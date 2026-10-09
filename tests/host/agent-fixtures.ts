@@ -63,6 +63,51 @@ export class FakeOpenAI {
   }
 }
 
+/** A local Anthropic `/v1/messages` server that answers every request with one streamed text reply. */
+export class FakeAnthropic {
+  readonly requests: Record<string, unknown>[] = []
+  private server: Server | undefined
+  private port = 0
+
+  /** @param replies Reply texts in request order. */
+  constructor(private readonly replies: string[]) {}
+
+  /** @returns The base URL, without `/v1`. */
+  get baseURL(): string { return `http://127.0.0.1:${this.port}` }
+
+  async start(): Promise<void> {
+    this.server = createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+      request.on('end', () => {
+        this.requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>)
+        const text = this.replies.shift() ?? 'no more scripted replies'
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        const send = (type: string, data: Record<string, unknown>): void => { response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`) }
+        send('message_start', { message: {
+          id: `msg_${this.requests.length}`, type: 'message', role: 'assistant', model: 'claude', content: [], stop_reason: null,
+          usage: { input_tokens: 100, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        } })
+        send('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+        send('content_block_delta', { index: 0, delta: { type: 'text_delta', text } })
+        send('content_block_stop', { index: 0 })
+        send('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 10 } })
+        send('message_stop', {})
+        response.end()
+      })
+    })
+    await new Promise<void>(resolve => { this.server!.listen(0, '127.0.0.1', resolve) })
+    const address = this.server.address()
+    if (address === null || typeof address === 'string') throw new Error('no address')
+    this.port = address.port
+  }
+
+  async stop(): Promise<void> {
+    this.server?.closeAllConnections()
+    await new Promise<void>(resolve => { this.server?.close(() => { resolve() }) ?? resolve() })
+  }
+}
+
 /**
  * A throwaway Host home.
  * @returns The environment and a cleanup function.

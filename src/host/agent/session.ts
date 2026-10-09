@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import {
-  createInitialSystemMessage, isContextOverflow, toToolDeclaration, type AssistantMessage, type ImageContent, type Message, type Tool,
-  type ToolResultMessage, type UserMessage,
+  createInitialSystemMessage, isContextOverflow, toToolDeclaration, type Api, type AssistantMessage, type ImageContent, type Message, type Model,
+  type Tool, type ToolResultMessage, type UserMessage,
 } from '@earendil-works/pi-ai'
 import { resolveBudget, type Budget } from '../../shared/budget.ts'
 import type {
@@ -13,7 +13,8 @@ import type {
 import { RpcError } from '../rpc.ts'
 import { roots } from '../projects.ts'
 import { buildContext, type ContextItem } from './context.ts'
-import { compact, compactionThreshold, estimateMessages } from './compaction.ts'
+import { compact, compactionThreshold, estimateMessages, SHARED_CACHE_WINDOW_MS } from './compaction.ts'
+import { addUsage, usageOf } from './llm.ts'
 import { loadBaseline, loadedFrom, renderAdditional, renderBaseline } from './instructions.ts'
 import type { ResolvedModel } from './models.ts'
 import { buildSystemPrompt } from './prompt.ts'
@@ -47,12 +48,13 @@ export function fallbackTitle(text: string): string {
   return `${bytes.subarray(0, end).toString('utf8')}…`
 }
 
-function usageOf(message: AssistantMessage): UsageSummary {
-  return {
-    input: message.usage.input, output: message.usage.output, cacheRead: message.usage.cacheRead, cacheWrite: message.usage.cacheWrite,
-    ...(message.usage.reasoning === undefined ? {} : { reasoning: message.usage.reasoning }),
-    ...(message.usage.cost.total > 0 ? { cost: message.usage.cost.total } : {}),
-  }
+/**
+ * @param model Model of a request.
+ * @param thinking Reasoning level of the request.
+ * @returns What two requests must share to share a prompt cache, besides their prefix.
+ */
+function requestKey(model: Model<Api>, thinking: string): string {
+  return `${model.provider}/${model.id}/${thinking}`
 }
 
 function textOf(content: ToolResultMessage['content']): string {
@@ -73,6 +75,8 @@ export class ChatSession {
   /** Ratio between provider-reported input tokens and the local estimate; only ever grows. */
   private calibration = 1
   private lastEstimate = 0
+  /** Start time, model and reasoning level of the chat's latest request, to judge whether its prompt cache is warm. */
+  private lastRequest: { at: number; key: string } | undefined
   private runPromise: Promise<void> | undefined
   private context: ContextUsage | null = null
   private streamTimer: NodeJS.Timeout | undefined
@@ -257,17 +261,19 @@ export class ChatSession {
         this.lastEstimate = estimateMessages(system, declarations, messages)
         if (estimate >= compactionThreshold(budget) && this.run !== undefined) {
           const latest = this.resolved() ?? resolved
-          const entry = await this.compact(latest, 'auto', signal).catch((error: unknown) => {
+          const entry = await this.compact(latest, 'auto', signal, request.context.messages).catch((error: unknown) => {
             this.services.log(`[chat ${this.chat.id}] compaction failed: ${error instanceof Error ? error.message : String(error)}`)
             return undefined
           })
           if (entry !== undefined) {
             const rebuilt = buildContext(this.entries).map(item => item.message)
             this.lastEstimate = estimateMessages(system, declarations, rebuilt)
+            this.lastRequest = { at: Date.now(), key: requestKey(request.model, request.thinkingLevel) }
             return { context: { ...request.context, messages: [...(initial === undefined ? [] : [initial]), ...rebuilt] } }
           }
         }
         this.updateContextUsage(budget, messages.length, system, declarations, messages)
+        this.lastRequest = { at: Date.now(), key: requestKey(request.model, request.thinkingLevel) }
         return undefined
       },
     })
@@ -395,13 +401,7 @@ export class ChatSession {
       this.services.rpc.emit('session.stream', { sessionId: this.chat.id, message: null })
       if (this.run !== undefined) {
         this.run.requests++
-        const usage = usageOf(message)
-        this.run.usage = {
-          input: this.run.usage.input + usage.input, output: this.run.usage.output + usage.output,
-          cacheRead: this.run.usage.cacheRead + usage.cacheRead, cacheWrite: this.run.usage.cacheWrite + usage.cacheWrite,
-          ...(usage.reasoning === undefined && this.run.usage.reasoning === undefined ? {} : { reasoning: (this.run.usage.reasoning ?? 0) + (usage.reasoning ?? 0) }),
-          ...(usage.cost === undefined && this.run.usage.cost === undefined ? {} : { cost: (this.run.usage.cost ?? 0) + (usage.cost ?? 0) }),
-        }
+        this.run.usage = addUsage(this.run.usage, usageOf(message))
       }
       const actual = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite
       if (actual > 0 && this.lastEstimate > 0 && actual > this.lastEstimate * this.calibration) this.calibration = (actual / this.lastEstimate) * 1.1
@@ -531,19 +531,37 @@ export class ChatSession {
     })
   }
 
-  private async compact(resolved: ResolvedModel, trigger: 'auto' | 'overflow' | 'manual', signal: AbortSignal | undefined): Promise<Extract<TranscriptEntry, { kind: 'compaction' }> | undefined> {
+  /**
+   * Compact the chat's context.
+   * @param resolved Model to summarize with.
+   * @param trigger Why.
+   * @param signal Aborts the summary request.
+   * @param prefix Messages the next request would send, when a run already holds them; otherwise they are rebuilt the
+   *   way a new run builds its first request.
+   * @returns The appended compaction entry, or `undefined` when nothing was worth compacting.
+   */
+  private async compact(resolved: ResolvedModel, trigger: 'auto' | 'overflow' | 'manual', signal: AbortSignal | undefined, prefix?: readonly Message[]): Promise<Extract<TranscriptEntry, { kind: 'compaction' }> | undefined> {
     const previous = this.status
     this.setStatus('compacting')
     try {
       const tools = this.tools()
       const system = await this.systemPrompt(tools)
+      const declarations = tools.map(tool => toToolDeclaration(tool) as Tool)
       const items: ContextItem[] = buildContext(this.entries)
+      const initial = createInitialSystemMessage(system, declarations)
       const latestUser = [...this.entries].reverse().find(entry => entry.kind === 'user')?.id
+      const last = this.lastRequest
       const entry = await compact({
-        models: this.services.models, resolved, system, tools: tools.map(tool => toToolDeclaration(tool) as Tool), items, latestUser, trigger,
+        models: this.services.models, resolved, system, tools: declarations, items, latestUser, trigger,
+        prefix: prefix ?? [...(initial === undefined ? [] : [initial]), ...items.map(item => item.message)],
+        shareCache: last !== undefined && last.key === requestKey(resolved.model, resolved.thinking ?? 'off') && Date.now() - last.at < SHARED_CACHE_WINDOW_MS,
+        sessionId: this.chat.id, estimateRatio: this.counterRatio(),
         ...(signal === undefined ? {} : { signal }),
       })
-      if (entry !== undefined) await this.append(entry)
+      if (entry !== undefined) {
+        await this.append(entry)
+        if (this.run !== undefined && entry.request !== undefined) this.run.usage = addUsage(this.run.usage, entry.request.usage)
+      }
       return entry
     } finally {
       this.setStatus(previous === 'compacting' ? 'running' : previous)

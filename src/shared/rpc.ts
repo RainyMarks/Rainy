@@ -129,8 +129,14 @@ export type TranscriptEntry =
   }
   /** Text the Host added to the model context: workspace instructions, memory recall, referenced chats. */
   | { id: string; kind: 'context'; ts: number; label: 'instructions' | 'memory' | 'reference' | 'notice'; text: string }
-  /** The entries from `firstId` through `lastId` are replaced in the model context by `summary`. */
-  | { id: string; kind: 'compaction'; ts: number; firstId: string; lastId: string; summary: string; tokensBefore: number; trigger: 'auto' | 'overflow' | 'manual' }
+  /**
+   * The entries from `firstId` through `lastId` are replaced in the model context by `summary`. `request` says whether
+   * the summary came from a request that shared the chat's prompt cache, and what the summary requests used.
+   */
+  | {
+    id: string; kind: 'compaction'; ts: number; firstId: string; lastId: string; summary: string; tokensBefore: number; trigger: 'auto' | 'overflow' | 'manual'
+    request?: { mode: 'shared' | 'separate'; usage: UsageSummary } | undefined
+  }
   /** UI-only line: retries, errors, stopped runs. Never sent to the model. */
   | { id: string; kind: 'notice'; ts: number; level: 'info' | 'warning' | 'error'; text: string; code?: string | undefined }
   /** End-of-turn statistics. Never sent to the model. */

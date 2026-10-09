@@ -9,7 +9,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
 import { ANTHROPIC_MODELS } from '@earendil-works/pi-ai/providers/anthropic.models'
 import { RequestQueue, resolveBudget } from '../../shared/budget.ts'
-import type { ModelSetup, ThinkingLevel } from '../../shared/rpc.ts'
+import type { ModelSetup, ThinkingLevel, UsageSummary } from '../../shared/rpc.ts'
 
 const PROTOCOLS: Readonly<Record<string, () => ProviderStreams>> = {
   'openai-completions': openAICompletionsApi,
@@ -103,6 +103,31 @@ export function toPiModel(setup: ModelSetup): Model<Api> {
 }
 
 /**
+ * @param message A finished model reply.
+ * @returns Its token usage, with the cost when the provider prices it.
+ */
+export function usageOf(message: AssistantMessage): UsageSummary {
+  return {
+    input: message.usage.input, output: message.usage.output, cacheRead: message.usage.cacheRead, cacheWrite: message.usage.cacheWrite,
+    ...(message.usage.reasoning === undefined ? {} : { reasoning: message.usage.reasoning }),
+    ...(message.usage.cost.total > 0 ? { cost: message.usage.cost.total } : {}),
+  }
+}
+
+/**
+ * @param a Usage so far.
+ * @param b Usage to add.
+ * @returns The sum; optional counts stay absent when neither side has them.
+ */
+export function addUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
+  return {
+    input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite,
+    ...(a.reasoning === undefined && b.reasoning === undefined ? {} : { reasoning: (a.reasoning ?? 0) + (b.reasoning ?? 0) }),
+    ...(a.cost === undefined && b.cost === undefined ? {} : { cost: (a.cost ?? 0) + (b.cost ?? 0) }),
+  }
+}
+
+/**
  * pi-ai reasoning option for a RainyAgent level.
  * @param level Level after {@link effectiveThinking}.
  * @returns The option value; `off` sends no reasoning parameter.
@@ -170,7 +195,9 @@ export function createStreamFn(deps: StreamDeps) {
       maxRetries: 2,
       maxRetryDelayMs: 10_000,
       cacheRetention: options.cacheRetention ?? deps.cacheRetention(model),
-      ...(model.api === 'anthropic-messages' ? { onPayload: (payload: unknown) => markPreviousTurn(payload) } : {}),
+      ...(model.api === 'anthropic-messages'
+        ? { onPayload: (payload: unknown, payloadModel: Model<Api>) => { blockContent(payload); markPreviousTurn(payload); return options.onPayload?.(payload, payloadModel) } }
+        : {}),
     })
     return (async function* events(): AsyncGenerator<AssistantMessageEvent> {
       let partial: AssistantMessage | undefined
@@ -209,6 +236,19 @@ function marks(blocks: unknown): number {
 }
 
 /**
+ * Send every message's text as content blocks. A breakpoint can only sit on a block, so pi-ai and
+ * {@link markPreviousTurn} turn a string into a block to mark it; without this, the same message would change form
+ * between requests depending on whether it carries the breakpoint. The payload is changed in place.
+ * @param payload Anthropic Messages request body.
+ */
+export function blockContent(payload: unknown): void {
+  if (!isRecord(payload) || !Array.isArray(payload.messages)) return
+  for (const message of payload.messages) {
+    if (isRecord(message) && typeof message.content === 'string' && message.content !== '') message.content = [{ type: 'text', text: message.content }]
+  }
+}
+
+/**
  * pi-ai marks the system prompt, the last tool and the last user message. Anthropic looks back only about 20 blocks
  * from a breakpoint, so a step that adds many tool results would write the whole conversation again. Marking the user
  * message that ended the previous request as well keeps that entry an exact hit. The payload is changed in place.
@@ -240,5 +280,21 @@ export function markPreviousTurn(payload: unknown): undefined {
   if (!Array.isArray(message.content) || marks(message.content) > 0) return undefined
   const last: unknown = message.content.at(-1)
   if (isRecord(last) && typeof last.type === 'string' && MARKABLE.has(last.type)) last.cache_control = cacheControl
+  return undefined
+}
+
+/**
+ * Remove the breakpoint pi-ai puts on the last user message of an Anthropic request, after {@link markPreviousTurn}
+ * ran. A compaction request reads the previous request's cache entry through the breakpoint on that request's last user
+ * message; writing its own tail would cost a cache write nothing reads, since the history changes when the checkpoint
+ * lands. Messages after the last user message, such as pi-ai's per-message effort, carry no breakpoint. The payload
+ * is changed in place.
+ * @param payload Anthropic Messages request body.
+ * @returns `undefined`, so pi-ai sends its own object.
+ */
+export function unmarkLastUserMessage(payload: unknown): undefined {
+  if (!isRecord(payload) || !Array.isArray(payload.messages)) return undefined
+  const last: unknown = payload.messages.findLast(message => isRecord(message) && message.role === 'user')
+  if (isRecord(last) && Array.isArray(last.content)) for (const block of last.content) if (isRecord(block)) delete block.cache_control
   return undefined
 }

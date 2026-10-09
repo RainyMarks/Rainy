@@ -141,6 +141,12 @@
   cursor: pointer;
 }
 
+.compactionUsage {
+  padding: 0 0 6px 20px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
 .compactionSummary {
   padding: 8px 12px;
   border-radius: var(--dsw-radius-sm);

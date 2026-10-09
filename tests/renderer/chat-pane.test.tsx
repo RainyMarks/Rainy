@@ -175,3 +175,17 @@ it('says when it is compacting the context', async () => {
   await emit('session.state', { sessionId: 'compact-1', status: 'idle', queue: [], model: null, context: null })
   expect(document.body.textContent).not.toContain('正在压缩上下文')
 })
+
+it('shows whether a compaction’s summary request reused the chat’s cache, and what it used', async () => {
+  const compaction: TranscriptEntry = {
+    id: 'k1', kind: 'compaction', ts: 6, firstId: 'u1', lastId: 'a2', summary: '读了 main.py。', tokensBefore: 90000, trigger: 'auto',
+    request: { mode: 'shared', usage: { input: 1500, output: 300, cacheRead: 88000, cacheWrite: 0 } },
+  }
+  handle('sessions.get', ({ sessionId }) => snapshot(sessionId, [...turn, compaction]))
+  await render(<ChatPane workspace={workspace} sessionId="k-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
+  await waitFor(() => { expect(hasText('已压缩较早的对话（约 90k tokens）')).toBe(true) })
+  expect(document.body.textContent).not.toContain('复用了对话缓存')
+  await click(button('已压缩较早的对话（约 90k tokens）'))
+  expect(document.body.textContent).toContain('摘要请求复用了对话缓存 · 输入 1.5k · 缓存 88k · 输出 300')
+  expect(document.body.textContent).toContain('读了 main.py。')
+})

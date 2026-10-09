@@ -155,7 +155,9 @@ function ContextRow({ entry }: { entry: Entry<'context'> }): JSX.Element {
 
 function CompactionRow({ entry }: { entry: Entry<'compaction'> }): JSX.Element {
   const t = useChatT()
+  const prefs = usePrefs()
   const [open, setOpen] = useState(false)
+  const request = entry.request
   return (
     <div className={css.compaction}>
       <button type="button" className={css.compactionLine} aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
@@ -163,6 +165,13 @@ function CompactionRow({ entry }: { entry: Entry<'compaction'> }): JSX.Element {
         <span>{t(entry.trigger === 'manual' ? 'compactionManual' : 'compaction', { tokens: formatTokens(entry.tokensBefore) })}</span>
         <IconChevronDownOutlineRegular size={12} className={clsx(css.chevron, open && css.chevronOpen)} />
       </button>
+      {open && request !== undefined && prefs.showUsage && (
+        <div className={css.compactionUsage}>
+          {t(request.mode === 'shared' ? 'compactionShared' : 'compactionSeparate')}
+          {' · '}
+          {t('turnUsage', { input: formatTokens(request.usage.input), cache: formatTokens(request.usage.cacheRead), output: formatTokens(request.usage.output) })}
+        </div>
+      )}
       {open && <Markdown className={css.compactionSummary} text={entry.summary} />}
     </div>
   )

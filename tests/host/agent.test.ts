@@ -1,17 +1,19 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { estimateText, resolveBudget } from '../../src/shared/budget.ts'
 import { brandString } from '../../src/shared/brand.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import { createProjectRegistry } from '../../src/shared/project-registry.ts'
 import type { HostEvents, MethodParams, MethodResult, HostMethod, TranscriptEntry } from '../../src/shared/rpc.ts'
 import { Activity } from '../../src/host/activity.ts'
+import { SHARED_CACHE_WINDOW_MS } from '../../src/host/agent/compaction.ts'
 import { createAgent, type AgentService } from '../../src/host/agent/index.ts'
 import { Projects } from '../../src/host/projects.ts'
 import { RpcHub } from '../../src/host/rpc.ts'
 import type { RuntimeService } from '../../src/host/runtime/index.ts'
 import { Settings } from '../../src/host/settings.ts'
-import { FakeOpenAI, tempHost } from './agent-fixtures.ts'
+import { FakeAnthropic, FakeOpenAI, tempHost, type ScriptedReply } from './agent-fixtures.ts'
 
 const runtime: RuntimeService = {
   handle: () => Promise.reject(new Error('not used')),
@@ -28,7 +30,7 @@ interface Harness {
   home: string
 }
 
-async function harness(server: FakeOpenAI, cleanups: (() => Promise<void>)[]): Promise<Harness> {
+async function harness(server: { baseURL: string }, cleanups: (() => Promise<void>)[]): Promise<Harness> {
   const { env, dir, cleanup } = await tempHost()
   cleanups.push(cleanup)
   const project = join(dir, 'project')
@@ -200,7 +202,15 @@ describe('agent', () => {
     expect(JSON.stringify(server.requests[1])).not.toContain('bad key')
   })
 
-  it('compacts on request and rebuilds the context from the checkpoint', async () => {
+  /** The request body without its messages, and its messages. */
+  const split = (body: Record<string, unknown> | undefined): { rest: Record<string, unknown>; messages: unknown[] } => {
+    const { messages, ...rest } = body ?? {}
+    return { rest, messages: messages as unknown[] }
+  }
+  const compactions = async (h: Harness, sessionId: string) => (await h.call('sessions.get', { sessionId })).entries
+    .filter((entry): entry is Extract<TranscriptEntry, { kind: 'compaction' }> => entry.kind === 'compaction')
+
+  it('compacts on request by repeating the previous request unchanged plus one instruction', async () => {
     const long = 'x'.repeat(4000)
     server = new FakeOpenAI([{ text: long }, { text: long }, { text: long }, { text: 'SUMMARY: earlier work' }, { text: 'after compaction' }])
     await server.start()
@@ -212,13 +222,140 @@ describe('agent', () => {
     }
     const result = await h.call('chat.compact', { sessionId: chat.id })
     expect(result.message).toMatch(/^Compacted/)
+    // Same model, tools, system prompt, history and options; no tool_choice; only the reply and the instruction added.
+    const previous = split(server.requests[2])
+    const shared = split(server.requests[3])
+    expect(shared.rest).toEqual(previous.rest)
+    expect(shared.rest.tool_choice).toBeUndefined()
+    expect(shared.messages.slice(0, previous.messages.length)).toEqual(previous.messages)
+    expect(shared.messages).toHaveLength(previous.messages.length + 2)
+    expect(JSON.stringify(shared.messages.at(-1))).toContain('do not call any tools')
+    const [entry] = await compactions(h, chat.id)
+    expect(entry?.request).toMatchObject({ mode: 'shared', usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 } })
+
     await h.call('chat.send', { sessionId: chat.id, text: 'd' })
     await idle(h, chat.id)
-    const last = JSON.stringify(server.requests.at(-1))
-    expect(last).toContain('SUMMARY: earlier work')
-    expect(last).toContain('compacted-summary')
-    const snapshot = await h.call('sessions.get', { sessionId: chat.id })
-    expect(snapshot.entries.some(entry => entry.kind === 'compaction')).toBe(true)
+    const after = split(server.requests.at(-1))
+    expect(JSON.stringify(after.messages)).toContain('SUMMARY: earlier work')
+    expect(JSON.stringify(after.messages)).toContain('compacted-summary')
+    expect(after.rest.tools).toEqual(previous.rest.tools)
+    expect(after.messages[0]).toEqual(previous.messages[0])
+  })
+
+  it('compacts between tool steps by repeating the interrupted request', async () => {
+    const replies = ['x'.repeat(120000), 'x'.repeat(60000)]
+    const script: ScriptedReply[] = replies.map(text => ({ text }))
+    server = new FakeOpenAI(script)
+    await server.start()
+    const h = await harness(server, cleanups)
+    await h.call('models.configure', { provider: 'fake', baseURL: server.baseURL, model: 'fake-model', contextWindow: 131072, local: true, api: 'openai-completions' })
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    for (const text of ['a', 'b']) {
+      await h.call('chat.send', { sessionId: chat.id, text })
+      await idle(h, chat.id)
+    }
+    // Grow the context past the compaction threshold with one tool call, leaving room for the shared request.
+    const budget = resolveBudget(131072)
+    // The last request holds everything but its own reply.
+    const used = estimateText(JSON.stringify(server.requests.at(-1))) + estimateText(replies.at(-1)!)
+    const comment = 'y'.repeat(Math.max(0, budget.compactAt + 4000 - used) * 3)
+    script.push({ toolCalls: [{ name: process.platform === 'win32' ? 'pwsh' : 'bash', arguments: { command: `echo step # ${comment}`, description: 'Step' } }] },
+      { text: 'SUMMARY: mid-run' }, { text: 'done' })
+    await h.call('chat.send', { sessionId: chat.id, text: 'c' })
+    await idle(h, chat.id)
+    expect(server.requests).toHaveLength(5)
+    const interrupted = split(server.requests[2])
+    const shared = split(server.requests[3])
+    expect(shared.rest).toEqual(interrupted.rest)
+    expect(shared.messages.slice(0, interrupted.messages.length)).toEqual(interrupted.messages)
+    // The tool call, its result and the instruction follow the interrupted request.
+    expect(shared.messages.slice(interrupted.messages.length).map(message => (message as { role: string }).role)).toEqual(['assistant', 'tool', 'user'])
+    const resumed = JSON.stringify(server.requests[4])
+    expect(resumed).toContain('SUMMARY: mid-run')
+    expect(resumed).toContain('echo step')
+    const [entry] = await compactions(h, chat.id)
+    expect(entry?.trigger).toBe('auto')
+    expect(entry?.request?.mode).toBe('shared')
+    const turn = (await h.call('sessions.get', { sessionId: chat.id })).entries.filter(item => item.kind === 'turn').at(-1)
+    // The tool step, the summary and the resumed answer: the turn's usage includes the summary request.
+    expect(turn?.kind === 'turn' && turn.usage.input).toBe(300)
+  })
+
+  it('falls back to a separate summary request when the shared one calls a tool', async () => {
+    const long = 'x'.repeat(4000)
+    server = new FakeOpenAI([{ text: long }, { text: long }, { text: long },
+      { toolCalls: [{ name: 'read', arguments: { file_path: 'notes.txt' } }] }, { text: 'SUMMARY: separate' }])
+    await server.start()
+    const h = await harness(server, cleanups)
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    for (const text of ['a', 'b', 'c']) {
+      await h.call('chat.send', { sessionId: chat.id, text })
+      await idle(h, chat.id)
+    }
+    await h.call('chat.compact', { sessionId: chat.id })
+    const separate = split(server.requests[4])
+    expect(separate.rest.tool_choice).toBe('none')
+    expect(JSON.stringify(separate.messages.at(-1))).toContain('replace the conversation above')
+    const [entry] = await compactions(h, chat.id)
+    expect(entry?.summary).toBe('SUMMARY: separate')
+    expect(entry?.request).toMatchObject({ mode: 'separate', usage: { input: 200, output: 30, cacheRead: 0, cacheWrite: 0 } })
+    expect(JSON.stringify((await h.call('sessions.get', { sessionId: chat.id })).entries)).not.toContain('notes.txt')
+  })
+
+  it('reads the previous Claude request’s cache entry and writes none for the summary request', async () => {
+    const claude = new FakeAnthropic(['x'.repeat(4000), 'x'.repeat(4000), 'x'.repeat(4000), 'SUMMARY: claude'])
+    await claude.start()
+    cleanups.push(() => claude.stop())
+    const h = await harness(claude, cleanups)
+    await h.call('models.configure', { provider: 'anthropic', baseURL: claude.baseURL, model: 'claude-opus-5-5', contextWindow: 32768, local: false, api: 'anthropic-messages', apiKey: 'test-key' })
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    for (const text of ['a', 'b', 'c']) {
+      await h.call('chat.send', { sessionId: chat.id, text })
+      await idle(h, chat.id)
+    }
+    await h.call('chat.compact', { sessionId: chat.id })
+    expect(claude.requests).toHaveLength(4)
+    const previous = split(claude.requests[2])
+    const shared = split(claude.requests[3])
+    // Breakpoints move between requests and are not part of the cached bytes.
+    const unmarked = (value: unknown): unknown => JSON.parse(JSON.stringify(value, (key, item: unknown) => key === 'cache_control' ? undefined : item))
+    expect(unmarked(shared.rest)).toEqual(unmarked(previous.rest))
+    expect(shared.rest.tool_choice).toBeUndefined()
+    expect(unmarked(shared.messages.slice(0, previous.messages.length))).toEqual(unmarked(previous.messages))
+    const lastUser = (messages: unknown[]): number => messages.findLastIndex(message => (message as { role: string }).role === 'user')
+    const marker = (message: unknown): unknown => (message as { content: { cache_control?: unknown }[] }).content.at(-1)?.cache_control
+    // The previous request wrote its entry at its last user message; the summary request reads exactly there and
+    // marks nothing after it, so it writes no cache.
+    const written = lastUser(previous.messages)
+    expect(marker(previous.messages[written])).toEqual({ type: 'ephemeral', ttl: '1h' })
+    expect(marker(shared.messages[written])).toEqual({ type: 'ephemeral', ttl: '1h' })
+    expect(lastUser(shared.messages)).toBeGreaterThan(previous.messages.length)
+    expect(JSON.stringify(shared.messages.slice(written + 1))).not.toContain('cache_control')
+    const [entry] = await compactions(h, chat.id)
+    expect(entry?.request?.mode).toBe('shared')
+  })
+
+  it('sends a separate summary request when the previous request’s cache has expired', async () => {
+    const long = 'x'.repeat(4000)
+    server = new FakeOpenAI([{ text: long }, { text: long }, { text: long }, { text: 'SUMMARY: cold' }])
+    await server.start()
+    const h = await harness(server, cleanups)
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    for (const text of ['a', 'b', 'c']) {
+      await h.call('chat.send', { sessionId: chat.id, text })
+      await idle(h, chat.id)
+    }
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + SHARED_CACHE_WINDOW_MS + 1)
+    try {
+      await h.call('chat.compact', { sessionId: chat.id })
+    } finally {
+      clock.mockRestore()
+    }
+    expect(server.requests).toHaveLength(4)
+    expect(split(server.requests[3]).rest.tool_choice).toBe('none')
+    const [entry] = await compactions(h, chat.id)
+    expect(entry?.request?.mode).toBe('separate')
   })
 
   it('imports RainyAgent 1.x models, keys and the global prompt once', async () => {
