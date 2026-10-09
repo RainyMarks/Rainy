@@ -1,92 +1,28 @@
-CLAUDE.local.md
-.env
-apps/desktop/.env.windows
-apps/desktop/.env.macos
-apps/desktop/*.p12
 node_modules/
-lib/
 *.tsbuildinfo
-pnpm-debug.log
-.pnpm-store/
-.cache/
-examples/*/*.jsonl
-.storages/
-.sessions/
-examples/*/.sessions/
-coverage/
-.coverage-times.json
-.doc-typecheck-*/
-.node-next-types-*/
-.oxlint-contract-*/
-.oxlintrc.contract-*.json
-oxlint-contract-*.ts
-.humanize/
-tmp/
-.claude/commands/
-.claude/launch.json
-.claude/settings.json
-.vscode/
+.env
 .DS_Store
 .idea
-mise.toml
-dist-exe/
-/dist/
-apps/desktop/.desktop-build/
-python/sdk-runtime/src/deepseek_harness_runtime/runtime/
-python/**/__pycache__/
-python/**/.pytest_cache/
-packages/**/__pycache__/
-apps/web/dist/
-.artifacts/
-.dsh-build/
-.playwright-mcp/
-.orig
-.worktrees/
-worktrees/
-.agents/worktrees/
-.typert-*/
-native/system/test/bin/
-apps/rainy-desktop/runtime/
-apps/rainy-desktop/release/
-apps/rainy-license-manager/release/
-validation/upgrade-0.4.0/manager-ui-run/
-validation/upgrade-0.4.0/manager-cdp*/
-apps/rainy-desktop/build/
-apps/rainy-desktop/resources/editor/
-apps/rainy-desktop/resources/ide/
-apps/rainy-desktop/resources/strata-runtime/
-apps/rainy-desktop/validation/ide-runtime/
-# Generated acceptance records retain exact build IDs and ship with release evidence.
-apps/rainy-desktop/validation/**/*.json
-apps/rainy-desktop/validation/**/*.log
-/validation/**/*.json
-/validation/**/*.log
-apps/rainy-desktop/toolpacks/stage/
-apps/rainy-desktop/toolpacks/stage-*/
-apps/rainy-desktop/toolpacks/cache/
-apps/rainy-desktop/validation/native-tools/media/
-apps/rainy-desktop/validation/native-tools/expansion/downloads/
-apps/rainy-desktop/validation/native-tools/expansion/upstream/
-apps/rainy-desktop/validation/native-tools/expansion/stage*/
-apps/rainy-desktop/validation/native-tools/expansion/fixtures/
-apps/rainy-desktop/validation/native-tools/expansion/notices/
-apps/rainy-desktop/validation/native-tools-clean-install/tools/
-apps/rainy-desktop/validation/native-tools-clean-install/runtime/
-validation/native-tools/expansion/downloads/
-validation/native-tools/expansion/upstream/
-validation/native-tools/expansion/stage*/
-validation/native-tools/expansion/fixtures/
-validation/native-tools/expansion/notices/
+.vscode/
+coverage/
+tmp/
 
-# Legacy activation-manager build artifacts stay local.
-apps/rainy-license-manager/
+# Build outputs
+/dist/
+/build/
+/release/
+/runtime/
+
+# Generated or downloaded resources
+/resources/editor/
+/resources/ide/
+/resources/strata-runtime/
+/toolpacks/stage/
+/toolpacks/stage-*/
+/toolpacks/cache/
+
+# Local acceptance evidence
+/validation/
+
 # Release signing keys are builder-owned and never published.
 **/release-signing-key.pem
-# Local validation backups and generated artifact inventories.
-apps/rainy-desktop/validation/**/runtime-resource-backup/
-
-# Local acceptance evidence and accidental Windows cache directories stay private.
-/validation/
-/apps/rainy-desktop/validation/
-/%SystemDrive%/
-/NVIDIA Corporation/
