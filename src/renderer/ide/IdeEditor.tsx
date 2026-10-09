@@ -1,7 +1,7 @@
 /** Retained editor mount; editor buffers remain owned by the workspace model. */
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { EditorAppearance, EditorInstance } from './editor-types.ts'
+import type { EditorActionLabels, EditorAppearance, EditorInstance } from './editor-types.ts'
 import { loadEditorAssets } from './editor-loader.ts'
 import { sourceLanguage, sourceUri, type IdeModel, type IdeState } from './ide-model.ts'
 import { fileKey, workspaceRoots } from './ide-paths.ts'
@@ -34,8 +34,11 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   const revealed = useRef<IdeState['reveal']>()
   const callbacks = useRef({ sendSelection, breakpoint, attach })
   callbacks.current = { sendSelection, breakpoint, attach }
-  const labels = useRef({ save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'), toggleBreakpoint: t('ideToggleBreakpoint'),
-    gotoDefinition: t('ideGotoDefinition'), findReferences: t('ideFindReferences'), rename: t('ideRenameSymbol'), locale })
+  const actionLabels: EditorActionLabels = { save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'),
+    toggleBreakpoint: t('ideToggleBreakpoint'), gotoDefinition: t('ideGotoDefinition'), findReferences: t('ideFindReferences'),
+    rename: t('ideRenameSymbol'), locale }
+  const labels = useRef(actionLabels)
+  labels.current = actionLabels
   const [ready, setReady] = useState(false)
   const [workspaceReady, setWorkspaceReady] = useState<string | undefined>()
   const pythonPath = selectedPythonExecutable(state.data.execution)
@@ -159,6 +162,9 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   useEffect(() => {
     instance.current?.setAppearance(appearance)
   }, [ready, appearance])
+  useEffect(() => {
+    instance.current?.setLabels(labels.current)
+  }, [ready, locale])
   useEffect(() => {
     instance.current?.setBreakpoints(state.data.execution?.breakpoints.map(source => ({
       path: fileKey(source.path, source.rootId), lines: source.lines,

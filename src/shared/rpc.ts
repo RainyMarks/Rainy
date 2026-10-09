@@ -78,6 +78,8 @@ export interface McpServerConfig {
   args?: string[] | undefined
   env?: Record<string, string> | undefined
   url?: string | undefined
+  /** Request headers of a streamable-http server, such as `Authorization`. */
+  headers?: Record<string, string> | undefined
   /** Tool names the model may call; an empty list allows every tool the server lists. */
   tools: string[]
 }

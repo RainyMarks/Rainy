@@ -152,7 +152,7 @@ export class McpManager {
     try {
       const transport = config.transport === 'stdio'
         ? new StdioClientTransport({ command: config.command!, args: config.args ?? [], env: { ...scrubbedEnv(), ...config.env }, stderr: 'pipe' })
-        : new StreamableHTTPClientTransport(new URL(config.url!))
+        : new StreamableHTTPClientTransport(new URL(config.url!), config.headers === undefined ? undefined : { requestInit: { headers: config.headers } })
       if (transport instanceof StdioClientTransport) transport.stderr?.on('data', (chunk: Buffer) => { this.log(`[mcp:${config.name}] ${chunk.toString('utf8').trimEnd()}`) })
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
       const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS })

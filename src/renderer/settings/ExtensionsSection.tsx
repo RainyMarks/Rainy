@@ -170,8 +170,12 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
               spellCheck={false} onChange={(event) => { edit({ args: event.target.value }) }} /></Field>
             <Field label={t('mcpEnv')} wide><textarea className={css.textarea} aria-label={t('mcpEnv')} value={form.value.env} rows={3}
               spellCheck={false} onChange={(event) => { edit({ env: event.target.value }) }} /></Field>
-          </> : <Field label={t('mcpUrl')} wide><input className={css.input} aria-label={t('mcpUrl')} value={form.value.url} type="url"
-            placeholder="https://" spellCheck={false} autoComplete="off" onChange={(event) => { edit({ url: event.target.value }) }} /></Field>}
+          </> : <>
+            <Field label={t('mcpUrl')} wide><input className={css.input} aria-label={t('mcpUrl')} value={form.value.url} type="url"
+              placeholder="https://" spellCheck={false} autoComplete="off" onChange={(event) => { edit({ url: event.target.value }) }} /></Field>
+            <Field label={t('mcpHeaders')} wide><textarea className={css.textarea} aria-label={t('mcpHeaders')} value={form.value.headers} rows={3}
+              placeholder="Authorization: Bearer …" spellCheck={false} onChange={(event) => { edit({ headers: event.target.value }) }} /></Field>
+          </>}
         </div>
         <fieldset className={css.tools}>
           <legend>{t('mcpToolsTitle')}</legend>

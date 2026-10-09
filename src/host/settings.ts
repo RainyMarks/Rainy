@@ -1,5 +1,6 @@
 /** `settings.json` and `.credentials.json` under the Host home, plus the one-time import of RainyAgent 1.x settings. */
 import { readFile } from 'node:fs/promises'
+import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
@@ -30,8 +31,29 @@ const serverSchema = z.object({
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
   url: z.string().url().optional(),
+  headers: z.record(z.string(), z.string()).optional().refine(validHeaders, 'MCP request headers need valid, distinct names and values'),
   tools: z.array(z.string()),
 }).refine(server => server.transport === 'stdio' ? server.command !== undefined : server.url !== undefined, 'stdio servers need a command; HTTP servers need a URL')
+
+/**
+ * @param headers MCP request headers.
+ * @returns Whether every header is valid HTTP and no two names differ only in case.
+ */
+function validHeaders(headers: Record<string, string> | undefined): boolean {
+  if (headers === undefined) return true
+  const names = new Set<string>()
+  for (const [name, value] of Object.entries(headers)) {
+    try {
+      validateHeaderName(name)
+      validateHeaderValue(name, value)
+    } catch (_invalid) {
+      return false
+    }
+    if (names.has(name.toLowerCase())) return false
+    names.add(name.toLowerCase())
+  }
+  return true
+}
 
 /** Interface defaults for a new installation. */
 export const DEFAULT_PREFS: Readonly<UiPreferences> = {

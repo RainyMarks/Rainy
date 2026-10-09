@@ -108,3 +108,17 @@ it('shows breakpoints and the paused line, and compares against original text', 
   expect(shownView(container).state.readOnly).toBe(false)
   await expect(editor.action('no-such-command')).rejects.toThrow('Unknown editor action')
 })
+
+it('switches its built-in phrases when the locale changes', async () => {
+  const container = document.createElement('div')
+  document.body.append(container)
+  editor = await assets.create(container, callbacks(), labels)
+  await editor.setWorkspace({ id: 'w', path: '/project', title: 'project', roots: [] })
+  editor.updateDocuments([document1])
+  editor.show('main.py')
+  expect(shownView(container).state.phrase('Find')).toBe('查找')
+  editor.setLabels({ ...labels, locale: 'en' })
+  expect(shownView(container).state.phrase('Find')).toBe('Find')
+  editor.setLabels({ ...labels, locale: 'zh' })
+  expect(shownView(container).state.phrase('Find')).toBe('查找')
+})

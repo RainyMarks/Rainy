@@ -76,6 +76,7 @@ export async function mountWindow(width = 1440, options: { native?: boolean; ses
     show: vi.fn(),
     showDiff: vi.fn(),
     setAppearance: vi.fn(),
+    setLabels: vi.fn(),
     setBreakpoints: vi.fn(),
     reveal: vi.fn(),
     action: vi.fn(async () => {}),

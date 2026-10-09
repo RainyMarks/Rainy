@@ -208,4 +208,16 @@ describe('parseServerForm', () => {
     expect(parseServerForm({ ...emptyServerForm(), name: 'a', command: 'run', env: '1BAD=x' }, [])).toEqual({ ok: false, error: 'mcpEnvInvalid', vars: { line: 1 } })
     expect(parseServerForm({ ...emptyServerForm(), name: 'other', command: 'run' }, ['other'])).toEqual({ ok: false, error: 'mcpNameTaken', vars: { name: 'other' } })
   })
+  it('reads HTTP request headers one per line and round-trips them', () => {
+    const http = { ...emptyServerForm(), name: 'web', transport: 'streamable-http' as const, url: 'https://mcp.example.test/mcp' }
+    const parsed = parseServerForm({ ...http, headers: 'Authorization: Bearer a:b \n\nX-Team:rainy' }, [])
+    expect(parsed).toEqual({ ok: true, server: { name: 'web', enabled: true, transport: 'streamable-http', url: 'https://mcp.example.test/mcp',
+      headers: { Authorization: 'Bearer a:b', 'X-Team': 'rainy' }, tools: [] } })
+    if (parsed.ok) expect(parseServerForm(serverFormOf(parsed.server), [])).toEqual(parsed)
+    expect(parseServerForm({ ...http, headers: '\n' }, [])).toEqual({ ok: true, server: { name: 'web', enabled: true, transport: 'streamable-http',
+      url: 'https://mcp.example.test/mcp', tools: [] } })
+    expect(parseServerForm({ ...http, headers: 'X-Ok: 1\nbad header: x' }, [])).toEqual({ ok: false, error: 'mcpHeaderInvalid', vars: { line: 2 } })
+    expect(parseServerForm({ ...http, headers: 'NoColon' }, [])).toEqual({ ok: false, error: 'mcpHeaderInvalid', vars: { line: 1 } })
+    expect(parseServerForm({ ...http, headers: 'X-Key: 1\nx-key: 2' }, [])).toEqual({ ok: false, error: 'mcpHeaderDuplicate', vars: { name: 'x-key' } })
+  })
 })

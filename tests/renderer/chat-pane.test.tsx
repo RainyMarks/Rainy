@@ -164,3 +164,14 @@ it('appends streamed entries and shows a failed request', async () => {
   expect(document.body.textContent).toContain('429 rate limited')
   expect(button('发送').disabled).toBe(true)
 })
+
+it('says when it is compacting the context', async () => {
+  handle('sessions.get', ({ sessionId }) => snapshot(sessionId, turn))
+  await render(<ChatPane workspace={workspace} sessionId="compact-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
+  await waitFor(() => { expect(hasText('看看 @main.py')).toBe(true) })
+  expect(document.body.textContent).not.toContain('正在压缩上下文')
+  await emit('session.state', { sessionId: 'compact-1', status: 'compacting', queue: [], model: null, context: null })
+  expect(document.body.textContent).toContain('正在压缩上下文…')
+  await emit('session.state', { sessionId: 'compact-1', status: 'idle', queue: [], model: null, context: null })
+  expect(document.body.textContent).not.toContain('正在压缩上下文')
+})

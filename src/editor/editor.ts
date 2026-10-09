@@ -32,6 +32,10 @@ const lspSlot = new Compartment()
 const diffSlot = new Compartment()
 const darkSlot = new Compartment()
 const indentSlot = new Compartment()
+const phrasesSlot = new Compartment()
+
+/** @returns The phrase table of a locale; English is CodeMirror's own text. */
+const phrasesFor = (locale: EditorActionLabels['locale']): Extension => locale === 'zh' ? EditorState.phrases.of(chinesePhrases) : []
 
 // ── Breakpoints and the paused line ──
 
@@ -188,7 +192,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
   private menuCleanup: (() => void) | undefined
   private readonly viewTimers = new Map<string, number>()
 
-  constructor(private readonly container: HTMLElement, private readonly callbacks: EditorCallbacks, private readonly labels: EditorActionLabels) {
+  constructor(private readonly container: HTMLElement, private readonly callbacks: EditorCallbacks, private labels: EditorActionLabels) {
     container.classList.add('rainy-editor')
   }
 
@@ -251,6 +255,13 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     if (appearance.dark === this.dark) return
     this.dark = appearance.dark
     for (const open of this.documents.values()) open.view.dispatch({ effects: darkSlot.reconfigure(EditorView.darkTheme.of(this.dark)) })
+  }
+
+  setLabels(labels: EditorActionLabels): void {
+    const previous = this.labels.locale
+    this.labels = labels
+    if (labels.locale === previous) return
+    for (const open of this.documents.values()) open.view.dispatch({ effects: phrasesSlot.reconfigure(phrasesFor(labels.locale)) })
   }
 
   setBreakpoints(breakpoints: readonly { readonly path: string; readonly lines: readonly number[] }[], stopped?: { readonly path: string; readonly line: number }): void {
@@ -422,7 +433,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       highlightActiveLine(),
       highlightSelectionMatches(),
       search({ top: true }),
-      this.labels.locale === 'zh' ? EditorState.phrases.of(chinesePhrases) : [],
+      phrasesSlot.of(phrasesFor(this.labels.locale)),
       breakpointField,
       renameField,
       editorTheme,

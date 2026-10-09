@@ -135,7 +135,7 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 模型设置保存在所选 Host 的 `settings.json`；API 密钥保存在 `.credentials.json`（权限 0600），同名环境变量优先。新的 API 模型默认使用 OpenAI Responses，本地模型默认使用 Chat Completions，均可按服务修改。DeepSeek 预设使用 1,000,000 上下文 tokens。两个 Claude 预设共用 Anthropic 密钥，只提供模型支持的推理档位，并将提示词缓存保留一小时。发现模型只需要供应商、Base URL、协议和可选密钥，不保存任何内容；保存和单独的流式/工具调用检查需要完整配置。RainyAgent 不会静默替换为其他模型。首次启动时会一次性导入 1.x profile 中的模型、密钥和全局提示词；1.x 的对话不导入。
 
-Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL.md` 的文件夹。系统提示中只放它们的名称和描述（合计最多 4,096 tokens），模型需要时再读取对应文件。MCP 服务在“设置 → Skills 与 MCP”中统一配置，通过 stdio 或 streamable HTTP 服务所有对话。其工具名为 `mcp__<服务>__<工具>`，调用 60 秒超时，服务说明会加入系统提示。IDA 预设通过 `uvx` 启动 IDA MCP 服务。
+Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL.md` 的文件夹。系统提示中只放它们的名称和描述（合计最多 4,096 tokens），模型需要时再读取对应文件。MCP 服务在“设置 → Skills 与 MCP”中统一配置，通过 stdio（命令、参数、环境变量）或 streamable HTTP（URL 和 `Authorization` 等请求头）服务所有对话。环境变量和请求头保存在 `settings.json` 中，不在保存模型密钥的凭据存储中。其工具名为 `mcp__<服务>__<工具>`，调用 60 秒超时，服务说明会加入系统提示。IDA 预设通过 `uvx` 启动 IDA MCP 服务。
 
 工具执行无需审批。读取工具按行分页，默认 2,000 行、每行 2,000 字符、50 KiB；长行截断标记清晰可见，原文件不受影响。写入和编辑要求先读取已存在的文件，并保留其 BOM 与主要换行符。Shell 命令（WSL 中为 `bash`，Windows 中为 `pwsh`）默认 60 秒超时，最长 10 分钟；较长输出在回复中保留开头和结尾，完整文本保存在 Host 临时目录的文件中。工作区指令（`AGENTS.md`、`CLAUDE.md` 及其 `.local` 版本，最多 64 KiB）在对话首次请求前加入一次，智能体进入子目录工作时再加入该目录的指令。对话标题取自第一条用户消息。
 

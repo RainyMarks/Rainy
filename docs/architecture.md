@@ -49,7 +49,7 @@ The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Window
 
 | Path | Content |
 |---|---|
-| `settings.json` | Models (without keys), selected model, global prompt, MCP servers, UI preferences |
+| `settings.json` | Models (without keys), selected model, global prompt, MCP servers (with their environment and request headers), UI preferences |
 | `.credentials.json` | API keys, mode 0600 |
 | `chats/<sessionId>.jsonl` | One chat: a header line, then transcript entries in order |
 | `chats/index.json` | Chat summaries for the history list; rebuilt from the files when missing |

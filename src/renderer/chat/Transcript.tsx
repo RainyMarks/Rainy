@@ -377,7 +377,10 @@ export function Transcript({ view, onFork, empty }: { view: ChatView; onFork(ses
               tools={view.tools} live={running && index === groups.length - 1} prefs={prefs} onFork={onFork} />
           ))}
           {running && view.streaming === null && Object.keys(view.tools).length === 0 && (
-            <div className={css.pending} aria-live="polite"><span className={css.pendingDot} /><span className={css.pendingDot} /><span className={css.pendingDot} /></div>
+            <div className={css.pending} aria-live="polite">
+              <span className={css.pendingDot} /><span className={css.pendingDot} /><span className={css.pendingDot} />
+              {view.summary.status === 'compacting' && <span className={css.pendingLabel}>{t('compactionRunning')}</span>}
+            </div>
           )}
           {view.summary.status === 'error' && view.error !== undefined && (
             <div className={css.error} role="alert"><IconWarningTriangleOutlineRegular size={14} /><div className={css.errorText}>{view.error}</div></div>

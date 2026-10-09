@@ -79,7 +79,7 @@ Strata 运行时已进行独立路径迁移、Python 导入和模拟健康/聊�
 
 Skills 无需手动启用：项目 Skills 位于 `.rainy/skills/<名称>/SKILL.md`，用户 Skills 位于 `~/.rainy-agent/skills/<名称>/SKILL.md`。系统提示中只放 Skill 的名称、短描述和文件路径（合计最多 4,096 tokens），正文由读取工具按需加载。“设置 → Skills 与 MCP”列出当前项目读到的 Skills。
 
-MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对话生效。每个服务可选择 stdio（命令、参数、环境变量）或 streamable HTTP（URL）。工具以 `mcp__<服务>__<工具>` 的名称提供给模型，单次调用 60 秒超时；服务提供的说明会加入系统提示。点击“添加 IDA MCP”会配置通过 `uvx` 启动的 IDA MCP 服务。当前不提供插件市场或 MCP OAuth 登录。
+MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对话生效。每个服务可选择 stdio（命令、参数、环境变量）或 streamable HTTP（URL 和请求头，每行一个 `名称: 值`，例如 `Authorization: Bearer …`）。环境变量和请求头保存在 `settings.json` 中，不在保存模型密钥的凭据存储中。工具以 `mcp__<服务>__<工具>` 的名称提供给模型，单次调用 60 秒超时；服务提供的说明会加入系统提示。点击“添加 IDA MCP”会配置通过 `uvx` 启动的 IDA MCP 服务。当前不提供插件市场或 MCP OAuth 登录。
 
 ## CTF 工具
 

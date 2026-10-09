@@ -104,6 +104,8 @@ export interface EditorInstance {
   showDiff(path: string, original: string, editable: boolean): void
   /** @param appearance Resolved host appearance. */
   setAppearance(appearance: EditorAppearance): void
+  /** @param labels Labels after a locale change; open panels and menus keep their text until they reopen. */
+  setLabels(labels: EditorActionLabels): void
   /** @param breakpoints Persisted source line breakpoints. @param stopped Optional paused source position. */
   setBreakpoints(
     breakpoints: readonly { readonly path: string; readonly lines: readonly number[] }[],

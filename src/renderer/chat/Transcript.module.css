@@ -256,8 +256,15 @@
 
 .pending {
   display: flex;
+  align-items: center;
   gap: 4px;
   padding: 4px 0;
+}
+
+.pendingLabel {
+  margin-left: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
 }
 
 .pendingDot {

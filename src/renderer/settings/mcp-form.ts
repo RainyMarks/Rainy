@@ -2,7 +2,7 @@
 import type { McpServerConfig } from '../../shared/rpc.ts'
 import type { SettingsMessage } from './messages.ts'
 
-/** Unsaved server fields: arguments and environment as one entry per line. */
+/** Unsaved server fields: arguments, environment and headers as one entry per line. */
 export interface McpServerForm {
   name: string
   enabled: boolean
@@ -11,16 +11,19 @@ export interface McpServerForm {
   args: string
   env: string
   url: string
+  headers: string
   tools: string[]
 }
 
 /** Server names the Host accepts. */
 export const MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,32}$/
 const ENV_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
+/** An RFC 9110 field name, a colon and a value without control characters other than tab. */
+const HEADER_LINE = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([^\x00-\x08\x0a-\x1f\x7f]*)$/
 
 /** @returns The form of a new, enabled stdio server. */
 export function emptyServerForm(): McpServerForm {
-  return { name: '', enabled: true, transport: 'stdio', command: '', args: '', env: '', url: '', tools: [] }
+  return { name: '', enabled: true, transport: 'stdio', command: '', args: '', env: '', url: '', headers: '', tools: [] }
 }
 
 /**
@@ -32,7 +35,9 @@ export function serverFormOf(server: McpServerConfig): McpServerForm {
     name: server.name, enabled: server.enabled, transport: server.transport, command: server.command ?? '',
     args: (server.args ?? []).join('\n'),
     env: Object.entries(server.env ?? {}).map(([key, value]) => `${key}=${value}`).join('\n'),
-    url: server.url ?? '', tools: [...server.tools],
+    url: server.url ?? '',
+    headers: Object.entries(server.headers ?? {}).map(([key, value]) => `${key}: ${value}`).join('\n'),
+    tools: [...server.tools],
   }
 }
 
@@ -59,7 +64,18 @@ export function parseServerForm(form: McpServerForm, otherNames: readonly string
     let parsed: URL | undefined
     try { parsed = new URL(url) } catch (_invalid) { parsed = undefined }
     if (parsed === undefined || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) return { ok: false, error: 'mcpUrlRequired' }
-    return { ok: true, server: { name, enabled: form.enabled, transport: 'streamable-http', url, tools } }
+    const headers: [string, string][] = []
+    for (const [index, line] of lines(form.headers).entries()) {
+      if (line === '') continue
+      const match = HEADER_LINE.exec(line)
+      if (match === null) return { ok: false, error: 'mcpHeaderInvalid', vars: { line: index + 1 } }
+      const key = match[1]!
+      if (headers.some(([other]) => other.toLowerCase() === key.toLowerCase())) return { ok: false, error: 'mcpHeaderDuplicate', vars: { name: key } }
+      headers.push([key, match[2]!.trimEnd()])
+    }
+    // Object.fromEntries defines every name as an own property, `__proto__` included.
+    return { ok: true, server: { name, enabled: form.enabled, transport: 'streamable-http', url,
+      ...headers.length === 0 ? {} : { headers: Object.fromEntries(headers) }, tools } }
   }
   const command = form.command.trim()
   if (command === '') return { ok: false, error: 'mcpCommandRequired' }
