@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = new URL('../resources/icesky/js/app/persistence.js', import.meta.url);
+const source = new URL('../../resources/icesky/js/app/persistence.js', import.meta.url);
 const plain = value => JSON.parse(JSON.stringify(value));
 const envelope = (data = {}, revision = 0) => ({ version: 1, revision, data });
 const draft = text => ({ shared: { activeTab: 'transforms' }, tools: { transforms: { fields: { transformInput: text }, files: {} } }, legacyMigrated: true });

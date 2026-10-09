@@ -82,7 +82,7 @@ function inherited(name: string, presets: Map<string, Preset>, chain = new Set<s
 function expandDirectory(value: string, root: string, preset: Preset, explicit: Readonly<Record<string, string>>): string {
   const environment: Record<string, string> = {}
   for (const [key, contents] of Object.entries(process.env))
-    if (contents !== undefined && !SENSITIVE_ENV_PATTERN.test(key) && !/^DSH_/i.test(key)) environment[key] = contents
+    if (contents !== undefined && !SENSITIVE_ENV_PATTERN.test(key) && !/^RAINY_/i.test(key)) environment[key] = contents
   Object.assign(environment, explicit)
   const expanding = new Set<string>()
   const expand = (input: string): string => {

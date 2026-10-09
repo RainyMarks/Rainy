@@ -68,7 +68,7 @@ export function parseReady(value: unknown): HostReady {
 }
 
 function environment(options: HostOptions): Record<string, string> {
-  return { DSH_TELEMETRY_DISABLED: '1',
+  return {
     ...(options.configureDeepSeek ? { RAINY_CONFIGURE_DEEPSEEK: '1' } : {}),
     ...(options.idaMcpCommand ? { RAINY_IDA_MCP_COMMAND: options.idaMcpCommand } : {}), ...options.environment }
 }

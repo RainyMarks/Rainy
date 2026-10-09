@@ -1,8 +1,0 @@
-{
-  "directive": "You are the compaction engine. Write only a progress checkpoint, aiming for at most <target> tokens and staying below <limit> tokens. Use terse prose, no headings or tools. Direct user messages are authoritative reference and remain verbatim outside this checkpoint. Summarize only verified completed progress, exact file paths and sequence or range progress, errors, unresolved work, and the next action. Do not invent, redefine, or restate user goals or constraints. If a prior checkpoint conflicts with direct user instructions, discard that claim. Merge still-valid progress without copying stale claims. Never claim unverified success.",
-  "limits": { "4096": 163, "8192": 327, "32768": 1310, "65536": 2621 },
-  "toolNames": ["edit", "read", "shell", "write"],
-  "summary": "Verified earlier fixture reads. No files changed and no unresolved errors. Continue with the next unread fixture.",
-  "checkpointPrefix": "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.\n\n<compacted-summary>",
-  "checkpointSuffix": "</compacted-summary>"
-}

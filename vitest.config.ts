@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
-    exclude: ['tests/legacy/**', 'tests/legacy-ui/**', 'node_modules/**'],
+    exclude: ['node_modules/**'],
     testTimeout: 30000,
   },
 })

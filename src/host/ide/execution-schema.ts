@@ -24,7 +24,7 @@ const environment = z.record(
   z
     .string()
     .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
-    .refine(value => !/^DSH_/i.test(value), 'DSH environment names are reserved.'),
+    .refine(value => !/^RAINY_/i.test(value), 'RAINY_ environment names are reserved.'),
   text,
 )
 const build = z.discriminatedUnion('kind', [

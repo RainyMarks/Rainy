@@ -27,7 +27,7 @@ WSL 系统组件安装、管理员确认和 Windows 重启续装按具体发行�
 
 ## 编辑、运行与调试
 
-先打开工作区，再从文件树打开文件。Monaco 提供完整文本编辑、多标签、查找替换、撤销和差异视图；使用保存操作写入磁盘。默认可编辑上限为 5 MiB，二进制、无法无损解码及超限文件只读。超限 UTF-8 文件最多预览 64 KiB，二进制以十六进制最多预览 4 KiB。快速打开可搜索尚未展开的文件树路径，结果过多时提示截断。更改查询、切换项目或重新打开窗口会撤销旧结果；等待或搜索失败时不能误打开上一轮的文件。
+先打开工作区，再从文件树打开文件。CodeMirror 6 编辑器提供完整文本编辑、多标签、查找替换（Ctrl+F / Ctrl+H）、转到行（Ctrl+G）、撤销和内联差异视图；使用保存操作（Ctrl+S）写入磁盘。Python、JavaScript/TypeScript 和 C/C++ 文件有补全、悬停提示、诊断、转到定义（F12）、查找引用（Shift+F12）和重命名（F2）；右键菜单也提供这些操作以及“发送到 AI”。点击行号左侧可切换断点。默认可编辑上限为 5 MiB，二进制、无法无损解码及超限文件只读。超限 UTF-8 文件最多预览 64 KiB，二进制以十六进制最多预览 4 KiB。快速打开可搜索尚未展开的文件树路径，结果过多时提示截断。更改查询、切换项目或重新打开窗口会撤销旧结果；等待或搜索失败时不能误打开上一轮的文件。
 
 顶栏中部的项目切换器可切换已有项目，“搜索文件”显示快速打开的快捷键。窗口底部状态栏显示执行环境、运行与调试状态、光标行列、选中长度、语言、行尾和编码。
 
@@ -61,9 +61,9 @@ Strata 运行时已进行独立路径迁移、Python 导入和模拟健康/聊�
 
 应用的 DeepSeek V4.1 Flash 预设使用模型 ID `deepseek-flash`，地址 `https://api.deepseek.com`，窗口 1,000,000，最大输出 393,216，推理 `max`，协议为 Responses。本地窗口的默认输出限制不会覆盖这个显式 API 配置。来源：[模型列表](https://api-docs.deepseek.com/api/list-models/)、[Responses API](https://api-docs.deepseek.com/guides/responses_api/)、[推理与工具调用](https://api-docs.deepseek.com/guides/thinking_mode/)。
 
-请求预算覆盖系统提示、工具定义、项目指令、扩展和历史。缺少服务端 tokenizer 时使用保守的多语言估计，并用实际 usage 向上校准；界面明确标为估计。其他工具结果超限后保存完整文本，只把有限首尾片段和原文位置送给模型。read 使用自己的行窗口，不对普通文件或 spill 文件读取结果再次生成 spill；默认上限为 2,000 行、每行 2,000 字符和 50 KiB 所选文本。完整请求连同包装仍受总输入预算限制，超限在供应商调用前拒绝。超长行有明确截断标记且原文件不变；offset/limit 不能分页读取单行后半。摘要使用当前模型，完整辅助请求包含保留的直接用户原文作为准确参考，并按同一完整输入计量。摘要指令只记录已验证的进度、错误、待办和下一步，不改写用户目标或约束；参考原文不进入替换范围。失败保留原记录。最近一个已接纳输入的轮次中，直接用户消息（包括该轮中途补充的输入）在当前表层原位保留全文；新轮次接纳首条用户消息后才切换保护范围。更早轮次仍可摘要，已经遮蔽的原文不会回填。自动、空闲手动和显式范围压缩均保留这些当前轮消息；受保护输入本身超限会明确报错。上下文溢出至多压缩重试一次，仍超限就停止发送。原始会话日志不会被摘要替换或删除。
+请求预算覆盖系统提示、工具定义、项目指令、记忆和历史，发送前使用保守的多语言估计；输入框旁的上下文占用显示估算值，或上一请求由服务商返回的实际用量。工具输出超限时保存完整文本，只把有限的首尾片段和文件位置送给模型。read 使用自己的行窗口，默认上限为 2,000 行、每行 2,000 字符和 50 KiB；超长行有明确截断标记且原文件不变。达到压缩阈值时，较早的一段对话由当前模型摘要替换：最新的用户请求保留原文，工具调用与结果不会被拆开；摘要只记录已验证的进度、准确路径、错误、待办和下一步，不改写用户目标或约束。上下文溢出时至多压缩并重试一次。输入 `/compact` 可随时手动压缩。摘要失败时保留原记录；被摘要的原文仍保存在对话文件中。
 
-高级计数配置位于 `~/.rainy-agent/profiles/rainy/cordis.patch.yml` 的 `rainy-policy` 条目，可设置 `tokenizers: { local: "http://127.0.0.1:端口/count" }`。该自定义接口接收 `provider/model/system/messages/tools`，必须按实际部署的聊天模板计数，POST 返回 `{ "tokens": 1234, "model": "当前模型", "chatTemplate": "模板版本" }`；模型不匹配、模板标识缺失或计数失败时回落到估计。通用 `/tokenize` 接口不能未经适配直接替代。共享同一服务但地址不同的供应商可用 `endpointGroups` 指向同一个队列键。每个队列按到达顺序发送请求：本机回环地址（localhost、`*.localhost`、127.0.0.1、[::1]）默认一次一个，其他端点默认最多同时四个；`localEndpointConcurrency` 与 `remoteEndpointConcurrency` 修改这两个默认值，`endpointConcurrency` 按队列键（分组名、Base URL 的 origin 或供应商 ID）单独设置。分组中任一供应商使用回环地址时整组按本机处理；局域网或其他非回环地址上的单路服务需在 `endpointConcurrency` 中设为 1。
+发往同一服务地址的请求按到达顺序排队：本机回环地址（localhost、`*.localhost`、127.0.0.1、[::1]）一次一个，其他地址最多同时四个。
 
 在“设置 → 模型 → 全局提示词”中填写希望所有会话都遵守的要求（例如“始终用中文回答”），保存后立即对所有会话生效，并计入上下文预算；默认最多 4,000 字，留空即关闭。
 
@@ -71,32 +71,15 @@ Strata 运行时已进行独立路径迁移、Python 导入和模拟健康/聊�
 
 项目记忆按载体的项目身份保存，Windows 与 WSL 共享项目记录，解释器、shell 等环境事实保留各自执行端范围。“使用记忆”和“自动生成”分别开关；支持查看、编辑、删除和清空。编辑携带页面显示的版本号，冲突时需刷新；后台生成不会覆盖人工修正。删除保留源事件水位及排除摘要，避免旧会话再次生成已删除内容。
 
-任务完成后空闲 60 秒触发，每项目最多 10 分钟一次。后台使用已选择模型，不调用工具，不自动切换云端；完整输入最多 4,096 tokens、输出最多 512 tokens，30 秒超时，前台新输入会取消它。有效记忆总量最多 1,024 估算 tokens，新聊天自动读取最多 512 tokens 且不超过输入预算的 5%，包含来源和说明。生成失败、取消或版本冲突均保留旧记录。后台调用的确切输入、结果和用量进入日志；记忆作为带来源的历史资料进入聊天，不拥有指令或授权地位。源文件变化会使相关自动事实失效。
+任务完成后空闲 60 秒触发，每项目最多 10 分钟一次。后台使用已选择模型，不调用工具，不自动切换云端；完整输入最多 4,096 tokens、输出最多 512 tokens，30 秒超时，前台新输入会取消它。有效记忆总量最多 1,024 估算 tokens，新聊天自动读取最多 512 tokens 且不超过输入预算的 5%，包含来源和说明。生成失败、取消或版本冲突均保留旧记录。记忆作为带来源的历史资料进入聊天，不拥有指令或授权地位。源文件变化会使相关自动事实失效。
 
-项目指令的单源与完整批次上限为 64 KiB；超限会指明文件并停止发送，不静默截断必要要求。修正动态指令后会在下一请求前重新检查。上下文页将系统提示、工具定义、项目指令、记忆、扩展、历史与协议包装分项显示为估算；专用计数服务确认当前模型与模板后才标记其总数为实测。首发预览读取当前项目与已保存模型，不创建聊天、不调用模型；未提交附件与发送时才发生的变更不在预览中。
+项目指令（`AGENTS.md`、`CLAUDE.md` 及其 `.local` 版本）合计上限为 64 KiB，在对话首次请求前加入一次；智能体进入子目录工作时再加入该目录的指令。“设置 → 模型”的上下文预算卡片分项显示系统提示、工具定义、项目指令、记忆和历史的估算值；预览读取当前项目与已保存模型，不创建聊天、不调用模型。
 
 ## Skills 与 MCP
 
-所有扩展默认关闭。从顶部设置切换到“Skills 与 MCP”，确认会话并读取配置；从已打开的会话进入时默认选中该会话。项目 Skills 位于 `.rainy/skills/<名称>/SKILL.md`，用户 Skills 位于 `~/.rainy-agent/skills/<名称>/SKILL.md`。只将已选择 Skill 的短描述与原文读取路径加入系统提示，正文由现有文件读取工具按需加载。扩展说明和工具定义合计不得超过配置上限或模型输入预算的 20%。
+Skills 无需手动启用：项目 Skills 位于 `.rainy/skills/<名称>/SKILL.md`，用户 Skills 位于 `~/.rainy-agent/skills/<名称>/SKILL.md`。系统提示中只放 Skill 的名称、短描述和文件路径（合计最多 4,096 tokens），正文由读取工具按需加载。“设置 → Skills 与 MCP”列出当前项目读到的 Skills。
 
-显式启用示例：
-
-```json
-{
-  "skills": ["project/style-guide"],
-  "servers": [
-    {
-      "serverName": "project-tools",
-      "transport": "stdio",
-      "command": "/absolute/path/to/server",
-      "args": [],
-      "tools": ["selected_tool"]
-    }
-  ]
-}
-```
-
-MCP 也支持 `streamable-http` 与 `url`。只向该会话注册 `tools` 中列出的工具；撤销选择会关闭其连接。会话恢复时重新加载它明确保存的选择。当前界面使用 JSON 配置，不提供插件市场或 MCP OAuth 登录。
+MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对话生效。每个服务可选择 stdio（命令、参数、环境变量）或 streamable HTTP（URL）。工具以 `mcp__<服务>__<工具>` 的名称提供给模型，单次调用 60 秒超时；服务提供的说明会加入系统提示。点击“添加 IDA MCP”会配置通过 `uvx` 启动的 IDA MCP 服务。当前不提供插件市场或 MCP OAuth 登录。
 
 ## CTF 工具
 
@@ -126,23 +109,23 @@ IceSky 从安装包本地加载。工作台和 RainyAgent 的模型设置分别�
 
 构建需要 Windows Node `^22.19 || >=24`、仓库锁定的 pnpm、Git，以及所选 WSL2 中的 Python 3.12+ 和 HTTPS 访问。环境介质的签名验证需要 GnuPG，可通过 `RAINY_GPG` 指定 `gpg.exe`。目标平台专用的 npm 包按锁文件的 SHA-512 校验，Node 发行包按官方 SHA-256 校验。
 
-日常开发在仓库根目录运行 `pnpm run build`（只构建外壳与 Host 时用 `pnpm run build:host`），输出 `dist/main.cjs`、`dist/preload.cjs`、`dist/setup/`、`dist/host.js`、`dist/renderer/` 及 `resources/editor/`。`pnpm run dev` 构建后以 `tmp/dev-home` 为数据目录直接启动 Host 并打印工作台地址，`--no-build`、`--home <目录>`、`--port <端口>` 可调整，Ctrl+C 通过控制行停止 Host。`pnpm start` 从仓库根目录启动 Electron，Windows 原生目标需要先由 `scripts/stage-windows.mjs` 暂存 `runtime/windows-host`。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 中的脚本测试。
+日常开发在仓库根目录运行 `pnpm run build`（只构建外壳与 Host 时用 `pnpm run build:host`），输出 `dist/main.cjs`、`dist/preload.cjs`、`dist/setup/`、`dist/host.js` 和 `dist/renderer/`（含编辑器分块与 `THIRD_PARTY_NOTICES.txt`）。`pnpm run dev` 构建后以 `tmp/dev-home` 为数据目录直接启动 Host 并打印工作台地址，`--no-build`、`--home <目录>`、`--port <端口>` 可调整，Ctrl+C 通过控制行停止 Host。`pnpm start` 从仓库根目录启动 Electron，Windows 原生目标需要先由 `scripts/stage-windows.mjs` 暂存 `runtime/windows-host`。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 与 `tests/icesky` 中的 node:test 测试。
 
 从仓库根目录运行：
 
 ```powershell
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-1.0.6 -ComponentSource release/offline-1.0.6/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.0.0 -ComponentSource release/offline-2.0.0/environment-components
 ```
 
-[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的 [1.0.6 输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、工具、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，运行 `build.ts --release`，由 `runtime-graph.mjs` 从 `node_modules/.pnpm` 计算 Host 外部依赖（node-pty、ripgrep、Pyright、TypeScript 语言服务、TypeScript、Prettier、tsx）的生产依赖闭包，分别生成 Windows 与 Linux Host，再由 `prepare-shell.mjs` 暂存 `build/shell` 并生成 NSIS 安装包。`-ReuseNativeToolsRelease` 复用刚恢复到 `release/offline-1.0.6` 的工具输入，`-ComponentSource` 指向其 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
+[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、工具、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，运行 `build.ts --release`，由 `runtime-graph.mjs` 从 `node_modules/.pnpm` 计算 Host 外部依赖（node-pty、ripgrep、Pyright、TypeScript 语言服务、TypeScript、Prettier、tsx）的生产依赖闭包，分别生成 Windows 与 Linux Host，再由 `prepare-shell.mjs` 暂存 `build/shell` 并生成 NSIS 安装包。`-ReuseNativeToolsRelease` 复用刚恢复到 `release/offline-2.0.0` 的工具输入，`-ComponentSource` 指向其 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
 
 Windows Host 构建先按官方 SHA-256 校验 Node ZIP，再使用 Windows 随附的 .NET ZIP 解压器展开；这一环节无需额外安装压缩工具。
 
 生产构建使用独立 Ed25519 发行密钥。默认在忽略提交的 `build/release-signing-key.pem` 创建并复用本机构建密钥；`RAINY_RELEASE_SIGNING_KEY` 可指定已有私钥文件，路径缺失、格式不符或与暂存公钥不匹配时构建失败。公开资源只包含发行公钥，载体将该公钥嵌入并校验签名资源清单。该流程不读取客户授权数据库。
 
-1.0.6 完整离线目录为 `release/offline-1.0.6/`，包含核心安装程序、原生工具文件、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、Strata 引擎、PHP 组件和 WSL 运行环境都位于核心 EXE 之外；安装包只附带固定这三个可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；Windows Host 使用实体依赖文件，Linux Host 使用包内相对链接。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
+完整离线目录为 `release/offline-2.0.0/`，包含核心安装程序、原生工具文件、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、Strata 引擎、PHP 组件和 WSL 运行环境都位于核心 EXE 之外；安装包只附带固定这三个可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；Windows Host 使用实体依赖文件，Linux Host 使用包内相对链接。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
 
 ## 已知限制和后续工作
 

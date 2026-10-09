@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const resources = new URL('../resources/icesky/', import.meta.url);
+const resources = new URL('../../resources/icesky/', import.meta.url);
 const cases = [
     { tool: 'TranslateTool', method: 'translateTo', argument: 'French', controller: 'translateAbortController', output: 'transformOutput', loading: 'translateLoading', stop: 'translateStopRequest' },
     { tool: 'PromptCraftTool', method: 'pcRunMutation', controller: 'pcAbortController', output: 'pcOutput', loading: 'pcLoading', stop: 'pcStopMutation' },

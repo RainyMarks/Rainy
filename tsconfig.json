@@ -17,5 +17,5 @@
     "types": ["node"]
   },
   "include": ["src/main", "src/preload", "src/host", "src/shared", "scripts/*.ts", "tests/**/*.ts", "vite.config.ts", "vitest.config.ts"],
-  "exclude": ["tests/renderer", "tests/legacy", "tests/legacy-ui"]
+  "exclude": ["tests/renderer"]
 }

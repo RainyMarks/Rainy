@@ -572,7 +572,7 @@ export class IdeDebugSession {
       )
       const environment: Record<string, string> = {}
       for (const [name, value] of Object.entries(request.env ?? {})) {
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || /^DSH_/i.test(name))
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || /^RAINY_/i.test(name))
           throw new Error('The adapter requested a reserved terminal environment variable.')
         environment[name] = value ?? ''
       }

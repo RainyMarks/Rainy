@@ -17,7 +17,7 @@ import { completeChats, completeFiles } from './complete.ts'
 import { loadBaseline, renderBaseline } from './instructions.ts'
 import { idaServer, McpManager } from './mcp.ts'
 import { ProjectMemory } from './memory/index.ts'
-import { Models } from './models.ts'
+import { DEEPSEEK_FLASH, Models } from './models.ts'
 import { buildSystemPrompt } from './prompt.ts'
 import { ChatSession } from './session.ts'
 import type { AgentServices } from './services.ts'
@@ -59,6 +59,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   const store = new ChatStore(join(env.home, 'chats'))
   await store.load()
   const models = new Models(settings)
+  if (env.configureDeepSeek === true) await models.configure(DEEPSEEK_FLASH)
   const mcp = new McpManager(log)
   const sessions = new Map<string, ChatSession>()
   const opening = new Map<string, Promise<ChatSession>>()

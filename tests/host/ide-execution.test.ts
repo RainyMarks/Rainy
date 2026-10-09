@@ -158,7 +158,7 @@ describe('human IDE execution', () => {
     f.canonical.set('/project/link', '/outside')
     await expect(resolveIdeWorkspacePath(f.files, '/project', '../outside', 'file')).rejects.toThrow('outside')
     await expect(resolveIdeWorkspacePath(f.files, '/project', 'link/new/program')).rejects.toThrow('outside')
-    await expect(f.request({ op: 'run.resolve', workspaceId, configuration: { ...configuration, environment: { DSH_SECRET: 'blocked' } } }))
+    await expect(f.request({ op: 'run.resolve', workspaceId, configuration: { ...configuration, environment: { RAINY_SECRET: 'blocked' } } }))
       .rejects.toThrow('reserved')
   })
 

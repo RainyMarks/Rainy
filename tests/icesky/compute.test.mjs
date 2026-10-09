@@ -6,9 +6,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const resourceRoot = fileURLToPath(new URL('../resources/icesky/', import.meta.url));
+const resourceRoot = fileURLToPath(new URL('../../resources/icesky/', import.meta.url));
 const workerPath = resolve(resourceRoot, 'js/workers/compute.js');
-const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/icesky/${name}-before.json`, import.meta.url), 'utf8'));
+const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/${name}-before.json`, import.meta.url), 'utf8'));
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function scriptContext() {

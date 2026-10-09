@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const resources = new URL('../resources/icesky/', import.meta.url);
+const resources = new URL('../../resources/icesky/', import.meta.url);
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function harness(toolName) {

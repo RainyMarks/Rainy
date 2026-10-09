@@ -19,7 +19,7 @@
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
-    "test:node": "node --test tests/scripts/*.test.mjs",
+    "test:node": "node --test tests/scripts/*.test.mjs tests/icesky/*.test.mjs",
     "package": "node scripts/prepare-shell.mjs && electron-builder --config electron-builder.config.cjs --win nsis"
   },
   "dependencies": {
@@ -81,6 +81,7 @@
     "esbuild": "0.28.1",
     "happy-dom": "^20.0.0",
     "highlight.js": "11.11.1",
+    "jsdom": "29.1.1",
     "katex": "0.16.47",
     "react": "18.3.1",
     "react-dom": "18.3.1",

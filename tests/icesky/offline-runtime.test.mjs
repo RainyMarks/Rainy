@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const resourceRoot = fileURLToPath(new URL('../resources/icesky/', import.meta.url));
+const resourceRoot = fileURLToPath(new URL('../../resources/icesky/', import.meta.url));
 const assetBase = 'http://127.0.0.1:9941/rainy/icesky/v/' + 'a'.repeat(64) + '/';
 const plain = value => JSON.parse(JSON.stringify(value));
 

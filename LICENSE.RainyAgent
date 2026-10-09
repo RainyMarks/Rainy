@@ -4,18 +4,21 @@ Copyright (c) 2026 NCUCyberBase and the RainyAgent contributors
 
 1. Scope and existing rights
 
-This license applies to RainyAgent-specific code and documentation in
-apps/rainy-desktop/ and packages/client/ui-rainy/, and to README.RainyAgent.md,
-except material identified as third-party material in its own notices or in
-THIRD_PARTY_NOTICES.md. This material is the "Covered Software". A distribution
-containing the Covered Software, including a modified version, must comply
-with this license for that material.
+This license applies to RainyAgent-specific code and documentation in this
+repository, including src/, scripts/, tests/, docs/, toolpacks/ and the README
+files, except material identified as derived from DeepSeek Harness or as
+third-party material in its own headers or notices or in THIRD_PARTY_NOTICES.md.
+This material is the "Covered Software". A distribution containing the Covered
+Software, including a modified version, must comply with this license for that
+material.
 
-DeepSeek Harness, Cordis, other upstream components, and changes distributed
-in their upstream package directories retain their stated licenses. This
-license does not restrict rights granted by those licenses, grant rights in
-third-party material, or revoke rights in copies previously received under
-another license. Copyright holders license only rights they control.
+Material derived from DeepSeek Harness (the files under src/renderer/ui/, the
+design tokens under src/renderer/theme/ that say so, and other files marked as
+derived from it), other upstream components, and third-party material retain
+their stated licenses. This license does not restrict rights granted by those
+licenses, grant rights in third-party material, or revoke rights in copies
+previously received under another license. Copyright holders license only
+rights they control.
 
 2. Permitted use
 

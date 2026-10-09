@@ -4,9 +4,9 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 
-const requireRoot = createRequire(new URL('../../../package.json', import.meta.url));
+const requireRoot = createRequire(new URL('../../package.json', import.meta.url));
 const { JSDOM, VirtualConsole } = requireRoot('jsdom');
-const resources = new URL('../resources/icesky/', import.meta.url);
+const resources = new URL('../../resources/icesky/', import.meta.url);
 const clone = value => JSON.parse(JSON.stringify(value));
 const deferred = () => Promise.withResolvers();
 const draft = input => ({ legacyMigrated: true, shared: { activeTab: 'tokenizer' }, tools: { tokenizer: { fields: { tokenizerInput: input, tokenizerEngine: 'byte' }, files: {} } } });

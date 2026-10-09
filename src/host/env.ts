@@ -27,6 +27,8 @@ export interface HostEnvironment {
   pwshPath?: string | undefined
   /** `uvx` used to launch the IDA MCP server. */
   idaMcpCommand?: string | undefined
+  /** Save and select the DeepSeek preset at startup (`RAINY_CONFIGURE_DEEPSEEK=1`), for development with `DEEPSEEK_API_KEY`. */
+  configureDeepSeek?: boolean | undefined
   /** Temporary files owned by this Host (tool output spill). */
   tmp: string
   /** Port to bind; 0 picks a free port. */
@@ -71,6 +73,7 @@ export function readHostEnvironment(env: NodeJS.ProcessEnv, moduleUrl: string): 
     builtinPhp: env.RAINY_BUILTIN_PHP || undefined,
     pwshPath: env.RAINY_PWSH_PATH || undefined,
     idaMcpCommand: env.RAINY_IDA_MCP_COMMAND || undefined,
+    configureDeepSeek: env.RAINY_CONFIGURE_DEEPSEEK === '1',
     tmp: join(tmpdir(), `rainy-agent-${process.pid}`),
     port,
   }
