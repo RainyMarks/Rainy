@@ -1,457 +1,685 @@
-/** Offline Monaco, language-client, and PTY rendering assets loaded by the Rainy workspace. */
-import * as monaco from 'monaco-editor'
-import { MonacoVscodeApiWrapper } from 'monaco-languageclient/vscodeApiWrapper'
-import type { MonacoVscodeApiConfig } from 'monaco-languageclient/vscodeApiWrapper'
-import { useWorkerFactory, Worker as WorkerDefinition } from 'monaco-languageclient/workerFactory'
-import { MonacoLanguageClient } from 'monaco-languageclient'
-import { CloseAction, ErrorAction } from 'vscode-languageclient/browser'
-import { WebSocketMessageReader, WebSocketMessageWriter, toSocket } from 'vscode-ws-jsonrpc'
-import { RegisteredFileSystemProvider, RegisteredMemoryFile, registerFileSystemOverlay } from '@codingame/monaco-vscode-files-service-override'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import '@xterm/xterm/css/xterm.css'
-import '@codingame/monaco-vscode-python-default-extension'
-import '@codingame/monaco-vscode-typescript-basics-default-extension'
-import '@codingame/monaco-vscode-cpp-default-extension'
-import '@codingame/monaco-vscode-json-default-extension'
-import '@codingame/monaco-vscode-theme-defaults-default-extension'
-import './editor.css'
-import { canonicalEditorUri, containsEditorUri } from './editor-uri.ts'
+/** CodeMirror 6 editors, language-server clients and the xterm terminal behind the IDE's `EditorAssets` interface. */
+import { Annotation, Compartment, EditorState, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state'
+import {
+  crosshairCursor, Decoration, drawSelection, dropCursor, EditorView, gutter, GutterMarker, highlightActiveLine, highlightActiveLineGutter,
+  highlightSpecialChars, keymap, lineNumbers, rectangularSelection, showPanel, type Command, type DecorationSet, type Panel,
+} from '@codemirror/view'
+import { defaultKeymap, history, historyKeymap, indentWithTab, redo, selectAll, toggleComment, undo } from '@codemirror/commands'
+import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit } from '@codemirror/language'
+import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
+import { lintKeymap } from '@codemirror/lint'
+import { unifiedMergeView } from '@codemirror/merge'
+import { findReferences, jumpToDefinition, LSPPlugin } from '@codemirror/lsp-client'
 import type {
-  EditorActionLabels, EditorAppearance, EditorAssets, EditorCallbacks, EditorDocument, EditorInstance,
-  EditorProblem, EditorTerminal, EditorView, EditorWorkspace,
+  EditorActionLabels, EditorAppearance, EditorAssets, EditorCallbacks, EditorDocument, EditorInstance, EditorProblem, EditorView as EditorViewState,
+  EditorWorkspace,
 } from '../renderer/ide/editor-types.ts'
+import { languageKey, loadLanguage, lspLanguageId, serverLanguage } from './languages.ts'
+import { chinesePhrases } from './phrases.ts'
+import { LanguageConnection, type LanguageHost, type LspDiagnostic, type LspPosition, type LspTextEdit } from './lsp.ts'
+import { createTerminal } from './terminal.ts'
+import { editorHighlighting, editorTheme } from './theme.ts'
+import { uriInside, uriKey } from './uri.ts'
+import './editor.css'
 
-const instances = new Set<WorkspaceEditor>()
-const languageIds = new Set(['python', 'typescript', 'javascript', 'c', 'cpp'])
-let initialization: Promise<void> | undefined
+/** Marks transactions that apply text the IDE model already holds, so they are not reported back as edits. */
+const external = Annotation.define<boolean>()
 
-function ownerFor(uri: string): WorkspaceEditor | undefined {
-  return [...instances].find(instance => instance.contains(uri))
-}
+const languageSlot = new Compartment()
+const readOnlySlot = new Compartment()
+const lspSlot = new Compartment()
+const diffSlot = new Compartment()
+const darkSlot = new Compartment()
+const indentSlot = new Compartment()
 
-function cancelled(token: { readonly isCancellationRequested: boolean }): boolean {
-  return token.isCancellationRequested
-}
+// ── Breakpoints and the paused line ──
 
-class WorkspaceFiles extends RegisteredFileSystemProvider {
-  private readonly registered = new Set<string>()
-  constructor() { super(false) }
+const setBreakpoints = StateEffect.define<{ lines: readonly number[]; stopped: number | undefined }>()
 
-  register(document: EditorDocument): void {
-    const uri = canonicalEditorUri(document.uri)
-    const key = uri.toString()
-    if (this.registered.has(key)) return
-    this.registerFile(new RegisteredMemoryFile(uri, document.text))
-    this.registered.add(key)
+class BreakpointMarker extends GutterMarker {
+  override toDOM(): Node {
+    const dot = document.createElement('span')
+    dot.className = 'rainy-breakpoint'
+    return dot
   }
+}
+const breakpointMarker = new BreakpointMarker()
+const stoppedLine = Decoration.line({ class: 'rainy-stopped-line' })
 
-  override async stat(uri: monaco.Uri) {
-    const canonical = canonicalEditorUri(uri)
-    try { return await super.stat(canonical) } catch (error) {
-      const document = await ownerFor(canonical.toString())?.read(canonical.toString())
-      if (document === undefined) throw error
-      this.register(document)
-      return super.stat(canonical)
+const breakpointField = StateField.define<{ markers: RangeSet<GutterMarker>; stopped: DecorationSet }>({
+  create: () => ({ markers: RangeSet.empty, stopped: Decoration.none }),
+  update(value, transaction) {
+    let next = transaction.docChanged ? { markers: value.markers.map(transaction.changes), stopped: value.stopped.map(transaction.changes) } : value
+    for (const effect of transaction.effects) {
+      if (!effect.is(setBreakpoints)) continue
+      const doc = transaction.state.doc
+      const lines = [...new Set(effect.value.lines)].filter(line => line >= 1 && line <= doc.lines).sort((left, right) => left - right)
+      const stopped = effect.value.stopped
+      next = {
+        markers: RangeSet.of(lines.map(line => breakpointMarker.range(doc.line(line).from))),
+        stopped: stopped !== undefined && stopped >= 1 && stopped <= doc.lines ? Decoration.set([stoppedLine.range(doc.line(stopped).from)]) : Decoration.none,
+      }
     }
+    return next
+  },
+  provide: field => EditorView.decorations.from(field, value => value.stopped),
+})
+
+// ── Rename prompt ──
+
+interface RenameRequest { word: string; label: string; done(name: string): void }
+const toggleRename = StateEffect.define<RenameRequest | null>()
+
+const renameField = StateField.define<RenameRequest | null>({
+  create: () => null,
+  update(value, transaction) {
+    for (const effect of transaction.effects) if (effect.is(toggleRename)) return effect.value
+    return value
+  },
+  provide: field => showPanel.from(field, request => request === null ? null : (view): Panel => {
+    const dom = document.createElement('form')
+    dom.className = 'rainy-rename-panel'
+    const label = document.createElement('label')
+    label.textContent = request.label
+    const input = document.createElement('input')
+    input.className = 'cm-textfield'
+    input.value = request.word
+    input.setAttribute('aria-label', request.label)
+    label.append(input)
+    dom.append(label)
+    const close = (): void => { view.dispatch({ effects: toggleRename.of(null) }); view.focus() }
+    dom.addEventListener('submit', (event) => {
+      event.preventDefault()
+      const name = input.value.trim()
+      close()
+      if (name !== '' && name !== request.word) request.done(name)
+    })
+    input.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close() } })
+    return { dom, top: true, mount: () => { input.focus(); input.select() } }
+  }),
+})
+
+// ── Helpers ──
+
+function positionOf(state: EditorState, line: number, column: number): number {
+  const target = state.doc.line(Math.min(Math.max(1, line), state.doc.lines))
+  return target.from + Math.min(Math.max(0, column - 1), target.length)
+}
+
+/** Offset of an LSP position in raw text with LF or CRLF line ends. */
+function offsetIn(text: string, position: LspPosition): number {
+  let offset = 0
+  for (let line = 0; line < position.line; line++) {
+    const end = text.indexOf('\n', offset)
+    if (end < 0) return text.length
+    offset = end + 1
   }
+  const lineEnd = text.indexOf('\n', offset)
+  const length = (lineEnd < 0 ? text.length : lineEnd) - offset - (lineEnd > 0 && text[lineEnd - 1] === '\r' ? 1 : 0)
+  return offset + Math.min(position.character, Math.max(0, length))
+}
 
-  override async readFile(uri: monaco.Uri): Promise<Uint8Array> {
-    const canonical = canonicalEditorUri(uri)
-    const document = await ownerFor(canonical.toString())?.read(canonical.toString())
-    if (document !== undefined) { this.register(document); return new TextEncoder().encode(document.text) }
-    return super.readFile(canonical)
+/** Apply LSP edits to raw text, last edit first so earlier offsets stay valid. */
+function applyTextEdits(text: string, edits: readonly LspTextEdit[]): string {
+  const ranges = edits.map(edit => ({ from: offsetIn(text, edit.range.start), to: offsetIn(text, edit.range.end), insert: edit.newText }))
+    .sort((left, right) => right.from - left.from)
+  let result = text
+  for (const range of ranges) result = result.slice(0, range.from) + range.insert + result.slice(range.to)
+  return result
+}
+
+/** Indentation the file already uses: a tab, or the smallest run of leading spaces among its first indented lines. */
+function detectIndent(text: string): string {
+  let smallest = 0
+  let seen = 0
+  for (const line of text.split('\n', 2000)) {
+    if (line.startsWith('\t')) return '\t'
+    const spaces = /^( +)\S/.exec(line)?.[1]?.length
+    if (spaces === undefined) continue
+    if (smallest === 0 || spaces < smallest) smallest = spaces
+    if (++seen >= 20) break
   }
+  return smallest === 2 || smallest === 4 || smallest === 8 ? ' '.repeat(smallest) : '    '
 }
 
-const files = new WorkspaceFiles()
-
-function initialize(): Promise<void> {
-  initialization ??= (async () => {
-    registerFileSystemOverlay(10, files)
-    const options: MonacoVscodeApiConfig = {
-      $type: 'extended',
-      viewsConfig: { $type: 'EditorService', openEditorFunc: async (reference, options) => {
-        const model = reference.object.textEditorModel
-        const owner = ownerFor(model.uri.toString())
-        if (owner === undefined) return undefined
-        const selection = options !== undefined && 'selection' in options && typeof options.selection === 'object' && options.selection !== null
-          ? options.selection : undefined
-        const line = selection !== undefined && 'startLineNumber' in selection && typeof selection.startLineNumber === 'number' ? selection.startLineNumber : undefined
-        const column = selection !== undefined && 'startColumn' in selection && typeof selection.startColumn === 'number' ? selection.startColumn : undefined
-        await owner.open(model.uri.toString(), line, column)
-        return owner.normalEditor
-      } },
-      userConfiguration: { json: JSON.stringify({
-        'editor.semanticHighlighting.enabled': true, 'editor.wordBasedSuggestions': 'matchingDocuments',
-        'files.autoSave': 'off', 'workbench.colorTheme': 'Default Dark Modern',
-      }) },
-      advanced: { loadThemes: true, enableExtHostWorker: false },
-      monacoWorkerFactory: () => {
-        useWorkerFactory({ workerLoaders: {
-          editorWorkerService: () => new WorkerDefinition(new URL('./editor.worker.js', import.meta.url), { type: 'module' }),
-          TextMateWorker: () => new WorkerDefinition(new URL('./textmate.worker.js', import.meta.url), { type: 'module' }),
-        } })
-      },
-    }
-    await new MonacoVscodeApiWrapper(options).start()
-  })()
-  return initialization
+/** Minimal replacement that turns `before` into `after`, so cursors and folds outside the change survive. */
+function minimalChange(before: string, after: string): { from: number; to: number; insert: string } {
+  let start = 0
+  const limit = Math.min(before.length, after.length)
+  while (start < limit && before.charCodeAt(start) === after.charCodeAt(start)) start++
+  let end = 0
+  while (end < limit - start && before.charCodeAt(before.length - 1 - end) === after.charCodeAt(after.length - 1 - end)) end++
+  return { from: start, to: before.length - end, insert: after.slice(start, after.length - end) }
 }
 
-interface ClientConnection {
-  readonly socket: WebSocket
-  readonly client: MonacoLanguageClient
-  readonly started: Promise<void>
+const severities: Record<number, EditorProblem['severity']> = { 1: 'error', 2: 'warning', 3: 'info', 4: 'hint' }
+
+interface WorkspaceEdit {
+  changes?: Record<string, LspTextEdit[]>
+  documentChanges?: ({ textDocument: { uri: string }; edits: LspTextEdit[] } | { kind: string })[]
 }
 
-async function stopConnection(connection: ClientConnection): Promise<void> {
-  try { await connection.started; await connection.client.stop() }
-  catch (error) { void error } // A failed startup has no live protocol session to shut down.
-  finally { connection.socket.close(1000) }
+/** One open document and its editor view. */
+interface OpenDocument {
+  document: EditorDocument
+  key: string | undefined
+  view: EditorView
+  host: HTMLDivElement
+  /** Connection whose plugin the view holds. */
+  connection: LanguageConnection | undefined
+  /** Comparison text while the document shows as a diff. */
+  diff: { original: string; editable: boolean } | undefined
+  /** The view state the IDE saved has been applied. */
+  restored: boolean
 }
 
-class WorkspaceEditor implements EditorInstance {
-  readonly normalEditor: monaco.editor.IStandaloneCodeEditor
-  private readonly diffEditor: monaco.editor.IStandaloneDiffEditor
-  private readonly normalContainer: HTMLDivElement
-  private readonly diffContainer: HTMLDivElement
-  private readonly models = new Map<string, { document: EditorDocument; model: monaco.editor.ITextModel; listener: monaco.IDisposable }>()
-  private readonly clients = new Map<string, ClientConnection>()
-  private readonly decorations = new Map<string, string[]>()
-  private readonly subscriptions: monaco.IDisposable[] = []
+class WorkspaceEditor implements EditorInstance, LanguageHost {
+  private readonly documents = new Map<string, OpenDocument>()
+  private readonly connections = new Map<string, LanguageConnection>()
+  private readonly diagnosticsByUri = new Map<string, { uri: string; diagnostics: readonly LspDiagnostic[] }>()
+  private readonly breakpoints = new Map<string, readonly number[]>()
+  private stopped: { path: string; line: number } | undefined
   private workspace: EditorWorkspace | undefined
   private activePath: string | undefined
-  private originalModel: monaco.editor.ITextModel | undefined
-  private updating = false
+  private dark = false
   private disposed = false
-  private generation = 0
-  private diffVisible = false
-  private workspaceChange: Promise<void> = Promise.resolve()
+  private menu: HTMLElement | undefined
+  private menuCleanup: (() => void) | undefined
+  private readonly viewTimers = new Map<string, number>()
 
-  constructor(private readonly container: HTMLElement, private readonly callbacks: EditorCallbacks, labels: EditorActionLabels) {
-    this.normalContainer = document.createElement('div')
-    this.diffContainer = document.createElement('div')
-    this.normalContainer.className = 'rainy-monaco-surface'
-    this.diffContainer.className = 'rainy-monaco-surface'
-    this.diffContainer.hidden = true
-    container.append(this.normalContainer, this.diffContainer)
-    this.normalEditor = monaco.editor.create(this.normalContainer, {
-      automaticLayout: true, model: null, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      glyphMargin: true, fontSize: 13, tabSize: 2, padding: { top: 8, bottom: 8 },
-    })
-    this.diffEditor = monaco.editor.createDiffEditor(this.diffContainer, {
-      automaticLayout: true, renderSideBySide: true, originalEditable: false, minimap: { enabled: false },
-      scrollBeyondLastLine: false, glyphMargin: true,
-    })
-    for (const editor of [this.normalEditor, this.diffEditor.getModifiedEditor()]) {
-      this.subscriptions.push(editor.onDidChangeCursorSelection((event) => {
-        const item = this.activePath === undefined ? undefined : this.models.get(this.activePath)
-        if (item === undefined || editor.getModel() !== item.model) return
-        const selected = event.selection
-        const text = item.model.getValueInRange(selected)
-        this.callbacks.selection(text === '' ? undefined : { path: item.document.path, text, language: item.document.language,
-          startLine: selected.startLineNumber, startColumn: selected.startColumn,
-          endLine: selected.endLineNumber, endColumn: selected.endColumn })
-        this.publishView(editor)
-      }))
-      this.subscriptions.push(editor.onDidScrollChange(() => { this.publishView(editor) }))
-      this.subscriptions.push(editor.onMouseDown((event) => {
-        if (event.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && this.activePath !== undefined) {
-          this.callbacks.breakpoint(this.activePath, event.target.position.lineNumber)
-        }
-      }))
-      this.subscriptions.push(editor.addAction({ id: 'rainy.save', label: labels.save,
-        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS], run: () => { this.callbacks.save() } }))
-      this.subscriptions.push(editor.addAction({ id: 'rainy.format', label: labels.format,
-        keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF], run: () => { this.callbacks.format() } }))
-      this.subscriptions.push(editor.addAction({ id: 'rainy.selection', label: labels.sendSelection,
-        contextMenuGroupId: 'navigation', contextMenuOrder: 3, run: () => { this.callbacks.sendSelection() } }))
-    }
-    this.subscriptions.push(monaco.editor.onDidChangeMarkers(() => { this.publishProblems() }))
-    instances.add(this)
+  constructor(private readonly container: HTMLElement, private readonly callbacks: EditorCallbacks, private readonly labels: EditorActionLabels) {
+    container.classList.add('rainy-editor')
   }
 
-  contains(uri: string): boolean {
-    if (!this.workspace) return false
-    return this.roots().some(root => this.containsRoot(uri, root.path))
-  }
-
-  private roots(): readonly { rootId: string; path: string; title: string }[] {
-    return this.workspace?.roots ?? (this.workspace === undefined ? [] : [{ rootId: 'primary', path: this.workspace.path, title: this.workspace.title }])
-  }
-
-  private containsRoot(uri: string, path: string): boolean {
-    return containsEditorUri(uri, path)
-  }
-
-  async read(uri: string): Promise<EditorDocument | undefined> { return this.callbacks.read(uri) }
-
-  async open(uri: string, line?: number, column?: number): Promise<void> {
-    const document = await this.callbacks.open(uri, line, column)
-    if (document === undefined || this.disposed) return
-    this.ensureModel(document)
-    this.show(document.path)
-    if (line !== undefined) this.reveal(document.path, line, column ?? 1)
-  }
+  // ── EditorInstance ──
 
   async setWorkspace(workspace: EditorWorkspace): Promise<void> {
-    const changed = this.workspaceChange.then(async () => {
-      if (this.disposed || (this.workspace?.id === workspace.id && this.workspace.pythonPath === workspace.pythonPath
-        && this.workspace.compileCommandsDirectory === workspace.compileCommandsDirectory
-        && JSON.stringify(this.workspace.roots) === JSON.stringify(workspace.roots))) return
-      this.generation++
-      const previous = [...this.clients.values()]
-      this.clients.clear()
-      await Promise.all(previous.map(stopConnection))
-      this.workspace = workspace
-    })
-    this.workspaceChange = changed
-    await changed
-  }
-
-  private ensureModel(document: EditorDocument): void {
-    const uri = canonicalEditorUri(document.uri)
-    const previous = this.models.get(document.path)
-    if (previous?.model.uri.toString() === uri.toString()) {
-      previous.document = document
-      if (previous.model.getValue() !== document.text) {
-        this.updating = true
-        previous.model.pushEditOperations([], [{ range: previous.model.getFullModelRange(), text: document.text }], () => null)
-        this.updating = false
-      }
-      monaco.editor.setModelLanguage(previous.model, document.language)
-      return
-    }
-    if (previous) { previous.listener.dispose(); previous.model.dispose() }
-    files.register(document)
-    const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(document.text, document.language, uri)
-    const listener = model.onDidChangeContent(() => {
-      if (!this.updating) this.callbacks.change(document.path, model.getValue())
-    })
-    this.models.set(document.path, { document, model, listener })
+    if (this.disposed) return
+    const previous = this.workspace
+    if (previous !== undefined && previous.id === workspace.id && previous.pythonPath === workspace.pythonPath
+      && previous.compileCommandsDirectory === workspace.compileCommandsDirectory && JSON.stringify(previous.roots) === JSON.stringify(workspace.roots)) return
+    this.closeConnections()
+    this.workspace = workspace
+    for (const open of this.documents.values()) this.attachLanguageServer(open)
   }
 
   updateDocuments(documents: readonly EditorDocument[]): void {
-    const paths = new Set(documents.map(item => item.path))
-    for (const [path, item] of this.models) {
-      if (!paths.has(path)) { item.listener.dispose(); item.model.dispose(); this.models.delete(path) }
-    }
-    for (const item of documents) this.ensureModel(item)
-    for (const document of documents.filter(item => item.uri.startsWith('file:'))) {
-      const root = [...this.roots()].sort((a, b) => b.path.length - a.path.length).find(item => this.containsRoot(document.uri, item.path))
-      if (root !== undefined) void this.connect(document.language, root)
-    }
+    if (this.disposed) return
+    const paths = new Set(documents.map(document => document.path))
+    for (const [path, open] of this.documents) if (!paths.has(path)) this.close(path, open)
+    for (const document of documents) this.ensure(document)
+    this.publishProblems()
   }
 
-  private isCurrent(generation: number): boolean {
-    return generation === this.generation && !this.disposed
-  }
-
-  private async connect(language: string, root: { rootId: string; path: string; title: string }): Promise<void> {
-    const workspace = this.workspace
-    const identity = `${root.rootId}:${language}`
-    if (!workspace || !languageIds.has(language) || this.clients.has(identity) || this.disposed) return
-    const generation = this.generation
-    const url = new URL('/rainy/ide/lsp', location.href)
-    url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    url.searchParams.set('workspaceId', workspace.id)
-    url.searchParams.set('language', language)
-    url.searchParams.set('rootId', root.rootId)
-    const socket = new WebSocket(url)
-    const transport = toSocket(socket)
-    const client = new MonacoLanguageClient({ id: `rainy-${workspace.id}-${root.rootId}-${language}`, name: `Rainy ${language}`,
-      clientOptions: {
-        documentSelector: [{ language, scheme: 'file', pattern: `${monaco.Uri.file(root.path).path.replace(/\/$/, '')}/**/*` }],
-        workspaceFolder: { index: 0, name: root.title, uri: monaco.Uri.file(root.path) },
-        initializationOptions: language === 'python' ? { pythonPath: workspace.pythonPath } : undefined,
-        middleware: { provideRenameEdits: async (document, position, newName, token, next) => {
-          const edit = await next(document, position, newName, token)
-          if (edit === undefined || edit === null || token.isCancellationRequested) return edit
-          for (const [uri] of edit.entries()) {
-            const source = await this.callbacks.prepareEdit(uri.toString())
-            if (source === undefined || source.readOnly || !this.isCurrent(generation)) return null
-            this.ensureModel(source)
-          }
-          return cancelled(token) ? null : edit
-        }, workspace: { configuration: async (params, token, next) => {
-          const result = await next(params, token)
-          if (!Array.isArray(result)) return result
-          const defaults: readonly unknown[] = result
-          return params.items.map((item, index) => {
-            if (language !== 'python' || workspace.pythonPath === undefined) return defaults[index]
-            if (item.section === 'python.pythonPath') return workspace.pythonPath
-            if (item.section === 'python') {
-              const value: unknown = defaults[index]
-              return { ...(typeof value === 'object' && value !== null ? value : {}), pythonPath: workspace.pythonPath }
-            }
-            return defaults[index]
-          })
-        } } },
-        errorHandler: { error: () => ({ action: ErrorAction.Continue }), closed: () => ({ action: CloseAction.DoNotRestart }) },
-      },
-      messageTransports: { reader: new WebSocketMessageReader(transport), writer: new WebSocketMessageWriter(transport) },
-    })
-    this.callbacks.languageState(identity, 'starting')
-    const started = (async () => {
-      await new Promise<void>((accept, reject) => {
-        socket.addEventListener('open', () => { accept() }, { once: true })
-        socket.addEventListener('error', () => { reject(new Error('Language service connection failed.')) }, { once: true })
-        socket.addEventListener('close', () => { if (socket.readyState !== WebSocket.OPEN) reject(new Error('Language service connection closed.')) }, { once: true })
+  show(path: string, view?: EditorViewState): void {
+    const open = this.activate(path)
+    if (open === undefined) return
+    if (open.diff !== undefined) {
+      open.diff = undefined
+      open.view.dispatch({ effects: [diffSlot.reconfigure([]), readOnlySlot.reconfigure(this.readOnly(open))] })
+    }
+    if (view !== undefined && !open.restored) {
+      open.restored = true
+      const anchor = positionOf(open.view.state, view.line, view.column)
+      open.view.dispatch({ selection: { anchor }, annotations: external.of(true) })
+      requestAnimationFrame(() => {
+        open.view.scrollDOM.scrollTop = view.top
+        open.view.scrollDOM.scrollLeft = view.left
       })
-      if (!this.isCurrent(generation)) { socket.close(1000); return }
-      await client.start()
-      if (language === 'python') await client.sendNotification('workspace/didChangeConfiguration', { settings: { python: { pythonPath: workspace.pythonPath } } })
-      if (this.isCurrent(generation)) this.callbacks.languageState(identity, 'ready')
-    })()
-    this.clients.set(identity, { socket, client, started })
-    try { await started } catch (error) {
-      socket.close(1000)
-      if (this.isCurrent(generation)) {
-        this.callbacks.languageState(identity, 'error', error instanceof Error ? error.message : String(error))
-      }
     }
-  }
-
-  show(path: string, view?: EditorView): void {
-    const item = this.models.get(path)
-    if (!item) return
-    this.activePath = path
-    this.diffVisible = false
-    this.normalContainer.hidden = false
-    this.diffContainer.hidden = true
-    this.normalEditor.setModel(item.model)
-    this.normalEditor.updateOptions({ readOnly: item.document.readOnly })
-    if (view) {
-      this.normalEditor.setPosition({ lineNumber: view.line, column: view.column })
-      this.normalEditor.setScrollPosition({ scrollTop: view.top, scrollLeft: view.left })
-    }
-    this.layout()
   }
 
   showDiff(path: string, original: string, editable: boolean): void {
-    const item = this.models.get(path)
-    if (!item) return
-    this.activePath = path
-    this.diffVisible = true
-    this.normalContainer.hidden = true
-    this.diffContainer.hidden = false
-    this.diffEditor.setModel(null)
-    this.originalModel?.dispose()
-    this.originalModel = monaco.editor.createModel(original, item.document.language)
-    this.diffEditor.setModel({ original: this.originalModel, modified: item.model })
-    this.diffEditor.updateOptions({ readOnly: !editable || item.document.readOnly })
-    this.layout()
+    const open = this.activate(path)
+    if (open === undefined) return
+    if (open.diff?.original === original && open.diff.editable === editable) return
+    open.diff = { original, editable }
+    open.view.dispatch({ effects: [
+      diffSlot.reconfigure(unifiedMergeView({ original, mergeControls: false, gutter: true, highlightChanges: true, syntaxHighlightDeletions: true })),
+      readOnlySlot.reconfigure(this.readOnly(open)),
+    ] })
   }
 
   setAppearance(appearance: EditorAppearance): void {
-    monaco.editor.setTheme(appearance.dark ? 'vs-dark' : 'vs')
-    this.normalEditor.updateOptions({ fontSize: appearance.fontSize })
-    this.diffEditor.updateOptions({ fontSize: appearance.fontSize })
+    const style = this.container.style
+    style.setProperty('--rainy-editor-font-size', `${appearance.fontSize}px`)
+    if (appearance.background !== undefined) style.setProperty('--rainy-editor-background', appearance.background)
+    else style.removeProperty('--rainy-editor-background')
+    if (appearance.foreground !== undefined) style.setProperty('--rainy-editor-foreground', appearance.foreground)
+    else style.removeProperty('--rainy-editor-foreground')
+    if (appearance.dark === this.dark) return
+    this.dark = appearance.dark
+    for (const open of this.documents.values()) open.view.dispatch({ effects: darkSlot.reconfigure(EditorView.darkTheme.of(this.dark)) })
   }
 
-  setBreakpoints(
-    breakpoints: readonly { readonly path: string; readonly lines: readonly number[] }[],
-    stopped?: { readonly path: string; readonly line: number },
-  ): void {
-    for (const [path, item] of this.models) {
-      const points = breakpoints.find(source => source.path === path)?.lines ?? []
-      const decorations: monaco.editor.IModelDeltaDecoration[] = points.map(line => ({
-        range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, glyphMarginClassName: 'rainy-monaco-breakpoint' },
-      }))
-      if (stopped?.path === path) decorations.push({ range: new monaco.Range(stopped.line, 1, stopped.line, 1),
-        options: { isWholeLine: true, className: 'rainy-monaco-stopped' } })
-      this.decorations.set(path, item.model.deltaDecorations(this.decorations.get(path) ?? [], decorations))
-    }
+  setBreakpoints(breakpoints: readonly { readonly path: string; readonly lines: readonly number[] }[], stopped?: { readonly path: string; readonly line: number }): void {
+    this.breakpoints.clear()
+    for (const source of breakpoints) this.breakpoints.set(source.path, source.lines)
+    this.stopped = stopped === undefined ? undefined : { path: stopped.path, line: stopped.line }
+    for (const [path, open] of this.documents) open.view.dispatch({ effects: setBreakpoints.of(this.breakpointsFor(path)) })
   }
 
   reveal(path: string, line: number, column: number): void {
-    if (path !== this.activePath) this.show(path)
-    const editor = this.diffVisible ? this.diffEditor.getModifiedEditor() : this.normalEditor
-    editor.setPosition({ lineNumber: line, column })
-    editor.revealLineInCenter(line)
-    editor.focus()
+    const open = path === this.activePath ? this.documents.get(path) : this.activate(path)
+    if (open === undefined) return
+    const anchor = positionOf(open.view.state, line, column)
+    open.view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) })
+    open.view.focus()
   }
 
-  async action(command: string): Promise<void> {
-    const editor = this.diffVisible ? this.diffEditor.getModifiedEditor() : this.normalEditor
-    await editor.getAction(command)?.run()
+  action(command: string): Promise<void> {
+    const view = this.activePath === undefined ? undefined : this.documents.get(this.activePath)?.view
+    const run = (target: Command): void => { if (view !== undefined) { target(view); view.focus() } }
+    switch (command) {
+      case 'rainy.save': this.callbacks.save(); break
+      case 'rainy.format':
+      case 'formatDocument': this.callbacks.format(); break
+      case 'rainy.selection': this.callbacks.sendSelection(); break
+      case 'find':
+      case 'replace': run(openSearchPanel); break
+      case 'gotoLine': run(gotoLine); break
+      case 'undo': run(undo); break
+      case 'redo': run(redo); break
+      case 'selectAll': run(selectAll); break
+      case 'toggleComment': run(toggleComment); break
+      case 'gotoDefinition': run(jumpToDefinition); break
+      case 'findReferences': run(findReferences); break
+      case 'rename': run(this.renameCommand); break
+      default: return Promise.reject(new Error(`Unknown editor action: ${command}`))
+    }
+    return Promise.resolve()
   }
 
-  layout(): void { this.normalEditor.layout(); this.diffEditor.layout() }
+  layout(): void {
+    const open = this.activePath === undefined ? undefined : this.documents.get(this.activePath)
+    open?.view.requestMeasure()
+  }
 
-  private publishView(editor: monaco.editor.ICodeEditor): void {
-    const position = editor.getPosition()
-    if (!this.activePath || !position) return
-    this.callbacks.view(this.activePath, { line: position.lineNumber, column: position.column,
-      top: editor.getScrollTop(), left: editor.getScrollLeft() })
+  async dispose(): Promise<void> {
+    this.disposed = true
+    this.closeMenu()
+    this.closeConnections()
+    for (const [path, open] of this.documents) this.close(path, open)
+    this.container.replaceChildren()
+    this.container.classList.remove('rainy-editor')
+  }
+
+  // ── LanguageHost ──
+
+  async display(uri: string): Promise<EditorView | null> {
+    const key = uriKey(uri)
+    const existing = [...this.documents.values()].find(open => uriKey(open.document.uri) === key)
+    if (existing !== undefined) { this.activate(existing.document.path); return existing.view }
+    const document = await this.callbacks.open(uri)
+    if (document === undefined || this.disposed) return null
+    const open = this.ensure(document)
+    this.activate(document.path)
+    return open.view
+  }
+
+  async read(uri: string): Promise<string | undefined> {
+    return (await this.callbacks.read(uri))?.text
+  }
+
+  diagnostics(uri: string, diagnostics: readonly LspDiagnostic[]): void {
+    if (diagnostics.length === 0) this.diagnosticsByUri.delete(uriKey(uri))
+    else this.diagnosticsByUri.set(uriKey(uri), { uri, diagnostics })
+    this.publishProblems()
+  }
+
+  // ── Documents ──
+
+  private readOnly(open: Pick<OpenDocument, 'document' | 'diff'>): Extension {
+    return EditorState.readOnly.of(open.document.readOnly || (open.diff !== undefined && !open.diff.editable))
+  }
+
+  private breakpointsFor(path: string): { lines: readonly number[]; stopped: number | undefined } {
+    return { lines: this.breakpoints.get(path) ?? [], stopped: this.stopped?.path === path ? this.stopped.line : undefined }
+  }
+
+  private activate(path: string): OpenDocument | undefined {
+    const open = this.documents.get(path)
+    if (open === undefined) return undefined
+    this.closeMenu()
+    if (this.activePath !== path) {
+      const previous = this.activePath === undefined ? undefined : this.documents.get(this.activePath)
+      if (previous !== undefined) previous.host.hidden = true
+      this.activePath = path
+      open.host.hidden = false
+      open.view.requestMeasure()
+      this.publishSelection(open.document, open.view)
+    }
+    return open
+  }
+
+  private ensure(document: EditorDocument): OpenDocument {
+    const existing = this.documents.get(document.path)
+    if (existing !== undefined) {
+      const previous = existing.document
+      existing.document = document
+      const current = existing.view.state.doc.toString()
+      const effects: StateEffect<unknown>[] = []
+      if (previous.readOnly !== document.readOnly) effects.push(readOnlySlot.reconfigure(this.readOnly(existing)))
+      if (current !== document.text || effects.length > 0) {
+        existing.view.dispatch({
+          ...(current === document.text ? {} : { changes: minimalChange(current, document.text) }),
+          effects, annotations: external.of(true),
+        })
+      }
+      const key = languageKey(document.path, document.language)
+      if (key !== existing.key || uriKey(previous.uri) !== uriKey(document.uri)) {
+        existing.key = key
+        this.loadLanguageInto(existing)
+        this.attachLanguageServer(existing)
+      } else if (existing.connection === undefined) this.attachLanguageServer(existing)
+      return existing
+    }
+
+    const host = window.document.createElement('div')
+    host.className = 'rainy-editor-surface'
+    host.hidden = true
+    this.container.append(host)
+    const pending: Omit<OpenDocument, 'view'> = { document, key: languageKey(document.path, document.language), host, connection: undefined, diff: undefined, restored: false }
+    const view = new EditorView({ parent: host, state: EditorState.create({ doc: document.text, extensions: this.extensions(pending) }) })
+    const open: OpenDocument = Object.assign(pending, { view })
+    open.view.dispatch({ effects: setBreakpoints.of(this.breakpointsFor(document.path)) })
+    view.scrollDOM.addEventListener('scroll', () => { this.scheduleView(open.document.path, view) }, { passive: true })
+    open.view.dom.addEventListener('contextmenu', (event) => { this.openMenu(open, event) })
+    this.documents.set(document.path, open)
+    this.loadLanguageInto(open)
+    this.attachLanguageServer(open)
+    return open
+  }
+
+  private extensions(open: Omit<OpenDocument, 'view'>): Extension {
+    const path = (): string => open.document.path
+    return [
+      lineNumbers(),
+      gutter({
+        class: 'rainy-breakpoint-gutter',
+        // Every line needs a cell to receive the click that sets a breakpoint.
+        renderEmptyElements: true,
+        markers: view => view.state.field(breakpointField).markers,
+        initialSpacer: () => breakpointMarker,
+        domEventHandlers: {
+          mousedown: (view, line) => { this.callbacks.breakpoint(path(), view.state.doc.lineAt(line.from).number); return true },
+        },
+      }),
+      foldGutter(),
+      highlightActiveLineGutter(),
+      highlightSpecialChars(),
+      history(),
+      drawSelection(),
+      dropCursor(),
+      EditorState.allowMultipleSelections.of(true),
+      indentOnInput(),
+      bracketMatching(),
+      closeBrackets(),
+      autocompletion(),
+      rectangularSelection(),
+      crosshairCursor(),
+      highlightActiveLine(),
+      highlightSelectionMatches(),
+      search({ top: true }),
+      this.labels.locale === 'zh' ? EditorState.phrases.of(chinesePhrases) : [],
+      breakpointField,
+      renameField,
+      editorTheme,
+      editorHighlighting,
+      keymap.of([
+        { key: 'Mod-s', run: () => { this.callbacks.save(); return true }, preventDefault: true },
+        { key: 'Shift-Alt-f', run: () => { this.callbacks.format(); return true }, preventDefault: true },
+        { key: 'Mod-g', run: gotoLine, preventDefault: true },
+        { key: 'Mod-h', run: openSearchPanel, preventDefault: true },
+        { key: 'F2', run: this.renameCommand, preventDefault: true },
+        ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab,
+      ]),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged && !update.transactions.every(transaction => transaction.annotation(external) === true)) {
+          this.callbacks.change(open.document.path, update.state.doc.toString())
+        }
+        if ((update.selectionSet || update.docChanged) && this.activePath === open.document.path) {
+          this.publishSelection(open.document, update.view)
+          this.scheduleView(open.document.path, update.view)
+        }
+      }),
+      languageSlot.of([]),
+      readOnlySlot.of(this.readOnly(open)),
+      lspSlot.of([]),
+      diffSlot.of([]),
+      darkSlot.of(EditorView.darkTheme.of(this.dark)),
+      indentSlot.of(indentUnit.of(detectIndent(open.document.text))),
+    ]
+  }
+
+  private loadLanguageInto(open: OpenDocument): void {
+    const key = open.key
+    void loadLanguage(key).then((language) => {
+      if (this.documents.get(open.document.path) !== open || open.key !== key) return
+      open.view.dispatch({ effects: languageSlot.reconfigure(language) })
+    })
+  }
+
+  private close(path: string, open: OpenDocument): void {
+    window.clearTimeout(this.viewTimers.get(path))
+    this.viewTimers.delete(path)
+    open.view.destroy()
+    open.host.remove()
+    this.documents.delete(path)
+    this.diagnosticsByUri.delete(uriKey(open.document.uri))
+    if (this.activePath === path) this.activePath = undefined
+  }
+
+  // ── Language servers ──
+
+  private rootFor(uri: string): { rootId: string; path: string; title: string } | undefined {
+    const workspace = this.workspace
+    if (workspace === undefined) return undefined
+    const roots = workspace.roots ?? [{ rootId: 'primary', path: workspace.path, title: workspace.title }]
+    return [...roots].sort((left, right) => right.path.length - left.path.length).find(root => uriInside(uri, root.path))
+  }
+
+  private attachLanguageServer(open: OpenDocument): void {
+    const workspace = this.workspace
+    const language = serverLanguage(open.key)
+    const languageId = lspLanguageId(open.key)
+    const root = open.document.uri.startsWith('file:') ? this.rootFor(open.document.uri) : undefined
+    if (workspace === undefined || language === undefined || languageId === undefined || root === undefined) {
+      if (open.connection !== undefined) { open.connection = undefined; open.view.dispatch({ effects: lspSlot.reconfigure([]) }) }
+      return
+    }
+    const identity = `${root.rootId}:${language}`
+    let connection = this.connections.get(identity)
+    if (connection === undefined) {
+      const created = new LanguageConnection(
+        { workspaceId: workspace.id, rootId: root.rootId, root: root.path, title: root.title, language, pythonPath: workspace.pythonPath },
+        this,
+        (message) => {
+          if (this.connections.get(identity) !== created) return
+          this.connections.delete(identity)
+          for (const item of this.documents.values()) {
+            if (item.connection === created) { item.connection = undefined; item.view.dispatch({ effects: lspSlot.reconfigure([]) }) }
+          }
+          this.callbacks.languageState(identity, 'error', message)
+        },
+      )
+      connection = created
+      this.connections.set(identity, created)
+      this.callbacks.languageState(identity, 'starting')
+      created.ready.then(() => {
+        if (this.connections.get(identity) === created) this.callbacks.languageState(identity, 'ready')
+      }, () => undefined)
+    }
+    if (open.connection === connection) return
+    open.connection = connection
+    open.view.dispatch({ effects: lspSlot.reconfigure(connection.plugin(open.document.uri, languageId)) })
+  }
+
+  private closeConnections(): void {
+    for (const open of this.documents.values()) {
+      if (open.connection === undefined) continue
+      open.connection = undefined
+      open.view.dispatch({ effects: lspSlot.reconfigure([]) })
+    }
+    for (const connection of this.connections.values()) connection.close()
+    this.connections.clear()
+    this.diagnosticsByUri.clear()
+    this.publishProblems()
+  }
+
+  /** Rename the symbol at the cursor in every file the server names, opening closed files as unsaved buffers. */
+  private readonly renameCommand: Command = (view) => {
+    const plugin = LSPPlugin.get(view)
+    const word = view.state.wordAt(view.state.selection.main.head)
+    if (plugin === null || word === null) return false
+    const position = plugin.toPosition(word.from)
+    view.dispatch({ effects: toggleRename.of({
+      word: view.state.sliceDoc(word.from, word.to),
+      label: this.labels.rename,
+      done: (newName) => { void this.rename(plugin, position, newName) },
+    }) })
+    return true
+  }
+
+  private async rename(plugin: LSPPlugin, position: LspPosition, newName: string): Promise<void> {
+    try {
+      plugin.client.sync()
+      const edit = await plugin.client.request<object, WorkspaceEdit | null>('textDocument/rename', { textDocument: { uri: plugin.uri }, position, newName })
+      if (edit === null || this.disposed) return
+      const byUri = new Map<string, LspTextEdit[]>()
+      for (const [uri, edits] of Object.entries(edit.changes ?? {})) byUri.set(uri, edits)
+      for (const change of edit.documentChanges ?? []) if ('textDocument' in change) byUri.set(change.textDocument.uri, change.edits)
+      const targets: { uri: string; edits: LspTextEdit[]; open: OpenDocument | undefined; document: EditorDocument | undefined }[] = []
+      for (const [uri, edits] of byUri) {
+        const open = [...this.documents.values()].find(item => uriKey(item.document.uri) === uriKey(uri))
+        const document = open === undefined ? await this.callbacks.prepareEdit(uri) : open.document
+        if (document === undefined || document.readOnly) throw new Error(`${this.labels.rename}: ${uri}`)
+        targets.push({ uri, edits, open, document })
+      }
+      for (const target of targets) {
+        if (target.open !== undefined) {
+          const view = target.open.view
+          const lspPlugin = LSPPlugin.get(view)
+          view.dispatch({
+            changes: target.edits.map(item => ({
+              from: lspPlugin === null ? offsetIn(view.state.doc.toString(), item.range.start) : lspPlugin.unsyncedChanges.mapPos(lspPlugin.fromPosition(item.range.start, lspPlugin.syncedDoc)),
+              to: lspPlugin === null ? offsetIn(view.state.doc.toString(), item.range.end) : lspPlugin.unsyncedChanges.mapPos(lspPlugin.fromPosition(item.range.end, lspPlugin.syncedDoc)),
+              insert: item.newText,
+            })),
+            userEvent: 'rename',
+          })
+        } else if (target.document !== undefined) {
+          this.callbacks.change(target.document.path, applyTextEdits(target.document.text, target.edits))
+        }
+      }
+    } catch (error) {
+      plugin.reportError(this.labels.rename, error)
+    }
+  }
+
+  // ── Reporting ──
+
+  private publishSelection(document: EditorDocument, view: EditorView): void {
+    const selection = view.state.selection.main
+    if (selection.empty) { this.callbacks.selection(undefined); return }
+    const doc = view.state.doc
+    const start = doc.lineAt(selection.from)
+    const end = doc.lineAt(selection.to)
+    this.callbacks.selection({
+      path: document.path, text: doc.sliceString(selection.from, selection.to), language: document.language,
+      startLine: start.number, startColumn: selection.from - start.from + 1, endLine: end.number, endColumn: selection.to - end.from + 1,
+    })
+  }
+
+  private scheduleView(path: string, view: EditorView): void {
+    if (this.viewTimers.has(path)) return
+    this.viewTimers.set(path, window.setTimeout(() => {
+      this.viewTimers.delete(path)
+      if (this.documents.get(path)?.view !== view) return
+      const head = view.state.selection.main.head
+      const line = view.state.doc.lineAt(head)
+      this.callbacks.view(path, { line: line.number, column: head - line.from + 1, top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft })
+    }, 150))
   }
 
   private publishProblems(): void {
     const problems: EditorProblem[] = []
-    for (const { document, model } of this.models.values()) {
-      for (const marker of monaco.editor.getModelMarkers({ resource: model.uri })) {
-        problems.push({ path: document.path, line: marker.startLineNumber, column: marker.startColumn,
-          endLine: marker.endLineNumber, endColumn: marker.endColumn, message: marker.message, source: marker.source ?? '',
-          severity: marker.severity === monaco.MarkerSeverity.Error ? 'error'
-            : marker.severity === monaco.MarkerSeverity.Warning ? 'warning' : marker.severity === monaco.MarkerSeverity.Info ? 'info' : 'hint' })
+    for (const open of this.documents.values()) {
+      const entry = this.diagnosticsByUri.get(uriKey(open.document.uri))
+      if (entry === undefined) continue
+      for (const diagnostic of entry.diagnostics) {
+        problems.push({
+          path: open.document.path, line: diagnostic.range.start.line + 1, column: diagnostic.range.start.character + 1,
+          endLine: diagnostic.range.end.line + 1, endColumn: diagnostic.range.end.character + 1, message: diagnostic.message,
+          severity: severities[diagnostic.severity ?? 1] ?? 'error', source: diagnostic.source ?? '',
+        })
       }
     }
     this.callbacks.problems(problems)
   }
 
-  async dispose(): Promise<void> {
-    this.disposed = true
-    this.generation++
-    instances.delete(this)
-    await this.workspaceChange
-    const clients = [...this.clients.values()]
-    this.clients.clear()
-    await Promise.all(clients.map(stopConnection))
-    for (const subscription of this.subscriptions) subscription.dispose()
-    this.normalEditor.dispose()
-    this.diffEditor.dispose()
-    this.originalModel?.dispose()
-    for (const item of this.models.values()) { item.listener.dispose(); item.model.dispose() }
-    this.models.clear()
-    this.container.replaceChildren()
+  // ── Context menu ──
+
+  private openMenu(open: OpenDocument, event: MouseEvent): void {
+    event.preventDefault()
+    this.closeMenu()
+    const view = open.view
+    const position = view.posAtCoords({ x: event.clientX, y: event.clientY })
+    if (position !== null && view.state.selection.ranges.every(range => position < range.from || position > range.to)) {
+      view.dispatch({ selection: { anchor: position } })
+    }
+    const hasSelection = !view.state.selection.main.empty
+    const language = LSPPlugin.get(view) !== null
+    const items: { label: string; enabled: boolean; run(): void }[] = [
+      { label: this.labels.sendSelection, enabled: hasSelection, run: () => { this.callbacks.sendSelection() } },
+      { label: this.labels.gotoDefinition, enabled: language, run: () => { jumpToDefinition(view) } },
+      { label: this.labels.findReferences, enabled: language, run: () => { findReferences(view) } },
+      { label: this.labels.rename, enabled: language && !open.document.readOnly, run: () => { this.renameCommand(view) } },
+      { label: this.labels.format, enabled: !open.document.readOnly, run: () => { this.callbacks.format() } },
+      { label: this.labels.toggleBreakpoint, enabled: true, run: () => { this.callbacks.breakpoint(open.document.path, view.state.doc.lineAt(view.state.selection.main.head).number) } },
+    ]
+    const menu = document.createElement('div')
+    menu.className = 'rainy-editor-menu'
+    menu.setAttribute('role', 'menu')
+    for (const item of items) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.setAttribute('role', 'menuitem')
+      button.textContent = item.label
+      button.disabled = !item.enabled
+      // Focus returns to the editor first, so a command that opens a prompt keeps the focus it moves.
+      button.addEventListener('click', () => { this.closeMenu(); view.focus(); item.run() })
+      menu.append(button)
+    }
+    document.body.append(menu)
+    const width = menu.offsetWidth
+    const height = menu.offsetHeight
+    menu.style.left = `${Math.min(event.clientX, window.innerWidth - width - 4)}px`
+    menu.style.top = `${Math.min(event.clientY, window.innerHeight - height - 4)}px`
+    this.menu = menu
+    const dismiss = (closeEvent: Event): void => {
+      if (closeEvent instanceof KeyboardEvent && closeEvent.key !== 'Escape') return
+      if (closeEvent.type === 'pointerdown' && closeEvent.target instanceof Node && menu.contains(closeEvent.target)) return
+      this.closeMenu()
+    }
+    const listeners = ['pointerdown', 'keydown', 'resize'] as const
+    for (const name of listeners) window.addEventListener(name, dismiss, true)
+    this.menuCleanup = () => { for (const name of listeners) window.removeEventListener(name, dismiss, true) }
+    menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  }
+
+  private closeMenu(): void {
+    this.menuCleanup?.()
+    this.menuCleanup = undefined
+    this.menu?.remove()
+    this.menu = undefined
   }
 }
 
-// Monaco's vs and vs-dark palettes, so the terminal matches the editor above it.
-const terminalThemes = {
-  light: { background: '#ffffff', foreground: '#1f1f1f', cursor: '#1f1f1f', cursorAccent: '#ffffff', selectionBackground: '#add6ff', selectionInactiveBackground: '#e5ebf1',
-    black: '#000000', red: '#cd3131', green: '#107c10', yellow: '#949800', blue: '#0451a5', magenta: '#bc05bc', cyan: '#0598bc', white: '#555555',
-    brightBlack: '#666666', brightRed: '#cd3131', brightGreen: '#14ce14', brightYellow: '#b5ba00', brightBlue: '#0451a5',
-    brightMagenta: '#bc05bc', brightCyan: '#0598bc', brightWhite: '#a5a5a5' },
-  dark: { background: '#1e1e1e', foreground: '#cccccc', cursor: '#cccccc', cursorAccent: '#1e1e1e', selectionBackground: '#264f78', selectionInactiveBackground: '#3a3d41',
-    black: '#000000', red: '#cd3131', green: '#0dbc79', yellow: '#e5e510', blue: '#2472c8', magenta: '#bc3fbc', cyan: '#11a8cd', white: '#e5e5e5',
-    brightBlack: '#666666', brightRed: '#f14c4c', brightGreen: '#23d18b', brightYellow: '#f5f543', brightBlue: '#3b8eea',
-    brightMagenta: '#d670d6', brightCyan: '#29b8db', brightWhite: '#e5e5e5' },
+/** Editor and terminal factories for the IDE. */
+export const assets: EditorAssets = {
+  version: 1,
+  create: async (container, callbacks, labels) => new WorkspaceEditor(container, callbacks, labels),
+  terminal: createTerminal,
 }
-
-function terminal(container: HTMLElement, data: (text: string) => void, resize: (cols: number, rows: number) => void): EditorTerminal {
-  const terminal = new Terminal({ fontSize: 13, cursorBlink: true, allowProposedApi: false, convertEol: false,
-    fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace", theme: terminalThemes.light })
-  const fit = new FitAddon()
-  terminal.loadAddon(fit)
-  terminal.open(container)
-  const onData = terminal.onData(data)
-  const onResize = terminal.onResize((size) => { resize(size.cols, size.rows) })
-  const fitVisible = (): void => { if (container.clientWidth > 0 && container.clientHeight > 0) fit.fit() }
-  const observer = new ResizeObserver(fitVisible)
-  observer.observe(container)
-  fitVisible()
-  const setAppearance = (appearance: EditorAppearance): void => {
-    terminal.options.theme = appearance.dark ? terminalThemes.dark : terminalThemes.light
-    if (terminal.options.fontSize !== appearance.fontSize) { terminal.options.fontSize = appearance.fontSize; fitVisible() }
-  }
-  return { write: (text) => { terminal.write(text) }, reset: () => { terminal.reset() }, fit: fitVisible, focus: () => { terminal.focus() },
-    setAppearance, dispose: () => { observer.disconnect(); onData.dispose(); onResize.dispose(); terminal.dispose() } }
-}
-
-const assets: EditorAssets = { version: 1, create: async (container, callbacks, labels) => {
-  await initialize()
-  return new WorkspaceEditor(container, callbacks, labels)
-}, terminal }
-window.__RAINY_EDITOR_ASSETS__ = assets

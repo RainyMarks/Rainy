@@ -1,4 +1,4 @@
-/** Build the Electron shell, the Host bundle, the renderer and the Monaco assets into `dist/` and `resources/editor`. */
+/** Build the Electron shell, the Host bundle and the renderer (including the editor) into `dist/`. */
 import { build } from 'esbuild'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -61,9 +61,8 @@ async function main(): Promise<void> {
 
   if (!hostOnly) {
     await node('node_modules/vite/bin/vite.js', 'build', '--config', resolve(root, 'vite.config.ts'))
-    await node('scripts/build-editor.mjs')
   }
-  console.log(hostOnly ? 'RainyAgent shell and Host built; the renderer and editor were not rebuilt.' : 'RainyAgent shell, Host, renderer and editor built.')
+  console.log(hostOnly ? 'RainyAgent shell and Host built; the renderer was not rebuilt.' : 'RainyAgent shell, Host and renderer built.')
 }
 
 try { await main() }

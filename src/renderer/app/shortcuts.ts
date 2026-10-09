@@ -1,4 +1,4 @@
-/** Window-wide shortcuts of the Windows profile. Keys handled first by Monaco or an open dialog are left to them. */
+/** Window-wide shortcuts of the Windows profile. Keys handled first by the editor or an open dialog are left to them. */
 import { useEffect, useRef } from 'react'
 
 /** Key caps of the quick-open shortcut. */

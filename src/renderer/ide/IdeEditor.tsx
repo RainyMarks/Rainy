@@ -1,4 +1,4 @@
-/** Retained Monaco mount; editor buffers remain owned by the workspace model. */
+/** Retained editor mount; editor buffers remain owned by the workspace model. */
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { EditorAppearance, EditorInstance } from './editor-types.ts'
@@ -7,6 +7,7 @@ import { sourceLanguage, sourceUri, type IdeModel, type IdeState } from './ide-m
 import { fileKey, workspaceRoots } from './ide-paths.ts'
 import { selectedPythonExecutable } from './run-target.ts'
 import { useIdeT } from './messages.ts'
+import { useLocale } from '../i18n.ts'
 import css from './Ide.module.css'
 
 interface Props {
@@ -21,18 +22,20 @@ interface Props {
   readonly empty?: ReactNode
 }
 
-/** Keep one Monaco instance while tabs, source text, and window geometry change.
+/** Keep one editor instance while tabs, source text, and window geometry change.
  * @param props The workspace model, appearance and editor callbacks.
  * @returns The editor mount and loading state.
  */
 export function IdeEditor({ model, state, appearance, sendSelection, breakpoint, attach, stopped, empty }: Props) {
   const t = useIdeT()
+  const locale = useLocale()
   const container = useRef<HTMLDivElement>(null)
   const instance = useRef<EditorInstance | undefined>(undefined)
   const revealed = useRef<IdeState['reveal']>()
   const callbacks = useRef({ sendSelection, breakpoint, attach })
   callbacks.current = { sendSelection, breakpoint, attach }
-  const labels = useRef({ save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'), toggleBreakpoint: t('ideToggleBreakpoint') })
+  const labels = useRef({ save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'), toggleBreakpoint: t('ideToggleBreakpoint'),
+    gotoDefinition: t('ideGotoDefinition'), findReferences: t('ideFindReferences'), rename: t('ideRenameSymbol'), locale })
   const [ready, setReady] = useState(false)
   const [workspaceReady, setWorkspaceReady] = useState<string | undefined>()
   const pythonPath = selectedPythonExecutable(state.data.execution)
@@ -173,7 +176,7 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   const reason = buffer?.document.readOnlyReason
   return (
     <div className={css.editorHost}>
-      <div ref={container} className={css.monaco} hidden={path === null || (reason !== null && reason !== undefined)} data-rainy-monaco />
+      <div ref={container} className={css.editor} hidden={path === null || (reason !== null && reason !== undefined)} data-rainy-editor />
       {!ready && path !== null && <div className={css.empty} role="status">{t('ideEditorLoading')}</div>}
       {path === null && (empty ?? <div className={css.empty}>{t(state.workspace === null ? 'ideNoWorkspace' : 'ideNoFile')}</div>)}
       {buffer !== undefined && reason !== null && reason !== undefined && (

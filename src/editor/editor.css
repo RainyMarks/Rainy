@@ -1,20 +1,99 @@
-.rainy-monaco-surface {
+.rainy-editor {
+  overflow: hidden;
+}
+
+.rainy-editor-surface {
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
 }
 
-.rainy-monaco-surface[hidden] {
+.rainy-editor-surface[hidden] {
   display: none;
 }
 
-.rainy-monaco-breakpoint {
-  border-radius: 50%;
-  background: var(--dsw-alias-state-error-primary);
-  transform: scale(0.65);
+.rainy-editor-surface > .cm-editor {
+  height: 100%;
 }
 
-.rainy-monaco-stopped {
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 20%, transparent);
+.rainy-breakpoint-gutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  cursor: pointer;
+}
+
+.rainy-breakpoint {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.rainy-breakpoint-gutter .cm-gutterElement:not(:has(.rainy-breakpoint)):hover::after {
+  content: '';
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 35%, transparent);
+}
+
+.rainy-stopped-line {
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 20%, transparent) !important;
+}
+
+.rainy-rename-panel {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+}
+
+.rainy-rename-panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.rainy-rename-panel input {
+  min-width: 220px;
+  font-family: var(--ds-font-family-code);
+}
+
+.rainy-editor-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  box-shadow: var(--dsw-elevation-prominent);
+}
+
+.rainy-editor-menu button {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rainy-editor-menu button:hover:not(:disabled),
+.rainy-editor-menu button:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}
+
+.rainy-editor-menu button:disabled {
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
 }

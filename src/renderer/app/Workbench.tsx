@@ -286,9 +286,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
       selection: () => { workbench.sendSelection() },
       focus: () => { model.layout({ agentVisible: false, bottomVisible: false }); model.center('editor') },
       format: () => { run(model.format()) },
-      find: () => { run(editor.current?.action('actions.find') ?? Promise.resolve()) },
-      replace: () => { run(editor.current?.action('editor.action.startFindReplaceAction') ?? Promise.resolve()) },
-      line: () => { run(editor.current?.action('editor.action.gotoLine') ?? Promise.resolve()) },
+      find: () => { run(editor.current?.action('find') ?? Promise.resolve()) },
+      replace: () => { run(editor.current?.action('replace') ?? Promise.resolve()) },
+      line: () => { run(editor.current?.action('gotoLine') ?? Promise.resolve()) },
       files: () => {
         if (narrow) {
           setNarrowNavigation(!leftVisible)

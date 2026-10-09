@@ -1,4 +1,4 @@
-/** Same-document adapter for the separately bundled Monaco and terminal assets. */
+/** Interface between the IDE and the CodeMirror editor and xterm terminal in `src/editor`. */
 
 /** Source models use Host file URIs; snippets and unmounted recovery use isolated untitled URIs. */
 export interface EditorDocument {
@@ -28,7 +28,7 @@ export interface EditorSelection {
   readonly endColumn: number
 }
 
-/** A diagnostic projected from Monaco's language-client markers. */
+/** A language-server diagnostic for an open document. */
 export interface EditorProblem {
   readonly path: string
   readonly line: number
@@ -48,12 +48,17 @@ export interface EditorAppearance {
   readonly foreground?: string
 }
 
-/** Locale-owned Monaco action labels. */
+/** Locale-owned labels for the editor's context menu and rename prompt. */
 export interface EditorActionLabels {
   readonly save: string
   readonly format: string
   readonly sendSelection: string
   readonly toggleBreakpoint: string
+  readonly gotoDefinition: string
+  readonly findReferences: string
+  readonly rename: string
+  /** Interface language of the editor's own panels (search, go to line, folding). */
+  readonly locale: 'zh' | 'en'
 }
 
 /** One workspace's language-service address and source root. */
@@ -67,7 +72,7 @@ export interface EditorWorkspace {
   readonly compileCommandsDirectory?: string | undefined
 }
 
-/** Callbacks stay within the trusted renderer; the asset bundle never owns source-file saves. */
+/** Editor events; the IDE model owns buffers and saves, the editor never writes files. */
 export interface EditorCallbacks {
   readonly change: (path: string, text: string) => void
   readonly view: (path: string, view: EditorView) => void
@@ -83,7 +88,7 @@ export interface EditorCallbacks {
   readonly breakpoint: (path: string, line: number) => void
 }
 
-/** A retained Monaco editor instance and its owned models and language clients. */
+/** A retained editor: one view per open document, plus its language-server connections. */
 export interface EditorInstance {
   /** @param workspace Next workspace. @returns Completion after previous language clients stop. */
   setWorkspace(workspace: EditorWorkspace): Promise<void>
@@ -106,7 +111,12 @@ export interface EditorInstance {
   ): void
   /** @param path Source path. @param line One-based line. @param column One-based column. */
   reveal(path: string, line: number, column: number): void
-  /** @param command Monaco action identity. @returns Completion when its action settles. */
+  /**
+   * Run an editor command on the shown document.
+   * @param command One of `rainy.save`, `rainy.format`, `rainy.selection`, `find`, `replace`, `gotoLine`, `undo`, `redo`,
+   *   `selectAll`, `toggleComment`, `gotoDefinition`, `findReferences`, `rename`, `formatDocument`.
+   * @returns Completion; rejects for an unknown command.
+   */
   action(command: string): Promise<void>
   /** Request a layout after the containing pane becomes visible. */
   layout(): void
@@ -130,7 +140,7 @@ export interface EditorTerminal {
   dispose(): void
 }
 
-/** Public asset module entry; loaded lazily from the application's own origin. */
+/** Editor module entry, loaded on the first editor or terminal visit. */
 export interface EditorAssets {
   readonly version: 1
   /**
@@ -151,11 +161,4 @@ export interface EditorAssets {
     data: (text: string) => void,
     resize: (cols: number, rows: number) => void,
   ): EditorTerminal
-}
-
-declare global {
-  interface Window {
-    /** Trusted same-origin ESM bundle, absent until the first editor or terminal visit. */
-    __RAINY_EDITOR_ASSETS__?: EditorAssets
-  }
 }

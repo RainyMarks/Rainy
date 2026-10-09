@@ -151,7 +151,7 @@
 }
 
 .stopButton {
-  background: var(--dsw-alias-bg-layer-2);
+  background: var(--dsw-alias-bg-module-platform);
   color: var(--dsw-alias-label-primary);
 }
 

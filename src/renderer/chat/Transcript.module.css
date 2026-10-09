@@ -40,7 +40,7 @@
   max-width: 88%;
   padding: 8px 12px;
   border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-2);
+  background: var(--dsw-alias-bg-module-platform);
   color: var(--dsw-alias-label-primary);
   font-size: var(--dsh-content-font-size, 14px);
   line-height: 1.6;
@@ -144,7 +144,7 @@
 .compactionSummary {
   padding: 8px 12px;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1);
+  background: var(--dsw-alias-bg-module-platform);
   font-size: 13px;
 }
 

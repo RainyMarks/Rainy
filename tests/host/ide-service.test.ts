@@ -1,4 +1,4 @@
-/** The assembled IDE behind the `ide` RPC method, the editor asset route and the language WebSocket. */
+/** The assembled IDE behind the `ide` RPC method and the language WebSocket. */
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,8 +30,6 @@ async function host() {
     platform: process.platform === 'win32' ? 'win32' : 'linux', executionTargetId: 'wsl:test', carrierStateRoot: join(root, 'carrier'),
     toolchainRoot: join(root, 'components'), tmp: join(root, 'tmp'), port: 0,
   }
-  await mkdir(join(env.resources, 'editor'), { recursive: true })
-  await writeFile(join(env.resources, 'editor', 'editor.js'), 'window.__RAINY_EDITOR_ASSETS__ = {}\n')
   const project = join(root, 'project')
   await mkdir(project)
   const log = vi.fn()
@@ -124,18 +122,7 @@ describe('ide RPC method', () => {
   }, 30000)
 })
 
-describe('editor routes', () => {
-  it('serves editor assets only to authenticated requests and only from the bundle', async () => {
-    const { origin, cookie } = await host()
-    const asset = await fetch(`${origin}/rainy/editor/editor.js`, { headers: { cookie } })
-    expect(asset.status).toBe(200)
-    expect(asset.headers.get('content-type')).toBe('text/javascript; charset=utf-8')
-    expect(await asset.text()).toContain('__RAINY_EDITOR_ASSETS__')
-    expect((await fetch(`${origin}/rainy/editor/editor.js`)).status).toBe(403)
-    expect((await fetch(`${origin}/rainy/editor/%2e%2e/secret.js`, { headers: { cookie } })).status).toBe(404)
-    expect((await fetch(`${origin}/rainy/editor/missing.js`, { headers: { cookie } })).status).toBe(404)
-  })
-
+describe('language route', () => {
   it('runs a TypeScript language server for messages sent before the server started', async () => {
     const { origin, cookie, workspace, project } = await host()
     await writeFile(join(project, 'main.ts'), 'const answer: number = 42\n')

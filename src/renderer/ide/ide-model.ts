@@ -85,7 +85,7 @@ const initialData = (): IdeWorkspaceStateData => ({
   execution: { profiles: [], activeProfile: null, breakpoints: [], watches: [] },
 })
 
-/** Infer the editor language from a source filename. @param path Source path. @returns Monaco language identity. */
+/** Infer the editor language from a source filename. @param path Source path. @returns IDE language id. */
 export function sourceLanguage(path: string): string {
   const extension = path.split('.').at(-1)?.toLowerCase()
   return (
@@ -619,7 +619,7 @@ export class IdeModel {
     this.changed()
   }
 
-  /** Persist a cursor and scroll position. @param path Open source. @param view Monaco position. */
+  /** Persist a cursor and scroll position. @param path Open source. @param view Cursor and scroll position. */
   view(path: string, view: EditorView): void {
     const tabs = this.state
       .getSnapshot()

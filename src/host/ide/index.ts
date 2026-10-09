@@ -9,7 +9,6 @@ import type { Projects } from '../projects.ts'
 import { RpcError } from '../rpc.ts'
 import type { RuntimeService } from '../runtime/index.ts'
 import type { HostServer } from '../server.ts'
-import { createIdeAssetHandler } from './assets.ts'
 import { createIdeExecutionService, ideExecutionFailure } from './execution.ts'
 import { localIdeSubprocess } from './execution-process.ts'
 import { ideExecutionLimitsSchema } from './execution-schema.ts'
@@ -68,7 +67,7 @@ function toRpcError(error: unknown): RpcError {
 }
 
 /**
- * Build the IDE and register `/rainy/editor/` and the `/rainy/ide/lsp` WebSocket.
+ * Build the IDE and register the `/rainy/ide/lsp` WebSocket.
  * @param deps Host environment, workbench config, project catalog, runtime selections, server and activity gate.
  * @returns The IDE service.
  */
@@ -93,7 +92,6 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
   const lifetime = new AbortController()
   let closing: Promise<void> | undefined
 
-  server.route('/rainy/editor/', createIdeAssetHandler(join(env.resources, 'editor')))
   server.socket('/rainy/ide/lsp', (socket, _request, url) => {
     if (closing !== undefined) { socket.close(1013, 'The IDE is closing'); return }
     language.accept(socket, url)

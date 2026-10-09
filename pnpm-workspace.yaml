@@ -1,39 +1,17 @@
 # Single-package repository: this file only carries pnpm settings.
 
 overrides:
-  # Monaco services and default extensions share one VS Code API generation.
-  "@codingame/monaco-vscode-api": "37.1.0"
-  "@codingame/monaco-vscode-base-service-override": "37.1.0"
-  "@codingame/monaco-vscode-bulk-edit-service-override": "37.1.0"
-  "@codingame/monaco-vscode-configuration-service-override": "37.1.0"
-  "@codingame/monaco-vscode-cpp-default-extension": "37.1.0"
-  "@codingame/monaco-vscode-editor-api": "37.1.0"
-  "@codingame/monaco-vscode-editor-service-override": "37.1.0"
-  "@codingame/monaco-vscode-environment-service-override": "37.1.0"
-  "@codingame/monaco-vscode-extension-api": "37.1.0"
-  "@codingame/monaco-vscode-extensions-service-override": "37.1.0"
-  "@codingame/monaco-vscode-files-service-override": "37.1.0"
-  "@codingame/monaco-vscode-host-service-override": "37.1.0"
-  "@codingame/monaco-vscode-json-default-extension": "37.1.0"
-  "@codingame/monaco-vscode-keybindings-service-override": "37.1.0"
-  "@codingame/monaco-vscode-languages-service-override": "37.1.0"
-  "@codingame/monaco-vscode-layout-service-override": "37.1.0"
-  "@codingame/monaco-vscode-localization-service-override": "37.1.0"
-  "@codingame/monaco-vscode-log-service-override": "37.1.0"
-  "@codingame/monaco-vscode-model-service-override": "37.1.0"
-  "@codingame/monaco-vscode-monarch-service-override": "37.1.0"
-  "@codingame/monaco-vscode-python-default-extension": "37.1.0"
-  "@codingame/monaco-vscode-quickaccess-service-override": "37.1.0"
-  "@codingame/monaco-vscode-textmate-service-override": "37.1.0"
-  "@codingame/monaco-vscode-theme-defaults-default-extension": "37.1.0"
-  "@codingame/monaco-vscode-theme-service-override": "37.1.0"
-  "@codingame/monaco-vscode-typescript-basics-default-extension": "37.1.0"
-  "@codingame/monaco-vscode-view-banner-service-override": "37.1.0"
-  "@codingame/monaco-vscode-view-common-service-override": "37.1.0"
-  "@codingame/monaco-vscode-view-status-bar-service-override": "37.1.0"
-  "@codingame/monaco-vscode-view-title-bar-service-override": "37.1.0"
-  "@codingame/monaco-vscode-views-service-override": "37.1.0"
-  "@codingame/monaco-vscode-workbench-service-override": "37.1.0"
+  # CodeMirror extensions break when two copies of a core package load; every dependent shares these.
+  "@codemirror/autocomplete": "6.20.3"
+  "@codemirror/commands": "6.11.1"
+  "@codemirror/language": "6.12.4"
+  "@codemirror/lint": "6.9.7"
+  "@codemirror/search": "6.7.2"
+  "@codemirror/state": "6.7.6"
+  "@codemirror/view": "6.43.13"
+  "@lezer/common": "1.5.3"
+  "@lezer/highlight": "1.2.4"
+  "@lezer/lr": "1.4.10"
 
 # Install scripts are denied unless listed here.
 allowBuilds:
@@ -46,7 +24,5 @@ allowBuilds:
   msgpackr-extract: false
 
 patchedDependencies:
-  # Monaco's file service override accepts the workbench's in-memory overlay.
-  '@codingame/monaco-vscode-files-service-override@37.1.0': patches/@codingame__monaco-vscode-files-service-override@37.1.0.patch
   # Tool-call arguments are parsed once at the end instead of on every streamed delta.
   '@earendil-works/pi-ai@1.0.0': patches/@earendil-works__pi-ai@1.0.0.patch
