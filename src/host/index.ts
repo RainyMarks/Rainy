@@ -50,11 +50,11 @@ async function main(): Promise<void> {
 
   const runtime = await createRuntime({ env, projects, registry, activity, log })
   const ide = await createIde({ env, config, projects, runtime, server, activity, log })
-  const agent = await createAgent({ env, settings, projects, runtime, rpc, activity, log })
+  const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, log })
   await installIceSky({ env, server, log })
 
   rpc.register('app.info', () => ({
-    name: 'RainyAgent', version: env.version, environment: env.platform === 'win32' ? 'Windows' : 'WSL',
+    name: 'RainyAgent' as const, version: env.version, environment: env.platform === 'win32' ? 'Windows' as const : 'WSL' as const,
     executionTargetId: env.executionTargetId, platform: env.platform, home: env.home,
   }))
   rpc.register('prefs.get', () => settings.prefs())

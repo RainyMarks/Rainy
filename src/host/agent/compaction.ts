@@ -1,204 +1,130 @@
-/** Rainy retention policy over DSH's durable, tool-pair-safe compaction transactions. */
-import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
-import type { BasicCompactionConfig } from '@deepseek-ai/dsh-compaction-basic'
-import type { Context } from '@deepseek-ai/cordis'
-import { z } from 'zod'
-import { buildSummarizationInput, selectCompactableRange } from '@deepseek-ai/dsh-compaction-basic/src/region.ts'
-import { buildSummarizationMessages, frameSummary, summarizeWithLlm } from '@deepseek-ai/dsh-compaction-basic/src/summarizer.ts'
-import type { SummarizationInput, SummaryResult } from '@deepseek-ai/dsh-compaction-basic/src/summarizer.ts'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
-import { SessionSeq, isAppendSurfaceEvent } from '@deepseek-ai/dsh-session'
-import type { Session } from '@deepseek-ai/dsh-session'
-import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
-import type { TokenMeasurement } from '@deepseek-ai/dsh-token-meter'
-import { toolPairingBalancedAfter, toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
-import type { CompactionTrigger, CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { estimateRequest, estimateText, resolveBudget } from './budget.ts'
-import type { Budget } from './budget.ts'
+/** Context compaction: replace an older span of a chat's context with a model-written checkpoint. */
+import { randomUUID } from 'node:crypto'
+import { createInitialSystemMessage, type Message, type Tool } from '@earendil-works/pi-ai'
+import { estimateRequest, resolveBudget, type Budget, type CountableRequest } from '../../shared/budget.ts'
+import type { TranscriptEntry } from '../../shared/rpc.ts'
+import { toolPairsBalanced, type ContextItem } from './context.ts'
+import { reasoningOption } from './llm.ts'
+import type { Models, ResolvedModel } from './models.ts'
 
-const retainedInputSchema = z.object({
-  awaitingInput: z.boolean(),
-  users: z.array(z.object({ seq: z.number().int().nonnegative().transform(SessionSeq), id: z.string().transform(MessageId) })),
-})
-type RetainedInput = z.infer<typeof retainedInputSchema>
-declare module '@deepseek-ai/dsh-session-projection' {
-  interface SessionProjectionStateMap {
-    rainyRetainedInput: RetainedInput
+type CompactionEntry = Extract<TranscriptEntry, { kind: 'compaction' }>
+
+/**
+ * Estimate the tokens of a request.
+ * @param system System prompt.
+ * @param tools Tool declarations.
+ * @param messages Conversation messages.
+ * @returns Estimated input tokens.
+ */
+export function estimateMessages(system: string, tools: readonly Tool[], messages: readonly Message[]): number {
+  const request: CountableRequest = {
+    system,
+    tools: tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+    messages: messages.map(message => ({
+      role: message.role,
+      content: typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content,
+    })),
   }
-}
-const retainedInputProjection: ProjectionDefinition<'rainyRetainedInput'> = {
-  key: 'rainyRetainedInput',
-  stateVersion: 1,
-  stateSchema: retainedInputSchema,
-  init: () => ({ awaitingInput: true, users: [] }),
-  apply(state, event) {
-    if (event.type === 'turn/start') return { ...state, awaitingInput: true }
-    if (event.type !== 'user/message' || event.data.source.kind !== 'user' || !isAppendSurfaceEvent(event)) return state
-    const user = { seq: event.seq, id: event.data.id }
-    return { awaitingInput: false, users: state.awaitingInput ? [user] : [...state.users, user] }
-  },
-}
-
-type SurfaceRange = { start: SessionSeq; end: SessionSeq }
-
-/** Add Rainy's checkpoint requirements to both the planned and dispatched summary. */
-function summaryInput(input: SummarizationInput, budget: Budget): SummarizationInput {
-  return { ...input, directive:
-    `You are the compaction engine. Write only a progress checkpoint, aiming for at most ${Math.floor(budget.summaryTokens / 2)} tokens and staying below ${budget.summaryTokens} tokens. `
-    + 'Use terse prose, no headings or tools. Direct user messages are authoritative reference and remain verbatim outside this checkpoint. '
-    + 'Summarize only verified completed progress, exact file paths and sequence or range progress, errors, unresolved work, and the next action. '
-    + 'Do not invent, redefine, or restate user goals or constraints. If a prior checkpoint conflicts with direct user instructions, discard that claim. '
-    + 'Merge still-valid progress without copying stale claims. Never claim unverified success.' }
+  return estimateRequest(request)
 }
 
 /**
- * Reserve the full summary instruction before history reaches the input limit.
- * @param budget Resolved conversation window and output reservations.
- * @returns Conservative request size that starts automatic compaction.
+ * Request estimate at which a chat compacts before sending.
+ * @param budget Model budget.
+ * @returns Token threshold.
  */
 export function compactionThreshold(budget: Budget): number {
-  const instructionTokens = estimateRequest({ messages: buildSummarizationMessages(summaryInput({ messages: [] }, budget)) })
-    - estimateRequest({ messages: [] })
-  const summaryLimit = resolveBudget(budget.contextWindow, budget.summaryTokens).inputLimit
-  return Math.min(budget.compactAt, Math.max(0, summaryLimit - instructionTokens))
+  return budget.compactAt
 }
 
-/** Select retention per actual model window while retaining the original durable transaction machinery. */
-export default class RainyCompaction extends BasicCompactionEngine {
-  static override inject = [...BasicCompactionEngine.inject, 'sessionProjections']
+function directive(summaryTokens: number): string {
+  return `You are the compaction engine. Write only a progress checkpoint, aiming for at most ${Math.floor(summaryTokens / 2)} tokens and staying below ${summaryTokens} tokens. `
+    + 'Use terse prose, no headings or tools. Direct user messages are authoritative reference and remain verbatim outside this checkpoint. '
+    + 'Summarize only verified completed progress, exact file paths and sequence or range progress, errors, unresolved work, and the next action. '
+    + 'Do not invent, redefine, or restate user goals or constraints. If a prior checkpoint conflicts with direct user instructions, discard that claim. '
+    + 'Merge still-valid progress without copying stale claims. Never claim unverified success.'
+}
 
-  constructor(ctx: Context, config: BasicCompactionConfig = {}) {
-    super(ctx, config)
-    ctx.effect(() => ctx.sessionProjections.register(retainedInputProjection))
+function itemTokens(item: ContextItem): number {
+  return estimateMessages('', [], [item.message]) - 16
+}
+
+/**
+ * Choose the span to compact: the part of the context older than the most recent `keepRecentTokens`, never including
+ * the most recent user request, and never separating a tool call from its result.
+ * @param items Context items (without the system message).
+ * @param budget Model budget.
+ * @param latestUser Entry id of the most recent user request, kept verbatim.
+ * @param manual Use the largest eligible span regardless of the recent-tokens reserve.
+ * @returns Inclusive index range, or `undefined` when nothing can be compacted.
+ */
+export function selectSpan(items: readonly ContextItem[], budget: Budget, latestUser: string | undefined, manual: boolean): [number, number] | undefined {
+  const userIndex = latestUser === undefined ? -1 : items.findIndex(item => item.entryId === latestUser)
+  // The most recent items that stay as they are.
+  let keepFrom = items.length
+  if (!manual) {
+    let kept = 0
+    while (keepFrom > 0 && kept + itemTokens(items[keepFrom - 1]!) <= budget.keepRecentTokens) kept += itemTokens(items[--keepFrom]!)
+  } else keepFrom = items.length - 1
+  const candidates: [number, number][] = []
+  if (userIndex > 0) candidates.push([0, Math.min(userIndex - 1, keepFrom - 1)])
+  candidates.push([userIndex + 1, keepFrom - 1])
+  if (userIndex < 0) candidates.splice(0, candidates.length, [0, keepFrom - 1])
+  for (const [start, initialEnd] of candidates) {
+    let end = initialEnd
+    while (end > start && !toolPairsBalanced(items, start, end)) end--
+    if (end <= start) continue
+    const tokens = items.slice(start, end + 1).reduce((total, item) => total + itemTokens(item), 0)
+    if (tokens > budget.summaryTokens + 512) return [start, end]
   }
+  return undefined
+}
 
-  private retainedInput(session: Session): RetainedInput['users'] {
-    const current = new Set(session.surface.nodes)
-    const state = this.ctx.sessionProjections.stateOf(session, 'rainyRetainedInput')
-    if (state === undefined) throw new Error('Rainy retained-input projection is unavailable.')
-    return state.users.filter(user => current.has(user.seq))
-  }
+/** Inputs of one compaction. */
+export interface CompactionRequest {
+  models: Models
+  resolved: ResolvedModel
+  system: string
+  tools: readonly Tool[]
+  items: readonly ContextItem[]
+  latestUser: string | undefined
+  trigger: CompactionEntry['trigger']
+  signal?: AbortSignal | undefined
+}
 
-  /** Include retained source instructions as reference without adding them to the replacement span. */
-  private summaryWithReference(input: SummarizationInput, budget: Budget, session: Session): SummarizationInput {
-    const retainedIds = new Set(this.retainedInput(session).map(user => user.id))
-    const selected = new Map(input.messages.map(message => [message.id, message]))
-    const messages = session.deriveMessages().flatMap((message) => {
-      const original = selected.get(message.id)
-      return original === undefined ? retainedIds.has(message.id) ? [message] : [] : [original]
-    })
-    return summaryInput({ ...input, messages }, budget)
-  }
-
-  /** Keep the latest admitted turn's user messages at their existing surface positions. */
-  private eligibleRanges(session: Session, measurement: TokenMeasurement, retainTokens: number): SurfaceRange[] {
-    const range = selectCompactableRange(session, measurement, retainTokens)
-    if (range === null) return []
-    const protectedSeqs = new Set(this.retainedInput(session).map(user => user.seq))
-    const nodes = measurement.nodes
-    const ranges: SurfaceRange[] = []
-    let start = nodes.findIndex(node => node.seq === range.start)
-    const end = nodes.findIndex(node => node.seq === range.end)
-    const append = (last: number): void => {
-      while (start <= last && !toolPairingBalancedBefore(session, nodes[start].seq)) start++
-      while (last >= start && !toolPairingBalancedAfter(session, nodes[last].seq)) last--
-      if (start <= last) ranges.push({ start: nodes[start].seq, end: nodes[last].seq })
-    }
-    for (let index = start; index <= end; index++) {
-      if (!protectedSeqs.has(nodes[index].seq)) continue
-      append(index - 1)
-      start = index + 1
-    }
-    append(end)
-    return ranges
-  }
-
-  protected override selectRange(session: Session, measurement: TokenMeasurement, retainTokens: number): SurfaceRange | null {
-    return this.eligibleRanges(session, measurement, retainTokens)[0] ?? null
-  }
-
-  override async compactRegion(start: SessionSeq, end: SessionSeq, agent: Agent, signal?: AbortSignal): Promise<CompactionResult> {
-    const nodes = agent.session.surface.nodes
-    const first = nodes.indexOf(start)
-    const last = nodes.indexOf(end)
-    const selected = new Set(nodes.slice(first, last + 1))
-    if (first >= 0 && last >= first && this.retainedInput(agent.session).some(user => selected.has(user.seq))) {
-      throw new Error('压缩范围包含当前轮用户原始指令；请选择仅包含执行进度的范围。')
-    }
-    return super.compactRegion(start, end, agent, signal)
-  }
-
-  override async compactIfNeeded(agent: Agent, trigger: CompactionTrigger, signal: AbortSignal): Promise<CompactionResult | null> {
-    // The Rainy request counter is the sole automatic pressure owner; the base listener delegates here too.
-    if (trigger === 'pressure') return null
-    const route = agent.session.requestHeader()?.config
-    if (!route) return null
-    return this.reduce(agent, signal, true)
-  }
-
-  /**
-   * Reduce a balanced prefix whose complete summary fits the routed model.
-   * @param agent Conversation owning the source history and durable transaction.
-   * @param signal Cancellation shared by planning and summarization.
-   * @param overflow Prefer the largest eligible prefix after request rejection.
-   * @returns The durable reduction, or null when no fitting prefix can shrink.
-   */
-  async reduce(agent: Agent, signal: AbortSignal, overflow = false): Promise<CompactionResult | null> {
-    const route = agent.session.requestHeader()?.config
-    if (!route) return null
-    const info = await this.ctx.llm.resolveModelInfo(route.provider, route.model, signal)
-    const budget = resolveBudget(info.context?.contextWindow ?? 32768, route.maxTokens)
-    const measurement = this.ctx.tokenMeter.measure(agent.session)
-    const retainedIds = new Set(this.retainedInput(agent.session).map(user => user.id))
-    const required = agent.session.deriveMessages().filter(message => message.role === 'system' || retainedIds.has(message.id))
-    if (estimateRequest({ messages: required, tools: agent.session.requestHeader()?.tools }) > budget.inputLimit) {
-      throw new Error('当前轮用户原始指令与必需上下文超过模型输入预算；请缩短输入或选择更大窗口，原文未被压缩。')
-    }
-    const maximums = this.eligibleRanges(agent.session, measurement, 0)
-    const preferred = overflow ? null : this.selectRange(agent.session, measurement, budget.keepRecentTokens)
-    const nodes = measurement.nodes
-    const summaryLimit = resolveBudget(budget.contextWindow, budget.summaryTokens).inputLimit
-    const replacementTokens = budget.summaryTokens + this.ctx.tokenMeter.estimateMessage(createUserMessage({
-      source: { kind: 'system-prompt' },
-      content: frameSummary([]),
-    }))
-    for (const maximum of maximums) {
-      const startIndex = nodes.findIndex(node => node.seq === maximum.start)
-      const maximumEnd = nodes.findIndex(node => node.seq === maximum.end)
-      const preferredEnd = preferred === null ? -1 : nodes.findIndex(node => node.seq === preferred.end)
-      const candidates = [preferredEnd, ...Array.from({ length: maximumEnd - startIndex + 1 }, (_, index) => maximumEnd - index)]
-      for (const endIndex of new Set(candidates)) {
-        if (endIndex > maximumEnd || endIndex < startIndex) continue
-        const end = nodes.at(endIndex)?.seq
-        if (end === undefined || !toolPairingBalancedAfter(agent.session, end)) continue
-        const selected = nodes.slice(startIndex, endIndex + 1)
-        if (selected.reduce((sum, node) => sum + node.tokens, 0) <= replacementTokens) continue
-        const selectedInput = buildSummarizationInput(agent.session, selected.map(node => node.seq))
-        const input = this.summaryWithReference(selectedInput, budget, agent.session)
-        const estimated = estimateRequest({ messages: buildSummarizationMessages(input), tools: input.tools })
-        if (estimated > summaryLimit) continue
-        return this.compactRegion(maximum.start, end, agent, signal)
-      }
-    }
-    return null
-  }
-
-  protected override async summarize(input: SummarizationInput, agent: Agent, signal?: AbortSignal): Promise<SummaryResult> {
-    const route = agent.session.requestHeader()?.config
-    if (!route) throw new Error('请先选择模型再压缩。')
-    const info = await this.ctx.llm.resolveModelInfo(route.provider, route.model, signal)
-    const budget = resolveBudget(info.context?.contextWindow ?? 32768, route.maxTokens)
-    const complete = this.summaryWithReference(input, budget, agent.session)
-    if (estimateRequest({ messages: buildSummarizationMessages(complete), tools: complete.tools })
-      > resolveBudget(budget.contextWindow, budget.summaryTokens).inputLimit) {
-      throw new Error('摘要与原始用户指令的完整参考输入超过模型预算；原始会话保持不变。')
-    }
-    const result = await summarizeWithLlm(this.ctx, {
-      summarizationProvider: route.provider, summarizationModel: route.model, maxTokens: budget.summaryTokens,
-    }, complete, agent, signal)
-    const text = result.summary.map(block => block.type === 'text' ? block.text : '').join('\n')
-    if (estimateText(text) > budget.summaryTokens) throw new Error('摘要超过预算，原始会话保持可恢复；请缩小压缩范围后重试。')
-    return result
+/**
+ * Summarize one span of the context.
+ * @param request Model, context and trigger.
+ * @returns The compaction entry, or `undefined` when there is nothing worth compacting.
+ * @throws Error when the summary request fails.
+ */
+export async function compact(request: CompactionRequest): Promise<CompactionEntry | undefined> {
+  const budget = resolveBudget(request.resolved.setup.contextWindow, request.resolved.setup.maxTokens)
+  const span = selectSpan(request.items, budget, request.latestUser, request.trigger === 'manual')
+  if (span === undefined) return undefined
+  let [start, end] = span
+  const summaryBudget = resolveBudget(budget.contextWindow, budget.summaryTokens)
+  const fixed = estimateMessages(request.system, request.tools, []) + 256
+  // A span larger than one summary request can hold is shortened from its start; later compactions take the rest.
+  while (start < end && fixed + request.items.slice(start, end + 1).reduce((total, item) => total + itemTokens(item), 0) > summaryBudget.inputLimit) start++
+  while (start < end && !toolPairsBalanced(request.items, start, end)) start++
+  if (start >= end) return undefined
+  const span_ = request.items.slice(start, end + 1)
+  const tokensBefore = estimateMessages(request.system, request.tools, request.items.map(item => item.message))
+  const system = createInitialSystemMessage(request.system, request.tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })))
+  const messages: Message[] = [...(system === undefined ? [] : [system]), ...span_.map(item => item.message), { role: 'user', content: directive(budget.summaryTokens), timestamp: Date.now() }]
+  const stream = request.models.streamFn(request.resolved.model, { messages } as never, {
+    maxTokens: budget.summaryTokens,
+    toolChoice: 'none',
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
+    ...(reasoningOption(request.resolved.thinking) === undefined ? {} : { reasoning: reasoningOption(request.resolved.thinking) }),
+  })
+  const reply = await stream.result()
+  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? 'Compaction request failed.')
+  const summary = reply.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('').trim()
+  if (summary === '') throw new Error('Compaction returned an empty checkpoint.')
+  return {
+    id: randomUUID(), kind: 'compaction', ts: Date.now(),
+    firstId: span_[0]!.entryId, lastId: span_.at(-1)!.entryId, summary, tokensBefore, trigger: request.trigger,
   }
 }
