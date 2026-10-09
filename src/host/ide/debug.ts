@@ -3,18 +3,18 @@ import { createConnection, createServer, type Server, type Socket } from 'node:n
 import { delimiter, win32 } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
-import type { SubprocessTerminalHandle } from '@deepseek-ai/dsh-subprocess'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
+import { assertNever } from '../../shared/brand.ts'
 import type {
   IdeDebugSnapshot,
   IdeExecutionRequest,
   IdeExecutionResponse,
   IdeSourceBreakpoints,
   IdeVerifiedBreakpoint,
-} from '@deepseek-ai/dsh-client-ui-rainy/ide-execution-protocol'
-import { IdeDapPeer } from './ide-debug-protocol.ts'
-import * as values from './ide-debug-values.ts'
-import { IdeProcessOwner, type IdeOutputStream, type IdeSubprocess } from './ide-execution-process.ts'
+} from '../../shared/ide-execution-protocol.ts'
+import type { TerminalHandle } from '../process.ts'
+import { IdeDapPeer } from './debug-protocol.ts'
+import * as values from './debug-values.ts'
+import { IdeProcessOwner, type IdeOutputStream, type IdeSubprocess } from './execution-process.ts'
 import {
   absoluteIdePath,
   idePathApi,
@@ -22,8 +22,8 @@ import {
   resolveIdeWorkspacePath,
   type IdeRunResolverOptions,
   type ResolvedIdeRun,
-} from './ide-execution-resolve.ts'
-import type { IdeExecutionLimits } from './ide-execution-schema.ts'
+} from './execution-resolve.ts'
+import type { IdeExecutionLimits } from './execution-schema.ts'
 
 type DebugRequest = Extract<IdeExecutionRequest, { readonly debugId: unknown }>
 
@@ -59,7 +59,7 @@ export class IdeDebugSession {
   private readonly variableCounts = new Map<number, number>()
   private active?: IdeDapPeer
   private rootPeer?: IdeDapPeer
-  private terminal?: SubprocessTerminalHandle
+  private terminal?: TerminalHandle
   private serverPort?: number
   private childClaimed = false
   private targetCount = 0

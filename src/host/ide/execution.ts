@@ -1,14 +1,8 @@
-/** Workspace-scoped human terminals, runs and launch-only debug sessions. */
+/** Project-scoped human terminals, runs and launch-only debug sessions. */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
-import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import type { IdeRootId } from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
-import type { ResolvedWorkspaceEnvironment } from './runtime-environments.ts'
-import { resolvePwshPath } from '@deepseek-ai/dsh-pwsh-local'
-import type { SubprocessHandle, SubprocessOutcome, SubprocessTerminalHandle } from '@deepseek-ai/dsh-subprocess'
-import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess'
+import { assertNever, brandString } from '../../shared/brand.ts'
+import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type {
   IdeDebugId,
   IdeExecutionEvent,
@@ -20,9 +14,11 @@ import type {
   IdeRunSnapshot,
   IdeTerminalId,
   IdeTerminalSnapshot,
-} from '@deepseek-ai/dsh-client-ui-rainy/ide-execution-protocol'
-import { IdeDebugSession } from './ide-debug.ts'
-import { ideExecutionRequestSchema, type IdeExecutionLimits } from './ide-execution-schema.ts'
+} from '../../shared/ide-execution-protocol.ts'
+import { ExecutableNotFoundError, type ProcessHandle, type ProcessOutcome, type TerminalHandle } from '../process.ts'
+import type { ResolvedWorkspaceEnvironment } from '../runtime/environments.ts'
+import { IdeDebugSession } from './debug.ts'
+import { IdeProcessOwner, writeIdeInput, type IdeOutputStream, type IdeSubprocess } from './execution-process.ts'
 import {
   absoluteIdePath,
   nodeIdeExecutionFiles,
@@ -33,12 +29,15 @@ import {
   type IdeExecutionResources,
   type IdeExecutionWorkspace,
   type ResolvedIdeRun,
-} from './ide-execution-resolve.ts'
-import { IdeProcessOwner, writeIdeInput, type IdeOutputStream, type IdeSubprocess } from './ide-execution-process.ts'
+} from './execution-resolve.ts'
+import { ideExecutionRequestSchema, type IdeExecutionLimits } from './execution-schema.ts'
+import { resolvePwshPath } from './tools.ts'
 
-/** Controller construction for the selected native Host. */
+/** Dependencies of {@link createIdeExecutionService}. */
 export interface IdeExecutionServiceOptions {
   readonly subprocess: IdeSubprocess
+  /** PowerShell 7 shipped with the Windows Host; the IDE terminal uses it on Windows. */
+  readonly pwshPath?: string | undefined
   readonly resolveWorkspace: (id: WorkspaceId, rootId?: IdeRootId) => Promise<IdeExecutionWorkspace>
   readonly resolveEnvironment?: (id: WorkspaceId) => ResolvedWorkspaceEnvironment
   /** Reject execution and input while the owning Host is switching targets. */
@@ -49,12 +48,14 @@ export interface IdeExecutionServiceOptions {
   readonly files?: IdeExecutionFiles
 }
 
-/** Authenticated product route and teardown surface; no Agent tools are registered. */
+/** Execution operations of the `ide` RPC method and their teardown. */
 export interface IdeExecutionService {
   /** @returns whether any run, terminal or debug session still owns processes. */
   hasActivity(): boolean
   /** Dispatch one human IDE operation. @param input - untrusted request JSON. @returns its operation-specific value. */
   handle(input: unknown): Promise<IdeExecutionResponse>
+  /** Stop every operation of one project, for example before the project is removed. @param workspaceId - project identity. @returns completion after their processes stopped. */
+  stopWorkspace(workspaceId: WorkspaceId): Promise<void>
   /** Stop admission and await all owned operations. @returns quiescent cleanup. */
   dispose(): Promise<void>
 }
@@ -68,8 +69,8 @@ interface BaseOperation {
   stopped: boolean
   finished: boolean
   ownsBuildDirectory?: boolean
-  terminal?: SubprocessTerminalHandle
-  process?: SubprocessHandle
+  terminal?: TerminalHandle
+  process?: ProcessHandle
 }
 interface RunOperation extends BaseOperation {
   readonly kind: 'run'
@@ -88,7 +89,7 @@ type Operation = RunOperation | TerminalOperation | DebugOperation
 function errorOf(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
-function exitOf(outcome: SubprocessOutcome, stopped: boolean) {
+function exitOf(outcome: ProcessOutcome, stopped: boolean): { exitCode: number | null; signal: string | null; stopped: boolean } {
   return { exitCode: outcome.exitCode, signal: outcome.signal, stopped }
 }
 
@@ -99,7 +100,7 @@ function exitOf(outcome: SubprocessOutcome, stopped: boolean) {
  */
 export function ideExecutionFailure(error: unknown): { readonly code: string; readonly message: string } {
   if (error instanceof z.ZodError) return { code: 'invalid-request', message: error.issues.map(issue => issue.message).join(' ') }
-  if (error instanceof SubprocessExecutableNotFoundError) return { code: 'dependency-unavailable', message: error.message }
+  if (error instanceof ExecutableNotFoundError) return { code: 'dependency-unavailable', message: error.message }
   if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'EXECUTABLE_NOT_FOUND'))
     return { code: 'dependency-unavailable', message: error.message }
   return { code: 'execution-error', message: errorOf(error).message }
@@ -209,7 +210,7 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
     })
   }
 
-  async function build(value: BaseOperation, resolved: ResolvedIdeRun): Promise<SubprocessOutcome | undefined> {
+  async function build(value: BaseOperation, resolved: ResolvedIdeRun): Promise<ProcessOutcome | undefined> {
     value.owner.signal.throwIfAborted()
     if (resolved.ownedBuildDirectory) {
       await files.createBuildDirectory(resolved.spec.workspaceRoot, resolved.ownedBuildDirectory)
@@ -255,7 +256,7 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
       }
       value.snapshot = { ...value.snapshot, phase: 'running' }
       publishRun(value)
-      let result: SubprocessOutcome
+      let result: ProcessOutcome
       if (resolved.spec.terminal) {
         value.terminal = await value.owner.terminal(resolved.spec.launch, cols, rows)
         result = await value.owner.waitTerminal(value.terminal, value.owner.pump(value.terminal.output, 'terminal'))
@@ -320,7 +321,7 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
     const cwd = await resolveIdeWorkspacePath(files, root, request.cwd ?? '.', 'directory')
     const environment = options.resolveEnvironment?.(request.workspaceId).environment ?? {}
     const shell = await resolveIdeExecutable(options.subprocess,
-      world.platform === 'windows' ? resolvePwshPath(process.env.RAINY_PWSH_PATH) : world.defaultShell,
+      world.platform === 'windows' ? resolvePwshPath(options.pwshPath) : world.defaultShell,
       world.platform === 'windows' ? 'pwsh.exe' : '/bin/bash', environment)
     reserve()
     const id = brandString<IdeTerminalId>(randomUUID())
@@ -540,6 +541,12 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
 
   return {
     hasActivity: () => [...operations.values()].some(operation => !operation.finished),
+    async stopWorkspace(workspaceId) {
+      const results = await Promise.allSettled([...operations.values()].filter(value => value.workspaceId === workspaceId).map(stop))
+      for (const value of [...operations.values()]) if (value.workspaceId === workspaceId) operations.delete(value.id)
+      const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason as unknown] : [])
+      if (failures.length) throw new AggregateError(failures, 'IDE operation cleanup failed.')
+    },
     handle(input) {
       const task = dispatch(input)
       requests.add(task)

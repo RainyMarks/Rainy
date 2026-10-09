@@ -7,11 +7,11 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'no
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
-import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import type { RuntimeCandidate, RuntimeEnvironmentId, RuntimeLanguage, RuntimePlatform, RuntimeSnapshot } from '@deepseek-ai/dsh-client-ui-rainy/runtime-protocol'
-import { ExecutionTargetId } from './project-registry.ts'
+import { brandString } from '../../shared/brand.ts'
+import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import { ExecutionTargetId } from '../../shared/project-registry.ts'
+import type { RuntimeCandidate, RuntimeEnvironmentId, RuntimeLanguage, RuntimePlatform, RuntimeSnapshot } from '../../shared/runtime-protocol.ts'
+import { scrubbedEnv } from '../process.ts'
 
 const execute = promisify(execFile)
 const languages = ['python', 'node', 'php', 'c', 'cpp'] as const
@@ -162,7 +162,7 @@ export class RuntimeEnvironments {
     this.platform = options.platform ?? hostPlatform()
     this.target = ExecutionTargetId(options.targetId)
     this.run = options.run ?? (async command => (await execute(command.executable, [...command.arguments], {
-      cwd: command.cwd, env: { ...scrubbedParentEnv(), PYTHONDONTWRITEBYTECODE: '1', HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', ...command.environment },
+      cwd: command.cwd, env: { ...scrubbedEnv(), PYTHONDONTWRITEBYTECODE: '1', HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', ...command.environment },
       timeout: command.timeoutMs, maxBuffer: 256 * 1024, windowsHide: true, encoding: 'utf8',
     })).stdout)
   }

@@ -61,7 +61,7 @@ if (isSetupPage('rainy-ide-environment-page')) {
 
 if (process.isMainFrame && location.protocol === 'http:' && location.hostname === '127.0.0.1') {
   if (process.platform === 'win32') installWindowChrome()
-  contextBridge.exposeInMainWorld('__DSH_HOST_PATHS__', {
+  contextBridge.exposeInMainWorld('__RAINY_HOST_PATHS__', {
     pathFor(file: File): string {
       const path = webUtils.getPathForFile(file)
       return path ? String(ipcRenderer.sendSync('rainy:path', path) ?? '') : ''

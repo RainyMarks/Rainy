@@ -1,13 +1,9 @@
-/** Authenticated, content-versioned local browser resources with bounded streaming ownership. */
+/** Content-versioned IceSky browser resources under `/rainy/icesky/`, with owned file streams. */
 import { createHash } from 'node:crypto'
 import { open, readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
-import { fileURLToPath } from 'node:url'
-import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-host-webserver'
-import type {} from '@deepseek-ai/dsh-client-connection'
 import { z } from 'zod'
 
 const assetSchema = z.object({
@@ -18,10 +14,8 @@ const manifestSchema = z.object({
 }).strict()
 type AssetManifest = z.infer<typeof manifestSchema>
 
-/** Static route dependencies; protected resources never bypass connection admission. */
+/** Static route options. */
 export interface IceSkyStaticOptions {
-  /** Admission precedes conditional cache responses and file access. */
-  readonly admit: (request: IncomingMessage) => 401 | 403 | undefined
   /** Maximum age of content-versioned private browser resources. */
   readonly maxAgeSeconds: number
 }
@@ -46,8 +40,8 @@ export class IceSkyStaticAssets {
 
   /**
    * Validate built asset metadata and prepare the index without per-request file reads.
-   * @param root - packaged resource directory.
-   * @returns the static resource owner; missing or stale build metadata rejects boot.
+   * @param root Packaged resource directory.
+   * @returns The static resource owner; missing or stale build metadata rejects.
    */
   static async open(root: string): Promise<IceSkyStaticAssets> {
     const manifest = manifestSchema.parse(JSON.parse(await readFile(resolve(root, 'assets-manifest.json'), 'utf8')))
@@ -70,13 +64,11 @@ export class IceSkyStaticAssets {
 
   /**
    * Serve a local resource; HEAD and matching ETag responses read no file body.
-   * @param request - browser request, including an optional content-versioned URL.
-   * @param response - Host response whose disconnect owns stream cancellation.
-   * @param options - connection admission and immutable cache budget.
+   * @param request Authenticated browser request, including an optional content-versioned URL.
+   * @param response Response whose disconnect cancels the file stream.
+   * @param options Immutable cache budget.
    */
   async handle(request: IncomingMessage, response: ServerResponse, options: IceSkyStaticOptions): Promise<void> {
-    const rejection = options.admit(request)
-    if (rejection !== undefined) { response.writeHead(rejection); response.end(); return }
     if (this.closed) { response.writeHead(503); response.end(); return }
     if (request.method !== 'GET' && request.method !== 'HEAD') { response.writeHead(405, { Allow: 'GET, HEAD' }); response.end(); return }
     try {
@@ -132,19 +124,4 @@ export class IceSkyStaticAssets {
     for (const controller of this.streams.keys()) controller.abort()
     await Promise.allSettled(this.streams.values())
   }
-}
-
-/**
- * Register the workbench's versioned resource route and its teardown ownership.
- * @param ctx - authenticated HTTP Host.
- * @param maxAgeSeconds - immutable private cache lifetime for versioned resources.
- */
-export async function installIceSkyStatic(ctx: Context, maxAgeSeconds: number): Promise<void> {
-  const owner = await IceSkyStaticAssets.open(fileURLToPath(new URL('../resources/icesky/', import.meta.url)))
-  ctx.effect(() => {
-    const unregister = ctx.webServer.register({ kind: 'prefix', path: '/rainy/icesky', handler: (request, response) => owner.handle(request, response, {
-      admit: (request) => { const result = ctx.connection.admit(request); return 'rejection' in result ? result.rejection : undefined }, maxAgeSeconds,
-    }) })
-    return async () => { unregister(); await owner.close() }
-  })
 }

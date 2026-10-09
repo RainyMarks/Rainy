@@ -2,14 +2,13 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, readFile, realpath, rm, stat, unlink } from 'node:fs/promises'
 import { posix, win32 } from 'node:path'
-import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
-import type { IdeCommandSpec, IdeResolvedRunSpec, IdeRunConfiguration } from '@deepseek-ai/dsh-client-ui-rainy/ide-execution-protocol'
-import type { IdeRootId } from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
-import type { ResolvedWorkspaceEnvironment } from './runtime-environments.ts'
-import { ideRunConfigurationSchema } from './ide-execution-schema.ts'
-import { resolveCmakeBuild } from './ide-execution-cmake.ts'
+import { assertNever } from '../../shared/brand.ts'
+import type { IdeCommandSpec, IdeResolvedRunSpec, IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
+import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { ResolvedWorkspaceEnvironment } from '../runtime/environments.ts'
+import { resolveCmakeBuild } from './execution-cmake.ts'
+import type { IdeSubprocess } from './execution-process.ts'
+import { ideRunConfigurationSchema } from './execution-schema.ts'
 
 /** Absolute paths supplied by the packaged IDE resource resolver. */
 export interface IdeExecutionResources {
@@ -18,13 +17,13 @@ export interface IdeExecutionResources {
   readonly tsxImport: string
 }
 
-/** Canonical workspace returned by the existing workspace registry. */
+/** Canonical project directory resolved from the project catalog. */
 export interface IdeExecutionWorkspace {
   readonly workspaceId: WorkspaceId
   readonly root: string
 }
 
-/** Filesystem operations in the same execution target as ctx.subprocess. */
+/** Filesystem operations in the Host's execution world. */
 export interface IdeExecutionFiles {
   /** Canonicalize an existing path. @param path - absolute native path. @returns its real path. */
   realpath(path: string): Promise<string>
@@ -50,7 +49,7 @@ export interface IdeExecutionFiles {
 
 /** Dependencies needed by the pure command-resolution layer. */
 export interface IdeRunResolverOptions {
-  readonly subprocess: Pick<SubprocessRuntime, 'resolveExecutable' | 'terminalEnvironment'>
+  readonly subprocess: Pick<IdeSubprocess, 'resolveExecutable' | 'terminalEnvironment'>
   readonly resources: IdeExecutionResources
   readonly files: IdeExecutionFiles
   readonly resolveWorkspace: (id: WorkspaceId, rootId?: IdeRootId) => Promise<IdeExecutionWorkspace>
@@ -203,15 +202,15 @@ export async function resolveIdeWorkspacePath(
 }
 
 /**
- * Resolve a configured executable or an explicit language default through ctx.subprocess.
- * @param provider - managed process provider.
+ * Resolve a configured executable or an explicit language default.
+ * @param provider - process provider.
  * @param configured - caller-supplied absolute path.
  * @param fallback - resolver-owned language command.
  * @param environment - deliberate child environment.
  * @returns canonical executable path.
  */
 export async function resolveIdeExecutable(
-  provider: Pick<SubprocessRuntime, 'resolveExecutable'>,
+  provider: Pick<IdeSubprocess, 'resolveExecutable'>,
   configured: string | undefined,
   fallback: string,
   environment: Readonly<Record<string, string>>,

@@ -1,19 +1,19 @@
 /** Retained Monaco mount; editor buffers remain owned by the workspace model. */
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
 import type { EditorAppearance, EditorInstance } from './editor-types.ts'
 import { loadEditorAssets } from './editor-loader.ts'
 import { sourceLanguage, sourceUri, type IdeModel, type IdeState } from './ide-model.ts'
-import css from './IdeShell.module.css'
 import { fileKey, workspaceRoots } from './ide-paths.ts'
+import { selectedPythonExecutable } from './run-target.ts'
+import { useIdeT } from './messages.ts'
+import css from './Ide.module.css'
 
 interface Props {
   readonly model: IdeModel
   readonly state: IdeState
   readonly appearance: EditorAppearance
-  readonly t: TranslateNS<'rainy'>
-  readonly sendSelection: () => Promise<void>
+  readonly sendSelection: () => void
   readonly breakpoint: (path: string, line: number) => void
   readonly attach: (editor: EditorInstance | undefined) => void
   readonly stopped?: { readonly path: string; readonly line: number } | undefined
@@ -21,23 +21,22 @@ interface Props {
   readonly empty?: ReactNode
 }
 
-/** Keep one Monaco instance while tabs, source text, and shell geometry change.
- * @param props The private workspace model and localized editor actions.
+/** Keep one Monaco instance while tabs, source text, and window geometry change.
+ * @param props The workspace model, appearance and editor callbacks.
  * @returns The editor mount and loading state.
  */
-export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoint, attach, stopped, empty }: Props) {
+export function IdeEditor({ model, state, appearance, sendSelection, breakpoint, attach, stopped, empty }: Props) {
+  const t = useIdeT()
   const container = useRef<HTMLDivElement>(null)
   const instance = useRef<EditorInstance | undefined>(undefined)
   const revealed = useRef<IdeState['reveal']>()
   const callbacks = useRef({ sendSelection, breakpoint, attach })
   callbacks.current = { sendSelection, breakpoint, attach }
+  const labels = useRef({ save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'), toggleBreakpoint: t('ideToggleBreakpoint') })
   const [ready, setReady] = useState(false)
   const [workspaceReady, setWorkspaceReady] = useState<string | undefined>()
+  const pythonPath = selectedPythonExecutable(state.data.execution)
   const profile = state.data.execution?.profiles.find(entry => entry.name === state.data.execution?.activeProfile)
-  const python =
-    profile?.language === 'python'
-      ? profile
-      : state.data.execution?.profiles.find(entry => entry.language === 'python')
   const compiled =
     profile?.language === 'c' || profile?.language === 'cpp'
       ? profile
@@ -52,54 +51,25 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
         assets.create(
           host,
           {
-            change: (path, text) => {
-              model.change(path, text)
-            },
-            view: (path, view) => {
-              model.view(path, view)
-            },
-            selection: (selection) => {
-              model.selection(selection)
-            },
-            problems: (problems) => {
-              model.problems(problems)
-            },
-            languageState: (language, phase, message) => {
-              model.language(language, phase, message)
-            },
+            change: (path, text) => { model.change(path, text) },
+            view: (path, view) => { model.view(path, view) },
+            selection: (selection) => { model.selection(selection) },
+            problems: (problems) => { model.problems(problems) },
+            languageState: (language, phase, message) => { model.language(language, phase, message) },
             open: async (uri, line, column) => {
               const document = await model.openUri(uri, 'open')
               if (document !== undefined && line !== undefined)
-                queueMicrotask(() => {
-                  instance.current?.reveal(document.path, line, column ?? 1)
-                })
+                queueMicrotask(() => { instance.current?.reveal(document.path, line, column ?? 1) })
               return document
             },
             read: uri => model.openUri(uri, 'read'),
             prepareEdit: uri => model.openUri(uri, 'edit'),
-            save: () => {
-              void model.save()
-            },
-            format: () => {
-              void model.format().catch((error: unknown) => {
-                model.fail(error)
-              })
-            },
-            sendSelection: () => {
-              void callbacks.current.sendSelection().catch((error: unknown) => {
-                model.fail(error)
-              })
-            },
-            breakpoint: (path, line) => {
-              callbacks.current.breakpoint(path, line)
-            },
+            save: () => { void model.save() },
+            format: () => { void model.format().catch((error: unknown) => { model.fail(error) }) },
+            sendSelection: () => { callbacks.current.sendSelection() },
+            breakpoint: (path, line) => { callbacks.current.breakpoint(path, line) },
           },
-          {
-            save: t('ideSave'),
-            format: t('ideFormat'),
-            sendSelection: t('ideSendSelection'),
-            toggleBreakpoint: t('ideToggleBreakpoint'),
-          },
+          labels.current,
         ),
       )
       .then((editor) => {
@@ -137,7 +107,7 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
           path: workspace?.path ?? '/',
           title: workspace?.title ?? t('ideAppTitle'),
           roots: workspace === null ? [] : workspaceRoots(workspace),
-          pythonPath: python?.executable,
+          pythonPath,
           compileCommandsDirectory,
         })
       })
@@ -150,7 +120,7 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
     return () => {
       cancelled = true
     }
-  }, [ready, state.workspace, python?.executable, compileCommandsDirectory, model])
+  }, [ready, state.workspace, pythonPath, compileCommandsDirectory, model])
   useEffect(() => {
     const workspace = state.workspace
     if (workspaceReady !== (workspace?.workspaceId ?? 'rainy:previews')) return
@@ -161,16 +131,13 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
           const uri = buffer.source === 'snippet' ? `untitled:${encodeURIComponent(path)}`
             : workspace === null ? undefined : sourceUri(workspace, path)
           if (uri === undefined) return []
-          return [
-            {
-              path,
-              uri,
-              language: buffer.language ?? sourceLanguage(path),
-              text: buffer.text,
-              readOnly:
-                buffer.source === 'snippet' || buffer.document.readOnlyReason !== null || state.phase === 'loading',
-            },
-          ]
+          return [{
+            path,
+            uri,
+            language: buffer.language ?? sourceLanguage(path),
+            text: buffer.text,
+            readOnly: buffer.source === 'snippet' || buffer.document.readOnlyReason !== null || state.phase === 'loading',
+          }]
         }),
     )
   }, [workspaceReady, state.workspace, state.buffers, state.phase])
@@ -184,12 +151,7 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
     if (tab?.kind === 'diff' && comparison !== undefined)
       editor?.showDiff(path, comparison.original, buffer?.source !== 'snippet')
     else
-      editor?.show(
-        path,
-        tab?.cursor === undefined
-          ? undefined
-          : { ...tab.cursor, top: tab.scroll?.top ?? 0, left: tab.scroll?.left ?? 0 },
-      )
+      editor?.show(path, tab?.cursor === undefined ? undefined : { ...tab.cursor, top: tab.scroll?.top ?? 0, left: tab.scroll?.left ?? 0 })
   }, [workspaceReady, path, tab?.kind, comparison])
   useEffect(() => {
     instance.current?.setAppearance(appearance)
@@ -211,29 +173,12 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
   const reason = buffer?.document.readOnlyReason
   return (
     <div className={css.editorHost}>
-      <div
-        ref={container}
-        className={css.monaco}
-        hidden={path === null || (reason !== null && reason !== undefined)}
-        data-rainy-monaco
-      />
-      {!ready && path !== null && (
-        <div className={css.empty} role="status">
-          {t('ideEditorLoading')}
-        </div>
-      )}
+      <div ref={container} className={css.monaco} hidden={path === null || (reason !== null && reason !== undefined)} data-rainy-monaco />
+      {!ready && path !== null && <div className={css.empty} role="status">{t('ideEditorLoading')}</div>}
       {path === null && (empty ?? <div className={css.empty}>{t(state.workspace === null ? 'ideNoWorkspace' : 'ideNoFile')}</div>)}
       {buffer !== undefined && reason !== null && reason !== undefined && (
         <div className={css.empty}>
-          <span>
-            {t(
-              reason === 'binary'
-                ? 'ideReadOnlyBinary'
-                : reason === 'too-large'
-                  ? 'ideReadOnlyLarge'
-                  : 'ideReadOnlyEncoding',
-            )}
-          </span>
+          <span>{t(reason === 'binary' ? 'ideReadOnlyBinary' : reason === 'too-large' ? 'ideReadOnlyLarge' : 'ideReadOnlyEncoding')}</span>
           <small>{t('ideSize', { bytes: buffer.document.bytes })}</small>
           {buffer.document.preview !== undefined && (
             <>
@@ -241,13 +186,7 @@ export function IdeEditor({ model, state, appearance, t, sendSelection, breakpoi
                 {t('ideReadOnlyPreview', { read: buffer.document.preview.bytesRead, total: buffer.document.bytes })}
                 {buffer.document.preview.truncated ? ` · ${t('idePreviewTruncated')}` : ''}
               </small>
-              <pre
-                className={css.preview}
-                aria-label={t('ideReadOnlyPreview', {
-                  read: buffer.document.preview.bytesRead,
-                  total: buffer.document.bytes,
-                })}
-              >
+              <pre className={css.preview} aria-label={t('ideReadOnlyPreview', { read: buffer.document.preview.bytesRead, total: buffer.document.bytes })}>
                 {buffer.document.preview.text}
               </pre>
             </>

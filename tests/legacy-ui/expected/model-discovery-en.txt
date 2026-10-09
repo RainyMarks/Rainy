@@ -1,3 +1,0 @@
-Discover models
-available-small
-available-large

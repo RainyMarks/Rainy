@@ -1,11 +1,11 @@
 /** Retained workspace execution mirrors with bounded output, cursor ordering and stale-debug-read suppression. */
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { WorkspaceId } from '../ide-files-protocol.ts'
+import { createStore } from '../ui/store.ts'
+import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type {
   IdeDebugEvaluation, IdeDebugFrame, IdeDebugId, IdeDebugScope, IdeDebugSnapshot, IdeDebugThread, IdeDebugVariable,
   IdeExecutionConfiguration, IdeExecutionPoll, IdeExecutionRequest, IdeExecutionResponseMap, IdeExecutionStatus,
   IdeOperationId, IdeRunConfiguration,
-} from '../ide-execution-protocol.ts'
+} from '../../shared/ide-execution-protocol.ts'
 import type { IdeExecutionApi } from './ide-execution-api.ts'
 import { fileKey, fileReference } from './ide-paths.ts'
 
@@ -72,9 +72,9 @@ function operationIds(status: IdeExecutionStatus): IdeOperationId[] {
 
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 
-/** React-free execution owner; changing workspaces never stops the user's running processes. */
+/** Execution owner outside React; changing workspaces never stops the user's running processes. */
 export class IdeExecutionModel {
-  readonly state = createSnapshotStore<IdeExecutionState>(emptyState(null))
+  readonly state = createStore<IdeExecutionState>(emptyState(null))
   private readonly workspaces = new Map<WorkspaceId, RetainedWorkspace>()
   private readonly requests = new Set<Promise<unknown>>()
   private readonly controllers = new Set<AbortController>()

@@ -1,6 +1,6 @@
-/** User-level tool directory state; native operations never enter the Session log. */
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { NativeToolCatalog, NativeToolId, NativeToolsBridge, NativeToolsDownloadState, NativeToolsOperation, NativeToolsUpdateState } from '../native-tools-protocol.ts'
+/** User-level tool directory state; native operations never enter a chat transcript. */
+import { createStore, type Store } from '../ui/store.ts'
+import type { NativeToolCatalog, NativeToolId, NativeToolsBridge, NativeToolsDownloadState, NativeToolsOperation, NativeToolsUpdateState } from '../../shared/native-tools-protocol.ts'
 
 /** Retained directory state and in-flight operations. */
 export interface NativeToolsState extends NativeToolCatalog {
@@ -24,7 +24,7 @@ export interface NativeToolsCopy {
 
 /** Owns requests independently of a visible catalog panel. */
 export class NativeToolsController {
-  readonly state
+  readonly state: Store<NativeToolsState>
   private disposed = false
   private loading: Promise<void> | undefined
   private downloading: Promise<void> | undefined
@@ -39,7 +39,7 @@ export class NativeToolsController {
    */
   constructor(private readonly bridge: NativeToolsBridge | undefined, private readonly copy: NativeToolsCopy,
     private readonly toast: (message: string, kind: 'success' | 'error' | 'warning') => void) {
-    this.state = createSnapshotStore<NativeToolsState>({ phase: bridge === undefined ? 'desktop-only' : 'idle',
+    this.state = createStore<NativeToolsState>({ phase: bridge === undefined ? 'desktop-only' : 'idle',
       tools: [], preferences: { favorites: [], recent: [] }, catalogOutdated: false, updateBytes: 0, error: '', pending: [], savingFavorites: false,
       download: { phase: 'idle', completedBytes: 0, totalBytes: 0, error: '' },
       update: { phase: 'unchecked', version: '', error: '' } })
@@ -113,7 +113,7 @@ export class NativeToolsController {
     }
   }
 
-  /** Suppress late IPC responses and feedback after the plugin unloads. */
+  /** Suppress late IPC responses and feedback after the owner is disposed. */
   dispose(): void { this.disposed = true; this.unsubscribe?.() }
 
   /**

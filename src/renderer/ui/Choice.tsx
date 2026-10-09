@@ -1,10 +1,17 @@
-/** Token-styled select menu shared by Rainy's forms and project selectors. */
+/** Token-styled select menu for forms and pickers. */
 import { useState } from 'react'
-import { Button, Menu, IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import css from './SettingsSections.module.css'
+import { Button } from './Button.tsx'
+import { Menu } from './Menu.tsx'
+import { IconChevronDownOutlineRegular } from './icons/index.tsx'
+import css from './Choice.module.css'
 
-/** Render a keyboard-accessible choice whose expanded popup uses the application theme.
- * @param props Field name, selected key, choices, and change callback.
+/**
+ * Render a keyboard-accessible choice whose popup uses the application theme.
+ * @param props.label Accessible name of the trigger.
+ * @param props.value Selected item id.
+ * @param props.items Choices in display order.
+ * @param props.onChange Receives the chosen id.
+ * @param props.disabled Whether the trigger is disabled.
  * @returns A labeled menu trigger and its portaled options.
  */
 export function Choice({ label, value, items, onChange, disabled = false }: {

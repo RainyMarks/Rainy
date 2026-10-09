@@ -1,6 +1,7 @@
-/** Rainy glyphs drawn on the shared 16px, one-pixel, currentColor product icon grid. */
+/** Workbench glyphs drawn on the shared 16px, one-pixel, currentColor icon grid. */
 import type { ReactNode } from 'react'
-import { ICON_REGULAR_STROKE, type IconProps } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { IconProps } from './props.ts'
+import { ICON_REGULAR_STROKE } from './index.tsx'
 
 function Glyph({ size = 16, className, children }: IconProps & { readonly children: ReactNode }) {
   return <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"

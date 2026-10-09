@@ -1,26 +1,27 @@
-/** Workspace filename search with cancellation when a later query replaces it. */
+/** Workspace filename search; a later query supersedes an earlier one. */
 import { useEffect, useRef, useState } from 'react'
-import { IconCloseOutlineRegular, IconLoadingOutlineRegular, IconSearchOutlineRegular, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
+import { IconCloseOutlineRegular, IconLoadingOutlineRegular, IconSearchOutlineRegular, Modal } from '../ui/index.ts'
 import type { IdeModel, IdeState } from './ide-model.ts'
-import css from './IdeShell.module.css'
 import { fileLabel } from './ide-paths.ts'
+import { useIdeT } from './messages.ts'
+import css from './Ide.module.css'
 
-type Props = { model: IdeModel; state: IdeState; t: TranslateNS<'rainy'> }
+type Props = { model: IdeModel; state: IdeState }
 type SearchResult = { query: string } & (
   | { phase: 'ready'; paths: readonly string[]; truncated: boolean }
   | { phase: 'error'; message: string }
 )
 
-/** Search and open a project path without mounting or creating a chat.
- * @param props Current workspace, search owner, and localized dialog labels.
- * @returns The keyboard-accessible quick-open dialog.
+/** Search and open a project path without starting a chat.
+ * @param props Current workspace and its model.
+ * @returns The keyboard-accessible quick-open dialog, or nothing while closed.
  */
 export function QuickOpenDialog(props: Props) {
   return props.state.quickOpen ? <OpenQuickOpenDialog key={props.state.workspace?.workspaceId ?? ''} {...props} /> : null
 }
 
-function OpenQuickOpenDialog({ model, state, t }: Props) {
+function OpenQuickOpenDialog({ model, state }: Props) {
+  const t = useIdeT()
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<SearchResult>()
   const [openError, setOpenError] = useState('')
@@ -37,12 +38,12 @@ function OpenQuickOpenDialog({ model, state, t }: Props) {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
     const controller = new AbortController()
-    void model.searchFiles(query, controller.signal).then((result) => {
+    void model.searchFiles(query, controller.signal).then((found) => {
       if (controller.signal.aborted) return
-      setResult({ query, phase: 'ready', ...result })
+      setResult({ query, phase: 'ready', ...found })
       setSelected(0)
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setResult({ query, phase: 'error', message: error instanceof Error ? error.message : String(error) })
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) setResult({ query, phase: 'error', message: reason instanceof Error ? reason.message : String(reason) })
     })
     return () => { controller.abort() }
   }, [query, state.workspace?.workspaceId, model])
@@ -58,11 +59,11 @@ function OpenQuickOpenDialog({ model, state, t }: Props) {
     try {
       await model.openFile(path)
       if (mounted.current && currentQuery.current === query) model.quickOpen(false)
-    } catch (error) {
-      if (mounted.current && currentQuery.current === query) setOpenError(error instanceof Error ? error.message : String(error))
+    } catch (reason) {
+      if (mounted.current && currentQuery.current === query) setOpenError(reason instanceof Error ? reason.message : String(reason))
     }
   }
-  return <Modal open headless className={`${css.quickDialog}`} title={t('ideQuickOpen')} onClose={() => { model.quickOpen(false) }}>
+  return <Modal open headless className={css.quickDialog} title={t('ideQuickOpen')} onClose={() => { model.quickOpen(false) }}>
     <div className={css.quickSearch}>
       <IconSearchOutlineRegular size={16} />
       <input className={css.quickInput} role="combobox" data-modal-autofocus aria-expanded="true" aria-controls="rainy-quick-files"
@@ -71,6 +72,7 @@ function OpenQuickOpenDialog({ model, state, t }: Props) {
           if (event.target.value === query) return
           setQuery(event.target.value); setResult(undefined); setOpenError(''); setSelected(0)
         }} onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return
           if (event.key === 'ArrowDown') { event.preventDefault(); setSelected(Math.max(0, Math.min(paths.length - 1, selected + 1))) }
           else if (event.key === 'ArrowUp') { event.preventDefault(); setSelected(Math.max(0, selected - 1)) }
           else if (event.key === 'Enter') {
@@ -80,7 +82,7 @@ function OpenQuickOpenDialog({ model, state, t }: Props) {
           }
         }} />
       {pending && <span className={css.quickSpinner} role="status" aria-label={t('ideLoading')}><IconLoadingOutlineRegular size={16} /></span>}
-      <button type="button" className={`${css.button} ${css.iconButton}`} aria-label={t('ideClose')}
+      <button type="button" className={`${css.button} ${css.quickClose}`} aria-label={t('ideClose')}
         onClick={() => { model.quickOpen(false) }}><IconCloseOutlineRegular size={14} /></button>
     </div>
     {error && <div className={`${css.quickNotice} ${css.error}`} role="alert">{error}</div>}

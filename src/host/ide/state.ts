@@ -1,27 +1,18 @@
-/** Atomic workspace IDE snapshots and dirty-buffer recovery, separate from Session persistence. */
-import { brandString } from '@deepseek-ai/dsh-brand'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
-import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
-import type { Domain } from '@deepseek-ai/dsh-storage-domain'
-import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type {
-  IdeFilesResults, IdeFileVersion, IdeStateRequest, IdeWorkspaceSelection, IdeWorkspaceState, IdeWorkspaceStateData, WorkspaceId, IdeRootId,
-} from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
+/** Per-project editor snapshots and dirty-buffer recovery under `<home>/ide`, separate from chat logs. */
+import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import { z } from 'zod'
-import { IdeOperationError, ideRelativePath } from './ide-files-core.ts'
-import { ideExecutionConfigurationSchema } from './ide-execution-schema.ts'
-
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    /** Host-owned project selection shared with the native execution-target handoff. */
-    rainyIdeState: Pick<RainyIdeStateStore, 'getSelection' | 'setSelection'>
-  }
-}
+import { assertNever, brandString } from '../../shared/brand.ts'
+import type {
+  IdeFilesResults, IdeFileVersion, IdeRootId, IdeStateRequest, IdeWorkspaceSelection, IdeWorkspaceState, IdeWorkspaceStateData, WorkspaceId,
+} from '../../shared/ide-files-protocol.ts'
+import { readJson, writeJson } from '../files.ts'
+import type { Projects } from '../projects.ts'
+import { ideExecutionConfigurationSchema } from './execution-schema.ts'
+import { IdeOperationError, ideRelativePath } from './files-core.ts'
 
 const relativePath = z.string().max(32768).refine((value) => {
-  try { ideRelativePath(value); return true }
-  catch (_invalidPath) { return false }
+  try { ideRelativePath(value); return true } catch (_invalidPath) { return false }
 }, 'A recovery path must stay inside its workspace.')
 const version = z.string().min(1).max(1024).transform(value => brandString<IdeFileVersion>(value))
 const workspaceId = z.string().min(1).max(512).transform(value => brandString<WorkspaceId>(value))
@@ -34,7 +25,7 @@ const layoutSchema = z.object({
 
 /** Complete editor-state validator; strict fields exclude provider settings and credentials. */
 export const ideStateDataSchema = z.object({
-  lastSessionId: z.string().min(1).max(512).transform(value => brandString<SessionId>(value)).nullable(),
+  lastSessionId: z.string().min(1).max(512).nullable(),
   tabs: z.array(z.object({ path: relativePath, rootId: rootId.optional(), kind: z.enum(['file', 'diff']),
     cursor: z.object({ line: z.number().int().positive(), column: z.number().int().positive() }).strict().optional(),
     scroll: z.object({ top: z.number().nonnegative(), left: z.number().nonnegative() }).strict().optional(),
@@ -50,7 +41,7 @@ export const ideStateDataSchema = z.object({
   layout: layoutSchema,
   execution: ideExecutionConfigurationSchema.optional(),
 }).strict().superRefine((data, context) => {
-  const identity = (entry: { rootId?: IdeRootId | undefined; path: string }) => `${entry.rootId ?? 'primary'}:${entry.path}`
+  const identity = (entry: { rootId?: IdeRootId | undefined; path: string }): string => `${entry.rootId ?? 'primary'}:${entry.path}`
   const tabs = new Set(data.tabs.map(tab => `${tab.kind}:${identity(tab)}`))
   if (tabs.size !== data.tabs.length) context.addIssue({ code: 'custom', message: 'An editor tab may appear only once.' })
   if (new Set(data.buffers.map(identity)).size !== data.buffers.length) context.addIssue({ code: 'custom', message: 'A file may have only one recovery buffer.' })
@@ -61,16 +52,8 @@ const recordSchema = z.object({
   version: z.literal(1), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), data: ideStateDataSchema,
 }).strict() satisfies z.ZodType<IdeWorkspaceState>
 const selectionSchema = z.object({ version: z.literal(1), workspaceId: workspaceId.nullable() }).strict()
-const initialSelection: IdeWorkspaceSelection = { version: 1, workspaceId: null }
 
-/** Workspace recovery rows use the existing atomic domain backend and their own format version. */
-export const ideStateSpec = defineDomain({
-  name: 'rainy_ide', version: 1, layout: 'single',
-  global: { schema: selectionSchema, initial: initialSelection },
-  tables: { workspaces: domainTable<WorkspaceId, IdeWorkspaceState>(recordSchema) },
-})
-
-/** Deployment budgets and the initial layout for previously unopened workspaces. */
+/** Recovery budgets and the initial layout of a project opened for the first time. */
 export const ideStateConfigSchema = z.object({
   maxStateBytes: z.number().int().positive().default(32 * 1024 * 1024),
   maxBufferBytes: z.number().int().positive().default(5 * 1024 * 1024),
@@ -81,13 +64,13 @@ export const ideStateConfigSchema = z.object({
     sidebarVisible: true, agentVisible: false, bottomVisible: false, bottomTab: 'terminal' }),
 }).strict()
 
-/** Resolved budgets used before a snapshot enters the durable write queue. */
+/** Resolved recovery budgets. */
 export type IdeStateConfig = z.infer<typeof ideStateConfigSchema>
 
 /**
- * Resolve state defaults at application construction.
- * @param config - application overrides.
- * @returns validated complete state configuration.
+ * Apply defaults to partial budgets.
+ * @param config Overrides; omitted fields use the 1.x defaults.
+ * @returns Complete state configuration.
  */
 export function resolveIdeStateConfig(config: z.input<typeof ideStateConfigSchema> = {}): IdeStateConfig {
   return ideStateConfigSchema.parse(config)
@@ -103,9 +86,9 @@ const requestSchema = z.discriminatedUnion('op', [
 ])
 
 /**
- * Parse persisted editor data received over the IDE route.
- * @param value - decoded JSON body.
- * @returns a strict state operation, never provider settings.
+ * Parse a state operation received over JSON.
+ * @param value Decoded request.
+ * @returns A strict state operation, never provider settings.
  */
 export function parseIdeStateRequest(value: unknown): IdeStateRequest {
   const parsed = requestSchema.safeParse(value)
@@ -113,92 +96,124 @@ export function parseIdeStateRequest(value: unknown): IdeStateRequest {
   return parsed.data
 }
 
-/** Dependencies for one exclusively owned IDE domain. */
-export interface RainyIdeStateOptions {
-  readonly domain: Domain<typeof ideStateSpec>
-  readonly registry: Pick<WorkspaceRegistry, 'get'>
-  readonly config: IdeStateConfig
+/**
+ * File name of one project's snapshot; identities that are not plain file names are hashed.
+ * @param id Project identity.
+ * @returns A file name inside the state directory.
+ */
+export function ideStateFileName(id: WorkspaceId): string {
+  const plain = /^[A-Za-z0-9_-]{1,128}$/u.test(id) && !/^(?:con|prn|aux|nul|com\d|lpt\d)$/iu.test(id)
+  return `${plain ? id : `sha256-${createHash('sha256').update(id).digest('hex')}`}.json`
 }
 
-/** Serialized revision comparisons and atomic durable publication for workspace recovery. */
+/** Dependencies of {@link RainyIdeStateStore}. */
+export interface RainyIdeStateOptions {
+  /** Directory holding `<workspaceId>.json` snapshots and `selection.json`. */
+  readonly directory: string
+  readonly projects: Pick<Projects, 'get'>
+  readonly config: IdeStateConfig
+  /** Atomic JSON publication; defaults to {@link writeJson}. */
+  readonly write?: (path: string, value: unknown) => Promise<void>
+  /** Reports an unreadable selection file, which is then treated as no selection. */
+  readonly log?: (message: string) => void
+}
+
+/** Serialized revision comparisons and atomic publication of per-project recovery state. */
 export class RainyIdeStateStore {
   private chain: Promise<void> = Promise.resolve()
   private closing = false
   private disposal?: Promise<void>
+  private readonly records = new Map<WorkspaceId, Promise<IdeWorkspaceState | undefined>>()
+  private readonly write: (path: string, value: unknown) => Promise<void>
 
-  /** @param options - exclusively owned domain, workspace identity lookup, and resolved limits. */
-  constructor(private readonly options: RainyIdeStateOptions) {}
+  private constructor(private readonly options: RainyIdeStateOptions, private selection: IdeWorkspaceSelection) {
+    this.write = options.write ?? writeJson
+  }
+
+  /**
+   * Load the remembered selection; project snapshots load on first use.
+   * @param options State directory, project lookup and budgets.
+   * @returns The store.
+   */
+  static async open(options: RainyIdeStateOptions): Promise<RainyIdeStateStore> {
+    let selection: IdeWorkspaceSelection = { version: 1, workspaceId: null }
+    try {
+      const raw = await readJson(join(options.directory, 'selection.json'))
+      if (raw !== undefined) selection = selectionSchema.parse(raw)
+    } catch (error) {
+      options.log?.(`IDE selection is unreadable and was ignored: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return new RainyIdeStateStore(options, selection)
+  }
 
   /**
    * Read committed state, including recovery buffers when a directory is temporarily missing.
-   * @param workspaceId - registered project identity.
-   * @returns a detached committed snapshot or revision-zero defaults.
+   * @param workspaceId Registered project identity.
+   * @returns A detached committed snapshot, or revision-zero defaults.
    */
-  get(workspaceId: WorkspaceId): IdeWorkspaceState {
+  async get(workspaceId: WorkspaceId): Promise<IdeWorkspaceState> {
     if (this.closing) throw new IdeOperationError('closed', 'IDE recovery storage is closing.')
-    return this.current(workspaceId)
+    return structuredClone(await this.current(workspaceId))
   }
 
   /**
-   * Read the last selected registered project; missing older records and deleted registrations return null.
-   * @returns a detached selection, retaining registered projects whose directory is temporarily unavailable.
+   * Read the last selected registered project.
+   * @returns A detached selection; a project that is no longer registered reads as no selection.
    */
   getSelection(): IdeWorkspaceSelection {
     if (this.closing) throw new IdeOperationError('closed', 'IDE recovery storage is closing.')
-    const current = this.options.domain.global.get()
-    return { version: 1, workspaceId: current.workspaceId !== null && this.options.registry.get(current.workspaceId) !== undefined
-      ? current.workspaceId : null }
+    const id = this.selection.workspaceId
+    return { version: 1, workspaceId: id !== null && this.options.projects.get(id) !== undefined ? id : null }
   }
 
   /**
-   * Persist the selected project in Host admission order without changing workspace recovery revisions.
-   * @param workspaceId - registered project identity, or null to clear the remembered selection.
-   * @returns the selected identity after its atomic write succeeds.
+   * Persist the selected project in admission order without changing recovery revisions.
+   * @param workspaceId Registered project identity, or null to clear the selection.
+   * @returns The selection after its atomic write succeeds.
    */
   setSelection(workspaceId: WorkspaceId | null): Promise<IdeWorkspaceSelection> {
-    if (this.closing) return Promise.reject(new IdeOperationError('closed', 'IDE recovery storage is closing.'))
-    const request = this.chain.then(async () => {
-      if (workspaceId !== null && this.options.registry.get(workspaceId) === undefined)
+    return this.serialize(async () => {
+      if (workspaceId !== null && this.options.projects.get(workspaceId) === undefined) {
         throw new IdeOperationError('workspace-not-found', 'The selected workspace is no longer registered.')
+      }
       const next: IdeWorkspaceSelection = { version: 1, workspaceId }
-      await this.options.domain.global.set(next)
+      await this.write(join(this.options.directory, 'selection.json'), next)
+      this.selection = next
       return { ...next }
     })
-    this.chain = request.then(() => undefined, () => undefined)
-    return request
   }
 
   /**
-   * Save the complete editor snapshot only if its base revision still owns the record.
-   * @param workspaceId - registered project identity.
-   * @param baseRevision - last committed revision observed by this client.
-   * @param data - validated editor fields and dirty source copies.
-   * @returns a detached snapshot after the atomic durable commit succeeds.
+   * Save the complete editor snapshot only if its base revision is still the committed one.
+   * @param workspaceId Registered project identity.
+   * @param baseRevision Last committed revision observed by the client.
+   * @param data Validated editor fields and dirty source copies.
+   * @returns A detached snapshot after the atomic write succeeds.
    */
   replace(workspaceId: WorkspaceId, baseRevision: number, data: IdeWorkspaceStateData): Promise<IdeWorkspaceState> {
-    if (this.closing) return Promise.reject(new IdeOperationError('closed', 'IDE recovery storage is closing.'))
     const detached = structuredClone(data)
-    const request = this.chain.then(async () => {
+    return this.serialize(async () => {
       this.checkBudget(detached)
-      const current = this.current(workspaceId)
-      if (current.revision !== baseRevision) throw new IdeOperationError('revision-conflict', 'The workspace IDE state was saved by another client. Recover the current snapshot before replacing it.', { currentState: current })
+      const current = await this.current(workspaceId)
+      if (current.revision !== baseRevision) {
+        throw new IdeOperationError('revision-conflict', 'The workspace IDE state was saved by another client. Recover the current snapshot before replacing it.', { currentState: structuredClone(current) })
+      }
       const next: IdeWorkspaceState = { version: 1, revision: baseRevision + 1, data: detached }
-      await this.options.domain.table('workspaces').put(workspaceId, next)
+      await this.write(join(this.options.directory, ideStateFileName(workspaceId)), next)
+      this.records.set(workspaceId, Promise.resolve(next))
       return structuredClone(next)
     })
-    this.chain = request.then(() => undefined, () => undefined)
-    return request
   }
 
   /**
-   * Dispatch the parsed state operation without creating a Session.
-   * @param request - validated JSON state operation.
-   * @returns the committed or loaded snapshot.
+   * Run one parsed state operation.
+   * @param request Validated state operation.
+   * @returns The committed or loaded value.
    */
   handle<Request extends IdeStateRequest>(request: Request): Promise<IdeFilesResults[Request['op']]>
   handle(request: IdeStateRequest): Promise<IdeWorkspaceState | IdeWorkspaceSelection> {
     switch (request.op) {
-      case 'state.read': return Promise.resolve().then(() => this.get(request.workspaceId))
+      case 'state.read': return this.get(request.workspaceId)
       case 'state.save': return this.replace(request.workspaceId, request.baseRevision, request.data)
       case 'state.selection.read': return Promise.resolve().then(() => this.getSelection())
       case 'state.selection.save': return this.setSelection(request.workspaceId)
@@ -206,20 +221,45 @@ export class RainyIdeStateStore {
     }
   }
 
-  /** @returns resolution after admitted writes drain and the owned domain closes. */
+  /** @returns Completion after admitted writes drain; later operations are rejected. */
   close(): Promise<void> {
     this.closing = true
-    this.disposal ??= this.chain.then(() => this.options.domain.close())
+    this.disposal ??= this.chain
     return this.disposal
   }
 
-  private current(workspaceId: WorkspaceId): IdeWorkspaceState {
-    if (this.options.registry.get(workspaceId) === undefined) throw new IdeOperationError('workspace-not-found', 'The selected workspace is no longer registered.')
-    const stored = this.options.domain.table('workspaces').get(workspaceId)
-    return stored === undefined ? { version: 1, revision: 0, data: {
+  private serialize<T>(action: () => Promise<T>): Promise<T> {
+    if (this.closing) return Promise.reject(new IdeOperationError('closed', 'IDE recovery storage is closing.'))
+    const result = this.chain.then(action)
+    this.chain = result.then(() => undefined, () => undefined)
+    return result
+  }
+
+  private async current(workspaceId: WorkspaceId): Promise<IdeWorkspaceState> {
+    if (this.options.projects.get(workspaceId) === undefined) throw new IdeOperationError('workspace-not-found', 'The selected workspace is no longer registered.')
+    let record = this.records.get(workspaceId)
+    if (record === undefined) {
+      record = this.load(workspaceId)
+      this.records.set(workspaceId, record)
+      void record.catch(() => { if (this.records.get(workspaceId) === record) this.records.delete(workspaceId) })
+    }
+    return await record ?? { version: 1, revision: 0, data: {
       lastSessionId: null, tabs: [], activePath: null, expandedPaths: [], buffers: [],
       layout: structuredClone(this.options.config.initialLayout),
-    } } : structuredClone(stored)
+    } }
+  }
+
+  private async load(workspaceId: WorkspaceId): Promise<IdeWorkspaceState | undefined> {
+    const unreadable = new IdeOperationError('io-error', 'The saved IDE state of this project has an unsupported format; it was left unchanged.')
+    let raw: unknown
+    try { raw = await readJson(join(this.options.directory, ideStateFileName(workspaceId))) } catch (error) {
+      if (error instanceof SyntaxError) throw unreadable
+      throw error
+    }
+    if (raw === undefined) return undefined
+    const parsed = recordSchema.safeParse(raw)
+    if (!parsed.success) throw unreadable
+    return parsed.data
   }
 
   private checkBudget(data: IdeWorkspaceStateData): void {

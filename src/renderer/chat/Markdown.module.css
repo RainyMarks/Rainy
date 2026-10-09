@@ -1,0 +1,107 @@
+.markdown {
+  font-size: var(--dsh-content-font-size, 14px);
+  line-height: 1.7;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+
+.markdown p, .markdown ul, .markdown ol, .markdown blockquote, .markdown .tableScroll {
+  margin: 0 0 12px;
+}
+
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  margin: 20px 0 8px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.markdown h1 { font-size: 1.4em; }
+.markdown h2 { font-size: 1.25em; }
+.markdown h3 { font-size: 1.1em; }
+.markdown h4 { font-size: 1em; }
+
+.markdown ul, .markdown ol { padding-left: 1.5em; }
+.markdown li + li { margin-top: 4px; }
+.markdown li > p { margin: 0; }
+
+.markdown a {
+  color: var(--dsw-alias-link);
+  text-decoration: none;
+}
+.markdown a:hover { text-decoration: underline; }
+
+.markdown blockquote {
+  padding: 2px 12px;
+  border-left: 3px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.markdown :not(pre) > code {
+  padding: 1px 5px;
+  border-radius: var(--dsw-radius-xs);
+  background: var(--dsw-alias-markdown-inline-code);
+  font-size: 0.9em;
+}
+
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  margin: 16px 0;
+}
+
+.tableScroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.markdown th, .markdown td {
+  padding: 6px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown th {
+  background: var(--dsw-alias-markdown-code-block-banner);
+  font-weight: 600;
+}
+
+.code {
+  margin: 0 0 12px;
+}
+
+.pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--ds-font-family-code);
+  font-size: var(--dsh-code-font-size, 13px);
+  line-height: 1.6;
+  background: var(--dsw-alias-markdown-code-block);
+}
+
+[data-code-wrap='true'] .pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.line { white-space: inherit; }
+
+.action {
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--dsw-radius-xs);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.action:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}

@@ -1,8 +1,7 @@
 /** JSON admission for human run/debug requests and durable workspace execution settings. */
 import { z } from 'zod'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import type { IdeRootId } from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
+import { brandString } from '../../shared/brand.ts'
+import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type {
   IdeDebugId,
   IdeExecutionConfiguration,
@@ -10,13 +9,13 @@ import type {
   IdeRunConfiguration,
   IdeRunId,
   IdeTerminalId,
-} from '@deepseek-ai/dsh-client-ui-rainy/ide-execution-protocol'
+} from '../../shared/ide-execution-protocol.ts'
 
 const text = z.string().refine(value => !value.includes('\0'), 'NUL characters are not accepted.')
 const path = text.min(1)
 const line = z.number().int().positive()
 const reference = z.number().int().nonnegative()
-const workspaceId = text.min(1).transform(WorkspaceId)
+const workspaceId = text.min(1).transform(value => brandString<WorkspaceId>(value))
 const rootId = text.min(1).transform(value => brandString<IdeRootId>(value))
 const runId = z.uuid().transform(value => brandString<IdeRunId>(value))
 const terminalId = z.uuid().transform(value => brandString<IdeTerminalId>(value))
@@ -88,7 +87,7 @@ const debugScope = { ...scope, debugId }
 const terminalScope = { ...scope, terminalId }
 const runScope = { ...scope, runId }
 
-/** Deployment-configurable execution retention, protocol, terminal, and lifecycle bounds. */
+/** Execution retention, protocol, terminal and lifecycle bounds. */
 export const ideExecutionLimitsSchema = z
   .object({
     maxOutputBytes: z
@@ -135,7 +134,7 @@ export const ideExecutionLimitsSchema = z
 /** Fully resolved execution limits passed to the controller. */
 export type IdeExecutionLimits = z.output<typeof ideExecutionLimitsSchema>
 
-/** Whitelisted operations accepted from the authenticated product endpoint. */
+/** Execution operations accepted by the `ide` RPC method. */
 export const ideExecutionRequestSchema: z.ZodType<IdeExecutionRequest> = z.discriminatedUnion('op', [
   z.object({ op: z.literal('execution.status'), ...scope }).strict(),
   z.object({ op: z.literal('execution.poll'), ...scope, cursor: reference }).strict(),

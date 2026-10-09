@@ -8,7 +8,7 @@
   padding: 12px;
   overflow: auto;
   color: var(--dsw-alias-label-primary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-size: calc(var(--dsh-content-font-size, 14px) - 1px);
   line-height: 1.5;
   container-type: inline-size;
 }
@@ -75,7 +75,7 @@
   min-height: 160px;
   padding: 24px;
   text-align: center;
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-size: calc(var(--dsh-content-font-size, 14px) - 1px);
   color: var(--dsw-alias-label-primary);
 }
 

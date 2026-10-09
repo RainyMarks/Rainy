@@ -1,12 +1,12 @@
 /** Task-oriented display groups for the human tool directory; the signed catalog keeps its coarse categories. */
-import type { NativeToolSummary } from '../native-tools-protocol.ts'
-import type { zh } from './locales.ts'
+import type { NativeToolSummary } from '../../shared/native-tools-protocol.ts'
+import type { CtfMessageKey } from './messages.ts'
 
 /** Display group shown as a filter and as a heading in the complete list. */
 export type ToolGroup = 'web' | 'traffic' | 'reverse' | 'forensics' | 'stego' | 'audio' | 'data' | 'other'
 
 /** Groups in display order with their localized titles. */
-export const toolGroups: readonly { readonly id: ToolGroup; readonly copyKey: keyof typeof zh }[] = [
+export const toolGroups: readonly { readonly id: ToolGroup; readonly copyKey: CtfMessageKey }[] = [
   { id: 'web', copyKey: 'toolsGroupWeb' }, { id: 'traffic', copyKey: 'toolsGroupTraffic' },
   { id: 'reverse', copyKey: 'toolsGroupReverse' }, { id: 'forensics', copyKey: 'toolsGroupForensics' },
   { id: 'stego', copyKey: 'toolsGroupStego' }, { id: 'audio', copyKey: 'toolsGroupAudio' },

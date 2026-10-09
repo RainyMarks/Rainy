@@ -1,6 +1,5 @@
-/** Workspace-owned source buffers and durable recovery, independent of conversation mounts. */
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+/** Workspace-owned source buffers and durable recovery, independent of the chat pane. */
+import { createStore } from '../ui/store.ts'
 import type {
   IdeDirectory,
   IdeEditorTab,
@@ -13,8 +12,9 @@ import type {
   IdeWorkspaceStateData,
   WorkspaceId,
   IdeRootId,
-} from '../ide-files-protocol.ts'
-import type { IdeExecutionConfiguration } from '../ide-execution-protocol.ts'
+  SessionId,
+} from '../../shared/ide-files-protocol.ts'
+import type { IdeExecutionConfiguration } from '../../shared/ide-execution-protocol.ts'
 import type { EditorDocument, EditorProblem, EditorSelection, EditorView } from './editor-types.ts'
 import { IdeRequestError, type IdeFilesApi } from './ide-api.ts'
 import { createRootedIdeApi } from './ide-rooted-api.ts'
@@ -39,7 +39,7 @@ export interface IdeBuffer {
   }
 }
 
-/** Snapshot consumed by the framework-generated workspace hook. */
+/** Snapshot rendered by the window layout. */
 export interface IdeState {
   readonly workspaces: readonly IdeWorkspace[]
   readonly workspace: IdeWorkspace | null
@@ -58,7 +58,7 @@ export interface IdeState {
   readonly reveal?: { readonly path: string; readonly line: number; readonly column: number }
 }
 
-/** The owner supplies session restoration and UI feedback without sharing feature implementations. */
+/** The owner supplies chat restoration and error text. */
 export interface IdeModelOptions {
   readonly debounceMs: number
   readonly pollMs: number
@@ -135,7 +135,7 @@ export function sourceUri(workspace: IdeWorkspace, path: string): string {
 
 /** Retains dirty files across panel changes and saves recovery through revision comparisons. */
 export class IdeModel {
-  readonly state = createSnapshotStore<IdeState>({
+  readonly state = createStore<IdeState>({
     workspaces: [],
     workspace: null,
     phase: 'loading',
@@ -238,6 +238,43 @@ export class IdeModel {
     error: '' })
     this.setData({ expandedPaths: this.state.getSnapshot().data.expandedPaths.filter(path => fileReference(path).rootId !== rootId) })
     await this.flush()
+  }
+
+  /** Rename a registered project.
+   * @param workspaceId Project to rename.
+   * @param title New display name.
+   * @returns Completion after the project list shows the new name.
+   */
+  async renameWorkspace(workspaceId: WorkspaceId, title: string): Promise<void> {
+    const workspace = await this.api.request({ op: 'workspaces.rename', workspaceId, title })
+    const current = this.state.getSnapshot()
+    this.patch({
+      workspaces: current.workspaces.map(item => item.workspaceId === workspace.workspaceId ? workspace : item),
+      ...current.workspace?.workspaceId === workspace.workspaceId ? { workspace } : {},
+    })
+  }
+
+  /** Remove a project from the project list without deleting its files; removing the selected project closes it.
+   * @param workspaceId Project to remove.
+   * @returns Completion; nothing changes while the selected project's recovery copy cannot be saved.
+   */
+  async removeWorkspace(workspaceId: WorkspaceId): Promise<void> {
+    const removed = this.state.getSnapshot().workspaces.find(item => item.workspaceId === workspaceId)
+    const selected = this.state.getSnapshot().workspace?.workspaceId === workspaceId
+    if (removed === undefined || (selected && (this.switching || !(await this.flush())))) return
+    await this.api.request({ op: 'workspaces.remove', workspaceId })
+    const current = this.state.getSnapshot()
+    this.patch({ workspaces: current.workspaces.filter(item => item.workspaceId !== workspaceId) })
+    if (current.workspace?.workspaceId !== workspaceId) return
+    this.revision = 0
+    this.generation = 0
+    this.persistedGeneration = 0
+    this.patch({
+      workspace: null, data: { ...initialData(), layout: current.data.layout }, buffers: {}, directories: {}, problems: [],
+      selection: undefined, languageStates: {}, saving: false, recoveryConflict: false, error: '', phase: 'ready', center: 'editor',
+    })
+    await this.options.restoreSession(removed, null)
+    await this.api.request({ op: 'state.selection.save', workspaceId: null })
   }
 
   /**

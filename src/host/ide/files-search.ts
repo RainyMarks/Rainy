@@ -1,9 +1,9 @@
 /** Bounded filename discovery for Quick Open without reading file contents or following directory links. */
 import { lstat, opendir, realpath } from 'node:fs/promises'
 import { relative, resolve } from 'node:path'
-import type { IdeFileSearch } from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
-import { ideContains } from './ide-files-core.ts'
-import type { IdeFilesConfig } from './ide-files.ts'
+import type { IdeFileSearch } from '../../shared/ide-files-protocol.ts'
+import { ideContains } from './files-core.ts'
+import type { IdeFilesConfig } from './files.ts'
 
 function transient(error: unknown): boolean {
   return error !== null && typeof error === 'object' && 'code' in error
@@ -12,13 +12,13 @@ function transient(error: unknown): boolean {
 
 /**
  * Find regular files by case-insensitive path tokens, within the registered directory.
- * @param root - freshly resolved workspace root.
- * @param query - space-separated filename or path fragments; an empty query lists initial files.
- * @param requestedLimit - optional result cap, clamped to the deployment budget.
- * @param config - explicit scan, result, deadline and excluded-directory budgets.
- * @param signal - caller cancellation, checked between filesystem operations.
- * @param now - clock for the cooperative deadline.
- * @returns project-relative paths and whether any part of the tree was omitted.
+ * @param root Freshly resolved workspace root.
+ * @param query Space-separated filename or path fragments; an empty query lists initial files.
+ * @param requestedLimit Optional result cap, clamped to the configured budget.
+ * @param config Scan, result, deadline and excluded-directory budgets.
+ * @param signal Caller cancellation, checked between filesystem operations.
+ * @param now Clock for the cooperative deadline.
+ * @returns Project-relative paths and whether any part of the tree was omitted.
  */
 export async function searchIdeFiles(
   root: string, query: string, requestedLimit: number | undefined,

@@ -10,10 +10,6 @@
   pointer-events: auto;
 }
 
-.root[data-fullscreen] {
-  z-index: 40;
-}
-
 .header {
   display: flex;
   align-items: center;
@@ -22,39 +18,12 @@
   min-height: 40px;
   padding: 6px 12px;
   color: var(--dsw-alias-label-primary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
-}
-
-.icon,
-.close svg {
-  width: 16px;
-  height: 16px;
-}
-
-.title {
-  flex: 1;
-  font-weight: 500;
+  font-size: calc(var(--dsh-content-font-size, 14px) - 1px);
 }
 
 .status {
   margin-left: auto;
   color: var(--dsw-alias-label-secondary);
-}
-
-.close {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: var(--dsw-radius-sm);
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-}
-
-.close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .body {
@@ -63,7 +32,6 @@
   min-height: 0;
 }
 
-.navigation { flex: none; padding: 8px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .panel { position: absolute; inset: 0; min-width: 0; min-height: 0; }
 .panel[hidden] { display: none; }
 
@@ -94,19 +62,11 @@
   border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-size: calc(var(--dsh-content-font-size, 14px) - 1px);
 }
 
 .error small {
   overflow-wrap: anywhere;
-}
-
-:global([data-platform='darwin']) .root[data-fullscreen] .header {
-  padding-top: var(--dsh-frame-top-clearance);
-}
-
-:global([data-windows-titlebar]) .root[data-fullscreen] {
-  max-width: calc(100vw - var(--dsh-windows-sidebar-width));
 }
 
 @keyframes spin {

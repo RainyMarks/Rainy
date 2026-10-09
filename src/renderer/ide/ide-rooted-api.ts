@@ -1,5 +1,5 @@
-/** Translate renderer file keys at the existing typed IDE protocol, retaining primary-root compatibility. */
-import type { IdeWorkspaceStateData, IdeWorkspaceState } from '../ide-files-protocol.ts'
+/** Translate renderer file keys at the typed IDE protocol, retaining primary-root compatibility. */
+import type { IdeWorkspaceStateData, IdeWorkspaceState } from '../../shared/ide-files-protocol.ts'
 import type { IdeFilesApi, IdeApiRequest, IdeApiResults } from './ide-api.ts'
 import { IdeRequestError } from './ide-api.ts'
 import { fileKey, fileReference } from './ide-paths.ts'
@@ -74,7 +74,8 @@ export function createRootedIdeApi(api: IdeFilesApi): IdeFilesApi {
         return { ...result, path: fileKey(result.path, reference.rootId),
           entries: result.entries.map(entry => ({ ...entry, path: fileKey(entry.path, reference.rootId) })) }
       }
-      if (body.op === 'format') return wire({ ...body, ...location }, signal)
+      // The formatter reads only the file name, and its request carries no root identity.
+      if (body.op === 'format') return wire({ ...body, path: reference.path }, signal)
       const result = await wire({ ...body, ...location }, signal)
       return { ...result, path: fileKey(result.path, reference.rootId) }
     }

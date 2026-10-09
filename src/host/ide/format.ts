@@ -1,14 +1,15 @@
-/** Explicit formatting of human editor buffers through maintained, locally shipped tools. */
+/** Formatting of unsaved editor buffers with locally shipped tools; the file itself is never written. */
 import { join } from 'node:path'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
-import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
+import type { Readable } from 'node:stream'
 import { z } from 'zod'
-import { IdeOperationError, ideRelativePath } from './ide-files-core.ts'
-import type { IdeToolPaths } from './ide-tools.ts'
+import { assertNever, brandString } from '../../shared/brand.ts'
+import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { ProcessHandle } from '../process.ts'
+import type { IdeSubprocess } from './execution-process.ts'
+import { IdeOperationError, ideRelativePath } from './files-core.ts'
+import type { IdeToolPaths } from './tools.ts'
 
-/** Editor language identifiers supported by the first IDE release. */
+/** Editor languages with formatting and language-server support. */
 export const ideLanguageSchema = z.enum(['python', 'javascript', 'typescript', 'c', 'cpp'])
 /** Language identifier shared by formatter and language-server selection. */
 export type IdeLanguage = z.infer<typeof ideLanguageSchema>
@@ -17,7 +18,7 @@ const requestSchema = z.object({ op: z.literal('format'),
   path: z.string().min(1).max(32768), text: z.string(), language: ideLanguageSchema,
 }).strict()
 
-/** Formatter process bounds supplied by the owning Host configuration. */
+/** Formatter process bounds. */
 export interface IdeFormatLimits {
   readonly maxTextBytes: number
   readonly maxStderrBytes: number
@@ -25,17 +26,30 @@ export interface IdeFormatLimits {
   readonly killGraceMs: number
 }
 
-/** Format an unsaved buffer without writing its file.
- * @param body - decoded, untrusted HTTP request.
- * @param options - explicit execution provider, workspace resolution, helper paths and limits.
- * @returns formatted text; a timeout or tool failure preserves the original editor buffer.
+async function collect(stream: Readable, limit: number): Promise<{ text: string; complete: boolean }> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of stream) {
+    const buffer = chunk as Buffer
+    if (size + buffer.length <= limit) chunks.push(buffer)
+    else if (size < limit) chunks.push(buffer.subarray(0, limit - size))
+    size += buffer.length
+  }
+  return { text: Buffer.concat(chunks).toString('utf8'), complete: size <= limit }
+}
+
+/**
+ * Format an unsaved buffer.
+ * @param body Untrusted `format` request.
+ * @param options Process provider, project resolution, tool paths and limits.
+ * @returns Formatted text; a timeout or tool failure leaves the editor buffer to the caller.
  */
 export async function formatIdeDocument(body: unknown, options: {
-  readonly subprocess: SubprocessRuntime
+  readonly subprocess: Pick<IdeSubprocess, 'spawn' | 'resolveExecutable'>
   readonly resolveWorkspace: (id: WorkspaceId) => Promise<{ readonly root: string }>
   readonly tools: IdeToolPaths
   readonly limits: IdeFormatLimits
-  readonly signal?: AbortSignal
+  readonly signal?: AbortSignal | undefined
 }): Promise<{ readonly text: string }> {
   const parsed = requestSchema.safeParse(body)
   if (!parsed.success) throw new IdeOperationError('invalid-request', 'Invalid formatter request')
@@ -56,18 +70,23 @@ export async function formatIdeDocument(body: unknown, options: {
   options.signal?.addEventListener('abort', cancel, { once: true })
   if (options.signal?.aborted) cancel()
   const deadline = setTimeout(() => { abort.abort(new IdeOperationError('aborted', 'Formatting timed out')) }, options.limits.timeoutMs)
-  let child: SubprocessHandle | undefined
+  let child: ProcessHandle | undefined
   try {
-    child = options.subprocess.spawn({ argv, cwd: root,
-      stdio: { stdin: { data: request.text }, stdout: { maxBytes: options.limits.maxTextBytes },
-        stderr: { maxBytes: options.limits.maxStderrBytes } },
-      graceMs: options.limits.killGraceMs, signal: abort.signal, env: { PYTHONDONTWRITEBYTECODE: '1' },
-    })
-    const result = await child.done
+    child = options.subprocess.spawn({ argv, cwd: root, environment: { PYTHONDONTWRITEBYTECODE: '1' },
+      stdin: 'pipe', graceMs: options.limits.killGraceMs, signal: abort.signal })
+    child.stdin?.on('error', (_closedInput: unknown) => { /* A formatter that exits early reports through its exit status. */ })
+    child.stdin?.end(request.text)
+    const [stdout, stderr, result] = await Promise.all([
+      collect(child.stdout, options.limits.maxTextBytes), collect(child.stderr, options.limits.maxStderrBytes), child.done,
+    ])
     abort.signal.throwIfAborted()
-    const text = child.collected.stdout?.readFrom(0)
-    if (result.exitCode !== 0 || result.signal !== null || !text || text.lossy) throw new IdeOperationError('io-error', child.collected.stderr?.readFrom(0).text || 'Formatting did not produce a complete result')
-    return { text: request.text.includes('\r\n') && !/(?<!\r)\n/u.test(request.text) ? text.text.replace(/\r?\n/g, '\r\n') : text.text }
+    if (result.exitCode !== 0 || result.signal !== null || !stdout.complete) {
+      throw new IdeOperationError('io-error', stderr.text || 'Formatting did not produce a complete result')
+    }
+    return { text: request.text.includes('\r\n') && !/(?<!\r)\n/u.test(request.text) ? stdout.text.replace(/\r?\n/g, '\r\n') : stdout.text }
+  } catch (error) {
+    if (abort.signal.aborted && abort.signal.reason instanceof IdeOperationError) throw abort.signal.reason
+    throw error
   } finally {
     clearTimeout(deadline)
     options.signal?.removeEventListener('abort', cancel)

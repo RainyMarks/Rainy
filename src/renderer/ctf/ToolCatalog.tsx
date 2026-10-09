@@ -1,16 +1,15 @@
-/** Human tool discovery, per-tool downloads and native launch controls in the retained CTF workspace. */
+/** Tool discovery, per-tool downloads and native launch controls in the CTF workbench. */
 import { useState } from 'react'
-import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { Button, Input, Pill, Tag, Tooltip, fileSizeText, IconSearchOutlineRegular, IconRefreshOutlineRegular,
-  IconPinOutlineRegular, IconPinFillRegular, IconDownloadOutlineRegular, IconTrashOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { nativeToolIds } from '../native-tools-protocol.ts'
-import type { NativeToolId, NativeToolSummary, NativeToolsOperation } from '../native-tools-protocol.ts'
+  IconPinOutlineRegular, IconPinFillRegular, IconDownloadOutlineRegular, IconTrashOutlineRegular } from '../ui/index.ts'
+import { nativeToolIds } from '../../shared/native-tools-protocol.ts'
+import type { NativeToolId, NativeToolSummary, NativeToolsOperation } from '../../shared/native-tools-protocol.ts'
 import type { NativeToolsState } from './native-tools.ts'
-import type { zh } from './locales.ts'
+import { useCtfT, type CtfMessageKey } from './messages.ts'
 import css from './ToolCatalog.module.css'
 import { toolGroup, toolGroups, type ToolGroup } from './tool-groups.ts'
 
-const purpose: Record<typeof nativeToolIds[number], keyof typeof zh> = {
+const purpose: Record<typeof nativeToolIds[number], CtfMessageKey> = {
   yakit: 'toolYakit', cyberchef: 'toolCyberChef', '7zip': 'tool7zip', exiftool: 'toolExiftool',
   wireshark: 'toolWireshark', binwalk: 'toolBinwalk', ffmpeg: 'toolFfmpeg', audacity: 'toolAudacity',
   stegsolve: 'toolStegsolve', pngcheck: 'toolPngcheck', qrazybox: 'toolQrazybox', 'image-lsb-viewer': 'toolImageLsb',
@@ -24,14 +23,14 @@ const purpose: Record<typeof nativeToolIds[number], keyof typeof zh> = {
 }
 const kindCopy = { desktop: 'toolsDesktop', terminal: 'toolsTerminal', web: 'toolsOfflineWeb' } as const
 type Filter = 'all' | 'installed' | 'favorites' | 'recent' | ToolGroup
-const views: readonly { readonly id: Filter; readonly copyKey: keyof typeof zh }[] = [
+const views: readonly { readonly id: Filter; readonly copyKey: CtfMessageKey }[] = [
   { id: 'all', copyKey: 'toolsAll' }, { id: 'installed', copyKey: 'toolsInstalled' },
   { id: 'favorites', copyKey: 'toolsFavorites' }, { id: 'recent', copyKey: 'toolsRecent' },
 ]
-const groupCopy = Object.fromEntries(toolGroups.map(group => [group.id, group.copyKey])) as Record<ToolGroup, keyof typeof zh>
+const groupCopy = Object.fromEntries(toolGroups.map(group => [group.id, group.copyKey])) as Record<ToolGroup, CtfMessageKey>
 const sum = (tools: readonly NativeToolSummary[]): number => tools.reduce((total, tool) => total + tool.downloadBytes, 0)
 
-/** Actions supplied by the directory's retained owner. */
+/** Actions supplied by the catalog's owner. */
 export interface ToolCatalogActions {
   readonly checkToolUpdates: () => Promise<void>
   readonly operateTools: (operation: NativeToolsOperation, ids?: readonly NativeToolId[]) => Promise<void>
@@ -43,11 +42,12 @@ export interface ToolCatalogActions {
 
 /**
  * Filter the directory, download single tools on demand and open the installed ones.
- * @param props - localized copy, authoritative availability, and native operations.
- * @returns the catalog, or the desktop availability notice in a browser.
+ * @param props Tool availability and native operations.
+ * @returns The catalog, or the desktop availability notice in a browser.
  */
-export function ToolCatalog({ t, state, loadTools, launchTool, toggleFavorite, operateTools, cancelDownload, checkToolUpdates }:
-  PropsLocale<'rainy'> & ToolCatalogActions & { readonly state: NativeToolsState }) {
+export function ToolCatalog({ state, loadTools, launchTool, toggleFavorite, operateTools, cancelDownload, checkToolUpdates }:
+  ToolCatalogActions & { readonly state: NativeToolsState }) {
+  const t = useCtfT()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [removing, setRemoving] = useState<NativeToolId | undefined>()

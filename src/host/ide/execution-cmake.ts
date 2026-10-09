@@ -1,9 +1,9 @@
 /** CMake Debug commands and preset-directory checks for human workspace launches. */
 import { z } from 'zod'
-import { SENSITIVE_ENV_PATTERN } from '@deepseek-ai/dsh-subprocess'
-import type { IdeCommandSpec, IdeRunConfiguration } from '@deepseek-ai/dsh-client-ui-rainy/ide-execution-protocol'
-import { containsIdePath, idePathApi, resolveIdeExecutable, resolveIdeWorkspacePath } from './ide-execution-resolve.ts'
-import type { IdeRunResolverOptions } from './ide-execution-resolve.ts'
+import type { IdeCommandSpec, IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
+import { SENSITIVE_ENV_PATTERN } from '../process.ts'
+import { containsIdePath, idePathApi, resolveIdeExecutable, resolveIdeWorkspacePath } from './execution-resolve.ts'
+import type { IdeRunResolverOptions } from './execution-resolve.ts'
 
 const presetSchema = z
   .object({

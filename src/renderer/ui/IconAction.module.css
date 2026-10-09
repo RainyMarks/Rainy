@@ -1,0 +1,4 @@
+.iconButton { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; flex: none;
+  border-radius: var(--dsw-radius-sm, 6px); color: var(--dsw-alias-label-secondary); }
+.iconButton:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
+.iconButton[aria-pressed='true'] { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-button-ghost-active-fill); }

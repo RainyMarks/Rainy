@@ -3,7 +3,7 @@ import type { EditorAssets } from './editor-types.ts'
 
 let pending: Promise<EditorAssets> | undefined
 
-/** Mount same-origin assets without mixing their ESM workers into the plugin CJS bundle.
+/** Load the separately built Monaco bundle from `/rainy/editor/` on first use.
  * @returns The trusted adapter installed by the editor entry point.
  */
 export function loadEditorAssets(): Promise<EditorAssets> {

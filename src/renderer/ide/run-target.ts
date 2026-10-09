@@ -1,6 +1,6 @@
 /** Run target selection: the open file by extension or a remembered per-file language, unless a profile is pinned. */
-import type { IdeExecutionConfiguration, IdeExecutionLanguage, IdeRunConfiguration } from '../ide-execution-protocol.ts'
-import type { IdeRootId } from '../ide-files-protocol.ts'
+import type { IdeExecutionConfiguration, IdeExecutionLanguage, IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
+import type { IdeRootId } from '../../shared/ide-files-protocol.ts'
 import { sourceLanguage } from './ide-model.ts'
 
 /** Languages the run and debug commands accept, in menu order. */
@@ -96,4 +96,17 @@ export function chooseFileLanguage(execution: IdeExecutionConfiguration | undefi
  */
 export function pinRunProfile(execution: IdeExecutionConfiguration | undefined, name: string | null): IdeExecutionConfiguration {
   return { ...execution ?? empty, activeProfile: name }
+}
+
+/**
+ * Select the Python interpreter sent to the workspace language server.
+ * @param configuration Saved workspace run choices.
+ * @returns The pinned Python profile's interpreter, else the first Python profile that names one.
+ */
+export function selectedPythonExecutable(configuration: IdeExecutionConfiguration | undefined): string | undefined {
+  if (configuration === undefined) return undefined
+  const active = configuration.profiles.find(profile => profile.name === configuration.activeProfile && profile.language === 'python')
+  return active === undefined
+    ? configuration.profiles.find(profile => profile.language === 'python' && profile.executable !== undefined)?.executable
+    : active.executable
 }

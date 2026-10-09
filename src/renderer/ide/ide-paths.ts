@@ -1,5 +1,5 @@
 /** Renderer-only keys for files whose relative names can repeat across mounted directories. */
-import type { IdeFileReference, IdeRootId, IdeWorkspace, IdeWorkspaceRoot } from '../ide-files-protocol.ts'
+import type { IdeFileReference, IdeRootId, IdeWorkspace, IdeWorkspaceRoot } from '../../shared/ide-files-protocol.ts'
 
 const prefix = '\0'
 const primary = 'primary' as IdeRootId

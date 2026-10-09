@@ -1,6 +1,0 @@
-File
-打开 Windows 文件夹: disabled
-浏览当前执行环境文件夹: disabled
-Explorer
-打开文件夹: disabled
-添加文件夹到工作区: disabled

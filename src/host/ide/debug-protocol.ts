@@ -1,8 +1,8 @@
 /** Request correlation and reverse requests over a bounded DAP byte stream. */
 import type { Readable, Writable } from 'node:stream'
 import { z } from 'zod'
-import { encodeMessage, MessageDecoder } from '@deepseek-ai/dsh-lsp-stdio'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
+import { assertNever } from '../../shared/brand.ts'
+import { encodeMessage, MessageDecoder } from './jsonrpc-framing.ts'
 
 const responseSchema = z
   .object({

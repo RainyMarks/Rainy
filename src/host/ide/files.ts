@@ -1,25 +1,22 @@
-/** Workspace-scoped human file operations using the existing guarded local filesystem writer. */
+/** Project-scoped human file operations with explicit version checks. */
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { lstat, mkdir, opendir, realpath, rmdir, unlink } from 'node:fs/promises'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
-import type { FileSystem, FsPathInfo, FsTarget, FsVersion } from '@deepseek-ai/dsh-fs'
-import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
+import { z } from 'zod'
+import { assertNever, brandString } from '../../shared/brand.ts'
 import type {
   IdeDeletePreview, IdeDeleteToken, IdeDirectory, IdeFileChange, IdeFileDiff, IdeFileDocument,
-  IdeFileEntry, IdeFilesRequest, IdeFilesResults, IdeFileVersion, IdeWorkspace, WorkspaceId,
-  IdeRootId,
-} from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
-import { z } from 'zod'
-import { ideContains, IdeOperationError, ideRelativePath } from './ide-files-core.ts'
-import { renameIdePathNoReplace } from './ide-files-native.ts'
-import { searchIdeFiles } from './ide-files-search.ts'
-import type RainyProjectRoots from './project-roots.ts'
+  IdeFileEntry, IdeFilesRequest, IdeFilesResults, IdeFileVersion, IdeRootId, WorkspaceId,
+} from '../../shared/ide-files-protocol.ts'
+import { workspaceView, type Projects } from '../projects.ts'
+import { createDirectory, listDirectories } from './directories.ts'
+import { ideContains, IdeOperationError, ideRelativePath } from './files-core.ts'
+import { LocalIdeFileSystem, renameNoReplace, type IdePathInfo, type IdeTargetInfo } from './files-fs.ts'
+import { searchIdeFiles } from './files-search.ts'
 
-/** Deployment budgets for human file and Git operations. */
+/** File-operation and Git budgets. */
 export const ideFilesConfigSchema = z.object({
   maxTextBytes: z.number().int().positive().default(5 * 1024 * 1024),
   maxPreviewBytes: z.number().int().positive().default(64 * 1024),
@@ -40,9 +37,9 @@ export const ideFilesConfigSchema = z.object({
 export type IdeFilesConfig = z.infer<typeof ideFilesConfigSchema>
 
 /**
- * Resolve deployment defaults before constructing the service.
- * @param config - optional application overrides.
- * @returns validated complete budgets.
+ * Apply defaults to partial budgets.
+ * @param config Overrides; omitted fields use the 1.x defaults.
+ * @returns Complete budgets.
  */
 export function resolveIdeFilesConfig(config: z.input<typeof ideFilesConfigSchema> = {}): IdeFilesConfig {
   return ideFilesConfigSchema.parse(config)
@@ -55,10 +52,14 @@ const rootIdSchema = z.string().min(1).max(128).transform(value => brandString<I
 const rootLocation = { workspaceId: workspaceIdSchema, rootId: rootIdSchema.optional() }
 const location = { ...rootLocation, path: pathSchema }
 const filesRequestSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('directories.list'), path: pathSchema.min(1).optional(), showHidden: z.boolean().optional() }).strict(),
+  z.object({ op: z.literal('directories.create'), path: pathSchema.min(1) }).strict(),
   z.object({ op: z.literal('workspaces.list') }).strict(),
   z.object({ op: z.literal('workspaces.open'), path: pathSchema.min(1) }).strict(),
   z.object({ op: z.literal('workspaces.attach'), workspaceId: workspaceIdSchema, path: pathSchema.min(1) }).strict(),
   z.object({ op: z.literal('workspaces.removeRoot'), workspaceId: workspaceIdSchema, rootId: rootIdSchema }).strict(),
+  z.object({ op: z.literal('workspaces.rename'), workspaceId: workspaceIdSchema, title: z.string().max(1000) }).strict(),
+  z.object({ op: z.literal('workspaces.remove'), workspaceId: workspaceIdSchema }).strict(),
   z.object({ op: z.literal('files.list'), ...location }).strict(),
   z.object({ op: z.literal('files.read'), ...location }).strict(),
   z.object({ op: z.literal('files.search'), ...rootLocation, query: z.string().max(512), limit: z.number().int().positive().optional() }).strict(),
@@ -74,8 +75,8 @@ const filesRequestSchema = z.discriminatedUnion('op', [
 
 /**
  * Parse a file request received over JSON; unknown fields are rejected.
- * @param value - decoded request body.
- * @returns the validated request, with branded identities.
+ * @param value Decoded request.
+ * @returns The validated request with branded identities.
  */
 export function parseIdeFilesRequest(value: unknown): IdeFilesRequest {
   const parsed = filesRequestSchema.safeParse(value)
@@ -83,28 +84,29 @@ export function parseIdeFilesRequest(value: unknown): IdeFilesRequest {
   return parsed.data
 }
 
-/** A registered directory after a fresh realpath and directory check. */
-export interface ResolvedIdeWorkspace extends IdeWorkspace {
+/** A mounted project directory after a fresh realpath and directory check. */
+export interface ResolvedIdeWorkspace {
+  readonly workspaceId: WorkspaceId
   readonly root: string
-  readonly rootId?: IdeRootId | undefined
+  readonly rootId: IdeRootId
 }
 
-/** Explicit service dependencies; this service never opens an Agent or Session. */
+/** Dependencies of {@link RainyIdeFiles}; the service never opens a chat. */
 export interface RainyIdeFilesOptions {
-  readonly registry: Pick<WorkspaceRegistry, 'get' | 'list' | 'create'>
-  readonly fs: Pick<FileSystem, 'resolve' | 'processPath' | 'lstat' | 'stat' | 'readBytes' | 'readByteRange' | 'writeText'>
+  readonly projects: Pick<Projects, 'list' | 'get' | 'open' | 'attach' | 'detach' | 'rename' | 'remove' | 'resolveRoot'>
   readonly config: IdeFilesConfig
-  readonly roots: Pick<RainyProjectRoots, 'get' | 'resolveRoot' | 'attach' | 'remove'>
+  /** Filesystem access; tests replace individual methods. */
+  readonly fs?: LocalIdeFileSystem
   /** Clock for confirmation expiry and cooperative search deadlines. */
   readonly now?: () => number
 }
 
 interface Observation {
   readonly absolute: string
-  readonly target: FsTarget
-  readonly info: FsPathInfo
-  readonly targetVersion?: FsVersion
-  readonly targetKind?: 'file' | 'directory' | 'other'
+  readonly target: string
+  readonly info: IdePathInfo
+  readonly targetVersion?: string
+  readonly targetKind?: IdeTargetInfo['type']
   readonly bytes: number
   readonly version: IdeFileVersion
   readonly outside: boolean
@@ -112,7 +114,7 @@ interface Observation {
 
 interface DeletionEntry {
   readonly path: string
-  readonly version: FsVersion
+  readonly version: string
   readonly kind: IdeFileEntry['kind']
   readonly bytes: number
   readonly identity: string
@@ -136,12 +138,9 @@ function deletionFingerprint(entries: readonly DeletionEntry[]): string {
   return hash.digest('hex')
 }
 
-function workspaceView(workspace: { id: WorkspaceId; path: string; title: string }): IdeWorkspace {
-  return { workspaceId: workspace.id, path: workspace.path, title: workspace.title }
-}
-
 function missing(error: unknown): boolean {
-  return error !== null && typeof error === 'object' && 'code' in error && (error.code === 'ENOENT' || error.code === 'FS_NOT_FOUND')
+  return error instanceof IdeOperationError ? error.code === 'not-found'
+    : error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
 }
 
 function decode(bytes: Uint8Array, partial = false): Pick<IdeFileDocument, 'content' | 'bom' | 'eol' | 'readOnlyReason'> {
@@ -170,8 +169,10 @@ function hexPreview(bytes: Uint8Array, totalBytes: number, limit: number): NonNu
   return { kind: 'hex', text: rows.join('\n'), bytesRead: prefix.length, truncated: prefix.length < totalBytes }
 }
 
-/** Human filesystem owner; writes, rename and confirmed deletion serialize within each workspace. */
+/** Human filesystem owner; writes, renames and confirmed deletions serialize within each project. */
 export class RainyIdeFiles {
+  /** Filesystem access used by every operation. */
+  readonly fs: LocalIdeFileSystem
   private readonly tails = new Map<WorkspaceId, Promise<void>>()
   private readonly inFlight = new Set<Promise<unknown>>()
   private readonly deletions = new Map<IdeDeleteToken, PendingDeletion>()
@@ -179,34 +180,29 @@ export class RainyIdeFiles {
   private closing = false
   private closed?: Promise<void>
 
-  /** @param options - existing workspace registry, local filesystem owner and resolved budgets. */
+  /** @param options Project catalog, filesystem access and budgets. */
   constructor(private readonly options: RainyIdeFilesOptions) {
+    this.fs = options.fs ?? new LocalIdeFileSystem()
     this.now = options.now ?? Date.now
   }
 
   /**
-   * Resolve a registered workspace without opening its chats.
-   * @param workspaceId - durable project identity.
-   * @returns a freshly checked canonical directory usable by execution services.
+   * Resolve one mounted directory of a registered project.
+   * @param workspaceId Project identity.
+   * @param rootId Mounted directory; omitted means the primary directory.
+   * @returns A freshly checked canonical directory.
    */
   async resolveWorkspace(workspaceId: WorkspaceId, rootId?: IdeRootId): Promise<ResolvedIdeWorkspace> {
     if (this.closing) throw new IdeOperationError('closed', 'The IDE file service is closing.')
-    const workspace = this.options.registry.get(workspaceId)
-    if (workspace === undefined) throw new IdeOperationError('workspace-not-found', 'The selected workspace is no longer registered.')
-    try {
-      const mounted = await this.options.roots.resolveRoot(workspaceId, rootId)
-      return { ...workspaceView(workspace), path: mounted.path, root: mounted.path, rootId: mounted.rootId }
-    } catch (error) {
-      if (error instanceof IdeOperationError) throw error
-      throw new IdeOperationError('workspace-unavailable', 'The workspace directory is unavailable.')
-    }
+    const root = await this.options.projects.resolveRoot(workspaceId, rootId)
+    return { workspaceId, root: root.path, rootId: root.rootId }
   }
 
   /**
-   * Dispatch one validated, authenticated human request.
-   * @param request - parsed file request.
-   * @param signal - request lifetime; cancellation before a mutation prevents publication.
-   * @returns the result keyed by the request operation in IdeFilesResults.
+   * Run one validated request.
+   * @param request Parsed file request.
+   * @param signal Cancels the operation before a mutation is published.
+   * @returns The result keyed by the request operation in {@link IdeFilesResults}.
    */
   handle<Request extends IdeFilesRequest>(request: Request, signal?: AbortSignal): Promise<IdeFilesResults[Request['op']]>
   handle(request: IdeFilesRequest, signal?: AbortSignal): Promise<IdeFilesResults[IdeFilesRequest['op']]> {
@@ -217,7 +213,7 @@ export class RainyIdeFiles {
     return task
   }
 
-  /** @returns resolution after all admitted operations settle and confirmation tokens are retired. */
+  /** @returns Completion after admitted operations settle; confirmation tokens are retired. */
   close(): Promise<void> {
     this.closing = true
     this.deletions.clear()
@@ -227,24 +223,26 @@ export class RainyIdeFiles {
 
   private async dispatch(request: IdeFilesRequest, signal?: AbortSignal): Promise<IdeFilesResults[IdeFilesRequest['op']]> {
     signal?.throwIfAborted()
-    const view = (workspace: { id: WorkspaceId; path: string; title: string }): IdeWorkspace =>
-      ({ ...workspaceView(workspace), roots: this.options.roots.get(workspace.id) })
-    if (request.op === 'workspaces.list') return this.options.registry.list().map(view)
-    if (request.op === 'workspaces.open') return view(await this.options.registry.create(request.path))
-    if (request.op === 'workspaces.attach' || request.op === 'workspaces.removeRoot') {
-      if (request.op === 'workspaces.attach') await this.options.roots.attach(request.workspaceId, request.path)
-      else await this.options.roots.remove(request.workspaceId, request.rootId)
-      const project = this.options.registry.get(request.workspaceId)
-      if (project === undefined) throw new IdeOperationError('workspace-not-found', 'The selected project is no longer registered.')
-      return view(project)
+    switch (request.op) {
+      case 'directories.list': return listDirectories(request.path, request.showHidden ?? false, this.options.config.maxDirectoryEntries, signal)
+      case 'directories.create': return createDirectory(request.path, this.options.config.maxDirectoryEntries)
+      case 'workspaces.list': return this.options.projects.list().map(workspaceView)
+      case 'workspaces.open': return workspaceView(await this.options.projects.open(request.path))
+      case 'workspaces.attach': return workspaceView(await this.options.projects.attach(request.workspaceId, request.path))
+      case 'workspaces.removeRoot': return workspaceView(await this.options.projects.detach(request.workspaceId, request.rootId))
+      case 'workspaces.rename': return workspaceView(await this.options.projects.rename(request.workspaceId, request.title))
+      case 'workspaces.remove':
+        if (this.options.projects.get(request.workspaceId) === undefined) throw new IdeOperationError('workspace-not-found', 'The selected project is no longer registered.')
+        await this.options.projects.remove(request.workspaceId)
+        return { workspaceId: request.workspaceId, removed: true }
+      default: break
     }
     const workspace = await this.resolveWorkspace(request.workspaceId, request.rootId)
     signal?.throwIfAborted()
     switch (request.op) {
       case 'files.list': return this.list(workspace, request.path, signal)
       case 'files.read': return this.read(workspace, request.path, signal)
-      case 'files.search': return searchIdeFiles(workspace.root, request.query, request.limit,
-        this.options.config, signal, this.now)
+      case 'files.search': return searchIdeFiles(workspace.root, request.query, request.limit, this.options.config, signal, this.now)
       case 'files.diff': return this.diff(workspace, request.path, signal)
       case 'files.changes': return this.changes(workspace, request.paths, signal)
       case 'files.deletePreview': return this.previewDelete(workspace, request.path, signal)
@@ -282,14 +280,14 @@ export class RainyIdeFiles {
 
   private async observe(workspace: ResolvedIdeWorkspace, path: string, allowRoot = false, allowOutside = false): Promise<Observation> {
     const absolute = await this.checkedPath(workspace, path, allowRoot)
-    const info = await this.options.fs.lstat(absolute)
+    const info = await this.fs.lstat(absolute)
     if (info === undefined) throw new IdeOperationError('not-found', 'The selected path no longer exists.')
-    const target = await this.options.fs.resolve(absolute)
-    const outside = !ideContains(workspace.root, this.options.fs.processPath(target))
+    const target = await this.fs.resolve(absolute)
+    const outside = !ideContains(workspace.root, target)
     if (outside && !allowOutside) throw new IdeOperationError('outside-workspace', 'The selected link points outside the workspace.')
-    const targetInfo = outside ? undefined : await this.options.fs.stat(target)
-    const version = versionOf(JSON.stringify([absolute, info.version, target.targetKey, targetInfo?.version]))
-    return { absolute, target, info, version, outside, bytes: targetInfo?.size ?? info.size ?? 0,
+    const targetInfo = outside ? undefined : await this.fs.stat(target)
+    const version = versionOf(JSON.stringify([absolute, info.version, target, targetInfo?.version]))
+    return { absolute, target, info, version, outside, bytes: targetInfo?.size ?? info.size,
       ...targetInfo === undefined ? {} : { targetVersion: targetInfo.version, targetKind: targetInfo.type } }
   }
 
@@ -316,14 +314,14 @@ export class RainyIdeFiles {
   private async list(workspace: ResolvedIdeWorkspace, path: string, signal?: AbortSignal): Promise<IdeDirectory> {
     const directory = await this.observe(workspace, path, true)
     if (directory.targetKind !== 'directory') throw new IdeOperationError('not-directory', 'The selected path is not a directory.')
-    const names = await this.directoryNames(this.options.fs.processPath(directory.target), this.options.config.maxDirectoryEntries, signal)
+    const names = await this.directoryNames(directory.target, this.options.config.maxDirectoryEntries, signal)
     const entries: IdeFileEntry[] = []
     for (const name of names.sort((a, b) => a.localeCompare(b))) {
       signal?.throwIfAborted()
       const child = path === '' ? name : `${path}/${name}`
       try { entries.push(this.entry(child, await this.observe(workspace, child, false, true))) }
       catch (error) {
-        if (missing(error) || error instanceof IdeOperationError && error.code === 'not-found') continue
+        if (missing(error)) continue
         throw error
       }
     }
@@ -336,22 +334,23 @@ export class RainyIdeFiles {
     const before = await this.observe(workspace, path)
     if (before.targetKind !== 'file') throw new IdeOperationError('not-file', 'The selected path is not a regular file.')
     const base = { workspaceId: workspace.workspaceId, path, version: before.version, bytes: before.bytes }
-    const large = before.bytes > this.options.config.maxTextBytes
+    const config = this.options.config
+    const large = before.bytes > config.maxTextBytes
     const bytes = large
-      ? await this.options.fs.readByteRange(before.target, { offset: 0, length: this.options.config.maxPreviewBytes }, signal)
-      : await this.options.fs.readBytes(before.target, signal, this.options.config.maxTextBytes)
+      ? await this.fs.readByteRange(before.target, { offset: 0, length: config.maxPreviewBytes }, signal)
+      : await this.fs.readBytes(before.target, config.maxTextBytes, signal)
     signal?.throwIfAborted()
     const after = await this.observe(workspace, path)
     if (before.version !== after.version) throw this.stale(after.version)
     const decoded = decode(bytes, large && bytes.length < before.bytes)
     if (large) {
       const preview = decoded.content === null
-        ? hexPreview(bytes, before.bytes, this.options.config.maxHexPreviewBytes)
+        ? hexPreview(bytes, before.bytes, config.maxHexPreviewBytes)
         : { kind: 'utf8' as const, text: decoded.content, bytesRead: bytes.length, truncated: bytes.length < before.bytes }
       return { ...base, ...decoded, content: null, readOnlyReason: decoded.readOnlyReason ?? 'too-large', preview }
     }
     return { ...base, bytes: bytes.length, ...decoded,
-      ...decoded.content === null ? { preview: hexPreview(bytes, bytes.length, this.options.config.maxHexPreviewBytes) } : {} }
+      ...decoded.content === null ? { preview: hexPreview(bytes, bytes.length, config.maxHexPreviewBytes) } : {} }
   }
 
   private stale(currentVersion: IdeFileVersion | null): IdeOperationError {
@@ -367,24 +366,30 @@ export class RainyIdeFiles {
     let current: IdeFileDocument
     try { current = await this.read(workspace, request.path, signal) }
     catch (error) {
-      if (missing(error) || error instanceof IdeOperationError && error.code === 'not-found') throw this.stale(null)
+      if (missing(error)) throw this.stale(null)
       throw error
     }
     if (current.version !== request.expectedVersion) throw this.stale(current.version)
     if (current.readOnlyReason !== null) throw new IdeOperationError('read-only', 'This file cannot be edited as bounded UTF-8 text.')
     const content = current.eol === 'crlf' ? request.content.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n') : request.content
-    const raw = `${current.bom ? '\uFEFF' : ''}${content}`
+    const raw = `${current.bom ? '﻿' : ''}${content}`
     this.checkText(raw)
     const observed = await this.observe(workspace, request.path)
     if (observed.version !== current.version || observed.targetVersion === undefined) throw this.stale(observed.version)
-    await this.options.fs.writeText(observed.target, raw, { kind: 'replaceIfVersion', version: observed.targetVersion }, signal,
-      { mode: 'workspace-write', workspaceRoot: workspace.root })
+    try {
+      await this.fs.writeText(observed.target, raw, { kind: 'replaceIfVersion', version: observed.targetVersion }, signal)
+    } catch (error) {
+      if (error instanceof IdeOperationError && error.code === 'version-conflict') {
+        throw this.stale((await this.observe(workspace, request.path).catch(() => undefined))?.version ?? null)
+      }
+      throw error
+    }
     return this.read(workspace, request.path, signal)
   }
 
   private async prepareNew(workspace: ResolvedIdeWorkspace, path: string): Promise<string> {
     const absolute = await this.checkedPath(workspace, path)
-    if (await this.options.fs.lstat(absolute) !== undefined) throw new IdeOperationError('already-exists', 'The destination already exists.')
+    if (await this.fs.lstat(absolute) !== undefined) throw new IdeOperationError('already-exists', 'The destination already exists.')
     return absolute
   }
 
@@ -392,9 +397,9 @@ export class RainyIdeFiles {
     this.checkText(content)
     signal?.throwIfAborted()
     const absolute = await this.prepareNew(workspace, path)
-    const target = await this.options.fs.resolve(absolute)
-    if (!ideContains(workspace.root, this.options.fs.processPath(target))) throw new IdeOperationError('outside-workspace', 'The destination points outside the selected workspace.')
-    await this.options.fs.writeText(target, content, { kind: 'createIfAbsent' }, signal, { mode: 'workspace-write', workspaceRoot: workspace.root })
+    const target = await this.fs.resolve(absolute)
+    if (!ideContains(workspace.root, target)) throw new IdeOperationError('outside-workspace', 'The destination points outside the selected workspace.')
+    await this.fs.writeText(target, content, { kind: 'createIfAbsent' }, signal)
     return this.read(workspace, path, signal)
   }
 
@@ -408,7 +413,7 @@ export class RainyIdeFiles {
     const fresh = await this.observe(workspace, request.path, false, true)
     if (fresh.version !== source.version) throw this.stale(fresh.version)
     signal?.throwIfAborted()
-    await renameIdePathNoReplace(fresh.absolute, destination)
+    await renameNoReplace(fresh.absolute, destination, fresh.info.type)
     return this.entry(request.destination, await this.observe(workspace, request.destination, false, true))
   }
 
@@ -416,6 +421,7 @@ export class RainyIdeFiles {
     ideRelativePath(path)
     const pending = [path]
     const entries: DeletionEntry[] = []
+    const limit = this.options.config.maxDeleteEntries
     while (pending.length > 0) {
       signal?.throwIfAborted()
       const next = pending.pop()
@@ -423,10 +429,9 @@ export class RainyIdeFiles {
       const observed = await this.observe(workspace, next, false, true)
       const info = await lstat(observed.absolute, { bigint: true })
       entries.push({ path: next, version: observed.info.version, kind: observed.info.type, bytes: observed.info.type === 'file' ? observed.bytes : 0, identity: `${info.dev}:${info.ino}` })
-      if (entries.length > this.options.config.maxDeleteEntries) throw new IdeOperationError('too-large', 'The selected tree exceeds the configured deletion limit.')
+      if (entries.length > limit) throw new IdeOperationError('too-large', 'The selected tree exceeds the configured deletion limit.')
       if (observed.info.type === 'directory') {
-        const names = await this.directoryNames(observed.absolute,
-          this.options.config.maxDeleteEntries - entries.length - pending.length, signal)
+        const names = await this.directoryNames(observed.absolute, limit - entries.length - pending.length, signal)
         for (const name of names.sort().reverse()) pending.push(`${next}/${name}`)
       }
     }
@@ -461,7 +466,7 @@ export class RainyIdeFiles {
     const entries = await this.deletionSnapshot(workspace, path, signal)
     if (deletionFingerprint(entries) !== preview.fingerprint) throw new IdeOperationError('version-conflict', 'The selected tree changed after the deletion preview. Confirm the updated preview.')
     signal?.throwIfAborted()
-    // No recursive filesystem remover is used: links are unlinked and directories must be empty.
+    // No recursive remover is used: links are unlinked and directories must be empty.
     for (const entry of entries.reverse()) {
       const observed = await this.observe(workspace, entry.path, false, true)
       const info = await lstat(observed.absolute, { bigint: true })
@@ -473,9 +478,7 @@ export class RainyIdeFiles {
     return { path, deleted: true }
   }
 
-  private async changes(
-    workspace: ResolvedIdeWorkspace, paths: readonly string[], signal?: AbortSignal,
-  ): Promise<readonly IdeFileChange[]> {
+  private async changes(workspace: ResolvedIdeWorkspace, paths: readonly string[], signal?: AbortSignal): Promise<readonly IdeFileChange[]> {
     if (paths.length > this.options.config.maxChangePaths) throw new IdeOperationError('too-large', 'Too many opened paths were requested in one change check.')
     const result: IdeFileChange[] = []
     for (const path of [...new Set(paths)]) {
@@ -485,7 +488,7 @@ export class RainyIdeFiles {
         const value = await this.observe(workspace, path, true, true)
         result.push({ path, version: value.version, kind: value.info.type })
       } catch (error) {
-        if (!missing(error) && !(error instanceof IdeOperationError && error.code === 'not-found')) throw error
+        if (!missing(error)) throw error
         result.push({ path, version: null, kind: 'missing' })
       }
     }
@@ -506,7 +509,7 @@ export class RainyIdeFiles {
     let current: IdeFileDocument | undefined
     try { current = await this.read(workspace, path, signal) }
     catch (error) {
-      if (!missing(error) && !(error instanceof IdeOperationError && error.code === 'not-found')) throw error
+      if (!missing(error)) throw error
     }
     const partial = { path, current: current?.content ?? null, version: current?.version ?? null }
     if (current?.readOnlyReason !== null && current?.readOnlyReason !== undefined) return { ...partial, base: null, status: 'unavailable', reason: current.readOnlyReason }

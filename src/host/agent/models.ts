@@ -9,7 +9,7 @@ import type {
 import { inspectStrataHealth } from '../../main/strata-health.ts'
 import { RpcError } from '../rpc.ts'
 import { GLOBAL_PROMPT_MAX_CHARS, LOCAL_NO_KEY, type Settings } from '../settings.ts'
-import { createStreamFn, effectiveThinking, reasoningOption, toPiModel } from './llm.ts'
+import { createStreamFn, effectiveThinking, reasoningOption, thinkingLevels, toPiModel } from './llm.ts'
 
 /** Official DeepSeek API with RainyAgent's context default. */
 export const DEEPSEEK_FLASH: ModelSetup = {
@@ -119,6 +119,7 @@ export class Models {
       models: data.models,
       credentials: this.settings.providersWithKeys(),
       selected: data.selected,
+      thinkingLevels: Object.fromEntries(data.models.map(model => [model.provider, thinkingLevels(model)])),
       presets: PRESETS,
       globalPrompt: { text: data.globalPrompt, maxChars: GLOBAL_PROMPT_MAX_CHARS },
     }

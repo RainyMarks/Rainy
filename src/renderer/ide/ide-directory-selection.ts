@@ -1,9 +1,9 @@
 /** One directory choice owns its open-or-attach action until both operations settle. */
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { createStore } from '../ui/store.ts'
 
 /** Coalesce repeated directory gestures while retaining the first gesture's action. */
 export class IdeDirectorySelection {
-  readonly pending = createSnapshotStore(false)
+  readonly pending = createStore(false)
   private operation: Promise<void> | undefined
   private disposed = false
 

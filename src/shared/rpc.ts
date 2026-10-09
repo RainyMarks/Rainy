@@ -49,6 +49,8 @@ export interface ModelsStatus {
   /** Providers whose credential is stored. */
   credentials: string[]
   selected: ModelSelection | null
+  /** Reasoning levels each saved model accepts, keyed by provider (one saved model per provider). */
+  thinkingLevels: Record<string, ThinkingLevel[]>
   presets: { name: string; model: ModelSetup }[]
   globalPrompt: { text: string; maxChars: number }
 }

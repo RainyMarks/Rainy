@@ -1,6 +1,5 @@
 /** Configuration and acknowledged saves for one retained workbench iframe. */
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
+import { createStore } from '../ui/store.ts'
 import type { CtfConfiguration, CtfFlushResult, CtfHostMessage } from './ctf-protocol.ts'
 
 /** Host view state includes failures before the frame's application is ready. */
@@ -27,7 +26,7 @@ interface PendingFlush {
 
 /** One frame's transport; draft and API contents stay outside its messages. */
 export class CtfWorkbenchBridge {
-  readonly state = createSnapshotStore<CtfWorkbenchState>({ phase: 'loading', error: undefined, message: '', saving: 'idle' })
+  readonly state = createStore<CtfWorkbenchState>({ phase: 'loading', error: undefined, message: '', saving: 'idle' })
   private frame: HTMLIFrameElement | null = null
   private configuration: CtfConfiguration | undefined
   private revision = 0
@@ -115,7 +114,7 @@ export class CtfWorkbenchBridge {
     if (this.disposed || !this.ready || this.frame?.contentWindow === null || this.frame === null) {
       return Promise.resolve({ ok: false, error: this.options.flushFailureMessage() })
     }
-    const id = randomUUID()
+    const id = crypto.randomUUID()
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)

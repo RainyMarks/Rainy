@@ -1,61 +1,63 @@
-/** Download and remove optional desktop components from settings. */
+/** Download and remove optional desktop components. */
 import { useEffect, useRef, useState } from 'react'
-import { Button, fileSizeText } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
-import type { OptionalModuleId, OptionalModuleStatus, OptionalModulesBridge, OptionalModulesState } from '../modules-protocol.ts'
-import css from './SettingsSections.module.css'
+import type { OptionalModuleId, OptionalModuleStatus, OptionalModulesState } from '../../shared/modules-protocol.ts'
+import { Button } from '../ui/Button.tsx'
+import { useT } from './messages.ts'
+import { modulesBridge } from './native.ts'
+import { Notice, errorText, fileSizeText } from './parts.tsx'
+import css from './sections.module.css'
 
 const copy = {
   strata: { name: 'moduleStrata', hint: 'moduleStrataHint' },
   php: { name: 'modulePhp', hint: 'modulePhpHint' },
 } as const
 
-/** @returns the desktop bridge, absent in a browser. */
-function modulesBridge(): OptionalModulesBridge | undefined {
-  return (globalThis as typeof globalThis & { __RAINY_MODULES__?: OptionalModulesBridge }).__RAINY_MODULES__
-}
-
 /**
  * List components with their sizes and offer download, cancellation and removal.
- * @param props.t - Rainy locale.
- * @param props.only - show one component inline, for example inside the Strata settings.
- * @param props.onChange - called after a component was installed or removed.
- * @returns the component list, or nothing outside the desktop app.
+ * @param props.only Show one component inline, for example inside the Strata card.
+ * @param props.onChange Called after a component was installed or removed.
+ * @returns The component list, or nothing outside the desktop app.
  */
-export function OptionalModules({ t, only, onChange }: { t: TranslateNS<'rainy'>; only?: OptionalModuleId; onChange?: () => void }) {
+export function OptionalModules({ only, onChange }: { only?: OptionalModuleId; onChange?: () => void }): JSX.Element | null {
+  const t = useT()
   const bridge = modulesBridge()
   const [modules, setModules] = useState<readonly OptionalModuleStatus[]>([])
   const [progress, setProgress] = useState<OptionalModulesState>({ phase: 'idle', completedBytes: 0, totalBytes: 0, error: '' })
   const [busy, setBusy] = useState(false)
   const changed = useRef(onChange)
   changed.current = onChange
+  const mounted = useRef(true)
   useEffect(() => {
+    mounted.current = true
     if (bridge === undefined) return undefined
-    let active = true
     const refresh = (): void => {
-      void bridge.list().then((value) => { if (active) setModules(value) }, (error: unknown) => {
-        if (active) setProgress({ phase: 'error', completedBytes: 0, totalBytes: 0, error: error instanceof Error ? error.message : String(error) })
+      void bridge.list().then((value) => { if (mounted.current) setModules(value) }, (error: unknown) => {
+        if (mounted.current) setProgress({ phase: 'error', completedBytes: 0, totalBytes: 0, error: errorText(error) })
       })
     }
     refresh()
-    void bridge.state().then((value) => { if (active) setProgress(value) })
+    void bridge.state().then((value) => { if (mounted.current) setProgress(value) }, () => undefined)
     const stop = bridge.onProgress((value) => {
-      if (!active) return
+      if (!mounted.current) return
       setProgress(value)
       if (value.phase === 'complete') { refresh(); changed.current?.() }
     })
-    return () => { active = false; stop() }
+    return () => { mounted.current = false; stop() }
   }, [bridge])
   if (bridge === undefined) return null
   const running = progress.phase === 'downloading' || progress.phase === 'installing'
   const act = (operation: () => Promise<void>): void => {
     setBusy(true)
-    void operation().then(async () => { setModules(await bridge.list()); changed.current?.() }, (error: unknown) => {
-      setProgress({ ...progress, phase: 'error', error: error instanceof Error ? error.message : String(error) })
-    }).finally(() => { setBusy(false) })
+    void operation().then(async () => {
+      const value = await bridge.list()
+      if (mounted.current) setModules(value)
+      changed.current?.()
+    }, (error: unknown) => {
+      if (mounted.current) setProgress(previous => ({ ...previous, phase: 'error', error: errorText(error) }))
+    }).finally(() => { if (mounted.current) setBusy(false) })
   }
   const shown = modules.filter(module => only === undefined || module.id === only)
-  return <div className={css.stack} data-rainy-modules>
+  return <div className={css.stack} data-optional-modules>
     {only === undefined && <>
       <h3 className={css.subheading}>{t('modulesTitle')}</h3>
       <p className={css.muted}>{t('modulesNote')}</p>
@@ -66,7 +68,7 @@ export function OptionalModules({ t, only, onChange }: { t: TranslateNS<'rainy'>
       return <div key={module.id} className={css.row} data-module={module.id}>
         <p className={css.muted}>
           <strong>{t(copy[module.id].name)}</strong> · {t(copy[module.id].hint)}<br />
-          {active ? t(progress.phase === 'installing' ? 'modulesInstalling' : 'modulesProgress', { progress: String(percentage) })
+          {active ? t(progress.phase === 'installing' ? 'modulesInstalling' : 'modulesProgress', { progress: percentage })
             : module.installed ? t('modulesInstalled', { size: fileSizeText(module.unpackedBytes) }) : t('modulesNotInstalled')}
         </p>
         <div className={css.actions}>
@@ -80,6 +82,6 @@ export function OptionalModules({ t, only, onChange }: { t: TranslateNS<'rainy'>
     })}
     {progress.phase === 'cancelled' && (only === undefined || progress.module === only) && <p className={css.muted}>{t('modulesCancelled')}</p>}
     {progress.phase === 'error' && (only === undefined || progress.module === only || progress.module === undefined)
-      && <p className={`${css.notice} ${css.error}`} role="alert">{progress.error}</p>}
+      && <Notice tone="error">{progress.error}</Notice>}
   </div>
 }
