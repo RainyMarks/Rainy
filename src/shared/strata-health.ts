@@ -1,6 +1,6 @@
 /** Public loopback health checks shared by the Windows carrier and selected Rainy Host. */
 import { z } from 'zod'
-import type { StrataConnection } from '../shared/strata-protocol.ts'
+import type { StrataConnection } from './strata-protocol.ts'
 
 const healthSchema = z.object({
   status: z.literal('ok'), service: z.literal('strata'), model: z.string().min(1),

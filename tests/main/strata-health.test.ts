@@ -1,6 +1,6 @@
 /** Local Strata discovery must not identify unrelated services or start model work. */
 import { describe, expect, it, vi } from 'vitest'
-import { inspectStrataHealth, readStrataHealth, strataLoopbackURL } from '../../src/main/strata-health.ts'
+import { inspectStrataHealth, readStrataHealth, strataLoopbackURL } from '../../src/shared/strata-health.ts'
 
 const health = { status: 'ok', service: 'strata', model: 'qwen3.8-flash-next', max_context: 32768, loaded: true, api_key: false }
 

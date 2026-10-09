@@ -6,7 +6,7 @@ import { resolveBudget } from '../../shared/budget.ts'
 import type {
   ModelDiscoveryInput, ModelSelection, ModelSetup, ModelSetupInput, ModelsStatus, ThinkingLevel,
 } from '../../shared/rpc.ts'
-import { inspectStrataHealth } from '../../main/strata-health.ts'
+import { inspectStrataHealth } from '../../shared/strata-health.ts'
 import { RpcError } from '../rpc.ts'
 import { GLOBAL_PROMPT_MAX_CHARS, LOCAL_NO_KEY, type Settings } from '../settings.ts'
 import { createStreamFn, effectiveThinking, reasoningOption, thinkingLevels, toPiModel } from './llm.ts'

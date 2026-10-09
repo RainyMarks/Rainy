@@ -8,7 +8,7 @@ import { createStrataManager } from '../../src/main/strata.ts'
 import type { StrataManagerOptions } from '../../src/main/strata.ts'
 import { DEFAULT_STRATA_SETTINGS, discoverStrataProfiles, resolveStrataModel } from '../../src/main/strata-model.ts'
 import type { StrataProcess, StrataProcessExit, StrataProcessSpec } from '../../src/main/strata-process.ts'
-import type { StrataHealth } from '../../src/main/strata-health.ts'
+import type { StrataHealth } from '../../src/shared/strata-health.ts'
 
 async function put(path: string, content = 'fixture'): Promise<void> {
   await mkdir(dirname(path), { recursive: true })

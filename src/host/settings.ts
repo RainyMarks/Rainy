@@ -164,9 +164,12 @@ export class Settings {
     return this.env[name] || this.keys[name]
   }
 
-  /** @returns Providers whose key is available. */
+  /** @returns Providers whose real key is available; the local-model placeholder does not count. */
   providersWithKeys(): string[] {
-    return this.data.models.map(model => model.provider).filter(provider => this.apiKey(provider) !== undefined)
+    return this.data.models.map(model => model.provider).filter((provider) => {
+      const key = this.apiKey(provider)
+      return key !== undefined && key !== LOCAL_NO_KEY
+    })
   }
 
   /**
