@@ -163,12 +163,27 @@ export interface IdeWorkspaceSelection {
   readonly workspaceId: WorkspaceId | null
 }
 
-/** File operations served through the authenticated POST /rainy/ide route. */
+/** One level of the in-app directory browser, outside any project. */
+export interface IdeDirectoryListing {
+  /** Absolute directory shown. */
+  readonly path: string
+  /** Parent directory, or `null` at a filesystem root. */
+  readonly parent: string | null
+  /** Filesystem roots to offer as shortcuts (drive letters on Windows, `/` and the home directory on Linux). */
+  readonly roots: readonly string[]
+  readonly entries: readonly { readonly name: string; readonly path: string; readonly hidden: boolean }[]
+}
+
+/** File operations served through the `ide` RPC method. */
 export type IdeFilesRequest =
+  | { readonly op: 'directories.list'; readonly path?: string | undefined; readonly showHidden?: boolean | undefined }
+  | { readonly op: 'directories.create'; readonly path: string }
   | { readonly op: 'workspaces.list' }
   | { readonly op: 'workspaces.open'; readonly path: string }
   | { readonly op: 'workspaces.attach'; readonly workspaceId: WorkspaceId; readonly path: string }
   | { readonly op: 'workspaces.removeRoot'; readonly workspaceId: WorkspaceId; readonly rootId: IdeRootId }
+  | { readonly op: 'workspaces.rename'; readonly workspaceId: WorkspaceId; readonly title: string }
+  | { readonly op: 'workspaces.remove'; readonly workspaceId: WorkspaceId }
   | { readonly op: 'files.list'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string }
   | { readonly op: 'files.read'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string }
   | { readonly op: 'files.search'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly query: string; readonly limit?: number | undefined }
@@ -190,10 +205,14 @@ export type IdeStateRequest =
 
 /** Successful results keyed by request operation for typed clients. */
 export interface IdeFilesResults {
+  'directories.list': IdeDirectoryListing
+  'directories.create': IdeDirectoryListing
   'workspaces.list': readonly IdeWorkspace[]
   'workspaces.open': IdeWorkspace
   'workspaces.attach': IdeWorkspace
   'workspaces.removeRoot': IdeWorkspace
+  'workspaces.rename': IdeWorkspace
+  'workspaces.remove': { readonly workspaceId: WorkspaceId; readonly removed: true }
   'files.list': IdeDirectory
   'files.read': IdeFileDocument
   'files.search': IdeFileSearch

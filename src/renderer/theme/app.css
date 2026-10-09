@@ -1,0 +1,38 @@
+/* Page-wide defaults. */
+:root {
+  --dsh-content-font-size: 14px;
+  --dsh-code-font-size: 13px;
+  color-scheme: light;
+}
+
+html:has(body[data-ds-dark-theme]) {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--dsw-font-family);
+  font-size: var(--dsh-content-font-size);
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+}
+
+code, pre, kbd, samp {
+  font-family: var(--ds-font-family-code);
+  font-size: var(--dsh-code-font-size);
+}
