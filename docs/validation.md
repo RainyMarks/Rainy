@@ -8,11 +8,11 @@
 
 本轮针对退出清理、环境切换与退出竞争、草稿保存失败、快速打开搜索乱序与失败、空模型 ID 的发现请求、更新状态机、Strata 生命周期及本地模型连接补充了回归。Strata 连接由当前 Host 独立核对服务身份、已加载模型和实际上下文；上下文缩小时保留用户输出配置，必要的修改需要明确确认。测试包括不正确的服务、未加载模型、请求密钥要求、远端地址及配置未被失败请求覆盖。
 
-相关检查入口为桌面目录的 Vitest 配置、`packages/client/ui-rainy/tests`，以及 [Rainy CI](../../.github/workflows/rainy.yml)。发布标签对应的源码已通过 [Ubuntu 24.04 与 Windows 2022 CI](https://github.com/RainyMarks/RainyAgent/actions/runs/37405776590)，在普通 runner 上构建源码并执行指定回归，不依赖上游组织的内部 runner。
+相关检查入口为 `tests/main`（Vitest）、`tests/scripts`（`node --test`），以及 [Rainy CI](../.github/workflows/rainy.yml)。发布标签对应的源码已通过 [Ubuntu 24.04 与 Windows 2022 CI](https://github.com/RainyMarks/RainyAgent/actions/runs/37405776590)，在普通 runner 上构建源码并执行指定回归，不依赖上游组织的内部 runner。
 
 ## 离线资源与自包含运行时
 
-23 个原始离线输入共 13,563,886,456 字节，封装为 30 个最大 1 GiB 的传输分片。实际 PowerShell 重组已完成，23 个文件的大小和 SHA-256 全部一致；缺片、损坏及路径校验由 [传输测试](tests/release-assets.test.mjs) 覆盖。构建准备入口在独立目录中恢复了 IDE、Windows 基础组件、WSL 组件目录和 Strata 运行时。
+23 个原始离线输入共 13,563,886,456 字节，封装为 30 个最大 1 GiB 的传输分片。实际 PowerShell 重组已完成，23 个文件的大小和 SHA-256 全部一致；缺片、损坏及路径校验由 [传输测试](../tests/scripts/release-assets.test.mjs) 覆盖。构建准备入口在独立目录中恢复了 IDE、Windows 基础组件、WSL 组件目录和 Strata 运行时。
 
 Strata 0.1.39 与 Python 3.12.14 的运行时包含 1,702 个文件，共 846,093,650 字节。将归档解压至包含中文和空格的不同目录后，隔离 Python 的解释器、导入模块和搜索路径均来自该运行时；引擎、服务和离线准备工具的入口检查通过。此次验收没有借用开发机的 Strata 安装或个人 Python 环境。
 
@@ -20,15 +20,15 @@ Strata 0.1.39 与 Python 3.12.14 的运行时包含 1,702 个文件，共 846,09
 
 ## 桌面与本地服务
 
-Windows x64 最终打包程序使用隔离用户数据启动。应用全局版本和通用设置版本均为 1.0.0；真实 Monaco 编辑器、中文项目、未保存文本和无激活入口检查通过。Strata 原生接口报告随包运行时可用、模型未配置，不会自动加载模型。首页 [工作区截图](assets/workbench.png) 来自该程序实际界面。
+Windows x64 最终打包程序使用隔离用户数据启动。应用全局版本和通用设置版本均为 1.0.0；真实 Monaco 编辑器、中文项目、未保存文本和无激活入口检查通过。Strata 原生接口报告随包运行时可用、模型未配置，不会自动加载模型。首页 [工作区截图](../assets/workbench.png) 来自该程序实际界面。
 
-[桌面验收入口](tests/installed-ui.mjs) 的首次启动和重启验收均通过，编辑恢复与设置检查无页面或控制台错误。[Strata 桌面入口](tests/strata-desktop.mjs) 从真实界面保存本地端口、连接并核对 Host 和界面模型设置，再点击诊断获得流式文本 `RainyAgent connected`。关闭应用后，外部服务仍保持运行。mock 没有配置工具调用返回，因此未将工具调用记为通过；这些结果不代表实际 GPU 推理能力、工具使用能力或生成质量。
+1.0.0 桌面验收入口 `apps/rainy-desktop/tests/installed-ui.mjs` 的首次启动和重启验收均通过，编辑恢复与设置检查无页面或控制台错误。1.0.0 Strata 桌面入口 `apps/rainy-desktop/tests/strata-desktop.mjs` 从真实界面保存本地端口、连接并核对 Host 和界面模型设置，再点击诊断获得流式文本 `RainyAgent connected`。关闭应用后，外部服务仍保持运行。mock 没有配置工具调用返回，因此未将工具调用记为通过；这些结果不代表实际 GPU 推理能力、工具使用能力或生成质量。
 
 最终程序的 Windows 与 WSL Host 启动、项目往返、草稿和选择状态恢复通过，两个环境中各执行一项 JavaScript 和 Python 程序，均正常退出并输出预期的 `42`。Python 使用明确指定的随包 Windows 解释器和 Ubuntu 解释器，未据此验证默认解释器发现。
 
 ## 自动更新与发行完整性
 
-更新控制器回归覆盖检查、下载、错误、销毁和用户确认流程。真实 Electron [更新下载测试](tests/update-download.mjs) 使用公开 updater API、临时用户数据、回环 HTTP 服务和最终 1,191,900,440 字节安装器，验证同版本不下载、旧版本完整下载并通过 SHA-256/SHA-512 校验，以及错误 SHA-512 被拒绝。该测试不执行更新安装。NSIS 内 28,127 个文件的压缩完整性检查通过，关键文件摘要与被测程序一致。
+更新控制器回归覆盖检查、下载、错误、销毁和用户确认流程。真实 Electron [更新下载测试](../tests/manual/update-download.mjs) 使用公开 updater API、临时用户数据、回环 HTTP 服务和最终 1,191,900,440 字节安装器，验证同版本不下载、旧版本完整下载并通过 SHA-256/SHA-512 校验，以及错误 SHA-512 被拒绝。该测试不执行更新安装。NSIS 内 28,127 个文件的压缩完整性检查通过，关键文件摘要与被测程序一致。
 
 生产程序保留资源清单签名和 Electron ASAR 完整性检查。Windows Authenticode 证书未配置，因此系统可能显示未知发布者；资源签名不能代替 Windows 发布者签名。常规退出不会自动安装下载的更新；确认重启安装后仍须完成草稿保存和 Host 清理。
 

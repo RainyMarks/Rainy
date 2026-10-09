@@ -15,7 +15,7 @@ import electronUpdater from 'electron-updater'
 import { RainyUpdates } from './updates.ts'
 import { updateMessages } from './update-messages.ts'
 import { createStrataManager } from './strata.ts'
-import { resolveBudget } from './budget.ts'
+import { resolveBudget } from '../shared/budget.ts'
 import { randomUUID } from 'node:crypto'
 import { prepareDesktopEnvironment } from './native-environment-window.ts'
 import { installNativeTools } from './native-tool-windows.ts'
@@ -27,7 +27,7 @@ import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
 import { listExecutionTargets, readDesktopPreferences, savedExecutionTarget, saveExecutionTarget } from './execution-targets.ts'
 import type { ExecutionTarget, PendingProjectTarget } from './execution-targets.ts'
-import { createProjectRegistry } from './project-registry.ts'
+import { createProjectRegistry } from '../shared/project-registry.ts'
 import { environmentComponentSchema, installWindowsComponent, readEnvironmentComponentCatalog } from './environment-components.ts'
 import { readFile, stat } from 'node:fs/promises'
 import { embeddedReleaseKeys, parseReleaseKeyring } from './release-trust.ts'
@@ -36,7 +36,8 @@ import type { ReleaseIntegrity } from './release-integrity.ts'
 import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splash.ts'
 import { initialPlacement, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
-import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
+import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
+import { brandString } from '../shared/brand.ts'
 import { allowsClipboardWrite } from './clipboard-policy.ts'
 
 const run = promisify(execFile)
@@ -398,7 +399,7 @@ async function start(): Promise<void> {
   else {
     const root = join(resourceRoot, 'windows-host')
     const node = join(root, 'node', 'node.exe')
-    const host = join(root, 'app', 'lib', 'host.js')
+    const host = join(root, 'app', 'dist', 'host.js')
     if (!existsSync(node) || !existsSync(host)) throw new Error('Windows 原生运行文件缺失，请安装完整发行包。')
     installed = { node, host }
   }
@@ -629,7 +630,7 @@ async function start(): Promise<void> {
     if (!trustedSender(event) || value === null || typeof value !== 'object' || !('targetId' in value) || typeof value.targetId !== 'string') throw new Error('Invalid execution target request.')
     const selected = (await listExecutionTargets()).find(item => item.id === value.targetId)
     if (!selected) throw new Error('The selected execution target is unavailable.')
-    return switchTarget(selected, 'workspaceId' in value && typeof value.workspaceId === 'string' ? WorkspaceId(value.workspaceId) : undefined)
+    return switchTarget(selected, 'workspaceId' in value && typeof value.workspaceId === 'string' ? brandString<WorkspaceId>(value.workspaceId) : undefined)
   })
   const admitStrata = (event: Electron.IpcMainInvokeEvent, mutate = false): void => {
     if (!trustedSender(event)) throw new Error('Strata controls are available only in the RainyAgent window.')

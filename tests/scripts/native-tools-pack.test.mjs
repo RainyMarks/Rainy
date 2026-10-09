@@ -4,9 +4,9 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, wr
 import { tmpdir } from 'node:os'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import test from 'node:test'
-import { zipSync } from 'fflate'
+import { zipSync } from './zip-fixture.mjs'
 import { create as createTar } from 'tar'
-import { childPath, planCopies, preparePack, validateArchiveListing, validateDefinition, verifyPack } from '../scripts/prepare-native-tools.mjs'
+import { childPath, planCopies, preparePack, validateArchiveListing, validateDefinition, verifyPack } from '../../scripts/prepare-native-tools.mjs'
 
 async function fixture(t) {
   const root = await mkdtemp(resolve(tmpdir(), 'rainy-native-pack-'))
@@ -399,7 +399,7 @@ for (const source of ['copy', 'archive', 'download', 'generated']) {
 }
 
 test('the shipped definition has thirty-eight tools and a packaged x32dbg variant', async () => {
-  const definition = validateDefinition(JSON.parse(await readFile(new URL('../toolpacks/native-tools.sources.json', import.meta.url), 'utf8')))
+  const definition = validateDefinition(JSON.parse(await readFile(new URL('../../toolpacks/native-tools.sources.json', import.meta.url), 'utf8')))
   assert.equal(definition.tools.length, 38)
   assert.deepEqual(definition.tools.filter(tool => tool.category === 'web').map(tool => tool.id), ['yakit', 'cyberchef', 'curl', 'jq', 'yq', 'bruno'])
   assert.equal(definition.tools.filter(tool => tool.category === 'misc').length, 25)

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { once } from 'node:events'
-import { serveNativeTool, type NativeToolWebPage } from '../src/native-tool-web.ts'
+import { serveNativeTool, type NativeToolWebPage } from '../../src/main/native-tool-web.ts'
 
 const control = vi.hoisted(() => ({
   path: '', phase: '' as 'realpath' | 'stat' | 'destroy' | '',
@@ -19,7 +19,7 @@ vi.mock('node:http', async (importOriginal) => {
   } }
 })
 
-vi.mock('../src/toolpack-fs.ts', async () => {
+vi.mock('../../src/main/toolpack-fs.ts', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
   return { toolPackFileSystem: { ...actual, promises: { ...actual.promises,
     realpath: async (path: Parameters<typeof actual.promises.realpath>[0]) => {

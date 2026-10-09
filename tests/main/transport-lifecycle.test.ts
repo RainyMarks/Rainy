@@ -4,8 +4,8 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { PassThrough } from 'node:stream'
 import { createConnection, Socket } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
-import { WindowsHostTransport, WslHostTransport } from '../src/transport.ts'
-import type { HostOptions } from '../src/transport.ts'
+import { WindowsHostTransport, WslHostTransport } from '../../src/main/transport.ts'
+import type { HostOptions } from '../../src/main/transport.ts'
 
 vi.mock('node:net', async original => ({ ...await original<typeof import('node:net')>(), createConnection: vi.fn() }))
 

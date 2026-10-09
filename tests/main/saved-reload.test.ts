@@ -1,7 +1,7 @@
 /** Native reload paths preserve drafts until the existing save bridge confirms completion. */
 import { describe, expect, it, vi } from 'vitest'
-import { createSavedReload, nativeReloadShortcut } from '../src/saved-reload.ts'
-import type { DraftFlushResult } from '../src/saved-reload.ts'
+import { createSavedReload, nativeReloadShortcut } from '../../src/main/saved-reload.ts'
+import type { DraftFlushResult } from '../../src/main/saved-reload.ts'
 
 describe('native reload shortcuts', () => {
   const input = { type: 'keyDown' as const, key: 'r', control: false, meta: false, shift: false, alt: false }

@@ -1,157 +1,142 @@
-/** Headless local-file checks for the maintenance page; native work is an explicit API fixture. */
+/** The offline tool maintenance page rendered in happy-dom; the native bridge is a test fixture. */
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import { before, after, test } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+import { Window } from 'happy-dom'
 
-const require = createRequire(new URL('../../web/package.json', import.meta.url))
-const { chromium } = require('playwright')
-const PAGE = new URL('../src/setup/toolpack.html', import.meta.url).href
+const PAGE = new URL('../../src/setup/toolpack.html', import.meta.url)
+const HTML = readFileSync(PAGE, 'utf8')
+const SCRIPT = readFileSync(new URL('../../src/setup/toolpack.js', import.meta.url), 'utf8')
+const STYLES = readFileSync(new URL('../../src/setup/toolpack.css', import.meta.url), 'utf8')
 const INITIAL = { phase: 'prepare', message: '正在准备离线安装', completedBytes: 0, totalBytes: 0, cancelling: false }
-let browser
+const settle = () => new Promise(resolve => { setImmediate(resolve) })
 
-before(async () => { browser = await chromium.launch({ headless: true }) })
-after(async () => { await browser?.close() })
-
+/**
+ * Load the page with a fixture bridge and run its script.
+ * @returns page accessors, the bridge state and an emitter for progress snapshots.
+ */
 async function fixture(owner, { initial = INITIAL, deferredInitial = false, missingBridge = false } = {}) {
-  const context = await browser.newContext({ viewport: { width: 720, height: 560 }, locale: 'zh-CN' })
-  owner.after(async () => { await context.close() })
-  const page = await context.newPage()
-  const requests = []
-  page.on('request', request => { requests.push(request.url()) })
-  await page.addInitScript(({ initial, deferredInitial, missingBridge }) => {
-    const listeners = new Set()
-    let finishInitial
-    let finishCancel
-    let rejectCancel
-    const state = { cancelCalls: 0, unsubscribed: 0 }
-    window.__TOOLPACK_FIXTURE__ = {
-      state,
-      emit(snapshot) { for (const listener of listeners) listener(snapshot) },
-      resolveInitial() { finishInitial?.(initial) },
-      resolveCancel() { finishCancel?.() },
-      rejectCancel() { rejectCancel?.(new Error('取消请求未能发送，请重试')) },
-    }
-    if (missingBridge) return
+  const window = new Window({ url: PAGE.href, settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true } })
+  owner.after(async () => { await window.happyDOM.close() })
+  window.document.write(HTML.replace(/<script\b[^>]*><\/script>/u, ''))
+  const listeners = new Set()
+  const state = { cancelCalls: 0, unsubscribed: 0 }
+  const control = {}
+  if (!missingBridge) {
     window.__RAINY_TOOLPACK__ = {
-      getProgress: () => deferredInitial ? new Promise(resolve => { finishInitial = resolve }) : Promise.resolve(initial),
+      getProgress: () => deferredInitial ? new Promise(resolve => { control.resolveInitial = () => resolve(initial) }) : Promise.resolve(initial),
       cancel: () => {
         state.cancelCalls++
-        return new Promise((resolve, reject) => { finishCancel = resolve; rejectCancel = reject })
+        return new Promise((resolve, reject) => {
+          control.resolveCancel = resolve
+          control.rejectCancel = () => reject(new Error('取消请求未能发送，请重试'))
+        })
       },
       onProgress(listener) {
         listeners.add(listener)
         return () => { state.unsubscribed++; listeners.delete(listener) }
       },
     }
-  }, { initial, deferredInitial, missingBridge })
-  await page.goto(PAGE)
-  await page.getByRole('heading', { name: '安装离线工具' }).waitFor({ state: 'visible' })
-  const emit = async snapshot => {
-    await page.evaluate(value => { window.__TOOLPACK_FIXTURE__.emit(value) }, { ...INITIAL, ...snapshot })
   }
-  return { page, emit, requests }
+  new Function('window', 'document', SCRIPT)(window, window.document)
+  await settle()
+  const byId = id => window.document.getElementById(id)
+  const text = id => byId(id).textContent
+  const emit = async snapshot => { for (const listener of listeners) listener({ ...INITIAL, ...snapshot }); await settle() }
+  const resolve = async name => { control[name]?.(); await settle() }
+  return { window, byId, text, emit, resolve, state }
 }
 
 test('renders stage bytes and file names without treating disk-space requirements as completed work', async (owner) => {
-  const { page, emit, requests } = await fixture(owner)
-  await page.getByRole('button', { name: '取消安装' }).waitFor({ state: 'visible' })
-  assert.equal(await page.locator('#progress').getAttribute('value'), null)
-  await emit({ phase: 'extracting', message: '正在解包工具', completedBytes: 1024, totalBytes: 4096,
-    currentPath: 'tools/示例 tool/<test>.bin' })
-  assert.equal(await page.locator('#phase').textContent(), '解包工具')
-  assert.equal(await page.locator('#percent').textContent(), '25%')
-  assert.equal(await page.locator('#bytes').textContent(), '1 KiB / 4 KiB')
-  assert.equal(await page.locator('#current-path').textContent(), 'tools/示例 tool/<test>.bin')
-  assert.equal(await page.locator('#current-path test').count(), 0)
-  assert.equal(await page.locator('#progress').getAttribute('aria-valuetext'), '当前阶段 25%，1 KiB / 4 KiB')
+  const { window, byId, text, emit } = await fixture(owner)
+  assert.equal(text('heading'), '安装离线工具')
+  assert.equal(text('cancel'), '取消安装')
+  assert.equal(byId('cancel').disabled, false)
+  assert.equal(byId('progress').getAttribute('value'), null)
+  await emit({ phase: 'extracting', message: '正在解包工具', completedBytes: 1024, totalBytes: 4096, currentPath: 'tools/示例 tool/<test>.bin' })
+  assert.equal(text('phase'), '解包工具')
+  assert.equal(text('percent'), '25%')
+  assert.equal(text('bytes'), '1 KiB / 4 KiB')
+  assert.equal(text('current-path'), 'tools/示例 tool/<test>.bin')
+  assert.equal(byId('current-path').querySelector('test'), null)
+  assert.equal(byId('progress').getAttribute('aria-valuetext'), '当前阶段 25%，1 KiB / 4 KiB')
   await emit({ phase: 'checking-space', message: '正在检查磁盘空间', completedBytes: 0, totalBytes: 10 * 1024 ** 3 })
-  assert.equal(await page.locator('#phase').textContent(), '检查磁盘空间')
-  assert.equal(await page.locator('#progress').getAttribute('value'), null)
-  assert.equal(await page.locator('#percent').textContent(), '')
-  assert.equal(await page.locator('#bytes').textContent(), '')
-  assert.equal(await page.locator('#current-path').isHidden(), true)
-  assert.ok(requests.every(url => new URL(url).protocol === 'file:'))
-  const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
+  assert.equal(text('phase'), '检查磁盘空间')
+  assert.equal(byId('progress').getAttribute('value'), null)
+  assert.equal(text('percent'), '')
+  assert.equal(text('bytes'), '')
+  assert.equal(byId('current-path').hidden, true)
+  for (const element of window.document.querySelectorAll('[src], [href]')) {
+    assert.doesNotMatch(element.getAttribute('src') ?? element.getAttribute('href'), /^[a-z][a-z0-9+.-]*:|^\/\//iu)
+  }
+  const policy = window.document.querySelector('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
   assert.match(policy, /script-src 'self'/)
   assert.match(policy, /style-src 'self'/)
   assert.doesNotMatch(policy, /unsafe-inline|https?:/)
 })
 
 test('keeps cancellation pending until a terminal update and never closes or navigates the page', async (owner) => {
-  const { page, emit } = await fixture(owner)
-  const before = page.url()
-  await page.getByRole('button', { name: '取消安装' }).click()
-  await page.evaluate(() => { document.getElementById('cancel').click() })
-  assert.equal(await page.evaluate(() => window.__TOOLPACK_FIXTURE__.state.cancelCalls), 1)
-  assert.equal(await page.locator('#cancel').isDisabled(), true)
-  assert.equal(await page.locator('#cancel-state').textContent(), '正在安全停止，请稍候')
-  await page.evaluate(async () => { window.__TOOLPACK_FIXTURE__.resolveCancel(); await Promise.resolve() })
-  assert.equal(await page.locator('#cancel').isDisabled(), true)
+  const { window, byId, text, emit, resolve, state } = await fixture(owner)
+  const before = window.location.href
+  byId('cancel').click()
+  byId('cancel').click()
+  await settle()
+  assert.equal(state.cancelCalls, 1)
+  assert.equal(byId('cancel').disabled, true)
+  assert.equal(text('cancel-state'), '正在安全停止，请稍候')
+  await resolve('resolveCancel')
+  assert.equal(byId('cancel').disabled, true)
   await emit({ phase: 'rolling-back', message: '正在恢复原有工具', cancelling: true })
-  assert.equal(await page.locator('#phase').textContent(), '恢复原有工具')
-  assert.equal(await page.locator('#cancel-state').textContent(), '正在安全停止，请稍候')
+  assert.equal(text('phase'), '恢复原有工具')
+  assert.equal(text('cancel-state'), '正在安全停止，请稍候')
   await emit({ phase: 'cancelled', message: '已取消，原有工具保持可用' })
-  assert.equal(await page.locator('#phase').textContent(), '已取消安装')
-  assert.equal(await page.locator('#cancel').isDisabled(), true)
-  assert.equal(await page.locator('#cancel-state').textContent(), '')
-  assert.equal(await page.locator('#progress').isHidden(), true)
-  assert.equal(page.isClosed(), false)
-  assert.equal(page.url(), before)
+  assert.equal(text('phase'), '已取消安装')
+  assert.equal(byId('cancel').disabled, true)
+  assert.equal(text('cancel-state'), '')
+  assert.equal(byId('progress').hidden, true)
+  assert.equal(window.location.href, before)
 })
 
 test('allows retry after an undelivered cancellation request and disables cancellation after completion', async (owner) => {
-  const { page, emit } = await fixture(owner)
-  await page.getByRole('button', { name: '取消安装' }).click()
-  await page.evaluate(async () => { window.__TOOLPACK_FIXTURE__.rejectCancel(); await Promise.resolve() })
-  await page.locator('#cancel-state[data-error]').waitFor({ state: 'visible' })
-  assert.equal(await page.locator('#cancel-state').textContent(), '取消请求未能发送，请重试')
-  assert.equal(await page.locator('#cancel').isDisabled(), false)
-  await page.getByRole('button', { name: '取消安装' }).click()
-  assert.equal(await page.evaluate(() => window.__TOOLPACK_FIXTURE__.state.cancelCalls), 2)
+  const { byId, text, emit, resolve, state } = await fixture(owner)
+  byId('cancel').click()
+  await resolve('rejectCancel')
+  assert.equal(byId('cancel-state').hasAttribute('data-error'), true)
+  assert.equal(text('cancel-state'), '取消请求未能发送，请重试')
+  assert.equal(byId('cancel').disabled, false)
+  byId('cancel').click()
+  await settle()
+  assert.equal(state.cancelCalls, 2)
   await emit({ phase: 'complete', message: '离线工具安装完成', completedBytes: 4096, totalBytes: 4096 })
-  assert.equal(await page.locator('#phase').textContent(), '安装完成')
-  assert.equal(await page.locator('#percent').textContent(), '100%')
-  assert.equal(await page.locator('#cancel').isDisabled(), true)
-  await page.evaluate(async () => { window.__TOOLPACK_FIXTURE__.rejectCancel(); await Promise.resolve() })
-  assert.equal(await page.locator('#cancel-state').textContent(), '')
+  assert.equal(text('phase'), '安装完成')
+  assert.equal(text('percent'), '100%')
+  assert.equal(byId('cancel').disabled, true)
+  await resolve('rejectCancel')
+  assert.equal(text('cancel-state'), '')
 })
 
 test('retains newer events over a late initial snapshot and disposes the subscription once', async (owner) => {
-  const { page, emit } = await fixture(owner, { deferredInitial: true })
+  const { window, text, emit, resolve, state } = await fixture(owner, { deferredInitial: true })
   await emit({ phase: 'checking-media', message: '正在校验分卷', completedBytes: 5, totalBytes: 10 })
-  await page.evaluate(async () => { window.__TOOLPACK_FIXTURE__.resolveInitial(); await Promise.resolve() })
-  assert.equal(await page.locator('#phase').textContent(), '校验安装文件')
-  assert.equal(await page.locator('#percent').textContent(), '50%')
-  await page.evaluate(() => {
-    window.dispatchEvent(new Event('pagehide'))
-    window.dispatchEvent(new Event('unload'))
-  })
-  assert.equal(await page.evaluate(() => window.__TOOLPACK_FIXTURE__.state.unsubscribed), 1)
+  await resolve('resolveInitial')
+  assert.equal(text('phase'), '校验安装文件')
+  assert.equal(text('percent'), '50%')
+  window.dispatchEvent(new window.Event('pagehide'))
+  window.dispatchEvent(new window.Event('unload'))
+  assert.equal(state.unsubscribed, 1)
   await emit({ phase: 'complete', message: 'late event', completedBytes: 10, totalBytes: 10 })
-  assert.equal(await page.locator('#phase').textContent(), '校验安装文件')
+  assert.equal(text('phase'), '校验安装文件')
 })
 
-test('changes the local palette across themes without narrow-view overflow and honors reduced motion', async (owner) => {
-  const { page, emit } = await fixture(owner)
-  await page.setViewportSize({ width: 400, height: 560 })
-  await emit({ phase: 'switching', message: '正在切换到已校验的新工具版本', currentPath: `tools/中文 路径/${'a'.repeat(100)}.dll` })
-  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
-  const light = await page.evaluate(() => ({ background: getComputedStyle(document.documentElement).backgroundColor,
-    text: getComputedStyle(document.documentElement).color, overflow: document.documentElement.scrollWidth > innerWidth,
-    animation: getComputedStyle(document.getElementById('progress')).animationName }))
-  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
-  const dark = await page.evaluate(() => ({ background: getComputedStyle(document.documentElement).backgroundColor,
-    text: getComputedStyle(document.documentElement).color, overflow: document.documentElement.scrollWidth > innerWidth }))
-  assert.notEqual(light.background, dark.background)
-  assert.notEqual(light.text, dark.text)
-  assert.equal(light.animation, 'none')
-  assert.equal(light.overflow, false)
-  assert.equal(dark.overflow, false)
+test('defines a dark palette and stops the waiting animation for reduced motion', () => {
+  assert.match(STYLES, /@media \(prefers-color-scheme: dark\) \{\s*:root \{[^}]*--toolpack-track:/u)
+  assert.match(STYLES, /@media \(prefers-reduced-motion: reduce\) \{\s*progress:not\(\[value\]\) \{ animation: none; \}/u)
+  assert.match(STYLES, /\.current-path \{[^}]*overflow-wrap: anywhere;/u)
 })
 
 test('shows a local connection error without an active cancellation control when no preload is present', async (owner) => {
-  const { page } = await fixture(owner, { missingBridge: true })
-  assert.equal(await page.locator('#phase').textContent(), '安装服务未连接')
-  assert.equal(await page.locator('#cancel').isDisabled(), true)
-  assert.equal(await page.locator('#progress').isHidden(), true)
+  const { byId, text } = await fixture(owner, { missingBridge: true })
+  assert.equal(text('phase'), '安装服务未连接')
+  assert.equal(byId('cancel').disabled, true)
+  assert.equal(byId('progress').hidden, true)
 })

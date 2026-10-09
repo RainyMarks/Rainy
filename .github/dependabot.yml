@@ -3,30 +3,12 @@ version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/"
-    exclude-paths:
-      # Vendored Cordis sources follow vendor/README.md instead of registry updates.
-      - "vendor/**"
     schedule:
       interval: "cron"
       cronjob: "0 4 * * *"
       timezone: "Asia/Shanghai"
     cooldown:
       default-days: 30
-    labels:
-      - "kind/dependency"
-      - "area/infra"
-
-  - package-ecosystem: "uv"
-    directory: "/python/sdk"
-    schedule:
-      interval: "cron"
-      cronjob: "0 4 * * *"
-      timezone: "Asia/Shanghai"
-    cooldown:
-      default-days: 30
-    labels:
-      - "kind/dependency"
-      - "area/infra"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -36,6 +18,3 @@ updates:
       timezone: "Asia/Shanghai"
     cooldown:
       default-days: 30
-    labels:
-      - "kind/dependency"
-      - "area/infra"

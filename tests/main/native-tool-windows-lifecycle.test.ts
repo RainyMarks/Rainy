@@ -3,8 +3,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { BrowserWindow } from 'electron'
-import { NativeToolsLibrary } from '../src/native-tools.ts'
-import { installNativeTools } from '../src/native-tool-windows.ts'
+import { NativeToolsLibrary } from '../../src/main/native-tools.ts'
+import { installNativeTools } from '../../src/main/native-tool-windows.ts'
 
 const control = vi.hoisted(() => ({
   windows: [] as Array<{ destroy(): void }>, release: Promise.withResolvers<undefined>(),
@@ -31,7 +31,7 @@ vi.mock('electron', async () => {
   return { BrowserWindow: Window, ipcMain: { handle: control.handle, removeHandler: vi.fn() } }
 })
 
-vi.mock('../src/native-tool-web.ts', () => ({
+vi.mock('../../src/main/native-tool-web.ts', () => ({
   serveNativeTool: async () => {
     control.serving.resolve(undefined)
     await control.serveGate

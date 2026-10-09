@@ -6,6 +6,7 @@ process.env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ';
 module.exports = {
   appId: 'dev.rainy.agent', productName: 'RainyAgent',
   publish: { provider: 'github', owner: 'RainyMarks', repo: 'RainyAgent', releaseType: 'release' },
+  // scripts/prepare-shell.mjs stages build/shell from dist/main.cjs, dist/preload.cjs and dist/setup.
   directories: { app: 'build/shell', output: 'release' },
   files: ['package.json', 'main.cjs', 'preload.cjs', 'setup/**', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '!**/node_modules/**'],
   extraResources: [

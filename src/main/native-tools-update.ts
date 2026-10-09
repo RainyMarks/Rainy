@@ -9,7 +9,7 @@ import { parseNativeToolCatalog } from './native-tools.ts'
 /** Tool-channel signatures cannot be reused as application resource signatures or as earlier channel formats. */
 export const TOOL_CHANNEL_SIGNATURE_DOMAIN = 'RainyAgent/tool-channel/v2\0'
 /** Publisher location of the newest signed per-tool channel. */
-export const TOOL_CHANNEL_URL = 'https://raw.githubusercontent.com/RainyMarks/RainyAgent/main/apps/rainy-desktop/toolpacks/native-tools-channel.v2.signed.json'
+export const TOOL_CHANNEL_URL = 'https://raw.githubusercontent.com/RainyMarks/RainyAgent/main/toolpacks/native-tools-channel.v2.signed.json'
 const hash = z.string().regex(/^[a-f0-9]{64}$/)
 const keyId = z.string().regex(/^[a-f0-9]{32}$/)
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)

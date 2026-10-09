@@ -1,9 +1,9 @@
 /** Authenticate and reuse immutable offline inputs before publishing a release catalog. */
 import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { componentDigest, environmentComponentSchema } from '../src/environment-components.ts'
-import { toolPackMetadataSchema } from '../src/toolpack-format.ts'
-import { environmentMedia } from '../src/environment-media.ts'
+import { componentDigest, environmentComponentSchema } from '../src/main/environment-components.ts'
+import { toolPackMetadataSchema } from '../src/main/toolpack-format.ts'
+import { environmentMedia } from '../src/main/environment-media.ts'
 
 const app = resolve(import.meta.dirname, '..')
 const version = JSON.parse(await readFile(join(app, 'package.json'), 'utf8')).version

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { c as archiveTar } from 'tar'
-import { componentDigest, environmentComponentSchema, installWindowsComponent } from '../src/environment-components.ts'
+import { componentDigest, environmentComponentSchema, installWindowsComponent } from '../../src/main/environment-components.ts'
 
 const directories: string[] = []
 afterEach(async () => {

@@ -5,8 +5,8 @@ import { createHash, generateKeyPairSync, verify } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import { prepareReleaseKey, readReleaseSigningKey, releaseSigningKeyPath } from '../scripts/release-signing-key.mjs'
-import { resolveReleaseSigner, signReleaseResources } from '../scripts/sign-release.mjs'
+import { prepareReleaseKey, readReleaseSigningKey, releaseSigningKeyPath } from '../../scripts/release-signing-key.mjs'
+import { resolveReleaseSigner, signReleaseResources } from '../../scripts/sign-release.mjs'
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'rainy-release-signing-'))

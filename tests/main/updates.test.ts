@@ -1,8 +1,8 @@
 /** Updater transport and saved-shutdown barriers are isolated from Electron and external services. */
 import { EventEmitter } from 'node:events'
 import { afterEach, expect, it, vi } from 'vitest'
-import { RainyUpdates } from '../src/updates.ts'
-import type { RainyUpdater, RainyUpdateHooks, RainyUpdateState } from '../src/updates.ts'
+import { RainyUpdates } from '../../src/main/updates.ts'
+import type { RainyUpdater, RainyUpdateHooks, RainyUpdateState } from '../../src/main/updates.ts'
 
 const controllers: RainyUpdates[] = []
 afterEach(() => { for (const controller of controllers.splice(0)) controller.dispose(); vi.restoreAllMocks() })

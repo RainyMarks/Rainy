@@ -1,13 +1,13 @@
 /** Adapt native file references to the selected WSL Host without exposing Electron APIs. */
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { installWindowChrome } from './preload-chrome.ts'
-import type { EnvironmentAction, EnvironmentSnapshot } from './environment.ts'
-import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult, NativeToolsDownloadState, NativeToolsUpdateState } from '@deepseek-ai/dsh-client-ui-rainy/native-tools-protocol'
-import type { ToolPackWindowProgress } from './toolpack-maintenance.ts'
-import type { IdeNativeDirectory } from './ide-native.ts'
-import type { IdeEnvironmentAction, IdeEnvironmentSnapshot } from './ide-environment.ts'
-import type { StrataNativeHost, StrataModelPicker, StrataSettings } from '@deepseek-ai/dsh-client-ui-rainy/strata-protocol'
-import type { OptionalModuleId, OptionalModulesBridge, OptionalModulesState } from '@deepseek-ai/dsh-client-ui-rainy/modules-protocol'
+import type { EnvironmentAction, EnvironmentSnapshot } from '../main/environment.ts'
+import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult, NativeToolsDownloadState, NativeToolsUpdateState } from '../shared/native-tools-protocol.ts'
+import type { ToolPackWindowProgress } from '../main/toolpack-maintenance.ts'
+import type { IdeNativeDirectory } from '../main/ide-native.ts'
+import type { IdeEnvironmentAction, IdeEnvironmentSnapshot } from '../main/ide-environment.ts'
+import type { StrataNativeHost, StrataModelPicker, StrataSettings } from '../shared/strata-protocol.ts'
+import type { OptionalModuleId, OptionalModulesBridge, OptionalModulesState } from '../shared/modules-protocol.ts'
 
 /** Payload sent by the main process on each progress channel. */
 interface ProgressChannels {

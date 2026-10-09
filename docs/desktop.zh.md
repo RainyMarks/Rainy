@@ -1,18 +1,18 @@
 # RainyAgent 桌面版
 
-[English](README.md) | 中文
+[English](desktop.md) | 中文
 
 RainyAgent 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 WSL Linux 运行环境是可选组件，原生工具按工具单独下载。模型权重由用户自行提供。它保留上游 Agent 循环、会话持久化和 Web 聊天界面，默认组合四个工具：`read`、`write`、`edit`，以及所选平台的 Shell（`pwsh` 或 `bash`）。上游基线为 0.1.7-rc.2 版本。
 
-[中文安装与配置指南](README.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](VALIDATION.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](THIRD_PARTY_NOTICES.md)介绍上游和打包依赖。
+[中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍上游和打包依赖。
 
 ## 离线安装与恢复
 
-[1.0.10 发行包](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.10)提供核心安装程序。[1.0.10 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.10-resources)存放 PHP 组件和 WSL 运行环境分片；[1.0.6 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.6-resources)存放原生工具归档。[1.0.0 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.0-resources)仍存放 Strata 归档、`environment/` WSL 安装介质和 `environment-components/` 运行环境归档。核心可直接在 Windows 原生启动，无需 WSL 或科学计算库。源码打包按[输入清单](toolpacks/build-inputs.v1.json)把固定版本的输入恢复至 `release/offline-1.0.6`。原生工具为可选项：可在目录中按工具联网下载；离线安装时，把全部 `rainy-unit-*.tar.gz` 归档放在安装程序旁，安装程序会安装其中每个单元。不带这些归档时，安装程序保留现有工具。
+[1.0.10 发行包](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.10)提供核心安装程序。[1.0.10 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.10-resources)存放 PHP 组件和 WSL 运行环境分片；[1.0.6 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.6-resources)存放原生工具归档。[1.0.0 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.0-resources)仍存放 Strata 归档、`environment/` WSL 安装介质和 `environment-components/` 运行环境归档。核心可直接在 Windows 原生启动，无需 WSL 或科学计算库。源码打包按[输入清单](../toolpacks/build-inputs.v1.json)把固定版本的输入恢复至 `release/offline-1.0.6`。原生工具为可选项：可在目录中按工具联网下载；离线安装时，把全部 `rainy-unit-*.tar.gz` 归档放在安装程序旁，安装程序会安装其中每个单元。不带这些归档时，安装程序保留现有工具。
 
 工具安装窗口显示当前阶段、文件及阶段进度。点击取消后请求安全停止，并等待必要的回滚。使用同一组归档重新运行安装程序时，会重新校验归档并复用已校验的暂存文件。归档损坏或空间不足会在工具目录替换前停止安装。更新前请保存工作并关闭 RainyAgent、原生工具及其命令行窗口；安装程序报告占用，不自动结束这些进程。
 
-第三方 Electron ASAR 归档按完整二进制文件安装、校验和备份。目录检查和离线 HTTP 响应通过未修改的磁盘文件系统读取这些文件。载体自身的打包页面继续使用正常的 ASAR 加载与完整性保护。[真实 Electron 测试](tests/toolpack-electron.mjs) 在私有临时目录检查安装、取消、重试、用户文件保留、目录检查及原始归档传输。
+第三方 Electron ASAR 归档按完整二进制文件安装、校验和备份。目录检查和离线 HTTP 响应通过未修改的磁盘文件系统读取这些文件。载体自身的打包页面继续使用正常的 ASAR 加载与完整性保护。[真实 Electron 测试](../tests/manual/toolpack-electron.mjs) 在私有临时目录检查安装、取消、重试、用户文件保留、目录检查及原始归档传输。
 
 升级会在继续提供的工具目录保留已声明的设置和用户新增文件。每个已安装版本保存文件清单，用于区分程序文件和用户文件；新版不再包含的旧程序文件会被移除。安装会把被替换或移除的工具目录移入 `.rainy-toolpack/backups/<transactionId>/`。安装提交后，路径、大小和 SHA-256 与已保存版本清单一致的备份文件会被删除，只留下用户文件和有改动的文件供手动恢复。启动约 60 秒后，应用对旧版本留下的备份执行同样的清理；未完成的切换或回滚会保留全部备份。旧清单之外的目录保持不动。用户路径与新版冲突或旧清单缺失时，升级会在替换前停止并指出相关路径。恢复记录、版本文件清单和剩余备份保留在 `.rainy-toolpack` 中。卸载应用会保留 `tools/`、`runtime/`、恢复记录及用户数据。
 
@@ -32,11 +32,11 @@ WSL 运行环境（约 340 MB）与每个 RainyAgent 版本对应，发布在 1.
 
 安装版在启动时检查 GitHub `RainyMarks/RainyAgent` 的稳定发行版，并在有新版本时后台下载核心更新。“帮助 → 检查更新”提供手动状态查看与重试。准备完成后可选择“稍后”或“重启安装”；只有确认、草稿保存和 Host 清理完成后才启动安装。保存失败会保留应用窗口。普通退出不会安装已下载的更新，更新器不会选择预发布版或降级已安装版本。
 
-自动更新替换核心应用并保留已安装的工具与环境，不会重新下载原生工具、WSL 介质或 CPU/CUDA 环境组件；更新后首次以 WSL 启动时会下载该版本的 WSL 运行环境。CPU/CUDA 环境组件仍从匹配的离线发行文件导入。[验收记录](VALIDATION.md)按发布产物记录已经完成的更新检查。
+自动更新替换核心应用并保留已安装的工具与环境，不会重新下载原生工具、WSL 介质或 CPU/CUDA 环境组件；更新后首次以 WSL 启动时会下载该版本的 WSL 运行环境。CPU/CUDA 环境组件仍从匹配的离线发行文件导入。[验收记录](validation.md)按发布产物记录已经完成的更新检查。
 
 ## 运行时约定
 
-显式的 `cordis.patch.yml` profile 排除官方账号、遥测、办公运行库、浏览器与电脑操作、定时任务、多 Agent 工具和插件市场。一个选定的 Windows 或 WSL Host 负责命令、终端、模型连接及会话；Windows 外壳负责窗口、原生工具窗口及共享项目目录。生命周期控制使用标准输入输出，应用数据使用认证后的 HTTP/WebSocket。切换执行目标前保存草稿，并拒绝运行中或排队中的 Agent 工作、程序、调试及终端；修改目标选择前冻结新执行。
+Host（[架构说明](architecture.md)）不包含官方账号、遥测、办公运行库、浏览器与电脑操作、定时任务、多 Agent 工具和插件市场。一个选定的 Windows 或 WSL Host 负责命令、终端、模型连接及会话；Windows 外壳负责窗口、原生工具窗口及共享项目目录。生命周期控制使用标准输入输出，应用数据使用认证后的 HTTP/WebSocket。切换执行目标前保存草稿，并拒绝运行中或排队中的 Agent 工作、程序、调试及终端；修改目标选择前冻结新执行。
 
 WSL 启动在 Host 报告 profile 就绪后，还会等待 Windows 侧 loopback TCP 可达。连接拒绝会在原有 90 秒启动期限内重试，其他连接错误会使启动失败。该检查不发送 HTTP 请求或认证 token。取消、超时及 Host 退出都会停止探测，transport 关闭会等待所拥有的 socket 和子进程退出。Windows 原生启动不执行跨系统探测。
 
@@ -52,7 +52,7 @@ WSL 启动在 Host 报告 profile 就绪后，还会等待 Windows 侧 loopback 
 
 Monaco 提供多文件标签、语法高亮、查找替换、撤销、显式保存和差异视图。文件操作保留 UTF-8 BOM 和换行方式。二进制、非 UTF-8 及超限文档只读，默认可编辑上限为 5 MiB。超限 UTF-8 文件最多预览 64 KiB，不截断字符；二进制以十六进制最多预览 4 KiB。快速打开搜索工作区路径，限制结果数量，并提示截断。更改查询、切换项目或重新打开窗口会使旧结果失效；搜索等待或失败时不能打开旧结果。
 
-编辑器的内存目录树按 URI 路径段解析父目录，包括 Windows 盘符根和 UNC 共享，同时保留语言服务使用的 Host 路径与文件 URI 语义。注册、模型创建及回读使用一致的 Monaco 规范 URI 标识。`node apps/rainy-desktop/tests/editor-files-browser.mjs` 在 Windows 浏览器环境中检查实际文件服务，覆盖中文与空格路径、相互独立的同名文件以及 POSIX 路径。
+编辑器的内存目录树按 URI 路径段解析父目录，包括 Windows 盘符根和 UNC 共享，同时保留语言服务使用的 Host 路径与文件 URI 语义。注册、模型创建及回读使用一致的 Monaco 规范 URI 标识。
 
 恢复存储按工作区保留未保存缓冲区、已开标签及面板尺寸。外部修改会刷新未编辑的缓冲区；已编辑的缓冲区保留文本并提供比较。版本冲突会阻止保存，直到用户处理已显示的差异。运行与调试先保存当前工作区的全部修改，任一保存失败就停止启动。
 
@@ -73,14 +73,14 @@ Monaco 提供多文件标签、语法高亮、查找替换、撤销、显式保�
 
 每个工具目录、每个共享运行时（Java 21、.NET 8）和目录文件都是一个安装单元，各有独立归档 `rainy-unit-<20 位十六进制>.tar.gz`。归档名由该单元的文件清单得出，因此未变化的工具在各发行版间沿用同一归档，不会再次下载。1.0.6 版共有 41 个归档，合计约 2.1 GB；最大的 IDA 约 383 MB，7-Zip 等小工具约 1 MB。1.0.6 之前由离线安装程序放入应用目录的工具在原处更新；其他情况下工具位于 `%APPDATA%\RainyAgent\native-tools`。
 
-工具通道使用签名格式 2：`toolpacks/native-tools-channel.v2.signed.json`（签名域 `RainyAgent/tool-channel/v2`）及下载来源 `toolpacks/native-tools-source.v2.json`。版本 1 的 `toolpacks/native-tools-channel.signed.json` 继续供 1.0.5 及更早客户端使用。安装程序以 `resources/native-tools-channel.signed.json` 附带通道；应用采用随包通道与缓存通道中修订号较高者，并忽略发布者的旧修订。应用拒绝无效签名和不匹配的目录，也不会从通道接受新的信任公钥。发布者先打包已暂存的工具，再以更大的 `--revision` 构建并签名通道：
+工具通道使用签名格式 2：`toolpacks/native-tools-channel.v2.signed.json`（签名域 `RainyAgent/tool-channel/v2`）及下载来源 `toolpacks/native-tools-source.v2.json`。RainyAgent 2.x 从 `main` 分支获取该文件的新修订。`apps/rainy-desktop/toolpacks/` 保留已安装 1.x 客户端读取的位置：供 1.0.6 及以后版本使用的 `native-tools-channel.v2.signed.json` 逐字节副本，以及供 1.0.5 及更早版本使用的版本 1 `native-tools-channel.signed.json`。`build-tool-channel.mjs` 与 `sign-tool-channel.mjs` 的输出为 `toolpacks/native-tools-channel.v2.signed.json` 时会同时重写该副本。安装程序以 `resources/native-tools-channel.signed.json` 附带通道；应用采用随包通道与缓存通道中修订号较高者，并忽略发布者的旧修订。应用拒绝无效签名和不匹配的目录，也不会从通道接受新的信任公钥。发布者先打包已暂存的工具，再以更大的 `--revision` 构建并签名通道：
 
 ```sh
 node scripts/package-native-tools.mjs --stage <stage> --output <dir> [--previous <earlier metadata.json>]
 node scripts/build-tool-channel.mjs --metadata <dir>/native-tools-metadata.json --archives <dir> --catalog <stage>/tools/manifest.json --version <x.y.z> --revision <n> --pieces <pieces dir> --source-output toolpacks/native-tools-source.v2.json --output toolpacks/native-tools-channel.v2.signed.json [--previous-source <earlier source>] [--key <publisher key>]
 ```
 
-将输出列出的分片上传到 `v<version>-resources` Release，并提交两个 toolpacks 文件。上一版来源清单中已有的归档保留原发布位置。签名身份须匹配 `resources/native-tools-public-keys.json`；重新构建应用只需保留这些公钥，无需持有工具签名私钥。
+将输出列出的分片上传到 `v<version>-resources` Release，并提交两个 toolpacks 文件及 1.x 副本。上一版来源清单中已有的归档保留原发布位置。签名身份须匹配 `resources/native-tools-public-keys.json`；重新构建应用只需保留这些公钥，无需持有工具签名私钥。
 
 “常用工具”顶部汇总“已下载 N / M 款工具”。未下载工具的卡片以“下载 · 大小”代替“打开”；已下载工具显示“打开”和“移除”，移除需再次点击确认。“有更新”标签标出过期工具。顶部按钮“全部下载（大小）”和“更新已下载的工具（大小）”位于“检查工具更新”旁。安装前逐个校验传输分片和归档的 SHA-256；下载支持取消、断点续传和重试。下载某个工具时会同时安装它需要的运行时，并把其他已下载工具更新到同一目录修订，只下载有变化的单元。“移除”删除该工具以及不再被剩余工具使用的运行时，无需联网。已安装工具可离线使用，重启和应用更新后仍保留。首次访问目录会检查签名工具通道，“检查工具更新”可再次检查。
 
@@ -115,7 +115,7 @@ IceSky 标签打开固定版本的浏览器工作台。一个保留的 iframe �
 <a id="strata-local-inference"></a>
 ## Strata 本地推理
 
-Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14，以及所需服务、准备脚本和 CUDA 运行依赖。引擎缺失时，“模型 → Strata 本地模型”显示“下载”按钮；“运行环境 → 可选组件”也列出该引擎。用户无需另装 Strata 或 Python。推理引擎面向 Windows x64、NVIDIA CUDA 13 和 580 或更新驱动，内含 `sm75`、`sm86`、`sm89`、`sm120` 目标。本包不提供 AMD 或 Linux 推理引擎。[运行时来源清单](toolpacks/strata-runtime.sources.json)固定输入与许可。
+Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14，以及所需服务、准备脚本和 CUDA 运行依赖。引擎缺失时，“模型 → Strata 本地模型”显示“下载”按钮；“运行环境 → 可选组件”也列出该引擎。用户无需另装 Strata 或 Python。推理引擎面向 Windows x64、NVIDIA CUDA 13 和 580 或更新驱动，内含 `sm75`、`sm86`、`sm89`、`sm120` 目标。本包不提供 AMD 或 Linux 推理引擎。[运行时来源清单](../toolpacks/strata-runtime.sources.json)固定输入与许可。
 
 用户提供受支持的 Qwen3.8 Flash Next 主模型 GGUF 及全部分片，以及配套 MTP GGUF 或已准备 MTP 目录。运行时不分发主模型/MTP 权重或派生的 dense/expert 文件。在“模型 → Strata 本地模型”中选择主模型、MTP 来源或兼容 profile，然后保存。MTP 路径留空时尝试从主模型附近检测匹配文件；API 服务仍然需要 MTP。只有明确点击启动后，才在本机准备所需模型文件并加载服务，不下载权重。准备和启动均可取消。
 
@@ -123,7 +123,7 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 “连接并设为默认”先让当前 Host 验证实际已加载模型与窗口，再保存本地端点。即使项目 Host 使用 WSL，Strata 仍在 Windows 运行。若 WSL NAT 无法访问 Windows loopback，请为 Strata 选择 Windows 执行环境；应用不修改网络设置，也不替换成云端模型。
 
-当前 Strata 验证覆盖引擎运行时迁移、Python 导入以及模拟服务的健康检查与聊天衔接，尚不能说明真实 GPU 推理、吞吐量或跨硬件兼容性。[验收记录](VALIDATION.md)负责具体被测产物和剩余项目。
+当前 Strata 验证覆盖引擎运行时迁移、Python 导入以及模拟服务的健康检查与聊天衔接，尚不能说明真实 GPU 推理、吞吐量或跨硬件兼容性。[验收记录](validation.md)负责具体被测产物和剩余项目。
 
 ## 模型体验
 
@@ -133,7 +133,7 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 “设置 → 模型 → 全局提示词”保存的指令会作为一段系统提示进入所有会话（包括已打开的会话）的模型请求。文本以 `globalPrompt` 保存在所选 Host 的 `rainy-policy` 条目中，长度受 `globalPromptMaxChars` 限制（默认 4,000 字），并与项目指令一起计入请求预算。压缩摘要、项目记忆、标题和连接探测使用各自的提示词；留空则不添加任何内容。
 
-模型设置保存在所选 Host 的 Rainy profile 中，凭据使用单独的私有存储。Host 就绪前会修正旧版 Rainy 模型配置中缺少协议映射的明确关闭思考设置，保留地址、预算、凭据引用和其他设置。模型请求使用已下载的 Strata 服务或用户配置的端点。新建 API 模型默认采用 OpenAI Responses，本地模型默认采用 Chat Completions；[设置默认值](../../packages/client/ui-rainy/README.zh.md#use-this-package)可按实际服务修改。DeepSeek 预设使用 1,000,000 tokens 上下文。发现模型只需供应商、Base URL、协议及可选请求密钥，不要求模型 ID 或上下文长度，也不保存配置。保存配置及独立的流式与工具调用诊断仍要求完整模型配置。它不会静默替换成云端供应商。Skills 与明确列出的 MCP 工具按会话选择和保存，只有已选注册项及有限的 Skill 描述进入模型输入。已有文件读取工具按需加载 Skill 正文；扩展说明与工具定义同时受配置上限和模型输入预算 20% 的限制。
+模型设置保存在所选 Host 的 Rainy profile 中，凭据使用单独的私有存储。Host 就绪前会修正旧版 Rainy 模型配置中缺少协议映射的明确关闭思考设置，保留地址、预算、凭据引用和其他设置。模型请求使用已下载的 Strata 服务或用户配置的端点。新建 API 模型默认采用 OpenAI Responses，本地模型默认采用 Chat Completions；设置默认值可按实际服务修改。DeepSeek 预设使用 1,000,000 tokens 上下文。发现模型只需供应商、Base URL、协议及可选请求密钥，不要求模型 ID 或上下文长度，也不保存配置。保存配置及独立的流式与工具调用诊断仍要求完整模型配置。它不会静默替换成云端供应商。Skills 与明确列出的 MCP 工具按会话选择和保存，只有已选注册项及有限的 Skill 描述进入模型输入。已有文件读取工具按需加载 Skill 正文；扩展说明与工具定义同时受配置上限和模型输入预算 20% 的限制。
 
 编程提示词保持简短；默认工具定义保留取消、文件观察检查和原子写入。搜索通过所选平台的 shell 与捆绑的 ripgrep 完成。其他工具的超长文本完整保存到磁盘，模型可见的有限片段包含原文读取位置。read 自己管理行窗口，读取普通文件或 spill 文件都不会再次打包成 spill。默认上限为 2,000 行、每行 2,000 字符及 50 KiB 的所选行文本，包装文本另计。完整模型请求仍须通过输入预算检查，过大的读取页会在供应商调用前拒绝，不会强塞入小窗口。超长行有明确截断标记，原始文件保持完整；offset 和 limit 按行分页，不支持行内列分页。会话标题来自首条用户消息，不产生辅助推理。项目指令和用户消息不会为强行满足预算而静默截断。Rainy 拒绝超过 64 KiB 的单源或完整指令批次，指明文件，并在下一请求前重新检查已修正的动态指令。上下文设置分别显示系统提示、工具定义、项目指令、记忆、扩展、历史及协议包装的估算开销。首发预览读取当前项目与已保存模型，不创建聊天、不调用推理；未提交附件及发送时才发生的变化不在预览中。配置的 tokenizer 接收当前 provider/model 与 system/messages/tools，只有返回匹配的 model、非空 chatTemplate 和整数 tokens 才标记为实测。
 
@@ -145,7 +145,7 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 ## 使用许可与发行完整性
 
-[RainyAgent 源码可用许可](LICENSE)允许个人和企业内部免费使用、修改及非商业再分发；销售、收费托管和商业再分发需要另行书面许可。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
+[RainyAgent 源码可用许可](../LICENSE)允许个人和企业内部免费使用、修改及非商业再分发；销售、收费托管和商业再分发需要另行书面许可。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
 
 生产载体使用构建时嵌入的发行公钥验证资源清单，并保留 Electron ASAR 完整性保护。构建密钥独立于用户数据：默认保存在被忽略的 build 目录，也可通过 RAINY_RELEASE_SIGNING_KEY 指定已有 Ed25519 私钥文件；私钥不进入发行包。Windows Authenticode 签名使用另行配置的证书。
 
@@ -153,25 +153,25 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 ## 已知限制与后续工作
 
-发行目标为 Windows x64；签名状态及平台、模型验收以[验收记录](VALIDATION.md)中的具体产物为准。其他 WSL2 发行版与模型端点需分别验收。扩展编辑器使用 JSON，不提供市场或 OAuth 流程。精确计数要求适配实际部署模型的全请求 tokenizer 端点。源码保留上游模块，生产依赖图单独裁剪。本桌面应用通过实际组合和安装包测试验证，不导出复用插件式的独立 invariant 入口。
+发行目标为 Windows x64；签名状态及平台、模型验收以[验收记录](validation.md)中的具体产物为准。其他 WSL2 发行版与模型端点需分别验收。扩展编辑器使用 JSON，不提供市场或 OAuth 流程。精确计数要求适配实际部署模型的全请求 tokenizer 端点。源码保留上游模块，生产依赖图单独裁剪。本桌面应用通过实际组合和安装包测试验证，不导出复用插件式的独立 invariant 入口。
 
-[发行验收记录](VALIDATION.md)负责浏览器性能测量与验收范围。本地 OCR、PDF 渲染和 BPE 在浏览器中运行；单项验收不代表所有输入文档的保真度或长时间 OCR 稳定性。
+[发行验收记录](validation.md)负责浏览器性能测量与验收范围。本地 OCR、PDF 渲染和 BPE 在浏览器中运行；单项验收不代表所有输入文档的保真度或长时间 OCR 稳定性。
 
 38 表示工具包内容数量，不代表通过功能验收的工具数量。命令行与离线网页检查按工具和产物分别记录，旧发行版的验收总数不适用于扩充后的目录。原生第三方 GUI 行为、首次启动提示和实际 UAC 同意交互仍需独立验收。干净 Windows 的安装与重启结果由最终验收记录按被测产物分别记录。无头浏览器的目录证据使用明确的桥接适配器，覆盖目录界面。逐工具验收与目录、安装器和环境测试分别记录；最终验收记录需关联被测产物和剩余项目。
 
 <details>
 <summary>IceSky 构建与定向检查</summary>
 
-桌面构建在打包前校验固定版本的离线依赖校验和，并重新生成资源清单。浏览器资源包含本地处理所需的文档库、PDF worker、OCR 核心和语言数据。[IceSky 集成补丁](resources/icesky/RAINY_PATCH.md)负责记录源码补丁与依赖。
+桌面构建在打包前校验固定版本的离线依赖校验和，并重新生成资源清单。浏览器资源包含本地处理所需的文档库、PDF worker、OCR 核心和语言数据。[IceSky 集成补丁](../resources/icesky/RAINY_PATCH.md)负责记录源码补丁与依赖。
 
 在仓库根目录运行以下定向检查：
 
 ```sh
 pnpm --filter @deepseek-ai/dsh-rainy-desktop run test:icesky
-pnpm --dir apps/rainy-desktop exec vitest run --config vitest.config.ts tests/icesky-host.test.ts tests/saved-reload.test.ts
+pnpm exec vitest run tests/main/saved-reload.test.ts
 pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/rainy-ctf.e2e.ts
 ```
 
-浏览器场景使用已构建的桌面插件与 Web 前端，恢复借用的已录制会话，并通过真实 Rainy profile 检查草稿恢复。浏览器基准需要已准备的 WSL 运行环境和 Playwright 路径；必需参数见[基准入口](tests/icesky-browser-benchmark.mjs)。录制会话场景和单元检查不调用模型接口。单独的私有浏览器夹具通过确定性的本机模型建立十个聊天，不调用外部模型。
+浏览器场景使用已构建的桌面插件与 Web 前端，恢复借用的已录制会话，并通过真实 Rainy profile 检查草稿恢复。浏览器基准需要已准备的 WSL 运行环境和 Playwright 路径；必需参数见[基准入口](../tests/legacy/icesky-browser-benchmark.mjs)。录制会话场景和单元检查不调用模型接口。单独的私有浏览器夹具通过确定性的本机模型建立十个聊天，不调用外部模型。
 
 </details>

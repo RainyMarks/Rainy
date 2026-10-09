@@ -3,11 +3,13 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createEnvironmentSetup, environmentStateDirectory, EnvironmentSetupError } from '../src/environment.ts'
-import type { EnvironmentPlatform, EnvironmentSetupOptions, EnvironmentSystem } from '../src/environment.ts'
-import { createWindowsEnvironmentPlatform } from '../src/environment-platform.ts'
-import { quotePowerShell } from '../src/powershell.ts'
+import { createEnvironmentSetup, environmentStateDirectory, EnvironmentSetupError } from '../../src/main/environment.ts'
+import type { EnvironmentPlatform, EnvironmentSetupOptions, EnvironmentSystem } from '../../src/main/environment.ts'
+import { createWindowsEnvironmentPlatform } from '../../src/main/environment-platform.ts'
+import { quotePowerShell } from '../../src/main/powershell.ts'
 import { execFileSync } from 'node:child_process'
 
 const temporaryRoots: string[] = []
@@ -196,9 +198,9 @@ describe('environment setup', () => {
     const test = await fixture()
     const ready = Promise.withResolvers<undefined>()
     const stopped = Promise.withResolvers<undefined>()
-    const moduleUrl = new URL('../src/environment-platform.ts', import.meta.url).href
+    const moduleUrl = new URL('../../src/main/environment-platform.ts', import.meta.url).href
     const script = `import { createWindowsEnvironmentPlatform } from ${JSON.stringify(moduleUrl)}; const platform = createWindowsEnvironmentPlatform(${JSON.stringify({ installRoot: test.options.installRoot, userData: test.options.userData })}); const release = await platform.acquireLock(); process.once('message', async () => { await release(); process.disconnect(); }); process.send('locked');`
-    const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx/esm'), '--input-type=module', '-e', script], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+    const child = spawn(process.execPath, ['--import', pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm')).href, '--input-type=module', '-e', script], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
     let stderr = ''
     child.stderr?.on('data', (value: Buffer) => { stderr += value.toString() })
     child.once('message', (message) => { if (message === 'locked') ready.resolve(undefined) })

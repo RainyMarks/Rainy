@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { environmentMedia } from '../src/environment-media.ts'
+import { environmentMedia } from '../src/main/environment-media.ts'
 
 const exec = promisify(execFile)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')

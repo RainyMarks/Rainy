@@ -1,7 +1,7 @@
 /** Download selected tools into per-user storage from verified, resumable per-unit archives. */
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { NativeToolId, NativeToolsDownloadState, NativeToolsOperation, NativeToolsUpdateState } from '@deepseek-ai/dsh-client-ui-rainy/native-tools-protocol'
+import type { NativeToolId, NativeToolsDownloadState, NativeToolsOperation, NativeToolsUpdateState } from '../shared/native-tools-protocol.ts'
 import type { ReleaseKeyring } from './release-trust.ts'
 import { acquireToolPackLock, damagedToolPackUnits, installNativeToolPack, installedToolPackManifest, sameToolPackUnit } from './toolpack.ts'
 import type { InstallNativeToolPackOptions, NativeToolPackInstallResult } from './toolpack.ts'

@@ -1,9 +1,9 @@
 /** Human admission, exact WSL command targets, and quiescent development setup. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createIdeEnvironmentSetup, parseIdeEnvironmentAction, resolveIdeEnvironmentConfig } from '../src/ide-environment.ts'
-import type { IdeEnvironmentInspection, IdeEnvironmentPlatform, IdeEnvironmentSetup } from '../src/ide-environment.ts'
-import { createWindowsIdeEnvironmentPlatform } from '../src/ide-environment-platform.ts'
-import type { IdeEnvironmentCommand } from '../src/ide-environment-platform.ts'
+import { createIdeEnvironmentSetup, parseIdeEnvironmentAction, resolveIdeEnvironmentConfig } from '../../src/main/ide-environment.ts'
+import type { IdeEnvironmentInspection, IdeEnvironmentPlatform, IdeEnvironmentSetup } from '../../src/main/ide-environment.ts'
+import { createWindowsIdeEnvironmentPlatform } from '../../src/main/ide-environment-platform.ts'
+import type { IdeEnvironmentCommand } from '../../src/main/ide-environment-platform.ts'
 
 const owners: IdeEnvironmentSetup[] = []
 const releases: Array<() => void> = []

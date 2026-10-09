@@ -1,4 +1,4 @@
-/** Build same-origin ESM Monaco and terminal assets without changing the Client's CJS bundle format. */
+/** Build same-origin ESM Monaco and terminal assets into resources/editor, loaded by the renderer on first use. */
 import { build } from 'esbuild'
 import { mkdir, readFile, writeFile, copyFile, readdir, rename, rm, realpath } from 'node:fs/promises'
 import { dirname, resolve, basename, relative } from 'node:path'
@@ -44,9 +44,9 @@ const assets = {
 const result = await build({
   absWorkingDir: appRoot,
   entryPoints: {
-    editor: 'src/editor-assets/editor.ts',
-    'editor.worker': 'src/editor-assets/editor.worker.ts',
-    'textmate.worker': 'src/editor-assets/textmate.worker.ts',
+    editor: 'src/editor/editor.ts',
+    'editor.worker': 'src/editor/editor.worker.ts',
+    'textmate.worker': 'src/editor/textmate.worker.ts',
   },
   outdir: output, format: 'esm', platform: 'browser', target: 'es2022', bundle: true, splitting: true,
   entryNames: '[name]', chunkNames: 'chunk-[hash]', assetNames: 'asset-[hash]',
@@ -94,7 +94,7 @@ for (const [name, source] of [...dependencies].sort(([left], [right]) => left.lo
   for (const entry of licenseFiles) notices.push(`\n--- ${entry.name} ---\n${await readFile(resolve(source.directory, entry.name), 'utf8')}\n`)
 }
 if (missing.length > 0) throw new Error(`Missing packaged license texts: ${missing.join(', ')}`)
-const licenses = resolve(appRoot, 'src/editor-assets/licenses')
+const licenses = resolve(appRoot, 'src/editor/licenses')
 const licenseSources = JSON.parse(await readFile(resolve(licenses, 'sources.json'), 'utf8'))
 for (const source of licenseSources) notices.push(`\n${'='.repeat(72)}\n${source.Name}\nSource: ${source.Url}\n\n${await readFile(resolve(licenses, source.Name), 'utf8')}\n`)
 const noticePath = resolve(output, 'THIRD_PARTY_NOTICES.txt')

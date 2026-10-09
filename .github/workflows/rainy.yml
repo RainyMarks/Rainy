@@ -14,7 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DSH_TELEMETRY_DISABLED: '1'
   pnpm_config_verify_deps_before_run: warn
 
 jobs:
@@ -37,36 +36,11 @@ jobs:
           cache: pnpm
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-      - name: Build source programs
+      - name: Type check
+        run: pnpm run typecheck
+      - name: Unit tests
+        run: pnpm exec vitest run
+      - name: Script tests
+        run: pnpm run test:node
+      - name: Build
         run: pnpm run build
-      - name: Check Rainy desktop types
-        run: pnpm exec tsc -p apps/rainy-desktop/tsconfig.json --pretty false
-      - name: Verify package licenses
-        run: pnpm exec tsx scripts/verify-dsh-package-licenses.ts
-      - name: Rainy client regression tests
-        run: >-
-          pnpm exec vitest run
-          packages/client/ui-rainy/tests/settings-sections.client.spec.tsx
-          packages/client/ui-rainy/tests/ide-shell.client.spec.tsx
-          packages/client/ui-rainy/tests/strata-settings.client.spec.tsx
-          packages/client/ui-rainy/tests/strata-controller.client.spec.ts
-          packages/client/ui-rainy/tests/native-tools.client.spec.ts
-          packages/client/ui-rainy/tests/tool-catalog.client.spec.tsx
-          packages/client/ui-rainy/tests/optional-modules.client.spec.tsx
-          packages/llm/llm-pi-ai/tests/anthropic-cache.spec.ts
-          packages/llm/llm-pi-ai/tests/catalog.spec.ts
-      - name: Rainy desktop regression tests
-        working-directory: apps/rainy-desktop
-        run: >-
-          pnpm exec vitest run --config vitest.config.ts
-          tests/desktop-lifecycle.test.ts tests/clipboard-policy.test.ts tests/updates.test.ts tests/models-discovery.test.ts
-          tests/transport.test.ts tests/transport-lifecycle.test.ts
-          tests/runtime-environments.test.ts tests/release-integrity.test.ts
-          tests/strata.test.ts tests/strata-health.test.ts tests/models-strata.test.ts tests/models-wire.test.ts tests/models-migration.test.ts
-          tests/native-tools-download.test.ts tests/native-tools.test.ts
-          tests/native-tool-windows-lifecycle.test.ts
-          tests/optional-modules.test.ts tests/toolpack-prune.test.ts
-      - name: Release signing regression tests
-        run: node --test apps/rainy-desktop/tests/sign-release.test.mjs apps/rainy-desktop/tests/sign-tool-channel.test.mjs
-      - name: Release transport regression tests
-        run: node --test apps/rainy-desktop/tests/release-assets.test.mjs apps/rainy-desktop/tests/strata-runtime.test.mjs apps/rainy-desktop/tests/install-runtime.test.mjs

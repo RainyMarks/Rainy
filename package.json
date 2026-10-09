@@ -20,7 +20,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
     "test:node": "node --test tests/scripts/*.test.mjs",
-    "package": "electron-builder --config electron-builder.config.cjs --win nsis"
+    "package": "node scripts/prepare-shell.mjs && electron-builder --config electron-builder.config.cjs --win nsis"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.0.0",

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
-import { initialPlacement, readWindowState, restoredBounds, writeWindowState } from '../src/window-state.ts'
+import { initialPlacement, readWindowState, restoredBounds, writeWindowState } from '../../src/main/window-state.ts'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })

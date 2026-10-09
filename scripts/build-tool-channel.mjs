@@ -4,13 +4,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { packReleaseAssets } from './release-assets.mjs'
-import { signToolChannel } from './sign-tool-channel.mjs'
+import { signToolChannel, writeToolChannel } from './sign-tool-channel.mjs'
 
 /**
  * Build the download source and signed channel for version 2 metadata.
  * Archives already listed in the previous source keep their release location; only the others need new pieces.
  * @param {{metadataPath:string,archives:string,catalogPath:string,releaseVersion:string,revision:number,pieces:string,
- *   sourceOutput:string,channelOutput:string,previousSource?:string,privateKeyPath?:string,publicKeysPath?:string}} options Build inputs.
+ *   sourceOutput:string,channelOutput:string,previousSource?:string,privateKeyPath?:string,publicKeysPath?:string,
+ *   channelPaths?:{published?:string,legacy?:string}}} options Build inputs; writing the published channel also refreshes its 1.x copy.
  * @returns {Promise<{source:object,uploads:string[]}>} Download source and the piece files to upload to the resources release.
  */
 export async function buildToolChannel(options) {
@@ -44,7 +45,7 @@ export async function buildToolChannel(options) {
   if (record?.sha256 !== createHash('sha256').update(catalog).digest('hex')) throw new Error('The catalog differs from the metadata inventory')
   const envelope = await signToolChannel({ revision: options.revision, releaseVersion: options.releaseVersion, sourcePath: options.sourceOutput,
     metadataPath: options.metadataPath, catalogPath: options.catalogPath, privateKeyPath: options.privateKeyPath, publicKeysPath: options.publicKeysPath })
-  await writeFile(options.channelOutput, JSON.stringify(envelope) + '\n')
+  await writeToolChannel(options.channelOutput, envelope, options.channelPaths)
   return { source, uploads }
 }
 

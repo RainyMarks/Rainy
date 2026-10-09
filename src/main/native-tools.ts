@@ -2,8 +2,8 @@
 import { dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { nativeToolIds } from '@deepseek-ai/dsh-client-ui-rainy/native-tools-protocol'
-import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult } from '@deepseek-ai/dsh-client-ui-rainy/native-tools-protocol'
+import { nativeToolIds } from '../shared/native-tools-protocol.ts'
+import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult } from '../shared/native-tools-protocol.ts'
 import { renameToolPackPath } from './toolpack-files.ts'
 import { toolPackFileSystem } from './toolpack-fs.ts'
 

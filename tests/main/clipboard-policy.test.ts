@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowsClipboardWrite } from '../src/clipboard-policy.ts'
+import { allowsClipboardWrite } from '../../src/main/clipboard-policy.ts'
 
 describe('desktop clipboard permissions', () => {
   it('allows conversation and workbench writes on the authenticated Host', () => {

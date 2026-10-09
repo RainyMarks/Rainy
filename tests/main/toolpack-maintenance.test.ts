@@ -2,11 +2,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { installNativeToolPack, ToolPackInstallError } from '../src/toolpack.ts'
-import { runToolPackMaintenance } from '../src/toolpack-maintenance.ts'
-import { authenticateToolChannel } from '../src/native-tools-update.ts'
-import { parseReleaseKeyring } from '../src/release-trust.ts'
-import type { ToolPackMetadataV2 } from '../src/toolpack-format.ts'
+import { installNativeToolPack, ToolPackInstallError } from '../../src/main/toolpack.ts'
+import { runToolPackMaintenance } from '../../src/main/toolpack-maintenance.ts'
+import { authenticateToolChannel } from '../../src/main/native-tools-update.ts'
+import { parseReleaseKeyring } from '../../src/main/release-trust.ts'
+import type { ToolPackMetadataV2 } from '../../src/main/toolpack-format.ts'
 
 const control = vi.hoisted(() => ({ executable: '' }))
 vi.mock('electron', () => ({
@@ -14,10 +14,10 @@ vi.mock('electron', () => ({
   BrowserWindow: function () { throw new Error('Silent maintenance must not open a window') },
   ipcMain: { removeHandler: vi.fn() },
 }))
-vi.mock('../src/native-tools-update.ts', () => ({ authenticateToolChannel: vi.fn() }))
-vi.mock('../src/release-trust.ts', () => ({ parseReleaseKeyring: vi.fn() }))
-vi.mock('../src/toolpack.ts', async importOriginal => ({
-  ...await importOriginal<typeof import('../src/toolpack.ts')>(), installNativeToolPack: vi.fn(),
+vi.mock('../../src/main/native-tools-update.ts', () => ({ authenticateToolChannel: vi.fn() }))
+vi.mock('../../src/main/release-trust.ts', () => ({ parseReleaseKeyring: vi.fn() }))
+vi.mock('../../src/main/toolpack.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../../src/main/toolpack.ts')>(), installNativeToolPack: vi.fn(),
 }))
 
 let fixture: string

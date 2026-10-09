@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import assert from 'node:assert/strict'
-const require = createRequire(new URL('../package.json', import.meta.url))
+const require = createRequire(new URL('../../package.json', import.meta.url))
 const { build } = require('esbuild')
 const root = await mkdtemp(join(tmpdir(), 'rainy-clipboard-fixture-'))
 try {

@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import { fileURLToPath } from 'node:url'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
-import { unzipSync } from 'fflate'
+import { readZip } from './zip.mjs'
 import { extractBuildInput } from './bootstrap-release-inputs.mjs'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -291,7 +291,7 @@ async function addRuntimeArchives(definition, options, cacheRoot, plan, temporar
 async function extractZip(bytes, root, label) {
   const names = new Set()
   const files = []
-  for (const [name, contents] of Object.entries(unzipSync(bytes))) {
+  for (const { name, data: contents } of readZip(bytes)) {
     const directory = name.endsWith('/')
     const normalized = directory ? name.slice(0, -1) : name
     const target = childPath(root, normalized)

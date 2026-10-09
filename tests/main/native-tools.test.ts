@@ -5,10 +5,10 @@ import { join, relative } from 'node:path'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { NativeToolsLibrary, parseNativeFavorites, parseNativeLaunch, resolveNativePath, type NativeInvocation, type NativeToolsInventorySource } from '../src/native-tools.ts'
-import { nativeConsoleCommand, nativeConsoleLauncher, nativeToolEnvironment } from '../src/native-tool-process.ts'
-import { serveNativeTool, type NativeToolWebPage } from '../src/native-tool-web.ts'
-import { windowsPowerShellPath } from '../src/powershell.ts'
+import { NativeToolsLibrary, parseNativeFavorites, parseNativeLaunch, resolveNativePath, type NativeInvocation, type NativeToolsInventorySource } from '../../src/main/native-tools.ts'
+import { nativeConsoleCommand, nativeConsoleLauncher, nativeToolEnvironment } from '../../src/main/native-tool-process.ts'
+import { serveNativeTool, type NativeToolWebPage } from '../../src/main/native-tool-web.ts'
+import { windowsPowerShellPath } from '../../src/main/powershell.ts'
 
 let fixture: string
 let installRoot: string

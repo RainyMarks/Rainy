@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 const mode = process.argv[2] ?? 'after'
 assert(['before', 'after'].includes(mode))
-const app = resolve(import.meta.dirname, '..')
+const app = resolve(import.meta.dirname, '../..')
 const requireApp = createRequire(join(app, 'package.json'))
 const requireBuilder = createRequire(requireApp.resolve('electron-builder/package.json'))
 const requireAppBuilder = createRequire(requireBuilder.resolve('app-builder-lib/package.json'))
@@ -35,7 +35,7 @@ try {
   await mkdir(join(carrier, 'setup'), { recursive: true })
   await writeFile(join(carrier, 'package.json'), JSON.stringify({ name: 'rainy-private-asar-test', main: 'main.cjs' }))
   await writeFile(join(carrier, 'setup/toolpack.html'), 'private carrier setup asset\n')
-  await build({ entryPoints: [join(app, 'tests/fixtures/toolpack-electron.ts')], outfile: join(carrier, 'main.cjs'),
+  await build({ entryPoints: [join(app, 'tests/manual/fixtures/toolpack-electron.ts')], outfile: join(carrier, 'main.cjs'),
     bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'] })
   async function packageFixture(version) {
     const source = join(root, version, 'source')
@@ -86,7 +86,7 @@ try {
   clearTimeout(deadline)
   const raw = stdout.split(/\r?\n/).find(line => line.startsWith('RAINY_ASAR_TEST '))
   const result = raw ? JSON.parse(raw.slice('RAINY_ASAR_TEST '.length)) : undefined
-  const report = { mode, command: 'node apps/rainy-desktop/tests/toolpack-electron.mjs ' + mode,
+  const report = { mode, command: 'node tests/manual/toolpack-electron.mjs ' + mode,
     electronExecutable: electron, carrierArchiveSha256: hash(await readFile(carrierArchive)), exit, timedOut, result, stderr,
     scope: 'Private temporary Electron app.asar and tool payload only; the real installed stage, journals, tools, and settings were not modified.' }
   await writeFile(join(output, `${mode}.json`), JSON.stringify(report, null, 2) + '\n')

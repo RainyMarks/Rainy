@@ -1,9 +1,32 @@
 /** Sign a per-tool channel revision using the same builder identity as application resources. */
 import { createHash, sign } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readReleaseSigningKey, releasePublicKeys, releaseSigningKeyPath } from './release-signing-key.mjs'
+
+const root = resolve(import.meta.dirname, '..')
+/** Published channel fetched by RainyAgent 2.x (`TOOL_CHANNEL_URL` in src/main/native-tools-update.ts). */
+export const TOOL_CHANNEL_PATH = resolve(root, 'toolpacks/native-tools-channel.v2.signed.json')
+/** Byte-identical copy at the repository path that installed 1.x clients fetch. */
+export const LEGACY_TOOL_CHANNEL_PATH = resolve(root, 'apps/rainy-desktop/toolpacks/native-tools-channel.v2.signed.json')
+
+/**
+ * Write a signed channel; writing the published channel also refreshes its 1.x copy.
+ * @param {string} output Destination file.
+ * @param {object} envelope Signed channel envelope.
+ * @param {{published?: string, legacy?: string}} [paths] Published channel and its 1.x copy.
+ * @returns {Promise<string[]>} Files written.
+ */
+export async function writeToolChannel(output, envelope, paths = {}) {
+  const text = JSON.stringify(envelope) + '\n'
+  await writeFile(output, text)
+  if (resolve(output) !== resolve(paths.published ?? TOOL_CHANNEL_PATH)) return [output]
+  const legacy = paths.legacy ?? LEGACY_TOOL_CHANNEL_PATH
+  await mkdir(dirname(legacy), { recursive: true })
+  await writeFile(legacy, text)
+  return [output, legacy]
+}
 
 /**
  * Bind a catalog, installation inventory and downloadable archive selection to one publisher revision.
@@ -15,7 +38,7 @@ export async function signToolChannel(options) {
   const key = await readReleaseSigningKey(options.privateKeyPath ?? releaseSigningKeyPath(process.env.RAINY_RELEASE_SIGNING_KEY))
   const publicKeys = releasePublicKeys(key)
   const keyId = Object.keys(publicKeys.keys)[0]
-  const trustedKeys = JSON.parse(await readFile(options.publicKeysPath ?? resolve(import.meta.dirname, '../resources/native-tools-public-keys.json'), 'utf8'))
+  const trustedKeys = JSON.parse(await readFile(options.publicKeysPath ?? resolve(root, 'resources/native-tools-public-keys.json'), 'utf8'))
   if (trustedKeys.version !== 1 || trustedKeys.keys?.[keyId] !== publicKeys.keys[keyId]) throw new Error('The tool signing key does not match the public keys shipped to clients')
   const [source, metadata, catalog] = await Promise.all([
     readFile(options.sourcePath, 'utf8').then(JSON.parse), readFile(options.metadataPath, 'utf8').then(JSON.parse), readFile(options.catalogPath, 'utf8'),
@@ -34,6 +57,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   for (const name of Object.keys(values)) if (!['--revision', '--version', '--source', '--metadata', '--catalog', '--output', '--key', '--public-keys'].includes(name)) throw new Error(`Unknown option: ${name}`)
   const envelope = await signToolChannel({ revision: Number(values['--revision']), releaseVersion: values['--version'], sourcePath: values['--source'],
     metadataPath: values['--metadata'], catalogPath: values['--catalog'], privateKeyPath: values['--key'], publicKeysPath: values['--public-keys'] })
-  await writeFile(values['--output'], JSON.stringify(envelope) + '\n')
-  console.log(`Signed tool channel revision ${values['--revision']} for ${values['--version']}`)
+  const written = await writeToolChannel(values['--output'], envelope)
+  console.log(`Signed tool channel revision ${values['--revision']} for ${values['--version']}: ${written.join(', ')}`)
 }

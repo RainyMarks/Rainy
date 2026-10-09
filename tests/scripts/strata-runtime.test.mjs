@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
-import { verifyStrataRuntime } from '../scripts/verify-strata-runtime.mjs'
+import { verifyStrataRuntime } from '../../scripts/verify-strata-runtime.mjs'
 
 const digest = value => createHash('sha256').update(value).digest('hex')
 const fixtureFiles = ['portablepython/python.exe', 'portablepython/python312.dll', 'portablepython/LICENSE.txt',

@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
-const script = fileURLToPath(new URL('../scripts/install-runtime.py', import.meta.url))
+const script = fileURLToPath(new URL('../../scripts/install-runtime.py', import.meta.url))
 const linux = process.platform === 'linux'
 const digestOf = text => createHash('sha256').update(text).digest('hex')
 
@@ -24,9 +24,9 @@ test('unpacks this version and asks for the archive when an earlier one is left'
   const { home, owned } = workspace(t)
   const source = join(home, 'source')
   mkdirSync(join(source, 'node/bin'), { recursive: true })
-  mkdirSync(join(source, 'app/lib'), { recursive: true })
+  mkdirSync(join(source, 'app/dist'), { recursive: true })
   writeFileSync(join(source, 'node/bin/node'), 'node')
-  writeFileSync(join(source, 'app/lib/host.js'), 'host')
+  writeFileSync(join(source, 'app/dist/host.js'), 'host')
   const archive = join(home, 'linux-runtime.tar.gz')
   execFileSync('tar', ['-czf', archive, '-C', source, 'node', 'app'])
   const bytes = readFileSync(archive)
@@ -37,7 +37,7 @@ test('unpacks this version and asks for the archive when an earlier one is left'
   writeFileSync(stale, 'an archive from an earlier version')
   assert.deepEqual(python(home, [stale, metadata]), { needsArchive: true })
   const installed = python(home, [archive, metadata])
-  assert.equal(installed.host, join(owned, digestOf(bytes), 'app/lib/host.js'))
+  assert.equal(installed.host, join(owned, digestOf(bytes), 'app/dist/host.js'))
   assert.equal(readFileSync(installed.node, 'utf8'), 'node')
 })
 

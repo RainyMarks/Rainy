@@ -12,9 +12,9 @@ import { parseArgs } from 'node:util'
 
 const { values } = parseArgs({ options: { artifacts: { type: 'string' }, report: { type: 'string' } } })
 assert.equal(process.platform, 'win32', 'The NSIS download fixture requires Windows')
-assert(values.artifacts, 'Usage: node tests/update-download.mjs --artifacts <release-directory> [--report <file.json>]')
+assert(values.artifacts, 'Usage: node tests/manual/update-download.mjs --artifacts <release-directory> [--report <file.json>]')
 const artifacts = resolve(values.artifacts)
-const appDirectory = resolve(import.meta.dirname, '..')
+const appDirectory = resolve(import.meta.dirname, '../..')
 const requireApp = createRequire(join(appDirectory, 'package.json'))
 const { load, dump } = requireApp('js-yaml')
 const latestBytes = await readFile(join(artifacts, 'latest.yml'))

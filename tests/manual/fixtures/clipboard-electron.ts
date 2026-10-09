@@ -2,7 +2,7 @@
 import { app, BrowserWindow, clipboard } from 'electron'
 import { createServer } from 'node:http'
 import assert from 'node:assert/strict'
-import { allowsClipboardWrite } from '../../src/clipboard-policy.ts'
+import { allowsClipboardWrite } from '../../../src/main/clipboard-policy.ts'
 
 async function main(): Promise<void> {
   await app.whenReady()

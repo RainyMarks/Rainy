@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { c } from 'tar'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { OptionalModules } from '../src/optional-modules.ts'
-import { RETIRED_RESOURCES, removeRetiredResources } from '../src/retired-resources.ts'
+import { OptionalModules } from '../../src/main/optional-modules.ts'
+import { RETIRED_RESOURCES, removeRetiredResources } from '../../src/main/retired-resources.ts'
 
 const roots: string[] = []
 afterEach(async () => {

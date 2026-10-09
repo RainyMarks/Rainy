@@ -1,13 +1,13 @@
+<# Build the Windows installer and the offline release directory from a checkout with restored release inputs. #>
 param([string]$Distribution = 'Ubuntu', [string]$NativeToolsSource, [string]$NativeToolsStage,
-    [string]$ReuseNativeToolsRelease, [string]$ComponentSource, [string]$SevenZip, [string]$StrataArchive, [switch]$SkipUpstreamBuild)
+    [string]$ReuseNativeToolsRelease, [string]$ComponentSource, [string]$SevenZip, [string]$StrataArchive)
 $ErrorActionPreference = 'Stop'
 $rainyApp = Split-Path $PSScriptRoot -Parent
-$rainyRoot = [IO.Path]::GetFullPath((Join-Path $rainyApp '../..'))
 $rainyVersion = (Get-Content -LiteralPath (Join-Path $rainyApp 'package.json') -Raw | ConvertFrom-Json).version
 $rainyStage = if ($NativeToolsStage) { [IO.Path]::GetFullPath($NativeToolsStage) } else { Join-Path $rainyApp "toolpacks/stage-$rainyVersion" }
 $rainyOffline = Join-Path $rainyApp "release/offline-$rainyVersion"
 function Check-Exit { if ($LASTEXITCODE -ne 0) { throw "Build step failed with exit code $LASTEXITCODE" } }
-Push-Location $rainyRoot
+Push-Location $rainyApp
 try {
     if ($ReuseNativeToolsRelease -and $NativeToolsSource) { throw 'Choose a verified prior tool release or a new native-tool source.' }
     if ($NativeToolsSource) {
@@ -23,7 +23,6 @@ try {
     if ($ReuseNativeToolsRelease) { $rainyInputs += @('--tools', [IO.Path]::GetFullPath($ReuseNativeToolsRelease)) }
     if ($ComponentSource) { $rainyInputs += @('--components', [IO.Path]::GetFullPath($ComponentSource)) }
     & node --import tsx (Join-Path $PSScriptRoot 'prepare-release-inputs.ts') @rainyInputs; Check-Exit
-    if (-not $SkipUpstreamBuild) { & pnpm.cmd run build; Check-Exit }
     & node --import tsx (Join-Path $PSScriptRoot 'build.ts') --release; Check-Exit
     & node (Join-Path $PSScriptRoot 'runtime-graph.mjs') --windows; Check-Exit
     & node (Join-Path $PSScriptRoot 'stage-windows.mjs'); Check-Exit
@@ -37,9 +36,7 @@ try {
     $rainyStrata = if ($StrataArchive) { [IO.Path]::GetFullPath($StrataArchive) } else { Join-Path $rainyOffline 'build-inputs/strata-runtime.tar.gz' }
     & node (Join-Path $PSScriptRoot 'prepare-optional-modules.mjs') --version $rainyVersion --pieces $rainyPieces --strata-archive $rainyStrata; Check-Exit
     & node (Join-Path $PSScriptRoot 'prepare-shell.mjs'); Check-Exit
-    Push-Location $rainyApp
-    try { & node (Join-Path $rainyApp 'node_modules/electron-builder/out/cli/cli.js') --config electron-builder.config.cjs --win nsis --publish never; Check-Exit }
-    finally { Pop-Location }
+    & node (Join-Path $rainyApp 'node_modules/electron-builder/out/cli/cli.js') --config electron-builder.config.cjs --win nsis --publish never; Check-Exit
     $rainyInstaller = Join-Path $rainyApp "release/RainyAgent-$rainyVersion-windows-x64-setup.exe"
     Copy-Item -LiteralPath $rainyInstaller -Destination $rainyOffline -Force
     Copy-Item -LiteralPath (Join-Path $rainyApp 'resources/offline-readme.txt') -Destination (Join-Path $rainyOffline '安装说明.txt') -Force

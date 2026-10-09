@@ -1,32 +1,22 @@
-/** Stage only the Electron carrier; all Linux dependencies travel in the verified runtime archive. */
-import { mkdirSync, copyFileSync, cpSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const app = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const version = JSON.parse(readFileSync(resolve(app, 'package.json'), 'utf8')).version;
-const target = resolve(app, 'build/shell');
-mkdirSync(target, { recursive: true });
-for (const name of ['license.html', 'license.js', 'license.css']) rmSync(resolve(target, 'setup', name), { force: true });
-copyFileSync(resolve(app, 'lib/main.cjs'), resolve(target, 'main.cjs'));
-copyFileSync(resolve(app, 'lib/preload.cjs'), resolve(target, 'preload.cjs'));
-cpSync(resolve(app, 'lib/setup'), resolve(target, 'setup'), { recursive: true });
-copyFileSync(resolve(app, 'LICENSE'), resolve(target, 'LICENSE'));
-copyFileSync(resolve(app, 'THIRD_PARTY_NOTICES.md'), resolve(target, 'THIRD_PARTY_NOTICES.md'));
-writeFileSync(resolve(target, 'package.json'), JSON.stringify({ name: 'rainy-agent', productName: 'RainyAgent', version, main: 'main.cjs', description: 'Local-model-first coding agent for Windows and WSL', author: 'NCUCyberBase', license: 'SEE LICENSE IN LICENSE' }, null, 2) + '\n');
-const graph = JSON.parse(readFileSync(resolve(app, 'runtime/graph.json'), 'utf8'));
-const sharpSource = graph.packages.find(item => item.name === 'sharp').source;
-const sharp = createRequire(import.meta.url)(sharpSource);
-const sizes = [16, 24, 32, 48, 64, 128, 256];
-const images = await Promise.all(sizes.map(size => sharp(resolve(app, 'resources/icon.png')).resize(size, size, { fit: 'contain' }).png().toBuffer()));
-const header = Buffer.alloc(6 + 16 * sizes.length);
-header.writeUInt16LE(1, 2); header.writeUInt16LE(sizes.length, 4);
-let offset = header.length;
-images.forEach((png, index) => {
-  const entry = 6 + index * 16;
-  header[entry] = header[entry + 1] = sizes[index] === 256 ? 0 : sizes[index];
-  header.writeUInt16LE(1, entry + 4); header.writeUInt16LE(32, entry + 6);
-  header.writeUInt32LE(png.length, entry + 8); header.writeUInt32LE(offset, entry + 12);
-  offset += png.length;
-});
-writeFileSync(resolve(app, 'build/icon.ico'), Buffer.concat([header, ...images]));
+/** Stage `build/shell`, the Electron app directory packaged into app.asar, and generate `build/icon.ico`. */
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { pngToIco } from './icon.mjs'
+
+const root = resolve(import.meta.dirname, '..')
+const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+const target = resolve(root, 'build/shell')
+for (const name of ['dist/main.cjs', 'dist/preload.cjs', 'dist/setup/index.html']) {
+  if (!existsSync(resolve(root, name))) throw new Error(`Build the application first (pnpm run build:release): ${name} is missing`)
+}
+rmSync(target, { recursive: true, force: true })
+mkdirSync(target, { recursive: true })
+copyFileSync(resolve(root, 'dist/main.cjs'), resolve(target, 'main.cjs'))
+copyFileSync(resolve(root, 'dist/preload.cjs'), resolve(target, 'preload.cjs'))
+cpSync(resolve(root, 'dist/setup'), resolve(target, 'setup'), { recursive: true })
+copyFileSync(resolve(root, 'LICENSE'), resolve(target, 'LICENSE'))
+copyFileSync(resolve(root, 'THIRD_PARTY_NOTICES.md'), resolve(target, 'THIRD_PARTY_NOTICES.md'))
+writeFileSync(resolve(target, 'package.json'), JSON.stringify({ name: manifest.name, productName: manifest.productName, version: manifest.version,
+  main: 'main.cjs', description: manifest.description, author: 'NCUCyberBase', license: manifest.license }, null, 2) + '\n')
+writeFileSync(resolve(root, 'build/icon.ico'), pngToIco(readFileSync(resolve(root, 'resources/icon.png'))))
+console.log(`Staged ${target} for RainyAgent ${manifest.version}`)

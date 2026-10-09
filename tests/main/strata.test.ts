@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createStrataManager } from '../src/strata.ts'
-import type { StrataManagerOptions } from '../src/strata.ts'
-import { DEFAULT_STRATA_SETTINGS, discoverStrataProfiles, resolveStrataModel } from '../src/strata-model.ts'
-import type { StrataProcess, StrataProcessExit, StrataProcessSpec } from '../src/strata-process.ts'
-import type { StrataHealth } from '../src/strata-health.ts'
+import { createStrataManager } from '../../src/main/strata.ts'
+import type { StrataManagerOptions } from '../../src/main/strata.ts'
+import { DEFAULT_STRATA_SETTINGS, discoverStrataProfiles, resolveStrataModel } from '../../src/main/strata-model.ts'
+import type { StrataProcess, StrataProcessExit, StrataProcessSpec } from '../../src/main/strata-process.ts'
+import type { StrataHealth } from '../../src/main/strata-health.ts'
 
 async function put(path: string, content = 'fixture'): Promise<void> {
   await mkdir(dirname(path), { recursive: true })

@@ -7,12 +7,12 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import * as tar from 'tar'
-import { extendReleaseAssets, packReleaseAssets, validateReleaseManifest } from '../scripts/release-assets.mjs'
-import { bootstrapReleaseInputs, extractBuildInput, restoreReleaseInputs, writeReleaseComponentCatalog } from '../scripts/bootstrap-release-inputs.mjs'
+import { extendReleaseAssets, packReleaseAssets, validateReleaseManifest } from '../../scripts/release-assets.mjs'
+import { bootstrapReleaseInputs, extractBuildInput, restoreReleaseInputs, writeReleaseComponentCatalog } from '../../scripts/bootstrap-release-inputs.mjs'
 
 const run = promisify(execFile)
 const baseUrl = 'https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.0/'
-const reassembler = resolve(import.meta.dirname, '../scripts/reassemble-release.ps1')
+const reassembler = resolve(import.meta.dirname, '../../scripts/reassemble-release.ps1')
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'rainy-release-assets-'))

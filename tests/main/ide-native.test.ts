@@ -1,7 +1,7 @@
 /** Native directory choices preserve Windows spelling while using the selected WSL namespace. */
 import { describe, expect, it, vi } from 'vitest'
-import { chooseIdeDirectory, createIdeDirectoryPicker } from '../src/ide-native.ts'
-import type { IdeNativeDirectory } from '../src/ide-native.ts'
+import { chooseIdeDirectory, createIdeDirectoryPicker } from '../../src/main/ide-native.ts'
+import type { IdeNativeDirectory } from '../../src/main/ide-native.ts'
 
 describe('Windows IDE folder selection', () => {
   it.each(['chosen', 'cancelled', 'rejected'] as const)('keeps one dialog per owner until %s', async (outcome) => {

@@ -8,10 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { list as listTar } from 'tar'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { toolPackMetadataSchema, type ToolPackMetadataV2 } from '../src/toolpack-format.ts'
+import { toolPackMetadataSchema, type ToolPackMetadataV2 } from '../../src/main/toolpack-format.ts'
 
 const execute = promisify(execFile)
-const script = fileURLToPath(new URL('../scripts/package-native-tools.mjs', import.meta.url))
+const script = fileURLToPath(new URL('../../scripts/package-native-tools.mjs', import.meta.url))
 let fixture: string
 let stage: string
 let output: string

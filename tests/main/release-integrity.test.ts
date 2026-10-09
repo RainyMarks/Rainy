@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { afterEach, expect, it } from 'vitest'
 import {
   authenticateReleaseManifest, ensureReleaseIntegrity, ReleaseIntegrityError, RELEASE_SIGNATURE_DOMAIN, verifyReleaseResources,
-} from '../src/release-integrity.ts'
-import { embeddedReleaseKeys, parseReleaseKeyring, releasePublicKeyId } from '../src/release-trust.ts'
+} from '../../src/main/release-integrity.ts'
+import { embeddedReleaseKeys, parseReleaseKeyring, releasePublicKeyId } from '../../src/main/release-trust.ts'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true, maxRetries: 5 }))) })
@@ -67,7 +67,7 @@ async function signedRelease(files: Record<string, string>) {
 }
 
 it('hashes an inventory once, then reuses its stamp until the inventory or root changes', async () => {
-  const release = await signedRelease({ 'windows-host/app/lib/host.js': 'host', 'windows-host/node/node.exe': 'node' })
+  const release = await signedRelease({ 'windows-host/app/dist/host.js': 'host', 'windows-host/node/node.exe': 'node' })
   let clock = 1000
   const options = { root: release.directory, signedPath: release.signedPath, keys: release.keys, stampPath: release.stampPath,
     recheckIntervalMs: 60_000, now: () => clock }

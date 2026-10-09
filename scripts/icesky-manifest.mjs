@@ -30,7 +30,9 @@ export async function writeIceSkyManifest(resourceRoot) {
     }
   }
   await visit(resourceRoot)
-  paths.sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
+  // Windows path spelling orders the files so every build platform derives the same version.
+  const key = path => relative(resourceRoot, path).split('/').join('\\')
+  paths.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
   const files = {}
   for (const path of paths) {
     const bytes = await readFile(path)

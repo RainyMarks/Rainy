@@ -6,10 +6,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { randomUUID } from 'node:crypto'
 import { posix, win32 } from 'node:path'
 import { z } from 'zod'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import { ProjectId } from './project-registry.ts'
-import type { IdeRootId } from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
-import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
+import { brandString } from '../shared/brand.ts'
+import { ProjectId } from '../shared/project-registry.ts'
+import type { IdeRootId, WorkspaceId } from '../shared/ide-files-protocol.ts'
 
 /** Host-authoritative roots and stable project identity used during a target switch. */
 export interface HostProjectSnapshot {
@@ -19,7 +18,7 @@ export interface HostProjectSnapshot {
 }
 const projectSchema: z.ZodType<HostProjectSnapshot> = z.object({
   projectId: z.string().transform(ProjectId),
-  workspaceId: z.string().transform(WorkspaceId),
+  workspaceId: z.string().transform(value => brandString<WorkspaceId>(value)),
   roots: z.array(z.object({
     rootId: z.string().min(1).transform(value => brandString<IdeRootId>(value)),
     path: z.string().min(1), title: z.string(), primary: z.boolean(),

@@ -1,9 +1,9 @@
 /** Local-window source checks and install draining without opening a real desktop window. */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { BrowserWindow } from 'electron'
-import { createIdeEnvironmentWindow } from '../src/ide-environment-window.ts'
-import type { IdeEnvironmentWindow } from '../src/ide-environment-window.ts'
-import type { IdeEnvironmentInspection, IdeEnvironmentPlatform } from '../src/ide-environment.ts'
+import { createIdeEnvironmentWindow } from '../../src/main/ide-environment-window.ts'
+import type { IdeEnvironmentWindow } from '../../src/main/ide-environment-window.ts'
+import type { IdeEnvironmentInspection, IdeEnvironmentPlatform } from '../../src/main/ide-environment.ts'
 
 const control = vi.hoisted(() => ({
   windows: [] as object[],

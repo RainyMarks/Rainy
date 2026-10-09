@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { c } from 'tar'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createNativeToolPackInstaller, damagedToolPackUnits, ToolPackInstallError } from '../src/toolpack.ts'
-import { toolPackMetadataSchema } from '../src/toolpack-format.ts'
-import type { ToolPackMetadata, ToolPackMetadataV1, ToolPackMetadataV2, ToolPackPlatform } from '../src/toolpack-format.ts'
-import { findBusyToolPackProcess } from '../src/toolpack-platform.ts'
-import { renameToolPackPath, writeToolPackRecord } from '../src/toolpack-files.ts'
-import { nativeConsoleCommand } from '../src/native-tool-process.ts'
+import { createNativeToolPackInstaller, damagedToolPackUnits, ToolPackInstallError } from '../../src/main/toolpack.ts'
+import { toolPackMetadataSchema } from '../../src/main/toolpack-format.ts'
+import type { ToolPackMetadata, ToolPackMetadataV1, ToolPackMetadataV2, ToolPackPlatform } from '../../src/main/toolpack-format.ts'
+import { findBusyToolPackProcess } from '../../src/main/toolpack-platform.ts'
+import { renameToolPackPath, writeToolPackRecord } from '../../src/main/toolpack-files.ts'
+import { nativeConsoleCommand } from '../../src/main/native-tool-process.ts'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -652,7 +652,7 @@ describe('native tool pack installation', () => {
   })
 
   it('limits NSIS cleanup to declared application files and preserves all runtime and tool trees', async () => {
-    const script = await readFile(new URL('../resources/native-tools-installer.nsh', import.meta.url), 'utf8')
+    const script = await readFile(new URL('../../resources/native-tools-installer.nsh', import.meta.url), 'utf8')
     expect(script).toContain('!macro customRemoveFiles')
     expect(script).not.toMatch(/RMDir\s+\/r/i)
     expect(script).not.toMatch(/(?:Delete|rainyDeleteApplicationFile|RMDir)\s+"\$INSTDIR\\(?:runtime|tools|\.rainy-toolpack)/i)

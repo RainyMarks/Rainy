@@ -6,9 +6,9 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import { writeEnvironmentRecord } from './environment.ts'
 import { windowsPowerShellPath } from './powershell.ts'
-import { ExecutionTargetId } from './project-registry.ts'
-import type { ProjectId } from './project-registry.ts'
-import type { IdeRootId } from '@deepseek-ai/dsh-client-ui-rainy/ide-files-protocol'
+import { ExecutionTargetId } from '../shared/project-registry.ts'
+import type { ProjectId } from '../shared/project-registry.ts'
+import type { IdeRootId } from '../shared/ide-files-protocol.ts'
 
 /** One explicit native execution destination. */
 export interface ExecutionTarget { id: ExecutionTargetId; kind: 'windows' | 'wsl'; label: string; distro?: string }

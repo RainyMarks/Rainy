@@ -7,7 +7,7 @@ import {
   promptBreakdown,
   RequestQueue,
   resolveBudget,
-} from '../src/budget.ts'
+} from '../../src/shared/budget.ts'
 
 describe('request budget', () => {
   it('separates project memory and instructions without retaining their content', () => {

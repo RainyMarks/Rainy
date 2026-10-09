@@ -6,12 +6,12 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import type * as FileSystem from 'node:fs'
-import { createNativeToolPackInstaller } from '../../src/toolpack.ts'
-import { toolPackHash, toolPackStat, toolPackTree } from '../../src/toolpack-files.ts'
-import { nativeToolPackPlatform } from '../../src/toolpack-platform.ts'
-import type { InstallNativeToolPackOptions } from '../../src/toolpack-format.ts'
-import { NativeToolsLibrary } from '../../src/native-tools.ts'
-import { serveNativeTool } from '../../src/native-tool-web.ts'
+import { createNativeToolPackInstaller } from '../../../src/main/toolpack.ts'
+import { toolPackHash, toolPackStat, toolPackTree } from '../../../src/main/toolpack-files.ts'
+import { nativeToolPackPlatform } from '../../../src/main/toolpack-platform.ts'
+import type { InstallNativeToolPackOptions } from '../../../src/main/toolpack-format.ts'
+import { NativeToolsLibrary } from '../../../src/main/native-tools.ts'
+import { serveNativeTool } from '../../../src/main/native-tool-web.ts'
 
 interface Fixture {
   readonly root: string

@@ -4,8 +4,8 @@ import type { Dirent } from 'node:fs'
 import { open, readFile, readdir, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
-import { strataSettingsSchema } from '@deepseek-ai/dsh-client-ui-rainy/strata-protocol'
-import type { StrataModel, StrataSettings } from '@deepseek-ai/dsh-client-ui-rainy/strata-protocol'
+import { strataSettingsSchema } from '../shared/strata-protocol.ts'
+import type { StrataModel, StrataSettings } from '../shared/strata-protocol.ts'
 
 /** Explicit initial allocation; changing model-request budgets remains the model settings page's responsibility. */
 export const DEFAULT_STRATA_SETTINGS: StrataSettings = {

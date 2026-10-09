@@ -5,8 +5,8 @@ import { mkdir, open, readFile, rename, stat, statfs, lstat, readdir, rm } from 
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { x as extractTar } from 'tar'
 import { z } from 'zod'
-import { brandString } from '@deepseek-ai/dsh-brand'
-import type { Branded } from '@deepseek-ai/dsh-brand'
+import { brandString } from '../shared/brand.ts'
+import type { Branded } from '../shared/brand.ts'
 
 /** One release-approved runtime component family and platform. */
 export type EnvironmentComponentId = Branded<'RainyEnvironmentComponentId'>

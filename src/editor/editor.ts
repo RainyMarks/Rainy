@@ -20,7 +20,7 @@ import { canonicalEditorUri, containsEditorUri } from './editor-uri.ts'
 import type {
   EditorActionLabels, EditorAppearance, EditorAssets, EditorCallbacks, EditorDocument, EditorInstance,
   EditorProblem, EditorTerminal, EditorView, EditorWorkspace,
-} from '../../../../packages/client/ui-rainy/src/client/editor-types.ts'
+} from '../renderer/ide/editor-types.ts'
 
 const instances = new Set<WorkspaceEditor>()
 const languageIds = new Set(['python', 'typescript', 'javascript', 'c', 'cpp'])

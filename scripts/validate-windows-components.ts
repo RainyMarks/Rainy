@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { environmentComponentSchema, installWindowsComponent } from '../src/environment-components.ts'
+import { environmentComponentSchema, installWindowsComponent } from '../src/main/environment-components.ts'
 
 const execute = promisify(execFile)
 const app = resolve(import.meta.dirname, '..')

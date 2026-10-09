@@ -5,8 +5,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
-import { createEnvironmentSetup, writeEnvironmentRecord } from '../src/environment.ts'
-import { createWindowsEnvironmentPlatform } from '../src/environment-platform.ts'
+import { createEnvironmentSetup, writeEnvironmentRecord } from '../../src/main/environment.ts'
+import { createWindowsEnvironmentPlatform } from '../../src/main/environment-platform.ts'
 
 assert.ok(process.argv.includes('--run'), 'Run explicitly with --run; this test creates only its own named WSL distribution')
 const run = promisify(execFile)
@@ -15,16 +15,16 @@ const testRoot = resolve('.artifacts', `rainy-clean-environment-${randomUUID()}`
 const installRoot = join(testRoot, '安装 RainyAgent')
 const userData = join(testRoot, 'userdata')
 const settingsPath = join(userData, 'desktop.json')
-const output = resolve('apps/rainy-desktop/validation/environment/clean-linux-install.json')
+const output = resolve('validation/environment/clean-linux-install.json')
 await mkdir(installRoot, { recursive: true })
 await mkdir(userData, { recursive: true })
 let settings = {}
-const platform = createWindowsEnvironmentPlatform({ installRoot, userData, mediaRoot: resolve('apps/rainy-desktop/runtime/environment') })
+const platform = createWindowsEnvironmentPlatform({ installRoot, userData, mediaRoot: resolve('runtime/environment') })
 const before = await platform.inspectSystem()
 const report = { scope: 'Fresh Ubuntu import and Rainy Host startup offline; host already has WSL2, no Windows feature changes or desktop automation',
   testRoot, beforeDistributions: before.distributions.map(value => value.name), steps: [], cleanup: false }
 let ownedName
-const setup = createEnvironmentSetup({ installRoot, userData, mediaRoot: resolve('apps/rainy-desktop/runtime/environment'),
+const setup = createEnvironmentSetup({ installRoot, userData, mediaRoot: resolve('runtime/environment'),
   readDesktopSettings: async () => settings,
   writeDesktopSettings: async next => { settings = next; await writeEnvironmentRecord(settingsPath, settings) },
   onProgress: snapshot => {
@@ -47,9 +47,9 @@ try {
   report.distro = ownedName
   const wsl = async (...args) => (await run('wsl.exe', ['--distribution', ownedName, ...args], { windowsHide: true, encoding: 'utf8', timeout: 240000, maxBuffer: 4 * 1024 * 1024 })).stdout.trim()
   const map = async value => wsl('--exec', 'wslpath', '-u', value)
-  const installScript = await map(resolve('apps/rainy-desktop/scripts/install-runtime.py'))
-  const archive = await map(resolve('apps/rainy-desktop/runtime/linux-runtime.tar.gz'))
-  const metadata = await map(resolve('apps/rainy-desktop/runtime/linux-runtime.json'))
+  const installScript = await map(resolve('scripts/install-runtime.py'))
+  const archive = await map(resolve('runtime/linux-runtime.tar.gz'))
+  const metadata = await map(resolve('runtime/linux-runtime.json'))
   const installed = JSON.parse(await wsl('--exec', 'python3', installScript, archive, metadata))
   report.installedRuntime = installed
   assert.ok(installed.node.startsWith('/home/rainy/.rainy-agent/runtime/'))

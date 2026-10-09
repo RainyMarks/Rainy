@@ -1,6 +1,6 @@
 # RainyAgent 桌面版
 
-本指南说明离线安装、常用工具、模型设置及从源码打包。RainyAgent 复用固定版本 DSH 的 Agent 循环、会话协议和共享 Web 界面；Windows Electron 管理窗口、Windows 原生或 WSL Host 生命周期及供人操作的 Windows 工具。功能范围和测量结果见 [验收记录](VALIDATION.md)。
+本指南说明离线安装、常用工具、模型设置及从源码打包。RainyAgent 复用固定版本 DSH 的 Agent 循环、会话协议和共享 Web 界面；Windows Electron 管理窗口、Windows 原生或 WSL Host 生命周期及供人操作的 Windows 工具。功能范围和测量结果见 [验收记录](validation.md)。
 
 ## 安装与使用
 
@@ -15,7 +15,7 @@
 7. 打开顶部设置中的“模型”，可通过 Strata 卡片下载引擎（首次使用时），再选择自己的主模型与配套 MTP 权重并启动。连接其他服务时，填写供应商、服务地址、协议及可选密钥后即可点击“发现模型”，无需预先知道模型 ID 或上下文长度；选定或手填模型 ID，设置实际上下文长度并保存，再执行“验证流式与工具调用”。模型发现不保存配置，也不能替代这项诊断。
 8. 新会话使用保存的默认模型。已有会话在原有模型选择器中切换。停止按钮取消当前请求和命令；`/compact` 手动压缩。重启后从项目中重新打开已保存的会话继续处理。
 
-WSL 系统组件安装、管理员确认和 Windows 重启续装按具体发行产物分别验收；控制器模拟测试不能替代这些系统操作。已完成项目与剩余限制见[验收记录](VALIDATION.md)。
+WSL 系统组件安装、管理员确认和 Windows 重启续装按具体发行产物分别验收；控制器模拟测试不能替代这些系统操作。已完成项目与剩余限制见[验收记录](validation.md)。
 
 模型不可用时显示请求错误，由用户选择另一个模型；没有自动云端回退。会话标题来自首条消息，不产生标题模型调用。安装版在启动时静默检查 GitHub `RainyMarks/RainyAgent` 的稳定版并后台下载核心更新；“帮助 → 检查更新”提供手动状态和重试。下载完成后选择“稍后”或“重启安装”。只有确认、草稿保存和 Host 清理完成后才启动安装；保存失败保留窗口，普通退出不会安装。自动更新不选择预发布版或降级，也不重新下载常用工具、WSL 介质或科学计算组件；更新后首次以 WSL 启动时会下载新版本的 WSL 运行环境。用安装程序离线安装工具前，请关闭相关工具窗口；安装程序检查占用，不自动结束这些进程。
 
@@ -49,7 +49,7 @@ Strata 引擎不随安装包附带，是约 560 MB 的可选组件，包含 Niko
 
 Strata 服务在 Windows loopback 上运行。WSL Host 只有在能访问该地址时才可连接；NAT 导致不可达时，在“运行环境”中切换到 Windows 后使用 Strata。应用不修改防火墙或 WSL 网络配置。
 
-Strata 运行时已进行独立路径迁移、Python 导入和模拟健康/聊天接口检查；真实 GPU 推理和性能尚未在本次发行验收中确认。具体产物、结果与剩余限制见[验收记录](VALIDATION.md)，运行时可导入不等于模型推理已通过。
+Strata 运行时已进行独立路径迁移、Python 导入和模拟健康/聊天接口检查；真实 GPU 推理和性能尚未在本次发行验收中确认。具体产物、结果与剩余限制见[验收记录](validation.md)，运行时可导入不等于模型推理已通过。
 
 ## 模型设置
 
@@ -104,13 +104,13 @@ MCP 也支持 `streamable-http` 与 `url`。只向该会话注册 `tools` 中列
 
 下载某个工具时会同时安装它需要的运行时（Java 21、.NET 8），并把其他已下载工具更新到同一目录修订，只下载有变化的单元；未变化的工具不会重复下载。“移除”删除该工具以及不再被其他工具使用的运行时，无需联网。首次打开目录会检查工具更新，也可点击“检查工具更新”；检查失败不会删除已有工具。1.0.6 之前由离线安装程序放入应用目录的工具在原处更新，其他工具保存在 `%APPDATA%\RainyAgent\native-tools`；应用更新后仍保留，离线时可使用已下载工具。
 
-点击顶部“CTF 工具”即可使用，不必先创建或选择聊天。默认“常用工具”目录共 38 项，按 Web 与接口、流量分析、逆向调试、取证与文件、隐写与图像、音频与信号、编码与数据分组显示；完整名单见[桌面功能说明](README.zh.md#ctf-工作台)。可按名称或用途搜索、按分组或“已下载”筛选、收藏工具及查看最近启动记录。收藏与最近记录按 Windows 用户保存，在聊天之间共享。Burp 收藏迁移到 Yakit，旧 Burp 最近记录移除，不会伪造 Yakit 启动记录。该目录只供人操作，不占用 Agent 的工具定义和提示词预算。
+点击顶部“CTF 工具”即可使用，不必先创建或选择聊天。默认“常用工具”目录共 38 项，按 Web 与接口、流量分析、逆向调试、取证与文件、隐写与图像、音频与信号、编码与数据分组显示；完整名单见[桌面功能说明](desktop.zh.md#ctf-工作台)。可按名称或用途搜索、按分组或“已下载”筛选、收藏工具及查看最近启动记录。收藏与最近记录按 Windows 用户保存，在聊天之间共享。Burp 收藏迁移到 Yakit，旧 Burp 最近记录移除，不会伪造 Yakit 启动记录。该目录只供人操作，不占用 Agent 的工具定义和提示词预算。
 
 桌面工具打开独立窗口，命令行工具打开已配置依赖的 Windows 终端，离线网页打开隔离工具窗口。x64dbg 与 x32dbg 共用一个条目，并分别提供按钮；FFmpeg 同包包含 ffprobe 与 ffplay。程序按安装目录定位，Windows 工具留在 Windows 侧，Agent 项目终端使用当前执行目标。
 
 Yakit 使用官方 1.4.8-0919 完整发行包，内置 `bins/yak.zip` 提供 Yak 1.4.8-beta19 的离线恢复来源，无需单独下载引擎。其数据目录遵循 Yakit 已配置的 `YAKIT_HOME`，Windows 默认值为 `Yakit.exe` 旁的 `yakit-projects`。原生界面的首次初始化仍须在 Yakit 内完成。工具包保留 AGPLv3 许可证及上游声明。ImHex 位于 Reverse 分类，可用于二进制编辑。
 
-自有 IDA Pro 9.5 使用正式安装和自己的许可证。将其安装到本机工具根目录的 `tools/ida/`，通过 `%APPDATA%/RainyAgent/native-tools.local.json` 指定该绝对根目录及 ID 为 `ida` 的工具条目，入口为 `tools/ida/ida.exe`。应用优先使用这一本机条目，后续下载或更新公共工具时保留选择；安装路径、配置和许可证留在本机。配置字段与约束见[本机工具目录说明](README.md#ctf-workbench)。
+自有 IDA Pro 9.5 使用正式安装和自己的许可证。将其安装到本机工具根目录的 `tools/ida/`，通过 `%APPDATA%/RainyAgent/native-tools.local.json` 指定该绝对根目录及 ID 为 `ida` 的工具条目，入口为 `tools/ida/ida.exe`。应用优先使用这一本机条目，后续下载或更新公共工具时保留选择；安装路径、配置和许可证留在本机。配置字段与约束见[本机工具目录说明](desktop.md#ctf-workbench)。
 
 下载的 IDA 附带独立的 Python 3.12.14、匹配的 SIP 绑定和 `imp` 兼容模块；启动时使用应用数据目录下的独立 `IDAUSR`。StegSolve、JADX 使用共享的 Java 21.0.12.1，dnSpy 6.6.0 附带 .NET Desktop 10.0.9。multimon-ng 默认打开帮助终端；分析 WAV 时，在音频所在目录依次运行 `sox.exe -R -t wav sample.wav -esigned-integer -b 16 -r 22050 -t raw sample.raw` 和 `multimon-ng.exe -a DTMF -t raw sample.raw`，文件名换成实际文件名。
 
@@ -124,18 +124,19 @@ IceSky 从安装包本地加载。工作台和 RainyAgent 的模型设置分别�
 
 ## 从源码构建
 
-构建需要 Windows Node `^22.19 || >=24`、仓库锁定的 pnpm、Git，以及所选 WSL2 中的 Python 3.12+、C 编译器、glibc 静态链接开发文件和 HTTPS 访问。环境介质的签名验证需要 GnuPG，可通过 `RAINY_GPG` 指定 `gpg.exe`。Linux 专用 npm 包按锁文件的 SHA-512 校验，Node 发行包按官方 SHA-256 校验。上游基线为 DSH 0.1.7-rc.2。
+构建需要 Windows Node `^22.19 || >=24`、仓库锁定的 pnpm、Git，以及所选 WSL2 中的 Python 3.12+ 和 HTTPS 访问。环境介质的签名验证需要 GnuPG，可通过 `RAINY_GPG` 指定 `gpg.exe`。目标平台专用的 npm 包按锁文件的 SHA-512 校验，Node 发行包按官方 SHA-256 校验。
+
+日常开发在仓库根目录运行 `pnpm run build`（只构建外壳与 Host 时用 `pnpm run build:host`），输出 `dist/main.cjs`、`dist/preload.cjs`、`dist/setup/`、`dist/host.js`、`dist/renderer/` 及 `resources/editor/`。`pnpm run dev` 构建后以 `tmp/dev-home` 为数据目录直接启动 Host 并打印工作台地址，`--no-build`、`--home <目录>`、`--port <端口>` 可调整，Ctrl+C 通过控制行停止 Host。`pnpm start` 从仓库根目录启动 Electron，Windows 原生目标需要先由 `scripts/stage-windows.mjs` 暂存 `runtime/windows-host`。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 中的脚本测试。
 
 从仓库根目录运行：
 
 ```powershell
 pnpm install --frozen-lockfile
-node apps/rainy-desktop/scripts/bootstrap-release-inputs.mjs --manifest apps/rainy-desktop/toolpacks/build-inputs.v1.json
-pnpm run build
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File apps/rainy-desktop/scripts/package.ps1 -SkipUpstreamBuild -Distribution Ubuntu -ReuseNativeToolsRelease apps/rainy-desktop/release/offline-1.0.6 -ComponentSource apps/rainy-desktop/release/offline-1.0.6/environment-components
+node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-1.0.6 -ComponentSource release/offline-1.0.6/environment-components
 ```
 
-[bootstrap-release-inputs.mjs](scripts/bootstrap-release-inputs.mjs)按仓库中的 [1.0.6 输入清单](toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、工具、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](scripts/package.ps1)校验环境媒体和组件归档，分别生成 Windows 与 Linux Host，再生成 NSIS 安装包。`-ReuseNativeToolsRelease` 复用刚恢复到 `release/offline-1.0.6` 的工具输入，`-ComponentSource` 指向其 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称；省略 `-SkipUpstreamBuild` 会重新构建上游库。最终产物与干净 checkout 的实测情况由[验收记录](VALIDATION.md)记录，以上命令不代表已经完成该项验收。
+[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的 [1.0.6 输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、工具、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，运行 `build.ts --release`，由 `runtime-graph.mjs` 从 `node_modules/.pnpm` 计算 Host 外部依赖（node-pty、ripgrep、Pyright、TypeScript 语言服务、TypeScript、Prettier、tsx）的生产依赖闭包，分别生成 Windows 与 Linux Host，再由 `prepare-shell.mjs` 暂存 `build/shell` 并生成 NSIS 安装包。`-ReuseNativeToolsRelease` 复用刚恢复到 `release/offline-1.0.6` 的工具输入，`-ComponentSource` 指向其 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
 
 Windows Host 构建先按官方 SHA-256 校验 Node ZIP，再使用 Windows 随附的 .NET ZIP 解压器展开；这一环节无需额外安装压缩工具。
 
@@ -143,12 +144,10 @@ Windows Host 构建先按官方 SHA-256 校验 Node ZIP，再使用 Windows 随�
 
 1.0.6 完整离线目录为 `release/offline-1.0.6/`，包含核心安装程序、原生工具文件、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、Strata 引擎、PHP 组件和 WSL 运行环境都位于核心 EXE 之外；安装包只附带固定这三个可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；Windows Host 使用实体依赖文件，Linux Host 使用包内相对链接。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
 
-`tests/composition.ts` 通过真正的 Rainy profile 和文件工具连接确定性模拟服务；其结果不是本地模型能力评估。`tests/benchmark.mjs` 用相同真实 API、相同任务和独立 Python 断言比较上游 Web 组合与 Rainy。原始数据和复现边界见 [验收记录](VALIDATION.md)。
-
 ## 已知限制和后续工作
 
 当前发布目标是 Windows x64，可选择 Windows 原生或 WSL2。应用提供可下载的 Strata 引擎和离线运行环境，模型权重与兼容显卡驱动由使用者准备，启动模型需要明确操作。程序运行、断点调试、CPU/CUDA 组件导入与计算，以及各模型端点按具体产物分别验收。没有精确 tokenizer 的服务使用估计，其误差会影响压缩时机。
 
 38 表示工具包目录的工具数量。命令行和离线网页功能检查按当前工具、版本与被测产物分别记录，旧版验收总数不沿用到新版。无头浏览器截图或 GIF 使用明确标注的桥接适配器，展示真实目录数据、搜索、分类和收藏。Windows 原生工具界面、首次启动提示、UAC 和干净机重启仍未验收。最终逐工具矩阵关联具体产物，不能由目录可用状态或进程创建成功推定。
 
-源码保留上游模块以便追踪更新，生产启动组合和打包依赖另行裁剪。部分 DSH 内部库仍有传递依赖，但未装载的工具不会进入模型请求。安装包的 Windows Authenticode 签名状态和更新验收以本次发行记录为准。原始上游许可及组件归属见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+源码保留上游模块以便追踪更新，生产启动组合和打包依赖另行裁剪。部分 DSH 内部库仍有传递依赖，但未装载的工具不会进入模型请求。安装包的 Windows Authenticode 签名状态和更新验收以本次发行记录为准。原始上游许可及组件归属见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

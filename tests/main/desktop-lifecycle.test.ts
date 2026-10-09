@@ -1,8 +1,8 @@
 /** Promise barriers place exit and target selection at their owned transition points. */
 import { describe, expect, it, vi } from 'vitest'
-import { createDesktopLifecycle } from '../src/desktop-lifecycle.ts'
-import type { DesktopLifecycleOptions, PreparedTargetSwitch } from '../src/desktop-lifecycle.ts'
-import type { DraftFlushResult } from '../src/saved-reload.ts'
+import { createDesktopLifecycle } from '../../src/main/desktop-lifecycle.ts'
+import type { DesktopLifecycleOptions, PreparedTargetSwitch } from '../../src/main/desktop-lifecycle.ts'
+import type { DraftFlushResult } from '../../src/main/saved-reload.ts'
 
 function fixture(overrides: Partial<DesktopLifecycleOptions> = {}) {
   const options = {

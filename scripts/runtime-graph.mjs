@@ -1,67 +1,133 @@
-/** Resolve the production closure, keeping each dependency version and excluding development-only packages. */
-import { createRequire } from 'node:module';
-import { readFileSync, realpathSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
-const rainyApp = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repository = resolve(rainyApp, '../..');
-const baseline = process.argv.includes('--baseline');
-const selectedPlatform = process.argv.includes('--windows') ? 'win32' : 'linux';
-const targetSuffix = selectedPlatform === 'win32' ? 'win32-x64' : 'linux-x64';
-const app = baseline ? resolve(repository, 'apps/cli') : rainyApp;
-const packages = new Map();
-const platformDownloads = [];
-const lock = yaml.load(readFileSync(resolve(repository, 'pnpm-lock.yaml'), 'utf8'));
-function resolveDirectory(name, owner) {
-  const require = createRequire(join(owner, 'package.json'));
+/**
+ * Resolve the Host's production package closure for one target platform.
+ *
+ * The Host bundle (`dist/host.js`) keeps the packages in `host-externals.json` outside the bundle. This script walks
+ * those packages and their dependencies through the pnpm store links in `node_modules/.pnpm`, drops packages whose
+ * `os`/`cpu` exclude the target, and records target-only optional packages that are not installed on the build
+ * machine as locked downloads (`platformDownloads`). `stage-windows.mjs` and `stage-linux.py` materialize the graph.
+ *
+ * `node scripts/runtime-graph.mjs [--windows]` writes `runtime/graph-windows.json` or `runtime/graph.json`.
+ */
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import yaml from 'js-yaml'
+
+/** Official Node.js release shipped with both Hosts. */
+export const RUNTIME_NODE_VERSION = '22.22.1'
+const ARCHITECTURE = 'x64'
+
+/**
+ * @param {string[] | undefined} values Package `os` or `cpu` list, possibly with `!` exclusions.
+ * @param {string} target Target value.
+ * @returns {boolean} Whether the list admits the target.
+ */
+function admits(values, target) {
+  if (!Array.isArray(values) || values.length === 0) return true
+  if (values.includes(`!${target}`)) return false
+  const positive = values.filter(value => !value.startsWith('!'))
+  return positive.length === 0 || positive.includes(target) || positive.includes('any')
+}
+
+/**
+ * @param {{os?: string[], cpu?: string[], libc?: string[]}} manifest Package manifest or lockfile entry.
+ * @param {'win32' | 'linux'} platform Target platform.
+ * @returns {boolean} Whether the package can run on the x64 target (glibc on Linux).
+ */
+function supports(manifest, platform) {
+  return admits(manifest.os, platform) && admits(manifest.cpu, ARCHITECTURE)
+    && (platform !== 'linux' || !Array.isArray(manifest.libc) || manifest.libc.includes('glibc'))
+}
+
+/**
+ * Locate one dependency the way Node resolves it from its owner's real directory.
+ * @param {string} name Package name.
+ * @param {string} owner Real directory of the depending package.
+ * @returns {string | undefined} Real package directory, or undefined when it is not installed.
+ */
+function installedDirectory(name, owner) {
+  const require = createRequire(join(owner, 'package.json'))
   for (const directory of require.resolve.paths(name) ?? []) {
-    const candidate = join(directory, name);
-    if (existsSync(join(candidate, 'package.json'))) return realpathSync(candidate);
+    const candidate = join(directory, name)
+    if (existsSync(join(candidate, 'package.json'))) return realpathSync(candidate)
   }
-  throw new Error(`Missing production dependency ${name} from ${owner}`);
+  return undefined
 }
-function visit(directory) {
-  directory = realpathSync(directory);
-  if (packages.has(directory)) return packages.get(directory);
-  const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
-  const item = { id: createHash('sha256').update(directory).digest('hex').slice(0, 16), name: manifest.name, version: manifest.version, source: directory,
-    workspace: !directory.includes('node_modules'), dependencies: {} };
-  packages.set(directory, item);
-  for (const name of new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {})])) {
-    const optional = Object.hasOwn(manifest.optionalDependencies ?? {}, name) || manifest.peerDependenciesMeta?.[name]?.optional === true;
-    let child;
-    try { child = resolveDirectory(name, directory); } catch (error) {
-      if (optional) {
-        if (name.includes(targetSuffix) && !name.includes('musl')) {
-          const candidates = Object.entries(lock.packages).filter(([key]) => key.startsWith(name + '@'));
-          const exact = candidates.find(([key]) => key === name + '@' + manifest.optionalDependencies?.[name]) ?? (candidates.length === 1 ? candidates[0] : undefined);
-          if (!exact) throw new Error(`No unambiguous locked Linux dependency for ${name}`);
-          platformDownloads.push({ owner: item.id, name, version: exact[0].slice(name.length + 1), integrity: exact[1].resolution.integrity });
-        }
-        continue;
+
+/**
+ * Compute the production closure of the Host's external packages.
+ * @param {{appDirectory: string, platform: 'win32' | 'linux'}} options Repository root and target platform.
+ * @returns {{version: 2, root: string, platform: string, node: string, appVersion: string, packages: object[], platformDownloads: object[]}}
+ *   Graph whose root item is the application; `source` paths are real directories on the build machine.
+ */
+export function resolveRuntimeGraph(options) {
+  const app = realpathSync(options.appDirectory)
+  const platform = options.platform
+  const manifest = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'))
+  const externals = JSON.parse(readFileSync(join(app, 'scripts/host-externals.json'), 'utf8'))
+  const lock = yaml.load(readFileSync(join(app, 'pnpm-lock.yaml'), 'utf8'))
+  const packages = new Map()
+  const platformDownloads = []
+  const id = directory => createHash('sha256').update(directory).digest('hex').slice(0, 16)
+
+  /** @returns {object | undefined} The lockfile entry of a package that is not installed here. */
+  function lockedEntry(name, range) {
+    const candidates = Object.entries(lock.packages ?? {}).filter(([key]) => key.startsWith(`${name}@`))
+    const exact = candidates.find(([key]) => key === `${name}@${range}`) ?? (candidates.length === 1 ? candidates[0] : undefined)
+    if (!exact) return undefined
+    return { version: exact[0].slice(name.length + 1), ...exact[1] }
+  }
+
+  function visit(directory) {
+    if (packages.has(directory)) return packages.get(directory)
+    const info = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+    const item = { id: id(directory), name: info.name, version: info.version, source: directory, workspace: false, dependencies: {} }
+    packages.set(directory, item)
+    const optional = { ...info.optionalDependencies }
+    for (const [name, meta] of Object.entries(info.peerDependenciesMeta ?? {})) if (meta?.optional) optional[name] ??= info.peerDependencies?.[name]
+    const names = new Set([...Object.keys(info.dependencies ?? {}), ...Object.keys(info.peerDependencies ?? {}), ...Object.keys(info.optionalDependencies ?? {})])
+    for (const name of names) {
+      const isOptional = Object.hasOwn(optional, name)
+      const child = installedDirectory(name, directory)
+      if (child === undefined) {
+        if (!isOptional) throw new Error(`Missing production dependency ${name} of ${info.name}`)
+        const locked = lockedEntry(name, optional[name])
+        // Packages for other platforms are not installed and never shipped; target-only packages are downloaded.
+        if (locked === undefined || !supports(locked, platform) || (!locked.os && !locked.cpu)) continue
+        const integrity = locked.resolution?.integrity
+        if (typeof integrity !== 'string' || !integrity.startsWith('sha512-')) throw new Error(`No locked sha512 integrity for ${name}@${locked.version}`)
+        platformDownloads.push({ owner: item.id, name, version: locked.version, integrity })
+        continue
       }
-      throw error;
+      const target = JSON.parse(readFileSync(join(child, 'package.json'), 'utf8'))
+      if (!supports(target, platform)) {
+        if (isOptional) continue
+        throw new Error(`${target.name} does not support ${platform}-${ARCHITECTURE} but ${info.name} requires it`)
+      }
+      item.dependencies[name] = visit(child).id
     }
-    const target = JSON.parse(readFileSync(join(child, 'package.json'), 'utf8'));
-    if (target.os && !target.os.includes(selectedPlatform) && !target.os.includes('any') && !target.os.every(os => os.startsWith('!'))) {
-      if (optional) continue;
-    }
-    if (target.cpu && !target.cpu.includes('x64') && !target.cpu.includes('any') && optional) continue;
-    item.dependencies[name] = visit(child).id;
+    return item
   }
-  return item;
+
+  const root = { id: id(app), name: manifest.name, version: manifest.version, source: app, workspace: true, dependencies: {} }
+  packages.set(app, root)
+  for (const name of externals) {
+    const directory = installedDirectory(name, app)
+    if (directory === undefined) throw new Error(`Host package ${name} is not installed; run pnpm install`)
+    root.dependencies[name] = visit(directory).id
+  }
+  return { version: 2, root: root.id, platform, node: RUNTIME_NODE_VERSION, appVersion: manifest.version,
+    packages: [...packages.values()], platformDownloads }
 }
-const root = visit(app);
-const system = [...packages.values()].find(item => item.name === '@deepseek-ai/node-addon-system');
-if (selectedPlatform === 'linux') {
-  const platform = visit(resolve(repository, 'native/system/packages/linux-x64'));
-  if (system) system.dependencies[platform.name] = platform.id;
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const app = resolve(import.meta.dirname, '..')
+  const platform = process.argv.includes('--windows') ? 'win32' : 'linux'
+  const graph = resolveRuntimeGraph({ appDirectory: app, platform })
+  const output = resolve(app, 'runtime')
+  mkdirSync(output, { recursive: true })
+  writeFileSync(resolve(output, platform === 'win32' ? 'graph-windows.json' : 'graph.json'), JSON.stringify(graph, null, 2) + '\n')
+  console.log(JSON.stringify({ platform, packages: graph.packages.length - 1, platformDownloads: graph.platformDownloads.map(item => `${item.name}@${item.version}`) }))
 }
-const graph = { root: root.id, platform: selectedPlatform, packages: [...packages.values()], platformDownloads, node: '22.22.1', upstream: JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version };
-const output = baseline ? resolve(repository, '.artifacts/rainy-baseline') : resolve(rainyApp, 'runtime');
-mkdirSync(output, { recursive: true });
-writeFileSync(resolve(output, selectedPlatform === 'win32' ? 'graph-windows.json' : 'graph.json'), JSON.stringify(graph, null, 2) + '\n');
-console.log(JSON.stringify({ packages: graph.packages.length, workspacePackages: graph.packages.filter(p => p.workspace).length,
-  omittedProductPackages: ['office', 'browser-use', 'computer-use', 'schedule', 'subagent', 'plugin-manager'].filter(fragment => !graph.packages.some(p => p.name.includes(fragment))) }));

@@ -1,13 +1,14 @@
-/** Place native Windows controls alongside the shared application's existing header rows. */
+/// <reference lib="dom" />
+/** Place native Windows controls alongside the renderer's existing header rows. */
 import { ipcRenderer } from 'electron'
-import { CAPTION_HEIGHT, CAPTION_FALLBACK_WIDTH } from './window-chrome.ts'
+import { CAPTION_HEIGHT, CAPTION_FALLBACK_WIDTH } from '../main/window-chrome.ts'
 
 interface ControlsOverlay extends EventTarget {
   visible: boolean
   getTitlebarAreaRect(): DOMRect
 }
 
-/** Reuse DSH's drag markers, theme tokens and settings panel without adding a caption row. */
+/** Reuse the renderer's drag markers, theme tokens and settings panel without adding a caption row. */
 export function installWindowChrome(): void {
   const mount = () => {
     const root = document.documentElement

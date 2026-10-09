@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute } from 'node:path'
-import { verifyIdeResources } from '../scripts/verify-ide-resources.mjs'
+import { verifyIdeResources } from '../../scripts/verify-ide-resources.mjs'
 
 async function fixture(t) {
   const app = await mkdtemp(join(tmpdir(), 'rainy-ide-resources-'))

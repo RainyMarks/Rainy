@@ -89,11 +89,11 @@ def install(owned, archive, metadata_path):
             staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
             with tarfile.open(archive, 'r:gz') as package:
                 package.extractall(staging, filter='data')
-            if not (staging / 'node/bin/node').is_file() or not (staging / 'app/lib/host.js').is_file():
+            if not (staging / 'node/bin/node').is_file() or not (staging / 'app/dist/host.js').is_file():
                 raise RuntimeError('Rainy runtime is missing its executable')
             (staging / '.complete').write_text(digest + '\n')
             staging.rename(target)
-    return {'node': str(target / 'node/bin/node'), 'host': str(target / 'app/lib/host.js')}
+    return {'node': str(target / 'node/bin/node'), 'host': str(target / 'app/dist/host.js')}
 
 
 owned = Path.home() / '.rainy-agent/runtime'

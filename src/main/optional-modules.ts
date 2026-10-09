@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { x as extractTar } from 'tar'
 import { z } from 'zod'
-import type { OptionalModuleId, OptionalModuleStatus, OptionalModulesState } from '@deepseek-ai/dsh-client-ui-rainy/modules-protocol'
+import type { OptionalModuleId, OptionalModuleStatus, OptionalModulesState } from '../shared/modules-protocol.ts'
 import { downloadReleaseFile } from './release-download.ts'
 import { assertToolPackPath, checkToolPackCancellation, toolPackStat, writeToolPackRecord } from './toolpack-files.ts'
 
