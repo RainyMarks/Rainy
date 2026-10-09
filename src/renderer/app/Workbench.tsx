@@ -539,7 +539,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
               }} />
           </div>
           <div className={css.retained} hidden={navigation !== 'history'} ref={history}>
-            <History currentSessionId={sessionId} onNewChat={newChat}
+            <History currentSessionId={sessionId} workspaceId={state.workspace?.workspaceId ?? null} onNewChat={newChat}
               onSelect={(summary) => { setNarrowNavigation(false); void workbench.openSession(summary) }} />
           </div>
         </aside>

@@ -169,7 +169,7 @@ export function sanitizeDocumentation(html: string): string {
           || (attribute.name === 'href' && child.tagName === 'A' && /^https?:/i.test(attribute.value))
         if (!keep) child.removeAttribute(attribute.name)
       }
-      if (child.tagName === 'A') { child.setAttribute('target', '_blank'); child.setAttribute('rel', 'noreferrer') }
+      if (child.tagName === 'A' && child.hasAttribute('href')) { child.setAttribute('target', '_blank'); child.setAttribute('rel', 'noreferrer') }
       clean(child)
     }
   }

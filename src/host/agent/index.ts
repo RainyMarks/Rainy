@@ -243,11 +243,6 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     const files = cwd === undefined ? [] : await completeFiles(cwd, query)
     return [...files, ...completeChats(store.list(), query, sessionId)]
   })
-  rpc.register('chat.commands', () => [
-    { name: 'compact', description: '压缩当前对话中较早的内容' },
-    { name: 'model', description: '切换当前对话使用的模型' },
-    { name: 'new', description: '开始新对话' },
-  ])
 
   // ── skills and MCP ──
   rpc.register('extensions.status', async ({ cwd }) => { lastExtensionsCwd = cwd; return extensionsStatus(cwd) })

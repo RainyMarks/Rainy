@@ -46,12 +46,19 @@ export function getPrefs(): UiPreferences {
 }
 
 /**
- * Change preferences; the page updates as soon as the Host confirms.
+ * Change preferences. The page shows the change at once and keeps the Host's answer; a rejected change is undone.
  * @param change Fields to change.
+ * @returns Completion; rejects with the Host's error after restoring the previous preferences.
  */
 export async function setPrefs(change: Partial<UiPreferences>): Promise<void> {
+  const previous = current
   publish({ ...current, ...change })
-  publish(await host.call('prefs.set', change))
+  try {
+    publish(await host.call('prefs.set', change))
+  } catch (error) {
+    publish(previous)
+    throw error
+  }
 }
 
 /** @returns Whether the page currently uses the dark palette. */

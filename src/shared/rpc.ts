@@ -187,9 +187,6 @@ export interface CompletionItem {
   detail?: string | undefined
 }
 
-/** A slash command offered by the composer. */
-export interface CommandInfo { name: string; description: string; args?: string | undefined }
-
 /** Search hit over chat titles and text. */
 export interface SessionSearchHit { summary: SessionSummary; snippet: string }
 
@@ -280,7 +277,6 @@ export interface HostMethods {
   'chat.setModel': [{ sessionId: SessionId } & ModelSelection, ModelSelection]
   'chat.compact': [{ sessionId: SessionId }, { message: string }]
   'chat.complete': [{ sessionId?: SessionId | undefined; workspaceId?: WorkspaceId | null | undefined; query: string }, CompletionItem[]]
-  'chat.commands': [void, CommandInfo[]]
 
   'extensions.status': [{ cwd?: string | undefined }, ExtensionsStatus]
   'extensions.saveServer': [{ server: McpServerConfig; previousName?: string | undefined }, ExtensionsStatus]
