@@ -27,9 +27,9 @@ export const CLAUDE_HAIKU: ModelSetup = {
   contextWindow: 100000, maxTokens: 16000, api: 'anthropic-messages', local: false, thinking: 'high',
 }
 const PRESETS = [
-  { name: 'DeepSeek', model: DEEPSEEK_FLASH },
-  { name: 'Claude Opus', model: CLAUDE_OPUS },
-  { name: 'Claude Haiku', model: CLAUDE_HAIKU },
+  { name: 'DeepSeek V4.1 Flash', model: DEEPSEEK_FLASH },
+  { name: 'Claude Opus 5.5', model: CLAUDE_OPUS },
+  { name: 'Claude Haiku 5.5', model: CLAUDE_HAIKU },
 ]
 
 const api = z.enum(['openai-completions', 'openai-responses', 'anthropic-messages'])

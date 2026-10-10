@@ -94,6 +94,8 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
   const { busy, run } = action
   const [form, setForm] = useState(() => emptyModelForm(config.local))
   const [editing, setEditing] = useState<string | undefined>()
+  /** Name of the preset loaded into the form and not saved yet. */
+  const [draftPreset, setDraftPreset] = useState<string | undefined>()
   const [result, setResult] = useState<Result | undefined>()
   const [removing, setRemoving] = useState<string | undefined>()
   const [strata, setStrata] = useState<StrataController | undefined>()
@@ -123,9 +125,13 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
     return () => { clearInterval(timer); controller.dispose() }
   }, [refresh, config.pollMs])
 
-  const load = (next: ModelForm, key: string | undefined): void => {
-    setForm(next); setEditing(key); setResult(undefined); setRemoving(undefined)
+  const load = (next: ModelForm, key: string | undefined, preset?: string): void => {
+    setForm(next); setEditing(key); setDraftPreset(preset); setResult(undefined); setRemoving(undefined)
   }
+  // One list: saved configurations (a saved preset keeps its name), then presets not saved yet.
+  const presets = status?.presets ?? []
+  const nameOf = (key: string): string => presets.find(preset => keyOf(preset.model) === key)?.name ?? key
+  const unsavedPresets = presets.filter(preset => status?.models.some(model => keyOf(model) === keyOf(preset.model)) !== true)
   const connection = (): ModelDiscoveryInput => {
     if (!form.provider.trim() || !form.baseURL.trim()) throw new Error(t('settingsRequiredDiscovery'))
     return { provider: form.provider.trim(), baseURL: form.baseURL.trim(), api: form.api,
@@ -153,7 +159,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
     run(async () => {
       accept(await host.call('models.remove', { provider: model.provider }))
       if (editing === key) load(emptyModelForm(config.local), undefined)
-    }, t('modelRemoved', { name: key }))
+    }, t('modelRemoved', { name: nameOf(key) }))
   }
   const field = (key: 'provider' | 'baseURL' | 'model' | 'context' | 'output' | 'apiKey', label: string, options: { type?: string; wide?: boolean } = {}) =>
     <Field label={label} wide={options.wide}><input className={css.input} aria-label={label} type={options.type ?? 'text'} value={form[key]}
@@ -176,15 +182,16 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
         <h3 className={css.subheading}>{t('settingsDefaultModel')}</h3>
         <Button size="sm" variant="outline" disabled={busy} onClick={() => { load(emptyModelForm(config.local), undefined) }}>{t('settingsAddModel')}</Button>
       </div>
-      {status === undefined ? error === '' && <Loading label={t('loading')} />
-        : status.models.length === 0 ? <p className={css.muted}>{t('modelsEmpty')}</p>
-          : <ul className={css.items}>{status.models.map((model) => {
+      {status === undefined ? error === '' && <Loading label={t('loading')} /> : <>
+        {status.models.length === 0 && <p className={css.muted}>{t('modelsEmpty')}</p>}
+        {status.models.length + unsavedPresets.length > 0 && <ul className={css.items}>
+          {status.models.map((model) => {
             const key = keyOf(model)
             const isDefault = status.selected !== null && keyOf(status.selected) === key
             return <li key={key} className={clsx(css.item, editing === key && css.itemCurrent)} data-model={key}>
               <div className={css.itemText}>
                 <div className={css.itemTitle}>
-                  <span>{key}</span>
+                  <span>{nameOf(key)}</span>
                   {isDefault && <Tag tone="success">{t('modelDefault')}</Tag>}
                   {status.credentials.includes(model.provider) && <Tag tone="neutral">{t('modelKeyStored')}</Tag>}
                 </div>
@@ -194,21 +201,32 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
               </div>
               <div className={css.actions}>
                 {isDefault
-                  ? <Select label={t('modelThinkingFor', { name: key })} value={status.selected?.thinking ?? model.thinking ?? 'off'} disabled={busy}
+                  ? <Select label={t('modelThinkingFor', { name: nameOf(key) })} value={status.selected?.thinking ?? model.thinking ?? 'off'} disabled={busy}
                     items={(status.thinkingLevels[model.provider] ?? thinkingLevels).map(id => ({ id, label: thinkingLabels[id] ?? id }))} onChange={(thinking) => { select(model, thinking) }} />
                   : <Button size="sm" variant="outline" disabled={busy} onClick={() => { select(model) }}>{t('modelUseDefault')}</Button>}
                 <Button size="sm" disabled={busy} onClick={() => { load(formOf(model), key) }}>{t('modelEdit')}</Button>
                 <Button size="sm" disabled={busy} onClick={() => { remove(model) }}>{t(removing === key ? 'modelRemoveConfirm' : 'modelRemove')}</Button>
               </div>
             </li>
-          })}</ul>}
+          })}
+          {unsavedPresets.map(preset => <li key={preset.name} className={clsx(css.item, draftPreset === preset.name && css.itemCurrent)}
+            data-preset={preset.name}>
+            <div className={css.itemText}>
+              <div className={css.itemTitle}><span>{preset.name}</span><Tag tone="neutral">{t('modelPreset')}</Tag></div>
+              <div className={css.muted}>{t('modelContext', {
+                kind: t(preset.model.local ? 'settingsLocalModel' : 'settingsApiModel'), context: preset.model.contextWindow.toLocaleString('en-US'),
+              })}</div>
+            </div>
+            <div className={css.actions}>
+              <Button size="sm" disabled={busy} onClick={() => { load(formOf(preset.model), undefined, preset.name) }}>{t('modelLoadPreset')}</Button>
+            </div>
+          </li>)}
+        </ul>}
+      </>}
     </article>
     <article className={css.card} data-model-form>
-      <h3 className={css.subheading}>{editing === undefined ? t('settingsAddModel') : t('modelEditTitle', { name: editing })}</h3>
-      {status !== undefined && status.presets.length > 0 && <div className={css.actions}>
-        {status.presets.map(preset => <Button key={preset.name} size="sm" disabled={busy}
-          onClick={() => { load(formOf(preset.model), undefined) }}>{t('settingsPreset', { name: preset.name })}</Button>)}
-      </div>}
+      <h3 className={css.subheading}>{editing !== undefined ? t('modelEditTitle', { name: nameOf(editing) })
+        : draftPreset !== undefined ? t('settingsPreset', { name: draftPreset }) : t('settingsAddModel')}</h3>
       <SegmentedControl id={kindId} label={t('settingsRuntimeKind')} value={form.local ? 'local' : 'api'} disabled={busy}
         options={[{ value: 'local', label: t('settingsLocalModel') }, { value: 'api', label: t('settingsApiModel') }]}
         onChange={(value) => {
@@ -235,7 +253,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       <div className={css.actions}>
         <Button variant="primary" disabled={busy} onClick={() => { run(async () => {
           const saved = await host.call('models.configure', setup())
-          setEditing(keyOf(saved)); setForm(current => ({ ...current, apiKey: '' })); setResult(undefined)
+          setEditing(keyOf(saved)); setDraftPreset(undefined); setForm(current => ({ ...current, apiKey: '' })); setResult(undefined)
           await refresh()
         }, t('settingsSaved')) }}>{t('settingsSaveModel')}</Button>
         <Button variant="outline" disabled={busy} onClick={() => { run(async () => {

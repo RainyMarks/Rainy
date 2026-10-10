@@ -66,7 +66,7 @@ RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择
 
 所选 Windows 或 WSL 环境必须能访问服务地址。密钥保存在该环境的私有凭据存储中，RainyAgent 不会静默切换到其他模型。
 
-使用 Claude 时，点击**载入 Claude Opus 预设**或**载入 Claude Haiku 预设**并填写 Anthropic API 密钥，两个预设共用同一个密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），RainyAgent 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
+使用 Claude 时，在**设置 → 模型**的模型列表中点击 **Claude Opus 5.5** 或 **Claude Haiku 5.5** 旁的**载入**，并填写 Anthropic API 密钥，两个预设共用同一个密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），RainyAgent 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
 
 ### Strata 本地模型
 

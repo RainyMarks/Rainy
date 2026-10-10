@@ -162,15 +162,39 @@ it('selects a saved model and the default reasoning effort, shows stored keys an
   expect(value(zh.settingsModelId)).toBe('')
 })
 
-it('loads a preset into a new model form', async () => {
-  status = modelsStatus({ presets: [{ name: 'DeepSeek', model: { provider: 'rainy-deepseek', baseURL: 'https://api.deepseek.com', model: 'deepseek-flash',
-    contextWindow: 1000000, maxTokens: 393216, local: false, api: 'openai-responses', thinking: 'max' } }] })
+const deepseekPreset = { name: 'DeepSeek V4.1 Flash', model: { provider: 'rainy-deepseek', baseURL: 'https://api.deepseek.com', model: 'deepseek-flash',
+  contextWindow: 1000000, maxTokens: 393216, local: false, api: 'openai-responses', thinking: 'max' } } satisfies ModelsStatus['presets'][number]
+
+it('lists unsaved presets after the saved models and loads one into a new model form', async () => {
+  status = modelsStatus({ presets: [deepseekPreset] })
   await render(<ModelsSection workspace={workspace} />)
-  await click(button('载入 DeepSeek 预设'))
+  await waitFor(() => { expect(document.querySelector('[data-preset]')).not.toBeNull() })
+  const rows = [...document.querySelectorAll('[data-default-model] li')]
+  expect(rows.map(row => row.getAttribute('data-model') ?? row.getAttribute('data-preset'))).toEqual(['official/large', 'DeepSeek V4.1 Flash'])
+  expect([...document.querySelector('[data-model-form]')!.querySelectorAll('button')].some(item => item.textContent?.includes('DeepSeek'))).toBe(false)
+  await click(button(zh.modelLoadPreset, rows[1]!))
   expect(value(zh.settingsProvider)).toBe('rainy-deepseek')
   expect(value(zh.settingsContext)).toBe('1000000')
-  expect(hasText(zh.settingsAddModel, document.querySelector('[data-model-form]')!)).toBe(true)
+  expect(hasText('DeepSeek V4.1 Flash（预设）', document.querySelector('[data-model-form]')!)).toBe(true)
   expect(button(zh.settingsApiModel).getAttribute('aria-selected')).toBe('true')
+})
+
+it('names a saved preset after the preset and stops offering it as a preset', async () => {
+  status = modelsStatus({ models: [official, deepseekPreset.model], presets: [deepseekPreset] })
+  await render(<ModelsSection workspace={workspace} />)
+  await waitFor(() => { expect(document.querySelector('[data-model="rainy-deepseek/deepseek-flash"]')).not.toBeNull() })
+  expect(document.querySelector('[data-preset]')).toBeNull()
+  const saved = document.querySelector('[data-model="rainy-deepseek/deepseek-flash"]')!
+  expect(hasText('DeepSeek V4.1 Flash', saved)).toBe(true)
+  await click(button(zh.modelEdit, saved))
+  expect(hasText('编辑 DeepSeek V4.1 Flash')).toBe(true)
+})
+
+it('lists presets when no model is saved yet', async () => {
+  status = modelsStatus({ models: [], selected: null, presets: [deepseekPreset] })
+  await render(<ModelsSection workspace={workspace} />)
+  await waitFor(() => { expect(hasText(zh.modelsEmpty)).toBe(true) })
+  expect(document.querySelector('[data-preset="DeepSeek V4.1 Flash"]')).not.toBeNull()
 })
 
 it('does not let a status read issued before a save replace the saved model', async () => {
