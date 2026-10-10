@@ -63,7 +63,8 @@ describe('ide RPC method', () => {
     const workspaceId = workspace.workspaceId
     await writeFile(join(project, 'main.py'), 'print(1)\n')
     const opened = await ide.handle({ op: 'files.read', workspaceId, path: 'main.py' }) as IdeFileDocument
-    await writeFile(join(project, 'main.py'), 'print(2)\n')
+    // A different size changes the version even when the Windows file clock repeats the timestamp.
+    await writeFile(join(project, 'main.py'), 'print(22)\n')
     const conflict = await rpcError(ide.handle({ op: 'files.save', workspaceId, path: 'main.py', content: 'x', expectedVersion: opened.version }))
     expect(conflict).toMatchObject({ code: 'version-conflict', data: { currentVersion: expect.any(String) } })
     expect(conflict.data?.currentVersion).not.toBe(opened.version)

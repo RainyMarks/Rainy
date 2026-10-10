@@ -22,7 +22,7 @@ afterEach(async () => {
 const linkType = process.platform === 'win32' ? 'junction' : 'dir'
 
 async function fixture(config: Parameters<typeof resolveIdeFilesConfig>[0] = {}) {
-  const temporary = await mkdtemp(join(tmpdir(), 'rainy-ide-files-'))
+  const temporary = await realpath(await mkdtemp(join(tmpdir(), 'rainy-ide-files-')))
   cleanups.push(() => rm(temporary, { recursive: true, force: true }))
   const root = join(temporary, '中文 project')
   const outside = join(temporary, 'outside')

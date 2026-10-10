@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { once } from 'node:events'
@@ -50,10 +50,13 @@ vi.mock('../../src/main/toolpack-fs.ts', async () => {
 })
 
 let fixture: string
+/** Canonical temporary directory; Windows may report it with 8.3 short names that realpath expands. */
+let temporary: string
 let page: NativeToolWebPage | undefined
 
 beforeEach(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'rainy-web-close-'))
+  temporary = await realpath(tmpdir())
+  fixture = await mkdtemp(join(temporary, 'rainy-web-close-'))
   control.path = join(fixture, 'assets', 'index.html')
   control.phase = ''
   control.streams = 0
@@ -69,7 +72,7 @@ afterEach(async () => {
   control.release.resolve(undefined)
   await page?.close()
   page = undefined
-  if (relative(tmpdir(), fixture).startsWith('..')) throw new Error('Fixture cleanup escaped the temporary directory')
+  if (relative(temporary, fixture).startsWith('..')) throw new Error('Fixture cleanup escaped the temporary directory')
   await rm(fixture, { recursive: true, force: true })
 })
 

@@ -1,5 +1,5 @@
 /** Editor language admission keeps unsaved documents bound to their selected project directory. */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -11,7 +11,7 @@ import { prepareIdeLanguageMessage, type IdeLanguageSpec } from '../../src/host/
 let directory: string
 let spec: IdeLanguageSpec
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), 'rainy-language-'))
+  directory = await realpath(await mkdtemp(join(tmpdir(), 'rainy-language-')))
   spec = { workspaceId: brandString<WorkspaceId>('language-test'), root: directory, language: 'python', argv: ['fixture-language-server'] }
 })
 afterEach(async () => {
