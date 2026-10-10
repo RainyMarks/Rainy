@@ -91,6 +91,7 @@ describe('memory evidence', () => {
     expect(lastCompletedSeq).toBe(3)
     expect(collected.map(item => item.text).join('\n')).not.toContain('这条还没完成')
     expect(collected.some(item => item.kind === 'user' && item.text === '项目用 Python 3.12')).toBe(true)
-    expect(JSON.stringify(collected)).toContain(join('/project', 'pyproject.toml'))
+    // Compare JSON with JSON so Windows backslashes are escaped on both sides.
+    expect(JSON.stringify(collected)).toContain(JSON.stringify(join('/project', 'pyproject.toml')).slice(1, -1))
   })
 })
