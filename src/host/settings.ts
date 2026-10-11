@@ -212,15 +212,20 @@ export class Settings {
 
   private async importLegacy(): Promise<void> {
     const credentials = await readText(join(this.home, '.credentials.yaml'))
+    /** 1.x credentials by reference name, such as `DEEPSEEK_API_KEY`. */
+    const refs: Record<string, string> = {}
     if (credentials !== undefined) {
       const document: unknown = yaml.load(credentials)
       if (isRecord(document)) {
-        for (const [name, value] of Object.entries(document)) {
-          if (typeof value === 'string' && value !== '') this.keys[name] = value
-          else if (isRecord(value) && value.kind === 'api-key' && typeof value.key === 'string' && value.key !== '') this.keys[name] = value.key
+        // Released 1.x builds write version 1 with the keys under `refs`; pre-release builds kept them at the top level.
+        const section = document.version === 1 && isRecord(document.refs) ? document.refs : document
+        for (const [name, value] of Object.entries(section)) {
+          if (typeof value === 'string' && value !== '') refs[name] = value
+          else if (isRecord(value) && value.kind === 'api-key' && typeof value.key === 'string' && value.key !== '') refs[name] = value.key
         }
       }
     }
+    Object.assign(this.keys, refs)
     const patch = await readText(join(this.home, 'profiles', 'rainy', 'cordis.patch.yml'))
     if (patch === undefined) return
     const entries: Record<string, unknown>[] = []
@@ -229,6 +234,9 @@ export class Settings {
     const providers = isRecord(piAi?.config) && isRecord(piAi.config.providers) ? piAi.config.providers : {}
     for (const [provider, value] of Object.entries(providers)) {
       if (!isRecord(value) || !Array.isArray(value.models)) continue
+      // A 1.x provider names its key reference in `apiKeyEnv`; 2.0 looks the key up by credentialName.
+      const key = typeof value.apiKeyEnv === 'string' ? refs[value.apiKeyEnv] : undefined
+      if (key !== undefined) this.keys[credentialName(provider)] ??= key
       const compat = isRecord(value.compat) ? value.compat : {}
       for (const model of value.models) {
         if (!isRecord(model)) continue

@@ -379,6 +379,29 @@ describe('agent', () => {
     expect(settings.apiKey('rainy-deepseek')).toBe('sk-test-123')
   })
 
+  it('imports keys from the version 1 credentials file that released 1.x builds write', async () => {
+    const { env, cleanup } = await tempHost()
+    cleanups.push(cleanup)
+    await mkdir(join(env.home, 'profiles', 'rainy'), { recursive: true })
+    await writeFile(join(env.home, '.credentials.yaml'), [
+      'version: 1', 'refs:', '  DEEPSEEK_API_KEY: sk-deepseek-123', '  RELAY_TOKEN: sk-relay-456', 'records:',
+      '  client-connection/browser-session:', '    kind: token', '    payload:', '      version: 1', '      secret: not-a-model-key',
+    ].join('\n'))
+    await writeFile(join(env.home, 'profiles', 'rainy', 'cordis.patch.yml'), [
+      '- id: llm-pi-ai', '  config:', '    providers:',
+      '      rainy-deepseek:', '        baseURL: https://api.deepseek.com', '        api: openai-responses', '        apiKeyEnv: DEEPSEEK_API_KEY',
+      '        models:', '          - id: deepseek-flash', '            contextWindow: 1000000',
+      '      relay:', '        baseURL: https://relay.example', '        api: anthropic-messages', '        apiKeyEnv: RELAY_TOKEN',
+      '        models:', '          - id: claude-opus-5-5', '            contextWindow: 200000',
+    ].join('\n'))
+    const settings = new Settings(env.home, {})
+    await settings.load()
+    expect(settings.apiKey('rainy-deepseek')).toBe('sk-deepseek-123')
+    expect(settings.apiKey('relay')).toBe('sk-relay-456')
+    expect(settings.providersWithKeys().sort()).toEqual(['rainy-deepseek', 'relay'])
+    expect(JSON.stringify(settings.get())).not.toContain('sk-')
+  })
+
   it('completes files and chats after @', async () => {
     server = new FakeOpenAI([])
     await server.start()
