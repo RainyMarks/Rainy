@@ -266,8 +266,28 @@ export async function spawnTerminal(spec: TerminalSpec): Promise<TerminalHandle>
   })
   const output = new PassThrough({ encoding: 'utf8' })
   const graceMs = spec.graceMs ?? DEFAULT_GRACE_MS
-  pty.onData((data) => { output.write(data) })
   let exited = false
+  // On Windows node-pty queues a resize until the terminal's first output and runs it from an event handler,
+  // where a program that already exited throws uncaught. Until that output, a resize only records the size.
+  let ready = process.platform !== 'win32'
+  let pendingSize: { cols: number; rows: number } | undefined
+  const applySize = (cols: number, rows: number): void => {
+    // A layout change can arrive after the program ended; ConPTY records the exit before onExit fires.
+    if (exited) return
+    try { pty.resize(cols, rows) } catch (error) {
+      if (!(error instanceof Error && error.message === PTY_EXITED)) throw error
+    }
+  }
+  pty.onData((data) => {
+    output.write(data)
+    if (ready) return
+    ready = true
+    // node-pty marks itself ready after this listener on the same output, so the next turn resizes immediately.
+    setImmediate(() => {
+      if (pendingSize !== undefined) applySize(pendingSize.cols, pendingSize.rows)
+      pendingSize = undefined
+    })
+  })
   const done = new Promise<ProcessOutcome>((resolve) => {
     pty.onExit(({ exitCode, signal }) => {
       exited = true
@@ -293,12 +313,8 @@ export async function spawnTerminal(spec: TerminalSpec): Promise<TerminalHandle>
     done,
     write(data: string): Promise<void> { pty.write(data); return Promise.resolve() },
     resize(cols: number, rows: number): Promise<void> {
-      // A layout change can arrive after the program ended; ConPTY records the exit before onExit fires.
-      // A finished terminal has nothing to resize.
-      if (exited) return Promise.resolve()
-      try { pty.resize(cols, rows) } catch (error) {
-        if (!(error instanceof Error && error.message === PTY_EXITED)) throw error
-      }
+      if (ready && pendingSize === undefined) applySize(cols, rows)
+      else pendingSize = { cols, rows }
       return Promise.resolve()
     },
     terminate,
