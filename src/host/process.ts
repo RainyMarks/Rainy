@@ -239,8 +239,11 @@ export interface TerminalHandle {
 }
 
 let ptyModule: typeof import('node-pty') | undefined
-/** node-pty's Windows agent throws this once the program has exited (node-pty is pinned, so the text is stable). */
-const PTY_EXITED = 'Cannot resize a pty that has already exited'
+/**
+ * What node-pty throws when a resize reaches a terminal whose program has exited but whose onExit has not fired:
+ * the Windows agent's own check, and the closed descriptor on Linux. node-pty is pinned, so the texts are stable.
+ */
+const PTY_CLOSED: ReadonlySet<string> = new Set(['Cannot resize a pty that has already exited', 'ioctl(2) failed, EBADF'])
 
 function loadPty(): typeof import('node-pty') {
   ptyModule ??= createRequire(import.meta.url)('node-pty') as typeof import('node-pty')
@@ -272,10 +275,10 @@ export async function spawnTerminal(spec: TerminalSpec): Promise<TerminalHandle>
   let ready = process.platform !== 'win32'
   let pendingSize: { cols: number; rows: number } | undefined
   const applySize = (cols: number, rows: number): void => {
-    // A layout change can arrive after the program ended; ConPTY records the exit before onExit fires.
+    // A layout change can arrive after the program ended, before onExit fires.
     if (exited) return
     try { pty.resize(cols, rows) } catch (error) {
-      if (!(error instanceof Error && error.message === PTY_EXITED)) throw error
+      if (!(error instanceof Error && PTY_CLOSED.has(error.message))) throw error
     }
   }
   pty.onData((data) => {
