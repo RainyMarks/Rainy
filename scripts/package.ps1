@@ -1,4 +1,5 @@
-<# Build the Windows installer and the offline release directory from a checkout with restored release inputs. #>
+﻿<# Build the Windows installer and the offline release directory from a checkout with restored release inputs. #>
+# Saved as UTF-8 with a BOM so Windows PowerShell 5.1 reads the Chinese offline file names below correctly.
 param([string]$Distribution = 'Ubuntu', [string]$NativeToolsSource, [string]$NativeToolsStage,
     [string]$ReuseNativeToolsRelease, [string]$ComponentSource, [string]$SevenZip, [string]$StrataArchive)
 $ErrorActionPreference = 'Stop'
