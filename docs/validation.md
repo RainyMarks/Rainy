@@ -2,15 +2,15 @@
 
 ## 2.0.0（2026-10-10）
 
-被测产物为 `RainyAgent-2.0.0-windows-x64-setup.exe`（292,609,610 字节，SHA-256 `23d92dc5b85815b8dec1efd804ca2492baa0c0fc0977a6edbecb1882a695fba6`），构建自提交 `41bf4fa5b1a501da0a9e08f328b5bb9b59b4cd54`；之后的提交只修改验收记录。构建与检查在 Windows 11（26200）和 WSL Ubuntu 26.04 上完成。
+被测产物为 `RainyAgent-2.0.0-windows-x64-setup.exe`（292,609,717 字节，SHA-256 `4fe9a1ae5bf0e1f5f236b71ee05a26306f82d687f84c3af44f7f4fde87029de4`），构建自提交 `0233799151890bdb52dd3e704e6d43e7eec5c6ee`；之后的提交只修改验收记录。构建与检查在 Windows 11（26200）和 WSL Ubuntu 26.04 上完成。
 
 ### 源码与回归
 
-Ubuntu 24.04 与 Windows 2022 CI 的类型检查、Vitest、node:test 和构建均通过。本机 Windows 11 上 Vitest 63 个文件 660 项通过（10 项按平台跳过），node:test 128 项通过（2 项跳过）。发布前修复并补充回归：Windows 运行器 8.3 短路径下的测试夹具与工具暂存目录重叠检查；程序结束后调整布局时出现“Cannot resize a pty that has already exited”，以及 Windows 终端在首次输出前调整大小时 node-pty 在事件回调中抛出未捕获错误；从 1.x 升级时 API 密钥未导入。
+Ubuntu 24.04 与 Windows 2022 CI 的类型检查、Vitest、node:test 和构建均通过。本机 Windows 11 上 Vitest 63 个文件 660 项通过（10 项按平台跳过），node:test 128 项通过（2 项跳过）。发布前修复并补充回归：Windows 运行器 8.3 短路径下的测试夹具与工具暂存目录重叠检查；程序结束后调整布局时出现“Cannot resize a pty that has already exited”，Windows 终端在首次输出前调整大小时 node-pty 在事件回调中抛出未捕获错误，以及 Linux 终端在程序退出后调整大小时抛出“ioctl(2) failed, EBADF”（在 WSL Ubuntu 中对快速退出的程序连续调整大小 200 次，出现的 221 次错误均为该错误）；从 1.x 升级时 API 密钥未导入。
 
 ### 构建与发行资源
 
-`bootstrap-release-inputs.mjs` 按输入清单校验了 23 个固定输入，其中原生工具归档从 1.0.0 资源存档下载。`package.ps1` 生成安装包、PHP 分片（38,191,707 字节）和 WSL 运行环境分片（312,798,120 字节，SHA-256 `897ba4ba8205b55900dd0ddd081dbd79b9e4bcd5b9a1375ff8559a3279aec4d0`），两者发布在 2.0.0 资源存档；Strata 引擎仍引用 1.0.0 资源存档。用 7-Zip 解开安装包后，10,043 个应用文件与 `release/win-unpacked` 逐一比对 SHA-256，全部一致。Windows Authenticode 证书未配置。
+`bootstrap-release-inputs.mjs` 按输入清单校验了 23 个固定输入，其中原生工具归档从 1.0.0 资源存档下载。`package.ps1` 生成安装包、PHP 分片（38,191,707 字节）和 WSL 运行环境分片（312,796,960 字节，SHA-256 `9cca80c61865b0a1350a3180e18bd5dd6ca40c3c2171c4749f7776442495262d`），两者发布在 2.0.0 资源存档；Strata 引擎仍引用 1.0.0 资源存档。用 7-Zip 解开安装包后，10,043 个应用文件与 `release/win-unpacked` 逐一比对 SHA-256，全部一致。Windows Authenticode 证书未配置。
 
 ### 打包程序
 
