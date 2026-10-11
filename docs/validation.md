@@ -1,8 +1,32 @@
 # RainyAgent 验收记录
 
+## 2.0.0（2026-10-10）
+
+被测产物为 `RainyAgent-2.0.0-windows-x64-setup.exe`（292,609,648 字节，SHA-256 `dc06f2722ee0b52a239b7b2f3f6249242b734c7b73c24b410eefba2a41b12917`），构建自提交 `bde750d604483c2471caa48baa7c7d71897662ec`；之后的提交只修改文档和 README 截图。构建与检查在 Windows 11（26200）和 WSL Ubuntu 26.04 上完成。
+
+### 源码与回归
+
+Ubuntu 24.04 与 Windows 2022 CI 的类型检查、Vitest、node:test 和构建均通过。本机 Windows 11 上 Vitest 63 个文件 660 项通过（10 项按平台跳过），node:test 128 项通过（2 项跳过）。发布前修复并补充回归：Windows 运行器 8.3 短路径下的测试夹具与工具暂存目录重叠检查；程序结束后调整布局时出现“Cannot resize a pty that has already exited”；从 1.x 升级时 API 密钥未导入。
+
+### 构建与发行资源
+
+`bootstrap-release-inputs.mjs` 按输入清单校验了 23 个固定输入，其中原生工具归档从 1.0.0 资源存档下载。`package.ps1` 生成安装包、PHP 分片（38,191,707 字节）和 WSL 运行环境分片（312,796,830 字节，SHA-256 `2485643440b50289991717193525d3fb7b9dd5823c1438422e9b9a9a95a842eb`），两者发布在 2.0.0 资源存档；Strata 引擎仍引用 1.0.0 资源存档。用 7-Zip 解开安装包后，10,043 个应用文件与 `release/win-unpacked` 逐一比对 SHA-256，全部一致。Windows Authenticode 证书未配置。
+
+### 打包程序
+
+`release/win-unpacked` 使用临时用户数据启动：首次启动约 5–7 秒显示工作台，版本为 2.0.0，执行环境为 Windows，38 款工具目录可用，可选组件列出 Strata 与 PHP；页面与控制台错误为零，关闭窗口后进程全部退出。在临时 baby-xor 项目中打开文件、用本机 Python 运行 `solve.py` 并得到预期 flag，再打开 AI 助手和 CTF 工具页；README 截图来自这次运行。
+
+WSL 运行环境在临时 HOME 中由 `install-runtime.py` 安装（约 7.5 秒），Linux Host 约 0.2 秒就绪，启动页返回 HTTP 200。用本机 1.x 设置的副本启动时，Host 导入了模型、默认模型选择和 DeepSeek 密钥；1.x 对话文件保持不变。
+
+### 验收范围
+
+本轮没有在本机执行 NSIS 安装、覆盖安装、卸载或从 1.0.10 自动更新到 2.0.0，以免改动正在使用的 1.0.10 安装；安装包内容由上述文件比对确认。没有调用真实模型；Strata GPU 推理、调试器、MCP 服务和逐个工具的功能未在本轮验收。
+
+## 1.0.0（2026-10-05）
+
 本记录对应 2026-10-05 的 RainyAgent 1.0.0 发布验收，区分源码检查、确定性模拟服务、打包程序和真实模型推理。发行文件的大小、SHA-256、构建提交和最终验收结果随 [v1.0.0 Release](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.0) 提供；旧版本的 API 对照与性能数字不作为本版本结论。
 
-## 源码与回归
+### 源码与回归
 
 独立源码目录已通过锁文件离线安装与完整源码构建。真实 Git 检出保留符号链接和可执行文件模式；477 个固定 IceSky 资源逐项哈希一致，IDE 资源和 Strata 清单验证通过。固定二进制及需保留原始字节的文本资源使用精确路径的 Git 属性，避免检出时改变校验值。
 
@@ -10,7 +34,7 @@
 
 相关检查入口为 `tests/main`（Vitest）、`tests/scripts`（`node --test`），以及 [Rainy CI](../.github/workflows/rainy.yml)。发布标签对应的源码已通过 [Ubuntu 24.04 与 Windows 2022 CI](https://github.com/RainyMarks/RainyAgent/actions/runs/37405776590)，在普通 runner 上构建源码并执行指定回归，不依赖上游组织的内部 runner。
 
-## 离线资源与自包含运行时
+### 离线资源与自包含运行时
 
 23 个原始离线输入共 13,563,886,456 字节，封装为 30 个最大 1 GiB 的传输分片。实际 PowerShell 重组已完成，23 个文件的大小和 SHA-256 全部一致；缺片、损坏及路径校验由 [传输测试](../tests/scripts/release-assets.test.mjs) 覆盖。构建准备入口在独立目录中恢复了 IDE、Windows 基础组件、WSL 组件目录和 Strata 运行时。
 
@@ -18,7 +42,7 @@ Strata 0.1.39 与 Python 3.12.14 的运行时包含 1,702 个文件，共 846,09
 
 运行时不包含主模型 GGUF、MTP 权重或派生 dense/expert 文件。用户必须自行选择兼容主模型及匹配的 MTP 来源。NVIDIA 驱动与硬件仍属于系统要求；没有随包提供 AMD 或 Linux 推理引擎。
 
-## 桌面与本地服务
+### 桌面与本地服务
 
 Windows x64 最终打包程序使用隔离用户数据启动。应用全局版本和通用设置版本均为 1.0.0；真实 Monaco 编辑器、中文项目、未保存文本和无激活入口检查通过。Strata 原生接口报告随包运行时可用、模型未配置，不会自动加载模型。首页 [工作区截图](../assets/workbench.png) 来自该程序实际界面。
 
@@ -26,7 +50,7 @@ Windows x64 最终打包程序使用隔离用户数据启动。应用全局版�
 
 最终程序的 Windows 与 WSL Host 启动、项目往返、草稿和选择状态恢复通过，两个环境中各执行一项 JavaScript 和 Python 程序，均正常退出并输出预期的 `42`。Python 使用明确指定的随包 Windows 解释器和 Ubuntu 解释器，未据此验证默认解释器发现。
 
-## 自动更新与发行完整性
+### 自动更新与发行完整性
 
 更新控制器回归覆盖检查、下载、错误、销毁和用户确认流程。真实 Electron [更新下载测试](../tests/manual/update-download.mjs) 使用公开 updater API、临时用户数据、回环 HTTP 服务和最终 1,191,900,440 字节安装器，验证同版本不下载、旧版本完整下载并通过 SHA-256/SHA-512 校验，以及错误 SHA-512 被拒绝。该测试不执行更新安装。NSIS 内 28,127 个文件的压缩完整性检查通过，关键文件摘要与被测程序一致。
 
@@ -34,7 +58,7 @@ Windows x64 最终打包程序使用隔离用户数据启动。应用全局版�
 
 [托管 Windows 2022 安装验收](https://github.com/RainyMarks/RainyAgent/actions/runs/37409614050) 下载并核对同一份最终安装器，在临时虚拟机上完成当前用户静默核心安装、注册项与两个快捷方式检查、真实界面启动、1.0.0 版本及无激活入口检查、正常关闭和静默卸载。页面及控制台错误均为零；卸载移除了核心程序、注册项和快捷方式，并保留三个位置的用户文件。该任务未安装可选工具分卷、模型权重或 WSL，也未执行跨版本升级。
 
-## 验收范围
+### 验收范围
 
 本轮没有加载大型真实模型；真实 Strata GPU 推理、吞吐量、长上下文能力及不同显卡兼容性尚未验证。
 
