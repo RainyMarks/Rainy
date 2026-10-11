@@ -216,10 +216,27 @@ function resolveSourceRoot(definition, sourceRoot) {
   return definition.sourceLayout === 'ctf-all-in-one-dist' && basename(path).toLowerCase() === 'libdll' ? dirname(path) : path
 }
 
+/**
+ * Spell a path like its realpath even when its tail does not exist yet, so Windows 8.3 short names compare equal to long names.
+ * @param {string} path Absolute path.
+ * @returns {Promise<string>} The realpath of the nearest existing ancestor joined with the missing tail.
+ */
+async function comparablePath(path) {
+  const missing = []
+  for (let current = path; ; current = dirname(current)) {
+    try { return resolve(await realpath(current), ...missing) } catch (error) {
+      if (error.code !== 'ENOENT' || dirname(current) === current) throw error
+      missing.unshift(basename(current))
+    }
+  }
+}
+
 async function ensureOwnedStage(stageRoot, sourceRoot) {
   if (stageRoot.split(sep).some(part => part.toLowerCase() === 'resources')) throw new Error('Native tool staging must stay outside resources.')
-  const sourceWithinStage = relative(stageRoot, sourceRoot)
-  const stageWithinSource = relative(sourceRoot, stageRoot)
+  // sourceRoot is a realpath; the link checks below still inspect stageRoot as given.
+  const comparableStage = await comparablePath(stageRoot)
+  const sourceWithinStage = relative(comparableStage, sourceRoot)
+  const stageWithinSource = relative(sourceRoot, comparableStage)
   if (!sourceWithinStage || (!isAbsolute(sourceWithinStage) && !sourceWithinStage.startsWith(`..${sep}`) && sourceWithinStage !== '..') || (!isAbsolute(stageWithinSource) && !stageWithinSource.startsWith(`..${sep}`) && stageWithinSource !== '..')) throw new Error('Source and stage roots must be separate non-overlapping directories.')
   const existing = await maybeStat(stageRoot)
   if (existing?.isSymbolicLink()) throw new Error('Native tool stage cannot be a symbolic link or junction.')
