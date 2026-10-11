@@ -137,6 +137,18 @@ describe('human IDE execution', () => {
     await expect(f.request({ op: 'terminal.stop', workspaceId, terminalId: terminal.id })).resolves.toEqual({ ok: true })
   })
 
+  it('accepts a late resize of an ended terminal without accepting input', async () => {
+    const f = fixture()
+    const terminal = await f.request({ op: 'terminal.start', workspaceId, cols: 80, rows: 24 })
+    await vi.waitFor(() => { expect(f.terminals).toHaveLength(1) })
+    f.terminals[0]!.output.end()
+    f.terminals[0]!.result.resolve({ exitCode: 0, signal: null })
+    await vi.waitFor(async () => { expect((await f.poll()).status.terminals[0]?.phase).toBe('exited') })
+    await expect(f.request({ op: 'terminal.resize', workspaceId, terminalId: terminal.id, cols: 100, rows: 30 })).resolves.toEqual({ ok: true })
+    expect(f.terminals[0]!.handle.resize).not.toHaveBeenCalled()
+    await expect(f.request({ op: 'terminal.input', workspaceId, terminalId: terminal.id, data: 'late\n' })).rejects.toThrow('not running')
+  })
+
   it('resolves absolute argv and preserves metacharacters as literal arguments', async () => {
     const f = fixture()
     const resolved = await f.request({

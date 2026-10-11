@@ -487,6 +487,8 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
           await stop(value)
           return { ok: true }
         }
+        // The page can resize a terminal before it learns that the terminal ended; that resize has nothing to do.
+        if (request.op === 'terminal.resize' && (value.finished || value.stopped)) return { ok: true }
         if (!value.terminal || value.finished || value.stopped) throw new Error('This terminal is not running.')
         if (request.op === 'terminal.input') {
           options.assertUsable()
@@ -504,6 +506,7 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
           await stop(value)
           return { ok: true }
         }
+        if (request.op === 'run.resize' && (value.finished || value.stopped)) return { ok: true }
         if (value.finished || value.stopped) throw new Error('This program is not running.')
         if (request.op === 'run.input') {
           options.assertUsable()

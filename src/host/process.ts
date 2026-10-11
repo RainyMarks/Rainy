@@ -239,6 +239,8 @@ export interface TerminalHandle {
 }
 
 let ptyModule: typeof import('node-pty') | undefined
+/** node-pty's Windows agent throws this once the program has exited (node-pty is pinned, so the text is stable). */
+const PTY_EXITED = 'Cannot resize a pty that has already exited'
 
 function loadPty(): typeof import('node-pty') {
   ptyModule ??= createRequire(import.meta.url)('node-pty') as typeof import('node-pty')
@@ -265,8 +267,10 @@ export async function spawnTerminal(spec: TerminalSpec): Promise<TerminalHandle>
   const output = new PassThrough({ encoding: 'utf8' })
   const graceMs = spec.graceMs ?? DEFAULT_GRACE_MS
   pty.onData((data) => { output.write(data) })
+  let exited = false
   const done = new Promise<ProcessOutcome>((resolve) => {
     pty.onExit(({ exitCode, signal }) => {
+      exited = true
       output.end()
       resolve({ exitCode, signal: signal ? (`SIG${signal}` as NodeJS.Signals) : null })
     })
@@ -288,7 +292,15 @@ export async function spawnTerminal(spec: TerminalSpec): Promise<TerminalHandle>
     output,
     done,
     write(data: string): Promise<void> { pty.write(data); return Promise.resolve() },
-    resize(cols: number, rows: number): Promise<void> { pty.resize(cols, rows); return Promise.resolve() },
+    resize(cols: number, rows: number): Promise<void> {
+      // A layout change can arrive after the program ended; ConPTY records the exit before onExit fires.
+      // A finished terminal has nothing to resize.
+      if (exited) return Promise.resolve()
+      try { pty.resize(cols, rows) } catch (error) {
+        if (!(error instanceof Error && error.message === PTY_EXITED)) throw error
+      }
+      return Promise.resolve()
+    },
     terminate,
   }
 }
