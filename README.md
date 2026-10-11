@@ -13,7 +13,7 @@
 
 English | [中文](README.zh.md)
 
-[**Download for Windows**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
+[**Download for Windows**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
 
 </div>
 
@@ -34,6 +34,22 @@ Write a solve script, run it, ask the AI why it fails, then open Wireshark or Cy
 
 ![CTF tools: download each tool when you need it](assets/ctf-tools.png)
 
+<a id="whats-new"></a>
+## What's new in 2.0
+
+RainyAgent 2.0 is a rewrite: the DeepSeek Harness plugin platform is gone, and the app is one package built on pi-ai and pi-agent-core.
+
+- **Lighter**: the installer is 293 MB (325 MB for 1.0.10) and the WSL runtime about 310 MB (was about 340 MB).
+- **CodeMirror 6 editor**: replaces Monaco and loads on demand; tabs, completion, hover, go to definition, rename, diagnostics and diffs remain.
+- **Chat history**: search chats, see them grouped as pinned, current project and other projects, and rename, pin, archive or delete them.
+- **Cheaper compaction**: compaction reuses the chat's prompt cache, and the chat shows when it is compacting.
+- **MCP and skills**: MCP servers are configured once in Settings, Streamable HTTP servers accept request headers such as `Authorization`, and skills are read from `.rainy/skills` automatically.
+- **Presets in the model list**: DeepSeek V4.1 Flash, Claude Opus 5.5 and Claude Haiku 5.5 are listed beside your saved models; select **Load** to use one.
+
+### Upgrading from 1.x
+
+RainyAgent 2.0 imports your saved models, API keys and global prompt from 1.x on first start. Chats from 1.x use the old Harness session format and are not imported; per-chat extension settings are replaced by the global MCP settings and automatic skills.
+
 <a id="run"></a>
 ## Download and start
 
@@ -46,14 +62,10 @@ Write a solve script, run it, ask the AI why it fails, then open Wireshark or Cy
 |---|---|---|
 | Strata engine | about 560 MB | **Settings → Runtime environments → Optional components** |
 | PHP | about 38 MB | **Settings → Runtime environments → Optional components** |
-| WSL runtime | about 340 MB | Downloaded automatically on the first WSL launch |
+| WSL runtime | about 310 MB | Downloaded automatically on the first WSL launch |
 | CTF tools | 1 MB – 400 MB each | **CTF tools → Common tools** |
 
 RainyAgent checks for stable releases and downloads them in the background. A downloaded update offers **Later** or **Restart and install**; ordinary exit does not install it, and updates never download your tools again. See [tool installation and updates](docs/desktop.md#ctf-workbench) for details.
-
-### Upgrading from 1.x
-
-RainyAgent 2.0 imports your saved models, API keys and global prompt from 1.x on first start. Chats from 1.x use the old Harness session format and are not imported; per-chat extension settings are replaced by the global MCP settings and automatic skills.
 
 <a id="connect-a-model"></a>
 ## Connect a model

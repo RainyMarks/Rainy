@@ -24,7 +24,7 @@ RainyAgent 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Ho
 
 “设置 → 运行环境 → 可选组件”可下载和删除 Strata 引擎（约 560 MB）及 PHP。Strata 引擎就是已作为 1.0.0 构建输入 `build-inputs/strata-runtime.tar.gz` 发布的归档；[Strata 本地推理](#strata-local-inference)说明其内容和用法。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。
 
-WSL 运行环境（约 340 MB）与每个 RainyAgent 版本对应，发布在 2.0.0 资源存档中。安装或更新后首次以 WSL 启动时自动下载，启动页显示进度；发行版中已解包本版本运行环境时不下载。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境，保留本版本以及仍有进程在使用的运行环境。
+WSL 运行环境（约 310 MB）与每个 RainyAgent 版本对应，发布在 2.0.0 资源存档中。安装或更新后首次以 WSL 启动时自动下载，启动页显示进度；发行版中已解包本版本运行环境时不下载。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境，保留本版本以及仍有进程在使用的运行环境。
 
 启动约 60 秒后，安装版会删除旧安装程序留在 `resources` 目录中的资源：`strata-runtime`、`php`、`linux-runtime.tar.gz`、`native-tools-metadata.json`、`native-tools-download.json` 和 `native-tools-catalog.json`。
 

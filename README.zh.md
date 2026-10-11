@@ -13,7 +13,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [2.0 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -34,6 +34,22 @@
 
 ![CTF 工具：用到哪款就下载哪款](assets/ctf-tools.png)
 
+<a id="whats-new"></a>
+## 2.0 新变化
+
+2.0 是一次重写：RainyAgent 不再基于 DeepSeek Harness 插件平台，改为基于 pi-ai 与 pi-agent-core 的单一代码包。
+
+- **更轻**：安装包 293 MB（1.0.10 为 325 MB），WSL 运行环境约 310 MB（原约 340 MB）。
+- **CodeMirror 6 编辑器**：取代 Monaco，按需加载；标签页、补全、悬停提示、转到定义、重命名、诊断和差异对比都保留。
+- **对话历史**：可搜索，按置顶、当前项目、其他项目分组，支持重命名、置顶、归档和删除。
+- **压缩更省钱**：上下文压缩复用对话的提示词缓存，压缩时对话里会显示“正在压缩上下文…”。
+- **MCP 与 Skills**：MCP 服务在设置中统一配置，Streamable HTTP 服务可填写请求头（如 `Authorization`）；Skills 从 `.rainy/skills` 自动读取。
+- **预设进了模型列表**：DeepSeek V4.1 Flash、Claude Opus 5.5 和 Claude Haiku 5.5 预设与已保存的模型列在一起，点击**载入**即可使用。
+
+### 从 1.x 升级
+
+2.0 首次启动时会从 1.x 导入已保存的模型、API 密钥和全局提示词。1.x 的对话使用旧的 Harness 会话格式，不会导入；按对话设置的扩展改为全局 MCP 设置和自动读取的 Skills。
+
 <a id="run"></a>
 ## 下载与开始使用
 
@@ -46,14 +62,10 @@
 |---|---|---|
 | Strata 引擎 | 约 560 MB | **设置 → 运行环境 → 可选组件** |
 | PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
-| WSL 运行环境 | 约 340 MB | 首次以 WSL 启动时自动下载 |
+| WSL 运行环境 | 约 310 MB | 首次以 WSL 启动时自动下载 |
 | CTF 工具 | 每款 1 MB – 400 MB | **CTF 工具 → 常用工具** |
 
 RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新，更新也不会重新下载你的工具。详见[工具安装与更新](docs/desktop.zh.md#ctf-workbench)。
-
-### 从 1.x 升级
-
-2.0 首次启动时会从 1.x 导入已保存的模型、API 密钥和全局提示词。1.x 的对话使用旧的 Harness 会话格式，不会导入；按对话设置的扩展改为全局 MCP 设置和自动读取的 Skills。
 
 <a id="connect-a-model"></a>
 ## 连接模型
