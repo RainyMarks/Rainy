@@ -1,10 +1,11 @@
-/** `settings.json` and `.credentials.json` under the Host home, plus the one-time import of RainyAgent 1.x settings. */
+/** `settings.json` and the API keys under the Host home (`credentials.ts`), plus the one-time import of RainyAgent 1.x settings. */
 import { readFile } from 'node:fs/promises'
 import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
 import type { McpServerConfig, ModelSelection, ModelSetup, PermissionMode, PermissionRules, ProxySettings, UiPreferences } from '../shared/rpc.ts'
+import { CredentialFiles, type CredentialSeal } from './credentials.ts'
 import { readJson, SerialQueue, writeJson } from './files.ts'
 
 /** Maximum characters of the user's global prompt. */
@@ -107,8 +108,6 @@ export interface SettingsData {
   proxy?: ProxySettings | undefined
 }
 
-const credentialsSchema = z.object({ version: z.literal(1), keys: z.record(z.string(), z.string()) })
-
 /**
  * Credential name for a provider. The DeepSeek preset uses `DEEPSEEK_API_KEY`, both Claude presets share
  * `ANTHROPIC_API_KEY`, and every other provider has its own name. An environment variable with the same
@@ -131,15 +130,21 @@ export class Settings {
   private keys: Record<string, string> = {}
   private readonly queue = new SerialQueue()
   private readonly settingsFile: string
-  private readonly credentialsFile: string
+  private readonly credentials: CredentialFiles
 
   /**
    * @param home Host home directory.
    * @param env Process environment; variables named like a credential override stored keys.
+   * @param seal Encrypts API keys at rest with the carrier's key; without it they are stored as plain text.
    */
-  constructor(private readonly home: string, private readonly env: NodeJS.ProcessEnv) {
+  constructor(private readonly home: string, private readonly env: NodeJS.ProcessEnv, seal?: CredentialSeal) {
     this.settingsFile = join(home, 'settings.json')
-    this.credentialsFile = join(home, '.credentials.json')
+    this.credentials = new CredentialFiles(home, seal)
+  }
+
+  /** @returns Whether API keys are encrypted at rest. */
+  get keysSealed(): boolean {
+    return this.credentials.sealed
   }
 
   /** Load both files. When `settings.json` does not exist yet, import RainyAgent 1.x settings first. */
@@ -148,12 +153,11 @@ export class Settings {
     if (raw === undefined) {
       await this.importLegacy()
       await writeJson(this.settingsFile, this.data)
-      await writeJson(this.credentialsFile, { version: 1, keys: this.keys })
+      await this.credentials.write(this.keys)
       return
     }
     this.data = fileSchema.parse(raw) as SettingsData
-    const credentials = await readJson(this.credentialsFile)
-    this.keys = credentials === undefined ? {} : credentialsSchema.parse(credentials).keys
+    this.keys = await this.credentials.read()
   }
 
   /** @returns A copy of the persisted settings. */
@@ -269,7 +273,7 @@ export class Settings {
       const next = { ...this.keys }
       if (key === undefined) delete next[name]
       else next[name] = key
-      await writeJson(this.credentialsFile, { version: 1, keys: next })
+      await this.credentials.write(next, key === undefined ? [name] : [])
       this.keys = next
     })
   }

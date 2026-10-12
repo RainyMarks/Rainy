@@ -11,7 +11,7 @@ vi.mock('node:net', async original => ({ ...await original<typeof import('node:n
 
 function fixture(
   onTestFinished: (cleanup: () => void | Promise<void>) => void, native = false, cooperative = true,
-  callbacks: Pick<HostOptions, 'onDiagnostic' | 'onExit' | 'resolveProxy'> = {},
+  callbacks: Pick<HostOptions, 'onDiagnostic' | 'onExit' | 'resolveProxy' | 'credentialKey'> = {},
 ) {
   vi.useFakeTimers()
   const input = new PassThrough()
@@ -97,6 +97,25 @@ describe('Host startup ownership', () => {
     expect(asked).toEqual(['https://api.openai.com/', 'https://llm.corp/', 'https://broken.example/'])
     test.ready()
     expect((await ready).pid).toBe(31415)
+  })
+
+  it('hands the credential key to the Host, and no key when it cannot be read', async ({ onTestFinished }) => {
+    const diagnostics: string[] = []
+    let fail = false
+    const test = fixture(onTestFinished, true, false, {
+      credentialKey: () => fail ? Promise.reject(new Error('userData is read-only')) : Promise.resolve('a2V5'),
+      onDiagnostic: (text) => { diagnostics.push(text) },
+    })
+    const replies: unknown[] = []
+    test.child.stdin.on('data', (chunk: Buffer) => { for (const line of chunk.toString().split('\n').filter(Boolean)) replies.push(JSON.parse(line)) })
+    // The Host never reports ready here; teardown stops it before readiness.
+    void outcome(test.transport.start())
+    test.output.write(`RAINY_CONTROL ${JSON.stringify({ type: 'credential-key', id: 'first' })}\n`)
+    await vi.waitFor(() => { expect(replies).toEqual([{ type: 'reply', id: 'first', key: 'a2V5' }]) })
+    fail = true
+    test.output.write(`RAINY_CONTROL ${JSON.stringify({ type: 'credential-key', id: 'second' })}\n`)
+    await vi.waitFor(() => { expect(replies).toContainEqual({ type: 'reply', id: 'second', key: null }) })
+    expect(diagnostics.some(text => text.includes('unencrypted') && text.includes('read-only'))).toBe(true)
   })
 
   it('leaves native Windows readiness free of loopback probes', async ({ onTestFinished }) => {

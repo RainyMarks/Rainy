@@ -30,7 +30,7 @@ Write a solve script, run it, ask the AI why it fails, then open Wireshark or Cy
 | **A real editor** | A CodeMirror 6 editor with tabs, search and replace, completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Images, Markdown, PDF, audio and video open in previews, and any file opens in a hex view. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **38 CTF tools, one click each** | Web, traffic, reverse engineering, forensics, steganography, audio and encoding tools, each downloaded separately. Updates download only the tools that changed. |
 | **Windows or WSL2** | Start in native Windows; switch the project to a WSL2 environment whenever a challenge needs Linux. |
-| **Your model, your choice** | Use any OpenAI- or Anthropic-compatible service, a local server, or Strata local inference on an NVIDIA GPU. Model requests follow the system proxy or one you set. Keys stay on your machine. |
+| **Your model, your choice** | Use any OpenAI- or Anthropic-compatible service, a local server, or Strata local inference on an NVIDIA GPU. Model requests follow the system proxy or one you set. Keys stay on your machine, encrypted with Windows data protection. |
 
 ![CTF tools: download each tool when you need it](assets/ctf-tools.png)
 
@@ -76,7 +76,7 @@ RainyAgent checks for stable releases and downloads them in the background. A do
 2. Select **Discover models** or enter the model ID manually.
 3. Set the service's actual context window and output limit, save, then run the streaming and tool-call check.
 
-The selected Windows or WSL environment must be able to reach the service. Keys are stored in that environment's private credential store, and RainyAgent never silently switches to another model.
+The selected Windows or WSL environment must be able to reach the service. Keys are stored encrypted in that environment's private credential store, and RainyAgent never silently switches to another model.
 
 For Claude, select **Load** next to **Claude Opus 5.5** or **Claude Haiku 5.5** in the model list of **Settings → Models** and enter your Anthropic API key; both presets share the key. The Haiku preset uses a 100K window so each request stays in Claude Haiku 5.5's lower price tier. A relay works the same way: keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), and RainyAgent applies that model's adaptive thinking and effort levels. Claude sessions keep the prompt cache for an hour, so continuing a conversation reads the earlier context from the cache.
 

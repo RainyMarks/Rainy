@@ -30,7 +30,7 @@
 | **真正的编辑器** | CodeMirror 6 编辑器，支持标签页、查找替换、补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。图片、Markdown、PDF、音视频直接预览，任何文件都能以十六进制查看。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
 | **38 款 CTF 工具，一键下载** | 涵盖 Web、流量、逆向、取证、隐写、音频和编码等工具，每款单独下载。更新时只下载有变化的工具。 |
 | **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 时，随时把项目切换到 WSL2。 |
-| **模型自己选** | 支持任意 OpenAI 或 Anthropic 兼容服务、本地服务，也可在 NVIDIA 显卡上用 Strata 本地推理。模型请求可跟随系统代理或使用你设置的代理。密钥只保存在你的电脑上。 |
+| **模型自己选** | 支持任意 OpenAI 或 Anthropic 兼容服务、本地服务，也可在 NVIDIA 显卡上用 Strata 本地推理。模型请求可跟随系统代理或使用你设置的代理。密钥只保存在你的电脑上，并用 Windows 数据保护加密。 |
 
 ![CTF 工具：用到哪款就下载哪款](assets/ctf-tools.png)
 
@@ -76,7 +76,7 @@ RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择
 2. 点击**发现模型**，或手动填写模型 ID。
 3. 设置服务实际的上下文窗口和输出上限，保存后执行流式与工具调用检查。
 
-所选 Windows 或 WSL 环境必须能访问服务地址。密钥保存在该环境的私有凭据存储中，RainyAgent 不会静默切换到其他模型。
+所选 Windows 或 WSL 环境必须能访问服务地址。密钥加密保存在该环境的私有凭据存储中，RainyAgent 不会静默切换到其他模型。
 
 使用 Claude 时，在**设置 → 模型**的模型列表中点击 **Claude Opus 5.5** 或 **Claude Haiku 5.5** 旁的**载入**，并填写 Anthropic API 密钥，两个预设共用同一个密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），RainyAgent 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
 

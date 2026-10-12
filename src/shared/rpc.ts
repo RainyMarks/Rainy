@@ -48,6 +48,8 @@ export interface ModelsStatus {
   models: ModelSetup[]
   /** Providers whose credential is stored. */
   credentials: string[]
+  /** Whether stored API keys are encrypted with Windows data protection; absent from Hosts before 2.1. */
+  keysEncrypted?: boolean
   selected: ModelSelection | null
   /** Reasoning levels each saved model accepts, keyed by provider (one saved model per provider). */
   thinkingLevels: Record<string, ThinkingLevel[]>

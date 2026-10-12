@@ -1,5 +1,5 @@
 /** RainyAgent desktop carrier for one explicitly selected native Windows or WSL Host. */
-import { app, BrowserWindow, dialog, Menu, screen, shell, ipcMain, nativeTheme } from 'electron'
+import { app, BrowserWindow, dialog, Menu, screen, shell, ipcMain, nativeTheme, safeStorage } from 'electron'
 import { mkdirSync, appendFileSync, existsSync, writeFileSync } from 'node:fs'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
@@ -35,6 +35,7 @@ import { ensureReleaseIntegrity, ReleaseIntegrityError } from './release-integri
 import type { ReleaseIntegrity } from './release-integrity.ts'
 import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splash.ts'
 import { systemProxyFor } from './system-proxy.ts'
+import { credentialKey } from './credential-key.ts'
 import { initialPlacement, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
 import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
@@ -55,6 +56,8 @@ let closeStrata: () => Promise<void> = () => Promise.resolve()
 let closeModules: () => Promise<void> = () => Promise.resolve()
 let releaseToolPack: (() => Promise<void>) | undefined
 let componentInstallation: Promise<void> | undefined
+/** Read or created once per run; every Host started in this run encrypts API keys with it. */
+let credentialKeyOnce: Promise<string | null> | undefined
 let updates: RainyUpdates | undefined
 let cleanupFailed = false
 // Setup windows may close before the workbench takes ownership of the application.
@@ -415,6 +418,8 @@ async function start(): Promise<void> {
   const builtinPhp = !app.isPackaged && existsSync(checkoutPhp) ? checkoutPhp : join(modulesRoot, 'php', 'php.exe')
   const hostEnvironment: Record<string, string> = {
     RAINY_EXECUTION_TARGET_ID: target.id,
+    // The Host asks this process for the key that encrypts its API keys.
+    RAINY_CARRIER_CREDENTIALS: '1',
     RAINY_CARRIER_STATE_ROOT: prepared === undefined ? carrierState : prepared.carrierState,
     ...(target.kind === 'windows' ? { RAINY_HOME: join(userData, 'native-home'),
       RAINY_TOOLCHAIN_ROOT: join(userData, 'env'),
@@ -433,6 +438,7 @@ async function start(): Promise<void> {
   }
   const hostOptions: HostOptions = { entry: installed.host, node: installed.node, idaMcpCommand, environment: hostEnvironment,
     resolveProxy: url => systemProxyFor(window.webContents.session, url),
+    credentialKey: () => credentialKeyOnce ??= credentialKey(userData, safeStorage, (line) => { appendFileSync(logPath, `${line}\n`) }),
     configureDeepSeek: process.env.RAINY_CONFIGURE_DEEPSEEK === '1',
     onDiagnostic: (text) =>{  appendFileSync(logPath, text + '\n') },
     onExit: (code) => {

@@ -177,6 +177,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       items={items.map(id => ({ id, label: labels?.[id] ?? id }))} onChange={change} /></Field>
   const thinkingLabels: Partial<Record<ThinkingLevel, string>> = { off: t('settingsThinkingOff') }
   const keyStored = status?.credentials.includes(form.provider.trim()) === true
+  const keyLabel = !keyStored ? 'settingsApiKey' : status?.keysEncrypted === true ? 'settingsApiKeyEncrypted' : 'settingsApiKeyStored'
 
   return <section className={css.section} data-settings-section="models">
     <h2 className={css.heading}>{t('settingsModels')}</h2>
@@ -244,7 +245,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
         {field('baseURL', t('settingsBaseUrl'), { wide: true })}
         {field('context', t('settingsContext'), { type: 'number' })}
         {field('output', t('settingsOutput'), { type: 'number' })}
-        {field('apiKey', t(keyStored ? 'settingsApiKeyStored' : 'settingsApiKey'), { type: 'password', wide: true })}
+        {field('apiKey', t(keyLabel), { type: 'password', wide: true })}
       </div>
       <details className={css.disclosure}><summary>{t('settingsCompatibility')}</summary><div className={clsx(css.grid, css.disclosed)}>
         {choice(t('settingsProtocol'), form.api, apis, (api) => { setForm(current => ({ ...current, api })) })}

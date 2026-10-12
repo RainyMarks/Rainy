@@ -14,7 +14,7 @@ Host (src/host), one per execution target: Windows Node or Node inside a WSL dis
 Renderer (src/renderer), loaded by the main window from the Host origin
 ```
 
-- Electron main spawns the Host with `node host.js` (Windows) or `wsl.exe --distribution <d> --exec env … node host.js` (WSL). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`). The Host's own requests go the other way: the Windows Host asks `system-proxy {id, url}` and main answers with a `reply` line, resolving the URL with Electron's `session.resolveProxy`, which applies the Windows proxy settings, bypass list and PAC scripts (`src/main/system-proxy.ts`).
+- Electron main spawns the Host with `node host.js` (Windows) or `wsl.exe --distribution <d> --exec env … node host.js` (WSL). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`). The Host's own requests go the other way and main answers each with a `reply` line: every Host asks `credential-key` once at start, and the Windows Host asks `system-proxy {id, url}` for each origin it connects to. Main resolves that URL with Electron's `session.resolveProxy`, which applies the Windows proxy settings, bypass list and PAC scripts (`src/main/system-proxy.ts`).
 - The main window loads `ready.url` (`http://127.0.0.1:<port>/?token=…`). The Host answers with an HttpOnly cookie and redirects to `/`. Every later request and WebSocket upgrade must carry that cookie.
 - Main and preload are plain Electron code. Preload exposes the `__RAINY_*` bridges listed in `src/preload/preload.ts`.
 
@@ -26,7 +26,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 |---|---|
 | `server.ts` | HTTP routes, launch-token auth, static files, the `/rpc` WebSocket, the `/rainy/ide/lsp` WebSocket |
 | `rpc.ts` | Method table and event broadcast; the method and event types are `src/shared/rpc.ts` |
-| `settings.ts` | `settings.json` and `.credentials.json` under the Host home, plus the one-time import of 1.x settings |
+| `settings.ts` | `settings.json` and the API keys (`credentials.ts`) under the Host home, plus the one-time import of 1.x settings |
 | `network.ts` | The proxy for model requests: follow the system (default), none, or a manual HTTP proxy. Model streaming, model discovery, the IceSky relay and MCP servers over HTTP fetch through it with undici's `ProxyAgent`, which forwards plain-HTTP requests and tunnels HTTPS; loopback, private, `.local` and single-label hosts stay direct. Following the system, the Windows Host asks main per origin (answers kept 30 seconds) and the WSL Host reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Commands and terminals are not proxied |
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
 | `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route, change hints |
@@ -52,7 +52,8 @@ The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Window
 | Path | Content |
 |---|---|
 | `settings.json` | Models (without keys), selected model, global prompt, MCP servers (with their environment and request headers), UI preferences, network proxy, default permission mode and remembered approvals |
-| `.credentials.json` | API keys, mode 0600 |
+| `.credentials.sealed.json` | API keys, each encrypted with AES-256-GCM and bound to its name, under a key the carrier keeps in `credential-key.bin` in the Electron user data, protected by Windows DPAPI (`src/main/credential-key.ts`) |
+| `.credentials.json` | Version 1 key file, empty once its keys are sealed, so an older version starts without keys instead of failing; keys found there are sealed at the next start. Development runs without the carrier keep keys here as plain text |
 | `chats/<sessionId>.jsonl` | One chat: a header line, then transcript entries in order |
 | `chats/index.json` | Chat summaries for the history list; rebuilt from the files when missing |
 | `snapshots/<sessionId>/` | Content replaced by the agent's write and edit calls, for undo; removed with the chat and after 30 days |

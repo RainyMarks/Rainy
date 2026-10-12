@@ -52,6 +52,8 @@ export interface HostOptions {
   onExit?: (code: number | null) => void
   /** Answers the Host's question which proxy the system uses for an `http(s)` URL: `http(s)://host:port` or `null`. */
   resolveProxy?: (url: string) => Promise<string | null>
+  /** The base64 key that encrypts the Host's API keys, or `null` when the system cannot protect it. */
+  credentialKey?: () => Promise<string | null>
 }
 /** Selected registered WSL distribution; arguments are never shell-interpolated. */
 export interface WslHostOptions extends HostOptions { distro: string }
@@ -188,6 +190,14 @@ abstract class ManagedHostTransport implements HostTransport {
           else if (data.type === 'system-proxy' && 'id' in data && typeof data.id === 'string' && 'url' in data && typeof data.url === 'string') {
             const id = data.id
             void this.systemProxy(data.url).then(url => { this.reply(child, { id, url }) }, () => { this.reply(child, { id, url: null }) })
+          }
+          else if (data.type === 'credential-key' && 'id' in data && typeof data.id === 'string') {
+            const id = data.id
+            // A key that cannot be read or stored leaves API keys unencrypted for this run rather than stopping the Host.
+            void (this.options.credentialKey?.() ?? Promise.resolve(null)).then(key => { this.reply(child, { id, key }) }, (error: unknown) => {
+              this.diagnostic(`API keys stay unencrypted for this run: ${error instanceof Error ? error.message : String(error)}`)
+              this.reply(child, { id, key: null })
+            })
           }
           else if (data.type === 'activity' && 'id' in data && typeof data.id === 'string') {
             const request = takeRequest(this.requests, data.id)

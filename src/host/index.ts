@@ -9,6 +9,7 @@ import { createProjectRegistry, ExecutionTargetId, ProjectId } from '../shared/p
 import { Activity } from './activity.ts'
 import { createAgent } from './agent/index.ts'
 import { ControlInput, sendControl } from './control.ts'
+import { credentialSeal, type CredentialSeal } from './credentials.ts'
 import { readHostEnvironment } from './env.ts'
 import { installIceSky } from './icesky/index.ts'
 import { createIde } from './ide/index.ts'
@@ -34,7 +35,14 @@ async function main(): Promise<void> {
   // The Host's Node and ripgrep are fallbacks for commands and terminals; programs the user installed come first.
   process.env.PATH = [process.env.PATH, dirname(process.execPath), join(env.appRoot, 'bin')].filter(Boolean).join(delimiter)
 
-  const settings = new Settings(env.home, process.env)
+  // API keys are encrypted with a key the carrier keeps with Windows data protection; it is null when Windows cannot.
+  let seal: CredentialSeal | undefined
+  if (process.env.RAINY_CARRIER_CREDENTIALS === '1') {
+    const reply = await control.ask({ type: 'credential-key' }, 30_000)
+    if (typeof reply.key === 'string') seal = credentialSeal(Buffer.from(reply.key, 'base64'))
+    else if (reply.key !== null) throw new Error('The carrier sent an invalid credential key')
+  }
+  const settings = new Settings(env.home, process.env, seal)
   await settings.load()
   // The Windows carrier answers which proxy the system uses for each address; without it, the environment decides.
   const systemProxy: SystemProxyResolver | undefined = process.env.RAINY_CARRIER_PROXY === '1'

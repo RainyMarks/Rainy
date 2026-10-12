@@ -122,6 +122,7 @@ export class Models {
     return {
       models: data.models,
       credentials: this.settings.providersWithKeys(),
+      keysEncrypted: this.settings.keysSealed,
       selected: data.selected,
       thinkingLevels: Object.fromEntries(data.models.map(model => [model.provider, thinkingLevels(model)])),
       presets: PRESETS,
