@@ -11,6 +11,7 @@ import type { Models, ResolvedModel } from '../models.ts'
 import { CHAT_FORMAT_VERSION } from '../store.ts'
 import { collectEvidence } from './evidence.ts'
 import { applyMemoryDelta, ProjectMemoryStore, type MemoryEvidence, type ProjectMemoryDocument, type ProjectMemoryItem } from './store.ts'
+import { localized } from '../../../shared/locale.ts'
 
 /** Wait after the last model request before generating. */
 const IDLE_MS = 60_000
@@ -297,7 +298,7 @@ export class ProjectMemory {
       selected.push(source)
       if (estimateRequest({ system: MEMORY_SYSTEM, messages: [{ role: 'user', content: [{ type: 'text', text: inputText() }] }] }) > limit) { selected.pop(); break }
     }
-    if (selected.length === 0) { item.error = '项目记忆与必要证据无法放入当前模型的后台预算；原记忆已保留。'; return }
+    if (selected.length === 0) { item.error = localized({ zh: '项目记忆与必要证据无法放入当前模型的后台预算；原记忆已保留。', en: 'Project memory and its supporting evidence do not fit the background budget of the current model; the existing memory is kept.' }); return }
     if (this.deps.busy()) { item.pending = true; return }
     const attemptAt = Date.now()
     let allowed = false

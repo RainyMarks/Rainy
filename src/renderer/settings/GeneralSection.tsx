@@ -1,7 +1,9 @@
-/** General section: language, appearance, font sizes, chat preferences, shortcut reference and version. */
+/** General section: language, appearance, font sizes, chat preferences, shortcut reference, diagnostics export and version. */
 import clsx from 'clsx'
+import { useState } from 'react'
 import type { UiPreferences } from '../../shared/rpc.ts'
 import { setPrefs, usePrefs } from '../prefs.ts'
+import { Button } from '../ui/Button.tsx'
 import { ShortcutKeys } from '../ui/ShortcutKeys.tsx'
 import { Switch } from '../ui/Switch.tsx'
 import { toast } from '../ui/toasts.tsx'
@@ -9,6 +11,7 @@ import {
   IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, IconDarkOutlineMedium, IconFollowsystemOutlineMedium, IconLightOutlineMedium,
 } from '../ui/icons/index.tsx'
 import { useT } from './messages.ts'
+import { diagnosticsBridge } from './native.ts'
 import type { SettingsMessage } from './messages.ts'
 import { Select, SettingRow, errorText } from './parts.tsx'
 import css from './sections.module.css'
@@ -52,6 +55,14 @@ export function GeneralSection(): JSX.Element {
   const t = useT()
   const prefs = usePrefs()
   const version = typeof window === 'undefined' ? undefined : window.__RAINY_AGENT__?.version
+  const diagnostics = diagnosticsBridge()
+  const [exporting, setExporting] = useState(false)
+  const exportDiagnostics = (): void => {
+    if (diagnostics === undefined) return
+    setExporting(true)
+    diagnostics.export().then((path) => { if (path !== null) toast(t('diagnosticsSaved', { path }), { tone: 'success' }) },
+      (error: unknown) => { toast(errorText(error)) }).finally(() => { setExporting(false) })
+  }
   const sizes = [
     { field: 'uiFontSize', value: prefs.uiFontSize, title: 'fontSizeTitle', description: 'fontSizeDescription', up: 'fontSizeIncrease', down: 'fontSizeDecrease' },
     { field: 'codeFontSize', value: prefs.codeFontSize, title: 'codeFontSizeTitle', description: 'codeFontSizeDescription', up: 'codeFontSizeIncrease', down: 'codeFontSizeDecrease' },
@@ -112,6 +123,9 @@ export function GeneralSection(): JSX.Element {
           </div>)}
         </dl>
       </div>
+      {diagnostics !== undefined && <SettingRow title={t('diagnosticsTitle')} description={t('diagnosticsDescription')}>
+        <Button variant="outline" disabled={exporting} onClick={exportDiagnostics}>{t(exporting ? 'diagnosticsExporting' : 'diagnosticsExport')}</Button>
+      </SettingRow>}
       {version !== undefined && <div className={css.version}>{t('currentVersion', { version })}</div>}
     </div>
   </section>

@@ -1,8 +1,9 @@
 /** Installer entry for the desktop carrier's adjacent offline tool archives. */
 import { readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { localized } from '../shared/locale.ts'
+import { setupPageURL } from './setup-page.ts'
 import { installNativeToolPack, ToolPackInstallError } from './toolpack.ts'
 import { assertToolPackPath, writeToolPackFile, writeToolPackRecord } from './toolpack-files.ts'
 import { authenticateToolChannel } from './native-tools-update.ts'
@@ -29,7 +30,8 @@ export async function runToolPackMaintenance(mediaDirectory: string, silent: boo
   const stateRoot = join(installRoot, '.rainy-toolpack')
   const progress: { phase: string; message: string }[] = []
   const abort = new AbortController()
-  let snapshot: ToolPackWindowProgress = { phase: 'preparing', message: '正在准备离线工具安装', completedBytes: 0, totalBytes: 0, cancelling: false }
+  let snapshot: ToolPackWindowProgress = { phase: 'preparing', message: localized({ zh: '正在准备离线工具安装', en: 'Preparing the offline tool installation' }),
+    completedBytes: 0, totalBytes: 0, cancelling: false }
   let window: BrowserWindow | undefined
   let finished = false
   const publish = (update: ToolPackWindowProgress): void => {
@@ -39,21 +41,22 @@ export async function runToolPackMaintenance(mediaDirectory: string, silent: boo
   const cancel = (): void => {
     if (finished || abort.signal.aborted) return
     abort.abort()
-    publish({ ...snapshot, cancelling: true, message: '正在安全停止，请稍候' })
+    publish({ ...snapshot, cancelling: true, message: localized({ zh: '正在安全停止，请稍候', en: 'Stopping safely. Please wait.' }) })
   }
   const record = async (name: string, value: object): Promise<void> => {
     try { await writeToolPackRecord(join(stateRoot, name), value) }
     catch (error) { console.error('Installation report could not be saved', error instanceof Error ? error.message : String(error)) }
   }
   if (!silent) {
-    const pageURL = pathToFileURL(join(__dirname, 'setup/toolpack.html')).href
-    window = new BrowserWindow({ title: 'RainyAgent · 离线工具安装', width: 820, height: 590, minWidth: 500, minHeight: 430,
+    const pageURL = setupPageURL(join(__dirname, 'setup/toolpack.html'))
+    window = new BrowserWindow({ title: localized({ zh: 'RainyAgent · 离线工具安装', en: 'RainyAgent · Offline tool installation' }),
+      width: 820, height: 590, minWidth: 500, minHeight: 430,
       show: false, webPreferences: { preload: join(__dirname, 'preload.cjs'),
         additionalArguments: [`--rainy-toolpack-page=${encodeURIComponent(pageURL)}`], nodeIntegration: false, contextIsolation: true, sandbox: true } })
     window.setMenu(null)
     const trusted = (event: Electron.IpcMainInvokeEvent): void => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
-        || event.senderFrame.url !== pageURL) throw new Error('安装请求来源无效')
+        || event.senderFrame.url !== pageURL) throw new Error(localized({ zh: '安装请求来源无效', en: 'The installation request came from an unknown source.' }))
     }
     ipcMain.handle('rainy:toolpack-status', (event) => { trusted(event); return snapshot })
     ipcMain.handle('rainy:toolpack-cancel', (event) => { trusted(event); cancel() })
@@ -80,7 +83,7 @@ export async function runToolPackMaintenance(mediaDirectory: string, silent: boo
       }, signal: abort.signal,
     })
     await record('install-result.json', { ...result, progress })
-    publish({ ...snapshot, phase: 'complete', message: '离线工具安装完成', cancelling: false })
+    publish({ ...snapshot, phase: 'complete', message: localized({ zh: '离线工具安装完成', en: 'The offline tools are installed.' }), cancelling: false })
     return 0
   } catch (error) {
     const code = error instanceof ToolPackInstallError ? error.code : 'install-failed'

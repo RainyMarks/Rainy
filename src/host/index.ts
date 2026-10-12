@@ -4,6 +4,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { z } from 'zod'
 import { brandString } from '../shared/brand.ts'
 import { resolveConfig } from '../shared/config.ts'
+import { followLocale, localized } from '../shared/locale.ts'
 import type { IdeRootId, WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { createProjectRegistry, ExecutionTargetId, ProjectId } from '../shared/project-registry.ts'
 import { Activity } from './activity.ts'
@@ -44,6 +45,8 @@ async function main(): Promise<void> {
   }
   const settings = new Settings(env.home, process.env, seal)
   await settings.load()
+  // Errors the page shows are written in the language chosen in Settings.
+  followLocale(() => settings.prefs().locale)
   // The Windows carrier answers which proxy the system uses for each address; without it, the environment decides.
   const systemProxy: SystemProxyResolver | undefined = process.env.RAINY_CARRIER_PROXY === '1'
     ? async (url) => {
@@ -101,11 +104,11 @@ async function main(): Promise<void> {
       if (request.method !== 'POST') { response.writeHead(405); response.end(); return }
       const command: unknown = JSON.parse((await readBody(request, 65536)).toString('utf8'))
       if (command === null || typeof command !== 'object' || !('method' in command) || command.method !== 'connect-strata' || !('params' in command)) {
-        throw new Error('未知设置操作。')
+        throw new Error(localized({ zh: '未知设置操作。', en: 'Unknown settings operation.' }))
       }
       sendJson(response, 200, { result: await agent.connectStrata(command.params) })
     } catch (error) {
-      sendJson(response, 400, { error: error instanceof Error ? error.message : '操作失败。' })
+      sendJson(response, 400, { error: error instanceof Error ? error.message : localized({ zh: '操作失败。', en: 'The operation failed.' }) })
     }
   })
 

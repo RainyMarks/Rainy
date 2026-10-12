@@ -7,6 +7,7 @@ import { Window } from 'happy-dom'
 const PAGE = new URL('../../src/setup/toolpack.html', import.meta.url)
 const HTML = readFileSync(PAGE, 'utf8')
 const SCRIPT = readFileSync(new URL('../../src/setup/toolpack.js', import.meta.url), 'utf8')
+const LOCALE = readFileSync(new URL('../../src/setup/locale.js', import.meta.url), 'utf8')
 const STYLES = readFileSync(new URL('../../src/setup/toolpack.css', import.meta.url), 'utf8')
 const INITIAL = { phase: 'prepare', message: '正在准备离线安装', completedBytes: 0, totalBytes: 0, cancelling: false }
 const settle = () => new Promise(resolve => { setImmediate(resolve) })
@@ -15,10 +16,10 @@ const settle = () => new Promise(resolve => { setImmediate(resolve) })
  * Load the page with a fixture bridge and run its script.
  * @returns page accessors, the bridge state and an emitter for progress snapshots.
  */
-async function fixture(owner, { initial = INITIAL, deferredInitial = false, missingBridge = false } = {}) {
-  const window = new Window({ url: PAGE.href, settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true } })
+async function fixture(owner, { initial = INITIAL, deferredInitial = false, missingBridge = false, lang } = {}) {
+  const window = new Window({ url: lang === undefined ? PAGE.href : `${PAGE.href}?lang=${lang}`, settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true } })
   owner.after(async () => { await window.happyDOM.close() })
-  window.document.write(HTML.replace(/<script\b[^>]*><\/script>/u, ''))
+  window.document.write(HTML.replace(/<script\b[^>]*><\/script>/gu, ''))
   const listeners = new Set()
   const state = { cancelCalls: 0, unsubscribed: 0 }
   const control = {}
@@ -38,6 +39,7 @@ async function fixture(owner, { initial = INITIAL, deferredInitial = false, miss
       },
     }
   }
+  new Function('window', 'document', 'location', LOCALE)(window, window.document, window.location)
   new Function('window', 'document', SCRIPT)(window, window.document)
   await settle()
   const byId = id => window.document.getElementById(id)
@@ -139,4 +141,17 @@ test('shows a local connection error without an active cancellation control when
   assert.equal(text('phase'), '安装服务未连接')
   assert.equal(byId('cancel').disabled, true)
   assert.equal(byId('progress').hidden, true)
+})
+
+test('switches the page to English when the window opens with lang=en', async (owner) => {
+  const { window, byId, text, emit } = await fixture(owner, { lang: 'en' })
+  assert.equal(window.document.documentElement.lang, 'en')
+  assert.equal(window.document.title, 'RainyAgent · Offline tools')
+  assert.equal(text('heading'), 'Install offline tools')
+  assert.equal(text('phase'), 'Preparing')
+  assert.equal(text('cancel'), 'Cancel installation')
+  assert.equal(byId('progress').getAttribute('aria-label'), 'Progress of this step')
+  await emit({ phase: 'extracting', message: 'Unpacking', completedBytes: 1536, totalBytes: 2048 })
+  assert.equal(text('phase'), 'Unpacking tools')
+  assert.equal(text('bytes'), '1.5 KiB / 2 KiB')
 })

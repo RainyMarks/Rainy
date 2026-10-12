@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { localized } from '../shared/locale.ts'
 
 function missing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
@@ -17,7 +18,7 @@ export async function writePrivateRecord(path: string, bytes: Buffer): Promise<v
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   try {
     const info = await lstat(path)
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error('本地记录路径不是普通文件')
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error(localized({ zh: '本地记录路径不是普通文件', en: 'The local record path is not a regular file.' }))
   } catch (error) { if (!missing(error)) throw error }
   const temporary = join(dirname(path), `.rainy-${randomUUID()}.tmp`)
   const file = await open(temporary, 'wx', 0o600)

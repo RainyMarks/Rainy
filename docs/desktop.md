@@ -34,6 +34,10 @@ The packaged app checks stable releases from `RainyMarks/RainyAgent` on GitHub a
 
 Automatic updates replace the core application and preserve installed tools and environments. They do not download native tools, WSL media, or CPU/CUDA environment components again; the first WSL launch after an update downloads that version's WSL runtime. CPU/CUDA environment components are still imported from matching offline release files. [Validation](validation.md) records the update checks completed for the published artifacts.
 
+## Diagnostics
+
+RainyAgent records crashes of its windows locally with Electron's crash reporter and uploads nothing. Settings → General → Diagnostics → Export… saves a zip with the version and system information, the end of the execution Host log and of the Strata logs, and the five newest crash dumps, then shows it in its folder. Keys, tokens, passwords and the Windows user name are removed from the logs; settings, chats and API keys are never included. Errors, dialogs and menus follow the interface language chosen in Settings → General.
+
 ## Runtime contract
 
 The Host ([architecture](architecture.md)) has no official accounts, telemetry, office runtimes, browser/computer control, schedules, multi-agent tools or plugin marketplace. One selected Windows or WSL Host owns commands, terminals, model connections and sessions. The Windows carrier owns the window, native tool windows and shared project catalog. Lifecycle control uses stdin/stdout; authenticated HTTP/WebSocket carries application data. Target switching saves drafts and refuses running or queued Agent work, programs, debugging and terminals. New execution is frozen before the target preference changes.

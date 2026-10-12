@@ -1,5 +1,6 @@
 /** First paint of the main window while the carrier admits resources and starts its Host. */
 import type { BrowserWindow } from 'electron'
+import { currentLocale, localized } from '../shared/locale.ts'
 import { CAPTION_HEIGHT } from './window-chrome.ts'
 
 /** Window background colors shared by the native window and the startup page, so neither flashes. */
@@ -12,7 +13,7 @@ export const WINDOW_BACKGROUND = { dark: '#16191e', light: '#f6f7f9' } as const
  */
 export function startupPage(dark: boolean): string {
   const background = dark ? WINDOW_BACKGROUND.dark : WINDOW_BACKGROUND.light
-  const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>RainyAgent</title><style>
+  const html = `<!doctype html><html lang="${currentLocale()}"><head><meta charset="utf-8"><title>RainyAgent</title><style>
 :root { color-scheme: ${dark ? 'dark' : 'light'}; --fg: ${dark ? '#e8eaed' : '#1d2129'}; --muted: ${dark ? '#9aa0a6' : '#6b7280'};
   --track: ${dark ? 'rgba(255,255,255,.08)' : 'rgba(17,24,39,.08)'}; --accent: #4d6bfe; }
 * { box-sizing: border-box; }
@@ -28,7 +29,7 @@ h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: .2px; }
 p { margin: 0; min-height: 20px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .bar[data-indeterminate] .fill { animation: none; width: 100%; opacity: .35; } }
 </style></head><body><div class="drag"></div><main><h1>RainyAgent</h1>
-<div class="bar" data-indeterminate><div class="fill"></div></div><p id="step">正在启动…</p></main>
+<div class="bar" data-indeterminate><div class="fill"></div></div><p id="step">${localized({ zh: '正在启动…', en: 'Starting…' })}</p></main>
 <script>
 window.__rainyStartup = (state) => {
   const bar = document.querySelector('.bar'), fill = document.querySelector('.fill')

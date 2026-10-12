@@ -2,6 +2,7 @@
 import { createReadStream } from 'node:fs'
 import { open, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { localized } from '../shared/locale.ts'
 import { assertToolPackPath, checkToolPackCancellation, renameToolPackPath, toolPackHash, toolPackStat } from './toolpack-files.ts'
 
 /** A published file split into flat release assets below one pinned release directory. */
@@ -42,7 +43,9 @@ async function fetchPiece(target: string, url: string, expected: { bytes: number
   const partial = target + '.partial'
   await assertToolPackPath(partial)
   const info = await toolPackStat(partial)
-  if (info && (!info.isFile() || info.size > expected.bytes)) throw new Error('下载缓存无效，请清理下载缓存后重试')
+  if (info && (!info.isFile() || info.size > expected.bytes)) {
+    throw new Error(localized({ zh: '下载缓存无效，请清理下载缓存后重试', en: 'The download cache is invalid. Clear the download cache and try again.' }))
+  }
   let offset = info?.size ?? 0
   if (offset === expected.bytes) {
     if (await releaseFileMatches(partial, expected, options.signal)) {
@@ -56,15 +59,16 @@ async function fetchPiece(target: string, url: string, expected: { bytes: number
   const response = await options.fetch(url, { signal: options.signal, headers: offset ? { Range: `bytes=${offset}-` } : {}, credentials: 'omit' })
   if (!response.ok || !response.body) {
     await response.body?.cancel()
-    throw new Error(`下载失败（HTTP ${response.status}），请检查网络后重试`)
+    throw new Error(localized({ zh: `下载失败（HTTP ${response.status}），请检查网络后重试`,
+      en: `The download failed (HTTP ${response.status}). Check your connection and try again.` }))
   }
   if (response.status === 206) {
     if (response.headers.get('content-range') !== `bytes ${offset}-${expected.bytes - 1}/${expected.bytes}`) {
       await response.body.cancel()
-      throw new Error('下载续传响应无效')
+      throw new Error(localized({ zh: '下载续传响应无效', en: 'The server sent an invalid response when resuming the download.' }))
     }
   } else if (response.status === 200) offset = 0
-  else { await response.body.cancel(); throw new Error('下载响应无效') }
+  else { await response.body.cancel(); throw new Error(localized({ zh: '下载响应无效', en: 'The server sent an invalid download response.' })) }
   const output = await open(partial, offset ? 'a' : 'w')
   let received = offset
   progress(received)
@@ -72,14 +76,14 @@ async function fetchPiece(target: string, url: string, expected: { bytes: number
     for await (const value of response.body) {
       checkToolPackCancellation(options.signal)
       received += value.byteLength
-      if (received > expected.bytes) throw new Error('下载内容超出清单大小')
+      if (received > expected.bytes) throw new Error(localized({ zh: '下载内容超出清单大小', en: 'The download is larger than expected.' }))
       await output.writeFile(value)
       progress(received)
     }
   } finally { await output.close() }
   if (!await releaseFileMatches(partial, expected, options.signal)) {
     await rm(partial)
-    throw new Error('下载校验失败，请重试')
+    throw new Error(localized({ zh: '下载校验失败，请重试', en: 'The download failed verification. Try again.' }))
   }
   await renameToolPackPath(partial, target)
 }
@@ -113,13 +117,13 @@ export async function downloadReleaseFile(release: ReleaseFile, options: Release
   try {
     for (const path of paths) for await (const chunk of createReadStream(path)) {
       checkToolPackCancellation(options.signal)
-      if (!Buffer.isBuffer(chunk)) throw new Error('下载分片读取格式无效')
+      if (!Buffer.isBuffer(chunk)) throw new Error(localized({ zh: '下载分片读取格式无效', en: 'Reading a downloaded part returned invalid data.' }))
       await output.writeFile(chunk)
     }
   } finally { await output.close() }
   if (!await releaseFileMatches(partial, release, options.signal)) {
     await rm(partial)
-    throw new Error('下载文件校验失败，请重试')
+    throw new Error(localized({ zh: '下载文件校验失败，请重试', en: 'The downloaded file failed verification. Try again.' }))
   }
   await renameToolPackPath(partial, target)
   for (const path of paths) await rm(path)

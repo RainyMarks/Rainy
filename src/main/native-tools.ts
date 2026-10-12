@@ -2,6 +2,7 @@
 import { dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { nativeToolIds } from '../shared/native-tools-protocol.ts'
 import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult } from '../shared/native-tools-protocol.ts'
 import { renameToolPackPath } from './toolpack-files.ts'
@@ -145,7 +146,7 @@ export async function resolveNativePath(root: string, child: string): Promise<st
   relativePath.parse(child)
   const actualRoot = await realpath(root)
   const actual = await realpath(resolve(root, child))
-  if (!inside(actualRoot, actual)) throw new Error(`工具路径超出安装目录：${child}`)
+  if (!inside(actualRoot, actual)) throw new Error(localized({ zh: `工具路径超出安装目录：${child}`, en: `The tool path is outside the installation folder: ${child}` }))
   return actual
 }
 
@@ -323,13 +324,17 @@ export class NativeToolsLibrary {
   private async launch(id: NativeToolId, variant?: 'x32'): Promise<NativeToolLaunchResult> {
     const { tools } = await this.catalog()
     const tool = tools.find(value => value.id === id)
-    if (tool === undefined) throw new Error('工具不在已安装目录中')
-    if (tool.state?.installed === false) throw new Error('工具尚未下载，请先在工具列表中下载')
+    if (tool === undefined) throw new Error(localized({ zh: '工具不在已安装目录中', en: 'The tool is not in the installed tool list.' }))
+    if (tool.state?.installed === false) {
+      throw new Error(localized({ zh: '工具尚未下载，请先在工具列表中下载', en: 'This tool is not downloaded yet. Download it from the tool list first.' }))
+    }
     const root = tool.installRoot
     const entry = variant === undefined ? tool.entry : tool.variants?.at(0)?.entry
-    if (entry === undefined) throw new Error('工具启动选项不可用')
+    if (entry === undefined) throw new Error(localized({ zh: '工具启动选项不可用', en: 'The launch option for this tool is unavailable.' }))
     const missing = await this.missing(root, tool, entry)
-    if (missing.length) throw new Error(`工具文件缺失，请修复工具包：${missing.join('、')}`)
+    if (missing.length) {
+      throw new Error(localized({ zh: `工具文件缺失，请修复工具包：${missing.join('、')}`, en: `Tool files are missing. Repair the tool pack: ${missing.join(', ')}` }))
+    }
     const target = await resolveNativePath(root, entry.path)
     const executable = entry.runtime === undefined ? target : await resolveNativePath(root, entry.runtime)
     await this.options.start({ id, name: tool.name, kind: entry.kind, target, executable,
@@ -342,7 +347,8 @@ export class NativeToolsLibrary {
     })
     try { await this.change((current) => { current.recent = [id, ...current.recent.filter(value => value !== id)].slice(0, ids.length) }) }
     catch (error) {
-      return { ok: true, warning: `工具已打开，但最近使用记录未保存：${error instanceof Error ? error.message : String(error)}` }
+      return { ok: true, warning: localized({ zh: `工具已打开，但最近使用记录未保存：${error instanceof Error ? error.message : String(error)}`,
+        en: `The tool opened, but the recently used list was not saved: ${error instanceof Error ? error.message : String(error)}` }) }
     }
     return { ok: true }
   }

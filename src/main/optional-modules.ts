@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { x as extractTar } from 'tar'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import type { OptionalModuleId, OptionalModuleStatus, OptionalModulesState } from '../shared/modules-protocol.ts'
 import { downloadReleaseFile } from './release-download.ts'
 import { assertToolPackPath, checkToolPackCancellation, toolPackStat, writeToolPackRecord } from './toolpack-files.ts'
@@ -61,7 +62,7 @@ export class OptionalModules {
 
   private async descriptor(id: CarrierModuleId): Promise<Descriptor> {
     const found = (await this.list()).find(module => module.id === id)
-    if (found === undefined) throw new Error(`此版本未提供可下载的组件：${id}`)
+    if (found === undefined) throw new Error(localized({ zh: `此版本未提供可下载的组件：${id}`, en: `This version does not offer this component for download: ${id}` }))
     return found
   }
 
@@ -109,8 +110,8 @@ export class OptionalModules {
    * @returns settled installation.
    */
   install(id: CarrierModuleId, progress?: (completed: number, total: number) => void): Promise<void> {
-    if (this.closed) return Promise.reject(new Error('RainyAgent 正在关闭'))
-    if (this.running) return Promise.reject(new Error('另一个组件正在下载，请稍候'))
+    if (this.closed) return Promise.reject(new Error(localized({ zh: 'RainyAgent 正在关闭', en: 'RainyAgent is closing.' })))
+    if (this.running) return Promise.reject(new Error(localized({ zh: '另一个组件正在下载，请稍候', en: 'Another component is downloading. Please wait.' })))
     this.abort = new AbortController()
     this.running = this.run(id, this.abort.signal, progress).finally(() => { this.running = undefined; this.abort = undefined })
     return this.running
@@ -154,7 +155,7 @@ export class OptionalModules {
       const cancelled = signal.aborted
       if (id !== 'linux-runtime') {
         this.publish({ ...this.state, module: id, phase: cancelled ? 'cancelled' : 'error',
-          error: cancelled ? '' : error instanceof Error ? error.message : '组件下载失败，请重试' })
+          error: cancelled ? '' : error instanceof Error ? error.message : localized({ zh: '组件下载失败，请重试', en: 'The component download failed. Try again.' }) })
       }
       if (!cancelled || id === 'linux-runtime') throw error
     }
@@ -164,7 +165,7 @@ export class OptionalModules {
    * @param id - module identity.
    */
   async remove(id: CarrierModuleId): Promise<void> {
-    if (this.running) throw new Error('请等待组件下载完成后再删除')
+    if (this.running) throw new Error(localized({ zh: '请等待组件下载完成后再删除', en: 'Wait for the component download to finish before removing it.' }))
     await this.descriptor(id)
     const target = join(this.options.root, id)
     await assertToolPackPath(target)

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { posix } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { IdeEnvironmentError, supportsIdeOfflineInstall } from './ide-environment.ts'
 import type { IdeEnvironmentConfig, IdeEnvironmentInspection, IdeEnvironmentPlatform } from './ide-environment.ts'
 
@@ -88,10 +89,15 @@ function run(command: IdeEnvironmentCommand, config: IdeEnvironmentConfig): Prom
       output = (output + stdout.end()).slice(-config.maxOutputCharacters)
       diagnostic = (diagnostic + stderr.end()).slice(-config.maxOutputCharacters)
       if (spawnError !== undefined) { reject(new IdeEnvironmentError('wsl-command-failed', spawnError.message)); return }
-      if (timedOut) { reject(new IdeEnvironmentError('development-check-timeout', '开发环境检查超时，请确认所选 WSL 环境可以启动后重试。')); return }
+      if (timedOut) {
+        reject(new IdeEnvironmentError('development-check-timeout', localized({ zh: '开发环境检查超时，请确认所选 WSL 环境可以启动后重试。',
+          en: 'The development environment check timed out. Make sure the selected WSL environment can start, then try again.' })))
+        return
+      }
       if (code !== 0 || signal !== null) {
-        reject(new IdeEnvironmentError('development-command-failed',
-          `开发工具命令未完成（退出码 ${code ?? '无'}${signal === null ? '' : `，信号 ${signal}`}）。\n${diagnostic || output}`))
+        reject(new IdeEnvironmentError('development-command-failed', localized({
+          zh: `开发工具命令未完成（退出码 ${code ?? '无'}${signal === null ? '' : `，信号 ${signal}`}）。\n${diagnostic || output}`,
+          en: `The development tools command did not finish (exit code ${code ?? 'none'}${signal === null ? '' : `, signal ${signal}`}).\n${diagnostic || output}` })))
         return
       }
       accept(output.replaceAll('\0', '').trim())
@@ -106,20 +112,28 @@ function run(command: IdeEnvironmentCommand, config: IdeEnvironmentConfig): Prom
  */
 export function createWindowsIdeEnvironmentPlatform(options: WindowsIdeEnvironmentOptions): IdeEnvironmentPlatform {
   if (!options.distro.trim() || options.distro.includes('\0') || !posix.isAbsolute(options.resourceRoot) || options.resourceRoot.includes('\0')) {
-    throw new IdeEnvironmentError('development-path-invalid', '所选环境或开发工具资源目录无效。')
+    throw new IdeEnvironmentError('development-path-invalid', localized({ zh: '所选环境或开发工具资源目录无效。',
+      en: 'The selected environment or the development tools resource folder is invalid.' }))
   }
   const execute = options.execute ?? (command => run(command, options.config))
   const inspect = async (): Promise<IdeEnvironmentInspection> => {
     const output = await execute({ args: ['-d', options.distro, '--exec', 'python3', '-c', probe, options.resourceRoot],
       timeoutMs: options.config.inspectTimeoutMs })
     try { return inspectionSchema.parse(JSON.parse(output)) }
-    catch (_invalidProbeResult) { throw new IdeEnvironmentError('development-check-invalid', '未能读取完整的开发环境检查结果，请重新检查。') }
+    catch (_invalidProbeResult) {
+      throw new IdeEnvironmentError('development-check-invalid', localized({ zh: '未能读取完整的开发环境检查结果，请重新检查。',
+        en: 'The development environment check returned incomplete results. Check again.' }))
+    }
   }
   return { inspect, install: async (onProgress) => {
     const before = await inspect()
-    if (!supportsIdeOfflineInstall(before)) throw new IdeEnvironmentError('unsupported-distribution', '离线开发组件只支持 Ubuntu 26.04 amd64，未修改所选环境。')
+    if (!supportsIdeOfflineInstall(before)) {
+      throw new IdeEnvironmentError('unsupported-distribution', localized({ zh: '离线开发组件只支持 Ubuntu 26.04 amd64，未修改所选环境。',
+        en: 'The offline development components support only Ubuntu 26.04 amd64. The selected environment was not changed.' }))
+    }
     if (!before.mediaPresent || !before.mediaMatches || before.packageCount === 0) {
-      throw new IdeEnvironmentError('development-media-missing', '离线开发组件缺失或不匹配，请重新安装完整的 RainyAgent 安装包。')
+      throw new IdeEnvironmentError('development-media-missing', localized({ zh: '离线开发组件缺失或不匹配，请重新安装完整的 RainyAgent 安装包。',
+        en: 'The offline development components are missing or do not match. Reinstall RainyAgent from the full installer.' }))
     }
     const output = await execute({
       args: ['-d', options.distro, '-u', 'root', '--exec', 'python3', posix.join(options.resourceRoot, 'install-system-packages.py'),
@@ -130,7 +144,8 @@ export function createWindowsIdeEnvironmentPlatform(options: WindowsIdeEnvironme
       const result = z.object({ installedPackages: z.number().int().positive(), offline: z.literal(true) }).strict().parse(JSON.parse(last ?? ''))
       if (result.installedPackages !== before.packageCount) throw new Error('Package count differs.')
     } catch (_invalidInstallResult) {
-      throw new IdeEnvironmentError('development-install-unconfirmed', '未收到离线安装完成确认。请查看安装详情并重新检查环境。')
+      throw new IdeEnvironmentError('development-install-unconfirmed', localized({ zh: '未收到离线安装完成确认。请查看安装详情并重新检查环境。',
+        en: 'The offline installation did not confirm that it finished. Review the installation details and check the environment again.' }))
     }
   } }
 }

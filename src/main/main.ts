@@ -1,7 +1,9 @@
 /** RainyAgent desktop carrier for one explicitly selected native Windows or WSL Host. */
-import { app, BrowserWindow, dialog, Menu, screen, shell, ipcMain, nativeTheme, safeStorage } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, Menu, screen, shell, ipcMain, nativeTheme, safeStorage } from 'electron'
+import { currentLocale, followLocale, localized, type Locale } from '../shared/locale.ts'
 import { mkdirSync, appendFileSync, existsSync, writeFileSync } from 'node:fs'
-import { dirname, join, posix, resolve, win32 } from 'node:path'
+import { arch, freemem, release, totalmem, version } from 'node:os'
+import { basename, dirname, join, posix, resolve, win32 } from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { WslHostTransport, WindowsHostTransport } from './transport.ts'
@@ -25,7 +27,7 @@ import { removeRetiredResources } from './retired-resources.ts'
 import { acquireToolPackLock } from './toolpack.ts'
 import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
-import { listExecutionTargets, readDesktopPreferences, savedExecutionTarget, saveExecutionTarget } from './execution-targets.ts'
+import { listExecutionTargets, readDesktopPreferences, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget } from './execution-targets.ts'
 import type { ExecutionTarget, PendingProjectTarget } from './execution-targets.ts'
 import { createProjectRegistry } from '../shared/project-registry.ts'
 import { environmentComponentSchema, installWindowsComponent, readEnvironmentComponentCatalog } from './environment-components.ts'
@@ -36,6 +38,7 @@ import type { ReleaseIntegrity } from './release-integrity.ts'
 import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splash.ts'
 import { systemProxyFor } from './system-proxy.ts'
 import { credentialKey } from './credential-key.ts'
+import { exportDiagnostics, newestFiles } from './diagnostics.ts'
 import { initialPlacement, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
 import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
@@ -48,6 +51,9 @@ app.setName('RainyAgent')
 app.setAppUserModelId('dev.rainy.agent')
 const userDataDirectory = app.commandLine.getSwitchValue('user-data-dir')
 app.setPath('userData', userDataDirectory ? resolve(userDataDirectory) : join(app.getPath('appData'), 'RainyAgent'))
+// Crashes of the windows are recorded next to the other user data for the diagnostics export; nothing is uploaded.
+app.setPath('crashDumps', join(app.getPath('userData'), 'Crashpad'))
+crashReporter.start({ uploadToServer: false })
 let transport: HostTransport | undefined
 let flushWorkbench: () => Promise<DraftFlushResult> = () => Promise.resolve({ ok: true })
 let closeNativeTools: () => Promise<void> = () => Promise.resolve()
@@ -58,6 +64,9 @@ let releaseToolPack: (() => Promise<void>) | undefined
 let componentInstallation: Promise<void> | undefined
 /** Read or created once per run; every Host started in this run encrypts API keys with it. */
 let credentialKeyOnce: Promise<string | null> | undefined
+/** @returns The interface language that matches the Windows display language. */
+const systemLocale = (): Locale => app.getLocale().toLowerCase().startsWith('zh') ? 'zh' : 'en'
+followLocale(() => app.isReady() ? systemLocale() : 'zh')
 let updates: RainyUpdates | undefined
 let cleanupFailed = false
 // Setup windows may close before the workbench takes ownership of the application.
@@ -66,8 +75,9 @@ const lifecycle = createDesktopLifecycle({
   flush: () => flushWorkbench(),
   retrySave: async (error) => {
     const answer = await dialog.showMessageBox({ type: 'error', title: 'RainyAgent',
-      message: '草稿尚未保存', detail: error ?? '保存失败，窗口和草稿已保留。',
-      buttons: ['重试保存并退出', '取消退出'], defaultId: 0, cancelId: 1 })
+      message: localized({ zh: '草稿尚未保存', en: 'Your drafts have not been saved.' }),
+      detail: error ?? localized({ zh: '保存失败，窗口和草稿已保留。', en: 'Saving failed. The window and your drafts are kept.' }),
+      buttons: [localized({ zh: '重试保存并退出', en: 'Retry saving and quit' }), localized({ zh: '取消退出', en: 'Do not quit' })], defaultId: 0, cancelId: 1 })
     return answer.response === 0
   },
   cleanup: [async () => { await componentInstallation }, () => closeIdeEnvironment(), () => closeNativeTools(),
@@ -96,7 +106,9 @@ async function wslPaths(distro: string, paths: readonly string[]): Promise<strin
   const output = (await run('wsl.exe', ['-d', distro, '--exec', 'sh', '-c', 'for p in "$@"; do wslpath -u "$p"; done', 'sh', ...paths],
     { windowsHide: true, timeout: 120000 })).stdout
   const lines = output.split('\n').map(line => line.replace(/\r$/u, '')).filter(line => line !== '')
-  if (lines.length !== paths.length || !lines.every(line => posix.isAbsolute(line))) throw new Error('WSL 路径转换结果无效。')
+  if (lines.length !== paths.length || !lines.every(line => posix.isAbsolute(line))) {
+    throw new Error(localized({ zh: 'WSL 路径转换结果无效。', en: 'WSL did not convert the paths correctly.' }))
+  }
   return lines
 }
 
@@ -143,7 +155,7 @@ async function controlBody(response: Response): Promise<unknown> {
 function quitAfterSave(draftsSaved = false): void {
   if (lifecycle.closing) return
   void lifecycle.quit(draftsSaved).catch(async (error: unknown) => {
-    await dialog.showMessageBox({ type: 'error', message: '退出前保存失败', detail: errorText(error) })
+    await dialog.showMessageBox({ type: 'error', message: localized({ zh: '退出前保存失败', en: 'Saving before quitting failed.' }), detail: errorText(error) })
   })
 }
 
@@ -156,6 +168,14 @@ async function start(): Promise<void> {
   const installRoot = app.isPackaged ? dirname(app.getPath('exe')) : resolve(__dirname, '..')
   const resourceRoot = app.isPackaged ? process.resourcesPath : resolve(__dirname, '..', 'runtime')
   const [lock, preferences] = await Promise.all([acquireToolPackLock(installRoot), readDesktopPreferences(settingsPath)])
+  // Dialogs, menus and errors follow the interface language the page last reported; the system language before that.
+  let interfaceLocale: Locale = preferences.locale === 'zh' || preferences.locale === 'en' ? preferences.locale : systemLocale()
+  followLocale(() => interfaceLocale)
+  const reportLocale = (locale: Locale): void => {
+    if (locale === interfaceLocale) return
+    interfaceLocale = locale
+    void saveDesktopLocale(settingsPath, locale).catch((error: unknown) => { appendFileSync(logPath, `The interface language was not saved: ${errorText(error)}\n`) })
+  }
   releaseToolPack = lock
   let target = savedExecutionTarget(preferences)
   // A launch that already recorded its resolved WSL target skips the environment window and the registry lookup.
@@ -198,11 +218,15 @@ async function start(): Promise<void> {
   let integrity: ReleaseIntegrity | undefined
   if (app.isPackaged) {
     const keys = embeddedReleaseKeys()
-    if (!keys) throw new Error('发行包缺少资源验证公钥，请重新安装完整发行包。')
+    if (!keys) {
+      throw new Error(localized({ zh: '发行包缺少资源验证公钥，请重新安装完整发行包。',
+        en: 'This installation has no key to verify its files. Reinstall RainyAgent from the full installer.' }))
+    }
     integrity = await ensureReleaseIntegrity({ root: resourceRoot, signedPath: join(resourceRoot, 'release-manifest.signed.json'), keys,
       stampPath: join(userData, 'release-verified.json'), recheckIntervalMs: RELEASE_RECHECK_INTERVAL_MS,
       onProgress: (completed, total) => {
-        progress.step(`首次启动，正在校验安装文件 ${completed.toLocaleString('zh-CN')} / ${total.toLocaleString('zh-CN')}`, completed / total)
+        progress.step(localized({ zh: `首次启动，正在校验安装文件 ${completed.toLocaleString('zh-CN')} / ${total.toLocaleString('zh-CN')}`,
+          en: `First start: verifying installed files ${completed.toLocaleString('en-US')} / ${total.toLocaleString('en-US')}` }), completed / total)
       } })
     timeline.mark(integrity.verified === 'full' ? 'verify (full)' : 'verify (stamp)')
   }
@@ -235,15 +259,21 @@ async function start(): Promise<void> {
     for (;;) {
       try {
         await modules.install('linux-runtime', (completed, total) => {
-          progress.step(`正在下载 WSL 运行环境 ${Math.round(completed / 1024 ** 2)} / ${Math.round(total / 1024 ** 2)} MB`, completed / total)
+          progress.step(localized({ zh: `正在下载 WSL 运行环境 ${Math.round(completed / 1024 ** 2)} / ${Math.round(total / 1024 ** 2)} MB`,
+            en: `Downloading the WSL runtime ${Math.round(completed / 1024 ** 2)} / ${Math.round(total / 1024 ** 2)} MB` }), completed / total)
         })
         return true
       } catch (error) {
-        const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'RainyAgent', message: 'WSL 运行环境下载失败',
-          detail: `${errorText(error)}\n更新后第一次使用 WSL 时需要联网下载一次，已下载的部分会保留。`,
-          buttons: ['重试', '改用 Windows 原生运行', '退出'], defaultId: 0, cancelId: 2 })
+        const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'RainyAgent',
+          message: localized({ zh: 'WSL 运行环境下载失败', en: 'The WSL runtime could not be downloaded.' }),
+          detail: localized({ zh: `${errorText(error)}\n更新后第一次使用 WSL 时需要联网下载一次，已下载的部分会保留。`,
+            en: `${errorText(error)}\nAfter an update, WSL needs a one-time download the first time you use it. What was already downloaded is kept.` }),
+          buttons: [localized({ zh: '重试', en: 'Retry' }), localized({ zh: '改用 Windows 原生运行', en: 'Run on Windows instead' }), localized({ zh: '退出', en: 'Quit' })],
+          defaultId: 0, cancelId: 2 })
         if (answer.response === 1) return false
-        if (answer.response !== 0) throw new Error('未下载 WSL 运行环境，RainyAgent 已停止启动。')
+        if (answer.response !== 0) {
+          throw new Error(localized({ zh: '未下载 WSL 运行环境，RainyAgent 已停止启动。', en: 'RainyAgent did not start because the WSL runtime was not downloaded.' }))
+        }
       }
     }
   }
@@ -251,7 +281,8 @@ async function start(): Promise<void> {
    * @returns the installed Host, or undefined when the user continues on Windows instead of downloading.
    */
   const prepareWsl = async (distribution: string) => {
-    progress.step(`正在启动 WSL · ${distribution}…`)
+    const startingWsl = (): string => localized({ zh: `正在启动 WSL · ${distribution}…`, en: `Starting WSL · ${distribution}…` })
+    progress.step(startingWsl())
     const [archive, metadata, installer, state, mappedUvx] = await wslPaths(distribution,
       [await linuxRuntimeArchive(), runtimeFiles.metadata, runtimeFiles.installer, carrierState, ...uvx === undefined ? [] : [uvx]])
     const install = async (): Promise<unknown> => JSON.parse((await run('wsl.exe', ['-d', distribution, '--exec', 'python3', installer, archive, metadata],
@@ -259,9 +290,11 @@ async function start(): Promise<void> {
     let installed = await install()
     if (installed !== null && typeof installed === 'object' && 'needsArchive' in installed) {
       if (!await downloadLinuxRuntime()) return undefined
-      progress.step(`正在启动 WSL · ${distribution}…`)
+      progress.step(startingWsl())
       installed = await install()
-      if (installed !== null && typeof installed === 'object' && 'needsArchive' in installed) throw new Error('下载的 WSL 运行环境与此版本不一致')
+      if (installed !== null && typeof installed === 'object' && 'needsArchive' in installed) {
+        throw new Error(localized({ zh: '下载的 WSL 运行环境与此版本不一致', en: 'The downloaded WSL runtime does not match this version of RainyAgent.' }))
+      }
     }
     // The unpacked runtime is all WSL needs; only the next version downloads an archive again.
     if (app.isPackaged) {
@@ -285,7 +318,7 @@ async function start(): Promise<void> {
     catch (error) { appendFileSync(logPath, `Recorded WSL target unavailable, checking the environment: ${errorText(error)}\n`) }
   }
   if (target.kind === 'wsl' && prepared === undefined && !windowsInstead) {
-    progress.step('正在检查运行环境…')
+    progress.step(localized({ zh: '正在检查运行环境…', en: 'Checking the runtime environment…' }))
     const environment = await prepareDesktopEnvironment(environmentSetup)
     target = (await listExecutionTargets()).find(value => value.kind === 'wsl' && value.distro === environment.distro)
       ?? { ...target, kind: 'wsl', distro: environment.distro, label: `WSL · ${environment.distro}` }
@@ -295,7 +328,7 @@ async function start(): Promise<void> {
   }
   // Like a switch made in settings, continuing on Windows is recorded for later launches.
   if (windowsInstead) target = (await listExecutionTargets()).find(value => value.kind === 'windows') ?? target
-  if (target.kind === 'wsl' && prepared === undefined) throw new Error('WSL 运行环境未就绪。')
+  if (target.kind === 'wsl' && prepared === undefined) throw new Error(localized({ zh: 'WSL 运行环境未就绪。', en: 'The WSL runtime is not ready.' }))
   timeline.mark('runtime')
   const distro = target.kind === 'wsl' ? requireWslDistribution(target) : 'Windows'
   const convert = async (path: string) => target.kind === 'windows' ? path : wslPath(distro, '-u', path)
@@ -308,13 +341,12 @@ async function start(): Promise<void> {
     ipcMain.handle(channel, handler)
     ipcDisposers.push(() => { ipcMain.removeHandler(channel) })
   }
-  let updateLocale: 'zh' | 'en' = app.getLocale().startsWith('zh') ? 'zh' : 'en'
   updates = new RainyUpdates(electronUpdater.autoUpdater, {
     enabled: app.isPackaged,
     notice: async (state, manual) => {
       if (window.isDestroyed() || lifecycle.closing) return
       window.setProgressBar(state.phase === 'downloading' ? state.percent / 100 : state.phase === 'checking' ? 2 : -1)
-      const text = updateMessages[updateLocale]
+      const text = updateMessages[currentLocale()]
       if (manual && (state.phase === 'current' || state.phase === 'error' || state.phase === 'unavailable')) {
         await dialog.showMessageBox(window, { type: state.phase === 'error' ? 'error' : 'info', title: text.title,
           message: state.phase === 'current' ? `${text.current} ${app.getVersion()}`
@@ -324,7 +356,7 @@ async function start(): Promise<void> {
     },
     confirm: async (version) => {
       if (window.isDestroyed() || lifecycle.closing) return false
-      const text = updateMessages[updateLocale]
+      const text = updateMessages[currentLocale()]
       const answer = await dialog.showMessageBox(window, { type: 'info', title: text.title,
         message: `${text.ready} ${version}`, detail: text.restartDetail,
         buttons: [text.later, text.install], defaultId: 0, cancelId: 0 })
@@ -335,7 +367,7 @@ async function start(): Promise<void> {
       try {
         await lifecycle.quit(false, {
           prepare: async () => {
-            const text = updateMessages[updateLocale]
+            const text = updateMessages[currentLocale()]
             if (componentInstallation || !transport || (await transport.inspectActivity('freeze')).active) {
               await dialog.showMessageBox(window, { type: 'info', title: text.title, message: text.busy })
               return false
@@ -363,11 +395,13 @@ async function start(): Promise<void> {
     reload: (ignoreCache) => { if (ignoreCache) window.webContents.reloadIgnoringCache(); else window.webContents.reload() },
     isClosing: () => lifecycle.closing || window.isDestroyed() || window.webContents.isDestroyed(),
     reportFailure: async (error) => { await dialog.showMessageBox(window, { type: 'error', title: 'RainyAgent',
-      message: '刷新前草稿尚未保存', detail: `${error}\n窗口和草稿已保留，请重新尝试刷新或导出草稿。` }) },
+      message: localized({ zh: '刷新前草稿尚未保存', en: 'Your drafts could not be saved before reloading.' }),
+      detail: localized({ zh: `${error}\n窗口和草稿已保留，请重新尝试刷新或导出草稿。`,
+        en: `${error}\nThe window and your drafts are kept. Try reloading again, or export your drafts.` }) }) },
   })
   const requestReload = (ignoreCache = false): void => {
     void reloadAfterSave(ignoreCache).catch((error: unknown) => {
-      void dialog.showMessageBox(window, { type: 'error', message: '刷新失败', detail: errorText(error) })
+      void dialog.showMessageBox(window, { type: 'error', message: localized({ zh: '刷新失败', en: 'Reloading failed.' }), detail: errorText(error) })
     })
   }
   window.webContents.on('before-input-event', (event, input) => {
@@ -377,11 +411,13 @@ async function start(): Promise<void> {
     requestReload(ignoreCache)
   })
   let switchTarget: (selected: ExecutionTarget, workspaceId?: WorkspaceId) => Promise<{ ok: boolean; error?: string }> =
-    () => Promise.resolve({ ok: false, error: '执行环境仍在启动。' })
+    () => Promise.resolve({ ok: false, error: localized({ zh: '执行环境仍在启动。', en: 'The execution environment is still starting.' }) })
   const selectDistribution = async () => {
     const targets = await listExecutionTargets()
-    const result = await dialog.showMessageBox(window, { message: '选择执行环境', detail: 'Windows 原生与 WSL 使用各自的解释器。已有聊天保留原执行环境；切换前请结束运行中的任务。',
-      buttons: [...targets.map(value => value.label), '取消'], cancelId: targets.length })
+    const result = await dialog.showMessageBox(window, { message: localized({ zh: '选择执行环境', en: 'Choose an execution environment' }),
+      detail: localized({ zh: 'Windows 原生与 WSL 使用各自的解释器。已有聊天保留原执行环境；切换前请结束运行中的任务。',
+        en: 'Windows native and WSL each use their own interpreters. Existing chats keep their execution environment. Finish running tasks before you switch.' }),
+      buttons: [...targets.map(value => value.label), localized({ zh: '取消', en: 'Cancel' })], cancelId: targets.length })
     const selected = targets.find((_value, index) => index === result.response)
     if (selected && selected.id !== target.id) {
       const changed = await switchTarget(selected)
@@ -390,14 +426,19 @@ async function start(): Promise<void> {
   }
   const requestDistribution = (): void => {
     void selectDistribution().catch((error: unknown) => {
-      void dialog.showMessageBox(window, { type: 'error', message: '切换发行版失败', detail: errorText(error) })
+      void dialog.showMessageBox(window, { type: 'error', message: localized({ zh: '切换发行版失败', en: 'Switching the distribution failed.' }), detail: errorText(error) })
     })
   }
+  // This menu bar is never shown (hidden title bar, setMenuBarVisibility(false), no Alt toggle) and only carries shortcuts,
+  // so its labels follow the language at launch and are not rebuilt when the language changes.
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'RainyAgent', submenu: [{ label: `执行环境：${target.label}`, click: requestDistribution },
-      { label: '检查更新…', click: () => { void updates?.check(true) } }, { label: '退出', click: () => { app.quit() } }] },
-    { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: '视图', submenu: [{ label: '重新加载', accelerator: 'CmdOrCtrl+R', click: () => { requestReload() } }, { role: 'toggleDevTools' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
+    { label: 'RainyAgent', submenu: [{ label: localized({ zh: `执行环境：${target.label}`, en: `Execution environment: ${target.label}` }), click: requestDistribution },
+      { label: localized({ zh: '检查更新…', en: 'Check for updates…' }), click: () => { void updates?.check(true) } },
+      { label: localized({ zh: '退出', en: 'Quit' }), click: () => { app.quit() } }] },
+    { label: localized({ zh: '编辑', en: 'Edit' }),
+      submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: localized({ zh: '视图', en: 'View' }), submenu: [{ label: localized({ zh: '重新加载', en: 'Reload' }), accelerator: 'CmdOrCtrl+R', click: () => { requestReload() } },
+      { role: 'toggleDevTools' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
   ]))
   let installed: unknown
   if (prepared !== undefined) installed = prepared.installed
@@ -405,13 +446,17 @@ async function start(): Promise<void> {
     const root = join(resourceRoot, 'windows-host')
     const node = join(root, 'node', 'node.exe')
     const host = join(root, 'app', 'dist', 'host.js')
-    if (!existsSync(node) || !existsSync(host)) throw new Error('Windows 原生运行文件缺失，请安装完整发行包。')
+    if (!existsSync(node) || !existsSync(host)) {
+      throw new Error(localized({ zh: 'Windows 原生运行文件缺失，请安装完整发行包。', en: 'The files for running natively on Windows are missing. Install the full RainyAgent package.' }))
+    }
     installed = { node, host }
   }
   if (installed === null || typeof installed !== 'object' || !('node' in installed) || typeof installed.node !== 'string'
     || !(target.kind === 'windows' ? win32.isAbsolute(installed.node) : posix.isAbsolute(installed.node))
     || !('host' in installed) || typeof installed.host !== 'string'
-    || !(target.kind === 'windows' ? win32.isAbsolute(installed.host) : posix.isAbsolute(installed.host))) throw new Error('执行环境运行文件无效。')
+    || !(target.kind === 'windows' ? win32.isAbsolute(installed.host) : posix.isAbsolute(installed.host))) {
+    throw new Error(localized({ zh: '执行环境运行文件无效。', en: 'The runtime files of the execution environment are invalid.' }))
+  }
   const idaMcpCommand = prepared === undefined ? uvx : prepared.uvx
   // The PHP component is downloaded from settings; the Host notices it at its fixed path without restarting.
   const checkoutPhp = resolve(__dirname, '../runtime/component-stage/windows-basic/php/php.exe')
@@ -443,12 +488,13 @@ async function start(): Promise<void> {
     onDiagnostic: (text) =>{  appendFileSync(logPath, text + '\n') },
     onExit: (code) => {
       if (lifecycle.quitting || code === 0 || window.isDestroyed()) return
-      void dialog.showMessageBox(window, { type: 'error', message: '执行后端已停止',
-        detail: `${code === null ? '进程已被终止' : `退出代码：${code}`}。会话历史已保留。` })
+      void dialog.showMessageBox(window, { type: 'error', message: localized({ zh: '执行后端已停止', en: 'The execution backend stopped.' }),
+        detail: localized({ zh: `${code === null ? '进程已被终止' : `退出代码：${code}`}。会话历史已保留。`,
+          en: `${code === null ? 'The process was terminated' : `Exit code: ${code}`}. Your chat history is kept.` }) })
     },
   }
   transport = target.kind === 'windows' ? new WindowsHostTransport({ ...hostOptions, cwd: installRoot }) : new WslHostTransport({ ...hostOptions, distro })
-  progress.step('正在启动执行后端…')
+  progress.step(localized({ zh: '正在启动执行后端…', en: 'Starting the execution backend…' }))
   const ready = await transport.start()
   timeline.mark('host')
   // Recording the resolved target lets the next launch skip the registry lookup and the environment window.
@@ -473,28 +519,40 @@ async function start(): Promise<void> {
   closeIdeEnvironment = () => ideEnvironment?.close() ?? Promise.resolve()
   const prepareComponents = async (): Promise<void> => {
     if (componentInstallation) return componentInstallation
-    if (lifecycle.closing || lifecycle.switching) throw new Error('应用正在退出或切换执行环境，请稍后再准备运行环境。')
+    if (lifecycle.closing || lifecycle.switching) {
+      throw new Error(localized({ zh: '应用正在退出或切换执行环境，请稍后再准备运行环境。',
+        en: 'RainyAgent is quitting or switching its execution environment. Prepare the runtime environment later.' }))
+    }
     const operation = async (): Promise<void> => {
-      const choices = target.kind === 'wsl' ? ['导入离线组件', '准备 Ubuntu 开发工具', '取消'] : ['导入离线组件', '准备 WSL 环境', '取消']
-      const action = await dialog.showMessageBox(window, { title: 'RainyAgent', message: '准备运行环境',
-        detail: '可直接复用已安装环境。导入只写入 RainyAgent 自有目录，不修改已有 Python、Conda 或系统 PATH。', buttons: choices, cancelId: choices.length - 1 })
+      const importComponents = localized({ zh: '导入离线组件', en: 'Import offline components' })
+      const cancel = localized({ zh: '取消', en: 'Cancel' })
+      const choices = target.kind === 'wsl' ? [importComponents, localized({ zh: '准备 Ubuntu 开发工具', en: 'Prepare Ubuntu development tools' }), cancel]
+        : [importComponents, localized({ zh: '准备 WSL 环境', en: 'Prepare a WSL environment' }), cancel]
+      const action = await dialog.showMessageBox(window, { title: 'RainyAgent', message: localized({ zh: '准备运行环境', en: 'Prepare the runtime environment' }),
+        detail: localized({ zh: '可直接复用已安装环境。导入只写入 RainyAgent 自有目录，不修改已有 Python、Conda 或系统 PATH。',
+          en: 'Environments that are already installed can be used as they are. Importing writes only to folders that RainyAgent owns '
+            + 'and does not change existing Python, Conda or the system PATH.' }), buttons: choices, cancelId: choices.length - 1 })
       if (action.response === choices.length - 1) return
       if (ideEnvironment !== undefined && action.response === 1) { await ideEnvironment.open(); return }
       if (target.kind === 'windows' && action.response === 1) {
         const prepared = await prepareDesktopEnvironment(environmentSetup)
         prepared.closeSetup()
-        await dialog.showMessageBox(window, { title: 'RainyAgent', message: 'WSL 环境已就绪', detail: '在运行环境页选择该 WSL 环境即可切换。' })
+        await dialog.showMessageBox(window, { title: 'RainyAgent', message: localized({ zh: 'WSL 环境已就绪', en: 'The WSL environment is ready.' }),
+          detail: localized({ zh: '在运行环境页选择该 WSL 环境即可切换。', en: 'Select it on the Runtime page to switch to it.' }) })
         return
       }
-      const selected = await dialog.showOpenDialog(window, { title: '选择完整离线包中的组件 JSON', properties: ['openFile'], filters: [{ name: '离线组件清单', extensions: ['json'] }] })
+      const selected = await dialog.showOpenDialog(window, { title: localized({ zh: '选择完整离线包中的组件 JSON', en: 'Select the component JSON in the full offline package' }),
+        properties: ['openFile'], filters: [{ name: localized({ zh: '离线组件清单', en: 'Offline component list' }), extensions: ['json'] }] })
       const descriptorPath = selected.filePaths[0]
       if (selected.canceled || !descriptorPath) return
-      if ((await stat(descriptorPath)).size > 65536) throw new Error('离线组件清单过大。')
+      if ((await stat(descriptorPath)).size > 65536) throw new Error(localized({ zh: '离线组件清单过大。', en: 'The offline component list is too large.' }))
       const supplied = environmentComponentSchema.parse(JSON.parse(await readFile(descriptorPath, 'utf8')))
       const catalog = await readEnvironmentComponentCatalog(join(resourceRoot, 'environment-component-catalog.json'))
       const expected = catalog.find(value => value.id === supplied.id && value.sha256 === supplied.sha256
         && value.manifestSha256 === supplied.manifestSha256)
-      if (!expected || expected.platform !== (target.kind === 'windows' ? 'windows' : 'linux')) throw new Error('该组件不属于当前发行包或执行环境。')
+      if (!expected || expected.platform !== (target.kind === 'windows' ? 'windows' : 'linux')) {
+        throw new Error(localized({ zh: '该组件不属于当前发行包或执行环境。', en: 'This component does not belong to this RainyAgent version or execution environment.' }))
+      }
       if (target.kind === 'windows') await installWindowsComponent({ mediaDirectory: dirname(descriptorPath), root: join(app.getPath('userData'), 'env'), component: expected,
         progress: (message) => { if (!window.isDestroyed()) window.webContents.send('rainy:component-progress', { message }) } })
       else {
@@ -503,7 +561,9 @@ async function start(): Promise<void> {
         await run('wsl.exe', ['-d', distro, '--exec', 'python3', installerPath, archive, JSON.stringify(expected), '--root', posix.join(ready.home, 'components')],
           { windowsHide: true, timeout: 30 * 60 * 1000, maxBuffer: 1024 * 1024 })
       }
-      await dialog.showMessageBox(window, { title: 'RainyAgent', message: '离线组件已校验并导入', detail: '点击运行环境页的“检测环境”，然后选择需要的解释器。' })
+      await dialog.showMessageBox(window, { title: 'RainyAgent', message: localized({ zh: '离线组件已校验并导入', en: 'The offline component was verified and imported.' }),
+        detail: localized({ zh: '点击运行环境页的“检测环境”，然后选择需要的解释器。',
+          en: 'On the Runtime page, click "Detect existing environments", then choose the interpreter you need.' }) })
     }
     componentInstallation = operation().finally(() => { componentInstallation = undefined })
     return componentInstallation
@@ -529,7 +589,7 @@ async function start(): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<DraftFlushResult>()
     const timer = setTimeout(() => {
       pendingFlush = undefined
-      resolve({ ok: false, error: '工具未能确认草稿已保存，请重试。' })
+      resolve({ ok: false, error: localized({ zh: '工具未能确认草稿已保存，请重试。', en: 'RainyAgent could not confirm that your drafts were saved. Try again.' }) })
     }, 65000)
     pendingFlush = { id, timer, promise, resolve }
     try { window.webContents.send('rainy:flush-workbench', id) }
@@ -543,11 +603,18 @@ async function start(): Promise<void> {
   switchTarget = (selected, workspaceId) => {
     if (selected.id === target.id) return Promise.resolve({ ok: true })
     return lifecycle.switchTarget(async () => {
-      if (componentInstallation) return { ok: false, error: '请等待运行环境准备完成后再切换。' }
-      if (!transport) return { ok: false, error: '应用正在退出或执行环境尚未就绪。' }
-      if ((await transport.inspectActivity()).active) return { ok: false, error: '请先结束运行中的 AI 任务、程序、调试及终端，再切换执行环境。' }
+      if (componentInstallation) {
+        return { ok: false, error: localized({ zh: '请等待运行环境准备完成后再切换。', en: 'Wait for the runtime environment setup to finish before switching.' }) }
+      }
+      if (!transport) return { ok: false, error: localized({ zh: '应用正在退出或执行环境尚未就绪。', en: 'RainyAgent is quitting, or the execution environment is not ready yet.' }) }
+      if ((await transport.inspectActivity()).active) {
+        return { ok: false, error: localized({ zh: '请先结束运行中的 AI 任务、程序、调试及终端，再切换执行环境。',
+          en: 'Finish running AI tasks, programs, debugging and terminals before switching the execution environment.' }) }
+      }
       const saved = await flushWorkbench()
-      if (!saved.ok) return { ok: false, error: saved.error ?? '草稿未保存，执行环境保持不变。' }
+      if (!saved.ok) {
+        return { ok: false, error: saved.error ?? localized({ zh: '草稿未保存，执行环境保持不变。', en: 'Your drafts were not saved. The execution environment is unchanged.' }) }
+      }
       workspaceId ??= (await transport.inspectProject())?.workspaceId
       let pendingProject: PendingProjectTarget | undefined
       const projects = createProjectRegistry({ root: carrierState, targetId: target.id })
@@ -556,13 +623,19 @@ async function start(): Promise<void> {
         if (!snapshot) throw new Error('The selected project is unavailable for target migration.')
         const records = await projects.list()
         const project = records.find(item => item.projectId === snapshot.projectId)
-        if (!project) return { ok: false, error: '当前项目尚未登记，请刷新运行环境页面后重试。' }
+        if (!project) {
+          return { ok: false, error: localized({ zh: '当前项目尚未登记，请刷新运行环境页面后重试。',
+            en: 'The current project is not registered yet. Refresh the Runtime page and try again.' }) }
+        }
         const current = project.bindings.find(binding => binding.targetId === target.id && binding.workspaceId === workspaceId)
         if (!current) throw new Error('The current project binding is unavailable.')
         // Windows paths are the shared form between the current and the selected target.
         const mapToSelected = async (path: string): Promise<string> => {
           const windowsPath = target.kind === 'windows' ? path : await wslPath(distro, '-w', path)
-          if (!win32.isAbsolute(windowsPath)) throw new Error('项目路径无法映射到目标环境，请保留原环境。')
+          if (!win32.isAbsolute(windowsPath)) {
+            throw new Error(localized({ zh: '项目路径无法映射到目标环境，请保留原环境。',
+              en: 'The project path cannot be used in the selected environment. Keep the current environment.' }))
+          }
           return selected.kind === 'windows' ? windowsPath : wslPath(requireWslDistribution(selected), '-u', windowsPath)
         }
         const path = project.bindings.find(binding => binding.targetId === selected.id)?.path || await mapToSelected(current.path)
@@ -572,7 +645,9 @@ async function start(): Promise<void> {
         }
         pendingProject = { projectId: project.projectId, path, roots }
       }
-      if ((await transport.inspectActivity('freeze')).active) return { ok: false, error: '新的任务已开始，执行环境保持不变。' }
+      if ((await transport.inspectActivity('freeze')).active) {
+        return { ok: false, error: localized({ zh: '新的任务已开始，执行环境保持不变。', en: 'A new task has started. The execution environment is unchanged.' }) }
+      }
       const frozenTransport = transport
       return { ok: true, commit: () => saveExecutionTarget(settingsPath, selected, pendingProject),
         resume: async () => { await frozenTransport.inspectActivity('resume') } }
@@ -587,7 +662,8 @@ async function start(): Promise<void> {
     for (const dispose of ipcDisposers.splice(0)) dispose()
     if (pendingFlush !== undefined) {
       clearTimeout(pendingFlush.timer)
-      pendingFlush.resolve({ ok: false, error: '窗口已关闭，无法确认草稿保存状态。' })
+      pendingFlush.resolve({ ok: false, error: localized({ zh: '窗口已关闭，无法确认草稿保存状态。',
+        en: 'The window closed, so RainyAgent could not confirm whether your drafts were saved.' }) })
       pendingFlush = undefined
     }
     flushWorkbench = () => Promise.resolve({ ok: true })
@@ -597,7 +673,7 @@ async function start(): Promise<void> {
     const colors = captionColors(value)
     if (!colors) return
     if (value !== null && typeof value === 'object' && 'locale' in value && (value.locale === 'zh' || value.locale === 'en')) {
-      updateLocale = value.locale
+      reportLocale(value.locale)
     }
     window.setTitleBarOverlay({ ...colors, color: '#00000000', height: CAPTION_HEIGHT })
     if (value !== null && typeof value === 'object' && 'theme' in value
@@ -607,7 +683,7 @@ async function start(): Promise<void> {
   onIpc('rainy:native-menu', (event, value) => {
     if (!trustedSender(event) || value === null || typeof value !== 'object' || !('menu' in value) || !('locale' in value)
       || (value.menu !== 'edit' && value.menu !== 'help') || (value.locale !== 'zh' && value.locale !== 'en')) return
-    updateLocale = value.locale
+    reportLocale(value.locale)
     const template = nativeMenuTemplate(value.menu, value.locale, () => {
       void dialog.showMessageBox(window, { title: 'RainyAgent', message: `RainyAgent ${app.getVersion()}`, detail: 'Develop by NCUCyberBase' })
     }, () => { void updates?.check(true) })
@@ -623,6 +699,32 @@ async function start(): Promise<void> {
       () => dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] }),
       convert,
     )
+  })
+  handleIpc('rainy:export-diagnostics', async (event) => {
+    if (!trustedSender(event)) throw new Error(localized({ zh: '只能在 RainyAgent 窗口中导出诊断信息。', en: 'Diagnostics can be exported only from the RainyAgent window.' }))
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/gu, '')
+    const chosen = await dialog.showSaveDialog(window, {
+      title: localized({ zh: '导出诊断信息', en: 'Export diagnostics' }),
+      defaultPath: join(app.getPath('downloads'), `RainyAgent-diagnostics-${stamp}.zip`),
+      filters: [{ name: 'Zip', extensions: ['zip'] }],
+    })
+    if (chosen.canceled || !chosen.filePath) return null
+    const crashes = app.getPath('crashDumps')
+    const dumps = await newestFiles(['reports', 'completed', 'pending', 'new'].map(folder => join(crashes, folder)), /\.dmp$/iu, 5)
+    const strataLogs = await newestFiles([join(userData, 'strata', 'logs')], /\.log$/iu, 3)
+    await exportDiagnostics(chosen.filePath, {
+      RainyAgent: app.getVersion(), Installed: String(app.isPackaged),
+      Electron: process.versions.electron, Chromium: process.versions.chrome, Node: process.versions.node,
+      Windows: `${version()} (${release()}, ${arch()})`, 'Execution target': target.label, 'Interface language': currentLocale(),
+      Memory: `${Math.round(totalmem() / 1024 ** 3)} GiB, ${Math.round(freemem() / 1024 ** 3)} GiB free`, Exported: new Date().toISOString(),
+    }, [
+      { name: 'logs/host.log', path: logPath, maxBytes: 4 * 1024 ** 2, text: true },
+      { name: 'desktop.json', path: settingsPath, maxBytes: 64 * 1024, text: true },
+      ...strataLogs.map(path => ({ name: `logs/strata/${basename(path)}`, path, maxBytes: 1024 ** 2, text: true })),
+      ...dumps.map(path => ({ name: `crashes/${basename(path)}`, path, maxBytes: 64 * 1024 ** 2, text: false })),
+    ])
+    shell.showItemInFolder(chosen.filePath)
+    return chosen.filePath
   })
   handleIpc('rainy:ide-directory', (event) => {
     if (!trustedSender(event)) throw new Error('Directory selection is available only in the RainyAgent window')
@@ -644,7 +746,9 @@ async function start(): Promise<void> {
   })
   const admitStrata = (event: Electron.IpcMainInvokeEvent, mutate = false): void => {
     if (!trustedSender(event)) throw new Error('Strata controls are available only in the RainyAgent window.')
-    if (mutate && (lifecycle.closing || lifecycle.switching)) throw new Error('请等待应用切换或退出完成后再操作 Strata。')
+    if (mutate && (lifecycle.closing || lifecycle.switching)) {
+      throw new Error(localized({ zh: '请等待应用切换或退出完成后再操作 Strata。', en: 'Wait for RainyAgent to finish switching or quitting before using Strata.' }))
+    }
   }
   const admitModule = (event: Electron.IpcMainInvokeEvent): void => {
     if (!trustedSender(event)) throw new Error('Component downloads are available only in the RainyAgent window.')
@@ -684,7 +788,7 @@ async function start(): Promise<void> {
     const statusResponse = await window.webContents.session.fetch(controlURL, { credentials: 'include' })
     const status = await controlBody(statusResponse)
     if (!statusResponse.ok || status === null || typeof status !== 'object' || !('models' in status) || !Array.isArray(status.models)) {
-      throw new Error('当前执行环境的模型设置不可用，请稍后重试。')
+      throw new Error(localized({ zh: '当前执行环境的模型设置不可用，请稍后重试。', en: 'The model settings of the current execution environment are unavailable. Try again later.' }))
     }
     const previous: unknown = status.models.find((value: unknown) => value !== null && typeof value === 'object'
       && 'provider' in value && value.provider === 'rainy-strata')
@@ -693,12 +797,12 @@ async function start(): Promise<void> {
       try { resolveBudget(connection.contextWindow, previous.maxTokens) }
       catch (_incompatibleBudget) {
         const maxTokens = resolveBudget(connection.contextWindow).outputTokens
-        const answer = await dialog.showMessageBox(window, updateLocale === 'zh'
+        const answer = await dialog.showMessageBox(window, currentLocale() === 'zh'
           ? { type: 'question', title: 'Strata 输出上限', message: `当前上下文为 ${connection.contextWindow}，原输出上限 ${previous.maxTokens} 过大。`,
             detail: `将输出上限调整为 ${maxTokens} 并连接？推理档位保持不变。`, buttons: ['取消', '调整并连接'], defaultId: 0, cancelId: 0 }
           : { type: 'question', title: 'Strata output limit', message: `The ${previous.maxTokens} output limit does not fit the ${connection.contextWindow} context.`,
             detail: `Set the output limit to ${maxTokens} and connect? The thinking setting stays unchanged.`, buttons: ['Cancel', 'Adjust and connect'], defaultId: 0, cancelId: 0 })
-        if (answer.response !== 1) throw new Error(updateLocale === 'zh' ? '已取消连接，原模型设置保持不变。' : 'Connection cancelled. Model settings are unchanged.')
+        if (answer.response !== 1) throw new Error(currentLocale() === 'zh' ? '已取消连接，原模型设置保持不变。' : 'Connection cancelled. Model settings are unchanged.')
         approvedBudget = { maxTokens, expectedContextWindow: connection.contextWindow }
       }
     }
@@ -710,7 +814,9 @@ async function start(): Promise<void> {
     if (value !== null && typeof value === 'object' && 'error' in value && typeof value.error === 'string') throw new Error(value.error)
     if (!response.ok || value === null || typeof value !== 'object' || !('result' in value)
       || value.result === null || typeof value.result !== 'object' || !('provider' in value.result) || !('model' in value.result)
-      || typeof value.result.provider !== 'string' || typeof value.result.model !== 'string') throw new Error('Strata 模型配置未完成，请重新检查当前执行环境。')
+      || typeof value.result.provider !== 'string' || typeof value.result.model !== 'string') {
+      throw new Error(localized({ zh: 'Strata 模型配置未完成，请重新检查当前执行环境。', en: 'The Strata model setup did not finish. Check the current execution environment again.' }))
+    }
     return { provider: value.result.provider, model: value.result.model }
   })
   writeFileSync(join(app.getPath('userData'), 'host.json'), JSON.stringify({ target, distro, pid: ready.pid, home: ready.home, origin, runtime: installed.host }, null, 2) + '\n')
@@ -738,7 +844,7 @@ async function start(): Promise<void> {
     callback(allowsClipboardWrite(permission, url, origin))
   })
   window.webContents.on('page-title-updated', (event) => { event.preventDefault(); window.setTitle('RainyAgent') })
-  progress.step('正在加载工作台…')
+  progress.step(localized({ zh: '正在加载工作台…', en: 'Loading the workbench…' }))
   await window.loadURL(ready.url)
   timeline.mark('workbench')
   appendFileSync(logPath, `RainyAgent startup (${target.label}): ${timeline.summary()}\n`)
@@ -779,8 +885,10 @@ async function runBackgroundChecks(options: {
   catch (error) {
     appendFileSync(options.logPath, `Release resource recheck failed: ${errorText(error)}\n`)
     if (error instanceof ReleaseIntegrityError && !options.window.isDestroyed()) {
-      await dialog.showMessageBox(options.window, { type: 'warning', title: 'RainyAgent', message: 'RainyAgent 安装文件已被修改或损坏',
-        detail: `${error.message}\n下次启动时会重新完整校验；如果问题仍然存在，请重新安装 RainyAgent。` })
+      await dialog.showMessageBox(options.window, { type: 'warning', title: 'RainyAgent',
+        message: localized({ zh: 'RainyAgent 安装文件已被修改或损坏', en: 'RainyAgent installation files were changed or damaged.' }),
+        detail: localized({ zh: `${error.message}\n下次启动时会重新完整校验；如果问题仍然存在，请重新安装 RainyAgent。`,
+          en: `${error.message}\nAll files will be checked again at the next start. If the problem remains, reinstall RainyAgent.` }) })
     }
   }
   if (options.target.kind !== 'wsl') return
@@ -814,7 +922,7 @@ else {
     quitAfterSave()
   })
   void app.whenReady().then(start).catch(async (error: unknown) => {
-    await dialog.showMessageBox({ type: 'error', message: 'RainyAgent 启动失败', detail: errorText(error) })
+    await dialog.showMessageBox({ type: 'error', message: localized({ zh: 'RainyAgent 启动失败', en: 'RainyAgent could not start.' }), detail: errorText(error) })
     app.quit()
   })
 }

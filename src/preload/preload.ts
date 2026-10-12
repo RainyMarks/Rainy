@@ -71,6 +71,9 @@ if (process.isMainFrame && location.protocol === 'http:' && location.hostname ==
     selectDirectory: (): Promise<IdeNativeDirectory | null> => ipcRenderer.invoke('rainy:ide-directory'),
     prepareDevelopmentTools: (): Promise<void> => ipcRenderer.invoke('rainy:ide-prepare-development'),
   })
+  contextBridge.exposeInMainWorld('__RAINY_DIAGNOSTICS__', {
+    export: (): Promise<string | null> => ipcRenderer.invoke('rainy:export-diagnostics'),
+  })
   contextBridge.exposeInMainWorld('__RAINY_STRATA_NATIVE__', {
     status: () => ipcRenderer.invoke('rainy:strata-status'),
     save: (settings: StrataSettings) => ipcRenderer.invoke('rainy:strata-save', settings),

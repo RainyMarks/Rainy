@@ -25,7 +25,14 @@ export interface RuntimeNativeHost {
   onProgress(listener: (message: string) => void): () => void
 }
 
+/** `window.__RAINY_DIAGNOSTICS__`: the local diagnostics export. */
+export interface DiagnosticsNativeHost {
+  /** @returns The saved zip, shown in its folder, or `null` when the user cancelled the save dialog. */
+  export(): Promise<string | null>
+}
+
 interface Bridges {
+  __RAINY_DIAGNOSTICS__?: DiagnosticsNativeHost
   __RAINY_STRATA_NATIVE__?: StrataNativeHost
   __RAINY_RUNTIME_NATIVE__?: RuntimeNativeHost
   __RAINY_MODULES__?: OptionalModulesBridge
@@ -37,5 +44,7 @@ const bridges = (): Bridges => globalThis as typeof globalThis & Bridges
 export function strataBridge(): StrataNativeHost | undefined { return bridges().__RAINY_STRATA_NATIVE__ }
 /** @returns The execution-target bridge, or `undefined` outside the desktop app. */
 export function runtimeBridge(): RuntimeNativeHost | undefined { return bridges().__RAINY_RUNTIME_NATIVE__ }
+/** @returns The diagnostics export bridge, or `undefined` outside the desktop app. */
+export function diagnosticsBridge(): DiagnosticsNativeHost | undefined { return bridges().__RAINY_DIAGNOSTICS__ }
 /** @returns The optional-component bridge, or `undefined` outside the desktop app. */
 export function modulesBridge(): OptionalModulesBridge | undefined { return bridges().__RAINY_MODULES__ }

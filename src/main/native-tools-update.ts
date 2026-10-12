@@ -1,6 +1,7 @@
 /** Authenticate a tool-channel revision before accepting new launch entries and archive hashes. */
 import { createHash, verify } from 'node:crypto'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import type { ReleaseKeyring } from './release-trust.ts'
 import { TOOL_UNIT_ARCHIVE, toolPackMetadataSchema } from './toolpack-format.ts'
 import type { ToolPackMetadataV2 } from './toolpack-format.ts'
@@ -37,14 +38,18 @@ export type NativeToolsChannel = Omit<z.infer<typeof channelSchema>, 'metadata'>
 export function validateToolDownloadInputs(
   source: NativeToolsDownloadSource, metadata: z.infer<typeof toolPackMetadataSchema>,
 ): ToolPackMetadataV2 {
-  if (metadata.version !== 2 || source.packId !== metadata.id || source.archives.length !== metadata.archives.length) throw new Error('工具下载清单与当前工具包不匹配')
+  if (metadata.version !== 2 || source.packId !== metadata.id || source.archives.length !== metadata.archives.length) {
+    throw new Error(localized({ zh: '工具下载清单与当前工具包不匹配', en: 'The tool download list does not match this tool pack.' }))
+  }
   const names = new Set<string>()
   for (const archive of metadata.archives) {
     const download = source.archives.find(entry => entry.file === archive.file)
     if (!download || download.bytes !== archive.bytes || download.sha256 !== archive.sha256
-      || download.pieces.reduce((sum, piece) => sum + piece.bytes, 0) !== download.bytes) throw new Error('工具下载分卷校验信息不匹配')
+      || download.pieces.reduce((sum, piece) => sum + piece.bytes, 0) !== download.bytes) {
+      throw new Error(localized({ zh: '工具下载分卷校验信息不匹配', en: 'The sizes or checksums of the tool download parts do not match.' }))
+    }
     for (const piece of download.pieces) {
-      if (names.has(piece.file)) throw new Error('工具下载分片重复')
+      if (names.has(piece.file)) throw new Error(localized({ zh: '工具下载分片重复', en: 'A tool download part is listed twice.' }))
       names.add(piece.file)
     }
   }
@@ -64,12 +69,14 @@ export function authenticateToolChannel(input: unknown, keys: ReleaseKeyring): N
   const identity = z.object({ keyId }).parse(raw)
   const key = keys.keys[identity.keyId]
   if (!key || !verify(null, Buffer.concat([Buffer.from(TOOL_CHANNEL_SIGNATURE_DOMAIN), payload]), key, Buffer.from(envelope.signature, 'base64'))) {
-    throw new Error('工具更新签名无效，请重试或更新 RainyAgent')
+    throw new Error(localized({ zh: '工具更新签名无效，请重试或更新 RainyAgent', en: 'The tool update signature is invalid. Try again or update RainyAgent.' }))
   }
   const channel = channelSchema.parse(raw)
   const metadata = validateToolDownloadInputs(channel.source, channel.metadata)
   const file = metadata.files.find(entry => entry.path === 'tools/manifest.json')
-  if (!file || Buffer.byteLength(channel.catalog) !== file.bytes || createHash('sha256').update(channel.catalog).digest('hex') !== file.sha256) throw new Error('工具更新目录摘要不匹配')
+  if (!file || Buffer.byteLength(channel.catalog) !== file.bytes || createHash('sha256').update(channel.catalog).digest('hex') !== file.sha256) {
+    throw new Error(localized({ zh: '工具更新目录摘要不匹配', en: 'The tool update catalog does not match its checksum.' }))
+  }
   parseNativeToolCatalog(channel.catalog)
   return { ...channel, metadata }
 }

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { createWindowsEnvironmentPlatform } from './environment-platform.ts'
 
 /** A registered Linux distribution and the directory Windows associates with it. */
@@ -125,7 +126,8 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
   })
   let actionPromise: Promise<EnvironmentSnapshot> | undefined
   let inspection: Promise<EnvironmentSnapshot> | undefined
-  let latest: EnvironmentSnapshot = { status: 'working', message: '正在检查本机环境…', distributions: [], installRoot, managedDistro, busy: false }
+  let latest: EnvironmentSnapshot = { status: 'working', message: localized({ zh: '正在检查本机环境…', en: 'Checking this computer…' }),
+    distributions: [], installRoot, managedDistro, busy: false }
 
   function publish(update: Partial<EnvironmentSnapshot>): EnvironmentSnapshot {
     latest = { ...latest, ...update }
@@ -150,10 +152,14 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
       throw error
     }
     let record: unknown
-    try { record = JSON.parse(text) } catch (error) { throw new EnvironmentSetupError('journal-invalid', `环境安装记录无法读取。请保留 ${journalPath} 并联系支持人员。${error instanceof Error ? ' ' + error.message : ''}`) }
+    try { record = JSON.parse(text) } catch (error) {
+      throw new EnvironmentSetupError('journal-invalid', localized({ zh: `环境安装记录无法读取。请保留 ${journalPath} 并联系支持人员。${error instanceof Error ? ' ' + error.message : ''}`,
+        en: `The environment setup record cannot be read. Keep ${journalPath} and contact support.${error instanceof Error ? ' ' + error.message : ''}` }))
+    }
     const parsed = journalSchema.safeParse(record)
     if (!parsed.success || environmentInstallationId(parsed.data.installRoot) !== id || parsed.data.managedDistro !== managedDistro) {
-      throw new EnvironmentSetupError('journal-invalid', `环境安装记录损坏或属于其他安装目录。请保留 ${journalPath} 并联系支持人员。`)
+      throw new EnvironmentSetupError('journal-invalid', localized({ zh: `环境安装记录损坏或属于其他安装目录。请保留 ${journalPath} 并联系支持人员。`,
+        en: `The environment setup record is damaged or belongs to another installation folder. Keep ${journalPath} and contact support.` }))
     }
     return parsed.data
   }
@@ -164,31 +170,54 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
   }
 
   function failed(error: unknown): EnvironmentSnapshot {
-    return publish({ status: 'error', busy: false, code: error instanceof EnvironmentSetupError ? error.code : 'setup-failed', message: error instanceof Error ? error.message : '环境检查失败，请重试。' })
+    return publish({ status: 'error', busy: false, code: error instanceof EnvironmentSetupError ? error.code : 'setup-failed',
+      message: error instanceof Error ? error.message : localized({ zh: '环境检查失败，请重试。', en: 'The environment check failed. Try again.' }) })
   }
 
   async function inspectInternal(): Promise<EnvironmentSnapshot> {
     try {
       const [system, settings, journal] = await Promise.all([platform.inspectSystem(), options.readDesktopSettings(), readJournal()])
       const saved = settings.distro
-      if (saved !== undefined && (typeof saved !== 'string' || !saved.trim())) throw new EnvironmentSetupError('settings-invalid', 'desktop.json 中的发行版名称无效，请恢复配置后重试。')
+      if (saved !== undefined && (typeof saved !== 'string' || !saved.trim())) {
+        throw new EnvironmentSetupError('settings-invalid', localized({ zh: 'desktop.json 中的发行版名称无效，请恢复配置后重试。',
+          en: 'The distribution name in desktop.json is invalid. Restore the settings and try again.' }))
+      }
       const savedDistro = typeof saved === 'string' ? saved : undefined
       publish({ distributions: system.distributions, savedDistro, code: undefined, distro: undefined, busy: false, canResume: journal?.phase === 'creating-distro' })
-      if (!system.supported) return publish({ status: 'blocked', code: 'unsupported-platform', message: system.reason ?? '需要 Windows 10 22H2 或更新版本的 64 位系统。' })
+      if (!system.supported) {
+        return publish({ status: 'blocked', code: 'unsupported-platform',
+          message: system.reason ?? localized({ zh: '需要 Windows 10 22H2 或更新版本的 64 位系统。', en: 'RainyAgent needs 64-bit Windows 10 22H2 or later.' }) })
+      }
       if (journal?.phase === 'awaiting-reboot' && journal.bootId === system.bootId) {
-        return publish({ status: 'reboot-required', message: '系统组件已安装。请先保存工作并重启 Windows，再打开 RainyAgent 继续。' })
+        return publish({ status: 'reboot-required', message: localized({ zh: '系统组件已安装。请先保存工作并重启 Windows，再打开 RainyAgent 继续。',
+          en: 'The system components are installed. Save your work and restart Windows, then open RainyAgent to continue.' }) })
       }
       if (journal?.phase === 'installing-system' && journal.bootId === system.bootId && system.wslInstalled && system.componentsEnabled) {
-        return publish({ status: 'reboot-required', message: '上次系统安装后尚未确认重启。请保存工作并重启 Windows，再打开 RainyAgent 继续。' })
+        return publish({ status: 'reboot-required', message: localized({ zh: '上次系统安装后尚未确认重启。请保存工作并重启 Windows，再打开 RainyAgent 继续。',
+          en: 'Windows has not restarted since the last system installation. Save your work and restart Windows, then open RainyAgent to continue.' }) })
       }
       if (savedDistro && system.distributions.some(distro => distro.name === savedDistro && distro.version === 2)) {
         await platform.checkDistribution(savedDistro)
-        return publish({ status: 'ready', distro: savedDistro, message: '运行环境已就绪。' })
+        return publish({ status: 'ready', distro: savedDistro, message: localized({ zh: '运行环境已就绪。', en: 'The runtime environment is ready.' }) })
       }
-      if (!system.virtualization) return publish({ status: 'blocked', code: 'virtualization-disabled', message: '请在 BIOS / UEFI 中启用 CPU 虚拟化（Intel VT-x 或 AMD SVM），启动 Windows 后重试。' })
-      if (!system.wslInstalled || !system.componentsEnabled) return publish({ status: 'needs-system', message: '需要安装 WSL 和 Windows 虚拟化组件。安装将请求管理员权限，可能需要重启。' })
-      if (savedDistro) return publish({ status: 'saved-distro-missing', message: `原环境“${savedDistro}”暂时不可用。恢复该环境后重试，或明确选择其他环境。新建环境不会恢复原聊天数据。` })
-      return publish({ status: 'needs-distro', message: journal?.phase === 'creating-distro' ? '上次环境创建尚未完成，可以继续恢复。' : '将从随安装包提供的 Ubuntu 镜像创建 RainyAgent 专用环境。' })
+      if (!system.virtualization) {
+        return publish({ status: 'blocked', code: 'virtualization-disabled', message: localized({
+          zh: '请在 BIOS / UEFI 中启用 CPU 虚拟化（Intel VT-x 或 AMD SVM），启动 Windows 后重试。',
+          en: 'Turn on CPU virtualization (Intel VT-x or AMD SVM) in BIOS / UEFI, start Windows, then try again.' }) })
+      }
+      if (!system.wslInstalled || !system.componentsEnabled) {
+        return publish({ status: 'needs-system', message: localized({ zh: '需要安装 WSL 和 Windows 虚拟化组件。安装将请求管理员权限，可能需要重启。',
+          en: 'WSL and the Windows virtualization components need to be installed. Installing asks for administrator rights and may need a restart.' }) })
+      }
+      if (savedDistro) {
+        return publish({ status: 'saved-distro-missing', message: localized({
+          zh: `原环境“${savedDistro}”暂时不可用。恢复该环境后重试，或明确选择其他环境。新建环境不会恢复原聊天数据。`,
+          en: `The previous environment "${savedDistro}" is unavailable right now. Restore it and try again, or choose another environment. `
+            + 'A new environment does not bring back earlier chat data.' }) })
+      }
+      return publish({ status: 'needs-distro', message: journal?.phase === 'creating-distro'
+        ? localized({ zh: '上次环境创建尚未完成，可以继续恢复。', en: 'The last environment setup did not finish. You can resume it.' })
+        : localized({ zh: '将从随安装包提供的 Ubuntu 镜像创建 RainyAgent 专用环境。', en: 'A dedicated RainyAgent environment will be created from the bundled Ubuntu image.' }) })
     } catch (error) { return failed(error) }
   }
 
@@ -200,12 +229,15 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
 
   async function select(name: string): Promise<EnvironmentSnapshot> {
     const system = await platform.inspectSystem()
-    if (!system.distributions.some(distro => distro.name === name && distro.version === 2)) throw new EnvironmentSetupError('distro-missing', '所选 WSL2 环境已不可用，请刷新列表。')
+    if (!system.distributions.some(distro => distro.name === name && distro.version === 2)) {
+      throw new EnvironmentSetupError('distro-missing', localized({ zh: '所选 WSL2 环境已不可用，请刷新列表。', en: 'The selected WSL2 environment is no longer available. Refresh the list.' }))
+    }
     await platform.checkDistribution(name)
     const settings = await options.readDesktopSettings()
     await options.writeDesktopSettings({ ...settings, distro: name })
     await saveJournal('ready', { distro: name })
-    return publish({ status: 'ready', distro: name, savedDistro: name, busy: false, canResume: false, message: '运行环境已就绪。', code: undefined })
+    return publish({ status: 'ready', distro: name, savedDistro: name, busy: false, canResume: false,
+      message: localized({ zh: '运行环境已就绪。', en: 'The runtime environment is ready.' }), code: undefined })
   }
 
   async function perform(action: EnvironmentAction): Promise<EnvironmentSnapshot> {
@@ -219,7 +251,7 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
       if (previous.status === 'blocked' || previous.status === 'reboot-required' || previous.code === 'journal-invalid') return previous
       if (previous.status === 'error' && previous.code !== 'distro-unhealthy') return previous
       if (action.type === 'install-system-components' && previous.status !== 'needs-system') return previous
-      publish({ status: 'working', busy: true, message: '正在准备环境…', code: undefined })
+      publish({ status: 'working', busy: true, message: localized({ zh: '正在准备环境…', en: 'Preparing the environment…' }), code: undefined })
       const progress = (message: string): void => { publish({ message, busy: true }) }
       if (action.type === 'select-existing') return await select(action.distroName)
       if (action.type === 'install-system-components') {
@@ -228,13 +260,16 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
         const result = await platform.installSystem(progress)
         if (result.rebootRequired) {
           await saveJournal('awaiting-reboot', { bootId: system.bootId })
-          return publish({ status: 'reboot-required', busy: false, message: '系统组件已安装。请保存工作并重启 Windows，再打开 RainyAgent 继续。' })
+          return publish({ status: 'reboot-required', busy: false, message: localized({ zh: '系统组件已安装。请保存工作并重启 Windows，再打开 RainyAgent 继续。',
+            en: 'The system components are installed. Save your work and restart Windows, then open RainyAgent to continue.' }) })
         }
         await saveJournal('system-ready')
         return await inspectInternal()
       }
       const system = await platform.inspectSystem()
-      if (!system.wslInstalled || !system.componentsEnabled) return publish({ status: 'needs-system', busy: false, message: '请先安装系统组件。' })
+      if (!system.wslInstalled || !system.componentsEnabled) {
+        return publish({ status: 'needs-system', busy: false, message: localized({ zh: '请先安装系统组件。', en: 'Install the system components first.' }) })
+      }
       await saveJournal('creating-distro')
       await platform.createManagedDistribution(managedDistro, progress)
       return await select(managedDistro)

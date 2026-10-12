@@ -1,6 +1,7 @@
 /** Non-persisting model API relay for the bundled IceSky workbench. */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readBody } from '../server.ts'
+import { localized } from '../../shared/locale.ts'
 
 /** Upstream API family. */
 export type IceSkyProvider = 'openai' | 'anthropic'
@@ -12,7 +13,7 @@ const MAX_RESPONSE = 4 * 1024 * 1024
 function endpoint(provider: IceSkyProvider, operation: IceSkyOperation, baseHeader: string | string[] | undefined): URL {
   const fallback = provider === 'openai' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com/v1'
   const base = new URL(typeof baseHeader === 'string' && baseHeader.trim() ? baseHeader : fallback)
-  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error('模型接口地址必须是 HTTP(S) Base URL。')
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error(localized({ zh: '模型接口地址必须是 HTTP(S) Base URL。', en: 'The model address must be an HTTP(S) base URL.' }))
   return new URL(base.href.replace(/\/+$/, '') + (operation === 'models' ? '/models' : provider === 'openai' ? '/chat/completions' : '/messages'))
 }
 
@@ -30,13 +31,13 @@ export function createIceSkyProxyHandler(provider: IceSkyProvider, operation: Ic
     try {
       const target = endpoint(provider, operation, req.headers[`x-${provider}-base-url`])
       const key = req.headers[`x-${provider}-api-key`]
-      if (key !== undefined && typeof key !== 'string') throw new Error('模型密钥格式无效。')
+      if (key !== undefined && typeof key !== 'string') throw new Error(localized({ zh: '模型密钥格式无效。', en: 'The model key format is invalid.' }))
       let body: string | undefined
       if (operation === 'chat') {
         const declared = req.headers['content-length']
-        if (declared !== undefined && (!/^\d+$/u.test(declared) || Number(declared) > MAX_REQUEST)) throw new Error('模型请求过大。')
-        try { body = (await readBody(req, MAX_REQUEST)).toString('utf8') } catch (_tooLarge) { throw new Error('模型请求过大。') }
-        try { JSON.parse(body) } catch (_invalidJson) { throw new Error('模型请求 JSON 无效。') }
+        if (declared !== undefined && (!/^\d+$/u.test(declared) || Number(declared) > MAX_REQUEST)) throw new Error(localized({ zh: '模型请求过大。', en: 'The model request is too large.' }))
+        try { body = (await readBody(req, MAX_REQUEST)).toString('utf8') } catch (_tooLarge) { throw new Error(localized({ zh: '模型请求过大。', en: 'The model request is too large.' })) }
+        try { JSON.parse(body) } catch (_invalidJson) { throw new Error(localized({ zh: '模型请求 JSON 无效。', en: 'The model request is not valid JSON.' })) }
       }
       const headers: Record<string, string> = {}
       if (operation === 'chat') headers['content-type'] = 'application/json'
@@ -59,7 +60,7 @@ export function createIceSkyProxyHandler(provider: IceSkyProvider, operation: Ic
             const { done, value } = await reader.read()
             if (done) break
             total += value.byteLength
-            if (total > MAX_RESPONSE) throw new Error('模型响应超过 4 MiB。')
+            if (total > MAX_RESPONSE) throw new Error(localized({ zh: '模型响应超过 4 MiB。', en: 'The model response is larger than 4 MiB.' }))
             res.write(value)
           }
         } finally { reader.releaseLock() }
@@ -68,7 +69,7 @@ export function createIceSkyProxyHandler(provider: IceSkyProvider, operation: Ic
     } catch (error) {
       if (res.headersSent) { res.destroy(); return }
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
-      res.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : '模型请求失败。' } }))
+      res.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : localized({ zh: '模型请求失败。', en: 'The model request failed.' }) } }))
     }
   }
 }

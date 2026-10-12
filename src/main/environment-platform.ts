@@ -8,6 +8,7 @@ import { arch, platform, release } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { environmentMedia } from './environment-media.ts'
 import { EnvironmentSetupError, environmentStateDirectory, writeEnvironmentRecord } from './environment.ts'
 import type { EnvironmentPlatform, EnvironmentSystem } from './environment.ts'
@@ -30,8 +31,8 @@ async function run(file: string, args: string[], timeout = 60_000): Promise<stri
     const result = await execFileAsync(file, args, { windowsHide: true, encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout, env: sanitizedEnvironment() })
     return result.stdout.replaceAll('\0', '').trim()
   } catch (error) {
-    const detail = error instanceof Error ? error.message : '未知错误'
-    throw new EnvironmentSetupError('command-failed', `${file} 执行失败：${detail}`)
+    const detail = error instanceof Error ? error.message : localized({ zh: '未知错误', en: 'Unknown error' })
+    throw new EnvironmentSetupError('command-failed', localized({ zh: `${file} 执行失败：${detail}`, en: `${file} failed: ${detail}` }))
   }
 }
 
@@ -48,14 +49,25 @@ async function exists(path: string): Promise<boolean> {
 
 async function verifyMedia(path: string, expected: { sha256: string; bytes: number }): Promise<void> {
   let size: number
-  try { size = (await stat(path)).size } catch (error) { throw new EnvironmentSetupError('media-missing', `离线安装文件缺失：${path}。请重新安装完整安装包。${error instanceof Error ? ' ' + error.message : ''}`) }
-  if (size !== expected.bytes) throw new EnvironmentSetupError('media-integrity', `安装文件大小不匹配：${path}。请重新安装完整安装包。`)
+  try { size = (await stat(path)).size } catch (error) {
+    throw new EnvironmentSetupError('media-missing', localized({ zh: `离线安装文件缺失：${path}。请重新安装完整安装包。${error instanceof Error ? ' ' + error.message : ''}`,
+      en: `An offline installation file is missing: ${path}. Reinstall RainyAgent from the full installer.${error instanceof Error ? ' ' + error.message : ''}` }))
+  }
+  if (size !== expected.bytes) {
+    throw new EnvironmentSetupError('media-integrity', localized({ zh: `安装文件大小不匹配：${path}。请重新安装完整安装包。`,
+      en: `An installation file has the wrong size: ${path}. Reinstall RainyAgent from the full installer.` }))
+  }
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(path)) {
-    if (!Buffer.isBuffer(chunk)) throw new EnvironmentSetupError('media-integrity', `安装文件读取未返回二进制数据：${path}`)
+    if (!Buffer.isBuffer(chunk)) {
+      throw new EnvironmentSetupError('media-integrity', localized({ zh: `安装文件读取未返回二进制数据：${path}`, en: `Reading an installation file did not return binary data: ${path}` }))
+    }
     hash.update(chunk)
   }
-  if (hash.digest('hex') !== expected.sha256) throw new EnvironmentSetupError('media-integrity', `安装文件校验失败：${path}。请重新安装完整安装包。`)
+  if (hash.digest('hex') !== expected.sha256) {
+    throw new EnvironmentSetupError('media-integrity', localized({ zh: `安装文件校验失败：${path}。请重新安装完整安装包。`,
+      en: `An installation file failed verification: ${path}. Reinstall RainyAgent from the full installer.` }))
+  }
 }
 
 function normalWindowsPath(path: string): string { return resolve(path.replace(/^\\\\\?\\/, '')).toLowerCase() }
@@ -77,7 +89,10 @@ export function createWindowsEnvironmentPlatform(
 
   async function inspectSystem(): Promise<EnvironmentSystem> {
     const build = Number(release().split('.')[2] ?? 0)
-    if (platform() !== 'win32' || arch() !== 'x64' || build < 19045) return { supported: false, reason: '需要 Windows 10 22H2 / Windows 11 的 x64 系统。', virtualization: false, wslInstalled: false, componentsEnabled: false, bootId: '', distributions: [] }
+    if (platform() !== 'win32' || arch() !== 'x64' || build < 19045) {
+      return { supported: false, reason: localized({ zh: '需要 Windows 10 22H2 / Windows 11 的 x64 系统。', en: 'RainyAgent needs x64 Windows 10 22H2 or Windows 11.' }),
+        virtualization: false, wslInstalled: false, componentsEnabled: false, bootId: '', distributions: [] }
+    }
     const result = systemSchema.parse(JSON.parse(await powershell(`
 $computer = Get-CimInstance Win32_ComputerSystem
 $processor = @(Get-CimInstance Win32_Processor)
@@ -105,8 +120,12 @@ if (Test-Path -LiteralPath $lxss) {
   async function checkDistribution(name: string): Promise<void> {
     try {
       const output = await run('wsl.exe', ['--distribution', name, '--exec', 'bash', '-c', "python3 -c 'import sys; assert sys.version_info >= (3,12), \"Python 3.12 or newer is required\"; print(\"RAINY_ENVIRONMENT_READY\")'"], 90_000)
-      if (!output.includes('RAINY_ENVIRONMENT_READY')) throw new Error('未收到环境检查完成标记')
-    } catch (error) { throw new EnvironmentSetupError('distro-unhealthy', `环境“${name}”无法运行 Bash / Python 3.12+。可修复原环境后重试，或创建专用环境。${error instanceof Error ? '\n' + error.message : ''}`) }
+      if (!output.includes('RAINY_ENVIRONMENT_READY')) throw new Error(localized({ zh: '未收到环境检查完成标记', en: 'The environment check did not report that it finished.' }))
+    } catch (error) {
+      throw new EnvironmentSetupError('distro-unhealthy', localized({
+        zh: `环境“${name}”无法运行 Bash / Python 3.12+。可修复原环境后重试，或创建专用环境。${error instanceof Error ? '\n' + error.message : ''}`,
+        en: `The environment "${name}" cannot run Bash / Python 3.12+. Repair it and try again, or create a dedicated environment.${error instanceof Error ? '\n' + error.message : ''}` }))
+    }
   }
 
   async function acquireLock(): Promise<() => Promise<void>> {
@@ -114,7 +133,10 @@ if (Test-Path -LiteralPath $lxss) {
     const address = platform() === 'win32' ? `\\\\.\\pipe\\rainy-environment-${lockId}` : join(setupDirectory, 'setup.sock')
     const server = createServer(socket => socket.end())
     await new Promise<void>((accept, reject) => {
-      server.once('error', (error) => { reject(new EnvironmentSetupError('setup-busy', `另一 RainyAgent 进程正在准备这个安装目录。请等待它完成后重试。${error.message}`)) })
+      server.once('error', (error) => {
+        reject(new EnvironmentSetupError('setup-busy', localized({ zh: `另一 RainyAgent 进程正在准备这个安装目录。请等待它完成后重试。${error.message}`,
+          en: `Another RainyAgent process is preparing this installation folder. Wait for it to finish, then try again. ${error.message}` })))
+      })
       server.listen(address, () => { accept() })
     })
     return async () => {
@@ -127,7 +149,7 @@ if (Test-Path -LiteralPath $lxss) {
   async function installSystem(progress: (message: string) => void): Promise<{ rebootRequired: boolean }> {
     const before = await inspectSystem()
     const msi = join(await options.resolveMediaRoot?.() ?? mediaRoot, environmentMedia.wsl.file)
-    progress('正在校验随包提供的 WSL 安装文件…')
+    progress(localized({ zh: '正在校验随包提供的 WSL 安装文件…', en: 'Verifying the bundled WSL installer…' }))
     await verifyMedia(msi, environmentMedia.wsl)
     await powershell(`$signature = Get-AuthenticodeSignature -LiteralPath ${quotePowerShell(msi)}\nif ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'WSL Microsoft signature verification failed' }`)
     await mkdir(setupDirectory, { recursive: true })
@@ -156,48 +178,66 @@ try {
   exit 1
 }
 `
-    progress('正在请求管理员权限并安装 Windows 组件；请留意系统确认窗口…')
+    progress(localized({ zh: '正在请求管理员权限并安装 Windows 组件；请留意系统确认窗口…',
+      en: 'Asking for administrator rights to install Windows components. Watch for the Windows confirmation prompt…' }))
     const encoded = Buffer.from(elevatedScript, 'utf16le').toString('base64')
-    await powershell(`$process = Start-Process -FilePath ${quotePowerShell(windowsPowerShellPath())} -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', '${encoded}') -Verb RunAs -PassThru -Wait -WindowStyle Hidden\nif ($process.ExitCode -ne 0) { throw ${quotePowerShell(`系统组件安装失败，请检查 ${reportPath} 后重试。`)} }`, 0)
+    const failure = localized({ zh: `系统组件安装失败，请检查 ${reportPath} 后重试。`, en: `Installing the system components failed. Check ${reportPath} and try again.` })
+    await powershell(`$process = Start-Process -FilePath ${quotePowerShell(windowsPowerShellPath())} -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', '${encoded}') -Verb RunAs -PassThru -Wait -WindowStyle Hidden\nif ($process.ExitCode -ne 0) { throw ${quotePowerShell(failure)} }`, 0)
     const result = z.object({ ok: z.literal(true), rebootRequired: z.boolean() }).parse(JSON.parse((await readFile(reportPath, 'utf8')).replace(/^\uFEFF/, '')))
     return { rebootRequired: result.rebootRequired }
   }
 
   async function createManagedDistribution(name: string, progress: (message: string) => void): Promise<void> {
     const image = join(await options.resolveMediaRoot?.() ?? mediaRoot, environmentMedia.ubuntu.file)
-    progress('正在校验 Ubuntu 离线镜像…')
+    progress(localized({ zh: '正在校验 Ubuntu 离线镜像…', en: 'Verifying the offline Ubuntu image…' }))
     await verifyMedia(image, environmentMedia.ubuntu)
     for (const directory of [join(installRoot, 'runtime'), runtimeRoot]) {
-      if (await exists(directory) && (await lstat(directory)).isSymbolicLink()) throw new EnvironmentSetupError('runtime-link', '环境存放目录不能是链接或 Windows 联接。')
+      if (await exists(directory) && (await lstat(directory)).isSymbolicLink()) {
+        throw new EnvironmentSetupError('runtime-link', localized({ zh: '环境存放目录不能是链接或 Windows 联接。', en: 'The environment storage folder cannot be a link or a Windows junction.' }))
+      }
     }
-    if (await exists(distroDirectory) && (await lstat(distroDirectory)).isSymbolicLink()) throw new EnvironmentSetupError('runtime-link', '专用环境目录不能是链接或 Windows 联接。')
+    if (await exists(distroDirectory) && (await lstat(distroDirectory)).isSymbolicLink()) {
+      throw new EnvironmentSetupError('runtime-link', localized({ zh: '专用环境目录不能是链接或 Windows 联接。', en: 'The dedicated environment folder cannot be a link or a Windows junction.' }))
+    }
     await mkdir(runtimeRoot, { recursive: true })
     const ownerExists = await exists(ownerPath)
     if (ownerExists) {
       const owner = ownerSchema.parse(JSON.parse(await readFile(ownerPath, 'utf8')))
-      if (owner.installRoot !== installRoot || owner.distro !== name || owner.imageSha256 !== environmentMedia.ubuntu.sha256) throw new EnvironmentSetupError('owner-mismatch', '专用环境归属记录不匹配，已保留原有文件。')
+      if (owner.installRoot !== installRoot || owner.distro !== name || owner.imageSha256 !== environmentMedia.ubuntu.sha256) {
+        throw new EnvironmentSetupError('owner-mismatch', localized({ zh: '专用环境归属记录不匹配，已保留原有文件。',
+          en: 'The ownership record of the dedicated environment does not match. The existing files were kept.' }))
+      }
     } else {
-      if (await exists(distroDirectory) && (await readdir(distroDirectory)).length > 0) throw new EnvironmentSetupError('unowned-runtime', 'runtime/wsl/data 已有未标记的文件，已保留原有内容。请移走该目录后重试。')
+      if (await exists(distroDirectory) && (await readdir(distroDirectory)).length > 0) {
+        throw new EnvironmentSetupError('unowned-runtime', localized({ zh: 'runtime/wsl/data 已有未标记的文件，已保留原有内容。请移走该目录后重试。',
+          en: 'runtime/wsl/data already contains files that RainyAgent did not create. They were kept. Move that folder elsewhere and try again.' }))
+      }
       await writeEnvironmentRecord(ownerPath, { version: 1, installRoot, distro: name, imageSha256: environmentMedia.ubuntu.sha256 })
     }
     const registered = (await inspectSystem()).distributions.find(distro => distro.name === name)
-    if (registered && (registered.version !== 2 || normalWindowsPath(registered.basePath) !== normalWindowsPath(distroDirectory))) throw new EnvironmentSetupError('distro-name-conflict', `发行版“${name}”已被其他目录使用，已保留原有环境。`)
+    if (registered && (registered.version !== 2 || normalWindowsPath(registered.basePath) !== normalWindowsPath(distroDirectory))) {
+      throw new EnvironmentSetupError('distro-name-conflict', localized({ zh: `发行版“${name}”已被其他目录使用，已保留原有环境。`,
+        en: `The distribution "${name}" is already used by another folder. The existing environment was kept.` }))
+    }
     if (!registered) {
       const vhd = join(distroDirectory, 'ext4.vhdx')
       if (await exists(vhd)) {
-        progress('正在重新连接上次创建的专用环境…')
+        progress(localized({ zh: '正在重新连接上次创建的专用环境…', en: 'Reconnecting the dedicated environment created last time…' }))
         await run('wsl.exe', ['--import-in-place', name, vhd], 0)
       } else {
-        progress('正在创建 RainyAgent 专用 Ubuntu 环境，请稍候…')
+        progress(localized({ zh: '正在创建 RainyAgent 专用 Ubuntu 环境，请稍候…', en: 'Creating the dedicated RainyAgent Ubuntu environment. Please wait…' }))
         await mkdir(distroDirectory, { recursive: true })
         await run('wsl.exe', ['--import', name, distroDirectory, image, '--version', '2'], 0)
       }
     }
-    progress('正在配置专用环境中的本地用户…')
+    progress(localized({ zh: '正在配置专用环境中的本地用户…', en: 'Setting up the local user in the dedicated environment…' }))
     await run('wsl.exe', ['--distribution', name, '--user', 'root', '--exec', 'bash', '-c', "set -eu; if ! id rainy >/dev/null 2>&1; then useradd --create-home --shell /bin/bash rainy; fi; python3 -c 'import configparser, pathlib, sys; assert sys.version_info >= (3,12); p=pathlib.Path(\"/etc/wsl.conf\"); c=configparser.ConfigParser(); c.read(p); c[\"user\"]={\"default\":\"rainy\"}; f=p.open(\"w\"); c.write(f); f.close()'"], 90_000)
     await run('wsl.exe', ['--terminate', name], 60_000)
     const defaultUser = await run('wsl.exe', ['--distribution', name, '--exec', 'id', '-un'], 90_000)
-    if (defaultUser !== 'rainy') throw new EnvironmentSetupError('default-user', '专用环境默认用户设置尚未生效，请重试恢复。')
+    if (defaultUser !== 'rainy') {
+      throw new EnvironmentSetupError('default-user', localized({ zh: '专用环境默认用户设置尚未生效，请重试恢复。',
+        en: 'The default user setting of the dedicated environment has not taken effect yet. Try resuming again.' }))
+    }
     await checkDistribution(name)
   }
 

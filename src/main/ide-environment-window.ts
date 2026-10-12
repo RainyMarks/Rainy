@@ -1,6 +1,7 @@
 /** A retained local development setup window, opened only by a human IDE action. */
 import { BrowserWindow, ipcMain } from 'electron'
-import { pathToFileURL } from 'node:url'
+import { localized } from '../shared/locale.ts'
+import { setupPageURL } from './setup-page.ts'
 import { createIdeEnvironmentSetup, parseIdeEnvironmentAction, resolveIdeEnvironmentConfig } from './ide-environment.ts'
 import type { IdeEnvironmentConfig, IdeEnvironmentPlatform, IdeEnvironmentSetup, IdeEnvironmentSnapshot } from './ide-environment.ts'
 import { createWindowsIdeEnvironmentPlatform } from './ide-environment-platform.ts'
@@ -37,7 +38,7 @@ const PROGRESS = 'rainy:ide-environment-progress'
  */
 export function createIdeEnvironmentWindow(options: IdeEnvironmentWindowOptions): IdeEnvironmentWindow {
   const config = options.config ?? resolveIdeEnvironmentConfig()
-  const pageURL = pathToFileURL(options.pagePath).href
+  const pageURL = setupPageURL(options.pagePath)
   let window: BrowserWindow | undefined
   let setup: IdeEnvironmentSetup | undefined
   let opening: Promise<void> | undefined
@@ -53,7 +54,7 @@ export function createIdeEnvironmentWindow(options: IdeEnvironmentWindowOptions)
   }
 
   const openInternal = async (): Promise<void> => {
-    const current = new BrowserWindow({ title: 'RainyAgent · 开发工具准备', parent: options.parent,
+    const current = new BrowserWindow({ title: localized({ zh: 'RainyAgent · 开发工具准备', en: 'RainyAgent · Development tools setup' }), parent: options.parent,
       width: 900, height: 740, minWidth: 680, minHeight: 560, show: false, backgroundColor: '#16191e',
       ...options.icon === undefined ? {} : { icon: options.icon },
       webPreferences: { preload: options.preloadPath, additionalArguments: [`--rainy-ide-environment-page=${encodeURIComponent(pageURL)}`],
@@ -73,7 +74,9 @@ export function createIdeEnvironmentWindow(options: IdeEnvironmentWindowOptions)
     setup = controller
     const trusted = (event: Electron.IpcMainInvokeEvent): void => {
       if (current.isDestroyed() || event.sender !== current.webContents || event.senderFrame !== current.webContents.mainFrame
-        || event.senderFrame.url !== pageURL) throw new Error('开发工具准备请求来源无效。')
+        || event.senderFrame.url !== pageURL) {
+        throw new Error(localized({ zh: '开发工具准备请求来源无效。', en: 'The development tools setup request came from an unknown source.' }))
+      }
     }
     ipcMain.handle(INSPECT, async (event) => { trusted(event); return controller.inspect() })
     ipcMain.handle(ACT, async (event, value: unknown) => {
@@ -110,7 +113,7 @@ export function createIdeEnvironmentWindow(options: IdeEnvironmentWindowOptions)
 
   return {
     open: () => {
-      if (closing) return Promise.reject(new Error('开发工具向导正在关闭。'))
+      if (closing) return Promise.reject(new Error(localized({ zh: '开发工具向导正在关闭。', en: 'The development tools setup is closing.' })))
       if (opening !== undefined) return opening
       if (window !== undefined && !window.isDestroyed()) {
         window.show()

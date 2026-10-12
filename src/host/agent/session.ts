@@ -26,6 +26,7 @@ import type { ChatStore, StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
 import { coreTools } from './tools/index.ts'
 import type { AgentServices } from './services.ts'
+import { localized } from '../../shared/locale.ts'
 
 type MessageMeta =
   | { kind: 'user'; entryId: string; text: string; images?: ImageContent[] | undefined; queueId?: string | undefined }
@@ -50,7 +51,7 @@ type ApprovalAnswer = { allow: true } | { allow: false; text: string; stop: bool
 export function fallbackTitle(text: string): string {
   const words = text.replace(REFERENCE_PATTERN, '@$1').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().split(/\s+/).filter(Boolean).slice(0, 5).join(' ')
   const bytes = Buffer.from(words, 'utf8')
-  if (bytes.length <= 40) return words || '新对话'
+  if (bytes.length <= 40) return words || localized({ zh: '新对话', en: 'New chat' })
   let end = 40
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--
   return `${bytes.subarray(0, end).toString('utf8')}…`
@@ -166,10 +167,10 @@ export class ChatSession {
    * @returns Whether the message was queued instead of starting a run.
    */
   async send(text: string, images: ImageContent[] = [], mode: 'queue' | 'steer' = 'queue'): Promise<{ queued: boolean }> {
-    if (text.trim() === '' && images.length === 0) throw new RpcError('empty', '消息不能为空。')
+    if (text.trim() === '' && images.length === 0) throw new RpcError('empty', localized({ zh: '消息不能为空。', en: 'A message cannot be empty.' }))
     const resolved = this.resolved()
-    if (resolved === undefined) throw new RpcError('no-model', '请先在 设置 → 模型 中配置模型。')
-    if (images.length > 0 && !resolved.model.input.includes('image')) throw new RpcError('images-unsupported', '当前模型不支持图片输入。')
+    if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
+    if (images.length > 0 && !resolved.model.input.includes('image')) throw new RpcError('images-unsupported', localized({ zh: '当前模型不支持图片输入。', en: 'The current model does not accept images.' }))
     const { message, meta, references } = await this.userMessage(text, images)
     if (this.running && this.approvals.size > 0) {
       // A new message answers a pending approval: the call is refused and the message reaches the model next.
@@ -236,10 +237,10 @@ export class ChatSession {
    */
   async approve(toolCallId: string, decision: ApprovalDecision, reason?: string): Promise<void> {
     const pending = this.approvals.get(toolCallId)
-    if (pending === undefined) throw new RpcError('not-found', '这个操作已不在等待批准。')
+    if (pending === undefined) throw new RpcError('not-found', localized({ zh: '这个操作已不在等待批准。', en: 'This action is no longer waiting for approval.' }))
     if (decision === 'always') {
       const rule = pending.approval.rule
-      if (rule === undefined || this.chat.workspaceId === null) throw new RpcError('invalid', '这个操作只能单次允许。')
+      if (rule === undefined || this.chat.workspaceId === null) throw new RpcError('invalid', localized({ zh: '这个操作只能单次允许。', en: 'This action can only be allowed once.' }))
       await this.services.settings.setPermissionRule(this.chat.workspaceId, pending.approval.reason === 'mcp' ? 'tool' : 'command', rule, true)
     }
     const said = reason?.trim() ?? ''
@@ -252,7 +253,7 @@ export class ChatSession {
    * @returns What was restored and what was not.
    */
   async revert(toolCallIds: readonly string[]): Promise<RevertResult> {
-    if (this.running) throw new RpcError('busy', '请等待当前任务结束后再撤销修改。')
+    if (this.running) throw new RpcError('busy', localized({ zh: '请等待当前任务结束后再撤销修改。', en: 'Wait for the current task to finish before undoing changes.' }))
     const position = new Map<string, number>()
     this.entries.forEach((entry, index) => { if (entry.kind === 'toolResult' && (entry.toolName === 'write' || entry.toolName === 'edit')) position.set(entry.toolCallId, index) })
     const done = new Set(this.entries.flatMap(entry => entry.kind === 'context' ? entry.reverted ?? [] : []))
@@ -287,7 +288,7 @@ export class ChatSession {
    */
   async setModel(selection: ModelSelection): Promise<ModelSelection> {
     const resolved = this.services.models.resolve(selection)
-    if (resolved === undefined || resolved.setup.provider !== selection.provider || resolved.setup.model !== selection.model) throw new RpcError('not-found', '模型尚未配置。')
+    if (resolved === undefined || resolved.setup.provider !== selection.provider || resolved.setup.model !== selection.model) throw new RpcError('not-found', localized({ zh: '模型尚未配置。', en: 'This model is not configured.' }))
     const stored: ModelSelection = { provider: selection.provider, model: selection.model, ...(resolved.thinking === undefined ? {} : { thinking: resolved.thinking }) }
     this.chat = await this.services.store.setMeta(this.chat.id, { model: stored })
     if (this.agent !== undefined) {
@@ -304,9 +305,9 @@ export class ChatSession {
    * @returns A message for the user.
    */
   async compactNow(): Promise<string> {
-    if (this.running) throw new RpcError('busy', '请等待当前任务结束后再压缩。')
+    if (this.running) throw new RpcError('busy', localized({ zh: '请等待当前任务结束后再压缩。', en: 'Wait for the current task to finish before compacting.' }))
     const resolved = this.resolved()
-    if (resolved === undefined) throw new RpcError('no-model', '请先在 设置 → 模型 中配置模型。')
+    if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
     const before = buildContext(this.entries).length
     const entry = await this.compact(resolved, 'manual', undefined)
     if (entry === undefined) return 'No compactable history yet.'
@@ -325,7 +326,7 @@ export class ChatSession {
   private async startRun(prompts: UserMessage[]): Promise<void> {
     this.services.activity.assertCanStart()
     const resolved = this.resolved()
-    if (resolved === undefined) throw new RpcError('no-model', '请先在 设置 → 模型 中配置模型。')
+    if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
     if (this.chat.title === '') {
       const first = this.meta.get(prompts[0]!)
       this.chat = await this.services.store.setMeta(this.chat.id, { title: fallbackTitle(first?.kind === 'user' ? first.text : '') })
@@ -410,7 +411,7 @@ export class ChatSession {
       run.overflowRetried = true
       const entry = await this.compact(resolved, 'overflow', undefined).catch(() => undefined)
       if (entry !== undefined && this.agent !== undefined) {
-        await this.append({ id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', text: '上下文超出模型窗口，已自动压缩并重试。', code: 'overflow-retry' })
+        await this.append({ id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', text: localized({ zh: '上下文超出模型窗口，已自动压缩并重试。', en: 'The context exceeded the model window, so the chat was compacted and the request retried.' }), code: 'overflow-retry' })
         const history = buildContext(this.entries).map(item => item.message)
         const tools = this.tools()
         const initial = createInitialSystemMessage(await this.systemPrompt(tools), tools.map(tool => toToolDeclaration(tool)))
@@ -428,7 +429,7 @@ export class ChatSession {
     this.stopAfterStep = false
     this.refused.clear()
     if (run !== undefined) {
-      if (run.aborted) await this.append({ id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', text: '已停止。', code: 'stopped' })
+      if (run.aborted) await this.append({ id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', text: localized({ zh: '已停止。', en: 'Stopped.' }), code: 'stopped' })
       else if (run.requests > 0) {
         await this.append({ id: randomUUID(), kind: 'turn', ts: Date.now(), durationMs: Date.now() - run.started, usage: run.usage, provider: resolved.setup.provider, model: resolved.setup.model, requests: run.requests })
         void this.services.memory.turnCompleted(this.chat.id, this.chat.workspaceId).catch((error: unknown) => { this.services.log(`[memory] ${String(error)}`) })

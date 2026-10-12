@@ -10,6 +10,7 @@ import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.l
 import { ANTHROPIC_MODELS } from '@earendil-works/pi-ai/providers/anthropic.models'
 import { RequestQueue, resolveBudget } from '../../shared/budget.ts'
 import type { ModelSetup, ThinkingLevel, UsageSummary } from '../../shared/rpc.ts'
+import { localized } from '../../shared/locale.ts'
 
 const PROTOCOLS: Readonly<Record<string, () => ProviderStreams>> = {
   'openai-completions': openAICompletionsApi,
@@ -210,7 +211,7 @@ export function createStreamFn(deps: StreamDeps) {
           arm()
           if ('partial' in event) partial = event.partial
           if (event.type === 'error' && idle) {
-            yield failure(model, partial, `模型在 ${STREAM_IDLE_TIMEOUT_MS / 1000} 秒内没有返回数据，请求已超时。`)
+            yield failure(model, partial, localized({ zh: `模型在 ${STREAM_IDLE_TIMEOUT_MS / 1000} 秒内没有返回数据，请求已超时。`, en: `The model sent nothing for ${STREAM_IDLE_TIMEOUT_MS / 1000} seconds, so the request timed out.` }))
             return
           }
           yield event

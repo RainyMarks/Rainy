@@ -4,6 +4,7 @@ import type { Dirent } from 'node:fs'
 import { open, readFile, readdir, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { strataSettingsSchema } from '../shared/strata-protocol.ts'
 import type { StrataModel, StrataSettings } from '../shared/strata-protocol.ts'
 
@@ -44,7 +45,7 @@ async function hasFiles(root: string, names: readonly string[]): Promise<boolean
 }
 
 async function readJson(path: string): Promise<unknown> {
-  if ((await stat(path)).size > 65536) throw new Error('Strata 配置文件超过 64 KiB。')
+  if ((await stat(path)).size > 65536) throw new Error(localized({ zh: 'Strata 配置文件超过 64 KiB。', en: 'The Strata profile is larger than 64 KiB.' }))
   return JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/u, ''))
 }
 
@@ -61,15 +62,19 @@ async function firstGguf(path: string): Promise<{ path: string; shards: string[]
   const shards: string[] = []
   if (split) {
     const total = Number(split[3])
-    if (total < 1 || total > 128) throw new Error('GGUF 分片数量无效。')
+    if (total < 1 || total > 128) throw new Error(localized({ zh: 'GGUF 分片数量无效。', en: 'The number of GGUF shards is invalid.' }))
     for (let index = 1; index <= total; index++) shards.push(join(dirname(path), `${split[1]}-${String(index).padStart(5, '0')}-of-${split[3]}.gguf`))
     file = join(dirname(path), `${split[1]}-00001-of-${split[3]}.gguf`)
   } else shards.push(file)
-  for (const shard of shards) if (!await isFile(shard)) throw new Error(`缺少模型分片：${basename(shard)}`)
+  for (const shard of shards) {
+    if (!await isFile(shard)) throw new Error(localized({ zh: `缺少模型分片：${basename(shard)}`, en: `A model shard is missing: ${basename(shard)}` }))
+  }
   const handle = await open(file, 'r')
   try {
     const magic = Buffer.alloc(4)
-    if ((await handle.read(magic, 0, 4, 0)).bytesRead !== 4 || magic.toString('ascii') !== 'GGUF') throw new Error('所选文件不是 GGUF 模型。')
+    if ((await handle.read(magic, 0, 4, 0)).bytesRead !== 4 || magic.toString('ascii') !== 'GGUF') {
+      throw new Error(localized({ zh: '所选文件不是 GGUF 模型。', en: 'The selected file is not a GGUF model.' }))
+    }
   } finally { await handle.close() }
   return { path: file, shards }
 }
@@ -89,7 +94,9 @@ async function modelInDirectory(root: string): Promise<string> {
     let entries: Dirent[]
     try { entries = await readdir(models, { withFileTypes: true }) }
     catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; entries = [] }
-    if (entries.length > 128) throw new Error('模型目录包含过多项目，请直接选择主模型的 GGUF 文件。')
+    if (entries.length > 128) {
+      throw new Error(localized({ zh: '模型目录包含过多项目，请直接选择主模型的 GGUF 文件。', en: 'The model folder contains too many items. Select the GGUF file of the main model directly.' }))
+    }
     for (const entry of entries) {
       if (entry.isDirectory()) candidates.push(...(await filesIn(join(models, entry.name))).filter(path => /\.gguf$/iu.test(path)))
       else if (entry.isFile() && /\.gguf$/iu.test(entry.name)) candidates.push(join(models, entry.name))
@@ -97,7 +104,11 @@ async function modelInDirectory(root: string): Promise<string> {
   }
   const first = candidates.filter(path => !/mtp/iu.test(basename(path))
     && (!/-\d{5}-of-\d{5}\.gguf$/iu.test(path) || /-00001-of-\d{5}\.gguf$/iu.test(path)))
-  if (first.length !== 1) throw new Error(first.length ? '目录包含多个模型，请直接选择需要的首个 GGUF 分片。' : '目录中没有找到主模型 GGUF，请选择完整模型目录或首个分片。')
+  if (first.length !== 1) {
+    throw new Error(first.length
+      ? localized({ zh: '目录包含多个模型，请直接选择需要的首个 GGUF 分片。', en: 'The folder contains more than one model. Select the first GGUF shard of the model you want.' })
+      : localized({ zh: '目录中没有找到主模型 GGUF，请选择完整模型目录或首个分片。', en: 'No main model GGUF was found in the folder. Select a complete model folder or the first shard.' }))
+  }
   return first[0]
 }
 
@@ -133,7 +144,8 @@ async function resolveMtp(source: string, candidates: readonly string[], cacheRo
     if (await hasFiles(join(selected, 'rt'), mtpFiles)) return { path: join(selected, 'rt'), preparations: [] }
     const packed = join(selected, 'mtp-q2_0.gguf')
     if (await isFile(packed)) selected = packed
-    else throw new Error('MTP 目录需要 dense.bin、dense.txt、experts.bin，或配套的 mtp-q2_0.gguf。')
+    else throw new Error(localized({ zh: 'MTP 目录需要 dense.bin、dense.txt、experts.bin，或配套的 mtp-q2_0.gguf。',
+      en: 'An MTP folder needs dense.bin, dense.txt and experts.bin, or the matching mtp-q2_0.gguf.' }))
   }
   const gguf = await firstGguf(selected)
   const output = join(cacheRoot, 'mtp', await fingerprint(gguf.shards))
@@ -164,7 +176,7 @@ export async function resolveStrataModel(
     const profile = profileSchema.parse(await readJson(selected))
     const base = profile.cwd ? absoluteFrom(dirname(selected), profile.cwd) : dirname(selected)
     const path = argument(profile.args, '--native')
-    if (!path) throw new Error('此 Strata 配置没有外部主模型 GGUF（--native）。')
+    if (!path) throw new Error(localized({ zh: '此 Strata 配置没有外部主模型 GGUF（--native）。', en: 'This Strata profile has no external main model GGUF (--native).' }))
     native = absoluteFrom(base, path)
     const pack = argument(profile.args, '--pack')
     if (pack) explicitPack = absoluteFrom(base, pack)
@@ -184,7 +196,10 @@ export async function resolveStrataModel(
         ...(explicitMtp ? { mtpPath: explicitMtp } : {}),
       })
     }
-  } else if (extname(selected).toLowerCase() !== '.gguf') throw new Error('请选择 Qwen3.8 Flash Next GGUF、模型目录或已有 Strata JSON 配置。')
+  } else if (extname(selected).toLowerCase() !== '.gguf') {
+    throw new Error(localized({ zh: '请选择 Qwen3.8 Flash Next GGUF、模型目录或已有 Strata JSON 配置。',
+      en: 'Select a Qwen3.8 Flash Next GGUF, a model folder, or an existing Strata JSON profile.' }))
+  }
   const gguf = await firstGguf(native)
   const modelDirectory = dirname(gguf.path)
   const preparations: StrataPreparation[] = []
@@ -210,7 +225,8 @@ export async function resolveStrataModel(
   const mtp = await resolveMtp(settings.mtpPath, mtpCandidates, cacheRoot)
   preparations.push(...mtp.preparations)
   const model = modelName?.trim() || basename(gguf.path, '.gguf').replace(/-\d{5}-of-\d{5}$/u, '').toLowerCase()
-  return { settings, preparations, missing: mtp.path ? [] : ['缺少配套 MTP 权重。请选择 MTP GGUF 或包含 dense.bin、dense.txt、experts.bin 的目录。'],
+  return { settings, preparations, missing: mtp.path ? [] : [localized({ zh: '缺少配套 MTP 权重。请选择 MTP GGUF 或包含 dense.bin、dense.txt、experts.bin 的目录。',
+    en: 'The matching MTP weights are missing. Select an MTP GGUF or a folder that contains dense.bin, dense.txt and experts.bin.' })],
     model: { sourcePath, model, ggufPath: gguf.path, packPath, tokenizerPath, mtpPath: mtp.path,
       needsPreparation: preparations.length > 0 } }
 }

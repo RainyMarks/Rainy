@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { resolveBudget } from '../../shared/budget.ts'
 import { brandString } from '../../shared/brand.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import { localized } from '../../shared/locale.ts'
 import type { ProjectRegistry } from '../../shared/project-registry.ts'
 import type { BudgetPreview, ExtensionsStatus, McpServerConfig, ProxySettings, SecurityStatus, SessionSummary } from '../../shared/rpc.ts'
 import type { Activity } from '../activity.ts'
@@ -99,7 +100,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     models,
     projectOf: async (workspaceId) => {
       const project = projects.get(workspaceId)
-      if (project === undefined) throw new RpcError('workspace-not-found', '工作区不存在。')
+      if (project === undefined) throw new RpcError('workspace-not-found', localized({ zh: '工作区不存在。', en: 'This workspace does not exist.' }))
       return deps.registry.getOrRegister({ workspaceId: project.id, path: project.path, title: project.title })
     },
     readChat: async (sessionId) => {
@@ -132,7 +133,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     if (loaded !== undefined) return Promise.resolve(loaded)
     let pending = opening.get(id)
     if (pending === undefined) {
-      if (store.get(id) === undefined) return Promise.reject(new RpcError('not-found', '对话不存在。'))
+      if (store.get(id) === undefined) return Promise.reject(new RpcError('not-found', localized({ zh: '对话不存在。', en: 'This chat does not exist.' })))
       pending = ChatSession.open(services, id).then((opened) => { sessions.set(id, opened); return opened }).finally(() => { opening.delete(id) })
       opening.set(id, pending)
     }
@@ -142,7 +143,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     const live = sessions.get(id)
     if (live !== undefined) return live.summary()
     const chat = store.get(id)
-    if (chat === undefined) throw new RpcError('not-found', '对话不存在。')
+    if (chat === undefined) throw new RpcError('not-found', localized({ zh: '对话不存在。', en: 'This chat does not exist.' }))
     return { ...chat, status: 'idle' }
   }
   const securityStatus = (workspaceId: WorkspaceId | null | undefined): SecurityStatus => ({
@@ -178,10 +179,10 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('prompt.global', ({ text }) => models.setGlobalPrompt(text))
   rpc.register('budget.preview', async ({ workspaceId, sessionId, draft }) => {
     const cwd = cwdFor(workspaceId)
-    if (cwd === undefined) throw new RpcError('workspace-not-found', '工作区不存在。')
+    if (cwd === undefined) throw new RpcError('workspace-not-found', localized({ zh: '工作区不存在。', en: 'This workspace does not exist.' }))
     const chat = sessionId === undefined ? undefined : await session(sessionId)
     const resolved = chat?.resolved() ?? models.resolve()
-    if (resolved === undefined) throw new RpcError('no-model', '请先配置模型。')
+    if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先配置模型。', en: 'Configure a model first.' }))
     const budget = resolveBudget(resolved.setup.contextWindow, resolved.setup.maxTokens)
     const skills = skillsSection(await discoverSkills(cwd))
     const core = inertCoreTools(env.platform)
@@ -225,7 +226,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('sessions.get', async ({ sessionId, limit }) => (await session(sessionId)).snapshot(limit))
   rpc.register('sessions.rename', async ({ sessionId, title }) => {
     const trimmed = title.trim()
-    if (trimmed === '' || Buffer.byteLength(trimmed, 'utf8') > 80) throw new RpcError('invalid', '标题需为 1–80 字节。')
+    if (trimmed === '' || Buffer.byteLength(trimmed, 'utf8') > 80) throw new RpcError('invalid', localized({ zh: '标题需为 1–80 字节。', en: 'A title must be 1 to 80 bytes long.' }))
     await store.setMeta(sessionId, { title: trimmed })
     const changed = summary(sessionId)
     rpc.emit('sessions.changed', changed)
@@ -254,13 +255,13 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('sessions.fork', async ({ sessionId, entryId }) => {
     const file = await store.read(sessionId)
     const index = file.entries.findIndex(entry => entry.id === entryId)
-    if (index < 0) throw new RpcError('not-found', '消息不存在。')
+    if (index < 0) throw new RpcError('not-found', localized({ zh: '消息不存在。', en: 'This message does not exist.' }))
     let end = index
     // Keep the tool results that answer calls in the cut-off reply.
     while (end + 1 < file.entries.length && file.entries[end + 1]!.kind === 'toolResult') end++
     const chat = await store.create({
       workspaceId: file.chat.workspaceId, cwd: file.chat.cwd, parent: { sessionId, entryId }, entries: file.entries.slice(0, end + 1),
-      title: `${file.chat.title || '新对话'}（分支）`, model: file.chat.model, ...(file.chat.permission === undefined ? {} : { permission: file.chat.permission }),
+      title: localized({ zh: `${file.chat.title || '新对话'}（分支）`, en: `${file.chat.title || 'New chat'} (branch)` }), model: file.chat.model, ...(file.chat.permission === undefined ? {} : { permission: file.chat.permission }),
     })
     const created = summary(chat.id)
     rpc.emit('sessions.changed', created)
@@ -276,7 +277,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('chat.approve', async (params) => {
     const { sessionId, toolCallId, decision, reason } = approveSchema.parse(params)
     const live = sessions.get(sessionId)
-    if (live === undefined) throw new RpcError('not-found', '这个操作已不在等待批准。')
+    if (live === undefined) throw new RpcError('not-found', localized({ zh: '这个操作已不在等待批准。', en: 'This action is no longer waiting for approval.' }))
     await live.approve(toolCallId, decision, reason)
   })
   rpc.register('chat.revert', async (params) => {
@@ -298,18 +299,18 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     const choice = network.withStoredPassword(proxy.mode === 'manual' ? { mode: 'manual', url: (proxy.url ?? '').trim() } : { mode: proxy.mode })
     if (choice.mode !== 'manual') return choice
     const url = proxyUrl(choice.url)
-    if (url === undefined) throw new RpcError('invalid', '代理地址无效，应为 host:port 或 http://host:port。')
+    if (url === undefined) throw new RpcError('invalid', localized({ zh: '代理地址无效，应为 host:port 或 http://host:port。', en: 'The proxy address is invalid. Use host:port or http://host:port.' }))
     // The mask stands for the saved password only at the saved address.
-    if (decodeURIComponent(new URL(url).password) === PASSWORD_MASK) throw new RpcError('invalid', '代理地址已更改，请重新输入代理密码。')
+    if (decodeURIComponent(new URL(url).password) === PASSWORD_MASK) throw new RpcError('invalid', localized({ zh: '代理地址已更改，请重新输入代理密码。', en: 'The proxy address changed. Enter the proxy password again.' }))
     return choice
   }
   rpc.register('network.status', () => {
-    if (deps.network === undefined) throw new RpcError('unavailable', '网络设置不可用。')
+    if (deps.network === undefined) throw new RpcError('unavailable', localized({ zh: '网络设置不可用。', en: 'Network settings are unavailable.' }))
     return deps.network.status(models.resolve()?.setup.baseURL)
   })
   rpc.register('network.set', async (params) => {
     const network = deps.network
-    if (network === undefined) throw new RpcError('unavailable', '网络设置不可用。')
+    if (network === undefined) throw new RpcError('unavailable', localized({ zh: '网络设置不可用。', en: 'Network settings are unavailable.' }))
     const choice = proxyChoice(network, params)
     await settings.update((data) => { data.proxy = choice })
     network.configure(settings.get().proxy)
@@ -317,10 +318,10 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   })
   rpc.register('network.test', async (params) => {
     const network = deps.network
-    if (network === undefined) throw new RpcError('unavailable', '网络设置不可用。')
+    if (network === undefined) throw new RpcError('unavailable', localized({ zh: '网络设置不可用。', en: 'Network settings are unavailable.' }))
     const proxy = proxyChoice(network, params)
     const resolved = models.resolve()
-    if (resolved === undefined) throw new RpcError('no-model', '请先配置模型，再测试连接。')
+    if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先配置模型，再测试连接。', en: 'Configure a model before testing the connection.' }))
     const url = resolved.setup.baseURL
     const started = Date.now()
     try {
@@ -350,13 +351,13 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   // ── skills and MCP ──
   rpc.register('extensions.status', async ({ cwd }) => { lastExtensionsCwd = cwd; return extensionsStatus(cwd) })
   rpc.register('extensions.saveServer', ({ server, previousName }) => saveServers((servers) => {
-    if (server.name !== previousName && servers.some(item => item.name === server.name)) throw new RpcError('duplicate', `已存在名为 ${server.name} 的 MCP 服务器。`)
+    if (server.name !== previousName && servers.some(item => item.name === server.name)) throw new RpcError('duplicate', localized({ zh: `已存在名为 ${server.name} 的 MCP 服务器。`, en: `An MCP server named ${server.name} already exists.` }))
     const index = servers.findIndex(item => item.name === (previousName ?? server.name))
     return index < 0 ? [...servers, server] : servers.map((item, position) => position === index ? server : item)
   }))
   rpc.register('extensions.removeServer', ({ name }) => saveServers(servers => servers.filter(item => item.name !== name)))
   rpc.register('extensions.addIda', () => {
-    if (env.idaMcpCommand === undefined) throw new RpcError('unavailable', '未找到 uvx，无法启动 IDA MCP。')
+    if (env.idaMcpCommand === undefined) throw new RpcError('unavailable', localized({ zh: '未找到 uvx，无法启动 IDA MCP。', en: 'uvx was not found, so IDA MCP cannot start.' }))
     return saveServers(servers => [...servers.filter(item => item.name !== 'ida'), idaServer(env.idaMcpCommand!)])
   })
 

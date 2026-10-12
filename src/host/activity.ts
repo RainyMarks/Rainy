@@ -1,4 +1,5 @@
 /** Busy tracking for target switches and update installs requested by the carrier. */
+import { localized } from '../shared/locale.ts'
 
 /** Collects "is anything running" probes and the freeze gate the carrier sets before restarting the Host. */
 export class Activity {
@@ -35,6 +36,6 @@ export class Activity {
 
   /** @throws Error while the carrier is replacing this Host. */
   assertCanStart(): void {
-    if (this.frozen) throw new Error('执行环境正在切换，请等待应用重新打开。')
+    if (this.frozen) throw new Error(localized({ zh: '执行环境正在切换，请等待应用重新打开。', en: 'The execution environment is switching. Wait for RainyAgent to open again.' }))
   }
 }

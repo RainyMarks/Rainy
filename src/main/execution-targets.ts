@@ -52,6 +52,18 @@ export async function listExecutionTargets(): Promise<ExecutionTarget[]> {
 }
 
 /**
+ * Remember the interface language, for dialogs shown before the page loads.
+ * @param settingsPath - private desktop preferences.
+ * @param locale - the language the page reported.
+ * @returns completion after an atomic preference update.
+ */
+export async function saveDesktopLocale(settingsPath: string, locale: 'zh' | 'en'): Promise<void> {
+  const preferences = await readDesktopPreferences(settingsPath)
+  await mkdir(dirname(settingsPath), { recursive: true })
+  await writeEnvironmentRecord(settingsPath, { ...preferences, locale })
+}
+
+/**
  * @param settingsPath - private desktop preferences.
  * @param target - inspected destination.
  * @param pending - optional existing project's mapped root.

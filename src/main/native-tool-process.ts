@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 import { dirname, delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
+import { localized } from '../shared/locale.ts'
 import type { NativeInvocation } from './native-tools.ts'
 import { quotePowerShell, windowsPowerShellPath } from './powershell.ts'
 
@@ -76,7 +77,7 @@ export function nativeConsoleLauncher(invocation: NativeInvocation, powershell: 
  * @returns completion when the operating system accepts the launch request; the window belongs to the user.
  */
 export async function startNativeProcess(invocation: NativeInvocation, environment: NodeJS.ProcessEnv): Promise<void> {
-  if (invocation.kind === 'web') throw new Error('网页工具需要使用独立网页窗口')
+  if (invocation.kind === 'web') throw new Error(localized({ zh: '网页工具需要使用独立网页窗口', en: 'Web tools open in their own window.' }))
   const env = nativeToolEnvironment(environment, invocation)
   if (invocation.id === 'ida') await mkdir(invocation.userData, { recursive: true })
   if (invocation.kind === 'console') {
@@ -89,6 +90,6 @@ export async function startNativeProcess(invocation: NativeInvocation, environme
   const child = spawn(invocation.executable, [...invocation.args], { cwd: invocation.cwd, shell: false, detached: true,
     windowsHide: false, stdio: 'ignore', env })
   await new Promise<void>((resolve, reject) => { child.once('spawn', () => { resolve() }); child.once('error', reject) })
-  if (child.pid === undefined) throw new Error('Windows 未返回工具进程编号')
+  if (child.pid === undefined) throw new Error(localized({ zh: 'Windows 未返回工具进程编号', en: 'Windows did not return a process ID for the tool.' }))
   child.unref()
 }

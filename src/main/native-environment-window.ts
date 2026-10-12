@@ -3,8 +3,9 @@ import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'node:fs'
 import { readFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
+import { setupPageURL } from './setup-page.ts'
 import { createEnvironmentSetup, writeEnvironmentRecord } from './environment.ts'
 import type { EnvironmentAction, EnvironmentDistribution, EnvironmentSnapshot } from './environment.ts'
 import { environmentMedia } from './environment-media.ts'
@@ -38,7 +39,7 @@ export async function prepareDesktopEnvironment(options: {
   /** Main window that stays behind the setup window while startup waits for it. */
   readonly parent?: BrowserWindow
 }): Promise<ReadyDesktopEnvironment> {
-  const pageURL = pathToFileURL(options.pagePath).href
+  const pageURL = setupPageURL(options.pagePath)
   const window = new BrowserWindow({ title: 'RainyAgent', width: 900, height: 670, minWidth: 680, minHeight: 520,
     show: false, icon: options.icon, backgroundColor: '#16191e', ...options.parent === undefined ? {} : { parent: options.parent },
     webPreferences: { preload: options.preloadPath, additionalArguments: [`--rainy-setup-page=${encodeURIComponent(pageURL)}`],
@@ -51,6 +52,7 @@ export async function prepareDesktopEnvironment(options: {
   let latest: EnvironmentSnapshot | undefined
   const trusted = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents
     && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === pageURL
+  const untrusted = (): Error => new Error(localized({ zh: '环境请求来源无效', en: 'The environment request came from an unknown source.' }))
   const update = (snapshot: EnvironmentSnapshot): void => {
     latest = snapshot
     busy = pendingActions > 0 || snapshot.busy
@@ -65,9 +67,12 @@ export async function prepareDesktopEnvironment(options: {
       const directories = [options.mediaRoot, join(options.installRoot, 'offline', 'environment'), join(dirname(options.installRoot), 'environment')]
       const available = directories.find(directory => Object.values(environmentMedia).every(item => existsSync(join(directory, item.file))))
       if (available) return available
-      const selected = await dialog.showOpenDialog(window, { title: '选择完整离线包的 environment 文件夹', properties: ['openDirectory'] })
+      const selected = await dialog.showOpenDialog(window, {
+        title: localized({ zh: '选择完整离线包的 environment 文件夹', en: 'Select the environment folder of the full offline package' }), properties: ['openDirectory'] })
       const directory = selected.filePaths[0]
-      if (selected.canceled || !directory) throw new Error('未选择 WSL 离线安装文件，现有环境保持不变。')
+      if (selected.canceled || !directory) {
+        throw new Error(localized({ zh: '未选择 WSL 离线安装文件，现有环境保持不变。', en: 'No WSL offline installation files were selected. Your current environment is unchanged.' }))
+      }
       return directory
     },
     async readDesktopSettings() {
@@ -83,13 +88,13 @@ export async function prepareDesktopEnvironment(options: {
     }, onProgress: update,
   })
   ipcMain.handle('rainy:environment-inspect', async (event) => {
-    if (!trusted(event)) throw new Error('环境请求来源无效')
+    if (!trusted(event)) throw untrusted()
     const snapshot = await setup.inspect()
     update(snapshot)
     return snapshot
   })
   ipcMain.handle('rainy:environment-act', async (event, value: unknown) => {
-    if (!trusted(event)) throw new Error('环境请求来源无效')
+    if (!trusted(event)) throw untrusted()
     const action: EnvironmentAction = actionSchema.parse(value)
     pendingActions++
     busy = true
@@ -110,7 +115,7 @@ export async function prepareDesktopEnvironment(options: {
   window.on('close', (event) => { if (busy) event.preventDefault() })
   window.on('closed', () => {
     cleanup()
-    if (!settled) { settled = true; ready.reject(new Error('环境准备已取消')) }
+    if (!settled) { settled = true; ready.reject(new Error(localized({ zh: '环境准备已取消', en: 'Environment setup was cancelled.' }))) }
   })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, url) => { if (url !== pageURL) event.preventDefault() })

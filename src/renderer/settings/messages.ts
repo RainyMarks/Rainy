@@ -21,6 +21,8 @@ const zh = {
   shortcutOpenFolder: '打开文件夹', shortcutTerminal: '新建终端', shortcutSend: '发送消息', shortcutNewline: '换行',
   shortcutAlternate: '繁忙时使用另一种发送行为（排队或插话）', shortcutStop: '停止运行', shortcutReload: '重新加载窗口',
   currentVersion: '当前版本：{version}',
+  diagnosticsTitle: '诊断信息', diagnosticsExport: '导出…', diagnosticsExporting: '正在导出…', diagnosticsSaved: '诊断信息已保存到 {path}',
+  diagnosticsDescription: '把版本、日志和崩溃记录打包成 zip，便于反馈问题。不包含 API 密钥、对话和设置，日志里的令牌和密码会被隐去，也不会自动上传。',
 
   strataTitle: 'Strata 本地模型',
   strataSupported: '支持 Qwen3.8 Flash Next GGUF 与配套 MTP 权重；分片模型请选择首片，也可导入 Strata profile',
@@ -143,6 +145,8 @@ const en: Record<keyof typeof zh, string> = {
   shortcutOpenFolder: 'Open folder', shortcutTerminal: 'New terminal', shortcutSend: 'Send message', shortcutNewline: 'New line',
   shortcutAlternate: 'Use the other send behavior while busy (queue or steer)', shortcutStop: 'Stop the run', shortcutReload: 'Reload window',
   currentVersion: 'Current version: {version}',
+  diagnosticsTitle: 'Diagnostics', diagnosticsExport: 'Export…', diagnosticsExporting: 'Exporting…', diagnosticsSaved: 'Diagnostics saved to {path}',
+  diagnosticsDescription: 'Pack versions, logs and crash records into a zip to attach to a report. API keys, chats and settings are left out, tokens and passwords in logs are hidden, and nothing is uploaded.',
 
   strataTitle: 'Strata local model',
   strataSupported: 'Supports Qwen3.8 Flash Next GGUF with matching MTP weights. Select the first shard of a split model, or import a Strata profile.',

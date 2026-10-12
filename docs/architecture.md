@@ -17,6 +17,8 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 - Electron main spawns the Host with `node host.js` (Windows) or `wsl.exe --distribution <d> --exec env … node host.js` (WSL). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`). The Host's own requests go the other way and main answers each with a `reply` line: every Host asks `credential-key` once at start, and the Windows Host asks `system-proxy {id, url}` for each origin it connects to. Main resolves that URL with Electron's `session.resolveProxy`, which applies the Windows proxy settings, bypass list and PAC scripts (`src/main/system-proxy.ts`).
 - The main window loads `ready.url` (`http://127.0.0.1:<port>/?token=…`). The Host answers with an HttpOnly cookie and redirects to `/`. Every later request and WebSocket upgrade must carry that cookie.
 - Main and preload are plain Electron code. Preload exposes the `__RAINY_*` bridges listed in `src/preload/preload.ts`.
+- Errors, dialogs and menus written by main or the Host use `localized({ zh, en })` from `src/shared/locale.ts` in the language chosen in Settings → General: the Host reads it from `settings.json`, main from the page and, before the page loads, from `desktop.json`.
+- Main starts Electron's crash reporter without uploads; `src/main/diagnostics.ts` packs versions, the scrubbed end of the logs and the newest crash dumps into the zip that Settings → General exports.
 
 ## Host
 

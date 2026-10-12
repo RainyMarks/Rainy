@@ -118,6 +118,23 @@ it('lists the keyboard shortcuts and the current version', async () => {
     `${zh.shortcutStop}: Esc+Esc`, `${zh.shortcutReload}: F5`,
   ])
   expect(hasText('当前版本：2.0.0')).toBe(true)
+  expect(findButton(zh.diagnosticsExport)).toBeUndefined()
+})
+
+it('exports diagnostics through the desktop and reports where the file went', async () => {
+  const exported = vi.fn<() => Promise<string | null>>().mockResolvedValueOnce('C:\\Downloads\\RainyAgent-diagnostics.zip').mockResolvedValueOnce(null)
+  const host = window as typeof window & { __RAINY_DIAGNOSTICS__?: { export(): Promise<string | null> } }
+  host.__RAINY_DIAGNOSTICS__ = { export: exported }
+  try {
+    await render(dialog())
+    expect(hasText(zh.diagnosticsDescription)).toBe(true)
+    await click(button(zh.diagnosticsExport))
+    await waitFor(() => { expect(toast).toHaveBeenCalledWith('诊断信息已保存到 C:\\Downloads\\RainyAgent-diagnostics.zip', { tone: 'success' }) })
+    toast.mockClear()
+    await click(button(zh.diagnosticsExport))
+    await waitFor(() => { expect(exported).toHaveBeenCalledTimes(2) })
+    expect(toast).not.toHaveBeenCalled()
+  } finally { delete host.__RAINY_DIAGNOSTICS__ }
 })
 
 it('reports a rejected preference change', async () => {

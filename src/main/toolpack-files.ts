@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { Stats } from 'node:fs'
 import { dirname, join, parse, relative, resolve, sep } from 'node:path'
+import { localized } from '../shared/locale.ts'
 import { ToolPackInstallError, isToolPackPath } from './toolpack-format.ts'
 import { toolPackFileSystem } from './toolpack-fs.ts'
 
@@ -14,7 +15,7 @@ const { copyFile, lstat, mkdir, open, readdir, readFile, rename, rm } = toolPack
  * @returns Absolute child path.
  */
 export function toolPackChild(root: string, path: string): string {
-  if (!isToolPackPath(path)) throw new ToolPackInstallError('unsafe-path', `工具包路径无效：${path}`)
+  if (!isToolPackPath(path)) throw new ToolPackInstallError('unsafe-path', localized({ zh: `工具包路径无效：${path}`, en: `Invalid tool pack path: ${path}` }))
   return resolve(root, ...path.split('/'))
 }
 
@@ -23,7 +24,10 @@ export function toolPackChild(root: string, path: string): string {
  * @returns Normally unless cancellation was requested.
  */
 export function checkToolPackCancellation(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new ToolPackInstallError('cancelled', '工具安装已取消。已校验的暂存文件会在重试时复用。')
+  if (signal?.aborted) {
+    throw new ToolPackInstallError('cancelled', localized({ zh: '工具安装已取消。已校验的暂存文件会在重试时复用。',
+      en: 'The tool installation was cancelled. Verified staged files will be reused when you retry.' }))
+  }
 }
 
 /** Read file metadata without following links; absence is distinct from other filesystem failures.
@@ -50,9 +54,15 @@ export async function assertToolPackPath(path: string): Promise<void> {
     cursor = join(cursor, part)
     const entry = await toolPackStat(cursor)
     if (!entry) return
-    if (entry.isSymbolicLink() || entry.isFile() && entry.nlink > 1) throw new ToolPackInstallError('link-not-allowed', `安装路径包含链接或重解析目录：${cursor}`)
-    if (index < parts.length - 1 && !entry.isDirectory()) throw new ToolPackInstallError('unsafe-path', `安装路径的父级不是目录：${cursor}`)
-    if (!entry.isDirectory() && !entry.isFile()) throw new ToolPackInstallError('unsafe-path', `安装路径包含不支持的文件类型：${cursor}`)
+    if (entry.isSymbolicLink() || entry.isFile() && entry.nlink > 1) {
+      throw new ToolPackInstallError('link-not-allowed', localized({ zh: `安装路径包含链接或重解析目录：${cursor}`, en: `The installation path contains a link or junction: ${cursor}` }))
+    }
+    if (index < parts.length - 1 && !entry.isDirectory()) {
+      throw new ToolPackInstallError('unsafe-path', localized({ zh: `安装路径的父级不是目录：${cursor}`, en: `Part of the installation path is not a folder: ${cursor}` }))
+    }
+    if (!entry.isDirectory() && !entry.isFile()) {
+      throw new ToolPackInstallError('unsafe-path', localized({ zh: `安装路径包含不支持的文件类型：${cursor}`, en: `The installation path contains an unsupported file type: ${cursor}` }))
+    }
   }
 }
 
@@ -68,11 +78,13 @@ export async function toolPackTree(root: string, signal?: AbortSignal): Promise<
     checkToolPackCancellation(signal)
     const entry = await toolPackStat(path)
     if (!entry) return
-    if (entry.isSymbolicLink() || entry.isFile() && entry.nlink > 1) throw new ToolPackInstallError('link-not-allowed', `工具目录包含链接，已保留原文件：${path}`)
+    if (entry.isSymbolicLink() || entry.isFile() && entry.nlink > 1) {
+      throw new ToolPackInstallError('link-not-allowed', localized({ zh: `工具目录包含链接，已保留原文件：${path}`, en: `The tool folder contains a link. The original files were kept: ${path}` }))
+    }
     if (entry.isDirectory()) {
       for (const name of await readdir(path)) await visit(join(path, name))
     } else if (entry.isFile()) files.push({ path, bytes: entry.size })
-    else throw new ToolPackInstallError('unsafe-path', `工具目录包含不支持的文件类型：${path}`)
+    else throw new ToolPackInstallError('unsafe-path', localized({ zh: `工具目录包含不支持的文件类型：${path}`, en: `The tool folder contains an unsupported file type: ${path}` }))
   }
   await visit(root)
   return files
@@ -88,7 +100,7 @@ export async function toolPackHash(path: string, signal?: AbortSignal): Promise<
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(path)) {
     checkToolPackCancellation(signal)
-    if (!Buffer.isBuffer(chunk)) throw new ToolPackInstallError('file-integrity', `文件读取返回了非二进制数据：${path}`)
+    if (!Buffer.isBuffer(chunk)) throw new ToolPackInstallError('file-integrity', localized({ zh: `文件读取返回了非二进制数据：${path}`, en: `Reading a file returned non-binary data: ${path}` }))
     hash.update(chunk)
   }
   return hash.digest('hex')
@@ -146,7 +158,10 @@ export async function writeToolPackRecord(path: string, value: object): Promise<
 export async function readToolPackRecord(path: string): Promise<unknown> {
   await assertToolPackPath(path)
   if (!await toolPackStat(path)) return undefined
-  try { return JSON.parse(await readFile(path, 'utf8')) } catch (error) { throw new ToolPackInstallError('invalid-record', `工具安装记录无法读取，已保留原文件：${path}`, { cause: error }) }
+  try { return JSON.parse(await readFile(path, 'utf8')) } catch (error) {
+    throw new ToolPackInstallError('invalid-record', localized({ zh: `工具安装记录无法读取，已保留原文件：${path}`,
+      en: `The tool installation record cannot be read. The original file was kept: ${path}` }), { cause: error })
+  }
 }
 
 /** Copy a declared user-data path into the staged replacement without following links.

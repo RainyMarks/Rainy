@@ -42,7 +42,7 @@ Before pushing, run `typecheck`, the vitest files for what you changed, `test:no
 - The Host and the page talk only through `src/shared/rpc.ts`: add a method to `HostMethods` or an event to `HostEvents`, register it in the Host, call it with `host.call` / `host.on` in the page. Validate RPC input on the Host; trust types inside one process.
 - Persisted files have versions: the chat format (`CHAT_FORMAT_VERSION`), `settings.json`, project memory (`memory.v1.json`), IDE state. Change a format only with a reader for the previous version.
 - Anything the model sees must be reconstructable from the chat file. New model-visible input needs a transcript entry kind or a `context` entry.
-- Page text is localized: each folder's `messages.ts` defines Chinese and English with `defineMessages`. No hard-coded copy in components.
+- Page text is localized: each folder's `messages.ts` defines Chinese and English with `defineMessages`. No hard-coded copy in components. Errors, dialogs and menus written by the Host or main use `localized({ zh, en })` from `src/shared/locale.ts`, called when the message is shown, so they follow the language chosen in Settings.
 - Colors, radii and shadows come from the tokens in `src/renderer/theme/` (`--dsw-*`). Dark mode is `body[data-ds-dark-theme]`; do not hard-code colors.
 - Text from projects, tools or language servers is untrusted in a CTF workbench. Never render it as HTML without sanitizing; the page has privileged bridges.
 - Tool calls pass `agent/permissions.ts` before they run: read-only, ask (the default) or full auto per chat. Keep tools inside their documented behavior: `read` before `write`/`edit`, output limits, spill files, and an undo snapshot for every change.
@@ -58,4 +58,4 @@ Before pushing, run `typecheck`, the vitest files for what you changed, `test:no
 
 ## Secrets
 
-Real model calls read keys from Settings or the environment (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`). Never commit keys. `RAINY_CONFIGURE_DEEPSEEK=1` makes a Host save and select the DeepSeek preset at startup.
+Real model calls read keys from Settings or the environment (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`). Never commit keys. Settings keeps them in `.credentials.sealed.json`, encrypted under a key the carrier protects with Windows DPAPI; `pnpm run dev` has no carrier and keeps them as plain text in `.credentials.json` under its private home. `RAINY_CONFIGURE_DEEPSEEK=1` makes a Host save and select the DeepSeek preset at startup.

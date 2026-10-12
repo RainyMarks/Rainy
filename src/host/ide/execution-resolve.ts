@@ -9,6 +9,7 @@ import type { ResolvedWorkspaceEnvironment } from '../runtime/environments.ts'
 import { resolveCmakeBuild } from './execution-cmake.ts'
 import type { IdeSubprocess } from './execution-process.ts'
 import { ideRunConfigurationSchema } from './execution-schema.ts'
+import { localized } from '../../shared/locale.ts'
 
 /** Absolute paths supplied by the packaged IDE resource resolver. */
 export interface IdeExecutionResources {
@@ -283,7 +284,7 @@ export async function resolveIdeRun(
           world.platform === 'windows' ? 'php.exe' : 'php', environment)
       } catch (error) {
         if (configuration.executable !== undefined || world.platform !== 'windows') throw error
-        throw new Error('未找到 PHP。请在「设置 → 运行环境 → 可选组件」中下载 PHP，或在运行方式中指定已安装的 php.exe。', { cause: error })
+        throw new Error(localized({ zh: '未找到 PHP。请在「设置 → 运行环境 → 可选组件」中下载 PHP，或在运行方式中指定已安装的 php.exe。', en: 'PHP was not found. Download PHP in Settings → Runtime environments → Optional components, or choose an installed php.exe in the run configuration.' }), { cause: error })
       }
       launch = { argv: [executable, program, ...arguments_], cwd, environment }
       break

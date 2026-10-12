@@ -1,4 +1,5 @@
 /** Carrier-owned exit and execution-target transitions while drafts and the Host remain available. */
+import { localized } from '../shared/locale.ts'
 import type { DraftFlushResult } from './saved-reload.ts'
 
 /** Result returned to either native target-selection entry point. */
@@ -62,7 +63,9 @@ export interface DesktopLifecycle {
   switchTarget(prepare: () => Promise<PreparedTargetSwitch>): Promise<TargetSwitchResult>
 }
 
-const closingResult: TargetSwitchResult = { ok: false, error: '应用正在退出，执行环境保持不变。' }
+/** @returns the refusal of a target switch during exit, in the current interface language. */
+const closingResult = (): TargetSwitchResult => ({ ok: false,
+  error: localized({ zh: '应用正在退出，执行环境保持不变。', en: 'RainyAgent is quitting. The execution environment is unchanged.' }) })
 
 /**
  * Keep a single owner for exit admission, target commits, and awaited cleanup.
@@ -104,15 +107,18 @@ export function createDesktopLifecycle(options: DesktopLifecycleOptions): Deskto
       return pendingQuit
     },
     switchTarget(prepare) {
-      if (isClosing()) return Promise.resolve(closingResult)
-      if (pendingSwitch !== undefined) return Promise.resolve({ ok: false, error: '执行环境正在切换，请等待应用重新打开。' })
+      if (isClosing()) return Promise.resolve(closingResult())
+      if (pendingSwitch !== undefined) {
+        return Promise.resolve({ ok: false, error: localized({ zh: '执行环境正在切换，请等待应用重新打开。',
+          en: 'The execution environment is switching. Wait for RainyAgent to reopen.' }) })
+      }
       pendingSwitch = Promise.resolve().then(async () => {
-        if (isClosing()) return closingResult
+        if (isClosing()) return closingResult()
         const prepared = await prepare()
         if (!prepared.ok) return prepared
         let restarted = false
         try {
-          if (isClosing()) return closingResult
+          if (isClosing()) return closingResult()
           await prepared.commit()
           options.restart()
           restarted = true

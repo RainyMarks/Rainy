@@ -7,6 +7,7 @@ import { finished, pipeline } from 'node:stream/promises'
 import { Parser } from 'tar'
 import type { ReadEntry } from 'tar'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { ToolPackInstallError, installedToolPackSchema, isToolPackPath, toolPackMetadataSchema, unitContains } from './toolpack-format.ts'
 import type { InstallNativeToolPackOptions, NativeToolPackInstallResult, ToolPackMetadata, ToolPackPlatform, ToolPackProgress, ToolPackUnit } from './toolpack-format.ts'
 import { assertToolPackPath, checkToolPackCancellation, copyToolPackUserData, readToolPackRecord, resetToolPackStagedUserData, toolPackChild, toolPackHash, toolPackStat, toolPackTree, writeToolPackRecord } from './toolpack-files.ts'
@@ -56,7 +57,8 @@ type Journal = z.infer<typeof journalSchema>
 type PackFile = ToolPackMetadata['files'][number]
 
 function asInstallError(error: unknown): ToolPackInstallError {
-  return error instanceof ToolPackInstallError ? error : new ToolPackInstallError('install-failed', error instanceof Error ? error.message : '工具安装失败，请重试。', { cause: error })
+  return error instanceof ToolPackInstallError ? error : new ToolPackInstallError('install-failed', error instanceof Error ? error.message
+    : localized({ zh: '工具安装失败，请重试。', en: 'The tool installation failed. Try again.' }), { cause: error })
 }
 
 /** Hold one installation directory exclusively during normal application use or maintenance.
@@ -66,7 +68,9 @@ function asInstallError(error: unknown): ToolPackInstallError {
 export async function acquireToolPackLock(installRoot: string): Promise<() => Promise<void>> {
   const root = resolve(installRoot)
   await assertToolPackPath(root)
-  if (!(await toolPackStat(root))?.isDirectory()) throw new ToolPackInstallError('invalid-target', 'RainyAgent 安装目录不存在。')
+  if (!(await toolPackStat(root))?.isDirectory()) {
+    throw new ToolPackInstallError('invalid-target', localized({ zh: 'RainyAgent 安装目录不存在。', en: 'The RainyAgent installation folder does not exist.' }))
+  }
   const stateRoot = join(root, '.rainy-toolpack')
   await assertToolPackPath(stateRoot)
   await mkdir(stateRoot, { recursive: true })
@@ -75,7 +79,8 @@ export async function acquireToolPackLock(installRoot: string): Promise<() => Pr
   const server = createServer(socket => socket.end())
   await new Promise<void>((accept, reject) => {
     server.once('error', (error) => {
-      reject(new ToolPackInstallError('install-busy', '安装目录正被 RainyAgent 或安装进程使用，请关闭应用或等待安装完成。', { cause: error }))
+      reject(new ToolPackInstallError('install-busy', localized({ zh: '安装目录正被 RainyAgent 或安装进程使用，请关闭应用或等待安装完成。',
+        en: 'RainyAgent or an installer is using the installation folder. Close RainyAgent or wait for the installation to finish.' }), { cause: error }))
     })
     server.listen(address, () => { accept() })
   })
@@ -100,7 +105,9 @@ export async function installedToolPackManifest(installRoot: string, packId: str
   const path = join(installRoot, '.rainy-toolpack', 'manifests', `${packId}.json`)
   const parsed = toolPackMetadataSchema.safeParse(await readToolPackRecord(path))
   if (!parsed.success || parsed.data.id !== packId) {
-    throw new ToolPackInstallError('invalid-record', `已安装工具文件清单缺失或损坏，无法安全区分程序文件和用户数据。已保留原目录，请恢复清单后重试：${path}`)
+    throw new ToolPackInstallError('invalid-record', localized({ zh: `已安装工具文件清单缺失或损坏，无法安全区分程序文件和用户数据。已保留原目录，请恢复清单后重试：${path}`,
+      en: `The file list of the installed tools is missing or damaged, so program files cannot be safely told apart from user data. `
+        + `The folder was left unchanged. Restore the list and try again: ${path}` }))
   }
   return parsed.data
 }
@@ -115,7 +122,10 @@ export async function readInstalledToolPack(
   const record = await readToolPackRecord(join(installRoot, '.rainy-toolpack', 'installed.json'))
   if (record === undefined) return undefined
   const parsed = installedToolPackSchema.safeParse(record)
-  if (!parsed.success) throw new ToolPackInstallError('invalid-record', '工具安装版本记录损坏，已保留原文件。')
+  if (!parsed.success) {
+    throw new ToolPackInstallError('invalid-record', localized({ zh: '工具安装版本记录损坏，已保留原文件。',
+      en: 'The record of installed tool versions is damaged. The original file was kept.' }))
+  }
   const metadata = await installedToolPackManifest(installRoot, parsed.data.packId)
   return { metadata, units: parsed.data.version === 2 ? parsed.data.units : metadata.units.map(unit => unit.path) }
 }
@@ -170,9 +180,13 @@ async function userDataUnits(
       const parts = key.split('/')
       if (unit.kind === 'file' || incomingFiles.has(key) || incomingDirectories.has(key)
         || parts.some((_part, index) => incomingFiles.has(parts.slice(0, index).join('/')))) {
-        throw new ToolPackInstallError('user-data-conflict', `用户文件与新版本工具路径冲突，已保留原目录。请将该文件移到工具目录外后重试：${path}`)
+        throw new ToolPackInstallError('user-data-conflict', localized({ zh: `用户文件与新版本工具路径冲突，已保留原目录。请将该文件移到工具目录外后重试：${path}`,
+          en: `A user file conflicts with a path in the new tool version. The folder was left unchanged. Move the file out of the tool folder and try again: ${path}` }))
       }
-      if (!isToolPackPath(path)) throw new ToolPackInstallError('unsafe-path', `用户文件路径不受支持，已保留原目录：${path}`)
+      if (!isToolPackPath(path)) {
+        throw new ToolPackInstallError('unsafe-path', localized({ zh: `用户文件路径不受支持，已保留原目录：${path}`,
+          en: `A user file path is not supported. The folder was left unchanged: ${path}` }))
+      }
       unit.preserve.push(path)
       preservedBytes += file.bytes
     }
@@ -238,7 +252,8 @@ async function extractArchive(
       const selected = wanted.has(entry.path)
       if (!isToolPackPath(entry.path) || !file || stream.strict && !selected || seen.has(entry.path.toLowerCase())
         || entry.type !== 'File' || entry.size !== file.bytes || entry.linkpath) {
-        throw new ToolPackInstallError('unsafe-archive', `归档包含未登记、重复或不安全的文件：${entry.path}`)
+        throw new ToolPackInstallError('unsafe-archive', localized({ zh: `归档包含未登记、重复或不安全的文件：${entry.path}`,
+          en: `The archive contains an unlisted, duplicate or unsafe file: ${entry.path}` }))
       }
       seen.add(entry.path.toLowerCase())
       if (!selected || reusable.has(entry.path)) {
@@ -255,11 +270,15 @@ async function extractArchive(
           for await (const chunk of entry) {
             checkToolPackCancellation(signal)
             bytes += chunk.length
-            if (bytes > file.bytes) throw new ToolPackInstallError('file-integrity', `解包文件超过登记大小：${file.path}`)
+            if (bytes > file.bytes) {
+              throw new ToolPackInstallError('file-integrity', localized({ zh: `解包文件超过登记大小：${file.path}`, en: `An unpacked file is larger than listed: ${file.path}` }))
+            }
             hash.update(chunk)
             await output.writeFile(chunk)
           }
-          if (bytes !== file.bytes || hash.digest('hex') !== file.sha256) throw new ToolPackInstallError('file-integrity', `工具文件校验失败：${file.path}`)
+          if (bytes !== file.bytes || hash.digest('hex') !== file.sha256) {
+            throw new ToolPackInstallError('file-integrity', localized({ zh: `工具文件校验失败：${file.path}`, en: `A tool file failed verification: ${file.path}` }))
+          }
           await output.sync()
         } catch (error) {
           await output.close()
@@ -290,13 +309,18 @@ async function extractArchive(
       await assertToolPackPath(path)
       for await (const chunk of createReadStream(path)) {
         checkToolPackCancellation(signal)
-        if (!Buffer.isBuffer(chunk)) throw new ToolPackInstallError('volume-integrity', '工具包读取返回了非二进制数据。')
+        if (!Buffer.isBuffer(chunk)) {
+          throw new ToolPackInstallError('volume-integrity', localized({ zh: '工具包读取返回了非二进制数据。', en: 'Reading the tool pack returned non-binary data.' }))
+        }
         yield chunk
       }
     }
   }
 
-  const onAbort = (): void => { fail(new ToolPackInstallError('cancelled', '工具安装已取消。已校验的暂存文件会在重试时复用。')) }
+  const onAbort = (): void => {
+    fail(new ToolPackInstallError('cancelled', localized({ zh: '工具安装已取消。已校验的暂存文件会在重试时复用。',
+      en: 'The tool installation was cancelled. Verified staged files will be reused when you retry.' })))
+  }
   signal?.addEventListener('abort', onAbort, { once: true })
   const source = Readable.from(chunks())
   try {
@@ -328,7 +352,10 @@ export function createNativeToolPackInstaller(
     const installRoot = resolve(options.installRoot)
     const mediaRoot = resolve(options.mediaDirectory)
     await assertToolPackPath(installRoot)
-    if (!(await toolPackStat(installRoot))?.isDirectory()) throw new ToolPackInstallError('invalid-target', '安装目标目录不存在。请从 RainyAgent 安装程序启动工具安装。')
+    if (!(await toolPackStat(installRoot))?.isDirectory()) {
+      throw new ToolPackInstallError('invalid-target', localized({ zh: '安装目标目录不存在。请从 RainyAgent 安装程序启动工具安装。',
+        en: 'The installation folder does not exist. Start the tool installation from the RainyAgent installer.' }))
+    }
     const stateRoot = join(installRoot, '.rainy-toolpack')
     const release = options.lockHeld
       ? async () => { /* The caller owns the lock for its whole lifetime. */ } : await acquireToolPackLock(installRoot)
@@ -355,7 +382,8 @@ export function createNativeToolPackInstaller(
         const destination = toolPackChild(installRoot, unit.path)
         const staged = toolPackChild(stageRoot, unit.path)
         const backup = toolPackChild(backupRoot, unit.path)
-        progress({ phase: 'rolling-back', message: '正在恢复安装前的工具…', completedBytes: 0, totalBytes: 0, currentPath: unit.path })
+        progress({ phase: 'rolling-back', message: localized({ zh: '正在恢复安装前的工具…', en: 'Restoring the tools from before the installation…' }),
+          completedBytes: 0, totalBytes: 0, currentPath: unit.path })
         await assertToolPackPath(destination)
         await assertToolPackPath(staged)
         await assertToolPackPath(backup)
@@ -365,9 +393,15 @@ export function createNativeToolPackInstaller(
         // Before 'moving-new', an existing destination is still the original unit, never the staged replacement.
         const destinationIsNew = !unit.retired && (unit.state === 'moving-new' || unit.state === 'installed')
         if (destinationIsNew && !stagedExists && destinationExists) await move(destination, staged)
-        else if (destinationExists && backupExists) throw new ToolPackInstallError('rollback-required', `恢复路径出现冲突，已保留两个版本：${unit.path}`)
+        else if (destinationExists && backupExists) {
+          throw new ToolPackInstallError('rollback-required', localized({ zh: `恢复路径出现冲突，已保留两个版本：${unit.path}`,
+            en: `Restoring ran into a conflict at this path. Both versions were kept: ${unit.path}` }))
+        }
         if (backupExists) await move(backup, destination)
-        else if (unit.hadOriginal && !await toolPackStat(destination)) throw new ToolPackInstallError('rollback-required', `原工具备份暂时不可用，已保留恢复记录：${unit.path}`)
+        else if (unit.hadOriginal && !await toolPackStat(destination)) {
+          throw new ToolPackInstallError('rollback-required', localized({ zh: `原工具备份暂时不可用，已保留恢复记录：${unit.path}`,
+            en: `The backup of the original tool is unavailable right now. The recovery record was kept: ${unit.path}` }))
+        }
         unit.state = 'rolled-back'
         await writeToolPackRecord(journalPath, journal)
       }
@@ -385,13 +419,19 @@ export function createNativeToolPackInstaller(
       const previous = await readToolPackRecord(journalPath)
       if (previous !== undefined) {
         const parsed = journalSchema.safeParse(previous)
-        if (!parsed.success || parsed.data.installRoot !== installRoot) throw new ToolPackInstallError('invalid-record', '工具安装恢复记录损坏或属于其他目录，已保留原文件。')
+        if (!parsed.success || parsed.data.installRoot !== installRoot) {
+          throw new ToolPackInstallError('invalid-record', localized({ zh: '工具安装恢复记录损坏或属于其他目录，已保留原文件。',
+            en: 'The tool installation recovery record is damaged or belongs to another folder. The original file was kept.' }))
+        }
         previousJournal = parsed.data
         if (['switching', 'rolling-back'].includes(parsed.data.phase)) {
           const retired = parsed.data.units.filter(unit => unit.retired)
           if (retired.length) {
             const owner = parsed.data.previousPackId ? await installedToolPackManifest(installRoot, parsed.data.previousPackId) : undefined
-            if (retired.some(unit => !owner?.units.some(previous => previous.path === unit.path && previous.kind === unit.kind))) throw new ToolPackInstallError('invalid-record', '退役工具目录不属于已安装工具清单，已保留原文件。')
+            if (retired.some(unit => !owner?.units.some(previous => previous.path === unit.path && previous.kind === unit.kind))) {
+              throw new ToolPackInstallError('invalid-record', localized({ zh: '退役工具目录不属于已安装工具清单，已保留原文件。',
+                en: 'A tool folder being removed is not in the list of installed tools. The original files were kept.' }))
+            }
           }
           await platform.assertNotBusy(installRoot, parsed.data.units)
           journal = parsed.data
@@ -402,14 +442,17 @@ export function createNativeToolPackInstaller(
       await assertToolPackPath(options.metadataPath)
       let metadata: ToolPackMetadata
       try { metadata = toolPackMetadataSchema.parse(JSON.parse(await readFile(options.metadataPath, 'utf8'))) } catch (error) {
-        throw new ToolPackInstallError('invalid-metadata', '工具包清单损坏或版本不受支持，请重新获取完整安装包。', { cause: error })
+        throw new ToolPackInstallError('invalid-metadata', localized({ zh: '工具包清单损坏或版本不受支持，请重新获取完整安装包。',
+          en: 'The tool pack file list is damaged or its version is not supported. Download the full installer again.' }), { cause: error })
       }
       const current = await readInstalledToolPack(installRoot)
       const previousPackId = current?.metadata.id ?? null
       const installedKeys = new Set(current?.units.map(path => path.toLowerCase()))
       const requested = options.units === undefined ? undefined : new Set(options.units.map(path => path.toLowerCase()))
       for (const path of requested ?? []) {
-        if (!metadata.units.some(unit => unit.path.toLowerCase() === path)) throw new ToolPackInstallError('invalid-selection', `所选工具不在当前工具包中：${path}`)
+        if (!metadata.units.some(unit => unit.path.toLowerCase() === path)) {
+          throw new ToolPackInstallError('invalid-selection', localized({ zh: `所选工具不在当前工具包中：${path}`, en: `The selected tool is not in this tool pack: ${path}` }))
+        }
       }
       // Catalog files describe every tool and always follow the newest pack.
       const desired = metadata.units.filter(unit => unit.kind === 'file' || requested === undefined || requested.has(unit.path.toLowerCase()))
@@ -429,7 +472,7 @@ export function createNativeToolPackInstaller(
       }
       if (replaced.length === 0 && retiredUnits.length === 0) {
         await commitRecords()
-        progress({ phase: 'complete', message: '工具已是最新。', completedBytes: 0, totalBytes: 0 })
+        progress({ phase: 'complete', message: localized({ zh: '工具已是最新。', en: 'The tools are up to date.' }), completedBytes: 0, totalBytes: 0 })
         return { status: 'installed', packId: metadata.id, installedFiles: 0, reusedFiles: 0, backupDirectory: '', prunedBytes: 0 }
       }
       const wantedFiles = replaced.flatMap(unit => newFiles.get(unit.path.toLowerCase()) ?? [])
@@ -448,10 +491,17 @@ export function createNativeToolPackInstaller(
         const path = toolPackChild(mediaRoot, volume.file)
         await assertToolPackPath(path)
         const file = await toolPackStat(path)
-        if (!expected || !file?.isFile()) throw new ToolPackInstallError('missing-volume', `缺少工具包分卷：${volume.file}。请将所有分卷与安装程序放在同一目录。`)
-        if (file.size !== expected.bytes || await toolPackHash(path, options.signal) !== expected.sha256) throw new ToolPackInstallError('volume-integrity', `工具包分卷校验失败：${volume.file}。请重新获取该分卷。`)
+        if (!expected || !file?.isFile()) {
+          throw new ToolPackInstallError('missing-volume', localized({ zh: `缺少工具包分卷：${volume.file}。请将所有分卷与安装程序放在同一目录。`,
+            en: `A part of the tool pack is missing: ${volume.file}. Put all parts in the same folder as the installer.` }))
+        }
+        if (file.size !== expected.bytes || await toolPackHash(path, options.signal) !== expected.sha256) {
+          throw new ToolPackInstallError('volume-integrity', localized({ zh: `工具包分卷校验失败：${volume.file}。请重新获取该分卷。`,
+            en: `A part of the tool pack failed verification: ${volume.file}. Download that part again.` }))
+        }
         verifiedBytes += expected.bytes
-        progress({ phase: 'checking-media', message: '正在校验工具包…', completedBytes: verifiedBytes, totalBytes: totalCompressedBytes, currentPath: volume.file })
+        progress({ phase: 'checking-media', message: localized({ zh: '正在校验工具包…', en: 'Verifying the tool pack…' }),
+          completedBytes: verifiedBytes, totalBytes: totalCompressedBytes, currentPath: volume.file })
       }
       checkToolPackCancellation(options.signal)
       await platform.assertNotBusy(installRoot, [...retiredUnits, ...replaced])
@@ -476,7 +526,10 @@ export function createNativeToolPackInstaller(
         const name = relative(stageRoot, file.path).split(sep).join('/')
         if (/^\.rainy-tmp-[a-f0-9-]{36}$/.test(name.split('/').at(-1) ?? '')) { await unlink(file.path); continue }
         const expected = fileIndex.get(name)
-        if (!expected) throw new ToolPackInstallError('unexpected-staging-file', `暂存目录包含未登记文件，已保留：${name}`)
+        if (!expected) {
+          throw new ToolPackInstallError('unexpected-staging-file', localized({ zh: `暂存目录包含未登记文件，已保留：${name}`,
+            en: `The staging folder contains an unlisted file, which was kept: ${name}` }))
+        }
         // Files staged for a unit outside this selection would otherwise move with nothing.
         if (!wanted.has(name)) { await unlink(file.path); continue }
         if (file.bytes === expected.bytes && await toolPackHash(file.path, options.signal) === expected.sha256) {
@@ -485,8 +538,11 @@ export function createNativeToolPackInstaller(
         }
       }
       const requiredBytes = unpackedBytes - reusedBytes + preservedBytes + 64 * 1024 ** 2
-      progress({ phase: 'checking-space', message: '正在检查目标磁盘空间…', completedBytes: 0, totalBytes: requiredBytes })
-      if (await platform.availableBytes(installRoot) < requiredBytes) throw new ToolPackInstallError('insufficient-space', `目标磁盘空间不足。至少还需要 ${Math.ceil(requiredBytes / 1024 ** 2)} MiB 可用空间。`)
+      progress({ phase: 'checking-space', message: localized({ zh: '正在检查目标磁盘空间…', en: 'Checking free disk space…' }), completedBytes: 0, totalBytes: requiredBytes })
+      if (await platform.availableBytes(installRoot) < requiredBytes) {
+        throw new ToolPackInstallError('insufficient-space', localized({ zh: `目标磁盘空间不足。至少还需要 ${Math.ceil(requiredBytes / 1024 ** 2)} MiB 可用空间。`,
+          en: `There is not enough disk space. At least ${Math.ceil(requiredBytes / 1024 ** 2)} MiB of free space is needed.` }))
+      }
       journal = { version: 1, installRoot, packId: metadata.id, transactionId: randomUUID(), previousPackId,
         ...current !== undefined && current.units.length !== current.metadata.units.length ? { previousUnits: [...current.units] } : {},
         phase: 'staging', units: [...retiredUnits, ...units].map(unit => ({ ...unit, state: 'pending' })) }
@@ -494,19 +550,24 @@ export function createNativeToolPackInstaller(
       let completedBytes = 0
       const extracted = (file: PackFile): void => {
         completedBytes += file.bytes
-        progress({ phase: 'extracting', message: '正在解包并逐项校验工具…', completedBytes, totalBytes: unpackedBytes, currentPath: file.path })
+        progress({ phase: 'extracting', message: localized({ zh: '正在解包并逐项校验工具…', en: 'Unpacking and verifying each tool file…' }),
+          completedBytes, totalBytes: unpackedBytes, currentPath: file.path })
       }
       let extractedFiles = 0
       for (const stream of streams) {
         extractedFiles += await extractArchive(stream, fileIndex, wanted, mediaRoot, stageRoot, reusable,
           (source, destination) => platform.move(source, destination), extracted, options.signal)
       }
-      if (extractedFiles !== wanted.size) throw new ToolPackInstallError('file-integrity', '归档未包含全部登记文件。')
-      progress({ phase: 'verifying', message: '全部工具文件已通过逐项校验。', completedBytes: unpackedBytes, totalBytes: unpackedBytes })
+      if (extractedFiles !== wanted.size) {
+        throw new ToolPackInstallError('file-integrity', localized({ zh: '归档未包含全部登记文件。', en: 'The archive does not contain every listed file.' }))
+      }
+      progress({ phase: 'verifying', message: localized({ zh: '全部工具文件已通过逐项校验。', en: 'Every tool file passed verification.' }),
+        completedBytes: unpackedBytes, totalBytes: unpackedBytes })
       checkToolPackCancellation(options.signal)
       for (const unit of units) {
         for (const path of unit.preserve) {
-          progress({ phase: 'preserving', message: '正在保留已有工具设置和用户数据…', completedBytes: 0, totalBytes: preservedBytes, currentPath: path })
+          progress({ phase: 'preserving', message: localized({ zh: '正在保留已有工具设置和用户数据…', en: 'Keeping existing tool settings and user data…' }),
+            completedBytes: 0, totalBytes: preservedBytes, currentPath: path })
           await copyToolPackUserData(toolPackChild(installRoot, path), toolPackChild(stageRoot, path), options.signal)
         }
       }
@@ -521,7 +582,8 @@ export function createNativeToolPackInstaller(
       await mkdir(backupRoot, { recursive: true })
       for (const unit of journal.units) {
         checkToolPackCancellation(options.signal)
-        progress({ phase: 'switching', message: '正在切换到已校验的新工具版本…', completedBytes: 0, totalBytes: unpackedBytes, currentPath: unit.path })
+        progress({ phase: 'switching', message: localized({ zh: '正在切换到已校验的新工具版本…', en: 'Switching to the verified new tool versions…' }),
+          completedBytes: 0, totalBytes: unpackedBytes, currentPath: unit.path })
         const destination = toolPackChild(installRoot, unit.path)
         const staged = toolPackChild(stageRoot, unit.path)
         const backup = toolPackChild(backupRoot, unit.path)
@@ -538,20 +600,31 @@ export function createNativeToolPackInstaller(
         unit.state = 'installed'
         await writeToolPackRecord(journalPath, journal)
       }
-      if (!await verifyFiles(installRoot, wantedFiles, metadata.units, options.signal)) throw new ToolPackInstallError('file-integrity', '工具切换后的文件校验失败，正在恢复旧版本。')
+      if (!await verifyFiles(installRoot, wantedFiles, metadata.units, options.signal)) {
+        throw new ToolPackInstallError('file-integrity', localized({ zh: '工具切换后的文件校验失败，正在恢复旧版本。',
+          en: 'Tool files failed verification after the switch. Restoring the previous version.' }))
+      }
       await commitRecords()
       await writeToolPackRecord(journalPath, { ...journal, phase: 'committed' })
       journal.phase = 'committed'
       let prunedBytes = 0
       try { prunedBytes = (await pruneToolPackBackups(installRoot, { transactions: [journal.transactionId] })).removedBytes }
       catch (error) { console.error('Committed tool backup was not pruned', error) }
-      progress({ phase: 'complete', message: '工具安装完成。', completedBytes: unpackedBytes, totalBytes: unpackedBytes })
+      progress({ phase: 'complete', message: localized({ zh: '工具安装完成。', en: 'The tools are installed.' }), completedBytes: unpackedBytes, totalBytes: unpackedBytes })
       return { status: 'installed', packId: metadata.id, installedFiles: wantedFiles.length, reusedFiles: reusable.size, backupDirectory: backupRoot, prunedBytes }
     } catch (error) {
       if (journal?.phase === 'switching') {
-        try { await rollback(journal) } catch (rollbackError) { throw new ToolPackInstallError('rollback-required', `工具安装未完成，恢复旧版本时遇到占用或文件错误。请关闭相关工具后重新运行安装程序。恢复记录：${journalPath}`, { cause: rollbackError }) }
+        try { await rollback(journal) } catch (rollbackError) {
+          throw new ToolPackInstallError('rollback-required', localized({
+            zh: `工具安装未完成，恢复旧版本时遇到占用或文件错误。请关闭相关工具后重新运行安装程序。恢复记录：${journalPath}`,
+            en: `The tool installation did not finish, and a file in use or a file error stopped the previous version from being restored. `
+              + `Close the affected tools and run the installer again. Recovery record: ${journalPath}` }), { cause: rollbackError })
+        }
       }
-      if (journal?.phase === 'rolling-back') throw new ToolPackInstallError('rollback-required', `工具旧版本尚未恢复完成。请关闭相关工具后重试。恢复记录：${journalPath}`, { cause: error })
+      if (journal?.phase === 'rolling-back') {
+        throw new ToolPackInstallError('rollback-required', localized({ zh: `工具旧版本尚未恢复完成。请关闭相关工具后重试。恢复记录：${journalPath}`,
+          en: `The previous tool version is not fully restored yet. Close the affected tools and try again. Recovery record: ${journalPath}` }), { cause: error })
+      }
       throw asInstallError(error)
     } finally { await release() }
   }

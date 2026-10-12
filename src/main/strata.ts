@@ -4,6 +4,7 @@ import { mkdir, readFile, stat } from 'node:fs/promises'
 import { freemem } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { localized } from '../shared/locale.ts'
 import { strataSettingsSchema } from '../shared/strata-protocol.ts'
 import type { StrataConnection, StrataStatus } from '../shared/strata-protocol.ts'
 import { readStrataHealth } from '../shared/strata-health.ts'
@@ -87,13 +88,17 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
   let health: StrataHealth | null = null
 
   const baseURL = () => `http://127.0.0.1:${settings.port}/v1`
-  const assertOpen = () => { if (closed) throw new Error('RainyAgent 正在关闭，无法修改 Strata。') }
+  const assertOpen = () => { if (closed) throw new Error(localized({ zh: 'RainyAgent 正在关闭，无法修改 Strata。', en: 'RainyAgent is closing and cannot change Strata.' })) }
   const busy = () => operation !== undefined || owned !== undefined
   function residentBudget(): number {
     const usableGiB = Math.floor((options.availableMemory ?? freemem)() / 2 ** 30 - (options.ramHeadroomGiB ?? 8))
-    if (usableGiB < 1) throw new Error('当前可用内存不足，无法在保留系统内存后加载 Strata。请先保存并结束其他占用内存的工作。')
+    if (usableGiB < 1) {
+      throw new Error(localized({ zh: '当前可用内存不足，无法在保留系统内存后加载 Strata。请先保存并结束其他占用内存的工作。',
+        en: 'There is not enough free memory to load Strata and still leave memory for the system. Save and close other work that uses memory first.' }))
+    }
     if (settings.residentBudgetGiB !== null && settings.residentBudgetGiB > usableGiB) {
-      throw new Error(`当前内存最多允许约 ${usableGiB} GiB 的 Strata 驻留预算。请降低高级设置中的内存预算，或先结束其他工作。`)
+      throw new Error(localized({ zh: `当前内存最多允许约 ${usableGiB} GiB 的 Strata 驻留预算。请降低高级设置中的内存预算，或先结束其他工作。`,
+        en: `Free memory allows a Strata resident budget of about ${usableGiB} GiB at most. Lower the memory budget in the advanced settings, or close other work first.` }))
     }
     return settings.residentBudgetGiB ?? usableGiB
   }
@@ -105,7 +110,7 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
   function initialize(): Promise<void> {
     initialized ??= (async () => {
       try {
-        if ((await stat(settingsPath)).size > 65536) throw new Error('Strata 设置文件超过 64 KiB。')
+        if ((await stat(settingsPath)).size > 65536) throw new Error(localized({ zh: 'Strata 设置文件超过 64 KiB。', en: 'The Strata settings file is larger than 64 KiB.' }))
         settings = strataSettingsSchema.parse(JSON.parse(await readFile(settingsPath, 'utf8')))
       } catch (failure) { if (!(failure instanceof Error && 'code' in failure && failure.code === 'ENOENT')) throw failure }
       if (settings.modelPath) {
@@ -113,7 +118,10 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
           model = await resolveStrataModel(settings, stateRoot)
           phase = 'stopped'
           error = model?.missing[0] ?? null
-        } catch (failure) { phase = 'error'; error = failure instanceof Error ? failure.message : '模型文件无法读取。' }
+        } catch (failure) {
+          phase = 'error'
+          error = failure instanceof Error ? failure.message : localized({ zh: '模型文件无法读取。', en: 'The model files cannot be read.' })
+        }
       }
     })()
     return initialized
@@ -160,21 +168,28 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
     for (const preparation of selected.preparations) {
       signal.throwIfAborted()
       phase = 'preparing'
-      progress = preparation.stage === 'mtp' ? '正在从本地 MTP 权重准备运行文件…' : '正在从本地 GGUF 准备 Strata 模型文件…'
+      progress = preparation.stage === 'mtp'
+        ? localized({ zh: '正在从本地 MTP 权重准备运行文件…', en: 'Preparing runtime files from the local MTP weights…' })
+        : localized({ zh: '正在从本地 GGUF 准备 Strata 模型文件…', en: 'Preparing Strata model files from the local GGUF…' })
       await mkdir(preparation.directory, { recursive: true, mode: 0o700 })
       const child = await startChild(['-I', '-B', join(runtimeRoot, 'server/tools', preparation.tool), ...preparation.args], `prepare-${randomUUID()}.log`, signal)
       const result = await child.exited
       if (owned === child) owned = undefined
       signal.throwIfAborted()
-      if (result.error || result.code !== 0) throw new Error('本地模型准备失败。请确认所有 GGUF 分片及配套 MTP 属于受支持的 Qwen3.8 Flash Next 模型。'
-        + '详细诊断保存在 RainyAgent 的 strata/logs。')
+      if (result.error || result.code !== 0) {
+        throw new Error(localized({ zh: '本地模型准备失败。请确认所有 GGUF 分片及配套 MTP 属于受支持的 Qwen3.8 Flash Next 模型。'
+          + '详细诊断保存在 RainyAgent 的 strata/logs。',
+        en: 'Preparing the local model failed. Make sure all GGUF shards and the matching MTP belong to a supported Qwen3.8 Flash Next model. '
+          + 'Details are saved in the strata/logs folder of RainyAgent.' }))
+      }
       await writePrivateRecord(join(preparation.directory, '.rainy-complete.json'), Buffer.from(JSON.stringify({ version: 1 }) + '\n'))
     }
     signal.throwIfAborted()
     const ready = await resolveStrataModel(settings, stateRoot)
     if (!ready || ready.preparations.length || ready.missing.length
       || !ready.model.packPath || !ready.model.tokenizerPath || !ready.model.mtpPath) {
-      throw new Error('模型文件尚不完整或准备期间发生变化，请检查主模型和配套 MTP 后重试。')
+      throw new Error(localized({ zh: '模型文件尚不完整或准备期间发生变化，请检查主模型和配套 MTP 后重试。',
+        en: 'The model files are incomplete or changed during preparation. Check the main model and the matching MTP, then try again.' }))
     }
     model = ready
     const configuredResidentBudget = residentBudget()
@@ -190,34 +205,40 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
       host: '127.0.0.1', port: settings.port, open_browser: false, api_monitor: false,
     }, null, 2) + '\n'))
     phase = 'starting'
-    progress = '正在加载本地 Strata 模型…'
+    progress = localized({ zh: '正在加载本地 Strata 模型…', en: 'Loading the local Strata model…' })
     const child = await startChild(['-I', '-B', join(runtimeRoot, 'server/serve/server.py'), '--engine', 'strata',
       '--config', configPath, '--host', '127.0.0.1', '--port', String(settings.port)], `server-${randomUUID()}.log`, signal)
     const deadline = Date.now() + (options.startupTimeoutMs ?? 600000)
     while (Date.now() < deadline) {
       signal.throwIfAborted()
-      if (child.finished) throw new Error('Strata 服务在就绪前退出。请检查模型文件、显存和端口；诊断保存在 strata/logs。')
+      if (child.finished) {
+        throw new Error(localized({ zh: 'Strata 服务在就绪前退出。请检查模型文件、显存和端口；诊断保存在 strata/logs。',
+          en: 'The Strata server exited before it was ready. Check the model files, video memory and port. Details are saved in strata/logs.' }))
+      }
       health = await probe(signal)
       if (health?.loaded) {
-        if (health.model !== ready.model.model || health.authenticationRequired) throw new Error('端口上的 Strata 服务与本次启动的模型不一致。')
+        if (health.model !== ready.model.model || health.authenticationRequired) {
+          throw new Error(localized({ zh: '端口上的 Strata 服务与本次启动的模型不一致。', en: 'The Strata server on this port is not running the model that was just started.' }))
+        }
         phase = 'running'
         progress = null
         void child.exited.then(() => {
           if (owned !== child) return
           owned = undefined
           health = null
-          if (!signal.aborted) { phase = 'error'; error = 'Strata 服务已退出。模型文件和设置已保留。' }
+          if (!signal.aborted) { phase = 'error'; error = localized({ zh: 'Strata 服务已退出。模型文件和设置已保留。', en: 'The Strata server exited. Model files and settings are kept.' }) }
         })
         return
       }
       await delay(options.pollIntervalMs ?? 1000, undefined, { signal })
     }
-    throw new Error('Strata 启动超时。请检查可用显存、内存及模型文件后重试。')
+    throw new Error(localized({ zh: 'Strata 启动超时。请检查可用显存、内存及模型文件后重试。',
+      en: 'Strata took too long to start. Check free video memory, memory and the model files, then try again.' }))
   }
   async function stopOwned(): Promise<void> {
     const pending = operation
     const child = owned
-    cancellation?.abort(new Error('Strata 启动或运行已停止。'))
+    cancellation?.abort(new Error(localized({ zh: 'Strata 启动或运行已停止。', en: 'Strata was stopped.' })))
     if (pending || child) phase = 'stopping'
     if (child && !child.finished) {
       if (health?.loaded) {
@@ -242,7 +263,10 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
     status: () => snapshot(true),
     save: value => transaction(async () => {
       await initialize(); assertOpen()
-      if (busy()) throw new Error('请先停止 RainyAgent 启动的 Strata，再修改模型和运行参数。')
+      if (busy()) {
+        throw new Error(localized({ zh: '请先停止 RainyAgent 启动的 Strata，再修改模型和运行参数。',
+          en: 'Stop the Strata server that RainyAgent started before changing the model or run settings.' }))
+      }
       const requested = strataSettingsSchema.parse(value)
       const resolved = await resolveStrataModel(requested, stateRoot, requested.modelPath !== settings.modelPath)
       assertOpen()
@@ -260,15 +284,21 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
       if (busy()) return snapshot(false)
       const bundled = await runtime()
       assertOpen()
-      if (!bundled.available) throw new Error('当前安装包缺少 Strata 运行文件，请安装包含本地模型运行时的完整 RainyAgent。')
+      if (!bundled.available) {
+        throw new Error(localized({ zh: '当前安装包缺少 Strata 运行文件，请安装包含本地模型运行时的完整 RainyAgent。',
+          en: 'This installation is missing the Strata runtime files. Install the full RainyAgent with the local model runtime.' }))
+      }
       const selected = await resolveStrataModel(settings, stateRoot)
       assertOpen()
-      if (!selected) throw new Error('请先选择主模型 GGUF 和配套 MTP 权重。')
+      if (!selected) throw new Error(localized({ zh: '请先选择主模型 GGUF 和配套 MTP 权重。', en: 'Select the main model GGUF and the matching MTP weights first.' }))
       if (selected.missing.length) throw new Error(selected.missing.join('\n'))
       health = await probe()
       assertOpen()
       if (health) {
-        if (health.model !== selected.model.model) throw new Error('所选端口已有另一个 Strata 模型；请更换端口，现有服务保持不变。')
+        if (health.model !== selected.model.model) {
+          throw new Error(localized({ zh: '所选端口已有另一个 Strata 模型；请更换端口，现有服务保持不变。',
+            en: 'Another Strata model is already using the selected port. Choose a different port; the running server is left unchanged.' }))
+        }
         return snapshot(false)
       }
       residentBudget()
@@ -286,9 +316,12 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
         if (owned === child && (!child || child.finished)) owned = undefined
         health = null
         progress = null
-        if (stopFailure) { phase = 'error'; error = 'Strata 子进程尚未确认退出，请重试停止后再启动。' }
+        if (stopFailure) {
+          phase = 'error'
+          error = localized({ zh: 'Strata 子进程尚未确认退出，请重试停止后再启动。', en: 'The Strata process has not confirmed that it exited. Stop it again before starting.' })
+        }
         else if (abort.signal.aborted) phase = 'stopped'
-        else { phase = 'error'; error = failure instanceof Error ? failure.message : 'Strata 启动失败。' }
+        else { phase = 'error'; error = failure instanceof Error ? failure.message : localized({ zh: 'Strata 启动失败。', en: 'Strata failed to start.' }) }
       }).finally(() => { operation = undefined })
       return snapshot(false)
     }),
@@ -296,13 +329,15 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
     connection: async () => {
       await initialize(); assertOpen()
       const current = await readHealth(baseURL())
-      if (!current.loaded) throw new Error('Strata 模型尚未加载完成。')
-      if (current.authenticationRequired) throw new Error('此服务需要 API 密钥，请在现有模型设置中配置连接。')
+      if (!current.loaded) throw new Error(localized({ zh: 'Strata 模型尚未加载完成。', en: 'The Strata model has not finished loading.' }))
+      if (current.authenticationRequired) {
+        throw new Error(localized({ zh: '此服务需要 API 密钥，请在现有模型设置中配置连接。', en: 'This server needs an API key. Set up the connection in your existing model settings.' }))
+      }
       return { baseURL: current.baseURL, model: current.model, contextWindow: current.contextWindow }
     },
     close() {
       closed = true
-      cancellation?.abort(new Error('RainyAgent 正在退出。'))
+      cancellation?.abort(new Error(localized({ zh: 'RainyAgent 正在退出。', en: 'RainyAgent is quitting.' })))
       closing ??= transaction(stopOwned)
       return closing
     },

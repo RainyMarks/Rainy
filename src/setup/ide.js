@@ -1,7 +1,12 @@
 /** Local development setup controls; installation is sent only by the explicit install button. */
 const api = window.__RAINY_IDE_ENVIRONMENT__
+const { say } = window
 const byId = id => document.getElementById(id)
-const labels = { checking: '正在检查', ready: '开发工具已就绪', 'needs-install': '需要准备开发工具', unsupported: '需要手动准备', 'missing-media': '安装文件不可用', installing: '正在安装', error: '准备未完成' }
+const labels = {
+  checking: say('正在检查', 'Checking'), ready: say('开发工具已就绪', 'Development tools ready'), 'needs-install': say('需要准备开发工具', 'Development tools needed'),
+  unsupported: say('需要手动准备', 'Manual setup needed'), 'missing-media': say('安装文件不可用', 'Installation files unavailable'),
+  installing: say('正在安装', 'Installing'), error: say('准备未完成', 'Setup incomplete'),
+}
 let working = false
 let revision = 0
 let disposed = false
@@ -10,7 +15,7 @@ let unsubscribe = () => {}
 function render(snapshot) {
   if (disposed) return
   working = snapshot.busy
-  byId('state').textContent = labels[snapshot.status] || '开发工具准备'
+  byId('state').textContent = labels[snapshot.status] || say('开发工具准备', 'Development tools')
   byId('distribution').textContent = snapshot.distro
   byId('message').textContent = snapshot.message
   byId('error-code').hidden = !snapshot.code
@@ -23,12 +28,12 @@ function render(snapshot) {
     name.textContent = tool.name
     const status = document.createElement('span')
     status.className = tool.ready ? 'tool-status' : 'tool-status missing'
-    status.textContent = tool.ready ? '已就绪' : '缺失'
+    status.textContent = tool.ready ? say('已就绪', 'Ready') : say('缺失', 'Missing')
     row.append(name, status)
     return row
   }))
   byId('incomplete').hidden = snapshot.incompletePackages.length === 0
-  byId('incomplete').textContent = snapshot.incompletePackages.length ? `尚有 ${snapshot.incompletePackages.length} 个组件未完成安装或配置。` : ''
+  byId('incomplete').textContent = snapshot.incompletePackages.length ? say(`尚有 ${snapshot.incompletePackages.length} 个组件未完成安装或配置。`, `${snapshot.incompletePackages.length} components are not fully installed or configured.`) : ''
   byId('diagnostics').hidden = snapshot.log.length === 0
   byId('log').textContent = snapshot.log.join('\n')
   for (const button of document.querySelectorAll('button')) button.disabled = working
@@ -42,7 +47,7 @@ async function act(type) {
   catch (error) {
     if (disposed) return
     working = false
-    byId('message').textContent = error instanceof Error ? error.message : '开发工具准备失败，请重新检查。'
+    byId('message').textContent = error instanceof Error ? error.message : say('开发工具准备失败，请重新检查。', 'Preparing development tools failed. Check again.')
     for (const button of document.querySelectorAll('button')) button.disabled = false
   }
 }
@@ -67,6 +72,6 @@ if (api) {
     if (!disposed) byId('message').textContent = error.message
   })
 } else {
-  byId('message').textContent = '开发工具准备服务未连接，请关闭窗口后从工作区重新打开。'
+  byId('message').textContent = say('开发工具准备服务未连接，请关闭窗口后从工作区重新打开。', 'The setup service is not connected. Close this window and open it again from the workspace.')
   for (const button of document.querySelectorAll('button')) button.disabled = true
 }

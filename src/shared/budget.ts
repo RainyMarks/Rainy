@@ -1,4 +1,5 @@
 /** Model-specific request budgets and explicit estimated token counts. */
+import { localized } from './locale.ts'
 export interface Budget {
   contextWindow: number
   outputTokens: number
@@ -13,12 +14,12 @@ export interface Budget {
 /** Resolve a combined input/output window; explicit output limits are never silently lowered. */
 export function resolveBudget(contextWindow: number, maxOutput?: number): Budget {
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 4096)
-    throw new Error('上下文长度必须是至少 4096 的整数。')
+    throw new Error(localized({ zh: '上下文长度必须是至少 4096 的整数。', en: 'The context length must be a whole number of at least 4096.' }))
   const outputTokens = maxOutput ?? Math.min(16000, Math.floor(contextWindow * 0.16))
-  if (!Number.isSafeInteger(outputTokens) || outputTokens < 1) throw new Error('输出上限必须是正整数。')
+  if (!Number.isSafeInteger(outputTokens) || outputTokens < 1) throw new Error(localized({ zh: '输出上限必须是正整数。', en: 'The output limit must be a positive whole number.' }))
   const marginTokens = Math.max(512, Math.floor(contextWindow * 0.08))
   const inputLimit = contextWindow - outputTokens - marginTokens
-  if (inputLimit < 1024) throw new Error('输出预留过大，当前窗口没有足够的输入空间。')
+  if (inputLimit < 1024) throw new Error(localized({ zh: '输出预留过大，当前窗口没有足够的输入空间。', en: 'The output reservation is too large; the context window leaves too little room for input.' }))
   return {
     contextWindow,
     outputTokens,

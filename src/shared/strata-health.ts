@@ -1,5 +1,6 @@
 /** Public loopback health checks shared by the Windows carrier and selected Rainy Host. */
 import { z } from 'zod'
+import { localized } from './locale.ts'
 import type { StrataConnection } from './strata-protocol.ts'
 
 const healthSchema = z.object({
@@ -22,7 +23,8 @@ export function strataLoopbackURL(baseURL: string): URL {
   const url = new URL(baseURL)
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
     || url.username || url.password || url.search || url.hash || !url.port || !/^\/v1\/?$/u.test(url.pathname)) {
-    throw new Error('Strata 连接必须使用带端口的本机 HTTP 地址和 /v1 路径。')
+    throw new Error(localized({ zh: 'Strata 连接必须使用带端口的本机 HTTP 地址和 /v1 路径。',
+      en: 'A Strata connection must use a local HTTP address with a port and the /v1 path.' }))
   }
   url.pathname = '/v1'
   return url
@@ -44,7 +46,7 @@ export async function readStrataHealth(baseURL: string, options: {
     signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     redirect: 'error',
   })
-  if (!response.ok) throw new Error(`Strata 健康检查失败（HTTP ${response.status}）。`)
+  if (!response.ok) throw new Error(localized({ zh: `Strata 健康检查失败（HTTP ${response.status}）。`, en: `The Strata status check failed (HTTP ${response.status}).` }))
   const health = healthSchema.parse(await response.json())
   return { baseURL: base.href, model: health.model, contextWindow: health.max_context,
     loaded: health.loaded, authenticationRequired: health.api_key }
@@ -58,7 +60,10 @@ export async function readStrataHealth(baseURL: string, options: {
  */
 export async function inspectStrataHealth(baseURL: string, options: { fetcher?: typeof fetch } = {}): Promise<StrataConnection> {
   const health = await readStrataHealth(baseURL, options)
-  if (!health.loaded) throw new Error('Strata 模型尚未加载完成，请等待就绪后再连接。')
-  if (health.authenticationRequired) throw new Error('此 Strata 服务需要 API 密钥，请在现有模型设置中配置凭据。')
+  if (!health.loaded) throw new Error(localized({ zh: 'Strata 模型尚未加载完成，请等待就绪后再连接。', en: 'The Strata model has not finished loading. Wait until it is ready, then connect.' }))
+  if (health.authenticationRequired) {
+    throw new Error(localized({ zh: '此 Strata 服务需要 API 密钥，请在现有模型设置中配置凭据。',
+      en: 'This Strata server needs an API key. Add the key in your existing model settings.' }))
+  }
   return { baseURL: health.baseURL, model: health.model, contextWindow: health.contextWindow }
 }

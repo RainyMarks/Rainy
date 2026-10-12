@@ -1,6 +1,7 @@
 /** Public release keys embedded in the carrier; no user or device activation state. */
 import { createHash, createPublicKey } from 'node:crypto'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 
 declare const __RAINY_RELEASE_PUBLIC_KEYS__: unknown
 
@@ -14,7 +15,7 @@ export interface ReleaseKeyring { readonly version: 1; readonly keys: Readonly<R
  */
 export function releasePublicKeyId(pem: string): string {
   const key = createPublicKey(pem)
-  if (key.asymmetricKeyType !== 'ed25519') throw new Error('发行公钥必须使用 Ed25519')
+  if (key.asymmetricKeyType !== 'ed25519') throw new Error(localized({ zh: '发行公钥必须使用 Ed25519', en: 'Release keys must use Ed25519.' }))
   return createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex').slice(0, 32)
 }
 
@@ -26,10 +27,10 @@ export function releasePublicKeyId(pem: string): string {
 export function parseReleaseKeyring(input: unknown): ReleaseKeyring {
   const parsed = z.object({ version: z.literal(1), keys: z.record(z.string().regex(/^[a-f0-9]{32}$/), z.string().max(4096)) })
     .strict().parse(input)
-  if (Object.keys(parsed.keys).length === 0) throw new Error('发行包缺少资源验证公钥')
+  if (Object.keys(parsed.keys).length === 0) throw new Error(localized({ zh: '发行包缺少资源验证公钥', en: 'The installation has no key to verify its files.' }))
   for (const [id, pem] of Object.entries(parsed.keys)) {
-    if (!pem.startsWith('-----BEGIN PUBLIC KEY-----')) throw new Error('发行包只能包含发行公钥')
-    if (releasePublicKeyId(pem) !== id) throw new Error('发行公钥标识无效')
+    if (!pem.startsWith('-----BEGIN PUBLIC KEY-----')) throw new Error(localized({ zh: '发行包只能包含发行公钥', en: 'The installation may contain only public release keys.' }))
+    if (releasePublicKeyId(pem) !== id) throw new Error(localized({ zh: '发行公钥标识无效', en: 'A release key has an invalid ID.' }))
   }
   return parsed
 }

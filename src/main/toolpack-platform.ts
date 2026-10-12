@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import { ToolPackInstallError } from './toolpack-format.ts'
 import type { ToolPackPlatform, ToolPackUnit } from './toolpack-format.ts'
 import { renameToolPackPath, toolPackChild } from './toolpack-files.ts'
@@ -50,7 +51,10 @@ async function assertNotBusy(installRoot: string, units: ToolPackUnit[]): Promis
   })
   const processes = processSchema.parse(JSON.parse(result.stdout))
   const busy = findBusyToolPackProcess(processes, installRoot, units, process.pid)
-  if (busy) throw new ToolPackInstallError('tools-busy', `工具仍在运行（进程 ${busy.pid}）。请保存工作并手动关闭该工具，再重试安装。`)
+  if (busy) {
+    throw new ToolPackInstallError('tools-busy', localized({ zh: `工具仍在运行（进程 ${busy.pid}）。请保存工作并手动关闭该工具，再重试安装。`,
+      en: `A tool is still running (process ${busy.pid}). Save your work, close the tool yourself, then retry the installation.` }))
+  }
 }
 
 /** Default operating-system calls; tests inject failures without changing host resources. */

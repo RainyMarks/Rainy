@@ -180,10 +180,13 @@ function CompactionRow({ entry }: { entry: Entry<'compaction'> }): JSX.Element {
 }
 
 function NoticeRow({ entry }: { entry: Entry<'notice'> }): JSX.Element {
+  const t = useChatT()
+  // Notices the Host writes with a known code follow the current language; the stored text is the language at the time.
+  const text = entry.code === 'overflow-retry' ? t('noticeOverflowRetry') : entry.code === 'stopped' ? t('stopped') : entry.text
   return (
     <div className={css.notice} data-level={entry.level}>
       {entry.level === 'info' ? <IconInfoOutlineRegular size={14} /> : <IconWarningTriangleOutlineRegular size={14} />}
-      <span>{entry.text}</span>
+      <span>{text}</span>
     </div>
   )
 }

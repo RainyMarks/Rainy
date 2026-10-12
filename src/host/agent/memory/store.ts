@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { estimateText } from '../../../shared/budget.ts'
+import { localized } from '../../../shared/locale.ts'
 
 /** Persisted note length limit, shared by the record schema and the human edit message. */
 const MAX_NOTE_LENGTH = 2048
@@ -275,18 +276,18 @@ export class ProjectMemoryStore {
     maxTokens: number,
   ): Promise<ProjectMemoryDocument> {
     return this.update(projectId, (current) => {
-      if (current.revision !== edit.expectedRevision) throw new Error('项目记忆已更新，请刷新后重试。')
+      if (current.revision !== edit.expectedRevision) throw new Error(localized({ zh: '项目记忆已更新，请刷新后重试。', en: 'Project memory changed. Refresh and try again.' }))
       const old = current.items.find(item => item.id === edit.id)
-      if (!old) throw new Error('项目记忆条目不存在。')
+      if (!old) throw new Error(localized({ zh: '项目记忆条目不存在。', en: 'This project memory note does not exist.' }))
       const updatedAt = new Date().toISOString()
       const text = redactMemoryText(edit.text.trim())
-      if (!text) throw new Error('项目记忆不能为空。')
-      if (text.length > MAX_NOTE_LENGTH) throw new Error(`单条项目记忆不能超过 ${MAX_NOTE_LENGTH} 个字符。`)
+      if (!text) throw new Error(localized({ zh: '项目记忆不能为空。', en: 'A project memory note cannot be empty.' }))
+      if (text.length > MAX_NOTE_LENGTH) throw new Error(localized({ zh: `单条项目记忆不能超过 ${MAX_NOTE_LENGTH} 个字符。`, en: `A project memory note can be at most ${MAX_NOTE_LENGTH} characters.` }))
       const items = current.items.map(item =>
         item.id === edit.id ? { ...item, text, updatedAt, editedByUser: true as const } : item,
       )
       if (items.reduce((sum, item) => sum + estimateText(item.text), 0) > maxTokens)
-        throw new Error('项目记忆超过总 token 预算，请精简内容。')
+        throw new Error(localized({ zh: '项目记忆超过总 token 预算，请精简内容。', en: 'Project memory is over its token budget. Shorten the notes.' }))
       return {
         ...current,
         revision: current.revision + 1,

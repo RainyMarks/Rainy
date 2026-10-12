@@ -7,6 +7,7 @@ import { x as extractTar } from 'tar'
 import { z } from 'zod'
 import { brandString } from '../shared/brand.ts'
 import type { Branded } from '../shared/brand.ts'
+import { localized } from '../shared/locale.ts'
 
 /** One release-approved runtime component family and platform. */
 export type EnvironmentComponentId = Branded<'RainyEnvironmentComponentId'>
@@ -115,14 +116,14 @@ export async function installWindowsComponent(options: {
     const staging = join(root, `.component-${randomUUID()}`)
     await mkdir(staging, { mode: 0o700 })
     try {
-      emit('正在解压已验证的离线组件…')
+      emit(localized({ zh: '正在解压已验证的离线组件…', en: 'Unpacking the verified offline component…' }))
       await extractTar({ file: archive, cwd: staging, strict: true, preservePaths: false,
         filter: (path, entry) => {
           childPath(staging, path.replace(/\/$/u, ''))
           if ('type' in entry ? !['File', 'Directory'].includes(entry.type) : !entry.isFile() && !entry.isDirectory()) throw new Error('Windows components cannot contain links or special files.')
           return true
         } })
-      emit('正在核对组件文件…')
+      emit(localized({ zh: '正在核对组件文件…', en: 'Checking the component files…' }))
       await verifyWindowsComponent(staging, expected, destination)
       await mkdir(dirnameOf(destination), { recursive: true })
       await rename(staging, destination)

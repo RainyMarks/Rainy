@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { brandString, type Branded } from '../../shared/brand.ts'
 import { readJson, writeJson } from '../files.ts'
 import { readBody } from '../server.ts'
+import { localized } from '../../shared/locale.ts'
 
 /** Standalone (`standalone`) or chat-scoped (`session:<id>`) draft identity. */
 export type IceSkyDraftScope = Branded<'IceSkyDraftScope'>
@@ -130,24 +131,24 @@ class RequestFailure extends Error {
 
 async function scopeOf(url: URL, options: IceSkyDraftRouteOptions, signal: AbortSignal): Promise<IceSkyDraftScope> {
   const scopes = url.searchParams.getAll('scope')
-  if (scopes.length !== 1) throw new RequestFailure(400, 'invalid-scope', '请选择独立草稿或一个聊天。')
+  if (scopes.length !== 1) throw new RequestFailure(400, 'invalid-scope', localized({ zh: '请选择独立草稿或一个聊天。', en: 'Choose the standalone draft or one chat.' }))
   const scope = scopes[0] ?? ''
   if (scope === 'standalone') return brandString<IceSkyDraftScope>(scope)
-  if (!scope.startsWith('session:')) throw new RequestFailure(400, 'invalid-scope', '草稿所属聊天无效。')
+  if (!scope.startsWith('session:')) throw new RequestFailure(400, 'invalid-scope', localized({ zh: '草稿所属聊天无效。', en: 'The chat of this draft is invalid.' }))
   const raw = scope.slice('session:'.length)
-  if (!raw || raw.length > 512 || /[\x00-\x20/\\]/.test(raw)) throw new RequestFailure(400, 'invalid-scope', '草稿所属聊天无效。')
-  if (!await options.sessionExists(raw, signal)) throw new RequestFailure(404, 'session-not-found', '所属聊天不存在。')
+  if (!raw || raw.length > 512 || /[\x00-\x20/\\]/.test(raw)) throw new RequestFailure(400, 'invalid-scope', localized({ zh: '草稿所属聊天无效。', en: 'The chat of this draft is invalid.' }))
+  if (!await options.sessionExists(raw, signal)) throw new RequestFailure(404, 'session-not-found', localized({ zh: '所属聊天不存在。', en: 'The chat of this draft no longer exists.' }))
   return brandString<IceSkyDraftScope>(scope)
 }
 
 async function readRequest(request: IncomingMessage, maxBytes: number): Promise<unknown> {
-  const tooLarge = new RequestFailure(413, 'draft-too-large', '草稿超过保存大小限制。')
+  const tooLarge = new RequestFailure(413, 'draft-too-large', localized({ zh: '草稿超过保存大小限制。', en: 'The draft is larger than the save limit.' }))
   const declared = request.headers['content-length']
   if (declared !== undefined && (!/^\d+$/u.test(declared) || Number(declared) > maxBytes)) throw tooLarge
   let body: Buffer
   try { body = await readBody(request, maxBytes) } catch (_overLimit) { throw tooLarge }
   try { return JSON.parse(body.toString('utf8')) }
-  catch (_invalidDraft) { throw new RequestFailure(400, 'invalid-draft', '草稿 JSON 无效。') }
+  catch (_invalidDraft) { throw new RequestFailure(400, 'invalid-draft', localized({ zh: '草稿 JSON 无效。', en: 'The draft is not valid JSON.' })) }
 }
 
 function json(response: ServerResponse, status: number, value: object): void {
@@ -175,16 +176,16 @@ export function createIceSkyDraftHandler(
       if (request.method === 'GET') { json(response, 200, store.get(scope)); return }
       const body = await readRequest(request, options.maxDraftBytes)
       const parsed = request.method === 'PUT' ? writeSchema.safeParse(body) : clearSchema.safeParse(body)
-      if (!parsed.success) throw new RequestFailure(400, 'invalid-draft', '草稿只能保存文字和参数，不能包含 API 密钥。')
+      if (!parsed.success) throw new RequestFailure(400, 'invalid-draft', localized({ zh: '草稿只能保存文字和参数，不能包含 API 密钥。', en: 'A draft can hold only text and options, not API keys.' }))
       json(response, 200, await store.replace(scope, parsed.data.baseRevision, parsed.data.data))
     } catch (error) {
       if (response.destroyed) return
       if (error instanceof IceSkyDraftConflict) {
-        json(response, 409, { ...error.current, error: { code: 'revision-conflict', message: '草稿已被更新，请先重新读取。' } })
+        json(response, 409, { ...error.current, error: { code: 'revision-conflict', message: localized({ zh: '草稿已被更新，请先重新读取。', en: 'The draft was changed elsewhere. Load it again first.' }) } })
       } else if (error instanceof RequestFailure) {
         json(response, error.status, { error: { code: error.code, message: error.message } })
       } else {
-        json(response, 503, { error: { code: 'draft-storage-unavailable', message: '草稿保存失败，当前输入仍可继续使用。' } })
+        json(response, 503, { error: { code: 'draft-storage-unavailable', message: localized({ zh: '草稿保存失败，当前输入仍可继续使用。', en: 'The draft was not saved. Your current input is still available.' }) } })
       }
     } finally { response.removeListener('close', disconnected) }
   }

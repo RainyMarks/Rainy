@@ -6,6 +6,7 @@ import { resolveBudget } from '../../shared/budget.ts'
 import type {
   ModelDiscoveryInput, ModelSelection, ModelSetup, ModelSetupInput, ModelsStatus, ThinkingLevel,
 } from '../../shared/rpc.ts'
+import { localized } from '../../shared/locale.ts'
 import { inspectStrataHealth } from '../../shared/strata-health.ts'
 import { RpcError } from '../rpc.ts'
 import { GLOBAL_PROMPT_MAX_CHARS, LOCAL_NO_KEY, type Settings } from '../settings.ts'
@@ -41,18 +42,18 @@ const thinking = z.enum(['off', 'low', 'high', 'max'])
  * @returns Normalized connection fields.
  */
 export function parseDiscovery(value: unknown): ModelDiscoveryInput {
-  if (value === null || typeof value !== 'object') throw new Error('模型设置必须是对象。')
+  if (value === null || typeof value !== 'object') throw new Error(localized({ zh: '模型设置必须是对象。', en: 'Model settings must be an object.' }))
   const data = value as Record<string, unknown>
-  if (typeof data.provider !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(data.provider)) throw new Error('供应商 ID 只允许小写字母、数字和连字符。')
-  if (typeof data.baseURL !== 'string') throw new Error('请填写服务地址。')
+  if (typeof data.provider !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(data.provider)) throw new Error(localized({ zh: '供应商 ID 只允许小写字母、数字和连字符。', en: 'The provider ID may contain only lowercase letters, digits and hyphens.' }))
+  if (typeof data.baseURL !== 'string') throw new Error(localized({ zh: '请填写服务地址。', en: 'Enter the service address.' }))
   let url: URL
-  try { url = new URL(data.baseURL) } catch (_error) { throw new Error('服务地址必须是有效的 HTTP(S) Base URL。') }
+  try { url = new URL(data.baseURL) } catch (_error) { throw new Error(localized({ zh: '服务地址必须是有效的 HTTP(S) Base URL。', en: 'The service address must be a valid HTTP(S) base URL.' })) }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-    throw new Error('服务地址必须是 HTTP(S) Base URL，不能包含密钥或查询参数。')
+    throw new Error(localized({ zh: '服务地址必须是 HTTP(S) Base URL，不能包含密钥或查询参数。', en: 'The service address must be an HTTP(S) base URL without credentials or query parameters.' }))
   }
   const protocol = api.safeParse(data.api)
-  if (!protocol.success) throw new Error('不支持的 API 协议。')
-  if (data.apiKey !== undefined && typeof data.apiKey !== 'string') throw new Error('密钥格式无效。')
+  if (!protocol.success) throw new Error(localized({ zh: '不支持的 API 协议。', en: 'This API protocol is not supported.' }))
+  if (data.apiKey !== undefined && typeof data.apiKey !== 'string') throw new Error(localized({ zh: '密钥格式无效。', en: 'The key format is invalid.' }))
   return { provider: data.provider, baseURL: url.href.replace(/\/$/, ''), api: protocol.data, ...(data.apiKey === undefined ? {} : { apiKey: data.apiKey }) }
 }
 
@@ -62,16 +63,16 @@ export function parseDiscovery(value: unknown): ModelDiscoveryInput {
  * @returns The profile plus the optional key.
  */
 export function parseSetup(value: unknown): ModelSetupInput {
-  if (value === null || typeof value !== 'object') throw new Error('模型设置必须是对象。')
+  if (value === null || typeof value !== 'object') throw new Error(localized({ zh: '模型设置必须是对象。', en: 'Model settings must be an object.' }))
   const data = value as Record<string, unknown>
-  if (typeof data.model !== 'string' || !data.model.trim()) throw new Error('请填写服务地址和模型 ID。')
-  if (typeof data.contextWindow !== 'number' || typeof data.local !== 'boolean') throw new Error('请填写实际上下文长度并选择本地或 API 模型。')
-  if (data.maxTokens !== undefined && typeof data.maxTokens !== 'number') throw new Error('输出上限必须是数字。')
+  if (typeof data.model !== 'string' || !data.model.trim()) throw new Error(localized({ zh: '请填写服务地址和模型 ID。', en: 'Enter the service address and the model ID.' }))
+  if (typeof data.contextWindow !== 'number' || typeof data.local !== 'boolean') throw new Error(localized({ zh: '请填写实际上下文长度并选择本地或 API 模型。', en: 'Enter the actual context length and choose a local or API model.' }))
+  if (data.maxTokens !== undefined && typeof data.maxTokens !== 'number') throw new Error(localized({ zh: '输出上限必须是数字。', en: 'The output limit must be a number.' }))
   resolveBudget(data.contextWindow, data.maxTokens)
   const connection = parseDiscovery({ ...data, api: data.api ?? (data.local ? 'openai-completions' : 'openai-responses') })
-  if (data.thinking !== undefined && !thinking.safeParse(data.thinking).success) throw new Error('推理档位无效。')
-  if (data.thinkingFormat !== undefined && !['openai', 'deepseek', 'qwen'].includes(String(data.thinkingFormat))) throw new Error('推理协议无效。')
-  if (data.maxTokensField !== undefined && !['max_tokens', 'max_completion_tokens'].includes(String(data.maxTokensField))) throw new Error('输出参数格式无效。')
+  if (data.thinking !== undefined && !thinking.safeParse(data.thinking).success) throw new Error(localized({ zh: '推理档位无效。', en: 'The reasoning level is invalid.' }))
+  if (data.thinkingFormat !== undefined && !['openai', 'deepseek', 'qwen'].includes(String(data.thinkingFormat))) throw new Error(localized({ zh: '推理协议无效。', en: 'The reasoning format is invalid.' }))
+  if (data.maxTokensField !== undefined && !['max_tokens', 'max_completion_tokens'].includes(String(data.maxTokensField))) throw new Error(localized({ zh: '输出参数格式无效。', en: 'The output limit field is invalid.' }))
   return {
     ...connection, model: data.model.trim(), contextWindow: data.contextWindow, local: data.local,
     ...(data.maxTokens === undefined ? {} : { maxTokens: data.maxTokens }),
@@ -156,7 +157,7 @@ export class Models {
     if (apiKey?.trim()) await this.settings.setApiKey(setup.provider, apiKey.trim())
     else if (this.settings.apiKey(setup.provider) === undefined) {
       if (setup.local) await this.settings.setApiKey(setup.provider, LOCAL_NO_KEY)
-      else throw new RpcError('missing-key', '请填写 API 密钥。')
+      else throw new RpcError('missing-key', localized({ zh: '请填写 API 密钥。', en: 'Enter the API key.' }))
     }
     const budget = resolveBudget(setup.contextWindow, setup.maxTokens)
     const level = effectiveThinking(setup)
@@ -196,7 +197,7 @@ export class Models {
    */
   async select(selection: ModelSelection): Promise<ModelsStatus> {
     const setup = this.settings.get().models.find(model => model.provider === selection.provider && model.model === selection.model)
-    if (setup === undefined) throw new RpcError('not-found', '模型尚未配置。')
+    if (setup === undefined) throw new RpcError('not-found', localized({ zh: '模型尚未配置。', en: 'This model is not configured.' }))
     const level = effectiveThinking(setup, selection.thinking)
     await this.settings.update((data) => {
       data.selected = { provider: setup.provider, model: setup.model, ...(level === undefined ? {} : { thinking: level }) }
@@ -212,7 +213,7 @@ export class Models {
    */
   async setGlobalPrompt(text: string): Promise<ModelsStatus> {
     const trimmed = text.trim()
-    if (trimmed.length > GLOBAL_PROMPT_MAX_CHARS) throw new RpcError('too-large', `全局提示词最多 ${GLOBAL_PROMPT_MAX_CHARS} 个字符。`)
+    if (trimmed.length > GLOBAL_PROMPT_MAX_CHARS) throw new RpcError('too-large', localized({ zh: `全局提示词最多 ${GLOBAL_PROMPT_MAX_CHARS} 个字符。`, en: `The global prompt can be at most ${GLOBAL_PROMPT_MAX_CHARS} characters.` }))
     await this.settings.update((data) => { data.globalPrompt = trimmed })
     this.publish()
     return this.status()
@@ -235,16 +236,17 @@ export class Models {
     } else if (key) headers.authorization = `Bearer ${key}`
     let response: Response
     try { response = await this.request(url, { headers, signal: AbortSignal.timeout(10_000), redirect: 'error' }) } catch (error) {
-      throw new RpcError('discovery-failed', `无法连接 ${url}：${error instanceof Error ? error.message : String(error)}`)
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new RpcError('discovery-failed', localized({ zh: `无法连接 ${url}：${reason}`, en: `Could not connect to ${url}: ${reason}` }))
     }
-    if (!response.ok) throw new RpcError('discovery-failed', `模型列表请求失败（HTTP ${response.status}）。`)
+    if (!response.ok) throw new RpcError('discovery-failed', localized({ zh: `模型列表请求失败（HTTP ${response.status}）。`, en: `The model list request failed (HTTP ${response.status}).` }))
     const text = await response.text()
-    if (text.length > 8 * 1024 * 1024) throw new RpcError('discovery-failed', '模型列表过大。')
+    if (text.length > 8 * 1024 * 1024) throw new RpcError('discovery-failed', localized({ zh: '模型列表过大。', en: 'The model list is too large.' }))
     const body: unknown = JSON.parse(text)
     const listed = isRecord(body) && Array.isArray(body.data) ? body.data
       : isRecord(body) && Array.isArray(body.models) ? body.models
         : isRecord(body) && isRecord(body.models) ? Object.entries(body.models).map(([id, entry]) => ({ id, ...(isRecord(entry) ? entry : {}) })) : undefined
-    if (listed === undefined) throw new RpcError('discovery-failed', '该服务的模型列表格式无法识别，请手动填写模型 ID。')
+    if (listed === undefined) throw new RpcError('discovery-failed', localized({ zh: '该服务的模型列表格式无法识别，请手动填写模型 ID。', en: 'This service lists its models in an unknown format. Enter the model ID yourself.' }))
     return listed.flatMap((entry) => {
       if (!isRecord(entry) || typeof entry.id !== 'string' || entry.id === '') return []
       const window = [entry.contextWindow, entry.context_window, entry.context_length, entry.max_input_tokens, isRecord(entry.limit) ? entry.limit.context : undefined]
@@ -265,17 +267,19 @@ export class Models {
       || saved.maxTokens !== resolveBudget(input.contextWindow, input.maxTokens).outputTokens || saved.thinking !== effectiveThinking(input)
       || (input.api === 'openai-completions' && ((saved.thinkingFormat ?? 'openai') !== (input.thinkingFormat ?? 'openai')
         || (saved.maxTokensField ?? 'max_tokens') !== (input.maxTokensField ?? 'max_tokens')))) {
-      throw new RpcError('not-saved', '请先保存当前模型设置，再验证这份已保存的配置。')
+      throw new RpcError('not-saved', localized({ zh: '请先保存当前模型设置，再验证这份已保存的配置。', en: 'Save the current model settings first, then check the saved configuration.' }))
     }
     const resolved = this.resolve({ provider: saved.provider, model: saved.model, thinking: saved.thinking })!
     const reply = await this.complete(resolved, 'Connection diagnostic. Reply only with RainyAgent connected.', [], 180_000)
-    if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new RpcError('probe-failed', reply.errorMessage ?? '连接失败。')
+    if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new RpcError('probe-failed', reply.errorMessage ?? localized({ zh: '连接失败。', en: 'The connection failed.' }))
     let text = reply.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('').slice(0, 300)
     let toolCall = false
     const tools = [{ name: 'rainy_probe', description: 'Harmless connection diagnostic; returns the supplied integer.', parameters: Type.Object({ value: Type.Integer() }) }]
     const toolReply = await this.complete(resolved, 'Connection diagnostic. Call rainy_probe with value 7 exactly once. Do not access files or run commands.', tools, 180_000)
-    if (toolReply.stopReason === 'error' || toolReply.stopReason === 'aborted') text += `\n工具诊断：${(toolReply.errorMessage ?? '未通过').slice(0, 200)}`
-    else toolCall = toolReply.content.some(block => block.type === 'toolCall' && block.name === 'rainy_probe')
+    if (toolReply.stopReason === 'error' || toolReply.stopReason === 'aborted') {
+      const reason = (toolReply.errorMessage ?? localized({ zh: '未通过', en: 'failed' })).slice(0, 200)
+      text += localized({ zh: `\n工具诊断：${reason}`, en: `\nTool check: ${reason}` })
+    } else toolCall = toolReply.content.some(block => block.type === 'toolCall' && block.name === 'rainy_probe')
     return { stream: text.length > 0, toolCall, text }
   }
 
@@ -285,14 +289,17 @@ export class Models {
    * @returns The new selection.
    */
   async connectStrata(raw: unknown): Promise<ModelSelection> {
-    if (raw === null || typeof raw !== 'object' || !('baseURL' in raw) || typeof raw.baseURL !== 'string') throw new Error('Strata 连接需要本机服务地址。')
+    if (raw === null || typeof raw !== 'object' || !('baseURL' in raw) || typeof raw.baseURL !== 'string') throw new Error(localized({ zh: 'Strata 连接需要本机服务地址。', en: 'Connecting to Strata needs the local service address.' }))
     let health: Awaited<ReturnType<typeof inspectStrataHealth>>
     try { health = await inspectStrataHealth(raw.baseURL) } catch (error) {
-      const detail = error instanceof Error ? error.message : '本地服务未就绪。'
-      throw new Error(`当前执行环境无法连接已加载的 Strata：${detail} Windows 本地模型请使用 Windows 执行环境；不会切换到云端。`)
+      const detail = error instanceof Error ? error.message : localized({ zh: '本地服务未就绪。', en: 'The local service is not ready.' })
+      throw new Error(localized({
+        zh: `当前执行环境无法连接已加载的 Strata：${detail} Windows 本地模型请使用 Windows 执行环境；不会切换到云端。`,
+        en: `This execution environment cannot reach the loaded Strata model: ${detail} Use the Windows execution environment for local Windows models; RainyAgent does not switch to a cloud model.`,
+      }))
     }
-    if ('expectedContextWindow' in raw && raw.expectedContextWindow !== health.contextWindow) throw new Error('Strata 的实际上下文已改变，请刷新后重新连接。')
-    if ('maxTokens' in raw && (typeof raw.maxTokens !== 'number' || !('expectedContextWindow' in raw))) throw new Error('调整输出上限需要确认当前 Strata 上下文。')
+    if ('expectedContextWindow' in raw && raw.expectedContextWindow !== health.contextWindow) throw new Error(localized({ zh: 'Strata 的实际上下文已改变，请刷新后重新连接。', en: 'The Strata context length changed. Refresh and connect again.' }))
+    if ('maxTokens' in raw && (typeof raw.maxTokens !== 'number' || !('expectedContextWindow' in raw))) throw new Error(localized({ zh: '调整输出上限需要确认当前 Strata 上下文。', en: 'Changing the output limit requires confirming the current Strata context length.' }))
     const previous = this.settings.get().models.find(model => model.provider === 'rainy-strata')
     const maxTokens = 'maxTokens' in raw ? raw.maxTokens as number : previous?.maxTokens
     return this.configure({

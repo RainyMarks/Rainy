@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { finished, pipeline } from 'node:stream/promises'
+import { localized } from '../shared/locale.ts'
 import type { NativeInvocation } from './native-tools.ts'
 import { toolPackFileSystem } from './toolpack-fs.ts'
 
@@ -31,7 +32,7 @@ export interface NativeToolWebPage {
  * @returns its private entry URL and complete asynchronous cleanup.
  */
 export async function serveNativeTool(invocation: NativeInvocation): Promise<NativeToolWebPage> {
-  if (invocation.kind !== 'web') throw new Error('只支持离线网页工具')
+  if (invocation.kind !== 'web') throw new Error(localized({ zh: '只支持离线网页工具', en: 'Only offline web tools are supported.' }))
   const root = await realpath(dirname(invocation.target))
   const entry = relative(root, await realpath(invocation.target))
   const prefix = `/${randomBytes(24).toString('hex')}/`
@@ -73,7 +74,7 @@ export async function serveNativeTool(invocation: NativeInvocation): Promise<Nat
   })
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve() }) })
   const address = server.address()
-  if (address === null || typeof address === 'string') { server.close(); throw new Error('无法打开离线工具页面') }
+  if (address === null || typeof address === 'string') { server.close(); throw new Error(localized({ zh: '无法打开离线工具页面', en: 'The offline tool page could not be opened.' })) }
   const origin = `http://127.0.0.1:${address.port}`
   let closing: Promise<void> | undefined
   return { origin, url: `${origin}${prefix}${entry.split(sep).map(encodeURIComponent).join('/')}`,

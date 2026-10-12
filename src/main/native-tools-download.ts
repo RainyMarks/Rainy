@@ -1,6 +1,7 @@
 /** Download selected tools into per-user storage from verified, resumable per-unit archives. */
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { localized } from '../shared/locale.ts'
 import type { NativeToolId, NativeToolsDownloadState, NativeToolsOperation, NativeToolsUpdateState } from '../shared/native-tools-protocol.ts'
 import type { ReleaseKeyring } from './release-trust.ts'
 import { acquireToolPackLock, damagedToolPackUnits, installNativeToolPack, installedToolPackManifest, sameToolPackUnit } from './toolpack.ts'
@@ -142,7 +143,10 @@ export class NativeToolsDownloader {
     const record = await readToolPackRecord(join(root, '.rainy-toolpack', 'installed.json'))
     if (record === undefined) return undefined
     const parsed = installedToolPackSchema.safeParse(record)
-    if (!parsed.success) throw new ToolPackInstallError('invalid-record', '工具安装版本记录损坏，已保留原文件。')
+    if (!parsed.success) {
+      throw new ToolPackInstallError('invalid-record', localized({ zh: '工具安装版本记录损坏，已保留原文件。',
+        en: 'The record of installed tool versions is damaged. The original file was kept.' }))
+    }
     const cache = this.installedCache
     const metadata = cache?.root === root && cache.packId === parsed.data.packId ? cache.metadata
       : await installedToolPackManifest(root, parsed.data.packId)
@@ -195,17 +199,22 @@ export class NativeToolsDownloader {
       try {
         const accepted = await this.current()
         const response = await (this.options.fetch ?? globalThis.fetch)(TOOL_CHANNEL_URL, { signal, credentials: 'omit', cache: 'no-cache' })
-        if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`检查工具更新失败（HTTP ${response.status}）`) }
+        if (!response.ok || !response.body) {
+          await response.body?.cancel()
+          throw new Error(localized({ zh: `检查工具更新失败（HTTP ${response.status}）`, en: `Checking for tool updates failed (HTTP ${response.status}).` }))
+        }
         const chunks: Buffer[] = []
         let size = 0
         for await (const chunk of response.body) {
           size += chunk.byteLength
-          if (size > 12 * 1024 ** 2) throw new Error('工具更新目录超过大小限制')
+          if (size > 12 * 1024 ** 2) throw new Error(localized({ zh: '工具更新目录超过大小限制', en: 'The tool update catalog is larger than allowed.' }))
           chunks.push(Buffer.from(chunk))
         }
         const text = Buffer.concat(chunks).toString('utf8')
         const channel = authenticateToolChannel(JSON.parse(text), this.options.keys)
-        if (channel.revision === accepted.revision && channel.source.packId !== accepted.source.packId) throw new Error('工具更新清单冲突')
+        if (channel.revision === accepted.revision && channel.source.packId !== accepted.source.packId) {
+          throw new Error(localized({ zh: '工具更新清单冲突', en: 'The tool update conflicts with the current tool list.' }))
+        }
         // A publisher channel older than this carrier's own is ignored.
         if (channel.revision > accepted.revision) {
           await writeToolPackFile(join(this.options.cacheRoot, CHANNEL_FILE), text)
@@ -216,7 +225,8 @@ export class NativeToolsDownloader {
         return { phase: updatable ? 'available' : 'current', version: this.channel?.releaseVersion ?? channel.releaseVersion, error: '' }
       } catch (error) {
         if (this.checkAbort?.signal.aborted) return { phase: 'unchecked', version: this.channel?.releaseVersion ?? '', error: '' }
-        return { phase: 'error', version: this.channel?.releaseVersion ?? '', error: error instanceof Error ? error.message : '无法检查工具更新，请检查网络后重试' }
+        return { phase: 'error', version: this.channel?.releaseVersion ?? '', error: error instanceof Error ? error.message
+          : localized({ zh: '无法检查工具更新，请检查网络后重试', en: 'Could not check for tool updates. Check your connection and try again.' }) }
       }
     })().finally(() => { this.checking = undefined; this.checkAbort = undefined })
     return this.checking
@@ -239,8 +249,11 @@ export class NativeToolsDownloader {
    * @returns settled operation.
    */
   start(request: NativeToolsRequest): Promise<void> {
-    if (this.closed) return Promise.reject(new Error('RainyAgent 正在关闭'))
-    if (this.running) return Promise.reject(new Error('另一个工具操作正在进行，请等待完成或先取消'))
+    if (this.closed) return Promise.reject(new Error(localized({ zh: 'RainyAgent 正在关闭', en: 'RainyAgent is closing.' })))
+    if (this.running) {
+      return Promise.reject(new Error(localized({ zh: '另一个工具操作正在进行，请等待完成或先取消',
+        en: 'Another tool operation is in progress. Wait for it to finish or cancel it first.' })))
+    }
     this.abort = new AbortController()
     this.running = this.run(request, this.abort.signal).finally(() => { this.running = undefined; this.abort = undefined })
     return this.running
@@ -340,7 +353,7 @@ export class NativeToolsDownloader {
       let replace: string[] = []
       if (request.operation === 'remove') {
         const text = await optionalText(join(root, 'tools', 'manifest.json'))
-        if (installed === undefined || text === undefined) throw new Error('工具尚未安装')
+        if (installed === undefined || text === undefined) throw new Error(localized({ zh: '工具尚未安装', en: 'No tools are installed yet.' }))
         const catalog = parseNativeToolCatalog(text)
         metadata = installed.metadata
         metadataPath = join(root, '.rainy-toolpack', 'manifests', `${metadata.id}.json`)
@@ -348,7 +361,9 @@ export class NativeToolsDownloader {
         units = unitsFor(catalog, installedIds(catalog).filter(id => !removed.has(id)))
       } else {
         const catalog = parseNativeToolCatalog(channel.catalog)
-        for (const id of tools) if (!catalog.tools.some(tool => tool.id === id)) throw new Error(`工具不在当前目录中：${id}`)
+        for (const id of tools) {
+          if (!catalog.tools.some(tool => tool.id === id)) throw new Error(localized({ zh: `工具不在当前目录中：${id}`, en: `The tool is not in the current tool list: ${id}` }))
+        }
         units = unitsFor(catalog, new Set([...installedIds(catalog), ...tools]))
         metadataPath = await this.metadataFile(channel)
         if (request.operation === 'repair' && installed !== undefined) {
@@ -387,7 +402,7 @@ export class NativeToolsDownloader {
       const recoveryFailed = error instanceof ToolPackInstallError && error.code === 'rollback-required'
       const cancelled = !recoveryFailed && (signal.aborted || error instanceof ToolPackInstallError && error.code === 'cancelled')
       this.publish({ ...this.state, operation, tools, phase: cancelled ? 'cancelled' : 'error',
-        error: cancelled ? '' : error instanceof Error ? error.message : '工具操作失败，请重试' })
+        error: cancelled ? '' : error instanceof Error ? error.message : localized({ zh: '工具操作失败，请重试', en: 'The tool operation failed. Try again.' }) })
       if (!cancelled) throw error
     }
   }

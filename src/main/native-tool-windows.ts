@@ -1,5 +1,6 @@
 /** Native tool windows and the trusted desktop catalog bridge. */
 import { BrowserWindow, ipcMain } from 'electron'
+import { localized } from '../shared/locale.ts'
 import { NativeToolsLibrary, parseNativeFavorites, parseNativeLaunch } from './native-tools.ts'
 import type { NativeToolsRequest } from './native-tools-download.ts'
 import { startNativeProcess } from './native-tool-process.ts'
@@ -42,7 +43,14 @@ export function installNativeTools(options: {
     publish: (state) => { if (!closed && !options.window.isDestroyed()) options.window.webContents.send('rainy:tools-download-progress', state) },
   })
   const isClosed = (): boolean => closed
-  const assertNoWebpages = (): void => { if (webpages.size > 0) throw new Error('请先关闭已打开的工具窗口，再下载或更新工具包') }
+  const assertNoWebpages = (): void => {
+    if (webpages.size > 0) {
+      throw new Error(localized({ zh: '请先关闭已打开的工具窗口，再下载或更新工具包', en: 'Close the open tool windows before downloading or updating the tool pack.' }))
+    }
+  }
+  const closingError = (): Error => new Error(localized({ zh: 'RainyAgent 正在关闭', en: 'RainyAgent is closing.' }))
+  const unavailableError = (): Error => new Error(localized({ zh: '当前版本未提供在线工具包，请更新 RainyAgent',
+    en: 'This version has no online tool pack. Update RainyAgent.' }))
   const closePage = (page: NativeToolWebPage): Promise<void> => {
     const closing = page.close()
     closingPages.add(closing)
@@ -52,14 +60,14 @@ export function installNativeTools(options: {
   const library = new NativeToolsLibrary({ installRoot: options.installRoot, userData: options.userData,
     ...download === undefined ? {} : { inventory: () => download.inventory() },
     start: async (invocation) => {
-      if (isClosed()) throw new Error('RainyAgent 正在关闭')
-      if (installing) throw new Error('请等待工具安装完成后再打开工具')
+      if (isClosed()) throw closingError()
+      if (installing) throw new Error(localized({ zh: '请等待工具安装完成后再打开工具', en: 'Wait for the tool installation to finish before opening tools.' }))
       if (invocation.kind !== 'web') {
         await startNativeProcess(invocation, globalThis.process.env)
         return
       }
       const page = await serveNativeTool(invocation)
-      if (isClosed()) { await page.close(); throw new Error('RainyAgent 正在关闭') }
+      if (isClosed()) { await page.close(); throw closingError() }
       const window = new BrowserWindow({ title: invocation.name, width: 1240, height: 860, minWidth: 700, minHeight: 500,
         show: false, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true,
           partition: `rainy-tool-${invocation.id}`, spellcheck: false } })
@@ -75,22 +83,27 @@ export function installNativeTools(options: {
   })
   const trusted = (event: Electron.IpcMainInvokeEvent): void => {
     if (closed || event.sender !== options.window.webContents || event.senderFrame !== options.window.webContents.mainFrame
-      || new URL(event.senderFrame.url).origin !== options.origin) throw new Error('工具请求来源无效')
+      || new URL(event.senderFrame.url).origin !== options.origin) {
+      throw new Error(localized({ zh: '工具请求来源无效', en: 'The tool request came from an unknown source.' }))
+    }
   }
   ipcMain.handle('rainy:tools-list', async (event) => { trusted(event); return library.listTools() })
   ipcMain.handle('rainy:tools-check-updates', async (event) => {
     trusted(event)
-    if (!download) throw new Error('当前版本未提供在线工具包，请更新 RainyAgent')
+    if (!download) throw unavailableError()
     return download.checkUpdates()
   })
   ipcMain.handle('rainy:tools-download-state', (event) => {
     trusted(event)
-    if (!download) throw new Error('当前版本未提供在线工具包，请更新 RainyAgent')
+    if (!download) throw unavailableError()
     return download.status()
   })
   const operate = (request: NativeToolsRequest): Promise<void> => {
-    if (!download) throw new Error('当前版本未提供在线工具包，请更新 RainyAgent')
-    if (installOperation) throw new Error('另一个工具操作正在进行，请等待完成或先取消')
+    if (!download) throw unavailableError()
+    if (installOperation) {
+      throw new Error(localized({ zh: '另一个工具操作正在进行，请等待完成或先取消',
+        en: 'Another tool operation is in progress. Wait for it to finish or cancel it first.' }))
+    }
     assertNoWebpages()
     installing = true
     cancelRequested = false

@@ -1,5 +1,6 @@
 /** Explicit human preparation of the selected distribution's offline development tools. */
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 
 /** Actions the local development setup page may request. Retry is read-only. */
 export type IdeEnvironmentAction = { readonly type: 'install' | 'retry' }
@@ -109,7 +110,8 @@ export interface IdeEnvironmentSetup {
  * @returns one serialized explicit-install controller.
  */
 export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): IdeEnvironmentSetup {
-  let latest: IdeEnvironmentSnapshot = { status: 'checking', distro: options.distro, message: '正在检查开发工具…', busy: false,
+  let latest: IdeEnvironmentSnapshot = { status: 'checking', distro: options.distro,
+    message: localized({ zh: '正在检查开发工具…', en: 'Checking the development tools…' }), busy: false,
     offlineInstallSupported: false, tools: [], incompletePackages: [], log: [] }
   let action: Promise<IdeEnvironmentSnapshot> | undefined
   let inspection: Promise<IdeEnvironmentSnapshot> | undefined
@@ -127,7 +129,8 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
   }
   const fail = (error: unknown): IdeEnvironmentSnapshot => publish({ status: 'error', busy: false,
     code: error instanceof IdeEnvironmentError ? error.code : 'development-setup-failed',
-    message: error instanceof Error ? error.message : '开发工具准备失败，请重新检查后重试。' })
+    message: error instanceof Error ? error.message
+      : localized({ zh: '开发工具准备失败，请重新检查后重试。', en: 'Preparing the development tools failed. Check again, then retry.' }) })
 
   const inspectInternal = async (): Promise<IdeEnvironmentSnapshot> => {
     try {
@@ -137,19 +140,29 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
       const incomplete = supported && observed.mediaMatches ? observed.incompletePackages : []
       publish({ tools: observed.tools, incompletePackages: incomplete, offlineInstallSupported: supported,
         os: observed.os, osVersion: observed.osVersion, busy: false, code: undefined })
-      if (missing.length === 0 && incomplete.length === 0) return publish({ status: 'ready', message: '开发工具已就绪，可以返回工作区运行和调试代码。' })
-      if (!supported) return publish({ status: 'unsupported', code: 'unsupported-distribution',
-        message: `所选环境为 ${observed.os} ${observed.osVersion}（${observed.architecture}）。随包离线安装仅支持 Ubuntu 26.04 amd64；请在所选环境中手动准备缺失工具。` })
+      if (missing.length === 0 && incomplete.length === 0) {
+        return publish({ status: 'ready', message: localized({ zh: '开发工具已就绪，可以返回工作区运行和调试代码。',
+          en: 'The development tools are ready. Return to the workspace to run and debug code.' }) })
+      }
+      if (!supported) return publish({ status: 'unsupported', code: 'unsupported-distribution', message: localized({
+        zh: `所选环境为 ${observed.os} ${observed.osVersion}（${observed.architecture}）。随包离线安装仅支持 Ubuntu 26.04 amd64；请在所选环境中手动准备缺失工具。`,
+        en: `The selected environment is ${observed.os} ${observed.osVersion} (${observed.architecture}). The bundled offline installation supports only `
+          + 'Ubuntu 26.04 amd64. Install the missing tools in this environment yourself.' }) })
       if (!observed.mediaPresent || !observed.mediaMatches) return publish({ status: 'missing-media', code: 'development-media-missing',
-        message: '离线开发工具文件缺失或不匹配，请重新安装完整的 RainyAgent 安装包后重试。' })
+        message: localized({ zh: '离线开发工具文件缺失或不匹配，请重新安装完整的 RainyAgent 安装包后重试。',
+          en: 'The offline development tool files are missing or do not match. Reinstall RainyAgent from the full installer, then try again.' }) })
       return publish({ status: 'needs-install', message: missing.length > 0
-        ? `缺少 ${missing.map(tool => tool.name).join('、')}。点击“安装开发工具”后，将在当前环境中安装随包提供的开发组件。`
-        : '开发组件尚未完成配置。点击“安装开发工具”可继续离线准备。' })
+        ? localized({ zh: `缺少 ${missing.map(tool => tool.name).join('、')}。点击“安装开发工具”后，将在当前环境中安装随包提供的开发组件。`,
+          en: `Missing: ${missing.map(tool => tool.name).join(', ')}. Click "Install development tools" to install the bundled development components in this environment.` })
+        : localized({ zh: '开发组件尚未完成配置。点击“安装开发工具”可继续离线准备。',
+          en: 'The development components are not fully set up. Click "Install development tools" to continue the offline setup.' }) })
     } catch (error) { return fail(error) }
   }
 
+  const closedError = (): IdeEnvironmentError => new IdeEnvironmentError('setup-closed',
+    localized({ zh: '开发工具向导已关闭。', en: 'The development tools setup is closed.' }))
   const inspect = (): Promise<IdeEnvironmentSnapshot> => {
-    if (closing) return Promise.reject(new IdeEnvironmentError('setup-closed', '开发工具向导已关闭。'))
+    if (closing) return Promise.reject(closedError())
     if (action !== undefined) return Promise.resolve(snapshot())
     inspection ??= inspectInternal().finally(() => { inspection = undefined })
     return inspection
@@ -161,7 +174,8 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
     try {
       const before = await inspectInternal()
       if (before.status !== 'needs-install') return before
-      publish({ status: 'installing', busy: true, code: undefined, log: [], message: '正在校验并离线安装开发工具，请等待完成后再关闭此窗口。' })
+      publish({ status: 'installing', busy: true, code: undefined, log: [], message: localized({ zh: '正在校验并离线安装开发工具，请等待完成后再关闭此窗口。',
+        en: 'Verifying and installing the development tools offline. Wait until this finishes before closing the window.' }) })
       await options.platform.install((message) => {
         const lines = message.replaceAll('\r', '').split('\n').filter(line => line.trim() !== '')
           .map(line => line.slice(-options.config.maxProgressLineCharacters))
@@ -169,13 +183,14 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
       })
       const after = await inspectInternal()
       if (after.status === 'needs-install') return publish({ status: 'error', code: 'development-tools-incomplete', busy: false,
-        message: '安装已退出，但部分开发工具仍未就绪。请查看安装详情后重新检查，再明确选择安装。' })
+        message: localized({ zh: '安装已退出，但部分开发工具仍未就绪。请查看安装详情后重新检查，再明确选择安装。',
+          en: 'The installation ended, but some development tools are still not ready. Review the installation details, check again, then choose to install.' }) })
       return after
     } catch (error) { return fail(error) }
   }
 
   const act = (requested: IdeEnvironmentAction): Promise<IdeEnvironmentSnapshot> => {
-    if (closing) return Promise.reject(new IdeEnvironmentError('setup-closed', '开发工具向导已关闭。'))
+    if (closing) return Promise.reject(closedError())
     if (action !== undefined) return action
     action = perform(requested).finally(() => { action = undefined })
     return action
