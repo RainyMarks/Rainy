@@ -39,7 +39,8 @@ interface Connection {
   client?: Client | undefined
   state: McpServerStatus['state']
   error?: string | undefined
-  tools: { name: string; description: string; inputSchema: Record<string, unknown> }[]
+  /** `readOnly`: the server marks the tool as not changing its environment (`readOnlyHint`). */
+  tools: { name: string; description: string; inputSchema: Record<string, unknown>; readOnly: boolean }[]
   instructions: string
   closing?: boolean | undefined
 }
@@ -103,6 +104,16 @@ export class McpManager {
       .map(connection => ({ server: connection.config.name, text: connection.instructions }))
   }
 
+  /** @returns Model-facing names of connected tools their server marks as read-only. */
+  readOnlyTools(): Set<string> {
+    const names = new Set<string>()
+    for (const connection of this.connections.values()) {
+      if (connection.state !== 'ready') continue
+      for (const tool of connection.tools) if (tool.readOnly) names.add(mcpToolName(connection.config.name, tool.name))
+    }
+    return names
+  }
+
   /** @returns Allowed tools of connected servers as agent tools. */
   tools(): AgentTool[] {
     const tools: AgentTool[] = []
@@ -158,7 +169,9 @@ export class McpManager {
       const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS })
       if (connection.closing) { await client.close(); return }
       connection.client = client
-      connection.tools = listed.tools.map(tool => ({ name: tool.name, description: tool.description ?? '', inputSchema: tool.inputSchema as Record<string, unknown> }))
+      connection.tools = listed.tools.map(tool => ({
+        name: tool.name, description: tool.description ?? '', inputSchema: tool.inputSchema as Record<string, unknown>, readOnly: tool.annotations?.readOnlyHint === true,
+      }))
       connection.instructions = client.getInstructions() ?? ''
       connection.state = 'ready'
       connection.error = undefined

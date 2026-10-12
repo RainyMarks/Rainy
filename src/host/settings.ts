@@ -4,7 +4,7 @@ import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
-import type { McpServerConfig, ModelSelection, ModelSetup, UiPreferences } from '../shared/rpc.ts'
+import type { McpServerConfig, ModelSelection, ModelSetup, PermissionMode, PermissionRules, UiPreferences } from '../shared/rpc.ts'
 import { readJson, SerialQueue, writeJson } from './files.ts'
 
 /** Maximum characters of the user's global prompt. */
@@ -69,6 +69,17 @@ const prefsSchema = z.object({
   showUsage: z.boolean(),
 })
 
+/** Remembered approvals per project; lists are capped so a runaway model cannot grow the file without bound. */
+const MAX_RULES = 200
+const rulesSchema = z.object({ commands: z.array(z.string().min(1).max(200)).max(MAX_RULES), tools: z.array(z.string().min(1).max(128)).max(MAX_RULES) })
+const securitySchema = z.object({
+  defaultMode: z.enum(['read-only', 'ask', 'auto']).optional(),
+  rules: z.record(z.string(), rulesSchema).optional(),
+})
+
+/** Mode of new chats until the user picks another in Settings → Security. */
+export const DEFAULT_PERMISSION_MODE: PermissionMode = 'ask'
+
 const fileSchema = z.object({
   version: z.literal(1),
   models: z.array(modelSchema),
@@ -77,6 +88,7 @@ const fileSchema = z.object({
   mcpServers: z.array(serverSchema),
   ui: prefsSchema.partial(),
   workbench: z.record(z.string(), z.unknown()).optional(),
+  security: securitySchema.optional(),
 })
 
 /** Persisted settings. */
@@ -88,6 +100,8 @@ export interface SettingsData {
   mcpServers: McpServerConfig[]
   ui: Partial<UiPreferences>
   workbench?: Record<string, unknown> | undefined
+  /** Default permission mode and remembered approvals by workspace id; absent in settings written before 2.1. */
+  security?: { defaultMode?: PermissionMode | undefined; rules?: Record<string, PermissionRules> | undefined } | undefined
 }
 
 const credentialsSchema = z.object({ version: z.literal(1), keys: z.record(z.string(), z.string()) })
@@ -142,6 +156,53 @@ export class Settings {
   /** @returns A copy of the persisted settings. */
   get(): SettingsData {
     return structuredClone(this.data)
+  }
+
+  /** @returns The mode new chats start in. */
+  defaultPermission(): PermissionMode {
+    return this.data.security?.defaultMode ?? DEFAULT_PERMISSION_MODE
+  }
+
+  /**
+   * @param mode Mode new chats start in.
+   * @returns The stored mode.
+   */
+  async setDefaultPermission(mode: PermissionMode): Promise<PermissionMode> {
+    await this.update((data) => { data.security = { ...data.security, defaultMode: mode } })
+    return this.defaultPermission()
+  }
+
+  /**
+   * @param workspaceId Project id.
+   * @returns Commands and MCP tools the user allowed without asking in that project.
+   */
+  permissionRules(workspaceId: string): PermissionRules {
+    const rules = this.data.security?.rules?.[workspaceId]
+    return { commands: [...rules?.commands ?? []], tools: [...rules?.tools ?? []] }
+  }
+
+  /**
+   * Remember or forget an approval for a project.
+   * @param workspaceId Project id.
+   * @param kind Command prefix or MCP tool name.
+   * @param rule The prefix or tool name.
+   * @param present Add when true, remove when false.
+   * @returns The project's rules afterwards.
+   */
+  async setPermissionRule(workspaceId: string, kind: 'command' | 'tool', rule: string, present: boolean): Promise<PermissionRules> {
+    await this.update((data) => {
+      const security = data.security ?? {}
+      const all = { ...security.rules ?? {} }
+      const current = all[workspaceId] ?? { commands: [], tools: [] }
+      const field = kind === 'command' ? 'commands' : 'tools'
+      const list = current[field].filter(item => item !== rule)
+      if (present) list.push(rule)
+      const next = { ...current, [field]: list.slice(-MAX_RULES) }
+      if (next.commands.length === 0 && next.tools.length === 0) delete all[workspaceId]
+      else all[workspaceId] = next
+      data.security = { ...security, rules: all }
+    })
+    return this.permissionRules(workspaceId)
   }
 
   /** @returns Interface preferences with defaults filled in. */

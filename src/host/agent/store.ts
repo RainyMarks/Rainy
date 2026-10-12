@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline'
 import { z } from 'zod'
 import { brandString } from '../../shared/brand.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
-import type { ModelSelection, SessionId, TranscriptEntry } from '../../shared/rpc.ts'
+import type { ModelSelection, PermissionMode, SessionId, TranscriptEntry } from '../../shared/rpc.ts'
 import { readJson, SerialQueue, writeFileAtomic, writeJson } from '../files.ts'
 
 /** Format version of chat files. */
@@ -25,10 +25,12 @@ export interface StoredChat {
   pinned: boolean
   model: ModelSelection | null
   parent?: { sessionId: SessionId; entryId: string } | undefined
+  /** Permission mode chosen for this chat; absent means the default from Settings. */
+  permission?: PermissionMode | undefined
 }
 
 /** Metadata changes recorded as `meta` lines; later lines win. */
-export type ChatMetaPatch = Partial<Pick<StoredChat, 'title' | 'archived' | 'pinned' | 'model'>>
+export type ChatMetaPatch = Partial<Pick<StoredChat, 'title' | 'archived' | 'pinned' | 'model' | 'permission'>>
 
 const headerSchema = z.object({
   type: z.literal('header'),
@@ -40,12 +42,14 @@ const headerSchema = z.object({
   parent: z.object({ sessionId: z.string(), entryId: z.string() }).optional(),
 })
 const selectionSchema = z.object({ provider: z.string(), model: z.string(), thinking: z.enum(['off', 'low', 'high', 'max']).optional() })
+const permissionSchema = z.enum(['read-only', 'ask', 'auto'])
 const metaSchema = z.object({
   type: z.literal('meta'),
   title: z.string().optional(),
   archived: z.boolean().optional(),
   pinned: z.boolean().optional(),
   model: selectionSchema.nullable().optional(),
+  permission: permissionSchema.optional(),
 })
 const indexSchema = z.object({
   version: z.literal(1),
@@ -53,6 +57,7 @@ const indexSchema = z.object({
     id: z.string(), workspaceId: z.string().nullable(), cwd: z.string(), title: z.string(), createdAt: z.number(), updatedAt: z.number(),
     archived: z.boolean(), pinned: z.boolean(), model: selectionSchema.nullable(),
     parent: z.object({ sessionId: z.string(), entryId: z.string() }).optional(),
+    permission: permissionSchema.optional(),
   })),
 })
 
@@ -119,16 +124,24 @@ export class ChatStore {
    * @param options Project, working directory and fork origin.
    * @returns The new chat.
    */
-  async create(options: { workspaceId: WorkspaceId | null; cwd: string; parent?: { sessionId: SessionId; entryId: string } | undefined; entries?: TranscriptEntry[] | undefined; title?: string | undefined; model?: ModelSelection | null | undefined }): Promise<StoredChat> {
+  async create(options: {
+    workspaceId: WorkspaceId | null; cwd: string; parent?: { sessionId: SessionId; entryId: string } | undefined; entries?: TranscriptEntry[] | undefined
+    title?: string | undefined; model?: ModelSelection | null | undefined; permission?: PermissionMode | undefined
+  }): Promise<StoredChat> {
     const now = Date.now()
     const chat: StoredChat = {
       id: randomUUID(), workspaceId: options.workspaceId, cwd: options.cwd, title: options.title ?? '', createdAt: now, updatedAt: now,
       archived: false, pinned: false, model: options.model ?? null, ...(options.parent === undefined ? {} : { parent: options.parent }),
+      ...(options.permission === undefined ? {} : { permission: options.permission }),
+    }
+    const meta = {
+      ...(chat.title === '' ? {} : { title: chat.title }), ...(chat.model === null ? {} : { model: chat.model }),
+      ...(chat.permission === undefined ? {} : { permission: chat.permission }),
     }
     const lines = [
       JSON.stringify({ type: 'header', version: CHAT_FORMAT_VERSION, id: chat.id, workspaceId: chat.workspaceId, cwd: chat.cwd, createdAt: now, ...(chat.parent === undefined ? {} : { parent: chat.parent }) }),
       ...(options.entries ?? []).map(entry => JSON.stringify({ type: 'entry', entry })),
-      ...(chat.title !== '' || chat.model !== null ? [JSON.stringify({ type: 'meta', ...(chat.title === '' ? {} : { title: chat.title }), ...(chat.model === null ? {} : { model: chat.model }) })] : []),
+      ...(Object.keys(meta).length > 0 ? [JSON.stringify({ type: 'meta', ...meta })] : []),
     ]
     await writeFileAtomic(this.path(chat.id), `${lines.join('\n')}\n`)
     this.chats.set(chat.id, chat)
@@ -259,6 +272,7 @@ export class ChatStore {
         if (meta.archived !== undefined) chat.archived = meta.archived
         if (meta.pinned !== undefined) chat.pinned = meta.pinned
         if (meta.model !== undefined) chat.model = meta.model
+        if (meta.permission !== undefined) chat.permission = meta.permission
       } else if (type === 'entry' && !headerOnly) entries.push((record as { entry: TranscriptEntry }).entry)
     }
     return { chat, entries }

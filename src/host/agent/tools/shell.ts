@@ -110,9 +110,8 @@ export function shellTool(context: ToolContext, shell: 'bash' | 'pwsh'): AgentTo
   return {
     name: shell,
     label: shell === 'bash' ? 'Bash' : 'PowerShell',
-    description: shell === 'bash'
-      ? 'Run a command in the project Bash shell. Use rg for search; inspect exit status.'
-      : 'Run a command in the project PowerShell shell. Use rg for search; inspect exit status.',
+    description: `Run a command in the project ${shell === 'bash' ? 'Bash' : 'PowerShell'} shell and inspect its exit status. `
+      + 'Search with the grep and glob tools rather than shell commands.',
     parameters: schema,
     executionMode: 'sequential',
     async execute(_id, params: Static<typeof schema>, signal, onUpdate?: AgentToolUpdateCallback<ShellDetails>) {

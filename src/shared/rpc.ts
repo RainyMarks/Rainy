@@ -127,8 +127,11 @@ export type TranscriptEntry =
     id: string; kind: 'toolResult'; ts: number; toolCallId: string; toolName: string
     content: (TextContent | ImageContent)[]; isError: boolean; details?: unknown; durationMs?: number | undefined
   }
-  /** Text the Host added to the model context: workspace instructions, memory recall, referenced chats. */
-  | { id: string; kind: 'context'; ts: number; label: 'instructions' | 'memory' | 'reference' | 'notice'; text: string }
+  /**
+   * Text the Host added to the model context: workspace instructions, memory recall, referenced chats, notices.
+   * `reverted` lists the write and edit calls whose changes the user undid; the notice tells the model.
+   */
+  | { id: string; kind: 'context'; ts: number; label: 'instructions' | 'memory' | 'reference' | 'notice'; text: string; reverted?: string[] | undefined }
   /**
    * The entries from `firstId` through `lastId` are replaced in the model context by `summary`. `request` says whether
    * the summary came from a request that shared the chat's prompt cache, and what the summary requests used.
@@ -154,9 +157,53 @@ export interface SessionSummary {
   pinned: boolean
   status: SessionRunStatus
   parent?: { sessionId: SessionId; entryId: string } | undefined
+  /** A tool call is waiting for the user's approval. */
+  awaitingApproval?: boolean | undefined
 }
 
 export type SessionRunStatus = 'idle' | 'running' | 'compacting' | 'error'
+
+/**
+ * What the agent may do without asking. `read-only`: read and search only. `ask`: reads, searches and changes inside the
+ * project run; commands, MCP tools and writes outside the project wait for approval. `auto`: everything runs.
+ */
+export type PermissionMode = 'read-only' | 'ask' | 'auto'
+
+/** A tool call waiting for the user. */
+export interface PendingApproval {
+  toolCallId: string
+  toolName: string
+  /** Why it waits: a command, a write outside the project, or an MCP tool. */
+  reason: 'command' | 'outside-write' | 'mcp'
+  /** The command prefix or MCP tool "always allow" would remember; absent when the call can only be allowed once. */
+  rule?: string | undefined
+  /** Absolute target of a write outside the project. */
+  path?: string | undefined
+}
+
+/** The user's answer to a pending approval. */
+export type ApprovalDecision = 'allow' | 'always' | 'deny'
+
+/** Calls the user lets the agent make without asking, per project. */
+export interface PermissionRules {
+  /** Command prefixes such as `python3` or `git status`; they match simple commands only. */
+  commands: string[]
+  /** MCP tool names such as `mcp__ida__decompile`. */
+  tools: string[]
+}
+
+/** Settings → Security view for one project. */
+export interface SecurityStatus {
+  /** Mode new chats start in. */
+  defaultMode: PermissionMode
+  rules: PermissionRules
+}
+
+/** Outcome of undoing write and edit calls. */
+export interface RevertResult {
+  reverted: { toolCallId: string; path: string }[]
+  failed: { toolCallId: string; path: string; reason: 'changed' | 'unavailable' | 'failed'; message: string }[]
+}
 
 /** A message waiting for the current run to reach a step boundary (steer) or to finish (queue). */
 export interface QueuedMessage { id: string; text: string; mode: 'queue' | 'steer'; imageCount: number }
@@ -183,6 +230,10 @@ export interface SessionSnapshot {
   streaming: AssistantMessage | null
   /** Tool calls currently executing. */
   runningTools: string[]
+  /** What the agent may do without asking in this chat. */
+  permission: PermissionMode
+  /** Tool calls waiting for the user's approval. */
+  approvals: PendingApproval[]
   error?: string | undefined
 }
 
@@ -271,7 +322,7 @@ export interface HostMethods {
 
   'sessions.list': [{ workspaceId?: WorkspaceId | null | undefined; archived?: boolean | undefined }, SessionSummary[]]
   'sessions.search': [{ query: string; limit?: number | undefined }, SessionSearchHit[]]
-  'sessions.create': [{ workspaceId: WorkspaceId | null; cwd?: string | undefined }, SessionSummary]
+  'sessions.create': [{ workspaceId: WorkspaceId | null; cwd?: string | undefined; permission?: PermissionMode | undefined }, SessionSummary]
   'sessions.get': [{ sessionId: SessionId; limit?: number | undefined }, SessionSnapshot]
   'sessions.rename': [{ sessionId: SessionId; title: string }, SessionSummary]
   'sessions.archive': [{ sessionId: SessionId; archived: boolean }, SessionSummary]
@@ -285,6 +336,14 @@ export interface HostMethods {
   'chat.setModel': [{ sessionId: SessionId } & ModelSelection, ModelSelection]
   'chat.compact': [{ sessionId: SessionId }, { message: string }]
   'chat.complete': [{ sessionId?: SessionId | undefined; workspaceId?: WorkspaceId | null | undefined; query: string }, CompletionItem[]]
+  'chat.setPermission': [{ sessionId: SessionId; mode: PermissionMode }, PermissionMode]
+  'chat.approve': [{ sessionId: SessionId; toolCallId: string; decision: ApprovalDecision; reason?: string | undefined }, void]
+  /** Undo write and edit calls of the chat, newest first; files changed since are left alone. */
+  'chat.revert': [{ sessionId: SessionId; toolCallIds: string[] }, RevertResult]
+
+  'security.status': [{ workspaceId?: WorkspaceId | null | undefined }, SecurityStatus]
+  'security.setDefault': [{ mode: PermissionMode }, SecurityStatus]
+  'security.removeRule': [{ workspaceId: WorkspaceId; kind: 'command' | 'tool'; rule: string }, SecurityStatus]
 
   'extensions.status': [{ cwd?: string | undefined }, ExtensionsStatus]
   'extensions.saveServer': [{ server: McpServerConfig; previousName?: string | undefined }, ExtensionsStatus]
@@ -314,7 +373,10 @@ export interface HostEvents {
   /** Partial output of a running tool. */
   'session.tool': { sessionId: SessionId; toolCallId: string; toolName: string; phase: 'start' | 'update' | 'end'; args?: unknown; partial?: string | undefined }
   /** Run status, queue or model changed. */
-  'session.state': { sessionId: SessionId; status: SessionRunStatus; queue: QueuedMessage[]; model: ModelSelection | null; context: ContextUsage | null; error?: string | undefined }
+  'session.state': {
+    sessionId: SessionId; status: SessionRunStatus; queue: QueuedMessage[]; model: ModelSelection | null; context: ContextUsage | null
+    permission: PermissionMode; approvals: PendingApproval[]; error?: string | undefined
+  }
   /** A chat was created or its summary changed. */
   'sessions.changed': SessionSummary
   'sessions.removed': { sessionId: SessionId }

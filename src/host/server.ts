@@ -163,8 +163,9 @@ export class HostServer {
       const html = await readFile(file, 'utf8')
       const globals = Object.entries(this.options.injectedGlobals())
         .map(([name, value]) => `window.${name}=${JSON.stringify(value).replace(/</g, '\\u003c')};`).join('')
-      const body = html.replace('<head>', `<head><script>${globals}</script>`)
-      response.writeHead(200, { 'Content-Type': MIME['.html']!, 'Cache-Control': 'no-store' })
+      const nonce = randomBytes(16).toString('base64')
+      const body = html.replace('<head>', `<head><script nonce="${nonce}">${globals}</script>`)
+      response.writeHead(200, { 'Content-Type': MIME['.html']!, 'Cache-Control': 'no-store', 'Content-Security-Policy': this.pagePolicy(nonce) })
       response.end(body)
       return
     }
@@ -174,6 +175,21 @@ export class HostServer {
       'Content-Length': info.size,
     })
     response.end(await readFile(file))
+  }
+
+  /**
+   * Content Security Policy of the workbench page: scripts only from the Host plus the one inline script carrying the
+   * injected globals, and no remote images or connections, so text from a project or a model cannot load or send anything.
+   * @param nonce Nonce of the inline script.
+   * @returns The header value.
+   */
+  private pagePolicy(nonce: string): string {
+    const port = this.boundPort
+    return [
+      "default-src 'self'", `script-src 'self' 'nonce-${nonce}'`, "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob:",
+      "media-src 'self' blob:", "font-src 'self' data:", `connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}`,
+      "worker-src 'self' blob:", "frame-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
+    ].join('; ')
   }
 
   private upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {

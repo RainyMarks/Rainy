@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { Type, type Static } from '@earendil-works/pi-ai'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
+import { MAX_SNAPSHOT_BYTES } from '../snapshots.ts'
 import { resolvePath, textResult, versionOf, type ToolContext } from './common.ts'
 
 /** Text kept per side of a change for the UI diff card. */
@@ -14,6 +15,22 @@ export interface ChangeDetails {
   operation: 'create' | 'update'
   before?: string | undefined
   after?: string | undefined
+  /** The previous content is kept, so the user can undo this change. */
+  undoable?: boolean | undefined
+}
+
+/**
+ * Keep the replaced content for undo. A failure costs only the undo, never the change itself.
+ * @param context Chat tool context.
+ * @param toolCallId The write or edit call.
+ * @param path Absolute path.
+ * @param before Previous content, `null` for a new file, `undefined` when it is too large to keep.
+ * @param after Written text.
+ * @returns Whether the change can be undone.
+ */
+async function keepForUndo(context: ToolContext, toolCallId: string, path: string, before: Uint8Array | null | undefined, after: string): Promise<boolean> {
+  if (before === undefined || context.recordChange === undefined) return false
+  return context.recordChange(toolCallId, path, before, Buffer.from(after, 'utf8')).catch(() => false)
 }
 
 function diffSides(before: string | undefined, after: string): Pick<ChangeDetails, 'before' | 'after'> {
@@ -38,19 +55,22 @@ export function writeTool(context: ToolContext): AgentTool<typeof writeParameter
     description: 'Create or replace a file. Inspect existing files before overwriting.',
     parameters: writeParameters,
     executionMode: 'sequential',
-    async execute(_id, params: Static<typeof writeParameters>) {
+    async execute(id, params: Static<typeof writeParameters>) {
       const { absolute, display } = resolvePath(context, params.file_path)
       const current = await versionOf(absolute)
       context.observations.assertCurrent(absolute, current, display, 'write')
-      const before = current === undefined || current.size > DIFF_TEXT_LIMIT ? undefined : await readFile(absolute, 'utf8')
+      // `null`: the file is new; `undefined`: too large to keep for undo.
+      const original = current === undefined ? null : current.size > MAX_SNAPSHOT_BYTES ? undefined : await readFile(absolute)
+      const before = original === null || original === undefined || original.length > DIFF_TEXT_LIMIT ? undefined : original.toString('utf8')
       await mkdir(dirname(absolute), { recursive: true })
       await writeFile(absolute, params.content, 'utf8')
       const written = await versionOf(absolute)
       if (written !== undefined) context.observations.record(absolute, written)
       context.onFileTouched?.(absolute)
+      const undoable = await keepForUndo(context, id, absolute, original, params.content)
       const operation = current === undefined ? 'create' : 'update'
       return textResult(`<path>${display}</path>\n<type>file</type>\n<content>\n${operation === 'create' ? 'Created' : 'Updated'} file\n</content>`,
-        { path: display, operation, ...diffSides(before, params.content) })
+        { path: display, operation, ...diffSides(before, params.content), ...(undoable ? { undoable } : {}) })
     },
   }
 }
@@ -101,12 +121,13 @@ export function editTool(context: ToolContext): AgentTool<typeof editParameters,
     description: 'Apply an exact text replacement to a previously read file.',
     parameters: editParameters,
     executionMode: 'sequential',
-    async execute(_id, params: Static<typeof editParameters>) {
+    async execute(id, params: Static<typeof editParameters>) {
       const { absolute, display } = resolvePath(context, params.file_path)
       const current = await versionOf(absolute)
       if (current === undefined) throw new Error(`cannot modify "${display}": not found`)
       context.observations.assertCurrent(absolute, current, display, 'modify')
-      const raw = await readFile(absolute, 'utf8')
+      const bytes = await readFile(absolute)
+      const raw = bytes.toString('utf8')
       const bom = raw.startsWith('﻿') ? '﻿' : ''
       const body = raw.slice(bom.length)
       const sample = body.slice(0, 4096)
@@ -119,8 +140,9 @@ export function editTool(context: ToolContext): AgentTool<typeof editParameters,
       const written = await versionOf(absolute)
       if (written !== undefined) context.observations.record(absolute, written)
       context.onFileTouched?.(absolute)
+      const undoable = await keepForUndo(context, id, absolute, bytes.length > MAX_SNAPSHOT_BYTES ? undefined : bytes, output)
       const message = params.replace_all ? `The file ${display} has been updated. All occurrences were successfully replaced.` : `The file ${display} has been updated successfully.`
-      return textResult(message, { path: display, operation: 'update', ...diffSides(normalized, edited) })
+      return textResult(message, { path: display, operation: 'update', ...diffSides(normalized, edited), ...(undoable ? { undoable } : {}) })
     },
   }
 }

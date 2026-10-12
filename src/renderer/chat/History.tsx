@@ -113,9 +113,11 @@ function Row({ chat, current, workspaceId, onSelect, onDelete }: {
           }} />
       ) : (
         <button type="button" className={css.open} aria-current={current || undefined} onClick={() => { onSelect(chat) }} title={title}>
-          {chat.status === 'running' || chat.status === 'compacting' ? <StateDot state="ongoing" size={10} /> : chat.pinned ? <IconPinFillRegular size={12} className={css.pin} /> : null}
+          {chat.awaitingApproval === true ? <StateDot state="warning" size={10} />
+            : chat.status === 'running' || chat.status === 'compacting' ? <StateDot state="ongoing" size={10} /> : chat.pinned ? <IconPinFillRegular size={12} className={css.pin} /> : null}
           <span className={css.title}>{title}</span>
           <span className={css.meta}>
+            {chat.awaitingApproval === true && <span className={css.waiting}>{t('approvalWaiting')}</span>}
             {showFolder && <span className={css.folder}>{folderName(chat.cwd)}</span>}
             <span>{relativeTime(chat.updatedAt, Date.now(), t)}</span>
           </span>

@@ -231,6 +231,21 @@
   font-variant-numeric: tabular-nums;
 }
 
+.undoTurn {
+  flex: none;
+  margin-left: 4px;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--dsw-radius-xs);
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.undoTurn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
+.undoTurn:disabled { cursor: default; opacity: 0.6; }
+
 .action {
   display: inline-flex;
   align-items: center;

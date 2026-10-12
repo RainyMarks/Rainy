@@ -2,17 +2,18 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import type { AssistantMessage, ImageContent, ToolCall } from '@earendil-works/pi-ai'
-import type { TranscriptEntry, UiPreferences } from '../../shared/rpc.ts'
+import type { PendingApproval, TranscriptEntry, UiPreferences } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
 import { usePrefs } from '../prefs.ts'
 import {
-  DisclosureRow, IconBranchOutlineRegular, IconChevronDownOutlineRegular, IconCompactOutlineRegular, IconContextInjectionOutlineRegular,
-  IconCopyOutlineRegular, IconInfoOutlineRegular, IconThinkOutlineRegular, IconWarningTriangleOutlineRegular, ImageLightbox, toast,
+  Button, DisclosureRow, IconBranchOutlineRegular, IconChevronDownOutlineRegular, IconCompactOutlineRegular, IconContextInjectionOutlineRegular,
+  IconCopyOutlineRegular, IconInfoOutlineRegular, IconThinkOutlineRegular, IconWarningTriangleOutlineRegular, ImageLightbox, Modal, toast,
   Tooltip, writeClipboard,
 } from '../ui/index.ts'
 import { groupTurns, loadChat, type ChatView } from './chat-store.ts'
 import { Markdown } from './Markdown.tsx'
 import { useChatT } from './messages.ts'
+import { revertChanges } from './revert.ts'
 import { ToolCard } from './ToolCard.tsx'
 import css from './Transcript.module.css'
 
@@ -145,7 +146,8 @@ function ContextRow({ entry }: { entry: Entry<'context'> }): JSX.Element {
   const t = useChatT()
   const [open, setOpen] = useState(false)
   const toggle = useCallback(() => { setOpen(value => !value) }, [])
-  const title = { instructions: t('contextInstructions'), memory: t('contextMemory'), reference: t('contextReference'), notice: t('contextNotice') }[entry.label]
+  const title = entry.reverted !== undefined ? t('revertedNotice', { count: entry.reverted.length })
+    : { instructions: t('contextInstructions'), memory: t('contextMemory'), reference: t('contextReference'), notice: t('contextNotice') }[entry.label]
   return (
     <DisclosureRow icon={<IconContextInjectionOutlineRegular size={14} />} title={title} open={open} expandable onToggle={toggle} expandOnRowClick>
       <pre className={css.contextText}>{entry.text}</pre>
@@ -189,18 +191,21 @@ function NoticeRow({ entry }: { entry: Entry<'notice'> }): JSX.Element {
 /** Counts shown on a folded turn. */
 function stepSummary(items: readonly TranscriptEntry[], t: ChatT): string {
   let reads = 0
+  let searches = 0
   let changes = 0
   let commands = 0
   let others = 0
   for (const item of items) {
     if (item.kind !== 'toolResult') continue
     if (item.toolName === 'read') reads++
+    else if (item.toolName === 'grep' || item.toolName === 'glob') searches++
     else if (item.toolName === 'write' || item.toolName === 'edit') changes++
     else if (item.toolName === 'bash' || item.toolName === 'pwsh') commands++
     else others++
   }
   return [
     reads > 0 ? t('readFiles', { count: reads }) : '',
+    searches > 0 ? t('searched', { count: searches }) : '',
     changes > 0 ? t('changedFiles', { count: changes }) : '',
     commands > 0 ? t('ranCommands', { count: commands }) : '',
     others > 0 ? t('calledTools', { count: others }) : '',
@@ -213,16 +218,24 @@ interface TurnProps {
   items: TranscriptEntry[]
   results: ReadonlyMap<string, Entry<'toolResult'>>
   tools: ChatView['tools']
+  /** Tool calls waiting for the user, by call id. */
+  approvals: ReadonlyMap<string, PendingApproval>
+  /** Write and edit calls the user undid. */
+  reverted: ReadonlySet<string>
   /** The turn is still being produced. */
   live: boolean
+  /** The chat is not running, so changes can be undone. */
+  idle: boolean
   prefs: UiPreferences
   onFork(sessionId: string): void
 }
 
 /** One user message and everything the agent did for it. */
-const Turn = memo(function Turn({ sessionId, user, items, results, tools, live, prefs, onFork }: TurnProps): JSX.Element {
+const Turn = memo(function Turn({ sessionId, user, items, results, tools, approvals, reverted, live, idle, prefs, onFork }: TurnProps): JSX.Element {
   const t = useChatT()
   const [stepsOpen, setStepsOpen] = useState<boolean | undefined>()
+  const [confirmUndo, setConfirmUndo] = useState(false)
+  const [undoing, setUndoing] = useState(false)
   const footer = items.findLast((item): item is Entry<'turn'> => item.kind === 'turn')
 
   // The final answer is the last assistant reply without tool calls; everything before it is a work step.
@@ -258,8 +271,8 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, live, 
         if (withText && block.text.trim() !== '') nodes.push(<Markdown key={key} className={css.text} text={block.text} />)
       } else {
         const call: ToolCall = block
-        nodes.push(<ToolCard key={key} call={call} result={results.get(call.id)} running={tools[call.id]}
-          defaultOpen={toolsOpen || tools[call.id] !== undefined} />)
+        nodes.push(<ToolCard key={key} sessionId={sessionId} call={call} result={results.get(call.id)} running={tools[call.id]}
+          defaultOpen={toolsOpen || tools[call.id] !== undefined} approval={approvals.get(call.id)} reverted={reverted.has(call.id)} canUndo={idle} />)
       }
     })
     if (message.stopReason === 'error') {
@@ -287,6 +300,14 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, live, 
       default: return []
     }
   })
+  // Changes of this turn that can still be undone, for the footer action.
+  const undoable = items.flatMap(item => item.kind === 'toolResult' && !item.isError && !reverted.has(item.toolCallId)
+    && item.details !== null && typeof item.details === 'object' && (item.details as { undoable?: unknown }).undoable === true ? [item.toolCallId] : [])
+  const undoTurn = (): void => {
+    setConfirmUndo(false)
+    setUndoing(true)
+    void revertChanges(sessionId, undoable).finally(() => { setUndoing(false) })
+  }
   const answerText = answer === undefined ? '' : assistantText(answer.message)
   const lastText = answer === undefined
     ? items.findLast((item): item is Entry<'assistant'> => item.kind === 'assistant' && assistantText(item.message) !== '')
@@ -308,6 +329,9 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, live, 
         <div className={css.turnFooter}>
           {lastText !== undefined && <CopyAction text={answerText !== '' ? answerText : assistantText(lastText.message)} label={t('copy')} />}
           {footer !== undefined && <ForkAction sessionId={sessionId} entryId={footer.id} onFork={onFork} />}
+          {undoable.length > 0 && (
+            <button type="button" className={css.undoTurn} disabled={!idle || undoing} onClick={() => { setConfirmUndo(true) }}>{t('undoTurn')}</button>
+          )}
           {footer !== undefined && prefs.showUsage && (
             <span className={css.usage} title={`${footer.provider} / ${footer.model}`}>
               {!foldable && `${formatDuration(footer.durationMs)} · `}
@@ -319,6 +343,12 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, live, 
           )}
         </div>
       )}
+      <Modal open={confirmUndo} onClose={() => { setConfirmUndo(false) }} title={t('undoTurnTitle')} closeLabel={t('close')}
+        description={t('undoTurnBody', { count: undoable.length })}
+        footer={<>
+          <Button variant="outline" onClick={() => { setConfirmUndo(false) }}>{t('cancel')}</Button>
+          <Button variant="primary" onClick={undoTurn}>{t('undoTurn')}</Button>
+        </>} />
     </section>
   )
 })
@@ -345,6 +375,8 @@ export function Transcript({ view, onFork, empty }: { view: ChatView; onFork(ses
     for (const entry of view.entries) if (entry.kind === 'toolResult') map.set(entry.toolCallId, entry)
     return map
   }, [view.entries])
+  const reverted = useMemo(() => new Set(view.entries.flatMap(entry => entry.kind === 'context' ? entry.reverted ?? [] : [])), [view.entries])
+  const approvals = useMemo(() => new Map(view.approvals.map(approval => [approval.toolCallId, approval])), [view.approvals])
 
   useLayoutEffect(() => {
     const element = scroller.current
@@ -383,7 +415,8 @@ export function Transcript({ view, onFork, empty }: { view: ChatView; onFork(ses
           {groups.length === 0 && empty}
           {groups.map((group, index) => (
             <Turn key={group.user?.id ?? `lead-${index}`} sessionId={sessionId} user={group.user} items={group.items} results={results}
-              tools={view.tools} live={running && index === groups.length - 1} prefs={prefs} onFork={onFork} />
+              tools={view.tools} approvals={approvals} reverted={reverted} live={running && index === groups.length - 1} idle={!running}
+              prefs={prefs} onFork={onFork} />
           ))}
           {running && view.streaming === null && Object.keys(view.tools).length === 0 && (
             <div className={css.pending} aria-live="polite">

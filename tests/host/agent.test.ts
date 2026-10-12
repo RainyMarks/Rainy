@@ -4,69 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { estimateText, resolveBudget } from '../../src/shared/budget.ts'
 import { brandString } from '../../src/shared/brand.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
-import { createProjectRegistry } from '../../src/shared/project-registry.ts'
-import type { HostEvents, MethodParams, MethodResult, HostMethod, TranscriptEntry } from '../../src/shared/rpc.ts'
-import { Activity } from '../../src/host/activity.ts'
+import type { TranscriptEntry } from '../../src/shared/rpc.ts'
 import { SHARED_CACHE_WINDOW_MS } from '../../src/host/agent/compaction.ts'
-import { createAgent, type AgentService } from '../../src/host/agent/index.ts'
-import { Projects } from '../../src/host/projects.ts'
-import { RpcHub } from '../../src/host/rpc.ts'
-import type { RuntimeService } from '../../src/host/runtime/index.ts'
 import { Settings } from '../../src/host/settings.ts'
-import { FakeAnthropic, FakeOpenAI, tempHost, type ScriptedReply } from './agent-fixtures.ts'
-
-const runtime: RuntimeService = {
-  handle: () => Promise.reject(new Error('not used')),
-  resolveDirectory: () => ({ environment: {}, executables: {} }),
-  resolveWorkspace: () => ({ environment: {}, executables: {} }),
-}
-
-interface Harness {
-  call<M extends HostMethod>(method: M, params: MethodParams<M>): Promise<MethodResult<M>>
-  events: { event: keyof HostEvents; data: unknown }[]
-  workspaceId: WorkspaceId
-  project: string
-  agent: AgentService
-  home: string
-}
-
-async function harness(server: { baseURL: string }, cleanups: (() => Promise<void>)[]): Promise<Harness> {
-  const { env, dir, cleanup } = await tempHost()
-  cleanups.push(cleanup)
-  const project = join(dir, 'project')
-  await mkdir(project, { recursive: true })
-  const settings = new Settings(env.home, {})
-  await settings.load()
-  const projects = new Projects(join(env.home, 'projects.json'))
-  await projects.load()
-  const opened = await projects.open(project)
-  const rpc = new RpcHub()
-  const events: Harness['events'] = []
-  const originalEmit = rpc.emit.bind(rpc)
-  rpc.emit = ((event: keyof HostEvents, data: never) => { events.push({ event, data }); originalEmit(event, data) }) as typeof rpc.emit
-  const agent = await createAgent({
-    env, settings, projects, registry: createProjectRegistry({ root: env.carrierStateRoot, targetId: env.executionTargetId }),
-    runtime, rpc, activity: new Activity(), log: () => undefined,
-  })
-  cleanups.push(() => agent.close())
-  let id = 1
-  const call = async <M extends HostMethod>(method: M, params: MethodParams<M>): Promise<MethodResult<M>> => {
-    const response = await rpc.dispatch({ id: id++, method, params })
-    if (response.error !== undefined) throw new Error(`${response.error.code}: ${response.error.message}`)
-    return response.result as MethodResult<M>
-  }
-  await call('models.configure', { provider: 'fake', baseURL: server.baseURL, model: 'fake-model', contextWindow: 32768, local: true, api: 'openai-completions' })
-  return { call, events, workspaceId: opened.id, project: opened.path, agent, home: env.home }
-}
-
-async function idle(h: Harness, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const snapshot = await h.call('sessions.get', { sessionId })
-    if (snapshot.summary.status !== 'running' && snapshot.summary.status !== 'compacting') return
-    await new Promise(resolve => setTimeout(resolve, 25))
-  }
-  throw new Error('chat did not finish')
-}
+import { FakeAnthropic, FakeOpenAI, harness, idle, tempHost, type Harness, type ScriptedReply } from './agent-fixtures.ts'
 
 describe('agent', () => {
   const cleanups: (() => Promise<void>)[] = []

@@ -1,9 +1,18 @@
 /** Test doubles for the agent side: a scripted OpenAI-compatible server and a Host home. */
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
+import { createProjectRegistry } from '../../src/shared/project-registry.ts'
+import type { HostEvents, HostMethod, MethodParams, MethodResult, PermissionMode } from '../../src/shared/rpc.ts'
+import { Activity } from '../../src/host/activity.ts'
+import { createAgent, type AgentService } from '../../src/host/agent/index.ts'
 import type { HostEnvironment } from '../../src/host/env.ts'
+import { Projects } from '../../src/host/projects.ts'
+import { RpcHub } from '../../src/host/rpc.ts'
+import type { RuntimeService } from '../../src/host/runtime/index.ts'
+import { Settings } from '../../src/host/settings.ts'
 
 /** One scripted assistant reply. */
 export type ScriptedReply =
@@ -119,4 +128,67 @@ export async function tempHost(): Promise<{ env: HostEnvironment; dir: string; c
     executionTargetId: 'test-target', carrierStateRoot: join(dir, 'carrier'), toolchainRoot: join(dir, 'components'), tmp: join(dir, 'tmp'), port: 0,
   }
   return { env, dir, cleanup: () => rm(dir, { recursive: true, force: true }) }
+}
+
+const runtime: RuntimeService = {
+  handle: () => Promise.reject(new Error('not used')),
+  resolveDirectory: () => ({ environment: {}, executables: {} }),
+  resolveWorkspace: () => ({ environment: {}, executables: {} }),
+}
+
+/** An agent side over a temp Host home with one project, driven through RPC dispatch. */
+export interface Harness {
+  call<M extends HostMethod>(method: M, params: MethodParams<M>): Promise<MethodResult<M>>
+  events: { event: keyof HostEvents; data: unknown }[]
+  workspaceId: WorkspaceId
+  project: string
+  agent: AgentService
+  home: string
+}
+
+/**
+ * Build an agent side whose model is `server`. Chats run tools without approval unless a test asks for another mode.
+ * @param server Fake model server.
+ * @param cleanups Collects teardown steps.
+ * @param mode Mode of new chats.
+ * @returns The harness.
+ */
+export async function harness(server: { baseURL: string }, cleanups: (() => Promise<void>)[], mode: PermissionMode = 'auto'): Promise<Harness> {
+  const { env, dir, cleanup } = await tempHost()
+  cleanups.push(cleanup)
+  const project = join(dir, 'project')
+  await mkdir(project, { recursive: true })
+  const settings = new Settings(env.home, {})
+  await settings.load()
+  const projects = new Projects(join(env.home, 'projects.json'))
+  await projects.load()
+  const opened = await projects.open(project)
+  const rpc = new RpcHub()
+  const events: Harness['events'] = []
+  const originalEmit = rpc.emit.bind(rpc)
+  rpc.emit = ((event: keyof HostEvents, data: never) => { events.push({ event, data }); originalEmit(event, data) }) as typeof rpc.emit
+  const agent = await createAgent({
+    env, settings, projects, registry: createProjectRegistry({ root: env.carrierStateRoot, targetId: env.executionTargetId }),
+    runtime, rpc, activity: new Activity(), log: () => undefined,
+  })
+  cleanups.push(() => agent.close())
+  let id = 1
+  const call = async <M extends HostMethod>(method: M, params: MethodParams<M>): Promise<MethodResult<M>> => {
+    const response = await rpc.dispatch({ id: id++, method, params })
+    if (response.error !== undefined) throw new Error(`${response.error.code}: ${response.error.message}`)
+    return response.result as MethodResult<M>
+  }
+  await call('models.configure', { provider: 'fake', baseURL: server.baseURL, model: 'fake-model', contextWindow: 32768, local: true, api: 'openai-completions' })
+  await call('security.setDefault', { mode })
+  return { call, events, workspaceId: opened.id, project: opened.path, agent, home: env.home }
+}
+
+/** Wait until a chat stops running. */
+export async function idle(h: Harness, sessionId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const snapshot = await h.call('sessions.get', { sessionId })
+    if (snapshot.summary.status !== 'running' && snapshot.summary.status !== 'compacting') return
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  throw new Error('chat did not finish')
 }

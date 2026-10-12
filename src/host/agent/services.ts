@@ -8,6 +8,7 @@ import type { Settings } from '../settings.ts'
 import type { McpManager } from './mcp.ts'
 import type { ProjectMemory } from './memory/index.ts'
 import type { Models } from './models.ts'
+import type { ChangeSnapshots } from './snapshots.ts'
 import type { ChatStore } from './store.ts'
 
 /** What a chat session uses from the rest of the Host. */
@@ -22,6 +23,10 @@ export interface AgentServices {
   runtime: RuntimeService
   activity: Activity
   rpc: RpcHub
+  /** Contents write and edit replaced, for undo. */
+  snapshots: ChangeSnapshots
+  /** ripgrep for the grep and glob tools, when this installation has one. */
+  ripgrep: string | undefined
   log(message: string): void
   /** A chat model request started streaming. */
   modelBusy(): void

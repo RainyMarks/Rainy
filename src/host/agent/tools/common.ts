@@ -24,6 +24,13 @@ export interface ToolContext {
   pwshPath?: string | undefined
   /** Called after a tool reads or changes a file, with its absolute path. */
   onFileTouched?: ((path: string) => void) | undefined
+  /**
+   * Keeps what write and edit replaced so the user can undo the change.
+   * @returns Whether the change can be undone.
+   */
+  recordChange?: ((toolCallId: string, path: string, before: Uint8Array | null, after: Uint8Array) => Promise<boolean>) | undefined
+  /** ripgrep executable for grep and glob. */
+  ripgrep?: string | undefined
 }
 
 /** A file's identity at one observation. */

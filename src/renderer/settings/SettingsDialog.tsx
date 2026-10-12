@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import {
-  IconCloseOutlineRegular, IconCodeOutlineMedium, IconDataOutlineMedium, IconDatabaseOutlineMedium, IconSettingsOutlineMedium,
+  IconCloseOutlineRegular, IconCodeOutlineMedium, IconDataOutlineMedium, IconDatabaseOutlineMedium, IconSettingsOutlineMedium, IconShieldOutlineMedium,
   IconSkillOutlineMedium,
 } from '../ui/icons/index.tsx'
 import { useModalLayer } from '../ui/useModalLayer.ts'
@@ -15,10 +15,11 @@ import { useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
 import { ModelsSection } from './ModelsSection.tsx'
 import { RuntimeSection } from './RuntimeSection.tsx'
+import { SecuritySection } from './SecuritySection.tsx'
 import css from './SettingsDialog.module.css'
 
 /** Section identifiers, in navigation order. */
-export type SettingsSection = 'general' | 'models' | 'extensions' | 'runtime' | 'memory'
+export type SettingsSection = 'general' | 'models' | 'extensions' | 'runtime' | 'memory' | 'security'
 
 /** Inputs from the window layout. */
 export interface SettingsDialogProps {
@@ -36,6 +37,7 @@ const sections: readonly { id: SettingsSection; label: SettingsMessage; Icon: ty
   { id: 'extensions', label: 'navExtensions', Icon: IconSkillOutlineMedium },
   { id: 'runtime', label: 'navRuntime', Icon: IconCodeOutlineMedium },
   { id: 'memory', label: 'navMemory', Icon: IconDatabaseOutlineMedium },
+  { id: 'security', label: 'navSecurity', Icon: IconShieldOutlineMedium },
 ]
 
 /**
@@ -82,6 +84,7 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
           {active === 'extensions' && <ExtensionsSection key={project} workspace={workspace} />}
           {active === 'runtime' && <RuntimeSection key={project} workspace={workspace} />}
           {active === 'memory' && <MemorySection key={project} workspace={workspace} />}
+          {active === 'security' && <SecuritySection key={project} workspace={workspace} />}
         </div>
       </div>
     </div>

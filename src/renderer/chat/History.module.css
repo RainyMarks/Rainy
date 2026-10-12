@@ -164,3 +164,5 @@
   cursor: pointer;
 }
 .footer:hover { color: var(--dsw-alias-label-primary); }
+
+.waiting { color: var(--dsw-alias-state-warn-primary); }

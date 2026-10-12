@@ -2,10 +2,12 @@
 import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { toToolDeclaration, type Tool } from '@earendil-works/pi-ai'
+import { z } from 'zod'
 import { resolveBudget } from '../../shared/budget.ts'
+import { brandString } from '../../shared/brand.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { ProjectRegistry } from '../../shared/project-registry.ts'
-import type { BudgetPreview, ExtensionsStatus, McpServerConfig, SessionSummary } from '../../shared/rpc.ts'
+import type { BudgetPreview, ExtensionsStatus, McpServerConfig, SecurityStatus, SessionSummary } from '../../shared/rpc.ts'
 import type { Activity } from '../activity.ts'
 import type { HostEnvironment } from '../env.ts'
 import type { Projects } from '../projects.ts'
@@ -22,11 +24,30 @@ import { buildSystemPrompt } from './prompt.ts'
 import { ChatSession } from './session.ts'
 import type { AgentServices } from './services.ts'
 import { discoverSkills, skillsSection } from './skills.ts'
+import { ChangeSnapshots } from './snapshots.ts'
 import { ChatStore } from './store.ts'
 import { inertCoreTools } from './tools/index.ts'
 
-/** Spill files older than this are deleted at startup. */
+/** Spill files and undo snapshots older than this are deleted at startup. */
 const SPILL_RETENTION_MS = 30 * 24 * 3600 * 1000
+
+const permissionSchema = z.enum(['read-only', 'ask', 'auto'])
+const approveSchema = z.object({
+  sessionId: z.string().min(1), toolCallId: z.string().min(1).max(512), decision: z.enum(['allow', 'always', 'deny']), reason: z.string().max(4000).optional(),
+})
+const revertSchema = z.object({ sessionId: z.string().min(1), toolCallIds: z.array(z.string().min(1).max(512)).min(1).max(1000) })
+const removeRuleSchema = z.object({ workspaceId: z.string().min(1), kind: z.enum(['command', 'tool']), rule: z.string().min(1).max(200) })
+
+/**
+ * The ripgrep the grep and glob tools run: the installation's own copy, else the npm package's.
+ * @param appRoot Application root, whose `bin` holds ripgrep in packaged builds.
+ * @returns The executable, or `undefined` when there is none.
+ */
+async function findRipgrep(appRoot: string): Promise<string | undefined> {
+  const bundled = join(appRoot, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg')
+  if (await stat(bundled).then(info => info.isFile(), () => false)) return bundled
+  try { return (await import('@vscode/ripgrep')).rgPath } catch (_missingPlatformPackage) { return undefined }
+}
 
 /** What `createAgent` needs. */
 export interface AgentDeps {
@@ -87,8 +108,9 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     log,
   })
 
+  const snapshots = new ChangeSnapshots(join(env.home, 'snapshots'))
   const services: AgentServices = {
-    env, settings, models, store, mcp, memory, projects, runtime: deps.runtime, activity: deps.activity, rpc, log,
+    env, settings, models, store, mcp, memory, projects, runtime: deps.runtime, activity: deps.activity, rpc, log, snapshots, ripgrep: await findRipgrep(env.appRoot),
     modelBusy: () => { activeRequests = Math.max(1, activeRequests); lastModelActivity = Date.now() },
     modelIdle: () => { activeRequests = [...sessions.values()].filter(session => session.running).length; lastModelActivity = Date.now() },
   }
@@ -98,6 +120,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   mcp.onChange(() => { void extensionsStatus(lastExtensionsCwd).then(status => { rpc.emit('extensions.changed', status) }) })
   models.onChange(status => { rpc.emit('models.changed', status) })
   void sweepSpill(join(env.home, 'spill')).catch((error: unknown) => { log(`[spill] sweep failed: ${String(error)}`) })
+  void snapshots.sweep(SPILL_RETENTION_MS).catch((error: unknown) => { log(`[snapshots] sweep failed: ${String(error)}`) })
 
   const session = (id: string): Promise<ChatSession> => {
     const loaded = sessions.get(id)
@@ -117,6 +140,10 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     if (chat === undefined) throw new RpcError('not-found', '对话不存在。')
     return { ...chat, status: 'idle' }
   }
+  const securityStatus = (workspaceId: WorkspaceId | null | undefined): SecurityStatus => ({
+    defaultMode: settings.defaultPermission(),
+    rules: workspaceId === null || workspaceId === undefined ? { commands: [], tools: [] } : settings.permissionRules(workspaceId),
+  })
   const cwdFor = (workspaceId: WorkspaceId | null | undefined): string | undefined =>
     workspaceId === null || workspaceId === undefined ? undefined : projects.get(workspaceId)?.path
 
@@ -182,9 +209,10 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     .filter(chat => archived === undefined || chat.archived === archived)
     .map(chat => summary(chat.id)))
   rpc.register('sessions.search', async ({ query, limit }) => (await store.search(query, Math.min(limit ?? 20, 50))).map(hit => ({ summary: summary(hit.chat.id), snippet: hit.snippet })))
-  rpc.register('sessions.create', async ({ workspaceId, cwd }) => {
+  rpc.register('sessions.create', async ({ workspaceId, cwd, permission }) => {
     const directory = cwdFor(workspaceId) ?? cwd ?? env.home
-    const chat = await store.create({ workspaceId, cwd: directory })
+    const mode = permission === undefined ? undefined : permissionSchema.parse(permission)
+    const chat = await store.create({ workspaceId, cwd: directory, ...(mode === undefined ? {} : { permission: mode }) })
     const created = summary(chat.id)
     rpc.emit('sessions.changed', created)
     return created
@@ -215,6 +243,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     const live = sessions.get(sessionId)
     if (live !== undefined) { await live.close(); sessions.delete(sessionId) }
     await store.delete(sessionId)
+    await snapshots.remove(sessionId).catch((error: unknown) => { log(`[snapshots] ${sessionId}: ${String(error)}`) })
     rpc.emit('sessions.removed', { sessionId })
   })
   rpc.register('sessions.fork', async ({ sessionId, entryId }) => {
@@ -226,7 +255,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     while (end + 1 < file.entries.length && file.entries[end + 1]!.kind === 'toolResult') end++
     const chat = await store.create({
       workspaceId: file.chat.workspaceId, cwd: file.chat.cwd, parent: { sessionId, entryId }, entries: file.entries.slice(0, end + 1),
-      title: `${file.chat.title || '新对话'}（分支）`, model: file.chat.model,
+      title: `${file.chat.title || '新对话'}（分支）`, model: file.chat.model, ...(file.chat.permission === undefined ? {} : { permission: file.chat.permission }),
     })
     const created = summary(chat.id)
     rpc.emit('sessions.changed', created)
@@ -238,11 +267,35 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('chat.unqueue', async ({ sessionId, id }) => (await session(sessionId)).unqueue(id))
   rpc.register('chat.setModel', async ({ sessionId, ...selection }) => (await session(sessionId)).setModel(selection))
   rpc.register('chat.compact', async ({ sessionId }) => ({ message: await (await session(sessionId)).compactNow() }))
+  rpc.register('chat.setPermission', async ({ sessionId, mode }) => (await session(sessionId)).setPermission(permissionSchema.parse(mode)))
+  rpc.register('chat.approve', async (params) => {
+    const { sessionId, toolCallId, decision, reason } = approveSchema.parse(params)
+    const live = sessions.get(sessionId)
+    if (live === undefined) throw new RpcError('not-found', '这个操作已不在等待批准。')
+    await live.approve(toolCallId, decision, reason)
+  })
+  rpc.register('chat.revert', async (params) => {
+    const { sessionId, toolCallIds } = revertSchema.parse(params)
+    return (await session(sessionId)).revert(toolCallIds)
+  })
   rpc.register('chat.complete', async ({ sessionId, workspaceId, query }) => {
     const chat = sessionId === undefined ? undefined : store.get(sessionId)
     const cwd = chat?.cwd ?? cwdFor(workspaceId)
     const files = cwd === undefined ? [] : await completeFiles(cwd, query)
     return [...files, ...completeChats(store.list(), query, sessionId)]
+  })
+
+  // ── security ──
+  rpc.register('security.status', ({ workspaceId }) => securityStatus(workspaceId))
+  rpc.register('security.setDefault', async ({ mode }) => {
+    await settings.setDefaultPermission(permissionSchema.parse(mode))
+    for (const live of sessions.values()) live.refresh()
+    return securityStatus(undefined)
+  })
+  rpc.register('security.removeRule', async (params) => {
+    const { workspaceId, kind, rule } = removeRuleSchema.parse(params)
+    await settings.setPermissionRule(workspaceId, kind, rule, false)
+    return securityStatus(brandString<WorkspaceId>(workspaceId))
   })
 
   // ── skills and MCP ──

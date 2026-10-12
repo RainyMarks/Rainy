@@ -39,7 +39,7 @@ it('opens on the requested section, follows section requests and navigates betwe
   const view = await render(dialog({ section: 'memory' }))
   expect(panel().dataset['section']).toBe('memory')
   expect(all('[data-settings-nav]').map(element => element.textContent))
-    .toEqual([zh.navGeneral, zh.navModels, zh.navExtensions, zh.navRuntime, zh.navMemory])
+    .toEqual([zh.navGeneral, zh.navModels, zh.navExtensions, zh.navRuntime, zh.navMemory, zh.navSecurity])
   expect(button(zh.navMemory).getAttribute('aria-current')).toBe('page')
   expect(hasText(zh.settingsOpenProject)).toBe(true)
   await click(button(zh.navGeneral))

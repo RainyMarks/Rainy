@@ -20,7 +20,7 @@ export interface PromptInputs {
 
 const PERSONA = 'You are RainyAgent, a concise coding assistant. Follow the user and applicable project instructions. '
   + 'Inspect relevant files before editing. Use the available file and shell tools to complete the task. '
-  + 'Check command results and report what was actually verified. Keep tool output bounded; use rg and targeted line ranges. '
+  + 'Check command results and report what was actually verified. Keep tool output bounded: search with grep and glob, and read targeted line ranges. '
   + 'Continue from compacted checkpoints without repeating finished work.'
 
 const FILE_REFERENCES = 'Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; '
@@ -33,10 +33,11 @@ const TOOL_NOTES: Readonly<Record<string, string>> = {
   pwsh: 'Non-zero exits are reported as `[exit code: N]` markers; investigate failures before moving on. On Windows a killed process '
     + 'settles as `[exit code: 1]` without a signal marker; treat a bare exit 1 after an interruption as a termination, not a command failure.',
   read: 'Use the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.',
+  grep: 'Use grep — not grep, rg, findstr or Select-String in the shell — to search file contents, and glob to find files by name.',
   write: 'Read an existing file before overwriting it with write and prefer edit for targeted changes.',
   edit: 'Read a file before editing it, unless you just created or edited it in this session.',
 }
-const TOOL_NOTE_ORDER = ['bash', 'pwsh', 'read', 'write', 'edit'] as const
+const TOOL_NOTE_ORDER = ['bash', 'pwsh', 'read', 'grep', 'write', 'edit'] as const
 
 const POWERSHELL_NOTES: Readonly<Record<'core' | 'desktop' | 'unknown', string>> = {
   core: 'Commands execute in PowerShell 7 on Windows.',

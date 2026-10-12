@@ -45,7 +45,7 @@ Before pushing, run `typecheck`, the vitest files for what you changed, `test:no
 - Page text is localized: each folder's `messages.ts` defines Chinese and English with `defineMessages`. No hard-coded copy in components.
 - Colors, radii and shadows come from the tokens in `src/renderer/theme/` (`--dsw-*`). Dark mode is `body[data-ds-dark-theme]`; do not hard-code colors.
 - Text from projects, tools or language servers is untrusted in a CTF workbench. Never render it as HTML without sanitizing; the page has privileged bridges.
-- Tools run without approval prompts. Keep tools inside their documented behavior: `read` before `write`/`edit`, output limits, spill files.
+- Tool calls pass `agent/permissions.ts` before they run: read-only, ask (the default) or full auto per chat. Keep tools inside their documented behavior: `read` before `write`/`edit`, output limits, spill files, and an undo snapshot for every change.
 - Pin exact dependency versions that are at least two weeks old. CodeMirror core packages are pinned once in `pnpm-workspace.yaml` overrides so only one copy loads.
 - Comments state contracts and non-obvious reasons, not narration. Files end with one newline.
 - Docs change with the code: `docs/architecture.md` for structure, `docs/desktop*.md` for build and release, README for users.

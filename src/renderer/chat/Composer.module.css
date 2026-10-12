@@ -273,3 +273,19 @@
 .meter[data-level='full'] .meterValue { stroke: var(--dsw-alias-state-error-primary); }
 
 .meterText { min-width: 26px; }
+
+.picker[data-permission='auto'] { color: var(--dsw-alias-state-warn-primary); }
+.picker[data-permission='read-only'] { color: var(--dsw-alias-state-business-primary); }
+
+.modeItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 280px;
+}
+.modeHint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  line-height: 1.4;
+  white-space: normal;
+}

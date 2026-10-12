@@ -44,7 +44,7 @@ import css from './App.module.css'
 type MenuId = 'file' | 'edit' | 'view' | 'explorer' | 'editor' | 'app' | 'workspace' | 'run'
 type Side = 'left' | 'right' | 'bottom'
 
-const settingsSections: readonly SettingsSection[] = ['general', 'models', 'extensions', 'runtime', 'memory']
+const settingsSections: readonly SettingsSection[] = ['general', 'models', 'extensions', 'runtime', 'memory', 'security']
 
 /** Inputs of the window layout. */
 export interface WorkbenchLayoutProps {

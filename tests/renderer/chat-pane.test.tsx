@@ -32,7 +32,7 @@ function summary(id: string, change: Partial<SessionSummary> = {}): SessionSumma
 }
 
 function snapshot(id: string, entries: TranscriptEntry[], change: Partial<SessionSnapshot> = {}): SessionSnapshot {
-  return { summary: summary(id), entries, model: { provider: 'fake', model: 'fake-model' }, queue: [], context: null, streaming: null, runningTools: [], ...change }
+  return { summary: summary(id), entries, model: { provider: 'fake', model: 'fake-model' }, queue: [], context: null, streaming: null, runningTools: [], permission: 'ask', approvals: [], ...change }
 }
 
 const turn: TranscriptEntry[] = [
@@ -118,7 +118,7 @@ it('queues with Enter and steers with Ctrl+Enter while busy, and stops on a doub
   await key(input(), { key: 'Escape' })
   await key(input(), { key: 'Escape' })
   expect(calls('chat.abort')).toEqual([{ sessionId: 'busy-1' }])
-  await emit('session.state', { sessionId: 'busy-1', status: 'idle', queue: [], model: null, context: null })
+  await emit('session.state', { sessionId: 'busy-1', status: 'idle', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
   expect(input().placeholder).toBe('描述任务，@ 引用文件，/ 使用命令')
 })
 
@@ -155,11 +155,11 @@ it('appends streamed entries and shows a failed request', async () => {
   handle('sessions.get', ({ sessionId }) => snapshot(sessionId, turn.slice(0, 1)))
   await render(<ChatPane workspace={workspace} sessionId="live-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
   await waitFor(() => { expect(hasText('看看 @main.py')).toBe(true) })
-  await emit('session.state', { sessionId: 'live-1', status: 'running', queue: [], model: null, context: null })
+  await emit('session.state', { sessionId: 'live-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
   await emit('session.stream', { sessionId: 'live-1', message: assistant([{ type: 'text', text: '正在看' }], 'pending') })
   expect(document.body.textContent).toContain('正在看')
   await emit('session.entry', { sessionId: 'live-1', entry: { id: 'a9', kind: 'assistant', ts: 9, message: assistant([], 'error') } })
-  await emit('session.state', { sessionId: 'live-1', status: 'error', queue: [], model: null, context: null, error: '429 rate limited' })
+  await emit('session.state', { sessionId: 'live-1', status: 'error', queue: [], model: null, context: null, permission: 'ask', approvals: [], error: '429 rate limited' })
   expect(hasText('请求失败')).toBe(true)
   expect(document.body.textContent).toContain('429 rate limited')
   expect(button('发送').disabled).toBe(true)
@@ -170,9 +170,9 @@ it('says when it is compacting the context', async () => {
   await render(<ChatPane workspace={workspace} sessionId="compact-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
   await waitFor(() => { expect(hasText('看看 @main.py')).toBe(true) })
   expect(document.body.textContent).not.toContain('正在压缩上下文')
-  await emit('session.state', { sessionId: 'compact-1', status: 'compacting', queue: [], model: null, context: null })
+  await emit('session.state', { sessionId: 'compact-1', status: 'compacting', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
   expect(document.body.textContent).toContain('正在压缩上下文…')
-  await emit('session.state', { sessionId: 'compact-1', status: 'idle', queue: [], model: null, context: null })
+  await emit('session.state', { sessionId: 'compact-1', status: 'idle', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
   expect(document.body.textContent).not.toContain('正在压缩上下文')
 })
 

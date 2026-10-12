@@ -1,6 +1,6 @@
 /** One chat: transcript on disk, a pi-agent-core Agent while it runs, and the events the renderer follows. */
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import {
   createInitialSystemMessage, isContextOverflow, toToolDeclaration, type Api, type AssistantMessage, type ImageContent, type Message, type Model,
@@ -8,7 +8,8 @@ import {
 } from '@earendil-works/pi-ai'
 import { resolveBudget, type Budget } from '../../shared/budget.ts'
 import type {
-  ContextUsage, ModelSelection, QueuedMessage, SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
+  ApprovalDecision, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RevertResult, SessionRunStatus, SessionSnapshot,
+  SessionSummary, TranscriptEntry, UsageSummary,
 } from '../../shared/rpc.ts'
 import { resolvePowerShell } from '../process.ts'
 import { RpcError } from '../rpc.ts'
@@ -18,6 +19,7 @@ import { compact, compactionThreshold, estimateMessages, SHARED_CACHE_WINDOW_MS 
 import { addUsage, usageOf } from './llm.ts'
 import { loadBaseline, loadedFrom, renderAdditional, renderBaseline } from './instructions.ts'
 import type { ResolvedModel } from './models.ts'
+import { canonicalPath, decide, denialText, READ_ONLY_REASON } from './permissions.ts'
 import { buildSystemPrompt } from './prompt.ts'
 import { discoverSkills, skillsSection } from './skills.ts'
 import type { ChatStore, StoredChat } from './store.ts'
@@ -34,6 +36,11 @@ const TOOL_UPDATE_THROTTLE_MS = 200
 /** Chats referenced with `@[…](rainy-session:<id>)` in one message. */
 const MAX_REFERENCES = 3
 const REFERENCE_PATTERN = /@\[([^\]\n]{1,200})\]\(rainy-session:([A-Za-z0-9-]{1,64})\)/g
+/** Model-facing result of a call still waiting when the user sent a new message. */
+const SUPERSEDED = 'The user did not answer the approval request for this tool call and sent a new message instead. Read it before continuing.'
+
+/** How a wait for approval ended: run the call, or refuse it with a model-facing text and maybe end the run after this step. */
+type ApprovalAnswer = { allow: true } | { allow: false; text: string; stop: boolean; by?: 'user' | 'mode' | undefined }
 
 /**
  * Title derived from the first message: control characters removed, at most five words and 40 bytes.
@@ -85,6 +92,12 @@ export class ChatSession {
   private messageStarted = 0
   private run: { started: number; requests: number; usage: UsageSummary; aborted: boolean; overflowRetried: boolean } | undefined
   private touched: string[] = []
+  /** Tool calls waiting for the user, with the callback that ends each wait. */
+  private readonly approvals = new Map<string, { approval: PendingApproval; settle: (answer: ApprovalAnswer) => void }>()
+  /** The user refused a call without guidance: skip the rest of the step and end the run. */
+  private stopAfterStep = false
+  /** Calls refused by the user or by read-only mode; their transcript entries say so for the UI. */
+  private readonly refused = new Map<string, 'user' | 'mode'>()
 
   private constructor(private readonly services: AgentServices, private chat: StoredChat, private readonly entries: TranscriptEntry[]) {}
 
@@ -107,7 +120,12 @@ export class ChatSession {
 
   /** @returns The history-list row. */
   summary(): SessionSummary {
-    return { ...this.services.store.get(this.chat.id) ?? this.chat, status: this.status }
+    return { ...this.services.store.get(this.chat.id) ?? this.chat, status: this.status, ...(this.approvals.size > 0 ? { awaitingApproval: true } : {}) }
+  }
+
+  /** @returns What the agent may do without asking: the chat's own mode, else the default from Settings. */
+  permission(): PermissionMode {
+    return this.chat.permission ?? this.services.settings.defaultPermission()
   }
 
   /**
@@ -124,6 +142,8 @@ export class ChatSession {
       context: this.context,
       streaming: this.streaming,
       runningTools: [...this.runningTools.keys()],
+      permission: this.permission(),
+      approvals: this.pendingApprovals(),
       ...(this.error === undefined ? {} : { error: this.error }),
     }
   }
@@ -152,6 +172,11 @@ export class ChatSession {
     if (resolved === undefined) throw new RpcError('no-model', '请先在 设置 → 模型 中配置模型。')
     if (images.length > 0 && !resolved.model.input.includes('image')) throw new RpcError('images-unsupported', '当前模型不支持图片输入。')
     const { message, meta, references } = await this.userMessage(text, images)
+    if (this.running && this.approvals.size > 0) {
+      // A new message answers a pending approval: the call is refused and the message reaches the model next.
+      for (const id of [...this.approvals.keys()]) this.settle(id, { allow: false, text: SUPERSEDED, stop: false, by: 'user' })
+      mode = 'steer'
+    }
     if (this.running) {
       const queueId = randomUUID()
       const queued: QueuedMessage = { id: queueId, text, mode, imageCount: images.length }
@@ -187,6 +212,73 @@ export class ChatSession {
     if (this.pending.delete(id)) this.queue = this.queue.filter(item => item.id !== id)
     this.publishState()
     return this.queue
+  }
+
+  /**
+   * Change what the agent may do without asking. Waiting calls follow the new mode.
+   * @param mode The mode.
+   * @returns The stored mode.
+   */
+  async setPermission(mode: PermissionMode): Promise<PermissionMode> {
+    this.chat = await this.services.store.setMeta(this.chat.id, { permission: mode })
+    for (const id of [...this.approvals.keys()]) {
+      if (mode === 'auto') this.settle(id, { allow: true })
+      else if (mode === 'read-only') this.settle(id, { allow: false, text: READ_ONLY_REASON, stop: false, by: 'mode' })
+    }
+    this.publishState()
+    return mode
+  }
+
+  /**
+   * Answer a waiting tool call.
+   * @param toolCallId The call.
+   * @param decision Allow once, allow and remember for the project, or refuse.
+   * @param reason What the user told the model when refusing; without it the run stops after this step.
+   */
+  async approve(toolCallId: string, decision: ApprovalDecision, reason?: string): Promise<void> {
+    const pending = this.approvals.get(toolCallId)
+    if (pending === undefined) throw new RpcError('not-found', '这个操作已不在等待批准。')
+    if (decision === 'always') {
+      const rule = pending.approval.rule
+      if (rule === undefined || this.chat.workspaceId === null) throw new RpcError('invalid', '这个操作只能单次允许。')
+      await this.services.settings.setPermissionRule(this.chat.workspaceId, pending.approval.reason === 'mcp' ? 'tool' : 'command', rule, true)
+    }
+    const said = reason?.trim() ?? ''
+    this.settle(toolCallId, decision === 'deny' ? { allow: false, text: denialText(said), stop: said === '', by: 'user' } : { allow: true })
+  }
+
+  /**
+   * Undo write and edit calls of this chat, newest first. A file that changed after the call is left alone.
+   * @param toolCallIds Calls to undo.
+   * @returns What was restored and what was not.
+   */
+  async revert(toolCallIds: readonly string[]): Promise<RevertResult> {
+    if (this.running) throw new RpcError('busy', '请等待当前任务结束后再撤销修改。')
+    const position = new Map<string, number>()
+    this.entries.forEach((entry, index) => { if (entry.kind === 'toolResult' && (entry.toolName === 'write' || entry.toolName === 'edit')) position.set(entry.toolCallId, index) })
+    const done = new Set(this.entries.flatMap(entry => entry.kind === 'context' ? entry.reverted ?? [] : []))
+    const ids = [...new Set(toolCallIds)].filter(id => position.has(id) && !done.has(id)).sort((left, right) => position.get(right)! - position.get(left)!)
+    const result: RevertResult = { reverted: [], failed: [] }
+    const lineage = this.lineage()
+    for (const id of ids) {
+      const outcome = await this.services.snapshots.revert(lineage, id)
+      if ('reason' in outcome) result.failed.push({ toolCallId: id, path: outcome.path, reason: outcome.reason, message: outcome.message })
+      else result.reverted.push({ toolCallId: id, path: outcome.path })
+    }
+    if (result.reverted.length > 0) {
+      const paths = [...new Set(result.reverted.map(item => pathForModel(this.chat.cwd, item.path)))]
+      await this.append({
+        id: randomUUID(), kind: 'context', ts: Date.now(), label: 'notice', reverted: result.reverted.map(item => item.toolCallId),
+        text: `The user undid ${result.reverted.length} of your file changes. These files are back to their content before those changes; `
+          + `read them again before changing them:\n${paths.map(path => `- ${path}`).join('\n')}`,
+      })
+    }
+    return result
+  }
+
+  /** Publish run state again, after the default mode in Settings changed. */
+  refresh(): void {
+    this.publishState()
   }
 
   /**
@@ -255,6 +347,27 @@ export class ChatSession {
       toolExecution: 'sequential',
       steeringMode: 'all',
       sessionId: this.chat.id,
+      beforeToolCall: async ({ toolCall, args }, signal) => {
+        if (this.stopAfterStep) return { block: true, reason: 'Skipped: the user refused an earlier tool call in this step.', terminate: true }
+        const decision = await decide({
+          mode: this.permission(), toolName: toolCall.name, args, cwd: this.chat.cwd, roots: () => this.canonicalRoots(),
+          rules: this.chat.workspaceId === null ? { commands: [], tools: [] } : this.services.settings.permissionRules(this.chat.workspaceId),
+          readOnlyTools: this.services.mcp.readOnlyTools(), canRemember: this.chat.workspaceId !== null, windows: this.services.env.platform === 'win32',
+        })
+        if (decision.kind === 'allow') return undefined
+        if (decision.kind === 'deny') { this.refused.set(toolCall.id, 'mode'); return { block: true, reason: decision.reason } }
+        const answer = await this.waitForApproval({ toolCallId: toolCall.id, toolName: toolCall.name, ...decision.approval }, signal)
+        if (answer.allow) return undefined
+        if (answer.by !== undefined) this.refused.set(toolCall.id, answer.by)
+        if (answer.stop) this.stopAfterStep = true
+        return { block: true, reason: answer.text, ...(answer.stop ? { terminate: true } : {}) }
+      },
+      finishTurn: () => {
+        if (!this.stopAfterStep) return undefined
+        this.stopAfterStep = false
+        // A message the user steered in still gets its answer.
+        return this.agent?.hasQueuedMessages() === true ? undefined : { action: 'end' }
+      },
       prepareRequest: async (request, signal) => {
         const messages = request.context.messages.filter((message): message is Message => message.role !== 'system')
         const budget = resolveBudget(request.model.contextWindow, request.model.maxTokens)
@@ -313,6 +426,8 @@ export class ChatSession {
     this.agent = undefined
     this.streaming = null
     this.runningTools.clear()
+    this.stopAfterStep = false
+    this.refused.clear()
     if (run !== undefined) {
       if (run.aborted) await this.append({ id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', text: '已停止。', code: 'stopped' })
       else if (run.requests > 0) {
@@ -416,9 +531,12 @@ export class ChatSession {
     if (message.role === 'toolResult') {
       const started = this.runningTools.get(message.toolCallId)
       this.runningTools.delete(message.toolCallId)
+      const refused = this.refused.get(message.toolCallId)
+      this.refused.delete(message.toolCallId)
+      const details = refused === undefined ? message.details : { refused }
       await this.append({
         id: randomUUID(), kind: 'toolResult', ts: message.timestamp, toolCallId: message.toolCallId, toolName: message.toolName,
-        content: message.content, isError: message.isError, ...(message.details === undefined ? {} : { details: message.details }),
+        content: message.content, isError: message.isError, ...(details === undefined ? {} : { details }),
         ...(started === undefined ? {} : { durationMs: Date.now() - started }),
       })
     }
@@ -513,6 +631,16 @@ export class ChatSession {
       observations: this.observations,
       pwshPath: env.pwshPath,
       onFileTouched: (path) => { this.touched.push(path) },
+      recordChange: async (toolCallId, path, before, after) => {
+        try {
+          await this.services.snapshots.record(this.chat.id, toolCallId, path, before, after)
+          return true
+        } catch (error) {
+          this.services.log(`[chat ${this.chat.id}] keeping ${path} for undo failed: ${error instanceof Error ? error.message : String(error)}`)
+          return false
+        }
+      },
+      ripgrep: this.services.ripgrep,
     }
     return [...coreTools(context, env.platform), ...this.services.mcp.tools()].sort((left, right) => left.name.localeCompare(right.name))
   }
@@ -593,6 +721,53 @@ export class ChatSession {
     this.publishState()
   }
 
+  // ── approvals ──
+
+  private pendingApprovals(): PendingApproval[] {
+    return [...this.approvals.values()].map(item => item.approval)
+  }
+
+  /** Project directories with links resolved; a chat outside any project has none, so its every write asks. */
+  private async canonicalRoots(): Promise<string[]> {
+    const project = this.chat.workspaceId === null ? undefined : this.services.projects.get(this.chat.workspaceId)
+    if (project === undefined) return []
+    return Promise.all([this.chat.cwd, ...roots(project).map(root => root.path)].map(path => canonicalPath(path)))
+  }
+
+  private waitForApproval(approval: PendingApproval, signal: AbortSignal | undefined): Promise<ApprovalAnswer> {
+    return new Promise<ApprovalAnswer>((resolve) => {
+      const onAbort = (): void => { this.settle(approval.toolCallId, { allow: false, text: 'Operation aborted', stop: true }) }
+      this.approvals.set(approval.toolCallId, {
+        approval,
+        settle: (answer) => { signal?.removeEventListener('abort', onAbort); resolve(answer) },
+      })
+      this.publishState()
+      this.services.rpc.emit('sessions.changed', this.summary())
+      if (signal?.aborted === true) onAbort()
+      else signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  private settle(toolCallId: string, answer: ApprovalAnswer): void {
+    const pending = this.approvals.get(toolCallId)
+    if (pending === undefined) return
+    this.approvals.delete(toolCallId)
+    pending.settle(answer)
+    this.publishState()
+    this.services.rpc.emit('sessions.changed', this.summary())
+  }
+
+  /** @returns This chat and the chats it was forked from, nearest first; a fork can undo changes made before it. */
+  private lineage(): string[] {
+    const ids = [this.chat.id]
+    let parent = this.chat.parent
+    while (parent !== undefined && ids.length < 16 && !ids.includes(parent.sessionId)) {
+      ids.push(parent.sessionId)
+      parent = this.services.store.get(parent.sessionId)?.parent
+    }
+    return ids
+  }
+
   // ── persistence and events ──
 
   private async append(entry: TranscriptEntry): Promise<void> {
@@ -611,7 +786,19 @@ export class ChatSession {
   private publishState(): void {
     this.services.rpc.emit('session.state', {
       sessionId: this.chat.id, status: this.status, queue: this.queue, model: this.selection(), context: this.context,
+      permission: this.permission(), approvals: this.pendingApprovals(),
       ...(this.error === undefined ? {} : { error: this.error }),
     })
   }
+}
+
+/**
+ * A path as the model knows it: relative to the working directory when inside it.
+ * @param cwd Working directory.
+ * @param path Absolute path.
+ * @returns The path to show.
+ */
+function pathForModel(cwd: string, path: string): string {
+  const inside = relative(cwd, path)
+  return inside !== '' && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) ? inside.split(sep).join('/') : path
 }

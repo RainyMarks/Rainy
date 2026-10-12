@@ -1,8 +1,9 @@
 /** Client state of the chats the renderer shows, kept current from Host events. */
 import { useEffect, useSyncExternalStore } from 'react'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
-import type { SessionSnapshot, SessionSummary, TranscriptEntry } from '../../shared/rpc.ts'
+import type { PendingApproval, SessionSnapshot, SessionSummary, TranscriptEntry } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
+import { chatT } from './messages.ts'
 
 /** Live output of a running tool. */
 export interface RunningTool { toolName: string; args?: unknown; partial?: string | undefined }
@@ -65,12 +66,28 @@ host.on('session.tool', ({ sessionId, toolCallId, toolName, phase, args, partial
     return { ...view, tools }
   })
 })
-host.on('session.state', ({ sessionId, status, queue, model, context, error }) => {
+/** Approvals already announced, so a repeated state event does not notify twice. */
+const announced = new Set<string>()
+
+/** Tell the user about a new approval request when the window is not in front. */
+function announce(approvals: readonly PendingApproval[], title: string): void {
+  for (const approval of approvals) {
+    if (announced.has(approval.toolCallId)) continue
+    announced.add(approval.toolCallId)
+    if (document.visibilityState === 'visible' && document.hasFocus()) continue
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') continue
+    const notice = new Notification(chatT('approvalNotifyTitle'), { body: title, tag: approval.toolCallId })
+    notice.onclick = () => { window.focus(); notice.close() }
+  }
+}
+
+host.on('session.state', ({ sessionId, status, queue, model, context, error, permission, approvals }) => {
   update(sessionId, view => ({
-    ...view, queue, model, context, error,
-    summary: { ...view.summary, status },
+    ...view, queue, model, context, error, permission, approvals,
+    summary: { ...view.summary, status, awaitingApproval: approvals.length > 0 || undefined },
     ...(status === 'idle' || status === 'error' ? { tools: {}, streaming: null } : {}),
   }))
+  if (approvals.length > 0) announce(approvals, chats.get(sessionId)?.summary.title ?? '')
 })
 host.on('sessions.changed', (summary) => {
   update(summary.id, view => ({ ...view, summary }))

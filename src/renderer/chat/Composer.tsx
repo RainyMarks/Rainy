@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import clsx from 'clsx'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
-import type { CompletionItem, ContextUsage, ModelSelection, QueuedMessage } from '../../shared/rpc.ts'
+import type { CompletionItem, ContextUsage, ModelSelection, PermissionMode, QueuedMessage } from '../../shared/rpc.ts'
 import { on } from '../app/bus.ts'
 import { getPrefs } from '../prefs.ts'
 import { host } from '../rpc.ts'
@@ -13,6 +13,7 @@ import {
 } from '../ui/index.ts'
 import { useChatT } from './messages.ts'
 import { ContextMeter, ModelPicker } from './ModelPicker.tsx'
+import { PermissionPicker } from './PermissionPicker.tsx'
 import css from './Composer.module.css'
 
 /** Most images one message carries. */
@@ -91,6 +92,9 @@ export interface ComposerProps {
   model: ModelSelection | null
   context: ContextUsage | null
   queue: readonly QueuedMessage[]
+  /** What the agent may do without asking in this chat, or in the next one. */
+  permission: PermissionMode
+  onPermission(mode: PermissionMode): void
   /** Text the pane asks the composer to show (for example after a failed send); consumed once per change of `seed.id`. */
   seed?: { id: number; text: string } | undefined
   onSend(text: string, images: ImageContent[], mode: 'queue' | 'steer'): Promise<boolean>
@@ -100,7 +104,7 @@ export interface ComposerProps {
 }
 
 /** Composer for one chat or for the next new chat. */
-export function Composer({ sessionId, workspaceId, busy, model, context, queue, seed, onSend, onStop, onCompact, onNewChat }: ComposerProps): JSX.Element {
+export function Composer({ sessionId, workspaceId, busy, model, context, queue, permission, onPermission, seed, onSend, onStop, onCompact, onNewChat }: ComposerProps): JSX.Element {
   const t = useChatT()
   const draftKey = sessionId ?? ''
   const [text, setText] = useState(() => drafts.get(draftKey) ?? '')
@@ -360,6 +364,7 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
           onKeyDown={onKeyDown} onPaste={onPaste} data-chat-input />
         <div className={css.toolbar}>
           <ModelPicker sessionId={sessionId} selection={model} openSignal={modelMenu} />
+          <PermissionPicker mode={permission} onChange={onPermission} />
           <label className={css.iconButton}>
             <Tooltip label={t('attachImage')} side="top" portal><IconPaperclipOutlineRegular size={16} /></Tooltip>
             <input type="file" accept={[...IMAGE_TYPES].join(',')} multiple hidden aria-label={t('attachImage')}

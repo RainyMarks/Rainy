@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { PermissionMode } from '../../shared/rpc.ts'
 import { on } from '../app/bus.ts'
 import { getPrefs } from '../prefs.ts'
 import { host, useConnectionState } from '../rpc.ts'
@@ -52,6 +53,18 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
   const connection = useConnectionState()
   const [creating, setCreating] = useState(false)
   const busy = view !== undefined && (view.summary.status === 'running' || view.summary.status === 'compacting')
+  /** Mode chosen before the first message of a new chat, and the default from Settings. */
+  const [nextMode, setNextMode] = useState<PermissionMode | undefined>()
+  const [defaultMode, setDefaultMode] = useState<PermissionMode>('ask')
+  useEffect(() => {
+    if (sessionId !== null) return
+    void host.call('security.status', {}).then((status) => { setDefaultMode(status.defaultMode) }, () => undefined)
+  }, [sessionId])
+  const permission = view?.permission ?? nextMode ?? defaultMode
+  const changePermission = (mode: PermissionMode): void => {
+    if (sessionId === null) { setNextMode(mode); return }
+    host.call('chat.setPermission', { sessionId, mode }).catch((error: unknown) => { toast(message(error)) })
+  }
 
   /**
    * Send to the current chat. A new chat is created first when there is none, or when `forWorkspace` names a project other than the chat's.
@@ -63,9 +76,10 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
         const workspaceId = forWorkspace ?? workspace?.workspaceId ?? null
         setCreating(true)
         try {
-          const created = await host.call('sessions.create', { workspaceId })
+          const created = await host.call('sessions.create', { workspaceId, ...(nextMode === undefined ? {} : { permission: nextMode }) })
           await loadChat(created.id)
           target = created.id
+          setNextMode(undefined)
           onSessionChange(created.id)
         } finally {
           setCreating(false)
@@ -110,7 +124,7 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
         ? <div className={css.empty}>{sessionId === null && <Hero hasProject={workspace !== null} />}</div>
         : <Transcript view={view} onFork={onSessionChange} empty={<Hero hasProject={workspace !== null} />} />}
       <Composer sessionId={sessionId} workspaceId={view?.summary.workspaceId ?? workspace?.workspaceId ?? null} busy={busy || creating}
-        model={view?.model ?? null} context={view?.context ?? null} queue={view?.queue ?? []}
+        model={view?.model ?? null} context={view?.context ?? null} queue={view?.queue ?? []} permission={permission} onPermission={changePermission}
         onSend={(text, images, mode) => send(text, images, mode)} onStop={stop} onCompact={compact} onNewChat={newChat} />
     </div>
   )

@@ -3,7 +3,7 @@ import { defineMessages } from '../i18n.ts'
 
 const zh = {
   title: '设置', close: '关闭', loading: '正在加载…',
-  navGeneral: '通用设置', navModels: '模型', navExtensions: 'Skills 与 MCP', navRuntime: '运行环境', navMemory: '项目记忆',
+  navGeneral: '通用设置', navModels: '模型', navExtensions: 'Skills 与 MCP', navRuntime: '运行环境', navMemory: '项目记忆', navSecurity: '安全',
 
   languageTitle: '语言', languageZh: '简体中文', languageEn: 'English',
   appearanceTitle: '外观', appearanceLight: '浅色', appearanceDark: '深色', appearanceSystem: '跟随系统',
@@ -62,6 +62,11 @@ const zh = {
   settingsPreviewAttachments: '不包含尚未发送的草稿和附件。',
   settingsBudget: '{tokens} / {window} tokens（{kind}）\n输入预算 {input} · 输出预留 {output} · 计数余量 {margin}',
   settingsSaved: '已保存', settingsApplied: '已应用',
+  settingsSecurity: '安全', settingsSecurityNote: 'AI 运行命令、调用 MCP 工具或写项目外的文件前，是否先问你。每个对话也可以在输入框旁单独切换。',
+  securityDefaultMode: '新对话的权限', securityDefaultModeNote: '已有对话保留各自的设置',
+  securityModeReadOnly: '只读：只能读取和搜索', securityModeAsk: '询问：命令、MCP 工具和项目外写入先问你', securityModeAuto: '完全自动：不再询问',
+  securityRules: '已记住的规则', securityRulesNote: '批准时选择“总是允许”会记在当前项目里。命令规则只匹配简单命令：含有 ; & | > < $ ( ) 等的命令仍会每次询问。',
+  securityNoRules: '当前项目还没有记住的规则', securityRuleCommand: '命令', securityRuleTool: 'MCP 工具', securityRemoveRule: '移除',
   settingsBudgetParts: '估算分项：系统 {system} · 工具 {tools} · 扩展说明 {extensions} · 项目与全局指令 {instructions} · 记忆 {memory}'
     + ' · 历史 {history} · 协议 {framing}',
   settingsProbeResult: '流式输出：{stream}\n工具调用：{tools}', settingsPass: '通过', settingsNotVerified: '未验证',
@@ -112,7 +117,7 @@ const zh = {
 
 const en: Record<keyof typeof zh, string> = {
   title: 'Settings', close: 'Close', loading: 'Loading…',
-  navGeneral: 'General', navModels: 'Models', navExtensions: 'Skills and MCP', navRuntime: 'Runtime', navMemory: 'Project memory',
+  navGeneral: 'General', navModels: 'Models', navExtensions: 'Skills and MCP', navRuntime: 'Runtime', navMemory: 'Project memory', navSecurity: 'Security',
 
   languageTitle: 'Language', languageZh: '简体中文', languageEn: 'English',
   appearanceTitle: 'Appearance', appearanceLight: 'Light', appearanceDark: 'Dark', appearanceSystem: 'System',
@@ -182,6 +187,11 @@ const en: Record<keyof typeof zh, string> = {
   settingsPreviewAttachments: 'Unsent drafts and attachments are excluded.',
   settingsBudget: '{tokens} / {window} tokens ({kind})\nInput budget {input} · Output reserve {output} · Counting margin {margin}',
   settingsSaved: 'Saved', settingsApplied: 'Applied',
+  settingsSecurity: 'Security', settingsSecurityNote: 'Whether the AI asks you before running commands, calling MCP tools or writing outside the project. Each chat can also switch this next to its input box.',
+  securityDefaultMode: 'Mode of new chats', securityDefaultModeNote: 'Existing chats keep their own mode',
+  securityModeReadOnly: 'Read-only: read and search only', securityModeAsk: 'Ask: commands, MCP tools and outside writes ask first', securityModeAuto: 'Full auto: never ask',
+  securityRules: 'Remembered rules', securityRulesNote: '"Always allow" in an approval is remembered for the current project. Command rules match simple commands only: commands with ; & | > < $ ( ) and similar still ask every time.',
+  securityNoRules: 'No rules remembered for this project yet', securityRuleCommand: 'Command', securityRuleTool: 'MCP tool', securityRemoveRule: 'Remove',
   settingsBudgetParts: 'Estimated parts: system {system} · tools {tools} · extension instructions {extensions}'
     + ' · project and global instructions {instructions} · memory {memory} · history {history} · framing {framing}',
   settingsProbeResult: 'Streaming: {stream}\nTool calls: {tools}', settingsPass: 'Passed', settingsNotVerified: 'Not verified',
