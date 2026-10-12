@@ -419,7 +419,8 @@ describe.skipIf(process.platform === 'win32')('real processes', () => {
     await vi.waitFor(async () => { expect((await status()).runs[0]?.phase).toBe('exited') }, { timeout: 30000 })
     expect((await status()).runs[0]?.exit?.exitCode).toBe(7)
     expect(await output()).toContain('42')
-    expect(await readdir(join(root, '.rainy-ide', 'build'))).toEqual([])
+    // The run reports its exit before the build directory is removed.
+    await vi.waitFor(async () => { expect(await readdir(join(root, '.rainy-ide', 'build'))).toEqual([]) })
   }, 60000)
 
   it.skipIf(resolveExecutable('cmake') === undefined || resolveExecutable('g++') === undefined)('builds a CMake target with an explicitly chosen compiler', async () => {
