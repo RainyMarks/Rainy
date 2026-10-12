@@ -6,7 +6,7 @@ import {
   createInitialSystemMessage, isContextOverflow, toToolDeclaration, type Api, type AssistantMessage, type ImageContent, type Message, type Model,
   type Tool, type ToolResultMessage, type UserMessage,
 } from '@earendil-works/pi-ai'
-import { resolveBudget, type Budget } from '../../shared/budget.ts'
+import { EstimateCalibration, resolveBudget, type Budget } from '../../shared/budget.ts'
 import type {
   ApprovalDecision, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RevertResult, SessionRunStatus, SessionSnapshot,
   SessionSummary, TranscriptEntry, UsageSummary,
@@ -80,8 +80,7 @@ export class ChatSession {
   private streaming: AssistantMessage | null = null
   private readonly runningTools = new Map<string, number>()
   private readonly observations = new Observations()
-  /** Ratio between provider-reported input tokens and the local estimate; only ever grows. */
-  private calibration = 1
+  private readonly calibration = new EstimateCalibration()
   private lastEstimate = 0
   /** Start time, model and reasoning level of the chat's latest request, to judge whether its prompt cache is warm. */
   private lastRequest: { at: number; key: string } | undefined
@@ -520,7 +519,7 @@ export class ChatSession {
         this.run.usage = addUsage(this.run.usage, usageOf(message))
       }
       const actual = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite
-      if (actual > 0 && this.lastEstimate > 0 && actual > this.lastEstimate * this.calibration) this.calibration = (actual / this.lastEstimate) * 1.1
+      this.calibration.observe(this.lastEstimate, actual)
       if (actual > 0 && this.context !== null) {
         this.context = { ...this.context, tokens: actual + message.usage.output, kind: 'exact' }
         this.publishState()
@@ -706,7 +705,7 @@ export class ChatSession {
   }
 
   private counterRatio(): number {
-    return this.calibration
+    return this.calibration.factor()
   }
 
   private updateContextUsage(budget: Budget, _count: number, system: string, tools: readonly Tool[], messages: readonly Message[]): void {

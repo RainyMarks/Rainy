@@ -1,7 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import {
-  CalibratedCounter,
-  EndpointCounter,
+  EstimateCalibration,
   estimateRequest,
   estimateText,
   promptBreakdown,
@@ -53,34 +52,6 @@ describe('request budget', () => {
     expect(count.instructions - base.instructions).toBe(estimateText('Always answer in Chinese.'))
     expect(count.system + count.extensions + count.instructions).toBe(base.system + base.extensions + base.instructions)
     expect(count.extensions).toBe(base.extensions)
-  })
-  it('requires the exact counter to identify its chat template', async () => {
-    const fetch = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response('{"tokens":42,"model":"local-model"}'))
-      .mockResolvedValueOnce(
-        new Response('{"tokens":42,"model":"local-model","chatTemplate":"deployment-template-v1"}'),
-      )
-    try {
-      const counter = new EndpointCounter('http://tokenizer.test/count', new CalibratedCounter())
-      expect((await counter.count({ model: 'local-model', messages: [] })).kind).toBe('estimated')
-      expect((await counter.count({ model: 'local-model', messages: [] })).kind).toBe('exact')
-    } finally {
-      fetch.mockRestore()
-    }
-  })
-  it('requires an exact counter to acknowledge the deployed model', async () => {
-    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"tokens":42,"model":"wrong-model"}'))
-    try {
-      const counter = new EndpointCounter('http://tokenizer.test/count', new CalibratedCounter())
-      expect((await counter.count({ model: 'local-model', messages: [] })).kind).toBe('estimated')
-      const body = fetch.mock.calls[0]?.[1]?.body
-      if (typeof body !== 'string') throw new Error('Expected a JSON tokenizer request body.')
-      const parsed: unknown = JSON.parse(body)
-      expect(parsed).toMatchObject({ model: 'local-model' })
-    } finally {
-      fetch.mockRestore()
-    }
   })
   it('reserves input, output and error margin for 100K', () => {
     expect(resolveBudget(100000)).toEqual({
@@ -138,34 +109,19 @@ describe('request budget', () => {
       estimateText(JSON.stringify(frozen.content)) + estimateText(JSON.stringify(mutable.content)),
     )
   })
-  it('increases estimates after observed undercount', async () => {
-    const counter = new CalibratedCounter()
-    const request = { messages: [] }
-    const before = await counter.count(request)
-    counter.observe(before.tokens, before.tokens * 2)
-    expect((await counter.count(request)).tokens).toBeGreaterThan(before.tokens * 2)
-  })
-  it('marks unavailable exact counters as estimates', async () => {
-    const counter = new EndpointCounter('http://127.0.0.1:1', new CalibratedCounter())
-    expect((await counter.count({ messages: [] })).kind).toBe('estimated')
-  })
-  it('passes only countable fields to the configured tokenizer', async () => {
-    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"tokens":42}', { status: 200 }))
-    try {
-      const request = { messages: [], tools: [], transportOnly: 'must-not-leave' }
-      const counter = new EndpointCounter('http://tokenizer.test/count', new CalibratedCounter())
-      expect(await counter.count(request)).toEqual({
-        tokens: 42,
-        kind: 'exact',
-        method: 'configured-request-tokenizer',
-      })
-      const body = fetch.mock.calls[0]?.[1]?.body
-      if (typeof body !== 'string') throw new Error('Expected a JSON tokenizer request body.')
-      const parsed: unknown = JSON.parse(body)
-      expect(parsed).toEqual({ messages: [], tools: [] })
-    } finally {
-      fetch.mockRestore()
-    }
+  it('raises estimates after an undercount until it is a few requests old, and never lowers them below the local estimate', () => {
+    const calibration = new EstimateCalibration()
+    expect(calibration.factor()).toBe(1)
+    calibration.observe(1000, 800)
+    expect(calibration.factor()).toBe(1)
+    calibration.observe(1000, 2000)
+    expect(calibration.factor()).toBeCloseTo(2.2)
+    for (let request = 0; request < 4; request++) calibration.observe(1000, 1000)
+    expect(calibration.factor()).toBeCloseTo(2.2)
+    calibration.observe(1000, 1100)
+    expect(calibration.factor()).toBeCloseTo(1.21)
+    calibration.observe(0, 5000)
+    expect(calibration.factor()).toBeCloseTo(1.21)
   })
 })
 

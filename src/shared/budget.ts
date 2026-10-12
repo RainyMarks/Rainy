@@ -31,10 +31,6 @@ export function resolveBudget(contextWindow: number, maxOutput?: number): Budget
   }
 }
 
-/** A counter must include provider framing and tool definitions, not only visible conversation text. */
-export interface TokenCounter {
-  count(request: CountableRequest, signal?: AbortSignal): Promise<TokenCount>
-}
 /** Request fields that contribute tokens; ids, secrets and transport options are excluded. */
 export interface CountableRequest {
   provider?: string
@@ -43,13 +39,6 @@ export interface CountableRequest {
   messages: readonly { id?: string; role: string; content: readonly unknown[]; source?: { kind: string } }[]
   tools?: readonly unknown[]
 }
-/** Exactness is carried into the UI; estimated counts never masquerade as tokenizer measurements. */
-export interface TokenCount {
-  tokens: number
-  kind: 'estimated' | 'exact'
-  method: string
-}
-
 /** Conservative component estimates; provider-reported totals may differ from this decomposition. */
 export interface PromptBreakdown {
   system: number
@@ -177,66 +166,27 @@ export function estimateRequest(request: CountableRequest): number {
   return tokens(total) + 16 * (request.messages.length + 1)
 }
 
-/** Maintain route-local calibration using actual provider usage; calibration only increases the estimate. */
-export class CalibratedCounter implements TokenCounter {
-  private ratio = 1
-  count(request: CountableRequest, signal?: AbortSignal): Promise<TokenCount> {
-    signal?.throwIfAborted()
-    return Promise.resolve({
-      tokens: Math.ceil(estimateRequest(request) * this.ratio),
-      kind: 'estimated',
-      method: 'multilingual-conservative+usage',
-    })
-  }
-  observe(estimated: number, actualInput: number): void {
-    if (estimated > 0 && actualInput > estimated) this.ratio *= (actualInput / estimated) * 1.1
-  }
-}
+/** Requests whose reported input tokens calibrate the local estimate. */
+const CALIBRATION_WINDOW = 5
 
-/** An optional service-provided whole-request counter, configured explicitly for the deployed chat template. */
-export class EndpointCounter implements TokenCounter {
-  constructor(
-    private readonly url: string,
-    private readonly fallback: TokenCounter,
-  ) {}
-  async count(request: CountableRequest, signal?: AbortSignal): Promise<TokenCount> {
-    try {
-      const response = await fetch(this.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: request.provider,
-          model: request.model,
-          system: request.system,
-          messages: request.messages.map(message => ({ role: message.role, content: message.content })),
-          tools: request.tools,
-        }),
-        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]),
-      })
-      if (!response.ok) throw new Error(`Token counter HTTP ${response.status}`)
-      const data: unknown = await response.json()
-      if (
-        data === null ||
-        typeof data !== 'object' ||
-        !('tokens' in data) ||
-        !Number.isSafeInteger(data.tokens) ||
-        Number(data.tokens) < 0
-      )
-        throw new Error('Invalid token counter response')
-      if (
-        request.model !== undefined &&
-        (!('model' in data) ||
-          data.model !== request.model ||
-          !('chatTemplate' in data) ||
-          typeof data.chatTemplate !== 'string' ||
-          !data.chatTemplate.trim())
-      )
-        return await this.fallback.count(request, signal)
-      return { tokens: Number(data.tokens), kind: 'exact', method: 'configured-request-tokenizer' }
-    } catch (error) {
-      if (signal?.aborted) throw error
-      return this.fallback.count(request, signal)
-    }
+/**
+ * Scales local estimates by what the provider reported for the latest requests. An underestimate raises the factor with
+ * a 10% margin; it ages out after a few requests instead of making a chat compact early for the rest of its life.
+ */
+export class EstimateCalibration {
+  private ratios: number[] = []
+
+  /**
+   * @param estimated Local estimate of a request's input tokens.
+   * @param reported Input tokens the provider reported for that request, including cached ones.
+   */
+  observe(estimated: number, reported: number): void {
+    if (estimated > 0 && reported > 0) this.ratios = [...this.ratios, reported / estimated].slice(-CALIBRATION_WINDOW)
+  }
+
+  /** @returns The factor applied to local estimates; never below 1. */
+  factor(): number {
+    return Math.max(1, ...this.ratios.filter(ratio => ratio > 1).map(ratio => ratio * 1.1))
   }
 }
 
