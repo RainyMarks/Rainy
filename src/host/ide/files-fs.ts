@@ -1,7 +1,7 @@
 /** Version-checked local file access and no-replace rename for the human editor. */
 import { randomUUID } from 'node:crypto'
 import { createReadStream, type BigIntStats, type Stats } from 'node:fs'
-import { chmod, link, lstat, open, realpath, rename, rm, stat, unlink } from 'node:fs/promises'
+import { chmod, link, lstat, open, realpath, rename, rm, stat, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { IdeOperationError } from './files-core.ts'
 
@@ -131,6 +131,25 @@ export class LocalIdeFileSystem {
     const tooLarge = (): Error => new IdeOperationError('too-large', 'The file exceeds the configured size limit.')
     if (info.size > maxBytes) throw tooLarge()
     return collect(createReadStream(path, { end: maxBytes, ...signal ? { signal } : {} }), maxBytes, tooLarge)
+  }
+
+  /**
+   * Open a regular file only if it is still the version that was observed.
+   * @param path Canonical file path.
+   * @param version Observed target version (`dev:ino:size:mtimeNs:ctimeNs`).
+   * @returns The open handle, which the caller closes, and the file size.
+   */
+  async openStable(path: string, version: string): Promise<{ handle: FileHandle; size: number }> {
+    const handle = await open(path, 'r')
+    try {
+      const info = await handle.stat({ bigint: true })
+      if (!info.isFile()) throw new IdeOperationError('not-file', 'The selected path is not a regular file.')
+      if (versionOf(info) !== version) throw new IdeOperationError('version-conflict', 'The file changed while it was opened.')
+      return { handle, size: Number(info.size) }
+    } catch (error) {
+      await handle.close()
+      throw error
+    }
   }
 
   /**

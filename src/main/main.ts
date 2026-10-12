@@ -37,6 +37,7 @@ import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splas
 import { initialPlacement, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
 import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
+import { IDE_RAW_ROUTE } from '../shared/ide-preview.ts'
 import { brandString } from '../shared/brand.ts'
 import { allowsClipboardWrite } from './clipboard-policy.ts'
 
@@ -717,7 +718,11 @@ async function start(): Promise<void> {
     } catch (error) { appendFileSync(logPath, `A dropped file could not be mapped into WSL: ${errorText(error)}\n`) }
   })
   window.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) void shell.openExternal(url); return { action: 'deny' } })
-  window.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault() })
+  // The page never navigates to project file bytes either: a link in a previewed document must not replace the workbench.
+  window.webContents.on('will-navigate', (event, url) => {
+    const target = new URL(url)
+    if (target.origin !== origin || target.pathname === IDE_RAW_ROUTE) event.preventDefault()
+  })
   window.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
     const url = details.requestingUrl
     callback(allowsClipboardWrite(permission, url, origin))

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { Config } from '../../shared/config.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import { IDE_RAW_ROUTE } from '../../shared/ide-preview.ts'
 import type { Activity } from '../activity.ts'
 import type { HostEnvironment } from '../env.ts'
 import type { Projects } from '../projects.ts'
@@ -16,6 +17,7 @@ import { ideFailure, IdeOperationError } from './files-core.ts'
 import { parseIdeFilesRequest, RainyIdeFiles, resolveIdeFilesConfig } from './files.ts'
 import { formatIdeDocument, type IdeFormatLimits } from './format.ts'
 import { IdeLanguageService, type IdeLanguageLimits } from './language.ts'
+import { createIdeRawRoute } from './raw.ts'
 import { parseIdeStateRequest, RainyIdeStateStore, resolveIdeStateConfig } from './state.ts'
 import { getIdeToolPaths, inspectIdeTools } from './tools.ts'
 
@@ -67,7 +69,7 @@ function toRpcError(error: unknown): RpcError {
 }
 
 /**
- * Build the IDE and register the `/rainy/ide/lsp` WebSocket.
+ * Build the IDE and register the `/rainy/ide/raw` file byte route and the `/rainy/ide/lsp` WebSocket.
  * @param deps Host environment, workbench config, project catalog, runtime selections, server and activity gate.
  * @returns The IDE service.
  */
@@ -92,6 +94,7 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
   const lifetime = new AbortController()
   let closing: Promise<void> | undefined
 
+  server.route(IDE_RAW_ROUTE, createIdeRawRoute(files, { assertUsable, signal: lifetime.signal }), true)
   server.socket('/rainy/ide/lsp', (socket, _request, url) => {
     if (closing !== undefined) { socket.close(1013, 'The IDE is closing'); return }
     language.accept(socket, url)

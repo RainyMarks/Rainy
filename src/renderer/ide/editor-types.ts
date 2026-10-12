@@ -86,6 +86,8 @@ export interface EditorCallbacks {
   readonly format: () => void
   readonly sendSelection: () => void
   readonly breakpoint: (path: string, line: number) => void
+  /** First visible line while the user scrolls, with a fraction for the part of it scrolled past; drives preview sync. */
+  readonly scroll?: ((path: string, line: number) => void) | undefined
 }
 
 /** A retained editor: one view per open document, plus its language-server connections. */
@@ -122,6 +124,8 @@ export interface EditorInstance {
   action(command: string): Promise<void>
   /** Request a layout after the containing pane becomes visible. */
   layout(): void
+  /** @param path Open document. @param line One-based line, possibly fractional, to place at the top without moving the cursor. */
+  scrollToLine(path: string, line: number): void
   /** @returns Completion after owned language clients, models, and editors stop. */
   dispose(): Promise<void>
 }

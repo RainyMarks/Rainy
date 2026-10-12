@@ -29,6 +29,7 @@ export const ideStateDataSchema = z.object({
   tabs: z.array(z.object({ path: relativePath, rootId: rootId.optional(), kind: z.enum(['file', 'diff']),
     cursor: z.object({ line: z.number().int().positive(), column: z.number().int().positive() }).strict().optional(),
     scroll: z.object({ top: z.number().nonnegative(), left: z.number().nonnegative() }).strict().optional(),
+    view: z.enum(['source', 'preview', 'split', 'hex']).optional(),
   }).strict()),
   activePath: relativePath.nullable(),
   activeRootId: rootId.optional(),

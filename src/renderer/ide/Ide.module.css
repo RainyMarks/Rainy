@@ -23,10 +23,11 @@
 .rootName span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* Editor host and read-only previews. */
-.editorHost { position: relative; flex: 1; min-height: 0; min-width: 0; }
+.editorHost { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.editorBody { position: relative; flex: 1; min-height: 0; min-width: 0; }
 .editor { position: absolute; inset: 0; }
 .editor[hidden] { display: none; }
-.preview { width: 100%; flex: 1; min-height: 0; margin: 0; overflow: auto; text-align: left; white-space: pre; font-family: var(--ds-font-family-code, monospace); font-size: var(--dsh-code-font-size, 13px); }
+.editorBody[data-split] > .editor { right: 50%; }
 
 /* Bottom panel: tabs match the editor tabs, secondary text and an accent under the selected tab. */
 .panelHeader { height: 36px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 6px 0 4px; border-bottom: 1px solid var(--dsw-alias-border-l1); }

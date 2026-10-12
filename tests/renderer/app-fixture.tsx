@@ -81,6 +81,7 @@ export async function mountWindow(width = 1440, options: { native?: boolean; ses
     reveal: vi.fn(),
     action: vi.fn(async () => {}),
     layout: vi.fn(),
+    scrollToLine: vi.fn(),
     dispose: vi.fn(async () => {}),
   }
   assets.create.mockResolvedValue(editor)

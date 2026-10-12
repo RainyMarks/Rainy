@@ -105,3 +105,26 @@
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
+
+.image {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+.remoteImage {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-xs);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 0.9em;
+}
+
+.localImage {
+  overflow-wrap: anywhere;
+}

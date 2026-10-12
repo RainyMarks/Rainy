@@ -9,6 +9,8 @@ export interface WorkbenchEvents {
   'editor.snippet': { code: string; language?: string | undefined; compare: boolean }
   /** Put text into the AI composer and send it (used by "Send selection to AI"). */
   'chat.send': { text: string; workspaceId: WorkspaceId }
+  /** Attach images to the AI composer without sending (used by the image viewer). */
+  'chat.attach': { files: readonly File[] }
   /** Show a pane of the window. */
   'pane.show': { pane: 'ai' | 'files' | 'bottom' | 'history' | 'settings' | 'ctf'; section?: string | undefined }
 }

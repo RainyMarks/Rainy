@@ -1,6 +1,7 @@
 /** Browser-safe requests and results for the human IDE; identities never depend on a chat. */
 import type { Branded } from './brand.ts'
 import type { IdeExecutionConfiguration } from './ide-execution-protocol.ts'
+import type { IdeTabView } from './ide-preview.ts'
 
 /** Durable project identity. */
 export type WorkspaceId = Branded<'WorkspaceId'>
@@ -57,7 +58,8 @@ export interface IdeFileDocument {
   readonly content: string | null
   readonly bom: boolean
   readonly eol: 'lf' | 'crlf' | 'mixed'
-  readonly readOnlyReason: 'binary' | 'too-large' | 'unsupported-encoding' | null
+  /** `media`: an image, audio, video or PDF file, served only as bytes for its viewer. */
+  readonly readOnlyReason: 'binary' | 'too-large' | 'unsupported-encoding' | 'media' | null
   /** Bounded display bytes for read-only files; this prefix is never accepted as editable source. */
   readonly preview?: {
     readonly kind: 'utf8' | 'hex'
@@ -112,6 +114,8 @@ export interface IdeEditorTab {
   readonly kind: 'file' | 'diff'
   readonly cursor?: { readonly line: number; readonly column: number } | undefined
   readonly scroll?: { readonly top: number; readonly left: number } | undefined
+  /** Viewer chosen for this tab; absent means the default for the file type. */
+  readonly view?: IdeTabView | undefined
 }
 
 /** Recovery copy kept independently of the original file; null base means an unsaved new file. */

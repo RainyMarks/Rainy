@@ -27,7 +27,7 @@ Write a solve script, run it, ask the AI why it fails, then open Wireshark or Cy
 |---|---|
 | **Light by design** | One package with no plugin framework: an Electron window, a small Node Host and a React page. Tools, the Strata engine, PHP and the WSL runtime are downloaded only when you need them. |
 | **AI that works in your project** | The assistant reads and edits project files and runs commands without approval prompts, and remembers the project across conversations. Skills are picked up from `.rainy/skills`; MCP servers (including an IDA preset) and a global prompt are configured in Settings. |
-| **A real editor** | A CodeMirror 6 editor with tabs, search and replace, completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
+| **A real editor** | A CodeMirror 6 editor with tabs, search and replace, completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Images, Markdown, PDF, audio and video open in previews, and any file opens in a hex view. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **38 CTF tools, one click each** | Web, traffic, reverse engineering, forensics, steganography, audio and encoding tools, each downloaded separately. Updates download only the tools that changed. |
 | **Windows or WSL2** | Start in native Windows; switch the project to a WSL2 environment whenever a challenge needs Linux. |
 | **Your model, your choice** | Use any OpenAI- or Anthropic-compatible service, a local server, or Strata local inference on an NVIDIA GPU. Keys stay on your machine. |

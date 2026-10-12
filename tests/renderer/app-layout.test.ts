@@ -33,6 +33,11 @@ describe('window shortcuts', () => {
       key('Comma'), key('Backquote')]).toEqual(['quickOpen', 'newChat', 'searchHistory', 'openFolder', 'settings', 'newTerminal'])
   })
 
+  it('maps the preview bindings: Ctrl+Shift+V and the first key of Ctrl+K V', () => {
+    expect([key('KeyV', { shiftKey: true }), key('KeyK'), key('KeyV', { shiftKey: true, altKey: true }), key('KeyV')])
+      .toEqual(['togglePreview', 'previewChord', undefined, undefined])
+  })
+
   it('ignores other modifiers, plain keys and keys typed during composition', () => {
     expect([key('KeyP'), key('KeyP', { altKey: true, shiftKey: true }), key('Comma', { ctrlKey: false }),
       key('KeyN', { altKey: true, isComposing: true }), key('KeyS')]).toEqual([undefined, undefined, undefined, undefined, undefined])

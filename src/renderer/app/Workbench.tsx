@@ -4,7 +4,7 @@ import type { PointerEvent, ReactNode } from 'react'
 import type { IdeFileEntry, IdeRootId } from '../../shared/ide-files-protocol.ts'
 import type { IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
 import {
-  Button, FileTypeIcon, IconAction, IconBugOutline, IconCheckOutlineRegular, IconChevronDownOutlineRegular,
+  Button, FileTypeIcon, fileSizeText, IconAction, IconBugOutline, IconCheckOutlineRegular, IconChevronDownOutlineRegular,
   IconChevronLeftOutlineRegular, IconCloseOutlineRegular, IconEllipsisOutlineRegular, IconFolderCloseRegular,
   IconPanelBottomOutline, IconPanelLeftOutlineRegular, IconPanelRightOutline, IconPlayOutlineRegular, IconPlusOutlineRegular,
   IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, IconShieldOutlineRegular, Menu,
@@ -28,6 +28,8 @@ import {
   chooseFileLanguage, inferredRunLanguage, pinRunProfile, runLanguageNames, runLanguages, runsFile, runTarget, type RunFile,
 } from '../ide/run-target.ts'
 import { useIdeT } from '../ide/messages.ts'
+import { useViewerT } from '../ide/viewers/messages.ts'
+import { defaultView, switchableViews } from '../ide/viewers/viewer-choice.ts'
 import { on } from './bus.ts'
 import { useDarkTheme } from './appearance.ts'
 import { DirectoryBrowser, type CreateDirectory, type ListDirectory } from './DirectoryBrowser.tsx'
@@ -61,6 +63,7 @@ export interface WorkbenchLayoutProps {
  */
 export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeight: height, listDirectory, createDirectory }: WorkbenchLayoutProps) {
   const t = useIdeT()
+  const tv = useViewerT()
   const tc = useCtfT()
   const ta = useAppT()
   const { model, execution, directory } = workbench
@@ -102,6 +105,14 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const active = activePath === null ? undefined : state.buffers[activePath]
   const tab = state.data.tabs.find(entry => entry.path === activePath)
   const editing = state.center === 'editor' && active !== undefined
+  const views = activePath === null || active === undefined ? [] : switchableViews(activePath, active.document.readOnlyReason)
+  const currentView = tab?.view ?? (activePath === null ? 'source' : defaultView(activePath))
+  /** Store a view, leaving the tab without an explicit choice when it picks its type's default. */
+  const showView = (view: 'source' | 'preview' | 'split' | 'hex'): boolean => {
+    if (activePath === null || !editing) return false
+    model.setView(activePath, view === defaultView(activePath) ? undefined : view)
+    return true
+  }
   const debug = executionState.status.debugSessions.find(entry => entry.id === executionState.debugId)
   const debugFrame = executionState.frames.find(frame => frame.id === executionState.frameId)
   const stoppedPath = debugFrame?.path !== undefined && state.workspace !== null
@@ -316,6 +327,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     },
     openFolder: () => { openDirectory('open') },
     newTerminal,
+    togglePreview: () => views.length > 0 && showView(currentView === 'preview' ? 'source' : 'preview'),
+    previewToSide: () => views.length > 0 && showView('split'),
+    canPreview: () => editing && views.length > 0,
   }
   useGlobalShortcuts(shortcuts)
   const showPane = useRef<(pane: string, section: string | undefined) => void>(() => undefined)
@@ -570,6 +584,17 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                 </div>}
               </div>
               {editing && <div className={css.editorActions}>
+                {views.length > 0 && <div className={css.viewSwitch} role="group" aria-label={tv('viewPreview')}>
+                  {views.map(view => (
+                    <button key={view} type="button" className={css.viewButton} aria-pressed={currentView === view}
+                      title={tv(view === 'source' ? 'viewSourceTitle' : view === 'preview' ? 'viewPreviewTitle' : 'viewSplitTitle')}
+                      onClick={() => { showView(view) }}>
+                      {tv(view === 'source' ? 'viewSource' : view === 'preview' ? 'viewPreview' : 'viewSplit')}
+                    </button>
+                  ))}
+                </div>}
+                {active.source !== 'snippet' && <button type="button" className={css.viewButton} aria-pressed={tab?.view === 'hex'} title={tv('viewHexTitle')}
+                  onClick={() => { if (activePath !== null) model.setView(activePath, tab?.view === 'hex' ? undefined : 'hex') }}>{tv('viewHex')}</button>}
                 {active.dirty && <Button size="sm" onClick={() => { run(model.save()) }}>{t('ideSave')}</Button>}
                 <Menu open={menu === 'editor'} onClose={() => { setMenu(undefined) }} portal align="end" compact
                   anchor={<IconAction label={t('ideEditorActions')} expanded={menu === 'editor'} onClick={() => { toggle('editor') }}>
@@ -651,11 +676,14 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
           <span className={css.spacer} />
           {caret !== undefined && <span className={css.statusItem}>{t('ideStatusPosition', { line: caret.endLine, column: caret.endColumn })}</span>}
           {caret !== undefined && caret.text.length > 0 && <span className={css.statusItem}>{t('ideStatusSelected', { count: caret.text.length })}</span>}
-          {active !== undefined && <>
+          {active !== undefined && (active.document.content !== null ? <>
             <span className={css.statusItem}>{active.language ?? sourceLanguage(active.document.path)}</span>
             <span className={css.statusItem}>{active.document.eol.toUpperCase()}</span>
             <span className={css.statusItem}>{t('ideEncoding')}{active.document.bom ? ` ${t('ideBom')}` : ''}</span>
-          </>}
+          </> : <>
+            {active.decoded !== undefined && <span className={css.statusItem}>{active.decoded.encoding.toUpperCase()}</span>}
+            <span className={css.statusItem}>{fileSizeText(active.document.bytes)}</span>
+          </>)}
         </footer>
         {leftVisible && !narrow && resize('left', leftWidth)}
         {layout.agentVisible && resize('right', width - rightWidth)}

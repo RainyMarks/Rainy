@@ -191,6 +191,9 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
   private menu: HTMLElement | undefined
   private menuCleanup: (() => void) | undefined
   private readonly viewTimers = new Map<string, number>()
+  private readonly scrollFrames = new Map<string, number>()
+  /** When `scrollToLine` last moved each document, so its own scroll event is not reported back. */
+  private readonly scrolling = new Map<string, number>()
 
   constructor(private readonly container: HTMLElement, private readonly callbacks: EditorCallbacks, private labels: EditorActionLabels) {
     container.classList.add('rainy-editor')
@@ -307,6 +310,17 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     open?.view.requestMeasure()
   }
 
+  scrollToLine(path: string, line: number): void {
+    const open = this.documents.get(path)
+    if (open === undefined) return
+    const doc = open.view.state.doc
+    const target = doc.line(Math.min(doc.lines, Math.max(1, Math.floor(line))))
+    // Fractional lines keep the preview position between two source blocks.
+    const block = open.view.lineBlockAt(target.from)
+    this.scrolling.set(path, Date.now())
+    open.view.scrollDOM.scrollTop = block.top + (line - Math.floor(line)) * block.height
+  }
+
   async dispose(): Promise<void> {
     this.disposed = true
     this.closeMenu()
@@ -395,7 +409,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     const view = new EditorView({ parent: host, state: EditorState.create({ doc: document.text, extensions: this.extensions(pending) }) })
     const open: OpenDocument = Object.assign(pending, { view })
     open.view.dispatch({ effects: setBreakpoints.of(this.breakpointsFor(document.path)) })
-    view.scrollDOM.addEventListener('scroll', () => { this.scheduleView(open.document.path, view) }, { passive: true })
+    view.scrollDOM.addEventListener('scroll', () => { this.scheduleView(open.document.path, view); this.scheduleScroll(open.document.path, view) }, { passive: true })
     open.view.dom.addEventListener('contextmenu', (event) => { this.openMenu(open, event) })
     this.documents.set(document.path, open)
     this.loadLanguageInto(open)
@@ -475,6 +489,9 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
   private close(path: string, open: OpenDocument): void {
     window.clearTimeout(this.viewTimers.get(path))
     this.viewTimers.delete(path)
+    window.cancelAnimationFrame(this.scrollFrames.get(path) ?? 0)
+    this.scrollFrames.delete(path)
+    this.scrolling.delete(path)
     open.view.destroy()
     open.host.remove()
     this.documents.delete(path)
@@ -601,6 +618,19 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       path: document.path, text: doc.sliceString(selection.from, selection.to), language: document.language,
       startLine: start.number, startColumn: selection.from - start.from + 1, endLine: end.number, endColumn: selection.to - end.from + 1,
     })
+  }
+
+  /** Report the first visible line once per frame, except for scrolls `scrollToLine` caused. */
+  private scheduleScroll(path: string, view: EditorView): void {
+    if (this.callbacks.scroll === undefined || this.scrollFrames.has(path)) return
+    this.scrollFrames.set(path, window.requestAnimationFrame(() => {
+      this.scrollFrames.delete(path)
+      if (this.documents.get(path)?.view !== view || Date.now() - (this.scrolling.get(path) ?? 0) < 120) return
+      const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop)
+      const line = view.state.doc.lineAt(block.from).number
+      const fraction = block.height > 0 ? Math.min(1, Math.max(0, (view.scrollDOM.scrollTop - block.top) / block.height)) : 0
+      this.callbacks.scroll?.(path, line + fraction)
+    }))
   }
 
   private scheduleView(path: string, view: EditorView): void {

@@ -1,14 +1,21 @@
-/** Retained editor mount; editor buffers remain owned by the workspace model. */
-import { useEffect, useRef, useState } from 'react'
+/** Retained editor mount and the file viewers beside it; editor buffers remain owned by the workspace model. */
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { EditorActionLabels, EditorAppearance, EditorInstance } from './editor-types.ts'
 import { loadEditorAssets } from './editor-loader.ts'
-import { sourceLanguage, sourceUri, type IdeModel, type IdeState } from './ide-model.ts'
+import { MAX_DECODE_BYTES, sourceLanguage, sourceUri, type IdeModel, type IdeState } from './ide-model.ts'
 import { fileKey, workspaceRoots } from './ide-paths.ts'
 import { selectedPythonExecutable } from './run-target.ts'
 import { useIdeT } from './messages.ts'
 import { useLocale } from '../i18n.ts'
+import { useViewerT } from './viewers/messages.ts'
+import { ScrollSync } from './viewers/scroll-sync.ts'
+import { chooseViewer, TEXT_ENCODINGS } from './viewers/viewer-choice.ts'
 import css from './Ide.module.css'
+import viewerCss from './viewers/Viewers.module.css'
+
+/** Viewers load with the first tab that needs one, outside the main bundle. */
+const FileViewer = lazy(async () => ({ default: (await import('./viewers/FileViewer.tsx')).FileViewer }))
 
 interface Props {
   readonly model: IdeModel
@@ -24,16 +31,19 @@ interface Props {
 
 /** Keep one editor instance while tabs, source text, and window geometry change.
  * @param props The workspace model, appearance and editor callbacks.
- * @returns The editor mount and loading state.
+ * @returns The editor mount, the viewer of the active tab and loading state.
  */
 export function IdeEditor({ model, state, appearance, sendSelection, breakpoint, attach, stopped, empty }: Props) {
   const t = useIdeT()
+  const tv = useViewerT()
   const locale = useLocale()
   const container = useRef<HTMLDivElement>(null)
   const instance = useRef<EditorInstance | undefined>(undefined)
   const revealed = useRef<IdeState['reveal']>()
   const callbacks = useRef({ sendSelection, breakpoint, attach })
   callbacks.current = { sendSelection, breakpoint, attach }
+  const scrollSync = useMemo(() => new ScrollSync(), [])
+  const activePath = useRef<string | null>(null)
   const actionLabels: EditorActionLabels = { save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'),
     toggleBreakpoint: t('ideToggleBreakpoint'), gotoDefinition: t('ideGotoDefinition'), findReferences: t('ideFindReferences'),
     rename: t('ideRenameSymbol'), locale }
@@ -74,6 +84,7 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
             format: () => { void model.format().catch((error: unknown) => { model.fail(error) }) },
             sendSelection: () => { callbacks.current.sendSelection() },
             breakpoint: (path, line) => { callbacks.current.breakpoint(path, line) },
+            scroll: (path, line) => { if (path === activePath.current) scrollSync.editorScrolled(line) },
           },
           labels.current,
         ),
@@ -132,7 +143,7 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
     if (workspaceReady !== (workspace?.workspaceId ?? 'rainy:previews')) return
     instance.current?.updateDocuments(
       Object.entries(state.buffers)
-        .filter(([, buffer]) => buffer.document.content !== null)
+        .filter(([, buffer]) => buffer.document.content !== null || buffer.decoded !== undefined)
         .flatMap(([path, buffer]) => {
           const uri = buffer.source === 'snippet' ? `untitled:${encodeURIComponent(path)}`
             : workspace === null ? undefined : sourceUri(workspace, path)
@@ -141,24 +152,37 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
             path,
             uri,
             language: buffer.language ?? sourceLanguage(path),
-            text: buffer.text,
+            text: buffer.decoded?.text ?? buffer.text,
             readOnly: buffer.source === 'snippet' || buffer.document.readOnlyReason !== null || state.phase === 'loading',
           }]
         }),
     )
   }, [workspaceReady, state.workspace, state.buffers, state.phase])
   const path = state.data.activePath
+  activePath.current = path
   const tab = state.data.tabs.find(entry => entry.path === path)
   const buffer = path === null ? undefined : state.buffers[path]
   const comparison = buffer?.comparison
+  const reason = buffer?.document.readOnlyReason
+  const decoded = buffer?.decoded
+  const textReady = buffer !== undefined && (buffer.document.content !== null || decoded !== undefined)
+  const choice = path === null || buffer === undefined ? undefined : chooseViewer(path, reason ?? null, tab?.view, decoded !== undefined)
+  const editorVisible = path !== null && textReady && choice?.editor !== false
   useEffect(() => {
-    if (workspaceReady === undefined || path === null) return
+    if (workspaceReady === undefined || path === null || !textReady) return
     const editor = instance.current
     if (tab?.kind === 'diff' && comparison !== undefined)
       editor?.showDiff(path, comparison.original, buffer?.source !== 'snippet')
     else
       editor?.show(path, tab?.cursor === undefined ? undefined : { ...tab.cursor, top: tab.scroll?.top ?? 0, left: tab.scroll?.left ?? 0 })
-  }, [workspaceReady, path, tab?.kind, comparison])
+  }, [workspaceReady, path, tab?.kind, comparison, textReady])
+  useEffect(() => {
+    // Text that is not UTF-8 is decoded when its tab shows text: automatically for a failed UTF-8 read, and again after a
+    // reload when the user picked an encoding for the file.
+    if (path === null || buffer === undefined || decoded !== undefined || tab?.view === 'hex' || buffer.document.bytes > MAX_DECODE_BYTES) return
+    if (reason !== 'unsupported-encoding' && !(reason === 'binary' && model.hasEncoding(path))) return
+    void model.decodeAs(path).catch((error: unknown) => { model.fail(error) })
+  }, [path, buffer?.document.version, reason, decoded, tab?.view, model])
   useEffect(() => {
     instance.current?.setAppearance(appearance)
   }, [ready, appearance])
@@ -178,30 +202,36 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   }, [workspaceReady, state.reveal, path])
   useEffect(() => {
     if (state.center === 'editor') instance.current?.layout()
-  }, [state.center, state.data.layout])
-  const reason = buffer?.document.readOnlyReason
+  }, [state.center, state.data.layout, editorVisible, choice?.split])
   return (
     <div className={css.editorHost}>
-      <div ref={container} className={css.editor} hidden={path === null || (reason !== null && reason !== undefined)} data-rainy-editor />
-      {!ready && path !== null && <div className={css.empty} role="status">{t('ideEditorLoading')}</div>}
-      {path === null && (empty ?? <div className={css.empty}>{t(state.workspace === null ? 'ideNoWorkspace' : 'ideNoFile')}</div>)}
-      {buffer !== undefined && reason !== null && reason !== undefined && (
-        <div className={css.empty}>
-          <span>{t(reason === 'binary' ? 'ideReadOnlyBinary' : reason === 'too-large' ? 'ideReadOnlyLarge' : 'ideReadOnlyEncoding')}</span>
-          <small>{t('ideSize', { bytes: buffer.document.bytes })}</small>
-          {buffer.document.preview !== undefined && (
-            <>
-              <small>
-                {t('ideReadOnlyPreview', { read: buffer.document.preview.bytesRead, total: buffer.document.bytes })}
-                {buffer.document.preview.truncated ? ` · ${t('idePreviewTruncated')}` : ''}
-              </small>
-              <pre className={css.preview} aria-label={t('ideReadOnlyPreview', { read: buffer.document.preview.bytesRead, total: buffer.document.bytes })}>
-                {buffer.document.preview.text}
-              </pre>
-            </>
-          )}
+      {decoded !== undefined && path !== null && choice?.editor === true && (
+        <div className={viewerCss.decoded} role="status">
+          <span>{tv('textDecoded', { encoding: decoded.encoding.toUpperCase() })}</span>
+          <label>{tv('textEncoding')}{' '}
+            <select value={decoded.encoding} onChange={(event) => { void model.decodeAs(path, event.target.value).catch((error: unknown) => { model.fail(error) }) }}>
+              {[...new Set([decoded.encoding, ...TEXT_ENCODINGS])].map(encoding => <option key={encoding} value={encoding}>{encoding.toUpperCase()}</option>)}
+            </select>
+          </label>
+          {decoded.replaced > 0 && <span>{tv('textReplaced', { count: decoded.replaced })}</span>}
         </div>
       )}
+      <div className={css.editorBody} data-split={choice?.split || undefined}>
+        <div ref={container} className={css.editor} hidden={!editorVisible} data-rainy-editor />
+        {!ready && editorVisible && <div className={css.empty} role="status">{t('ideEditorLoading')}</div>}
+        {path === null && (empty ?? <div className={css.empty}>{t(state.workspace === null ? 'ideNoWorkspace' : 'ideNoFile')}</div>)}
+        {path !== null && buffer !== undefined && choice?.editor === true && !textReady && (
+          <div className={css.empty} role="status">
+            {buffer.document.bytes > MAX_DECODE_BYTES ? tv('textTooLarge', { limit: `${MAX_DECODE_BYTES / 1024 / 1024} MB` }) : tv('loading')}
+          </div>
+        )}
+        {path !== null && buffer !== undefined && choice?.viewer !== undefined && state.workspace !== null && (
+          <Suspense fallback={<div className={css.empty} role="status">{tv('loading')}</div>}>
+            <FileViewer workspace={state.workspace} path={path} buffer={buffer} choice={choice} model={model} sync={scrollSync}
+              onScrollLine={(line) => { instance.current?.scrollToLine(path, line) }} />
+          </Suspense>
+        )}
+      </div>
     </div>
   )
 }

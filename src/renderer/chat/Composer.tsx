@@ -4,6 +4,7 @@ import clsx from 'clsx'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { CompletionItem, ContextUsage, ModelSelection, QueuedMessage } from '../../shared/rpc.ts'
+import { on } from '../app/bus.ts'
 import { getPrefs } from '../prefs.ts'
 import { host } from '../rpc.ts'
 import {
@@ -211,6 +212,13 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
       return next.slice(0, MAX_IMAGES)
     })
   }
+
+  const attach = useRef(addImages)
+  attach.current = addImages
+  useEffect(() => on('chat.attach', ({ files }) => {
+    void attach.current(files)
+    input.current?.focus()
+  }), [])
 
   const send = (mode: 'queue' | 'steer'): void => {
     const trimmed = text.trim()

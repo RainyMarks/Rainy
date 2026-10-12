@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "b6702a953a099561ce4af926be4a376ced6754020f0541ab91d4c7ed8e6c21c3",
+  "version": "25b00d00a87adae5606bcbf3845691a081a1c13466ced7fa8b68033eb00f5484",
   "files": {
     "css/_base.css": {
       "sha256": "9fc2ac1f26543ffca2be236d64b4bd0e664750512aff25bb7437a700598eda8e",
@@ -358,8 +358,8 @@
       "type": "text/javascript"
     },
     "js/tools/PdfInjectTool.js": {
-      "sha256": "5d92deaf4be091e76570cb07d085c56bd6be67426cc5a35b4b0be4891c215426",
-      "size": 107465,
+      "sha256": "075b2f8e58b6aea0e8c44d3314a089a91540981da01b614017e0cd2aed0111d5",
+      "size": 107503,
       "type": "text/javascript"
     },
     "js/tools/PromptCraftTool.js": {

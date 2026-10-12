@@ -1,11 +1,12 @@
 /** Project-scoped human file operations with explicit version checks. */
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { lstat, mkdir, opendir, realpath, rmdir, unlink } from 'node:fs/promises'
+import { lstat, mkdir, opendir, realpath, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { assertNever, brandString } from '../../shared/brand.ts'
+import { ideIsMedia } from '../../shared/ide-preview.ts'
 import type {
   IdeDeletePreview, IdeDeleteToken, IdeDirectory, IdeFileChange, IdeFileDiff, IdeFileDocument,
   IdeFileEntry, IdeFilesRequest, IdeFilesResults, IdeFileVersion, IdeRootId, WorkspaceId,
@@ -143,7 +144,7 @@ function missing(error: unknown): boolean {
     : error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
 }
 
-function decode(bytes: Uint8Array, partial = false): Pick<IdeFileDocument, 'content' | 'bom' | 'eol' | 'readOnlyReason'> {
+function decode(bytes: Uint8Array, partial = false): Pick<IdeFileDocument, 'content' | 'bom' | 'eol'> & { readOnlyReason: 'binary' | 'unsupported-encoding' | null } {
   const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
   if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)) {
     return { content: null, bom: false, eol: 'lf', readOnlyReason: 'unsupported-encoding' }
@@ -334,6 +335,8 @@ export class RainyIdeFiles {
     const before = await this.observe(workspace, path)
     if (before.targetKind !== 'file') throw new IdeOperationError('not-file', 'The selected path is not a regular file.')
     const base = { workspaceId: workspace.workspaceId, path, version: before.version, bytes: before.bytes }
+    // Images, audio, video and PDF go to their viewers as bytes; decoding them as text would only be discarded.
+    if (ideIsMedia(path)) return { ...base, content: null, bom: false, eol: 'lf', readOnlyReason: 'media' }
     const config = this.options.config
     const large = before.bytes > config.maxTextBytes
     const bytes = large
@@ -351,6 +354,22 @@ export class RainyIdeFiles {
     }
     return { ...base, bytes: bytes.length, ...decoded,
       ...decoded.content === null ? { preview: hexPreview(bytes, bytes.length, config.maxHexPreviewBytes) } : {} }
+  }
+
+  /**
+   * Open a regular file of a project for streaming its bytes to a viewer. The same containment rules as `read` apply,
+   * and the opened descriptor is checked against the observation, so a path swapped after the check is refused.
+   * @param workspaceId Project identity.
+   * @param rootId Mounted directory; omitted means the primary directory.
+   * @param path Project-relative path.
+   * @returns An open handle the caller closes, the file size and its version.
+   */
+  async openBytes(workspaceId: WorkspaceId, rootId: IdeRootId | undefined, path: string): Promise<{ handle: FileHandle; bytes: number; version: IdeFileVersion }> {
+    const workspace = await this.resolveWorkspace(workspaceId, rootId)
+    const observation = await this.observe(workspace, path)
+    if (observation.targetKind !== 'file' || observation.targetVersion === undefined) throw new IdeOperationError('not-file', 'The selected path is not a regular file.')
+    const opened = await this.fs.openStable(observation.target, observation.targetVersion)
+    return { handle: opened.handle, bytes: opened.size, version: observation.version }
   }
 
   private stale(currentVersion: IdeFileVersion | null): IdeOperationError {
@@ -512,7 +531,9 @@ export class RainyIdeFiles {
       if (!missing(error)) throw error
     }
     const partial = { path, current: current?.content ?? null, version: current?.version ?? null }
-    if (current?.readOnlyReason !== null && current?.readOnlyReason !== undefined) return { ...partial, base: null, status: 'unavailable', reason: current.readOnlyReason }
+    if (current?.readOnlyReason !== null && current?.readOnlyReason !== undefined) {
+      return { ...partial, base: null, status: 'unavailable', reason: current.readOnlyReason === 'media' ? 'binary' : current.readOnlyReason }
+    }
     let repository: string
     try { repository = (await this.git(workspace.root, ['rev-parse', '--show-toplevel'], signal)).toString('utf8').trim() }
     catch (error) {

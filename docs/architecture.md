@@ -28,7 +28,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 | `rpc.ts` | Method table and event broadcast; the method and event types are `src/shared/rpc.ts` |
 | `settings.ts` | `settings.json` and `.credentials.json` under the Host home, plus the one-time import of 1.x settings |
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
-| `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting |
+| `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route |
 | `runtime/` | Interpreter discovery and selection, project registry shared with main |
 | `icesky/` | The IceSky iframe: static files, model relay, drafts |
 
@@ -72,7 +72,7 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 |---|---|
 | `app/` | Window layout: top bar, file pane, editor area, AI pane, bottom panel, status bar |
 | `chat/` | Transcript, markdown, tool cards, composer, model picker, context meter, history list |
-| `ide/` | Editor tabs, editor mount, quick open, run configurations, terminal, problems, debug |
+| `ide/` | Editor tabs, editor mount, file viewers, quick open, run configurations, terminal, problems, debug |
 | `ctf/` | Native tool catalog and the IceSky iframe |
 | `settings/` | General, Models, Skills & MCP, Runtime and Memory sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
@@ -88,6 +88,16 @@ Each folder keeps its Chinese and English strings in a `messages.ts` built with 
 - Rename edits every file the server names; files without a view are opened as unsaved buffers through `prepareEdit`.
 - A comparison (`showDiff`) is `@codemirror/merge`'s unified view on the document's own view.
 - Language support loads per file type on first use (`languages.ts`).
+
+### File viewers
+
+`src/renderer/ide/viewers` shows what the text editor cannot. Vite emits it as a separate chunk that loads with the first tab needing a viewer. `viewer-choice.ts` picks the viewer from the file extension, the Host's read result and the tab's saved view (`source`, `preview`, `split` or `hex`).
+
+- The Host does not decode images, audio, video or PDF: `files.read` returns `readOnlyReason: 'media'`, and the page loads the bytes from `/rainy/ide/raw` (`src/host/ide/raw.ts`). The route applies the same path checks as every file operation and refuses a file that changed between the check and the open. It answers single `Range` requests and sends `Content-Security-Policy: sandbox`, so a file opened there runs no script; the window also refuses to navigate to it. The URL carries the observed version, so a changed file gets a new URL.
+- SVG is drawn through `<img>`, where its scripts do not run. Markdown is rendered by the chat renderer (`chat/Markdown.tsx`) relative to the document's directory: local images come from the byte route, local links open in the editor, and remote images load only in the system browser.
+- PDF uses the pdf.js build that ships with IceSky, with `isEvalSupported: false` (CVE-2024-4367).
+- The hex view reads 64 KiB chunks on demand, so it opens files of any size.
+- Text that is not UTF-8 (GB18030, UTF-16, Big5 and others) is decoded by the page and shown read-only.
 
 ## Build and packaging
 

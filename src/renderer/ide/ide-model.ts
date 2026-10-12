@@ -15,6 +15,7 @@ import type {
   SessionId,
 } from '../../shared/ide-files-protocol.ts'
 import type { IdeExecutionConfiguration } from '../../shared/ide-execution-protocol.ts'
+import { ideRawUrl, type IdeTabView } from '../../shared/ide-preview.ts'
 import type { EditorDocument, EditorProblem, EditorSelection, EditorView } from './editor-types.ts'
 import { IdeRequestError, type IdeFilesApi } from './ide-api.ts'
 import { createRootedIdeApi } from './ide-rooted-api.ts'
@@ -37,7 +38,12 @@ export interface IdeBuffer {
     readonly version?: IdeFileVersion
     readonly target?: string | undefined
   }
+  /** Read-only text of a file that is not UTF-8, decoded in the page; `replaced` counts undecodable sequences. */
+  readonly decoded?: { readonly encoding: string; readonly text: string; readonly replaced: number } | undefined
 }
+
+/** Largest file the page decodes in another encoding. */
+export const MAX_DECODE_BYTES = 8 * 1024 * 1024
 
 /** Snapshot rendered by the window layout. */
 export interface IdeState {
@@ -160,6 +166,8 @@ export class IdeModel {
   private polling: ReturnType<typeof setTimeout> | undefined
   private persistence: Promise<boolean> | undefined
   private snippetCounter = 0
+  /** Encodings the user picked for files that are not UTF-8, reused when such a file reloads. */
+  private readonly encodings = new Map<string, string>()
   private readonly api: IdeFilesApi
 
   /** @param api Validated Host file adapter. @param options Timing and session callbacks. */
@@ -617,6 +625,50 @@ export class IdeModel {
       buffers: { ...current.buffers, [path]: { ...buffer, text, dirty: text !== buffer.document.content } },
     })
     this.changed()
+  }
+
+  /**
+   * Choose how a tab shows its file.
+   * @param path Open file.
+   * @param view Source, preview, split or hex; `undefined` restores the default for the file type.
+   */
+  setView(path: string, view: IdeTabView | undefined): void {
+    const tabs = this.state.getSnapshot().data.tabs.map((tab) => {
+      if (tab.path !== path) return tab
+      const { view: _previous, ...rest } = tab
+      return view === undefined ? rest : { ...rest, view }
+    })
+    this.setData({ tabs })
+  }
+
+  /**
+   * Show a file that is not UTF-8 as read-only text in another encoding.
+   * @param path Open file.
+   * @param encoding WHATWG encoding label; omitted reuses the last choice for this file, else UTF-16 from a byte order mark, else GB18030.
+   * @returns Completion; the editable document is unchanged.
+   */
+  async decodeAs(path: string, encoding?: string): Promise<void> {
+    const before = this.state.getSnapshot()
+    const buffer = before.buffers[path]
+    if (before.workspace === null || buffer === undefined || buffer.document.version === null) return
+    if (buffer.document.bytes > MAX_DECODE_BYTES) throw new IdeRequestError('too-large', 'The file is too large to decode in another encoding.')
+    const reference = fileReference(path)
+    const response = await fetch(ideRawUrl({ workspaceId: before.workspace.workspaceId, rootId: reference.rootId, path: reference.path, version: buffer.document.version }))
+    if (!response.ok) throw new IdeRequestError(response.status === 409 ? 'version-conflict' : 'io-error', `The file could not be read (HTTP ${response.status}).`)
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    const chosen = encoding ?? this.encodings.get(path)
+      ?? (bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'gb18030')
+    const text = new TextDecoder(chosen).decode(bytes)
+    if (encoding !== undefined) this.encodings.set(path, encoding)
+    const current = this.state.getSnapshot()
+    const latest = current.buffers[path]
+    if (current.workspace?.workspaceId !== before.workspace.workspaceId || latest?.document.version !== buffer.document.version) return
+    this.patch({ buffers: { ...current.buffers, [path]: { ...latest, decoded: { encoding: chosen, text, replaced: (text.match(/�/gu) ?? []).length } } } })
+  }
+
+  /** @param path Open file. @returns Whether the user picked an encoding for it, so a reload decodes it again. */
+  hasEncoding(path: string): boolean {
+    return this.encodings.has(path)
   }
 
   /** Persist a cursor and scroll position. @param path Open source. @param view Cursor and scroll position. */

@@ -18,14 +18,27 @@ export interface ShortcutHandlers {
   readonly openFolder: () => void
   /** Ctrl+` */
   readonly newTerminal: () => void
+  /** Ctrl+Shift+V: switch a Markdown or SVG tab between source and preview. @returns `false` when the tab has no preview. */
+  readonly togglePreview: () => boolean
+  /** Ctrl+K V: show the preview beside the source. @returns `false` when the tab has no preview. */
+  readonly previewToSide: () => boolean
+  /** @returns Whether the active tab has a preview, so Ctrl+K starts a chord instead of reaching the page. */
+  readonly canPreview: () => boolean
 }
+
+/** Commands of single key presses; `previewChord` is the first half of Ctrl+K V. */
+export type ShortcutCommand = 'quickOpen' | 'settings' | 'newChat' | 'searchHistory' | 'openFolder' | 'newTerminal' | 'togglePreview' | 'previewChord'
+
+/** Milliseconds the second key of a chord may follow the first. */
+const CHORD_MS = 2000
 
 /**
  * @param event Key press.
  * @returns The bound command, if any.
  */
-export function shortcutCommand(event: Pick<KeyboardEvent, 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey' | 'isComposing' | 'code'>): keyof ShortcutHandlers | undefined {
-  if (!event.ctrlKey || event.shiftKey || event.metaKey || event.isComposing) return undefined
+export function shortcutCommand(event: Pick<KeyboardEvent, 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey' | 'isComposing' | 'code'>): ShortcutCommand | undefined {
+  if (!event.ctrlKey || event.metaKey || event.isComposing) return undefined
+  if (event.shiftKey) return !event.altKey && event.code === 'KeyV' ? 'togglePreview' : undefined
   if (event.altKey) {
     switch (event.code) {
       case 'KeyP': return 'quickOpen'
@@ -38,6 +51,7 @@ export function shortcutCommand(event: Pick<KeyboardEvent, 'ctrlKey' | 'altKey' 
   switch (event.code) {
     case 'Comma': return 'settings'
     case 'Backquote': return 'newTerminal'
+    case 'KeyK': return 'previewChord'
     default: return undefined
   }
 }
@@ -55,10 +69,25 @@ export function useGlobalShortcuts(handlers: ShortcutHandlers): void {
   const latest = useRef(handlers)
   latest.current = handlers
   useEffect(() => {
+    let chord = 0
     const keydown = (event: KeyboardEvent): void => {
       if (event.defaultPrevented) return
+      if (chord !== 0) {
+        const started = chord
+        chord = 0
+        if (Date.now() - started < CHORD_MS && event.code === 'KeyV' && !event.shiftKey && !event.altKey && !event.metaKey) {
+          if (latest.current.previewToSide()) event.preventDefault()
+          return
+        }
+      }
       const command = shortcutCommand(event)
       if (command === undefined || (command !== 'settings' && modalOpen())) return
+      if (command === 'previewChord') {
+        if (latest.current.canPreview()) { chord = Date.now(); event.preventDefault() }
+        return
+      }
+      // Without a preview, Ctrl+Shift+V keeps its paste-as-plain-text meaning.
+      if (command === 'togglePreview') { if (latest.current.togglePreview()) event.preventDefault(); return }
       event.preventDefault()
       latest.current[command]()
     }
