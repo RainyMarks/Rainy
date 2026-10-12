@@ -196,7 +196,9 @@ describe('workspace recovery', () => {
     expect(model.state.getSnapshot()).toMatchObject({ workspace: a,
       buffers: { 'main.py': { text: 'restored draft\n', dirty: true } } })
     expect(restoreSession).toHaveBeenCalledWith(a, sessionId)
-    expect(request).toHaveBeenLastCalledWith({ op: 'state.selection.save', workspaceId: a.workspaceId })
+    expect(request).toHaveBeenCalledWith({ op: 'state.selection.save', workspaceId: a.workspaceId })
+    // The restored tab is checked at once, so the Host starts watching its folder.
+    expect(request).toHaveBeenLastCalledWith({ op: 'files.changes', workspaceId: a.workspaceId, paths: ['main.py'] })
     expect(request.mock.calls.some(([body]) => body.op === 'files.save')).toBe(false)
   })
 
@@ -437,5 +439,15 @@ describe('project list', () => {
     await model.removeWorkspace(a.workspaceId)
     expect(request.mock.calls.some(([body]) => body.op === 'workspaces.remove')).toBe(false)
     expect(model.state.getSnapshot().workspace).toEqual(a)
+  })
+})
+
+describe('change checks', () => {
+  it('checks a newly opened file at once, so the Host watches its folder before the fallback poll', async () => {
+    const { request } = await fixture()
+    request.mockResolvedValue([])
+    await vi.waitFor(() => {
+      expect(request).toHaveBeenCalledWith({ op: 'files.changes', workspaceId: a.workspaceId, paths: ['main.py'] })
+    })
   })
 })

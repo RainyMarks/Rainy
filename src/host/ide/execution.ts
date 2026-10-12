@@ -45,6 +45,8 @@ export interface IdeExecutionServiceOptions {
   readonly limits: IdeExecutionLimits
   readonly reportError: (error: unknown) => void
   readonly files?: IdeExecutionFiles
+  /** A workspace's event history grew; the page is told to poll. */
+  readonly onEvent?: ((workspaceId: WorkspaceId) => void) | undefined
 }
 
 /** Execution operations of the `ide` RPC method and their teardown. */
@@ -131,6 +133,7 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
 
   function publish(value: EventValue): void {
     if (disposed) return
+    options.onEvent?.(value.workspaceId)
     const event = { ...value, sequence: ++sequence } as IdeExecutionEvent
     const bytes = Buffer.byteLength(JSON.stringify(event))
     if (bytes > options.limits.maxEventBytes) {

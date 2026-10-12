@@ -94,10 +94,14 @@ export class Models {
   readonly streamFn: ReturnType<typeof createStreamFn>
   private readonly listeners = new Set<(status: ModelsStatus) => void>()
 
-  /** @param settings Settings and credential store. */
-  constructor(private readonly settings: Settings) {
+  /**
+   * @param settings Settings and credential store.
+   * @param request Request function honoring the proxy settings.
+   */
+  constructor(private readonly settings: Settings, private readonly request: typeof globalThis.fetch = globalThis.fetch) {
     this.streamFn = createStreamFn({
       apiKey: provider => settings.apiKey(provider),
+      fetch: request,
       cacheRetention: model => model.api === 'anthropic-messages' ? 'long' : undefined,
     })
   }
@@ -229,7 +233,7 @@ export class Models {
       if (key) headers['x-api-key'] = key
     } else if (key) headers.authorization = `Bearer ${key}`
     let response: Response
-    try { response = await fetch(url, { headers, signal: AbortSignal.timeout(10_000), redirect: 'error' }) } catch (error) {
+    try { response = await this.request(url, { headers, signal: AbortSignal.timeout(10_000), redirect: 'error' }) } catch (error) {
       throw new RpcError('discovery-failed', `无法连接 ${url}：${error instanceof Error ? error.message : String(error)}`)
     }
     if (!response.ok) throw new RpcError('discovery-failed', `模型列表请求失败（HTTP ${response.status}）。`)

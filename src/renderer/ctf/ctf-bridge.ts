@@ -1,4 +1,4 @@
-/** Configuration and acknowledged saves for one retained workbench iframe. */
+/** Configuration and acknowledged saves for the workbench iframe, which is unloaded after a long time out of sight. */
 import { createStore } from '../ui/store.ts'
 import type { CtfConfiguration, CtfFlushResult, CtfHostMessage } from './ctf-protocol.ts'
 
@@ -85,7 +85,8 @@ export class CtfWorkbenchBridge {
         if (pending === undefined) return
         this.pending.delete(data.id)
         clearTimeout(pending.timer)
-        pending.resolve({ ok: data.ok, ...'error' in data && typeof data.error === 'string' ? { error: data.error } : {} })
+        pending.resolve({ ok: data.ok, ...'error' in data && typeof data.error === 'string' ? { error: data.error } : {},
+          ...'restorable' in data && typeof data.restorable === 'boolean' ? { restorable: data.restorable } : {} })
         return
       }
       case 'rainy:status':
@@ -144,6 +145,22 @@ export class CtfWorkbenchBridge {
     this.waitForReady()
     if (this.frame !== null) this.frame.src = this.frame.src
     return true
+  }
+
+  /**
+   * Forget the frame's document after a confirmed save, before the frame is removed; the next frame starts afresh.
+   * The hidden document could not change after that save, so saves still waiting for it settle as done.
+   */
+  unloaded(): void {
+    this.ready = false
+    this.configured = false
+    this.clearReadinessTimer()
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.resolve({ ok: true })
+    }
+    this.pending.clear()
+    this.state.set({ phase: 'loading', error: undefined, message: '', saving: 'idle' })
   }
 
   /** Settle pending waits and prevent disposed frames from publishing feedback. */

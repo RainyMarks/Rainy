@@ -275,7 +275,7 @@ it.each([{ locale: 'zh' as const, copy: zh }, { locale: 'en' as const, copy: en 
   expect(page.querySelector('h2')?.textContent).toBe(copy.settingsModels)
   const blocks = [...page.children].slice(1)
   expect(blocks.map(block => block.querySelector('h3, summary > span')?.textContent))
-    .toEqual([copy.settingsDefaultModel, copy.modelEditTitle.replace('{name}', 'official/large'), copy.settingsGlobalPrompt, copy.settingsContextBudget, copy.strataTitle])
+    .toEqual([copy.settingsDefaultModel, copy.modelEditTitle.replace('{name}', 'official/large'), copy.settingsGlobalPrompt, copy.proxyTitle, copy.settingsContextBudget, copy.strataTitle])
   expect(page.querySelector<HTMLDetailsElement>('details[data-strata]')?.open).toBe(false)
 })
 

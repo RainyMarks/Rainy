@@ -37,7 +37,12 @@ export interface CtfConfiguration {
 }
 
 /** A flush succeeds only after current edits reach durable Host storage. */
-export interface CtfFlushResult { readonly ok: boolean; readonly error?: string }
+export interface CtfFlushResult {
+  readonly ok: boolean
+  readonly error?: string
+  /** After a successful save: whether reloading the frame would lose nothing (no selected local files or generated files). */
+  readonly restorable?: boolean
+}
 
 /** Host-to-frame transport messages. */
 export type CtfHostMessage = (CtfConfiguration & { readonly type: 'rainy:configure'; readonly revision: number })

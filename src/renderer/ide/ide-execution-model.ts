@@ -8,6 +8,7 @@ import type {
 } from '../../shared/ide-execution-protocol.ts'
 import type { IdeExecutionApi } from './ide-execution-api.ts'
 import { fileKey, fileReference } from './ide-paths.ts'
+import { onPageVisible, pageHidden } from '../app/visibility.ts'
 
 /** Current selected workspace and the execution views rendered from its Host state. */
 export interface IdeExecutionState {
@@ -84,10 +85,22 @@ export class IdeExecutionModel {
   private disposed = false
   private disposal: Promise<void> | undefined
   private dimensions: { cols: number; rows: number }
+  private readonly stopVisibility: () => void
 
   /** @param api - validated execution transport. @param options - resolved limits and composition callbacks. */
   constructor(private readonly api: IdeExecutionApi, private readonly options: IdeExecutionModelOptions) {
     this.dimensions = { cols: options.terminalCols, rows: options.terminalRows }
+    // Polling stops while the window is hidden; the Host keeps the events and the next poll catches up.
+    this.stopVisibility = onPageVisible(() => { void this.refresh().catch(() => undefined) })
+  }
+
+  /**
+   * Poll now when the Host hints that a workspace's runs changed.
+   * @param workspaceId - workspace named by the hint.
+   */
+  hint(workspaceId: WorkspaceId): void {
+    if (this.disposed || this.state.getSnapshot().workspaceId !== workspaceId || pageHidden()) return
+    void this.refresh().catch(() => undefined)
   }
 
   /**
@@ -302,6 +315,7 @@ export class IdeExecutionModel {
   /** @returns resolution after outstanding client requests settle; the Host retains ownership of running operations. */
   dispose(): Promise<void> {
     this.disposed = true
+    this.stopVisibility()
     this.generation++
     this.clearTimer()
     for (const controller of this.controllers) controller.abort()
@@ -382,6 +396,7 @@ export class IdeExecutionModel {
     this.clearTimer()
     const record = this.current()
     if (record === undefined) return
+    if (pageHidden()) return
     const delay = active(record.snapshot.status) ? this.options.activePollMs : this.options.pollMs
     this.timer = setTimeout(() => {
       this.timer = undefined

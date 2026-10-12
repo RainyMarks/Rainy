@@ -2,7 +2,7 @@
 /** Markdown of replies and previews: relative targets, guarded images, heading anchors and source lines. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownDocument, resolveDocumentPath, slugify, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
-import { all, cleanup, click, render } from './settings-harness.tsx'
+import { all, cleanup, click, render, waitFor } from './settings-harness.tsx'
 
 vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harness.tsx')).rpcModule)
 vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./settings-harness.tsx')).toastsModule)
@@ -50,5 +50,13 @@ describe('MarkdownDocument', () => {
     expect(all('[data-line]', view.container).map(block => block.getAttribute('data-line'))).toEqual(['1', '3', '5', '7'])
     await click(all('a', view.container)[0]!)
     expect(open).toHaveBeenCalledWith({ path: 'solve.py', line: 12 })
+  })
+})
+
+describe('loading on demand', () => {
+  it('highlights code once its grammar loads, and renders math once KaTeX loads', async () => {
+    const view = await render(<MarkdownDocument options={{ codeActions: false }} text={'```python\ndef solve():\n    return 1\n```\n\nArea $x^2$.'} />)
+    await waitFor(() => { expect(view.container.querySelector('.hljs-keyword')?.textContent).toBe('def') })
+    await waitFor(() => { expect(view.container.querySelector('.katex')).not.toBeNull() })
   })
 })

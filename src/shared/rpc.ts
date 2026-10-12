@@ -55,6 +55,24 @@ export interface ModelsStatus {
   globalPrompt: { text: string; maxChars: number }
 }
 
+/** How requests to model services, MCP servers and the IceSky relay reach the network. */
+export interface ProxySettings {
+  /** `system`: the system proxy (Windows settings, or HTTPS_PROXY inside WSL); `off`: direct; `manual`: `url`. */
+  mode: 'system' | 'off' | 'manual'
+  /** `host:port` or an `http://` URL, for `manual`. */
+  url?: string | undefined
+}
+/** Settings → Models network view. Passwords in proxy URLs are masked. */
+export interface ProxyStatus {
+  settings: ProxySettings
+  /** The proxy remote requests use now, or `null` for direct. */
+  effective: string | null
+  /** The system proxy as this Host sees it. */
+  system: string | null
+}
+/** Outcome of reaching the selected model's service through some proxy settings. */
+export interface ProxyTestResult { ok: boolean; url: string; status?: number | undefined; ms: number; error?: string | undefined }
+
 /** Interface preferences kept by the Host so they survive renderer origin changes. */
 export interface UiPreferences {
   locale: 'zh' | 'en'
@@ -318,6 +336,9 @@ export interface HostMethods {
   'models.discover': [ModelDiscoveryInput, { id: string; contextWindow?: number | undefined }[]]
   'models.probe': [ModelSetupInput, { stream: boolean; toolCall: boolean; text?: string | undefined }]
   'prompt.global': [{ text: string }, ModelsStatus]
+  'network.status': [void, ProxyStatus]
+  'network.set': [ProxySettings, ProxyStatus]
+  'network.test': [ProxySettings, ProxyTestResult]
   'budget.preview': [{ workspaceId: WorkspaceId; sessionId?: SessionId | undefined; draft?: string | undefined }, BudgetPreview]
 
   'sessions.list': [{ workspaceId?: WorkspaceId | null | undefined; archived?: boolean | undefined }, SessionSummary[]]
@@ -384,6 +405,8 @@ export interface HostEvents {
   'prefs.changed': UiPreferences
   'extensions.changed': ExtensionsStatus
   'memory.changed': { workspaceId: WorkspaceId }
+  /** A file of an open editor tab or a run of the workspace changed; the page polls now instead of waiting. */
+  'ide.hint': { workspaceId: WorkspaceId; kind: 'files' | 'execution' }
 }
 export type HostEvent = keyof HostEvents
 

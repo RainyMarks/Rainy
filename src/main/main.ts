@@ -34,6 +34,7 @@ import { embeddedReleaseKeys, parseReleaseKeyring } from './release-trust.ts'
 import { ensureReleaseIntegrity, ReleaseIntegrityError } from './release-integrity.ts'
 import type { ReleaseIntegrity } from './release-integrity.ts'
 import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splash.ts'
+import { systemProxyFor } from './system-proxy.ts'
 import { initialPlacement, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
 import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
@@ -419,7 +420,9 @@ async function start(): Promise<void> {
       RAINY_TOOLCHAIN_ROOT: join(userData, 'env'),
       RAINY_BUILTIN_PHP: builtinPhp,
       // Module compilation is cached across launches; resolution still dominates the native Host's startup.
-      NODE_COMPILE_CACHE: join(userData, 'node-compile-cache') } : {}),
+      NODE_COMPILE_CACHE: join(userData, 'node-compile-cache'),
+      // Model requests follow the Windows system proxy, which the Host asks this process for; WSL keeps its own network.
+      RAINY_CARRIER_PROXY: '1' } : {}),
   }
   const pending = preferences.pendingProject
   if (pending !== null && typeof pending === 'object' && 'projectId' in pending && typeof pending.projectId === 'string'
@@ -429,6 +432,7 @@ async function start(): Promise<void> {
     if ('roots' in pending && Array.isArray(pending.roots)) hostEnvironment.RAINY_PENDING_PROJECT_ROOTS = JSON.stringify(pending.roots)
   }
   const hostOptions: HostOptions = { entry: installed.host, node: installed.node, idaMcpCommand, environment: hostEnvironment,
+    resolveProxy: url => systemProxyFor(window.webContents.session, url),
     configureDeepSeek: process.env.RAINY_CONFIGURE_DEEPSEEK === '1',
     onDiagnostic: (text) =>{  appendFileSync(logPath, text + '\n') },
     onExit: (code) => {

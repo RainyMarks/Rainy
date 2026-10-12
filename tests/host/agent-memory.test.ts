@@ -41,6 +41,18 @@ describe('project memory records', () => {
     await expect(store.edit('project-a', { id: note.id, text: 'x'.repeat(2049), expectedRevision: edited.revision }, 100000)).rejects.toThrow('不能超过 2048 个字符')
   })
 
+  it('starts new projects without background generation and keeps the setting of older records', async () => {
+    const root = await directory()
+    const store = new ProjectMemoryStore(root)
+    expect((await store.read('new-project')).generationEnabled).toBe(false)
+    const { writeFile, mkdir } = await import('node:fs/promises')
+    const legacy = { version: 1, revision: 3, enabled: true, updatedAt: null, items: [], excluded: [], sourceWatermarks: {} }
+    const path = join(root, 'old-project', 'memory.v1.json')
+    await mkdir(join(root, 'old-project'), { recursive: true })
+    await writeFile(path, JSON.stringify(legacy))
+    expect((await new ProjectMemoryStore(root).read('old-project')).generationEnabled).toBe(true)
+  })
+
   it('preserves deletion exclusions and source watermarks across reload', async () => {
     const root = await directory()
     const store = new ProjectMemoryStore(root)

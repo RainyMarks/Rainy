@@ -3,12 +3,12 @@ import { Children, isValidElement, memo, useCallback, useMemo, useState, type Re
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
 import clsx from 'clsx'
 import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { emit } from '../app/bus.ts'
-import { CodeToolbar, highlightLines, Tooltip, writeClipboard } from '../ui/index.ts'
+import { CodeToolbar, highlightLines, Tooltip, useHighlightRevision, writeClipboard } from '../ui/index.ts'
 import cardCss from '../ui/CodeCard.module.css'
+import { useMathPlugin } from './math.ts'
 import { useChatT } from './messages.ts'
 import css from './Markdown.module.css'
 
@@ -24,7 +24,8 @@ export function CodeBlock({ code, language, actions = true }: { code: string; la
   const t = useChatT()
   const [copied, setCopied] = useState(false)
   const [wrapped, setWrapped] = useState(false)
-  const lines = useMemo(() => highlightLines(code, language), [code, language])
+  const grammars = useHighlightRevision()
+  const lines = useMemo(() => highlightLines(code, language), [code, language, grammars])
   const onCopy = useCallback(() => {
     void writeClipboard(code).then((ok) => {
       if (!ok) return
@@ -231,7 +232,9 @@ export const MarkdownDocument = memo(function MarkdownDocument({ text, className
   options: MarkdownOptions
 }): ReactElement {
   const components = useMemo(() => markdownComponents(options), [options])
-  const rehypePlugins = useMemo(() => [rehypeKatex, rehypeAnchors(options.sourceLines === true)], [options.sourceLines])
+  // Math renders as plain text for the moment KaTeX takes to load the first time.
+  const katex = useMathPlugin(text)
+  const rehypePlugins = useMemo(() => [...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true)], [katex, options.sourceLines])
   return (
     <div className={clsx(css.markdown, className)} data-markdown-root>
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={components}>{text}</ReactMarkdown>

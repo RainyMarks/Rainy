@@ -11,11 +11,16 @@ import { ctfMessages } from './messages.ts'
 /** Tab shown in the workbench. */
 export type CtfView = 'catalog' | 'icesky'
 
+/** The IceSky page is unloaded after it has been out of sight this long, if everything on it is saved. */
+const UNLOAD_AFTER_MS = 10 * 60_000
+
 /** Owner of the frame bridge and tool catalog; outlives the workbench tab. */
 export interface CtfWorkbench {
   readonly bridge: CtfWorkbenchBridge
   readonly tools: NativeToolsController
   readonly view: Store<CtfView>
+  /** Whether the IceSky page is loaded: from when it is first shown until it is unloaded out of sight. */
+  readonly frameLoaded: Store<boolean>
   /**
    * Publish the chat context, appearance and visibility to the IceSky frame.
    * @param input Current chat (`null` for drafts outside any chat), appearance and whether the IceSky tab is on screen.
@@ -27,11 +32,11 @@ export interface CtfWorkbench {
 
 /**
  * Create the workbench owner and register its desktop save hook.
- * @param config Host-resolved deadlines.
+ * @param config Host-resolved deadlines; `unloadAfterMs` overrides the out-of-sight time before the IceSky page unloads.
  * @param bridges Desktop bridges; absent in a plain browser.
  * @returns The owner.
  */
-export function createCtfWorkbench(config: Pick<Config, 'readyTimeoutMs' | 'flushTimeoutMs'>, bridges: {
+export function createCtfWorkbench(config: Pick<Config, 'readyTimeoutMs' | 'flushTimeoutMs'> & { readonly unloadAfterMs?: number }, bridges: {
   readonly tools?: NativeToolsBridge | undefined
   readonly desktop?: DesktopWorkbenchBridge | undefined
 } = {}): CtfWorkbench {
@@ -50,13 +55,34 @@ export function createCtfWorkbench(config: Pick<Config, 'readyTimeoutMs' | 'flus
     downloadFailed: () => t('toolsDownloadFailed'),
   }, notify)
   const view = createStore<CtfView>('catalog')
+  const frameLoaded = createStore(false)
   const receive = (event: MessageEvent<unknown>): void => { bridge.receive(event) }
   window.addEventListener('message', receive)
   const unregister = bridges.desktop?.onFlush(() => bridge.flush())
+  // Out of sight, IceSky has already stopped its work. Its memory is released only after a confirmed save, and only when
+  // a reload restores everything: selected local files and generated files are not part of saved drafts.
+  let shown = false
+  let shows = 0
+  let disposed = false
+  let unloadTimer: ReturnType<typeof setTimeout> | undefined
+  const unloadLater = (): void => {
+    clearTimeout(unloadTimer)
+    unloadTimer = setTimeout(() => { unloadTimer = undefined; void unload() }, config.unloadAfterMs ?? UNLOAD_AFTER_MS)
+  }
+  const unload = async (): Promise<void> => {
+    const before = shows
+    const saved = await bridge.flush()
+    if (disposed || shown) return
+    if (shows === before && saved.ok && saved.restorable === true) {
+      bridge.unloaded()
+      frameLoaded.set(false)
+    } else unloadLater()
+  }
   return {
     bridge,
     tools,
     view,
+    frameLoaded,
     configure: ({ sessionId, appearance, visible }) => {
       const colors = readCtfColors(document)
       bridge.configure({
@@ -64,8 +90,20 @@ export function createCtfWorkbench(config: Pick<Config, 'readyTimeoutMs' | 'flus
         appearance: { ...appearance, ...colors === undefined ? {} : { colors } },
         visible,
       })
+      if (visible) {
+        if (!shown) shows++
+        shown = true
+        clearTimeout(unloadTimer)
+        unloadTimer = undefined
+        frameLoaded.set(true)
+      } else if (shown) {
+        shown = false
+        unloadLater()
+      }
     },
     dispose: () => {
+      disposed = true
+      clearTimeout(unloadTimer)
       unregister?.()
       window.removeEventListener('message', receive)
       bridge.dispose()

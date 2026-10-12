@@ -11,7 +11,7 @@ vi.mock('node:net', async original => ({ ...await original<typeof import('node:n
 
 function fixture(
   onTestFinished: (cleanup: () => void | Promise<void>) => void, native = false, cooperative = true,
-  callbacks: Pick<HostOptions, 'onDiagnostic' | 'onExit'> = {},
+  callbacks: Pick<HostOptions, 'onDiagnostic' | 'onExit' | 'resolveProxy'> = {},
 ) {
   vi.useFakeTimers()
   const input = new PassThrough()
@@ -75,6 +75,30 @@ function outcome(promise: ReturnType<WslHostTransport['start']>) {
 }
 
 describe('Host startup ownership', () => {
+  it('answers the Host system proxy questions from its first line, only for web addresses', async ({ onTestFinished }) => {
+    const asked: string[] = []
+    const test = fixture(onTestFinished, true, false, { resolveProxy: (url) => {
+      asked.push(url)
+      return url.includes('corp') ? Promise.resolve(null) : url.includes('broken') ? Promise.reject(new Error('no session')) : Promise.resolve('http://127.0.0.1:7890')
+    } })
+    const replies: unknown[] = []
+    test.child.stdin.on('data', (chunk: Buffer) => { for (const line of chunk.toString().split('\n').filter(Boolean)) replies.push(JSON.parse(line)) })
+    const ready = test.transport.start()
+    const ask = (id: string, url: string): void => { test.output.write(`RAINY_CONTROL ${JSON.stringify({ type: 'system-proxy', id, url })}\n`) }
+    ask('a', 'https://api.openai.com/')
+    ask('b', 'https://llm.corp/')
+    ask('c', 'file:///C:/secret.txt')
+    ask('d', 'https://broken.example/')
+    await vi.waitFor(() => { expect(replies).toHaveLength(4) })
+    expect(replies.toSorted((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)))).toEqual([
+      { type: 'reply', id: 'a', url: 'http://127.0.0.1:7890' }, { type: 'reply', id: 'b', url: null },
+      { type: 'reply', id: 'c', url: null }, { type: 'reply', id: 'd', url: null },
+    ])
+    expect(asked).toEqual(['https://api.openai.com/', 'https://llm.corp/', 'https://broken.example/'])
+    test.ready()
+    expect((await ready).pid).toBe(31415)
+  })
+
   it('leaves native Windows readiness free of loopback probes', async ({ onTestFinished }) => {
     const test = fixture(onTestFinished, true)
     const ready = test.transport.start()

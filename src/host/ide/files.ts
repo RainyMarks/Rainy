@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { lstat, mkdir, opendir, realpath, rmdir, unlink, type FileHandle } from 'node:fs/promises'
-import { basename, dirname, relative, resolve, sep } from 'node:path'
+import { basename, dirname, posix, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { assertNever, brandString } from '../../shared/brand.ts'
@@ -100,6 +100,8 @@ export interface RainyIdeFilesOptions {
   readonly fs?: LocalIdeFileSystem
   /** Clock for confirmation expiry and cooperative search deadlines. */
   readonly now?: () => number
+  /** Directories of the files a change check observed, so they can be watched for change hints. */
+  readonly onChangesChecked?: ((workspaceId: WorkspaceId, rootId: IdeRootId, directories: readonly string[]) => void) | undefined
 }
 
 interface Observation {
@@ -500,18 +502,36 @@ export class RainyIdeFiles {
   private async changes(workspace: ResolvedIdeWorkspace, paths: readonly string[], signal?: AbortSignal): Promise<readonly IdeFileChange[]> {
     if (paths.length > this.options.config.maxChangePaths) throw new IdeOperationError('too-large', 'Too many opened paths were requested in one change check.')
     const result: IdeFileChange[] = []
+    const directories: string[] = []
     for (const path of [...new Set(paths)]) {
       signal?.throwIfAborted()
       ideRelativePath(path, true)
       try {
         const value = await this.observe(workspace, path, true, true)
         result.push({ path, version: value.version, kind: value.info.type })
+        directories.push(value.info.type === 'directory' ? value.target : dirname(value.target))
       } catch (error) {
         if (!missing(error)) throw error
         result.push({ path, version: null, kind: 'missing' })
+        // A file deleted to be written again, as by a clean build or a checkout, is still noticed through its folder.
+        const folder = await this.existingFolder(workspace, path)
+        if (folder !== undefined) directories.push(folder)
       }
     }
+    this.options.onChangesChecked?.(workspace.workspaceId, workspace.rootId, directories)
     return result
+  }
+
+  /** @returns The canonical folder that holds a missing file, when that folder exists inside the project. */
+  private async existingFolder(workspace: ResolvedIdeWorkspace, path: string): Promise<string | undefined> {
+    const parent = posix.dirname(path)
+    if (parent === '.' || parent === '') return workspace.root
+    try {
+      const folder = await this.observe(workspace, parent, true, true)
+      return folder.info.type === 'directory' ? folder.target : undefined
+    } catch (_missingOrOutside) {
+      return undefined
+    }
   }
 
   private async git(root: string, args: string[], signal?: AbortSignal): Promise<Buffer> {

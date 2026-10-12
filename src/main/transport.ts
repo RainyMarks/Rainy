@@ -50,6 +50,8 @@ export interface HostOptions {
   idaMcpCommand?: string
   onDiagnostic?: (text: string) => void
   onExit?: (code: number | null) => void
+  /** Answers the Host's question which proxy the system uses for an `http(s)` URL: `http(s)://host:port` or `null`. */
+  resolveProxy?: (url: string) => Promise<string | null>
 }
 /** Selected registered WSL distribution; arguments are never shell-interpolated. */
 export interface WslHostOptions extends HostOptions { distro: string }
@@ -183,6 +185,10 @@ abstract class ManagedHostTransport implements HostTransport {
             }, (error: unknown) => { fail(error instanceof Error ? error : new Error('Host readiness failed.')) })
           }
           else if (data.type === 'fatal') { fail(new Error('message' in data ? String(data.message) : 'Host startup failed.')) }
+          else if (data.type === 'system-proxy' && 'id' in data && typeof data.id === 'string' && 'url' in data && typeof data.url === 'string') {
+            const id = data.id
+            void this.systemProxy(data.url).then(url => { this.reply(child, { id, url }) }, () => { this.reply(child, { id, url: null }) })
+          }
           else if (data.type === 'activity' && 'id' in data && typeof data.id === 'string') {
             const request = takeRequest(this.requests, data.id)
             if (!request) return
@@ -228,6 +234,15 @@ abstract class ManagedHostTransport implements HostTransport {
       if (error) takeRequest(requests, id)?.reject(error)
     })
     return promise
+  }
+  /** The system proxy for one URL the Host asked about; `null` (direct) without a resolver or for other schemes. */
+  private async systemProxy(url: string): Promise<string | null> {
+    if (this.options.resolveProxy === undefined || !/^https?:\/\//iu.test(url)) return null
+    return await this.options.resolveProxy(url)
+  }
+  /** Answer a Host request; a Host that already stopped needs no answer. */
+  private reply(child: ChildProcessWithoutNullStreams, fields: { id: string } & Record<string, unknown>): void {
+    if (child.stdin.writable) child.stdin.write(`${JSON.stringify({ type: 'reply', ...fields })}\n`)
   }
   inspectActivity(mode: 'observe' | 'freeze' | 'resume' = 'observe'): Promise<{ active: boolean }> {
     return this.request(this.requests, { type: 'inspect-activity', mode },

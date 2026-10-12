@@ -16,6 +16,7 @@ import { ideExecutionLimitsSchema } from './execution-schema.ts'
 import { ideFailure, IdeOperationError } from './files-core.ts'
 import { parseIdeFilesRequest, RainyIdeFiles, resolveIdeFilesConfig } from './files.ts'
 import { formatIdeDocument, type IdeFormatLimits } from './format.ts'
+import { IdeHints, type IdeHintKind } from './hints.ts'
 import { IdeLanguageService, type IdeLanguageLimits } from './language.ts'
 import { createIdeRawRoute } from './raw.ts'
 import { parseIdeStateRequest, RainyIdeStateStore, resolveIdeStateConfig } from './state.ts'
@@ -56,6 +57,8 @@ export interface IdeDependencies {
   readonly server: HostServer
   readonly activity: Activity
   readonly log: (message: string) => void
+  /** Tells the page to poll a workspace's files or runs now. */
+  readonly hint?: ((workspaceId: WorkspaceId, kind: IdeHintKind) => void) | undefined
 }
 
 function toRpcError(error: unknown): RpcError {
@@ -76,7 +79,12 @@ function toRpcError(error: unknown): RpcError {
 export async function createIde(deps: IdeDependencies): Promise<IdeService> {
   const { env, config, projects, runtime, server, activity, log } = deps
   const tools = await getIdeToolPaths(env.resources)
-  const files = new RainyIdeFiles({ projects, config: resolveIdeFilesConfig() })
+  // The page checks open files at least every editorPollMs while visible; watchers outlive a few missed checks.
+  const hints = new IdeHints((workspaceId, kind) => { deps.hint?.(workspaceId, kind) }, Math.max(30_000, 3 * config.editorPollMs))
+  const files = new RainyIdeFiles({
+    projects, config: resolveIdeFilesConfig(),
+    onChangesChecked: (workspaceId, rootId, directories) => { if (deps.hint !== undefined) hints.watchDirectories(workspaceId, rootId, directories) },
+  })
   const state = await RainyIdeStateStore.open({ directory: join(env.home, 'ide'), projects, config: resolveIdeStateConfig(), log })
   const assertUsable = (): void => { activity.assertCanStart() }
   const resolveWorkspace = (id: WorkspaceId, rootId?: Parameters<RainyIdeFiles['resolveWorkspace']>[1]) => files.resolveWorkspace(id, rootId)
@@ -85,6 +93,7 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
     subprocess: localIdeSubprocess, pwshPath: env.pwshPath, resolveWorkspace, resources: tools, assertUsable, resolveEnvironment,
     limits: ideExecutionLimitsSchema.parse({ defaultCols: config.editorTerminalCols, defaultRows: config.editorTerminalRows }),
     reportError: (error) => { log(`IDE execution cleanup failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`) },
+    onEvent: (workspaceId) => { hints.notify(workspaceId, 'execution') },
   })
   const removeActivity = activity.addSource(() => execution.hasActivity())
   const language = new IdeLanguageService({
@@ -154,6 +163,7 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
     close() {
       closing ??= (async () => {
         lifetime.abort()
+        hints.close()
         const results = await Promise.allSettled([language.close(), execution.dispose(), files.close(), state.close()])
         removeActivity()
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')

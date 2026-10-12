@@ -17,6 +17,8 @@ export interface IceSkyDependencies {
   readonly env: HostEnvironment
   readonly server: HostServer
   readonly log: (message: string) => void
+  /** Request function for the model relay, honoring the proxy settings. */
+  readonly fetch?: typeof globalThis.fetch | undefined
 }
 
 /**
@@ -54,6 +56,6 @@ export async function installIceSky(deps: IceSkyDependencies): Promise<void> {
     sessionExists: sessionId => chatExists(env.home, sessionId),
   }))
   for (const provider of ['openai', 'anthropic'] as const) {
-    for (const operation of ['chat', 'models'] as const) server.route(`/api/${provider}/${operation}`, createIceSkyProxyHandler(provider, operation))
+    for (const operation of ['chat', 'models'] as const) server.route(`/api/${provider}/${operation}`, createIceSkyProxyHandler(provider, operation, deps.fetch))
   }
 }

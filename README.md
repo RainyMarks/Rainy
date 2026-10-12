@@ -30,7 +30,7 @@ Write a solve script, run it, ask the AI why it fails, then open Wireshark or Cy
 | **A real editor** | A CodeMirror 6 editor with tabs, search and replace, completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Images, Markdown, PDF, audio and video open in previews, and any file opens in a hex view. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **38 CTF tools, one click each** | Web, traffic, reverse engineering, forensics, steganography, audio and encoding tools, each downloaded separately. Updates download only the tools that changed. |
 | **Windows or WSL2** | Start in native Windows; switch the project to a WSL2 environment whenever a challenge needs Linux. |
-| **Your model, your choice** | Use any OpenAI- or Anthropic-compatible service, a local server, or Strata local inference on an NVIDIA GPU. Keys stay on your machine. |
+| **Your model, your choice** | Use any OpenAI- or Anthropic-compatible service, a local server, or Strata local inference on an NVIDIA GPU. Model requests follow the system proxy or one you set. Keys stay on your machine. |
 
 ![CTF tools: download each tool when you need it](assets/ctf-tools.png)
 

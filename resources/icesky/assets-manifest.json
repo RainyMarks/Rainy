@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "25b00d00a87adae5606bcbf3845691a081a1c13466ced7fa8b68033eb00f5484",
+  "version": "e7f90204910519e18f705a6b66f156126bbd7fd50037607edcc93a831a80dfbc",
   "files": {
     "css/_base.css": {
       "sha256": "9fc2ac1f26543ffca2be236d64b4bd0e664750512aff25bb7437a700598eda8e",
@@ -223,8 +223,8 @@
       "type": "text/javascript"
     },
     "js/app/runtime.js": {
-      "sha256": "f6c57537f6e962746a6cb9cf75cead6d807bad260db0494d8080a2794759be2c",
-      "size": 29653,
+      "sha256": "5d538f704c112d7202dd79a409b99c622d1fd3ba2807394275fa7e0c07f25bd4",
+      "size": 30731,
       "type": "text/javascript"
     },
     "js/bundles/transforms-bundle.js": {

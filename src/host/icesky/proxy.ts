@@ -22,7 +22,7 @@ function endpoint(provider: IceSkyProvider, operation: IceSkyOperation, baseHead
  * @param operation Relayed endpoint.
  * @returns The handler for `/api/<provider>/<operation>`; the server calls it only for authenticated requests.
  */
-export function createIceSkyProxyHandler(provider: IceSkyProvider, operation: IceSkyOperation): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+export function createIceSkyProxyHandler(provider: IceSkyProvider, operation: IceSkyOperation, request: typeof globalThis.fetch = globalThis.fetch): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     if (req.method !== (operation === 'chat' ? 'POST' : 'GET')) { res.writeHead(405); res.end(); return }
     const controller = new AbortController()
@@ -45,7 +45,7 @@ export function createIceSkyProxyHandler(provider: IceSkyProvider, operation: Ic
         if (key) headers['x-api-key'] = key
         headers['anthropic-version'] = '2023-06-01'
       }
-      const upstream = await fetch(target, { method: req.method, headers, body, signal: controller.signal, redirect: 'error' })
+      const upstream = await request(target, { method: req.method, headers, body, signal: controller.signal, redirect: 'error' })
       res.writeHead(upstream.status, {
         'Content-Type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',

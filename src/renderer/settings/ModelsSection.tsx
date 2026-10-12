@@ -13,6 +13,7 @@ import { SegmentedControl } from '../ui/SegmentedControl.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import { toast } from '../ui/toasts.tsx'
 import { GlobalPromptSettings } from './GlobalPromptSettings.tsx'
+import { ProxySettings } from './ProxySettings.tsx'
 import { t as lookup, useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
 import { useModelsStatus } from './models-status.ts'
@@ -68,12 +69,15 @@ function positiveInteger(text: string): number | undefined {
   return Number.isInteger(value) && value > 0 ? value : undefined
 }
 
+/** Strata status refreshes this often while Settings shows it, so download and start progress stay current. */
+const STRATA_REFRESH_MS = 2000
+
 function workbench(): { local: number; api: number; pollMs: number } {
   const config = typeof window === 'undefined' ? undefined : window.__RAINY_WORKBENCH_CONFIG__
   return {
     local: config?.localModelContextWindow ?? DEFAULT_CONFIG.localModelContextWindow,
     api: config?.apiModelContextWindow ?? DEFAULT_CONFIG.apiModelContextWindow,
-    pollMs: config?.editorPollMs ?? DEFAULT_CONFIG.editorPollMs,
+    pollMs: STRATA_REFRESH_MS,
   }
 }
 
@@ -269,6 +273,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       }} />}
     </article>
     <GlobalPromptSettings saved={status?.globalPrompt} action={action} accept={accept} />
+    <ProxySettings action={action} />
     <BudgetCard workspace={workspace} status={status} />
     {strata !== undefined && <StrataCard controller={strata} onConnected={(saved) => { load(formOf(saved), keyOf(saved)) }} />}
   </section>

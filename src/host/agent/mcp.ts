@@ -51,7 +51,11 @@ export class McpManager {
   private readonly listeners = new Set<() => void>()
 
   /** @param log Diagnostic sink. */
-  constructor(private readonly log: (message: string) => void) {}
+  /**
+   * @param log Diagnostics.
+   * @param request Request function for HTTP servers, honoring the proxy settings.
+   */
+  constructor(private readonly log: (message: string) => void, private readonly request: typeof globalThis.fetch = globalThis.fetch) {}
 
   /**
    * Observe status changes.
@@ -83,6 +87,19 @@ export class McpManager {
       if (server.enabled) void this.connect(connection)
     }
     this.notify()
+  }
+
+  /** Connect again the streamable-HTTP servers that failed, for example after the proxy settings changed. */
+  retryWebServers(): void {
+    let retried = false
+    for (const connection of this.connections.values()) {
+      if (connection.config.transport !== 'streamable-http' || connection.state !== 'error') continue
+      connection.state = 'connecting'
+      connection.error = undefined
+      retried = true
+      void this.connect(connection)
+    }
+    if (retried) this.notify()
   }
 
   /** @returns Live state of every configured server. */
@@ -163,7 +180,7 @@ export class McpManager {
     try {
       const transport = config.transport === 'stdio'
         ? new StdioClientTransport({ command: config.command!, args: config.args ?? [], env: { ...scrubbedEnv(), ...config.env }, stderr: 'pipe' })
-        : new StreamableHTTPClientTransport(new URL(config.url!), config.headers === undefined ? undefined : { requestInit: { headers: config.headers } })
+        : new StreamableHTTPClientTransport(new URL(config.url!), { fetch: this.request, ...(config.headers === undefined ? {} : { requestInit: { headers: config.headers } }) })
       if (transport instanceof StdioClientTransport) transport.stderr?.on('data', (chunk: Buffer) => { this.log(`[mcp:${config.name}] ${chunk.toString('utf8').trimEnd()}`) })
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
       const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS })

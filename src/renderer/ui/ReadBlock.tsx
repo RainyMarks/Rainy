@@ -4,7 +4,7 @@ import { FoldToggle } from './FoldToggle.tsx'
 import { writeClipboard } from './clipboard.ts'
 import { CodeToolbar, type CodeToolbarLabels } from './CodeToolbar.tsx'
 import cardCss from './CodeCard.module.css'
-import { highlightLines, type HighlightSpan } from './highlight.ts'
+import { highlightLines, useHighlightRevision, type HighlightSpan } from './highlight.ts'
 import { useViewportHighlighting } from './viewport-highlighting.ts'
 import css from './ReadBlock.module.css'
 
@@ -75,9 +75,10 @@ export function ReadBlock({
   // Whole-window highlighting preserves multiline grammar context; copy uses
   // the same text without gutter or banner chrome.
   const raw = useMemo(() => lines.map(line => line.text).join('\n'), [lines])
+  const grammars = useHighlightRevision()
   const highlighted = useMemo(
     () => highlighting ? highlightLines(raw, lang) : undefined,
-    [highlighting, raw, lang],
+    [highlighting, raw, lang, grammars],
   )
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)

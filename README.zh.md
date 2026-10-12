@@ -30,7 +30,7 @@
 | **真正的编辑器** | CodeMirror 6 编辑器，支持标签页、查找替换、补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。图片、Markdown、PDF、音视频直接预览，任何文件都能以十六进制查看。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
 | **38 款 CTF 工具，一键下载** | 涵盖 Web、流量、逆向、取证、隐写、音频和编码等工具，每款单独下载。更新时只下载有变化的工具。 |
 | **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 时，随时把项目切换到 WSL2。 |
-| **模型自己选** | 支持任意 OpenAI 或 Anthropic 兼容服务、本地服务，也可在 NVIDIA 显卡上用 Strata 本地推理。密钥只保存在你的电脑上。 |
+| **模型自己选** | 支持任意 OpenAI 或 Anthropic 兼容服务、本地服务，也可在 NVIDIA 显卡上用 Strata 本地推理。模型请求可跟随系统代理或使用你设置的代理。密钥只保存在你的电脑上。 |
 
 ![CTF 工具：用到哪款就下载哪款](assets/ctf-tools.png)
 

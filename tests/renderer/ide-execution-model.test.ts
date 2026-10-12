@@ -117,6 +117,28 @@ describe('workspace execution observations', () => {
     expect(calls.at(-1)).toMatchObject({ op: 'execution.poll', cursor: 0 })
   })
 
+  it('polls at once on a hint for its workspace and stops polling while the window is hidden', async () => {
+    vi.useFakeTimers()
+    const { owner, calls } = fixture(async () => poll(), { pollMs: 500 })
+    owner.setWorkspace(workspaceA)
+    await owner.refresh()
+    const count = calls.length
+    owner.hint(workspaceB)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toHaveLength(count)
+    owner.hint(workspaceA)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toHaveLength(count + 1)
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    await owner.refresh()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(calls).toHaveLength(count + 2)
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toHaveLength(count + 3)
+  })
+
   it('uses the active cadence only while processes remain alive and clears its timer on disposal', async () => {
     vi.useFakeTimers()
     let status = terminalStatus(workspaceA, terminalA)

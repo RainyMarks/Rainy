@@ -561,9 +561,30 @@
     if (message.type === 'rainy:configure' && Number.isSafeInteger(message.revision)) {
       configureTail = configureTail.catch(() => {}).then(() => configure(message)).catch(showStartupError)
     } else if (message.type === 'rainy:flush' && typeof message.id === 'string') {
-      void configureTail.then(flush).then(() => post({ type: 'rainy:flushed', id: message.id, ok: true }),
+      void configureTail.then(flush).then(() => post({ type: 'rainy:flushed', id: message.id, ok: true, restorable: restorable() }),
         error => post({ type: 'rainy:flushed', id: message.id, ok: false, error: error.message }))
     }
+  }
+
+  /**
+   * Whether a reload would lose nothing: no selected local files, no request still running, and no tool holds a
+   * generated file or preview outside its saved fields.
+   */
+  function restorable() {
+    if (cleanupTasks.size || clipboardTasks.size) return false
+    for (const files of sourceFiles.values()) if (files.length) return false
+    for (const view of views.values()) {
+      if (view._iceSkyDisposed) continue
+      const saved = new Set(view._iceSkyKeys)
+      const values = [...Object.keys(view.$data).filter(key => !saved.has(key)).map(key => view.$data[key]),
+        ...Object.keys(view).filter(key => key.startsWith('_') && !key.startsWith('_iceSky')).map(key => view[key])]
+      for (const value of values) {
+        if (value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return false
+        if (value instanceof AbortController && !value.signal.aborted) return false
+        if (typeof value === 'string' && /^(?:blob|data):/i.test(value)) return false
+      }
+    }
+    return true
   }
 
   function dispose() {

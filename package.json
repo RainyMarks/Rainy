@@ -36,6 +36,7 @@
     "tsx": "4.22.4",
     "typescript": "6.0.3",
     "typescript-language-server": "6.0.1",
+    "undici": "7.30.0",
     "ws": "8.22.0",
     "zod": "^4.4.3"
   },

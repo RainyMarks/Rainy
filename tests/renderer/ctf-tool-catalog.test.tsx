@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /** Tool discovery, launch availability and the retained IceSky frame. */
+import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ToolCatalog } from '../../src/renderer/ctf/ToolCatalog.tsx'
 import { CtfWorkbench } from '../../src/renderer/ctf/CtfWorkbench.tsx'
@@ -185,5 +186,54 @@ describe('CTF workbench tabs', () => {
     view.rerender(<CtfWorkbench owner={owner} sessionId="chat-1" active dark />)
     expect(configure).toHaveBeenLastCalledWith(expect.objectContaining({ context: { kind: 'session', id: 'chat-1' },
       appearance: expect.objectContaining({ dark: true }) }))
+  })
+
+  it('unloads the frame out of sight only after a save that leaves nothing outside the draft', async () => {
+    vi.useFakeTimers()
+    try {
+      const owner = createCtfWorkbench({ readyTimeoutMs: 15000, flushTimeoutMs: 15000, unloadAfterMs: 1000 })
+      owners.push(owner)
+      const flush = vi.spyOn(owner.bridge, 'flush')
+        .mockResolvedValueOnce({ ok: true, restorable: false })
+        .mockResolvedValueOnce({ ok: false, error: 'disk full' })
+        .mockResolvedValueOnce({ ok: true, restorable: true })
+      const view = render(<CtfWorkbench owner={owner} sessionId={null} active dark={false} />)
+      const frame = (): HTMLIFrameElement | null => view.container.querySelector('iframe')
+      const wait = (ms: number): Promise<void> => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+      click(byRole('tab', 'IceSky'))
+      await wait(5000)
+      expect(flush).not.toHaveBeenCalled()
+      click(byRole('tab', '常用工具'))
+      await wait(1000)
+      // A selected local file, then a failed save, keep the page.
+      expect(flush).toHaveBeenCalledTimes(1)
+      expect(frame()).not.toBeNull()
+      await wait(1000)
+      expect(flush).toHaveBeenCalledTimes(2)
+      expect(frame()).not.toBeNull()
+      await wait(1000)
+      expect(flush).toHaveBeenCalledTimes(3)
+      expect(frame()).toBeNull()
+      click(byRole('tab', 'IceSky'))
+      expect(frame()).not.toBeNull()
+      expect(owner.bridge.state.getSnapshot().phase).toBe('loading')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('keeps the frame when it is shown again while the save before unloading is pending', async () => {
+    vi.useFakeTimers()
+    try {
+      const owner = createCtfWorkbench({ readyTimeoutMs: 15000, flushTimeoutMs: 15000, unloadAfterMs: 1000 })
+      owners.push(owner)
+      const saved = Promise.withResolvers<{ ok: boolean; restorable: boolean }>()
+      vi.spyOn(owner.bridge, 'flush').mockReturnValueOnce(saved.promise)
+      const view = render(<CtfWorkbench owner={owner} sessionId={null} active dark={false} />)
+      click(byRole('tab', 'IceSky'))
+      view.rerender(<CtfWorkbench owner={owner} sessionId={null} active={false} dark={false} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      view.rerender(<CtfWorkbench owner={owner} sessionId={null} active dark={false} />)
+      await act(async () => { saved.resolve({ ok: true, restorable: true }); await Promise.resolve() })
+      expect(view.container.querySelector('iframe')).not.toBeNull()
+    } finally { vi.useRealTimers() }
   })
 })

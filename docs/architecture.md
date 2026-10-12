@@ -14,7 +14,7 @@ Host (src/host), one per execution target: Windows Node or Node inside a WSL dis
 Renderer (src/renderer), loaded by the main window from the Host origin
 ```
 
-- Electron main spawns the Host with `node host.js` (Windows) or `wsl.exe --distribution <d> --exec env … node host.js` (WSL). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`).
+- Electron main spawns the Host with `node host.js` (Windows) or `wsl.exe --distribution <d> --exec env … node host.js` (WSL). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`). The Host's own requests go the other way: the Windows Host asks `system-proxy {id, url}` and main answers with a `reply` line, resolving the URL with Electron's `session.resolveProxy`, which applies the Windows proxy settings, bypass list and PAC scripts (`src/main/system-proxy.ts`).
 - The main window loads `ready.url` (`http://127.0.0.1:<port>/?token=…`). The Host answers with an HttpOnly cookie and redirects to `/`. Every later request and WebSocket upgrade must carry that cookie.
 - Main and preload are plain Electron code. Preload exposes the `__RAINY_*` bridges listed in `src/preload/preload.ts`.
 
@@ -27,8 +27,9 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 | `server.ts` | HTTP routes, launch-token auth, static files, the `/rpc` WebSocket, the `/rainy/ide/lsp` WebSocket |
 | `rpc.ts` | Method table and event broadcast; the method and event types are `src/shared/rpc.ts` |
 | `settings.ts` | `settings.json` and `.credentials.json` under the Host home, plus the one-time import of 1.x settings |
+| `network.ts` | The proxy for model requests: follow the system (default), none, or a manual HTTP proxy. Model streaming, model discovery, the IceSky relay and MCP servers over HTTP fetch through it with undici's `ProxyAgent`, which forwards plain-HTTP requests and tunnels HTTPS; loopback, private, `.local` and single-label hosts stay direct. Following the system, the Windows Host asks main per origin (answers kept 30 seconds) and the WSL Host reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Commands and terminals are not proxied |
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
-| `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route |
+| `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route, change hints |
 | `runtime/` | Interpreter discovery and selection, project registry shared with main |
 | `icesky/` | The IceSky iframe: static files, model relay, drafts |
 
@@ -41,7 +42,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 - `agent/prompt.ts` assembles the system prompt: persona, @-reference note, tool notes, MCP server instructions, extra project roots, skill descriptors, the user's global prompt and the working-directory line.
 - `agent/instructions.ts` injects `AGENTS.md`/`CLAUDE.md` files as a user message before the first request of a session.
 - `agent/compaction.ts` replaces an older span of the conversation with a summary when the request estimate reaches the budget threshold, after a context-overflow error, or on `/compact`. While the chat's previous request started less than 54 minutes ago with the same model and reasoning level (90% of the hour Claude keeps its cache), the summary request repeats exactly what the next request would send (system prompt, tools, full history, reasoning and stream options, no `tool_choice` or `max_tokens` change) and appends one instruction, so it reads the prompt cache that request left; on Claude it marks the previous request's last user message and writes no cache of its own. A reply that calls a tool, stops early, is empty or is far over the size limit is discarded. Then, and when the cache is cold or the full history would not fit, a separate request summarizes only the span with tool calls refused and no cache written. The compaction entry records which request produced the summary and the usage of both, and an automatic compaction's usage counts toward its turn. `llm.ts` sends Claude message text as content blocks so that moving a breakpoint never changes a message's form.
-- `agent/memory/` keeps per-project notes, generates them while the app is idle and recalls them once at the start of a session.
+- `agent/memory/` keeps per-project notes, generates them while the app is idle and recalls them once at the start of a session. Generation costs model requests, so it is off for projects without a memory record; records written before 2.1 keep their setting.
 - `agent/skills.ts` lists `SKILL.md` files from `<cwd>/.rainy/skills` and `~/.rainy-agent/skills`. `agent/mcp.ts` connects the MCP servers configured in Settings.
 
 ### Data under the Host home
@@ -50,7 +51,7 @@ The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Window
 
 | Path | Content |
 |---|---|
-| `settings.json` | Models (without keys), selected model, global prompt, MCP servers (with their environment and request headers), UI preferences, default permission mode and remembered approvals |
+| `settings.json` | Models (without keys), selected model, global prompt, MCP servers (with their environment and request headers), UI preferences, network proxy, default permission mode and remembered approvals |
 | `.credentials.json` | API keys, mode 0600 |
 | `chats/<sessionId>.jsonl` | One chat: a header line, then transcript entries in order |
 | `chats/index.json` | Chat summaries for the history list; rebuilt from the files when missing |
@@ -70,12 +71,15 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 
 `src/renderer` is one React application. `rpc.ts` connects to `/rpc` and reconnects after the Host restarts.
 
+- The page does not poll for changes it can be told about. `ide/hints.ts` in the Host watches the directories of files open in editor tabs (with `fs.watch`, up to 64 per project folder, including the folder of a deleted file) and run and debug events, and sends a throttled `ide.hint` event; the page then fetches the state with its usual requests, and checks open files at once when tabs open or close. The fallback polls (`editorPollMs`, 10 s; `executionPollMs`, 1 s during a run) cover lost hints and unwatchable folders, and stop while the window is hidden. Watchers close when the page has not checked a folder's files for 30 seconds (three fallback polls when that is longer), because Windows cannot rename a watched folder.
+- KaTeX and its stylesheet load only for a message that contains `$`; highlight.js grammars load per language on first use (`ui/highlight.ts`).
+
 | Folder | Content |
 |---|---|
 | `app/` | Window layout: top bar, file pane, editor area, AI pane, bottom panel, status bar |
 | `chat/` | Transcript, markdown, tool cards, composer, model picker, context meter, history list |
 | `ide/` | Editor tabs, editor mount, file viewers, quick open, run configurations, terminal, problems, debug |
-| `ctf/` | Native tool catalog and the IceSky iframe |
+| `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost |
 | `settings/` | General, Models, Skills & MCP, Runtime and Memory sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
 

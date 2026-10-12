@@ -66,11 +66,13 @@ export const MemoryDelta = z
   })
   .strict()
 
+// New projects do not organize memory in the background until the user turns it on: it spends model requests.
+// Documents written before the switch existed keep generating (the schema default above).
 const fresh = (): ProjectMemoryDocument => ({
   version: 1,
   revision: 0,
   enabled: true,
-  generationEnabled: true,
+  generationEnabled: false,
   updatedAt: null,
   lastAttemptAt: 0,
   items: [],

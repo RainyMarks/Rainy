@@ -8,10 +8,11 @@ import type { IdeRootId, WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { createProjectRegistry, ExecutionTargetId, ProjectId } from '../shared/project-registry.ts'
 import { Activity } from './activity.ts'
 import { createAgent } from './agent/index.ts'
-import { sendControl, serveControl } from './control.ts'
+import { ControlInput, sendControl } from './control.ts'
 import { readHostEnvironment } from './env.ts'
 import { installIceSky } from './icesky/index.ts'
 import { createIde } from './ide/index.ts'
+import { Network, type SystemProxyResolver } from './network.ts'
 import { Projects, roots } from './projects.ts'
 import { RpcHub } from './rpc.ts'
 import { createRuntime } from './runtime/index.ts'
@@ -26,6 +27,8 @@ const log = (message: string): void => { console.error(`[host] ${message}`) }
 
 async function main(): Promise<void> {
   const env = readHostEnvironment(process.env, import.meta.url)
+  // Replies to the Host's own requests can arrive while it is still starting.
+  const control = new ControlInput(process.stdin, sendControl)
   mkdirSync(env.home, { recursive: true, mode: 0o700 })
   mkdirSync(env.tmp, { recursive: true, mode: 0o700 })
   // The Host's Node and ripgrep are fallbacks for commands and terminals; programs the user installed come first.
@@ -33,6 +36,16 @@ async function main(): Promise<void> {
 
   const settings = new Settings(env.home, process.env)
   await settings.load()
+  // The Windows carrier answers which proxy the system uses for each address; without it, the environment decides.
+  const systemProxy: SystemProxyResolver | undefined = process.env.RAINY_CARRIER_PROXY === '1'
+    ? async (url) => {
+      const reply = await control.ask({ type: 'system-proxy', url })
+      if (typeof reply.url === 'string' || reply.url === null) return reply.url
+      throw new Error('The carrier sent an invalid system proxy')
+    }
+    : undefined
+  const network = new Network(env.platform, process.env, systemProxy)
+  network.configure(settings.get().proxy)
   const config = resolveConfig(settings.get().workbench)
   const projects = new Projects(join(env.home, 'projects.json'))
   await projects.load()
@@ -50,9 +63,9 @@ async function main(): Promise<void> {
   })
 
   const runtime = await createRuntime({ env, projects, registry, activity, log })
-  const ide = await createIde({ env, config, projects, runtime, server, activity, log })
-  const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, log })
-  await installIceSky({ env, server, log })
+  const ide = await createIde({ env, config, projects, runtime, server, activity, log, hint: (workspaceId, kind) => { rpc.emit('ide.hint', { workspaceId, kind }) } })
+  const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, network, log })
+  await installIceSky({ env, server, log, fetch: network.fetch })
 
   rpc.register('app.info', () => ({
     name: 'RainyAgent' as const, version: env.version, environment: env.platform === 'win32' ? 'Windows' as const : 'WSL' as const,
@@ -104,7 +117,7 @@ async function main(): Promise<void> {
     })()
     return stopping
   }
-  serveControl({
+  control.serve({
     inspectActivity: mode => activity.inspect(mode),
     inspectProject: async (requested) => {
       const id = requested === undefined ? ide.selection() : brandString<WorkspaceId>(requested)

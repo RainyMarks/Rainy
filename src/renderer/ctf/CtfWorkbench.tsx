@@ -1,5 +1,5 @@
-/** CTF workbench tab: the common tool catalog and the IceSky frame, kept mounted once visited. */
-import { useCallback, useEffect, useState } from 'react'
+/** CTF workbench tab: the common tool catalog and the IceSky frame, loaded when shown and unloaded after a long time out of sight. */
+import { useCallback, useEffect } from 'react'
 import { Button, IconLoadingOutlineRegular, SegmentedTabs, useStore } from '../ui/index.ts'
 import { usePrefs } from '../prefs.ts'
 import { ToolCatalog } from './ToolCatalog.tsx'
@@ -26,8 +26,7 @@ export function CtfWorkbench({ owner, sessionId, active, dark }: {
   const state = useStore(owner.bridge.state)
   const tools = useStore(owner.tools.state)
   const view = useStore(owner.view)
-  const [visitedIceSky, setVisitedIceSky] = useState(view === 'icesky')
-  useEffect(() => { if (view === 'icesky') setVisitedIceSky(true) }, [view])
+  const loaded = useStore(owner.frameLoaded)
   useEffect(() => { void owner.tools.load() }, [owner])
   const visible = active && view === 'icesky'
   useEffect(() => {
@@ -55,9 +54,9 @@ export function CtfWorkbench({ owner, sessionId, active, dark }: {
           cancelDownload={() => owner.tools.cancelDownload()} checkToolUpdates={() => owner.tools.checkUpdates()} />
       </div>
       <div id="rainy-icesky-panel" role="tabpanel" aria-labelledby="rainy-icesky-tab" className={css.panel} hidden={view !== 'icesky'}>
-        {visitedIceSky && <iframe ref={attach} className={css.frame} src="/rainy/icesky/index.html?embed=rainy"
+        {loaded && <iframe ref={attach} className={css.frame} src="/rainy/icesky/index.html?embed=rainy"
           title={t('ctfFrameTitle')} referrerPolicy="no-referrer" onError={() => { owner.bridge.loadFailed() }} />}
-        {visitedIceSky && state.phase === 'loading' && <div className={css.loading} role="status" aria-label={t('ctfLoading')}>
+        {loaded && state.phase === 'loading' && <div className={css.loading} role="status" aria-label={t('ctfLoading')}>
           <IconLoadingOutlineRegular className={css.spinner} />
         </div>}
         {error !== undefined && <div className={css.error} role="alert"><span>{error}</span>

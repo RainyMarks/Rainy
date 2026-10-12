@@ -139,6 +139,8 @@ export function reasoningOption(level: ThinkingLevel | undefined): SimpleStreamO
 /** Dependencies of {@link createStreamFn}. */
 export interface StreamDeps {
   apiKey(provider: string): string | undefined
+  /** Request function honoring the proxy settings; the global `fetch` when absent. */
+  fetch?: typeof globalThis.fetch | undefined
   /** Prompt-cache lifetime for a model; Claude keeps the hour-long cache. */
   cacheRetention(model: Model<Api>): SimpleStreamOptions['cacheRetention']
 }
@@ -195,6 +197,7 @@ export function createStreamFn(deps: StreamDeps) {
       maxRetries: 2,
       maxRetryDelayMs: 10_000,
       cacheRetention: options.cacheRetention ?? deps.cacheRetention(model),
+      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
       ...(model.api === 'anthropic-messages'
         ? { onPayload: (payload: unknown, payloadModel: Model<Api>) => { blockContent(payload); markPreviousTurn(payload); return options.onPayload?.(payload, payloadModel) } }
         : {}),

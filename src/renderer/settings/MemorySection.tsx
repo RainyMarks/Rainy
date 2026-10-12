@@ -59,7 +59,7 @@ export function MemorySection({ workspace }: { workspace: SettingsWorkspace }): 
               apply(() => host.call('memory.setEnabled', { workspaceId, enabled }))
             }} />
           </SettingRow>
-          <SettingRow title={t('settingsMemoryGenerate')}>
+          <SettingRow title={t('settingsMemoryGenerate')} description={t('settingsMemoryGenerateNote')}>
             <Switch label={t('settingsMemoryGenerate')} checked={snapshot.generationEnabled} disabled={busy} onChange={(generationEnabled) => {
               apply(() => host.call('memory.setEnabled', { workspaceId, generationEnabled }))
             }} />

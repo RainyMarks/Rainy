@@ -7,9 +7,10 @@ import { resolveBudget } from '../../shared/budget.ts'
 import { brandString } from '../../shared/brand.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { ProjectRegistry } from '../../shared/project-registry.ts'
-import type { BudgetPreview, ExtensionsStatus, McpServerConfig, SecurityStatus, SessionSummary } from '../../shared/rpc.ts'
+import type { BudgetPreview, ExtensionsStatus, McpServerConfig, ProxySettings, SecurityStatus, SessionSummary } from '../../shared/rpc.ts'
 import type { Activity } from '../activity.ts'
 import type { HostEnvironment } from '../env.ts'
+import { PASSWORD_MASK, proxyUrl, type Network } from '../network.ts'
 import type { Projects } from '../projects.ts'
 import { RpcError, type RpcHub } from '../rpc.ts'
 import type { RuntimeService } from '../runtime/index.ts'
@@ -58,6 +59,8 @@ export interface AgentDeps {
   runtime: RuntimeService
   rpc: RpcHub
   activity: Activity
+  /** Proxy settings and the request function for model services and MCP servers. */
+  network?: Network | undefined
   log(message: string): void
 }
 
@@ -79,9 +82,11 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   const { env, settings, projects, rpc, log } = deps
   const store = new ChatStore(join(env.home, 'chats'))
   await store.load()
-  const models = new Models(settings)
+  const models = new Models(settings, deps.network?.fetch)
   if (env.configureDeepSeek === true) await models.configure(DEEPSEEK_FLASH)
-  const mcp = new McpManager(log)
+  const mcp = new McpManager(log, deps.network?.fetch)
+  // Web MCP servers that failed may be reachable through the new proxy settings.
+  deps.network?.onChange(() => { mcp.retryWebServers() })
   const sessions = new Map<string, ChatSession>()
   const opening = new Map<string, Promise<ChatSession>>()
   let activeRequests = 0
@@ -283,6 +288,50 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     const cwd = chat?.cwd ?? cwdFor(workspaceId)
     const files = cwd === undefined ? [] : await completeFiles(cwd, query)
     return [...files, ...completeChats(store.list(), query, sessionId)]
+  })
+
+  // ── network ──
+  const proxySchema = z.object({ mode: z.enum(['system', 'off', 'manual']), url: z.string().max(2048).optional() })
+  /** The choice from Settings, where a masked password stands for the stored one. */
+  const proxyChoice = (network: Network, params: unknown): ProxySettings => {
+    const proxy = proxySchema.parse(params)
+    const choice = network.withStoredPassword(proxy.mode === 'manual' ? { mode: 'manual', url: (proxy.url ?? '').trim() } : { mode: proxy.mode })
+    if (choice.mode !== 'manual') return choice
+    const url = proxyUrl(choice.url)
+    if (url === undefined) throw new RpcError('invalid', '代理地址无效，应为 host:port 或 http://host:port。')
+    // The mask stands for the saved password only at the saved address.
+    if (decodeURIComponent(new URL(url).password) === PASSWORD_MASK) throw new RpcError('invalid', '代理地址已更改，请重新输入代理密码。')
+    return choice
+  }
+  rpc.register('network.status', () => {
+    if (deps.network === undefined) throw new RpcError('unavailable', '网络设置不可用。')
+    return deps.network.status(models.resolve()?.setup.baseURL)
+  })
+  rpc.register('network.set', async (params) => {
+    const network = deps.network
+    if (network === undefined) throw new RpcError('unavailable', '网络设置不可用。')
+    const choice = proxyChoice(network, params)
+    await settings.update((data) => { data.proxy = choice })
+    network.configure(settings.get().proxy)
+    return network.status(models.resolve()?.setup.baseURL)
+  })
+  rpc.register('network.test', async (params) => {
+    const network = deps.network
+    if (network === undefined) throw new RpcError('unavailable', '网络设置不可用。')
+    const proxy = proxyChoice(network, params)
+    const resolved = models.resolve()
+    if (resolved === undefined) throw new RpcError('no-model', '请先配置模型，再测试连接。')
+    const url = resolved.setup.baseURL
+    const started = Date.now()
+    try {
+      // Any HTTP answer, even 401 or 404, shows the service is reachable through these settings.
+      const response = await network.fetchWith(proxy, url, { method: 'GET', signal: AbortSignal.timeout(15_000), redirect: 'manual' })
+      await response.body?.cancel().catch(() => undefined)
+      return { ok: true, url, status: response.status, ms: Date.now() - started }
+    } catch (error) {
+      const cause = error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : ''
+      return { ok: false, url, ms: Date.now() - started, error: `${error instanceof Error ? error.message : String(error)}${cause}` }
+    }
   })
 
   // ── security ──

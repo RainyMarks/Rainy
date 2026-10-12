@@ -119,3 +119,27 @@ test('restoring a large saved input mounts without computation and large edits s
         assert.equal(h.workers.length, 0); assert.equal(h.view.tokenizerInput, 'Ordinary Unicode 示例🙂\n'.repeat(6000));
     } finally { h.close(); }
 });
+
+test('a save reports whether a reload would restore everything on the page', async () => {
+    const h = await harness();
+    try {
+        const parent = h.window.parent, send = parent.postMessage, replies = new Map();
+        parent.postMessage = message => { if (message.type === 'rainy:flushed') replies.get(message.id)?.resolve(message); send.call(parent, message); };
+        const save = id => {
+            replies.set(id, deferred());
+            h.window.dispatchEvent(new h.window.MessageEvent('message', { source: parent, origin: h.window.location.origin, data: { type: 'rainy:flush', id } }));
+            return replies.get(id).promise;
+        };
+        assert.deepEqual(clone(await save('a')), { type: 'rainy:flushed', id: 'a', ok: true, restorable: true });
+        h.view._generatedPreview = new h.window.Blob(['png']);
+        assert.equal((await save('b')).restorable, false);
+        h.view._generatedPreview = null;
+        h.view._pendingRequest = new h.window.AbortController();
+        assert.equal((await save('running')).restorable, false);
+        h.view._pendingRequest.abort();
+        // Saved fields come back with the draft whatever they contain.
+        h.view.tokenizerInput = 'data:text/plain;base64,QUJD'; await h.window.Vue.nextTick();
+        assert.equal((await save('c')).restorable, true);
+        assert.equal(h.records.get('session:A').data.tools.tokenizer.fields.tokenizerInput, 'data:text/plain;base64,QUJD');
+    } finally { h.close(); }
+});

@@ -20,6 +20,7 @@ import type { EditorDocument, EditorProblem, EditorSelection, EditorView } from 
 import { IdeRequestError, type IdeFilesApi } from './ide-api.ts'
 import { createRootedIdeApi } from './ide-rooted-api.ts'
 import { absoluteFilePath, fileKey, fileReference, keyFromAbsolute, workspaceRoots } from './ide-paths.ts'
+import { onPageVisible, pageHidden } from '../app/visibility.ts'
 
 /** A complete buffer with its last observed disk contents. */
 export interface IdeBuffer {
@@ -90,6 +91,11 @@ const initialData = (): IdeWorkspaceStateData => ({
   },
   execution: { profiles: [], activeProfile: null, breakpoints: [], watches: [] },
 })
+
+/** @returns Whether two tab lists hold the same paths in the same order; cursor and scroll changes do not count. */
+function samePaths(next: readonly IdeEditorTab[], previous: readonly IdeEditorTab[]): boolean {
+  return next === previous || (next.length === previous.length && next.every((tab, index) => tab.path === previous[index]?.path))
+}
 
 /** Infer the editor language from a source filename. @param path Source path. @returns IDE language id. */
 export function sourceLanguage(path: string): string {
@@ -164,6 +170,12 @@ export class IdeModel {
   private switching = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private polling: ReturnType<typeof setTimeout> | undefined
+  /** The open-file check in flight, and whether another one was asked for meanwhile. */
+  private pollRunning: Promise<void> | undefined
+  private pollAgain = false
+  private pollSoon = false
+  private pollStarted = false
+  private stopVisibility: (() => void) | undefined
   private persistence: Promise<boolean> | undefined
   private snippetCounter = 0
   /** Encodings the user picked for files that are not UTF-8, reused when such a file reloads. */
@@ -194,6 +206,7 @@ export class IdeModel {
       this.fail(error)
     }
     this.schedulePoll()
+    this.pollNow()
   }
 
   /** Register a directory without starting a chat.
@@ -407,6 +420,7 @@ export class IdeModel {
       this.fail(error)
     } finally {
       this.switching = false
+      this.pollNow()
       if (!this.isDisposed() && this.state.getSnapshot().phase === 'loading') {
         const current = this.state.getSnapshot()
         this.patch({ phase: current.workspace === null && current.error !== '' ? 'error' : 'ready' })
@@ -1057,10 +1071,31 @@ export class IdeModel {
     this.disposed = true
     if (this.timer !== undefined) clearTimeout(this.timer)
     if (this.polling !== undefined) clearTimeout(this.polling)
+    this.stopVisibility?.()
+  }
+
+  /** Check the open files now: the Host hinted a change, the window became visible, or the fallback interval passed. */
+  pollNow(): void {
+    if (this.disposed || !this.pollStarted) return
+    if (this.polling !== undefined) { clearTimeout(this.polling); this.polling = undefined }
+    // A hidden window checks nothing; becoming visible checks at once.
+    if (pageHidden()) return
+    if (this.pollRunning !== undefined) { this.pollAgain = true; return }
+    this.pollRunning = this.poll().finally(() => {
+      this.pollRunning = undefined
+      if (this.pollAgain) { this.pollAgain = false; this.pollNow() } else this.schedulePoll()
+    })
   }
 
   private patch(patch: Partial<IdeState>): void {
-    if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), ...patch })
+    if (this.disposed) return
+    const before = this.state.getSnapshot()
+    this.state.set({ ...before, ...patch })
+    // The Host watches the folders of the files it was last asked about, so a newly opened file is checked at once.
+    if (patch.data !== undefined && !samePaths(patch.data.tabs, before.data.tabs) && !this.pollSoon) {
+      this.pollSoon = true
+      setTimeout(() => { this.pollSoon = false; this.pollNow() }, 0)
+    }
   }
   private isDisposed(): boolean {
     return this.disposed
@@ -1119,11 +1154,12 @@ export class IdeModel {
   }
   private schedulePoll(): void {
     if (this.disposed) return
-    this.polling = setTimeout(() => {
-      void this.poll().finally(() => {
-        this.schedulePoll()
-      })
-    }, this.options.pollMs)
+    if (!this.pollStarted) {
+      this.pollStarted = true
+      this.stopVisibility = onPageVisible(() => { this.pollNow() })
+    }
+    if (this.polling !== undefined) clearTimeout(this.polling)
+    this.polling = setTimeout(() => { this.polling = undefined; this.pollNow() }, this.options.pollMs)
   }
   private async poll(): Promise<void> {
     const before = this.state.getSnapshot()

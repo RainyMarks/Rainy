@@ -4,7 +4,7 @@ import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
-import type { McpServerConfig, ModelSelection, ModelSetup, PermissionMode, PermissionRules, UiPreferences } from '../shared/rpc.ts'
+import type { McpServerConfig, ModelSelection, ModelSetup, PermissionMode, PermissionRules, ProxySettings, UiPreferences } from '../shared/rpc.ts'
 import { readJson, SerialQueue, writeJson } from './files.ts'
 
 /** Maximum characters of the user's global prompt. */
@@ -89,6 +89,7 @@ const fileSchema = z.object({
   ui: prefsSchema.partial(),
   workbench: z.record(z.string(), z.unknown()).optional(),
   security: securitySchema.optional(),
+  proxy: z.object({ mode: z.enum(['system', 'off', 'manual']), url: z.string().max(2048).optional() }).optional(),
 })
 
 /** Persisted settings. */
@@ -102,6 +103,8 @@ export interface SettingsData {
   workbench?: Record<string, unknown> | undefined
   /** Default permission mode and remembered approvals by workspace id; absent in settings written before 2.1. */
   security?: { defaultMode?: PermissionMode | undefined; rules?: Record<string, PermissionRules> | undefined } | undefined
+  /** Proxy for model requests; absent means the system proxy. */
+  proxy?: ProxySettings | undefined
 }
 
 const credentialsSchema = z.object({ version: z.literal(1), keys: z.record(z.string(), z.string()) })

@@ -1,40 +1,87 @@
-/** Synchronous syntax highlighting for code cards, built on highlight.js with a fixed language set. */
-import type { CSSProperties } from 'react'
+/**
+ * Syntax highlighting for code cards, built on highlight.js. Each grammar loads on first use outside the main bundle;
+ * until it arrives the code shows as plain text, then components using {@link useHighlightRevision} highlight it.
+ */
+import { useSyncExternalStore, type CSSProperties } from 'react'
 import hljs from 'highlight.js/lib/core'
-import bash from 'highlight.js/lib/languages/bash'
-import c from 'highlight.js/lib/languages/c'
-import cpp from 'highlight.js/lib/languages/cpp'
-import css from 'highlight.js/lib/languages/css'
-import diff from 'highlight.js/lib/languages/diff'
-import go from 'highlight.js/lib/languages/go'
-import ini from 'highlight.js/lib/languages/ini'
-import java from 'highlight.js/lib/languages/java'
-import javascript from 'highlight.js/lib/languages/javascript'
-import json from 'highlight.js/lib/languages/json'
-import markdown from 'highlight.js/lib/languages/markdown'
-import php from 'highlight.js/lib/languages/php'
-import powershell from 'highlight.js/lib/languages/powershell'
-import python from 'highlight.js/lib/languages/python'
-import rust from 'highlight.js/lib/languages/rust'
-import sql from 'highlight.js/lib/languages/sql'
-import typescript from 'highlight.js/lib/languages/typescript'
-import x86asm from 'highlight.js/lib/languages/x86asm'
-import xml from 'highlight.js/lib/languages/xml'
-import yaml from 'highlight.js/lib/languages/yaml'
+import type { LanguageFn } from 'highlight.js'
 
-const LANGUAGES = { bash, c, cpp, css, diff, go, ini, java, javascript, json, markdown, php, powershell, python, rust, sql, typescript, x86asm, xml, yaml }
-for (const [name, language] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, language)
+type GrammarModule = { default: LanguageFn }
+const LOADERS: Readonly<Record<string, () => Promise<GrammarModule>>> = {
+  bash: () => import('highlight.js/lib/languages/bash'),
+  c: () => import('highlight.js/lib/languages/c'),
+  cpp: () => import('highlight.js/lib/languages/cpp'),
+  css: () => import('highlight.js/lib/languages/css'),
+  diff: () => import('highlight.js/lib/languages/diff'),
+  go: () => import('highlight.js/lib/languages/go'),
+  ini: () => import('highlight.js/lib/languages/ini'),
+  java: () => import('highlight.js/lib/languages/java'),
+  javascript: () => import('highlight.js/lib/languages/javascript'),
+  json: () => import('highlight.js/lib/languages/json'),
+  markdown: () => import('highlight.js/lib/languages/markdown'),
+  php: () => import('highlight.js/lib/languages/php'),
+  powershell: () => import('highlight.js/lib/languages/powershell'),
+  python: () => import('highlight.js/lib/languages/python'),
+  rust: () => import('highlight.js/lib/languages/rust'),
+  sql: () => import('highlight.js/lib/languages/sql'),
+  typescript: () => import('highlight.js/lib/languages/typescript'),
+  x86asm: () => import('highlight.js/lib/languages/x86asm'),
+  xml: () => import('highlight.js/lib/languages/xml'),
+  yaml: () => import('highlight.js/lib/languages/yaml'),
+}
 
-/** Language hints and file extensions mapped to registered grammars. */
+/** Grammars that highlight embedded code with another grammar: scripts and styles in HTML, HTML in JSX and Markdown. */
+const EMBEDDED: Readonly<Record<string, readonly string[]>> = {
+  xml: ['css', 'javascript'], javascript: ['xml', 'css'], typescript: ['xml', 'css'], markdown: ['xml'],
+}
+
+const pending = new Map<string, Promise<void>>()
+let revision = 0
+const listeners = new Set<() => void>()
+
+/**
+ * Load a grammar once; components re-render through {@link useHighlightRevision} when it is registered.
+ * @param name Grammar name from {@link LOADERS}.
+ * @returns Completion of the load.
+ */
+export function loadGrammar(name: string): Promise<void> {
+  const loader = LOADERS[name]
+  if (loader === undefined || hljs.getLanguage(name) !== undefined) return Promise.resolve()
+  let task = pending.get(name)
+  if (task === undefined) {
+    task = loader().then((module) => {
+      hljs.registerLanguage(name, module.default)
+      revision++
+      for (const listener of listeners) listener()
+    }, (error: unknown) => {
+      pending.delete(name)
+      console.error(`Grammar ${name} failed to load`, error)
+    })
+    pending.set(name, task)
+    for (const embedded of EMBEDDED[name] ?? []) void loadGrammar(embedded)
+  }
+  return task
+}
+
+/** @returns A number that changes whenever a grammar finished loading; put it in the memo dependencies of highlighting. */
+export function useHighlightRevision(): number {
+  return useSyncExternalStore((listener) => { listeners.add(listener); return () => { listeners.delete(listener) } }, () => revision)
+}
+
+/**
+ * Language hints and file extensions mapped to grammars: every alias the grammars register themselves (highlight.js
+ * 11.11), which are unknown until a grammar loads, plus common extensions.
+ */
 const ALIASES: Readonly<Record<string, string>> = {
   ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
   js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript',
   sh: 'bash', shell: 'bash', shellscript: 'bash', zsh: 'bash', console: 'bash',
-  ps1: 'powershell', psm1: 'powershell', pwsh: 'powershell',
-  py: 'python', pyw: 'python', pyi: 'python',
-  h: 'c', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp', 'c++': 'cpp',
-  rs: 'rust', golang: 'go', yml: 'yaml', jsonc: 'json', jsonl: 'json',
-  html: 'xml', htm: 'xml', svg: 'xml', md: 'markdown', patch: 'diff',
+  ps: 'powershell', ps1: 'powershell', psm1: 'powershell', pwsh: 'powershell',
+  py: 'python', pyw: 'python', pyi: 'python', gyp: 'python', ipython: 'python',
+  h: 'c', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp', 'c++': 'cpp', 'h++': 'cpp',
+  rs: 'rust', golang: 'go', yml: 'yaml', jsonc: 'json', jsonl: 'json', jsp: 'java',
+  html: 'xml', htm: 'xml', xhtml: 'xml', svg: 'xml', rss: 'xml', atom: 'xml', xsd: 'xml', xsl: 'xml', xjb: 'xml', plist: 'xml', wsf: 'xml',
+  md: 'markdown', mkd: 'markdown', mkdown: 'markdown', patch: 'diff',
   toml: 'ini', conf: 'ini', cfg: 'ini', properties: 'ini', env: 'ini',
   asm: 'x86asm', nasm: 'x86asm', s: 'x86asm',
 }
@@ -57,7 +104,7 @@ export function grammarFor(lang: string | undefined): string | undefined {
   if (lang === undefined) return undefined
   const key = lang.trim().toLowerCase()
   const name = ALIASES[key] ?? key
-  return hljs.getLanguage(name) === undefined ? undefined : name
+  return Object.hasOwn(LOADERS, name) ? name : undefined
 }
 
 /**
@@ -85,11 +132,12 @@ const ENTITIES: Readonly<Record<string, string>> = { '&amp;': '&', '&lt;': '<', 
  * Highlight code into one span list per line.
  * @param code Source text.
  * @param lang Language hint.
- * @returns Lines of spans, or `undefined` when the language has no grammar.
+ * @returns Lines of spans, or `undefined` when the language has no grammar or its grammar is still loading.
  */
 export function highlightLines(code: string, lang: string | undefined): HighlightSpan[][] | undefined {
   const grammar = grammarFor(lang)
   if (grammar === undefined) return undefined
+  if (hljs.getLanguage(grammar) === undefined) { void loadGrammar(grammar); return undefined }
   const html = hljs.highlight(code, { language: grammar, ignoreIllegals: true }).value
   const lines: HighlightSpan[][] = [[]]
   const classes: string[] = []

@@ -132,6 +132,31 @@ describe('CTF frame bridge', () => {
     h.message({ type: 'rainy:toast', message: 'late', kind: 'success' })
     expect(h.toast).not.toHaveBeenCalled()
   })
+
+  it('passes on whether a save can be restored, and starts afresh in a new frame after unloading', async () => {
+    const h = fixture()
+    h.message({ type: 'rainy:ready' })
+    h.message({ type: 'rainy:loaded', revision: 1 })
+    const save = h.bridge.flush()
+    h.message({ type: 'rainy:flushed', id: h.flushId(), ok: true, restorable: true })
+    expect(await save).toEqual({ ok: true, restorable: true })
+    const waiting = h.bridge.flush()
+    h.bridge.unloaded()
+    expect(await waiting).toEqual({ ok: true })
+    expect(h.bridge.state.getSnapshot()).toEqual({ phase: 'loading', error: undefined, message: '', saving: 'idle' })
+    const sent = h.send.mock.calls.length
+    expect(await h.bridge.flush()).toEqual({ ok: true })
+    expect(h.send.mock.calls).toHaveLength(sent)
+    const next = document.createElement('iframe')
+    document.body.append(next)
+    if (next.contentWindow === null) throw new Error('expected a Window proxy')
+    const post = vi.spyOn(next.contentWindow, 'postMessage').mockImplementation(() => {})
+    h.bridge.attach(next)
+    h.message({ type: 'rainy:ready' }, location.origin, next.contentWindow)
+    expect(post).toHaveBeenLastCalledWith({ type: 'rainy:configure', revision: 1, ...first }, location.origin)
+    h.message({ type: 'rainy:loaded', revision: 1 }, location.origin, next.contentWindow)
+    expect(h.bridge.state.getSnapshot().phase).toBe('ready')
+  })
 })
 
 function assertNoPalette(): void {

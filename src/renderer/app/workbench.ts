@@ -211,6 +211,10 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
       execution.setWorkspace(next)
     }),
     on('editor.open', (event) => { void openPath(event).catch((error: unknown) => { model.fail(error) }) }),
+    host.on('ide.hint', (hint) => {
+      if (hint.kind === 'execution') execution.hint(hint.workspaceId)
+      else if (hint.workspaceId === model.state.getSnapshot().workspace?.workspaceId) model.pollNow()
+    }),
     on('editor.snippet', ({ code, language, compare }) => {
       model.openSnippet(code, language ?? '', ideMessages.t('ideSnippet'), compare)
     }),

@@ -6,11 +6,11 @@ export interface Config {
   readyTimeoutMs: number
   /** Maximum wait for a durable draft-save acknowledgement. */
   flushTimeoutMs: number
-  /** Interval between observations of open editor files, idle execution, and visible model settings. */
+  /** Fallback interval between observations of open editor files and idle execution; Host hints trigger them sooner. */
   editorPollMs: number
   /** Quiet interval before recovery buffers are durably saved. */
   editorStateDebounceMs: number
-  /** Poll interval while a user-owned run or debug operation is active. */
+  /** Fallback poll interval while a user-owned run or debug operation is active; Host hints trigger polls sooner. */
   executionPollMs: number
   /** Maximum retained output characters per workspace execution view. */
   editorMaxOutputCharacters: number
@@ -30,9 +30,9 @@ export interface Config {
 export const DEFAULT_CONFIG: Readonly<Config> = {
   readyTimeoutMs: 15000,
   flushTimeoutMs: 15000,
-  editorPollMs: 2000,
+  editorPollMs: 10000,
   editorStateDebounceMs: 500,
-  executionPollMs: 200,
+  executionPollMs: 1000,
   editorMaxOutputCharacters: 1048576,
   editorMaxRetainedWorkspaces: 8,
   editorTerminalCols: 80,
