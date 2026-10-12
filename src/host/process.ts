@@ -1,7 +1,7 @@
 /** Child processes and pseudo-terminals with whole-tree termination on Windows and Linux. */
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { accessSync, constants, lstatSync, statSync } from 'node:fs'
+import { basename, delimiter, isAbsolute, join } from 'node:path'
 import { PassThrough, type Readable, type Writable } from 'node:stream'
 import { createRequire } from 'node:module'
 import type { IPty } from 'node-pty'
@@ -68,6 +68,44 @@ export function resolveExecutable(command: string, env: NodeJS.ProcessEnv = proc
     }
   }
   return undefined
+}
+
+/** A PowerShell executable: PowerShell 7 or later (`core`) or Windows PowerShell 5.1 (`desktop`). */
+export interface PowerShellChoice {
+  path: string
+  edition: 'core' | 'desktop'
+}
+
+function spawnable(candidate: string): boolean {
+  try {
+    // lstat sees the Microsoft Store execution alias, which stat reports as inaccessible.
+    const info = lstatSync(candidate)
+    return info.isFile() || info.isSymbolicLink()
+  } catch (_absentCandidate) {
+    return false
+  }
+}
+
+/**
+ * Choose the PowerShell of the Windows command tool and IDE terminals. RainyAgent does not ship PowerShell: an explicit
+ * path wins, then PowerShell 7 from the Windows basic component, Program Files or PATH, and finally the Windows
+ * PowerShell 5.1 that every Windows installation has.
+ * @param options.configured Explicit executable (`RAINY_PWSH_PATH`), used when it exists.
+ * @param options.component `pwsh.exe` of the installed Windows basic component.
+ * @param options.env Environment whose ProgramFiles, PATH and SystemRoot are consulted.
+ * @returns The executable and its edition.
+ */
+export function resolvePowerShell(options: { configured?: string | undefined; component?: string | undefined; env?: NodeJS.ProcessEnv } = {}): PowerShellChoice {
+  const env = options.env ?? process.env
+  const candidates = [options.configured, options.component].filter((value): value is string => value !== undefined && value !== '')
+  candidates.push(join(env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'))
+  for (const entry of pathValue(env).split(';')) {
+    const directory = entry.trim().replace(/^"|"$/g, '')
+    if (directory !== '') candidates.push(join(directory, 'pwsh.exe'))
+  }
+  const found = candidates.find(spawnable)
+  if (found !== undefined) return { path: found, edition: basename(found).toLowerCase() === 'powershell.exe' ? 'desktop' : 'core' }
+  return { path: join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), edition: 'desktop' }
 }
 
 /** Exit facts of a finished process. */

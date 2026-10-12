@@ -57,7 +57,7 @@ try {
 import json, selectors, socket, subprocess, sys, time, urllib.request, http.cookiejar
 node, host = sys.argv[1:]
 env = {'PATH':'/usr/bin:/bin','HOME':'/home/rainy','USER':'rainy','LANG':'C.UTF-8','RAINY_HOME':'/home/rainy/offline-acceptance','RAINY_CONFIGURE_DEEPSEEK':'0'}
-process = subprocess.Popen([node, '--expose-internals', host], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+process = subprocess.Popen([node, host], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 ready = None
 selector = selectors.DefaultSelector()
 selector.register(process.stdout, selectors.EVENT_READ)

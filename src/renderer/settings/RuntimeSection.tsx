@@ -88,6 +88,14 @@ export function RuntimeSection({ workspace }: { workspace: SettingsWorkspace }):
             label: `${candidate.path}${candidate.version === null ? '' : ` · ${candidate.version}`}`, disabled: !candidate.ready }))]}
           onChange={(path) => { run(async () => { accept(await host.call('runtime', { op: 'select', workspaceId, language, path: path || null })) }, t('settingsApplied')) }} /></Field>
       </div>
+      {snapshot.powershell !== undefined && <article className={css.card} data-powershell={snapshot.powershell.edition}>
+        <div className={css.row}>
+          <span>{t('settingsShell')}</span>
+          <span className={css.muted}>{t(snapshot.powershell.edition === 'core' ? 'settingsShellCore' : 'settingsShellDesktop')}</span>
+        </div>
+        <p className={css.path}>{snapshot.powershell.path}</p>
+        {snapshot.powershell.edition === 'desktop' && <p className={css.muted}>{t('settingsShellDesktopHint')}</p>}
+      </article>}
       <div className={css.actions}>
         <Button variant="outline" disabled={busy} onClick={() => { run(async () => { accept(await host.call('runtime', { op: 'discover', workspaceId })) }) }}>{t('settingsDiscoverEnvironments')}</Button>
       </div>

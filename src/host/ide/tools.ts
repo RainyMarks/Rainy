@@ -1,5 +1,4 @@
 /** Paths and read-only readiness of the development tools the IDE launches. */
-import { lstatSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -83,32 +82,4 @@ export async function inspectIdeTools(subprocess: Pick<IdeSubprocess, 'resolveEx
     catch (_unavailableExecutable) { tools.push({ name, path: null, ready: false }) }
   }
   return { platform: process.platform, ubuntuVersion, offlineInstallSupported: process.platform === 'linux' && ubuntuVersion === '26.04', tools }
-}
-
-function spawnable(candidate: string): boolean {
-  try {
-    // lstat sees the Microsoft Store execution alias, which stat reports as inaccessible.
-    const info = lstatSync(candidate)
-    return info.isFile() || info.isSymbolicLink()
-  } catch (_absentCandidate) {
-    return false
-  }
-}
-
-/**
- * Choose the PowerShell executable of the Windows IDE terminal.
- * @param configured PowerShell shipped with the Host (`RAINY_PWSH_PATH`); trusted as-is.
- * @param env Environment whose PATH and install locations are probed.
- * @returns PowerShell 7, a `pwsh.exe` on PATH, Windows PowerShell 5.1, or `pwsh` for a PATH lookup.
- */
-export function resolvePwshPath(configured?: string, env: NodeJS.ProcessEnv = process.env): string {
-  if (configured !== undefined && configured.length > 0) return configured
-  if (process.platform !== 'win32') return 'pwsh'
-  const candidates = [join(env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe')]
-  for (const entry of (env.PATH ?? env.Path ?? '').split(';')) {
-    const directory = entry.trim().replace(/^"|"$/g, '')
-    if (directory !== '') candidates.push(join(directory, 'pwsh.exe'))
-  }
-  candidates.push(join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
-  return candidates.find(spawnable) ?? 'pwsh'
 }

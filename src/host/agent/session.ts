@@ -10,6 +10,7 @@ import { resolveBudget, type Budget } from '../../shared/budget.ts'
 import type {
   ContextUsage, ModelSelection, QueuedMessage, SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
 } from '../../shared/rpc.ts'
+import { resolvePowerShell } from '../process.ts'
 import { RpcError } from '../rpc.ts'
 import { roots } from '../projects.ts'
 import { buildContext, type ContextItem } from './context.ts'
@@ -528,7 +529,15 @@ export class ChatSession {
       extraRoots,
       skills: skillsSection(await discoverSkills(this.chat.cwd)),
       globalPrompt: settings.globalPrompt,
+      ...(this.services.env.platform === 'win32' ? { powershell: this.powershellEdition() } : {}),
     })
+  }
+
+  /** @returns The edition the command tool will run, so the prompt can describe its syntax. */
+  private powershellEdition(): 'core' | 'desktop' {
+    let component: string | undefined
+    try { component = this.services.runtime.resolveDirectory(this.chat.cwd).powershell } catch (_unavailableRuntime) { component = undefined }
+    return resolvePowerShell({ configured: this.services.env.pwshPath, component }).edition
   }
 
   /**

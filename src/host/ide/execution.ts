@@ -15,7 +15,7 @@ import type {
   IdeTerminalId,
   IdeTerminalSnapshot,
 } from '../../shared/ide-execution-protocol.ts'
-import { ExecutableNotFoundError, type ProcessHandle, type ProcessOutcome, type TerminalHandle } from '../process.ts'
+import { ExecutableNotFoundError, resolvePowerShell, type ProcessHandle, type ProcessOutcome, type TerminalHandle } from '../process.ts'
 import type { ResolvedWorkspaceEnvironment } from '../runtime/environments.ts'
 import { IdeDebugSession } from './debug.ts'
 import { IdeProcessOwner, writeIdeInput, type IdeOutputStream, type IdeSubprocess } from './execution-process.ts'
@@ -31,12 +31,11 @@ import {
   type ResolvedIdeRun,
 } from './execution-resolve.ts'
 import { ideExecutionRequestSchema, type IdeExecutionLimits } from './execution-schema.ts'
-import { resolvePwshPath } from './tools.ts'
 
 /** Dependencies of {@link createIdeExecutionService}. */
 export interface IdeExecutionServiceOptions {
   readonly subprocess: IdeSubprocess
-  /** PowerShell 7 shipped with the Windows Host; the IDE terminal uses it on Windows. */
+  /** PowerShell chosen explicitly with `RAINY_PWSH_PATH`; otherwise the IDE terminal uses `resolvePowerShell`. */
   readonly pwshPath?: string | undefined
   readonly resolveWorkspace: (id: WorkspaceId, rootId?: IdeRootId) => Promise<IdeExecutionWorkspace>
   readonly resolveEnvironment?: (id: WorkspaceId) => ResolvedWorkspaceEnvironment
@@ -319,9 +318,10 @@ export function createIdeExecutionService(options: IdeExecutionServiceOptions): 
     const workspace = await options.resolveWorkspace(request.workspaceId, request.rootId)
     const root = absoluteIdePath(await files.realpath(absoluteIdePath(workspace.root)))
     const cwd = await resolveIdeWorkspacePath(files, root, request.cwd ?? '.', 'directory')
-    const environment = options.resolveEnvironment?.(request.workspaceId).environment ?? {}
+    const runtime = options.resolveEnvironment?.(request.workspaceId)
+    const environment = runtime?.environment ?? {}
     const shell = await resolveIdeExecutable(options.subprocess,
-      world.platform === 'windows' ? resolvePwshPath(options.pwshPath) : world.defaultShell,
+      world.platform === 'windows' ? resolvePowerShell({ configured: options.pwshPath, component: runtime?.powershell }).path : world.defaultShell,
       world.platform === 'windows' ? 'pwsh.exe' : '/bin/bash', environment)
     reserve()
     const id = brandString<IdeTerminalId>(randomUUID())

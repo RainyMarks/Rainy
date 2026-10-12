@@ -416,7 +416,6 @@ async function start(): Promise<void> {
     RAINY_CARRIER_STATE_ROOT: prepared === undefined ? carrierState : prepared.carrierState,
     ...(target.kind === 'windows' ? { RAINY_HOME: join(userData, 'native-home'),
       RAINY_TOOLCHAIN_ROOT: join(userData, 'env'),
-      RAINY_PWSH_PATH: join(resourceRoot, 'windows-host', 'pwsh', 'pwsh.exe'),
       RAINY_BUILTIN_PHP: builtinPhp,
       // Module compilation is cached across launches; resolution still dominates the native Host's startup.
       NODE_COMPILE_CACHE: join(userData, 'node-compile-cache') } : {}),

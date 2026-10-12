@@ -28,7 +28,8 @@ async function main(): Promise<void> {
   const env = readHostEnvironment(process.env, import.meta.url)
   mkdirSync(env.home, { recursive: true, mode: 0o700 })
   mkdirSync(env.tmp, { recursive: true, mode: 0o700 })
-  process.env.PATH = [dirname(process.execPath), join(env.appRoot, 'bin'), process.env.PATH].filter(Boolean).join(delimiter)
+  // The Host's Node and ripgrep are fallbacks for commands and terminals; programs the user installed come first.
+  process.env.PATH = [process.env.PATH, dirname(process.execPath), join(env.appRoot, 'bin')].filter(Boolean).join(delimiter)
 
   const settings = new Settings(env.home, process.env)
   await settings.load()

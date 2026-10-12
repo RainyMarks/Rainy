@@ -20,7 +20,7 @@ export interface ToolContext {
   toolTokens(): number
   /** File versions this chat has read or written. */
   observations: Observations
-  /** PowerShell executable on Windows. */
+  /** PowerShell chosen explicitly with `RAINY_PWSH_PATH`, on Windows. */
   pwshPath?: string | undefined
   /** Called after a tool reads or changes a file, with its absolute path. */
   onFileTouched?: ((path: string) => void) | undefined

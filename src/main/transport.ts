@@ -268,7 +268,7 @@ export class WindowsHostTransport extends ManagedHostTransport {
   protected launch(): ChildProcessWithoutNullStreams {
     const clean = Object.fromEntries(Object.entries(process.env).filter(([key, value]) =>
       value !== undefined && !/KEY|SECRET|TOKEN|PASSWORD|^NODE_OPTIONS$|^NODE_PATH$/iu.test(key)))
-    return spawn(this.settings.node, ['--expose-internals', this.settings.entry], { cwd: this.settings.cwd,
+    return spawn(this.settings.node, [this.settings.entry], { cwd: this.settings.cwd,
       env: { ...clean, ...environment(this.settings) }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   }
   protected forceStop(child: ChildProcessWithoutNullStreams): void {
@@ -291,11 +291,11 @@ export class WslHostTransport extends ManagedHostTransport {
   protected launch(): ChildProcessWithoutNullStreams {
     return spawn('wsl.exe', ['--distribution', this.settings.distro, '--exec', 'env',
       ...Object.entries(environment(this.settings)).map(([key, value]) => `${key}=${value}`),
-      this.settings.node, '--expose-internals', this.settings.entry], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      this.settings.node, this.settings.entry], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   }
   protected forceStop(child: ChildProcessWithoutNullStreams): void {
     if (!this.host) { child.kill(); return }
-    const checkAndStop = 'import os,sys,signal; p=int(sys.argv[1]); f="/proc/%d/cmdline"%p; a=open(f,"rb").read().split(b"\\0") if os.path.exists(f) else []; os.kill(p,signal.SIGTERM) if len(a)>2 and a[0].decode()==sys.argv[2] and a[2].decode()==sys.argv[3] else None'
+    const checkAndStop = 'import os,sys,signal; p=int(sys.argv[1]); f="/proc/%d/cmdline"%p; a=open(f,"rb").read().split(b"\\0") if os.path.exists(f) else []; os.kill(p,signal.SIGTERM) if len(a)>1 and a[0].decode()==sys.argv[2] and a[1].decode()==sys.argv[3] else None'
     execFile('wsl.exe', ['-d', this.settings.distro, '--exec', 'python3', '-c', checkAndStop, String(this.host.pid), this.settings.node, this.settings.entry], { windowsHide: true, timeout: 3000 }, () => child.kill())
   }
 }

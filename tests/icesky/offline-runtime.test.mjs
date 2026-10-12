@@ -98,9 +98,10 @@ test('the actual Tesseract browser client creates one managed local worker with 
     assert.equal(language.payload.options.cacheMethod, 'none');
     assert.equal(language.payload.options.gzip, true);
     assert.deepEqual(plain(language.payload.langs), ['chi_sim', 'eng']);
-    for (const name of ['tesseract-core', 'tesseract-core-simd', 'tesseract-core-lstm', 'tesseract-core-simd-lstm']) {
+    // OCR starts with OEM 1 (LSTM only), so the worker imports one of the single-file LSTM cores with the WASM inlined.
+    assert.equal(load.payload.options.lstmOnly, true);
+    for (const name of ['tesseract-core-lstm', 'tesseract-core-simd-lstm']) {
       await access(resolve(resourceRoot, 'js/vendor/tesseract/core/' + name + '.wasm.js'));
-      await access(resolve(resourceRoot, 'js/vendor/tesseract/core/' + name + '.wasm'));
     }
     for (const name of ['chi_sim', 'eng']) await access(resolve(resourceRoot, 'js/vendor/tesseract/lang/' + name + '.traineddata.gz'));
   } finally { await pdf.pdfiStopOcr(); }

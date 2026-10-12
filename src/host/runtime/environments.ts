@@ -11,7 +11,7 @@ import { brandString } from '../../shared/brand.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { ExecutionTargetId } from '../../shared/project-registry.ts'
 import type { RuntimeCandidate, RuntimeEnvironmentId, RuntimeLanguage, RuntimePlatform, RuntimeSnapshot } from '../../shared/runtime-protocol.ts'
-import { scrubbedEnv } from '../process.ts'
+import { resolvePowerShell, scrubbedEnv } from '../process.ts'
 
 const execute = promisify(execFile)
 const languages = ['python', 'node', 'php', 'c', 'cpp'] as const
@@ -47,11 +47,15 @@ export interface RuntimeEnvironmentOptions {
   probeConcurrency?: number
   run?: RuntimeProbeRunner
   resolveWorkspace: (workspaceId: WorkspaceId) => { path: string } | undefined
+  /** PowerShell chosen explicitly with `RAINY_PWSH_PATH`. */
+  pwshPath?: string | undefined
 }
 /** Explicit execution values shared by tools, IDE and language services. */
 export interface ResolvedWorkspaceEnvironment {
   environment: Record<string, string>
   executables: Partial<Record<RuntimeLanguage, string>>
+  /** PowerShell 7 of the installed Windows basic component. */
+  powershell?: string | undefined
 }
 
 const pythonProbe = `import sys,json,platform,importlib
@@ -312,7 +316,19 @@ export class RuntimeEnvironments {
         ?? { id: identity(this.target, family, path), language: family, path, source: 'manual', platform: this.platform,
           version: null, ready: false, capabilities: [], error: 'Recheck this environment to confirm its current capabilities.' }
     }
-    return { targetId: this.target, platform: this.platform, workspaceId, selected, candidates }
+    const snapshot: RuntimeSnapshot = { targetId: this.target, platform: this.platform, workspaceId, selected, candidates }
+    if (this.platform === 'windows') {
+      const choice = resolvePowerShell({ configured: this.options.pwshPath, component: this.componentPowerShell() })
+      snapshot.powershell = { path: choice.path, edition: choice.edition }
+    }
+    return snapshot
+  }
+
+  /** @returns `pwsh.exe` of the installed Windows basic component, when it exists. */
+  private componentPowerShell(): string | undefined {
+    const basic = this.platform === 'windows' ? this.componentRoots.find(component => component.id === 'windows-basic') : undefined
+    const path = basic === undefined ? undefined : join(basic.path, 'pwsh', 'pwsh.exe')
+    return path !== undefined && existsSync(path) ? path : undefined
   }
 
   /**
@@ -366,7 +382,7 @@ export class RuntimeEnvironments {
       directories.push(join(match.pythonPrefix, 'Scripts'), join(match.pythonPrefix, 'Library', 'bin'))
     }
     for (const component of this.componentRoots.filter(value => value.id.endsWith('-basic') || value.id.endsWith('-cpp') || value.id.endsWith('-development'))) {
-      for (const directory of ['python', 'node', 'php', 'cpp', 'cmake', 'ninja', 'llvm', 'git/cmd', 'codelldb/extension/adapter']) {
+      for (const directory of ['python', 'node', 'php', 'pwsh', 'cpp', 'cmake', 'ninja', 'llvm', 'git/cmd', 'codelldb/extension/adapter']) {
         directories.push(join(component.path, directory, 'bin'), join(component.path, directory))
         if (this.platform === 'windows' && directory === 'python') directories.push(join(component.path, directory, 'Scripts'))
       }
@@ -376,6 +392,7 @@ export class RuntimeEnvironments {
     if (executables.php && this.platform === 'windows') {
       environment.RAINY_PHP_EXTENSION_DIR = join(dirname(executables.php), 'ext')
     }
-    return { environment, executables }
+    const powershell = this.componentPowerShell()
+    return { environment, executables, ...(powershell === undefined ? {} : { powershell }) }
   }
 }

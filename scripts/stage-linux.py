@@ -145,6 +145,13 @@ for dependency in graph.get('platformDownloads', []):
 node_pty = next((item for item in packages.values() if item['name'] == 'node-pty'), None)
 if node_pty:
     pty_dir = directories[node_pty['id']]
+    # Prebuilt binaries for other platforms, Windows ConPTY and debug symbols are never loaded on Linux x64.
+    for prebuild in (pty_dir / 'prebuilds').iterdir() if (pty_dir / 'prebuilds').is_dir() else []:
+        if prebuild.name != 'linux-x64':
+            shutil.rmtree(prebuild)
+    shutil.rmtree(pty_dir / 'third_party', ignore_errors=True)
+    for symbols in list(pty_dir.rglob('*.pdb')):
+        symbols.unlink()
     binaries = list(pty_dir.glob('prebuilds/linux-x64/pty.node'))
     if not binaries:
         raise RuntimeError('node-pty Linux binary missing from the locked package')

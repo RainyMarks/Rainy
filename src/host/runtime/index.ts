@@ -77,6 +77,7 @@ export async function createRuntime(deps: RuntimeDependencies): Promise<RuntimeS
     maxCandidates: RUNTIME_MAX_CANDIDATES,
     probeConcurrency: RUNTIME_PROBE_CONCURRENCY,
     resolveWorkspace: id => projects.get(id),
+    pwshPath: env.pwshPath,
   })
   await environments.initialize()
   let operations = 0

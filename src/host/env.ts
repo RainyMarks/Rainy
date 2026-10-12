@@ -23,7 +23,7 @@ export interface HostEnvironment {
   toolchainRoot: string
   /** Bundled PHP from the optional module, when installed. */
   builtinPhp?: string | undefined
-  /** PowerShell 7 executable shipped with the Windows Host. */
+  /** PowerShell chosen explicitly with `RAINY_PWSH_PATH`; otherwise `resolvePowerShell` picks one. */
   pwshPath?: string | undefined
   /** `uvx` used to launch the IDA MCP server. */
   idaMcpCommand?: string | undefined

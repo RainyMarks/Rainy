@@ -2,8 +2,9 @@
  * Assemble `runtime/windows-host/`, the native Windows Host shipped as an installer resource.
  *
  * Layout: `node/` (official Node.js), `app/` (package.json, dist/host.js, dist/renderer, resources, bin/rg.exe), `node_modules/`
- * (the production closure from `runtime/graph-windows.json`), `pwsh/` and `runtime.json` (file inventory). The
- * directory is replaced atomically; a failed run leaves the previous staging in place.
+ * (the production closure from `runtime/graph-windows.json`) and `runtime.json` (file inventory). PowerShell is not
+ * shipped: the Host uses PowerShell 7 when the system or the Windows basic component has it, else Windows PowerShell 5.1.
+ * The directory is replaced atomically; a failed run leaves the previous staging in place.
  */
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, constants } from 'node:fs'
@@ -142,6 +143,27 @@ for (const dependency of graph.platformDownloads) {
   console.log(`Verified Windows dependency: ${dependency.name}@${dependency.version}`)
 }
 
+// node-pty carries prebuilt binaries and debug symbols for every platform; the Windows x64 Host loads only its own.
+async function pruneNodePty(directory) {
+  safeOwned(directory)
+  for (const entry of await readdir(join(directory, 'prebuilds'), { withFileTypes: true })) {
+    if (entry.name !== 'win32-x64') await rm(join(directory, 'prebuilds', entry.name), { recursive: true, force: true })
+  }
+  const conpty = join(directory, 'third_party/conpty')
+  for (const release of await readdir(conpty, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error })) {
+    if (release.isDirectory()) await rm(join(conpty, release.name, 'win10-arm64'), { recursive: true, force: true })
+  }
+  async function dropSymbols(folder) {
+    for (const entry of await readdir(folder, { withFileTypes: true })) {
+      const path = join(folder, entry.name)
+      if (entry.isDirectory()) await dropSymbols(path)
+      else if (entry.name.endsWith('.pdb')) await rm(path)
+    }
+  }
+  await dropSymbols(directory)
+}
+for (const target of copied) if (target.endsWith(`${sep}node-pty`)) await pruneNodePty(target)
+
 // The Host puts <app>/bin on PATH for its shell tool.
 await mkdir(join(staging, 'app/bin'), { recursive: true })
 await cp(join(staging, 'node_modules/@vscode/ripgrep-win32-x64/bin/rg.exe'), join(staging, 'app/bin/rg.exe'))
@@ -154,7 +176,6 @@ await rm(join(staging, 'app/resources/ide/bin/ruff'), { force: true })
 try {
   await cp(join(app, 'runtime/component-stage/windows-basic/python/Scripts/ruff.exe'), join(staging, 'app/resources/ide/bin/ruff.exe'))
 } catch (error) { if (error.code !== 'ENOENT') throw error }
-await cp(join(app, 'runtime/component-stage/windows-basic/pwsh'), join(staging, 'pwsh'), { recursive: true, dereference: true })
 await cp(join(app, 'runtime/component-stage/windows-basic/python/Lib/site-packages/debugpy'), join(staging, 'app/resources/ide/python/debugpy'), { recursive: true, dereference: true })
 const files = []
 async function inventory(directory) {

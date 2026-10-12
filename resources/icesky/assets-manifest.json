@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "67f63fefeb91d1a075706d5617019296851af57f7d17d7f90c27d009d75a3291",
+  "version": "b6702a953a099561ce4af926be4a376ced6754020f0541ab91d4c7ed8e6c21c3",
   "files": {
     "css/_base.css": {
       "sha256": "9fc2ac1f26543ffca2be236d64b4bd0e664750512aff25bb7437a700598eda8e",
@@ -513,8 +513,8 @@
       "type": "text/javascript"
     },
     "js/vendor/OFFLINE_DEPENDENCIES.json": {
-      "sha256": "503582199484dee33bea2ac93913b19651ff7823d9aef7ed588652726307b232",
-      "size": 39529,
+      "sha256": "e319e55a5b2734bdbcce22f3ddb2c1284e3fa58ec6942fcce286190a141e5c82",
+      "size": 38838,
       "type": "application/json"
     },
     "js/vendor/jszip/jszip.min.js": {
@@ -1507,44 +1507,14 @@
       "size": 139512,
       "type": "font/ttf"
     },
-    "js/vendor/tesseract/core/tesseract-core-lstm.wasm": {
-      "sha256": "5db58ea4d1bd4256be81e8ae3b4fa226c4625dfba1850b1b3308dbf3700e9929",
-      "size": 2859424,
-      "type": "application/wasm"
-    },
     "js/vendor/tesseract/core/tesseract-core-lstm.wasm.js": {
       "sha256": "8f04aa0cc81e7bde33f80e92fa01a7a665f0b4884d098acf5de9c7104a11dfaa",
       "size": 3938277,
       "type": "text/javascript"
     },
-    "js/vendor/tesseract/core/tesseract-core-simd-lstm.wasm": {
-      "sha256": "66b601224a0c4a8977bc9d92dd39841189f9ca22cc4122fcd7208cdb0961eeef",
-      "size": 2859709,
-      "type": "application/wasm"
-    },
     "js/vendor/tesseract/core/tesseract-core-simd-lstm.wasm.js": {
       "sha256": "ce20eda9533cbed1e6c2b4276fbae1e0adc61b6754b5513084be601787b457cf",
       "size": 3938657,
-      "type": "text/javascript"
-    },
-    "js/vendor/tesseract/core/tesseract-core-simd.wasm": {
-      "sha256": "baa2f54ef5af43ada4605fd7ae999bde3c6ecc96bfe0d0410b0b4f4a5f9c8b91",
-      "size": 3457317,
-      "type": "application/wasm"
-    },
-    "js/vendor/tesseract/core/tesseract-core-simd.wasm.js": {
-      "sha256": "63f232c4f7a97b04e52eb940202700b2c6239783a75d0ff0553274fac530cd5c",
-      "size": 4735153,
-      "type": "text/javascript"
-    },
-    "js/vendor/tesseract/core/tesseract-core.wasm": {
-      "sha256": "b47a852b19181ae0999f9d970c368cd351135a320ea978b35bd38602d8bcc0bc",
-      "size": 3457035,
-      "type": "application/wasm"
-    },
-    "js/vendor/tesseract/core/tesseract-core.wasm.js": {
-      "sha256": "2b8c8c92b8788807061fb4bb16c5acdf000c149e100255f879f78d2c58ca9969",
-      "size": 4734777,
       "type": "text/javascript"
     },
     "js/vendor/tesseract/lang/chi_sim.traineddata.gz": {

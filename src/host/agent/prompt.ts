@@ -14,6 +14,8 @@ export interface PromptInputs {
   skills: string
   /** The user's global prompt from Settings. */
   globalPrompt: string
+  /** PowerShell edition on Windows; Windows PowerShell 5.1 (`desktop`) has no `&&` or `||`. */
+  powershell?: 'core' | 'desktop' | undefined
 }
 
 const PERSONA = 'You are RainyAgent, a concise coding assistant. Follow the user and applicable project instructions. '
@@ -35,6 +37,13 @@ const TOOL_NOTES: Readonly<Record<string, string>> = {
   edit: 'Read a file before editing it, unless you just created or edited it in this session.',
 }
 const TOOL_NOTE_ORDER = ['bash', 'pwsh', 'read', 'write', 'edit'] as const
+
+const POWERSHELL_NOTES: Readonly<Record<'core' | 'desktop' | 'unknown', string>> = {
+  core: 'Commands execute in PowerShell 7 on Windows.',
+  desktop: 'Commands execute in Windows PowerShell 5.1 on Windows, which has no && or || operators: '
+    + 'separate commands with ; and check $? or $LASTEXITCODE between them.',
+  unknown: 'Commands execute in PowerShell on Windows.',
+}
 
 /** Bytes of one MCP server's instructions kept in the prompt. */
 const MCP_INSTRUCTION_BYTES = 8192
@@ -60,7 +69,7 @@ export function buildSystemPrompt(inputs: PromptInputs): string {
   if (inputs.skills !== '') sections.push(inputs.skills)
   if (inputs.globalPrompt.trim() !== '') sections.push(inputs.globalPrompt.trim())
   sections.push(inputs.platform === 'win32'
-    ? `Working directory: ${inputs.cwd}. Commands execute in PowerShell on Windows.`
+    ? `Working directory: ${inputs.cwd}. ${POWERSHELL_NOTES[inputs.powershell ?? 'unknown']}`
     : `Working directory: ${inputs.cwd}. Commands execute in Bash on Linux (WSL).`)
   return sections.join('\n\n')
 }

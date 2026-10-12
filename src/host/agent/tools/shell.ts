@@ -1,11 +1,11 @@
 /** `bash` (WSL/Linux) and `pwsh` (Windows): one fresh shell per command. */
-import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
+import { createWriteStream, type WriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { Type, type Static } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolUpdateCallback } from '@earendil-works/pi-agent-core'
-import { resolveExecutable, scrubbedEnv, spawnProcess } from '../../process.ts'
+import { resolvePowerShell, scrubbedEnv, spawnProcess } from '../../process.ts'
 import { limitOutput, textResult, type ToolContext } from './common.ts'
 
 /** Timeout when the model does not set one. */
@@ -100,19 +100,6 @@ export function renderShellResult(stdout: string, stderr: string, outcome: { exi
 }
 
 /**
- * Find PowerShell 7, falling back to Windows PowerShell.
- * @param configured Path shipped with the Windows Host.
- * @returns Executable path.
- */
-export function pwshExecutable(configured: string | undefined): string {
-  if (configured !== undefined && existsSync(configured)) return configured
-  const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
-  const installed = join(programFiles, 'PowerShell', '7', 'pwsh.exe')
-  if (existsSync(installed)) return installed
-  return resolveExecutable('pwsh') ?? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-}
-
-/**
  * The shell tool for this platform.
  * @param context Chat tool context.
  * @param shell `bash` on Linux/WSL, `pwsh` on Windows.
@@ -133,13 +120,13 @@ export function shellTool(context: ToolContext, shell: 'bash' | 'pwsh'): AgentTo
       if (params.description.trim() === '') throw new Error('invalid description: expected a non-empty string')
       const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1, Math.floor(params.timeoutMs ?? DEFAULT_TIMEOUT_MS)))
       const cwd = params.workdir === undefined ? context.cwd : resolve(context.cwd, params.workdir)
-      const runtime = context.runtimeEnvironment(cwd).environment
+      const runtime = context.runtimeEnvironment(cwd)
       const env = {
-        ...scrubbedEnv(), NO_COLOR: '1', TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat', ...runtime, RAINY_SESSION_ID: context.sessionId,
+        ...scrubbedEnv(), NO_COLOR: '1', TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat', ...runtime.environment, RAINY_SESSION_ID: context.sessionId,
       }
       const argv = shell === 'bash'
         ? ['bash', '-c', params.command]
-        : [pwshExecutable(context.pwshPath), '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${ENCODING_PREAMBLE}${params.command}`]
+        : [resolvePowerShell({ configured: context.pwshPath, component: runtime.powershell }).path, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${ENCODING_PREAMBLE}${params.command}`]
       const started = Date.now()
       const spill = async (stream: string): Promise<string> => {
         await mkdir(context.spillDir, { recursive: true, mode: 0o700 })

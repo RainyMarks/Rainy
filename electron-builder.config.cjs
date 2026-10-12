@@ -23,6 +23,8 @@ module.exports = {
     { from: 'scripts/install-environment-component.py', to: 'install-environment-component.py' },
   ],
   npmRebuild: false,
+  // Chromium's own strings (spellcheck, built-in dialogs) for the two interface languages; other locales fall back to en-US.
+  electronLanguages: ['zh-CN', 'en-US'],
   afterPack: './scripts/after-pack.cjs',
   asar: true,
   electronFuses: { runAsNode: false, enableNodeOptionsEnvironmentVariable: false,

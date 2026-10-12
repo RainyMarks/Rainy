@@ -33,6 +33,8 @@ export interface RuntimeSnapshot {
   workspaceId: WorkspaceId
   selected: Partial<Record<RuntimeLanguage, RuntimeCandidate>>
   candidates: RuntimeCandidate[]
+  /** PowerShell of commands and terminals on Windows: PowerShell 7 (`core`) or Windows PowerShell 5.1 (`desktop`). */
+  powershell?: { path: string; edition: 'core' | 'desktop' } | undefined
 }
 /** Authenticated human operations accepted by the runtime page. */
 export type RuntimeRequest =
