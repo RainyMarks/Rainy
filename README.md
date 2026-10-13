@@ -52,7 +52,7 @@ Rainy puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit
 <a id="whats-new"></a>
 ## What's new in 2.2
 
-- **RainyAgent is now Rainy.** Same app and repository: 2.2 installs over earlier versions and keeps your settings, chats and tools.
+- **RainyAgent is now Rainy**, with a new icon. 2.2 installs over earlier versions and keeps your settings, chats and tools. The repository is now RainyMarks/Rainy; old links still work.
 - **Appearance settings**:
   - Seven color schemes: Graphite, Slate, Midnight, Sand, Forest, Rose and Pure black.
   - An accent color for links, switches and focus rings, or the scheme's own.
