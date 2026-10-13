@@ -54,7 +54,7 @@ export function createIdeEnvironmentWindow(options: IdeEnvironmentWindowOptions)
   }
 
   const openInternal = async (): Promise<void> => {
-    const current = new BrowserWindow({ title: localized({ zh: 'RainyAgent · 开发工具准备', en: 'RainyAgent · Development tools setup' }), parent: options.parent,
+    const current = new BrowserWindow({ title: localized({ zh: 'Rainy · 开发工具准备', en: 'Rainy · Development tools setup' }), parent: options.parent,
       width: 900, height: 740, minWidth: 680, minHeight: 560, show: false, backgroundColor: '#171717',
       ...options.icon === undefined ? {} : { icon: options.icon },
       webPreferences: { preload: options.preloadPath, additionalArguments: [`--rainy-ide-environment-page=${encodeURIComponent(pageURL)}`],

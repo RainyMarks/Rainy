@@ -126,7 +126,7 @@ it('steps font sizes within 12 to 17 px and resets both to the defaults', async 
 })
 
 it('shows the version, links to feedback and lists the keyboard shortcuts from the foot of the navigation', async () => {
-  window.__RAINY_AGENT__ = { name: 'RainyAgent', version: '2.0.0', environment: 'Windows' }
+  window.__RAINY_AGENT__ = { name: 'Rainy', version: '2.0.0', environment: 'Windows' }
   await render(dialog())
   expect(hasText('当前版本：2.0.0')).toBe(true)
   expect(hasText('版本 2.0.0')).toBe(true)

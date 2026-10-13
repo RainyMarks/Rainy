@@ -2,8 +2,8 @@
 import type { MenuItemConstructorOptions } from 'electron'
 
 const labels = {
-  zh: { undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选', about: '关于 RainyAgent', updates: '检查更新…' },
-  en: { undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select all', about: 'About RainyAgent', updates: 'Check for updates…' },
+  zh: { undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选', about: '关于 Rainy', updates: '检查更新…' },
+  en: { undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select all', about: 'About Rainy', updates: 'Check for updates…' },
 }
 
 /** Resolve a native menu with Electron-owned edit roles.

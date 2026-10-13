@@ -69,7 +69,7 @@ export async function acquireToolPackLock(installRoot: string): Promise<() => Pr
   const root = resolve(installRoot)
   await assertToolPackPath(root)
   if (!(await toolPackStat(root))?.isDirectory()) {
-    throw new ToolPackInstallError('invalid-target', localized({ zh: 'RainyAgent 安装目录不存在。', en: 'The RainyAgent installation folder does not exist.' }))
+    throw new ToolPackInstallError('invalid-target', localized({ zh: 'Rainy 安装目录不存在。', en: 'The Rainy installation folder does not exist.' }))
   }
   const stateRoot = join(root, '.rainy-toolpack')
   await assertToolPackPath(stateRoot)
@@ -79,8 +79,8 @@ export async function acquireToolPackLock(installRoot: string): Promise<() => Pr
   const server = createServer(socket => socket.end())
   await new Promise<void>((accept, reject) => {
     server.once('error', (error) => {
-      reject(new ToolPackInstallError('install-busy', localized({ zh: '安装目录正被 RainyAgent 或安装进程使用，请关闭应用或等待安装完成。',
-        en: 'RainyAgent or an installer is using the installation folder. Close RainyAgent or wait for the installation to finish.' }), { cause: error }))
+      reject(new ToolPackInstallError('install-busy', localized({ zh: '安装目录正被 Rainy 或安装进程使用，请关闭应用或等待安装完成。',
+        en: 'Rainy or an installer is using the installation folder. Close Rainy or wait for the installation to finish.' }), { cause: error }))
     })
     server.listen(address, () => { accept() })
   })
@@ -353,8 +353,8 @@ export function createNativeToolPackInstaller(
     const mediaRoot = resolve(options.mediaDirectory)
     await assertToolPackPath(installRoot)
     if (!(await toolPackStat(installRoot))?.isDirectory()) {
-      throw new ToolPackInstallError('invalid-target', localized({ zh: '安装目标目录不存在。请从 RainyAgent 安装程序启动工具安装。',
-        en: 'The installation folder does not exist. Start the tool installation from the RainyAgent installer.' }))
+      throw new ToolPackInstallError('invalid-target', localized({ zh: '安装目标目录不存在。请从 Rainy 安装程序启动工具安装。',
+        en: 'The installation folder does not exist. Start the tool installation from the Rainy installer.' }))
     }
     const stateRoot = join(installRoot, '.rainy-toolpack')
     const release = options.lockHeld

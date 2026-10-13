@@ -178,7 +178,7 @@ export class RainyUpdates {
 
   private report(): void {
     if (this.disposed) return
-    const failed = (error: unknown): void => { console.error('RainyAgent update notice failed:', error) }
+    const failed = (error: unknown): void => { console.error('Rainy update notice failed:', error) }
     try { void Promise.resolve(this.hooks.notice(this.current, this.manual)).catch(failed) }
     catch (error) { failed(error) }
   }

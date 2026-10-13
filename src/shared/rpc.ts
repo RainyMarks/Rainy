@@ -312,7 +312,7 @@ export interface BudgetPreview {
 
 /** Values the Host also injects into `index.html` as `window.__RAINY_AGENT__`. */
 export interface AppInfo {
-  name: 'RainyAgent'
+  name: 'Rainy'
   version: string
   environment: 'Windows' | 'WSL'
   executionTargetId: string

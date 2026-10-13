@@ -93,7 +93,7 @@ it('creates the chat in the open project before sending the first message', asyn
   handle('sessions.get', ({ sessionId }) => snapshot(sessionId, []))
   const onSessionChange = vi.fn()
   await render(<ChatPane workspace={workspace} sessionId={null} onSessionChange={onSessionChange} onClose={() => undefined} onShowHistory={() => undefined} />)
-  expect(hasText('Develop by NCUCyberBase')).toBe(true)
+  expect(hasText('Develop by RainyMarks')).toBe(true)
   await type(input(), '修复 bug')
   await key(input(), { key: 'Enter' })
   await waitFor(() => { expect(calls('chat.send')).toEqual([{ sessionId: 'new-1', text: '修复 bug', mode: 'queue' }]) })

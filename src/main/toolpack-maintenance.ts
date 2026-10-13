@@ -49,7 +49,7 @@ export async function runToolPackMaintenance(mediaDirectory: string, silent: boo
   }
   if (!silent) {
     const pageURL = setupPageURL(join(__dirname, 'setup/toolpack.html'))
-    window = new BrowserWindow({ title: localized({ zh: 'RainyAgent · 离线工具安装', en: 'RainyAgent · Offline tool installation' }),
+    window = new BrowserWindow({ title: localized({ zh: 'Rainy · 离线工具安装', en: 'Rainy · Offline tool installation' }),
       width: 820, height: 590, minWidth: 500, minHeight: 430,
       show: false, webPreferences: { preload: join(__dirname, 'preload.cjs'),
         additionalArguments: [`--rainy-toolpack-page=${encodeURIComponent(pageURL)}`], nodeIntegration: false, contextIsolation: true, sandbox: true } })

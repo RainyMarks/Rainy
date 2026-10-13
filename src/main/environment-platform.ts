@@ -51,11 +51,11 @@ async function verifyMedia(path: string, expected: { sha256: string; bytes: numb
   let size: number
   try { size = (await stat(path)).size } catch (error) {
     throw new EnvironmentSetupError('media-missing', localized({ zh: `离线安装文件缺失：${path}。请重新安装完整安装包。${error instanceof Error ? ' ' + error.message : ''}`,
-      en: `An offline installation file is missing: ${path}. Reinstall RainyAgent from the full installer.${error instanceof Error ? ' ' + error.message : ''}` }))
+      en: `An offline installation file is missing: ${path}. Reinstall Rainy from the full installer.${error instanceof Error ? ' ' + error.message : ''}` }))
   }
   if (size !== expected.bytes) {
     throw new EnvironmentSetupError('media-integrity', localized({ zh: `安装文件大小不匹配：${path}。请重新安装完整安装包。`,
-      en: `An installation file has the wrong size: ${path}. Reinstall RainyAgent from the full installer.` }))
+      en: `An installation file has the wrong size: ${path}. Reinstall Rainy from the full installer.` }))
   }
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(path)) {
@@ -66,7 +66,7 @@ async function verifyMedia(path: string, expected: { sha256: string; bytes: numb
   }
   if (hash.digest('hex') !== expected.sha256) {
     throw new EnvironmentSetupError('media-integrity', localized({ zh: `安装文件校验失败：${path}。请重新安装完整安装包。`,
-      en: `An installation file failed verification: ${path}. Reinstall RainyAgent from the full installer.` }))
+      en: `An installation file failed verification: ${path}. Reinstall Rainy from the full installer.` }))
   }
 }
 
@@ -90,7 +90,7 @@ export function createWindowsEnvironmentPlatform(
   async function inspectSystem(): Promise<EnvironmentSystem> {
     const build = Number(release().split('.')[2] ?? 0)
     if (platform() !== 'win32' || arch() !== 'x64' || build < 19045) {
-      return { supported: false, reason: localized({ zh: '需要 Windows 10 22H2 / Windows 11 的 x64 系统。', en: 'RainyAgent needs x64 Windows 10 22H2 or Windows 11.' }),
+      return { supported: false, reason: localized({ zh: '需要 Windows 10 22H2 / Windows 11 的 x64 系统。', en: 'Rainy needs x64 Windows 10 22H2 or Windows 11.' }),
         virtualization: false, wslInstalled: false, componentsEnabled: false, bootId: '', distributions: [] }
     }
     const result = systemSchema.parse(JSON.parse(await powershell(`
@@ -134,8 +134,8 @@ if (Test-Path -LiteralPath $lxss) {
     const server = createServer(socket => socket.end())
     await new Promise<void>((accept, reject) => {
       server.once('error', (error) => {
-        reject(new EnvironmentSetupError('setup-busy', localized({ zh: `另一 RainyAgent 进程正在准备这个安装目录。请等待它完成后重试。${error.message}`,
-          en: `Another RainyAgent process is preparing this installation folder. Wait for it to finish, then try again. ${error.message}` })))
+        reject(new EnvironmentSetupError('setup-busy', localized({ zh: `另一 Rainy 进程正在准备这个安装目录。请等待它完成后重试。${error.message}`,
+          en: `Another Rainy process is preparing this installation folder. Wait for it to finish, then try again. ${error.message}` })))
       })
       server.listen(address, () => { accept() })
     })
@@ -210,7 +210,7 @@ try {
     } else {
       if (await exists(distroDirectory) && (await readdir(distroDirectory)).length > 0) {
         throw new EnvironmentSetupError('unowned-runtime', localized({ zh: 'runtime/wsl/data 已有未标记的文件，已保留原有内容。请移走该目录后重试。',
-          en: 'runtime/wsl/data already contains files that RainyAgent did not create. They were kept. Move that folder elsewhere and try again.' }))
+          en: 'runtime/wsl/data already contains files that Rainy did not create. They were kept. Move that folder elsewhere and try again.' }))
       }
       await writeEnvironmentRecord(ownerPath, { version: 1, installRoot, distro: name, imageSha256: environmentMedia.ubuntu.sha256 })
     }
@@ -225,7 +225,7 @@ try {
         progress(localized({ zh: '正在重新连接上次创建的专用环境…', en: 'Reconnecting the dedicated environment created last time…' }))
         await run('wsl.exe', ['--import-in-place', name, vhd], 0)
       } else {
-        progress(localized({ zh: '正在创建 RainyAgent 专用 Ubuntu 环境，请稍候…', en: 'Creating the dedicated RainyAgent Ubuntu environment. Please wait…' }))
+        progress(localized({ zh: '正在创建 Rainy 专用 Ubuntu 环境，请稍候…', en: 'Creating the dedicated Rainy Ubuntu environment. Please wait…' }))
         await mkdir(distroDirectory, { recursive: true })
         await run('wsl.exe', ['--import', name, distroDirectory, image, '--version', '2'], 0)
       }

@@ -149,8 +149,8 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
         en: `The selected environment is ${observed.os} ${observed.osVersion} (${observed.architecture}). The bundled offline installation supports only `
           + 'Ubuntu 26.04 amd64. Install the missing tools in this environment yourself.' }) })
       if (!observed.mediaPresent || !observed.mediaMatches) return publish({ status: 'missing-media', code: 'development-media-missing',
-        message: localized({ zh: '离线开发工具文件缺失或不匹配，请重新安装完整的 RainyAgent 安装包后重试。',
-          en: 'The offline development tool files are missing or do not match. Reinstall RainyAgent from the full installer, then try again.' }) })
+        message: localized({ zh: '离线开发工具文件缺失或不匹配，请重新安装完整的 Rainy 安装包后重试。',
+          en: 'The offline development tool files are missing or do not match. Reinstall Rainy from the full installer, then try again.' }) })
       return publish({ status: 'needs-install', message: missing.length > 0
         ? localized({ zh: `缺少 ${missing.map(tool => tool.name).join('、')}。点击“安装开发工具”后，将在当前环境中安装随包提供的开发组件。`,
           en: `Missing: ${missing.map(tool => tool.name).join(', ')}. Click "Install development tools" to install the bundled development components in this environment.` })

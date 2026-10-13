@@ -487,7 +487,7 @@ export class IdeDebugSession {
       const capabilities = values.dapCapabilities.parse(
         await peer.request('initialize', {
           clientID: 'rainy-ide',
-          clientName: 'RainyAgent IDE',
+          clientName: 'Rainy IDE',
           adapterID: this.options.resolved.spec.language,
           pathFormat: 'path',
           linesStartAt1: true,

@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     port: env.port,
     rendererRoot: join(env.appRoot, 'dist', 'renderer'),
     injectedGlobals: () => ({
-      __RAINY_AGENT__: { name: 'RainyAgent', version: env.version, environment: env.platform === 'win32' ? 'Windows' : 'WSL' },
+      __RAINY_AGENT__: { name: 'Rainy', version: env.version, environment: env.platform === 'win32' ? 'Windows' : 'WSL' },
       __RAINY_WORKBENCH_CONFIG__: config,
     }),
     log,
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   await installIceSky({ env, server, log, fetch: network.fetch })
 
   rpc.register('app.info', () => ({
-    name: 'RainyAgent' as const, version: env.version, environment: env.platform === 'win32' ? 'Windows' as const : 'WSL' as const,
+    name: 'Rainy' as const, version: env.version, environment: env.platform === 'win32' ? 'Windows' as const : 'WSL' as const,
     executionTargetId: env.executionTargetId, platform: env.platform, home: env.home,
   }))
   rpc.register('prefs.get', () => settings.prefs())

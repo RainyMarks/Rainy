@@ -4,7 +4,9 @@ const { version } = require('./package.json');
 process.env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ';
 
 module.exports = {
-  appId: 'dev.rainy.agent', productName: 'RainyAgent',
+  // Rainy is the product name; the executable keeps its earlier name so installed shortcuts, pinned icons and the
+  // uninstaller steps in resources/native-tools-installer.nsh keep working across the rename.
+  appId: 'dev.rainy.agent', productName: 'Rainy', executableName: 'RainyAgent',
   publish: { provider: 'github', owner: 'RainyMarks', repo: 'RainyAgent', releaseType: 'release' },
   // scripts/prepare-shell.mjs stages build/shell from dist/main.cjs, dist/preload.cjs and dist/setup.
   directories: { app: 'build/shell', output: 'release' },
@@ -30,6 +32,6 @@ module.exports = {
   electronFuses: { runAsNode: false, enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false, enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true },
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'build/icon.ico', signExecutable: Boolean(process.env.CSC_LINK) },
-  nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, shortcutName: 'RainyAgent', deleteAppDataOnUninstall: false, include: 'resources/native-tools-installer.nsh' },
-  artifactName: 'RainyAgent-${version}-windows-x64-setup.${ext}',
+  nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, shortcutName: 'Rainy', deleteAppDataOnUninstall: false, include: 'resources/native-tools-installer.nsh' },
+  artifactName: 'Rainy-${version}-windows-x64-setup.${ext}',
 };

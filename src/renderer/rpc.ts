@@ -126,7 +126,7 @@ class HostClient {
 }
 
 /** Message of a request lost with its connection; the page replaces it with one in the interface language. */
-let disconnectedText = (): string => 'The connection to RainyAgent was lost, so this action did not finish.'
+let disconnectedText = (): string => 'The connection to Rainy was lost, so this action did not finish.'
 
 /**
  * Word the error of requests lost with their connection. This module cannot import the message tables, which read

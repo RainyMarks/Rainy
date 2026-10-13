@@ -186,15 +186,15 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
       publish({ distributions: system.distributions, savedDistro, code: undefined, distro: undefined, busy: false, canResume: journal?.phase === 'creating-distro' })
       if (!system.supported) {
         return publish({ status: 'blocked', code: 'unsupported-platform',
-          message: system.reason ?? localized({ zh: '需要 Windows 10 22H2 或更新版本的 64 位系统。', en: 'RainyAgent needs 64-bit Windows 10 22H2 or later.' }) })
+          message: system.reason ?? localized({ zh: '需要 Windows 10 22H2 或更新版本的 64 位系统。', en: 'Rainy needs 64-bit Windows 10 22H2 or later.' }) })
       }
       if (journal?.phase === 'awaiting-reboot' && journal.bootId === system.bootId) {
-        return publish({ status: 'reboot-required', message: localized({ zh: '系统组件已安装。请先保存工作并重启 Windows，再打开 RainyAgent 继续。',
-          en: 'The system components are installed. Save your work and restart Windows, then open RainyAgent to continue.' }) })
+        return publish({ status: 'reboot-required', message: localized({ zh: '系统组件已安装。请先保存工作并重启 Windows，再打开 Rainy 继续。',
+          en: 'The system components are installed. Save your work and restart Windows, then open Rainy to continue.' }) })
       }
       if (journal?.phase === 'installing-system' && journal.bootId === system.bootId && system.wslInstalled && system.componentsEnabled) {
-        return publish({ status: 'reboot-required', message: localized({ zh: '上次系统安装后尚未确认重启。请保存工作并重启 Windows，再打开 RainyAgent 继续。',
-          en: 'Windows has not restarted since the last system installation. Save your work and restart Windows, then open RainyAgent to continue.' }) })
+        return publish({ status: 'reboot-required', message: localized({ zh: '上次系统安装后尚未确认重启。请保存工作并重启 Windows，再打开 Rainy 继续。',
+          en: 'Windows has not restarted since the last system installation. Save your work and restart Windows, then open Rainy to continue.' }) })
       }
       if (savedDistro && system.distributions.some(distro => distro.name === savedDistro && distro.version === 2)) {
         await platform.checkDistribution(savedDistro)
@@ -217,7 +217,7 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
       }
       return publish({ status: 'needs-distro', message: journal?.phase === 'creating-distro'
         ? localized({ zh: '上次环境创建尚未完成，可以继续恢复。', en: 'The last environment setup did not finish. You can resume it.' })
-        : localized({ zh: '将从随安装包提供的 Ubuntu 镜像创建 RainyAgent 专用环境。', en: 'A dedicated RainyAgent environment will be created from the bundled Ubuntu image.' }) })
+        : localized({ zh: '将从随安装包提供的 Ubuntu 镜像创建 Rainy 专用环境。', en: 'A dedicated Rainy environment will be created from the bundled Ubuntu image.' }) })
     } catch (error) { return failed(error) }
   }
 
@@ -260,8 +260,8 @@ export function createEnvironmentSetup(options: EnvironmentSetupOptions): {
         const result = await platform.installSystem(progress)
         if (result.rebootRequired) {
           await saveJournal('awaiting-reboot', { bootId: system.bootId })
-          return publish({ status: 'reboot-required', busy: false, message: localized({ zh: '系统组件已安装。请保存工作并重启 Windows，再打开 RainyAgent 继续。',
-            en: 'The system components are installed. Save your work and restart Windows, then open RainyAgent to continue.' }) })
+          return publish({ status: 'reboot-required', busy: false, message: localized({ zh: '系统组件已安装。请保存工作并重启 Windows，再打开 Rainy 继续。',
+            en: 'The system components are installed. Save your work and restart Windows, then open Rainy to continue.' }) })
         }
         await saveJournal('system-ready')
         return await inspectInternal()

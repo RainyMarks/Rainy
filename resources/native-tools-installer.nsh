@@ -30,7 +30,7 @@
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\rainy-check-running.ps1" -InstallRoot "$INSTDIR\." -PreviousUserRoot "$R4\." -PreviousMachineRoot "$R5\." -InstallerPid $9'
   Pop $0
   ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONEXCLAMATION "请先保存工作并手动关闭 RainyAgent、原生工具及其命令行窗口，再重新运行安装程序。安装程序不会自动结束这些进程。" /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "请先保存工作并手动关闭 Rainy、原生工具及其命令行窗口，再重新运行安装程序。安装程序不会自动结束这些进程。" /SD IDOK
     SetErrorLevel 1
     Abort
   ${EndIf}
@@ -84,7 +84,7 @@
     ClearErrors
     Delete "${file}"
     ${If} ${Errors}
-      MessageBox MB_OK|MB_ICONSTOP "应用文件仍被占用或无法删除，请关闭 RainyAgent 后重试：${file}" /SD IDOK
+      MessageBox MB_OK|MB_ICONSTOP "应用文件仍被占用或无法删除，请关闭 Rainy 后重试：${file}" /SD IDOK
       SetErrorLevel 1
       Abort
     ${EndIf}

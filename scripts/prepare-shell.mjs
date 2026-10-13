@@ -17,6 +17,6 @@ cpSync(resolve(root, 'dist/setup'), resolve(target, 'setup'), { recursive: true 
 copyFileSync(resolve(root, 'LICENSE'), resolve(target, 'LICENSE'))
 copyFileSync(resolve(root, 'THIRD_PARTY_NOTICES.md'), resolve(target, 'THIRD_PARTY_NOTICES.md'))
 writeFileSync(resolve(target, 'package.json'), JSON.stringify({ name: manifest.name, productName: manifest.productName, version: manifest.version,
-  main: 'main.cjs', description: manifest.description, author: 'NCUCyberBase', license: manifest.license }, null, 2) + '\n')
+  main: 'main.cjs', description: manifest.description, author: 'RainyMarks', license: manifest.license }, null, 2) + '\n')
 writeFileSync(resolve(root, 'build/icon.ico'), pngToIco(readFileSync(resolve(root, 'resources/icon.png'))))
 console.log(`Staged ${target} for RainyAgent ${manifest.version}`)

@@ -48,9 +48,9 @@ export function installNativeTools(options: {
       throw new Error(localized({ zh: '请先关闭已打开的工具窗口，再下载或更新工具包', en: 'Close the open tool windows before downloading or updating the tool pack.' }))
     }
   }
-  const closingError = (): Error => new Error(localized({ zh: 'RainyAgent 正在关闭', en: 'RainyAgent is closing.' }))
-  const unavailableError = (): Error => new Error(localized({ zh: '当前版本未提供在线工具包，请更新 RainyAgent',
-    en: 'This version has no online tool pack. Update RainyAgent.' }))
+  const closingError = (): Error => new Error(localized({ zh: 'Rainy 正在关闭', en: 'Rainy is closing.' }))
+  const unavailableError = (): Error => new Error(localized({ zh: '当前版本未提供在线工具包，请更新 Rainy',
+    en: 'This version has no online tool pack. Update Rainy.' }))
   const closePage = (page: NativeToolWebPage): Promise<void> => {
     const closing = page.close()
     closingPages.add(closing)

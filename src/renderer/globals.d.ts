@@ -3,7 +3,7 @@ import type { Config } from '../shared/config.ts'
 
 declare global {
   interface Window {
-    __RAINY_AGENT__?: { name: 'RainyAgent'; version: string; environment: 'Windows' | 'WSL' }
+    __RAINY_AGENT__?: { name: 'Rainy'; version: string; environment: 'Windows' | 'WSL' }
     __RAINY_WORKBENCH_CONFIG__?: Config
   }
 }

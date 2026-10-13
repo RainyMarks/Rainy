@@ -157,7 +157,7 @@ describe('common tool catalog', () => {
 
   it('offers no native launch controls in a browser without the desktop bridge', () => {
     fixture({ ...state, phase: 'desktop-only' })
-    expect(allByText('在 RainyAgent 桌面应用中使用常用工具')).toHaveLength(1)
+    expect(allByText('在 Rainy 桌面应用中使用常用工具')).toHaveLength(1)
     expect(allByRole('button')).toHaveLength(0)
   })
 })

@@ -88,7 +88,7 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
   let health: StrataHealth | null = null
 
   const baseURL = () => `http://127.0.0.1:${settings.port}/v1`
-  const assertOpen = () => { if (closed) throw new Error(localized({ zh: 'RainyAgent 正在关闭，无法修改 Strata。', en: 'RainyAgent is closing and cannot change Strata.' })) }
+  const assertOpen = () => { if (closed) throw new Error(localized({ zh: 'Rainy 正在关闭，无法修改 Strata。', en: 'Rainy is closing and cannot change Strata.' })) }
   const busy = () => operation !== undefined || owned !== undefined
   function residentBudget(): number {
     const usableGiB = Math.floor((options.availableMemory ?? freemem)() / 2 ** 30 - (options.ramHeadroomGiB ?? 8))
@@ -178,9 +178,9 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
       signal.throwIfAborted()
       if (result.error || result.code !== 0) {
         throw new Error(localized({ zh: '本地模型准备失败。请确认所有 GGUF 分片及配套 MTP 属于受支持的 Qwen3.8 Flash Next 模型。'
-          + '详细诊断保存在 RainyAgent 的 strata/logs。',
+          + '详细诊断保存在 Rainy 的 strata/logs。',
         en: 'Preparing the local model failed. Make sure all GGUF shards and the matching MTP belong to a supported Qwen3.8 Flash Next model. '
-          + 'Details are saved in the strata/logs folder of RainyAgent.' }))
+          + 'Details are saved in the strata/logs folder of Rainy.' }))
       }
       await writePrivateRecord(join(preparation.directory, '.rainy-complete.json'), Buffer.from(JSON.stringify({ version: 1 }) + '\n'))
     }
@@ -264,8 +264,8 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
     save: value => transaction(async () => {
       await initialize(); assertOpen()
       if (busy()) {
-        throw new Error(localized({ zh: '请先停止 RainyAgent 启动的 Strata，再修改模型和运行参数。',
-          en: 'Stop the Strata server that RainyAgent started before changing the model or run settings.' }))
+        throw new Error(localized({ zh: '请先停止 Rainy 启动的 Strata，再修改模型和运行参数。',
+          en: 'Stop the Strata server that Rainy started before changing the model or run settings.' }))
       }
       const requested = strataSettingsSchema.parse(value)
       const resolved = await resolveStrataModel(requested, stateRoot, requested.modelPath !== settings.modelPath)
@@ -285,8 +285,8 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
       const bundled = await runtime()
       assertOpen()
       if (!bundled.available) {
-        throw new Error(localized({ zh: '当前安装包缺少 Strata 运行文件，请安装包含本地模型运行时的完整 RainyAgent。',
-          en: 'This installation is missing the Strata runtime files. Install the full RainyAgent with the local model runtime.' }))
+        throw new Error(localized({ zh: '当前安装包缺少 Strata 运行文件，请安装包含本地模型运行时的完整 Rainy。',
+          en: 'This installation is missing the Strata runtime files. Install the full Rainy with the local model runtime.' }))
       }
       const selected = await resolveStrataModel(settings, stateRoot)
       assertOpen()
@@ -337,7 +337,7 @@ export function createStrataManager(options: StrataManagerOptions): StrataManage
     },
     close() {
       closed = true
-      cancellation?.abort(new Error(localized({ zh: 'RainyAgent 正在退出。', en: 'RainyAgent is quitting.' })))
+      cancellation?.abort(new Error(localized({ zh: 'Rainy 正在退出。', en: 'Rainy is quitting.' })))
       closing ??= transaction(stopOwned)
       return closing
     },

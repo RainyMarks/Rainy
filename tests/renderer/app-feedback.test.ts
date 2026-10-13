@@ -28,7 +28,7 @@ it('announces a refused copy in the interface language unless the control report
   expect(await writeClipboard('flag{x}', { quiet: true })).toBe(false)
   expect(toast).not.toHaveBeenCalled()
   await emit('prefs.changed', prefs('en'))
-  expect(disconnection.text?.()).toBe('The connection to RainyAgent was lost, so this action did not finish.')
+  expect(disconnection.text?.()).toBe('The connection to Rainy was lost, so this action did not finish.')
   await writeClipboard('flag{x}')
   expect(toast).toHaveBeenLastCalledWith('Copy failed: the system clipboard refused the text. Click the window and try again.', { tone: 'error' })
   remove()

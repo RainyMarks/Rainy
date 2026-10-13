@@ -146,7 +146,7 @@ test('shows a local connection error without an active cancellation control when
 test('switches the page to English when the window opens with lang=en', async (owner) => {
   const { window, byId, text, emit } = await fixture(owner, { lang: 'en' })
   assert.equal(window.document.documentElement.lang, 'en')
-  assert.equal(window.document.title, 'RainyAgent · Offline tools')
+  assert.equal(window.document.title, 'Rainy · Offline tools')
   assert.equal(text('heading'), 'Install offline tools')
   assert.equal(text('phase'), 'Preparing')
   assert.equal(text('cancel'), 'Cancel installation')

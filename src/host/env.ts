@@ -40,7 +40,7 @@ function findAppRoot(start: string): string {
   for (;;) {
     if (existsSync(join(directory, 'package.json')) && existsSync(join(directory, 'resources'))) return directory
     const parent = dirname(directory)
-    if (parent === directory) throw new Error(`RainyAgent application root not found above ${start}`)
+    if (parent === directory) throw new Error(`Rainy application root not found above ${start}`)
     directory = parent
   }
 }
@@ -55,7 +55,7 @@ export function readHostEnvironment(env: NodeJS.ProcessEnv, moduleUrl: string): 
   const appRoot = findAppRoot(dirname(fileURLToPath(moduleUrl)))
   const manifest: unknown = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
   if (manifest === null || typeof manifest !== 'object' || !('version' in manifest) || typeof manifest.version !== 'string') {
-    throw new Error('RainyAgent package version is unavailable')
+    throw new Error('Rainy package version is unavailable')
   }
   const home = resolve(env.RAINY_HOME ?? join(homedir(), '.rainy-agent'))
   const platform = process.platform === 'win32' ? 'win32' : 'linux'

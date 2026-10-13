@@ -4,7 +4,7 @@ The bundled source is pinned to `spindriftpapilio/icesky` commit `e0321b41ade55b
 
 ## Name
 
-RainyAgent presents the workbench as “AI 安全工具箱” (AI security toolkit). The page title, tool fallbacks, download file names and the default author, company and artist metadata of generated DOCX and audio samples no longer use the upstream name, and the upstream WeChat account card and image are removed. Code identifiers, storage keys and the `icesky.*` recipe formats keep their names so existing drafts and recipes still load.
+Rainy presents the workbench as “AI 安全工具箱” (AI security toolkit). The page title, tool fallbacks, download file names and the default author, company and artist metadata of generated DOCX and audio samples (now “Rainy”) no longer use the upstream name, and the upstream WeChat account card and image are removed. Code identifiers, storage keys and the `icesky.*` recipe formats keep their names so existing drafts and recipes still load.
 
 ## Embedding and requests
 

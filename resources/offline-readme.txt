@@ -1,15 +1,15 @@
-RainyAgent 2.0.0 Windows x64 完整离线发行包
+Rainy 2.0.0 Windows x64 完整离线发行包
 
 安装与升级
-1. 运行 RainyAgent-2.0.0-windows-x64-setup.exe 安装核心，内含 Windows Host。Strata 引擎、Windows PHP 和 WSL 运行环境不在安装包内，需要时从 GitHub 下载；模型权重另备。新安装默认使用 Windows 原生运行，无需先安装 WSL。
+1. 运行 Rainy-2.0.0-windows-x64-setup.exe 安装核心，内含 Windows Host。Strata 引擎、Windows PHP 和 WSL 运行环境不在安装包内，需要时从 GitHub 下载；模型权重另备。新安装默认使用 Windows 原生运行，无需先安装 WSL。
 2. 完整离线交付请保留整个 offline-2.0.0 目录，包括 environment/、environment-components/、rainy-unit-*.tar.gz 工具归档、清单及 SHA256SUMS.txt。无需手动解压任何工具或运行环境归档。
 3. rainy-unit-*.tar.gz 工具归档放在安装程序旁时，安装程序安装其中每个单元；不带归档的核心更新保留已有工具，之后可在“常用工具”中按工具下载。归档校验失败会停止工具安装。
-4. 手动安装或修复工具前保存工作并关闭 RainyAgent、原生工具及其命令行窗口。安装程序检查占用，不自动结束这些进程。安装后直接使用，无需设备码或激活码。
+4. 手动安装或修复工具前保存工作并关闭 Rainy、原生工具及其命令行窗口。安装程序检查占用，不自动结束这些进程。安装后直接使用，无需设备码或激活码。
 5. 安装版启动时静默检查 GitHub 稳定版并后台下载核心更新；“帮助 → 检查更新”可查看状态或重试。下载完成后选择稍后或重启安装，只有确认、草稿保存与 Host 清理完成后才安装；普通退出不会安装。自动更新保留已有工具与环境，不重新下载工具或离线环境组件；更新后首次以 WSL 启动时会下载新版本的 WSL 运行环境。
 6. 启动约 60 秒后，应用删除旧安装程序留在 resources 目录中的 strata-runtime、php、linux-runtime.tar.gz、native-tools-metadata.json、native-tools-download.json 和 native-tools-catalog.json。
 
 可选组件
-Strata 引擎、PHP 和 WSL 运行环境由安装包内签名的 optional-modules.json 固定，从 GitHub 发行分片下载到 %APPDATA%\RainyAgent\modules\<id>。每个分片和完整归档都校验 SHA-256，支持断点续传；取消后保留已下载的分片，重试时复用。
+Strata 引擎、PHP 和 WSL 运行环境由安装包内签名的 optional-modules.json 固定，从 GitHub 发行分片下载到 %APPDATA%\Rainy\modules\<id>。每个分片和完整归档都校验 SHA-256，支持断点续传；取消后保留已下载的分片，重试时复用。
 在“设置 → 运行环境 → 可选组件”下载或删除 Strata 引擎（约 560 MB）和 PHP 8.5。
 
 Strata 本地模型
@@ -46,13 +46,13 @@ Windows 原生运行 PHP 前，在“可选组件”下载 PHP 8.5（含 json、
 常用工具与数据
 原生工具目录共 38 项，按 Web 与接口、流量分析、逆向调试、取证与文件、隐写与图像、音频与信号、编码与数据分组，具体条目与版本见工具清单.json。目录数量、文件就绪和“已发送启动请求”不代表全部工具已完成功能验收。未验收入口仍显示“待验证”。
 每个工具目录、共享运行时（Java 21、.NET 8）和目录文件各有一个 rainy-unit-*.tar.gz 归档；未变化的工具在新版本中沿用原归档，不会重复下载。“常用工具”中未下载的工具显示“下载 · 大小”，已下载工具可打开或移除；“全部下载”“更新已下载的工具”和“检查工具更新”位于顶部。移除会删除该工具及不再使用的运行时，无需联网。文件缺失的卡片提供“修复”，只重新下载缺失或摘要不符的单元。
-1.0.6 之前由离线安装程序装入应用目录的工具在原处更新；其他情况下工具位于 %APPDATA%\RainyAgent\native-tools。工具根目录中，工具位于 tools/，共享运行时位于 runtime/windows/；个人设置、工作台草稿及项目数据分别保留。卸载应用保留工具、环境和用户数据。
+1.0.6 之前由离线安装程序装入应用目录的工具在原处更新；其他情况下工具位于 %APPDATA%\Rainy\native-tools。工具根目录中，工具位于 tools/，共享运行时位于 runtime/windows/；个人设置、工作台草稿及项目数据分别保留。卸载应用保留工具、环境和用户数据。
 安装会把被替换或移除的工具目录移入 .rainy-toolpack/backups/。安装完成后，与已保存清单一致的备份文件会被删除，只留下用户文件和有改动的文件；启动约 60 秒后，旧版本留下的备份也按同样规则清理。未完成的切换或回滚保留全部备份，不要手动清理恢复记录。
 
 校验与验收范围
 SHA256SUMS.txt 记录完整离线目录的交付文件摘要；核心同时校验发行组件目录，工具安装、可选组件下载和组件导入分别验证自身文件。
 原生 Host、程序运行与断点调试、Windows/Linux CPU/CUDA 计算、组件导入及工具归档复用分别验收；旧版记录不代表本版本已完成验收。全新 Windows 的 UAC、重启续装及所有第三方工具原生界面仍须各自验收，详细范围以随交付验收报告为准。
-Develop by NCUCyberBase
+Develop by RainyMarks
 
 使用许可
 允许个人和企业内部免费使用；销售、收费托管及商业再分发须另行取得书面许可。完整条款见应用内 LICENSE，第三方组件仍适用各自许可。

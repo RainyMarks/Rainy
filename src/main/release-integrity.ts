@@ -41,10 +41,10 @@ export function authenticateReleaseManifest(input: unknown, keys: ReleaseKeyring
   const signed = signedManifestSchema.parse(input)
   const bytes = Buffer.from(signed.payload, 'base64url')
   const signature = Buffer.from(signed.signature, 'base64url')
-  if (bytes.toString('base64url') !== signed.payload || signature.toString('base64url') !== signed.signature || signature.length !== 64) throw new Error(localized({ zh: '发行清单编码无效', en: 'The RainyAgent file list is not encoded correctly.' }))
+  if (bytes.toString('base64url') !== signed.payload || signature.toString('base64url') !== signed.signature || signature.length !== 64) throw new Error(localized({ zh: '发行清单编码无效', en: 'The Rainy file list is not encoded correctly.' }))
   const manifest = releaseManifestSchema.parse(JSON.parse(bytes.toString('utf8')))
   const key = keys.keys[manifest.keyId]
-  if (!key || !verify(null, Buffer.concat([Buffer.from(RELEASE_SIGNATURE_DOMAIN), bytes]), key, signature)) throw new Error(localized({ zh: '发行清单签名无效', en: 'The RainyAgent file list has an invalid signature.' }))
+  if (!key || !verify(null, Buffer.concat([Buffer.from(RELEASE_SIGNATURE_DOMAIN), bytes]), key, signature)) throw new Error(localized({ zh: '发行清单签名无效', en: 'The Rainy file list has an invalid signature.' }))
   return manifest
 }
 
@@ -79,20 +79,20 @@ async function walkInventory(root: string): Promise<InventoryWalk> {
     async locate(expected) {
       const path = resolve(canonicalRoot, ...expected.path.split('/'))
       const local = relative(canonicalRoot, path)
-      if (!local || isAbsolute(local) || local === '..' || local.startsWith('../') || local.startsWith('..\\')) throw new ReleaseIntegrityError(localized({ zh: '发行资源路径越界', en: 'A RainyAgent file path points outside the installation.' }))
+      if (!local || isAbsolute(local) || local === '..' || local.startsWith('../') || local.startsWith('..\\')) throw new ReleaseIntegrityError(localized({ zh: '发行资源路径越界', en: 'A Rainy file path points outside the installation.' }))
       const info = await lstat(path, { bigint: true }).catch((error: unknown) => {
         if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
-          throw new ReleaseIntegrityError(localized({ zh: `发行资源缺失：${expected.path}`, en: `A RainyAgent file is missing: ${expected.path}` }))
+          throw new ReleaseIntegrityError(localized({ zh: `发行资源缺失：${expected.path}`, en: `A Rainy file is missing: ${expected.path}` }))
         throw error
       })
       if (!info.isFile() || info.isSymbolicLink() || info.size !== BigInt(expected.bytes)) {
-        throw new ReleaseIntegrityError(localized({ zh: `发行资源损坏：${expected.path}`, en: `A RainyAgent file is damaged: ${expected.path}` }))
+        throw new ReleaseIntegrityError(localized({ zh: `发行资源损坏：${expected.path}`, en: `A Rainy file is damaged: ${expected.path}` }))
       }
       const parent = dirname(path)
       let canonicalParent = directories.get(parent)
       if (canonicalParent === undefined) { canonicalParent = realpath(parent); directories.set(parent, canonicalParent) }
       if (await canonicalParent !== parent) {
-        throw new ReleaseIntegrityError(localized({ zh: `发行资源路径被替换：${expected.path}`, en: `The folder of a RainyAgent file was replaced: ${expected.path}` }))
+        throw new ReleaseIntegrityError(localized({ zh: `发行资源路径被替换：${expected.path}`, en: `The folder of a Rainy file was replaced: ${expected.path}` }))
       }
       return { path, signature: `${expected.path}\0${info.size}\0${info.mtimeNs}\0${info.ino}` }
     },
@@ -133,11 +133,11 @@ Promise<{ manifest: ReleaseManifest; fingerprint: string }> {
     const { path, signature } = await walk.locate(expected)
     const hash = createHash('sha256')
     for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
-      if (!Buffer.isBuffer(chunk)) throw new Error(localized({ zh: '发行资源读取格式无效', en: 'Reading a RainyAgent file returned invalid data.' }))
+      if (!Buffer.isBuffer(chunk)) throw new Error(localized({ zh: '发行资源读取格式无效', en: 'Reading a Rainy file returned invalid data.' }))
       hash.update(chunk)
     }
     if (hash.digest('hex') !== expected.sha256) {
-      throw new ReleaseIntegrityError(localized({ zh: `发行资源校验失败：${expected.path}`, en: `A RainyAgent file failed verification: ${expected.path}` }))
+      throw new ReleaseIntegrityError(localized({ zh: `发行资源校验失败：${expected.path}`, en: `A Rainy file failed verification: ${expected.path}` }))
     }
     signatures[index] = signature
     options.onProgress?.(++completed, manifest.files.length)

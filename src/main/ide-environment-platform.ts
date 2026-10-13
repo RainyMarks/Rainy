@@ -132,8 +132,8 @@ export function createWindowsIdeEnvironmentPlatform(options: WindowsIdeEnvironme
         en: 'The offline development components support only Ubuntu 26.04 amd64. The selected environment was not changed.' }))
     }
     if (!before.mediaPresent || !before.mediaMatches || before.packageCount === 0) {
-      throw new IdeEnvironmentError('development-media-missing', localized({ zh: '离线开发组件缺失或不匹配，请重新安装完整的 RainyAgent 安装包。',
-        en: 'The offline development components are missing or do not match. Reinstall RainyAgent from the full installer.' }))
+      throw new IdeEnvironmentError('development-media-missing', localized({ zh: '离线开发组件缺失或不匹配，请重新安装完整的 Rainy 安装包。',
+        en: 'The offline development components are missing or do not match. Reinstall Rainy from the full installer.' }))
     }
     const output = await execute({
       args: ['-d', options.distro, '-u', 'root', '--exec', 'python3', posix.join(options.resourceRoot, 'install-system-packages.py'),

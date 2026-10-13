@@ -38,7 +38,7 @@ try {
     & node (Join-Path $PSScriptRoot 'prepare-optional-modules.mjs') --version $rainyVersion --pieces $rainyPieces --strata-archive $rainyStrata; Check-Exit
     & node (Join-Path $PSScriptRoot 'prepare-shell.mjs'); Check-Exit
     & node (Join-Path $rainyApp 'node_modules/electron-builder/out/cli/cli.js') --config electron-builder.config.cjs --win nsis --publish never; Check-Exit
-    $rainyInstaller = Join-Path $rainyApp "release/RainyAgent-$rainyVersion-windows-x64-setup.exe"
+    $rainyInstaller = Join-Path $rainyApp "release/Rainy-$rainyVersion-windows-x64-setup.exe"
     Copy-Item -LiteralPath $rainyInstaller -Destination $rainyOffline -Force
     Copy-Item -LiteralPath (Join-Path $rainyApp 'resources/offline-readme.txt') -Destination (Join-Path $rainyOffline '安装说明.txt') -Force
     if (-not $ReuseNativeToolsRelease) { Copy-Item -LiteralPath (Join-Path $rainyStage 'tools/manifest.json') -Destination (Join-Path $rainyOffline '工具清单.json') -Force }

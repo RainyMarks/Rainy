@@ -46,7 +46,7 @@ describe('verified offline components', () => {
     await installWindowsComponent(value.options)
     const before = await readFile(join(value.root, 'active.json'), 'utf8')
     await writeFile(value.archive, 'damaged')
-    await expect(installWindowsComponent(value.options)).rejects.toThrow('离线组件包缺失或已损坏，请重新安装 RainyAgent。')
+    await expect(installWindowsComponent(value.options)).rejects.toThrow('离线组件包缺失或已损坏，请重新安装 Rainy。')
     expect(await readFile(join(value.root, 'active.json'), 'utf8')).toBe(before)
   })
   it('rechecks installed files before reusing an existing generation', async () => {

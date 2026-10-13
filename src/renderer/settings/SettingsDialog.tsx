@@ -91,7 +91,7 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
           <div className={css.identity}>
             <img src="/rainy/icon.png" alt="" className={css.identityMark} />
             <div className={css.identityText}>
-              <div className={css.identityName}>RainyAgent</div>
+              <div className={css.identityName}>Rainy</div>
               {version !== undefined && <div className={css.identityVersion}>{t('appVersion', { version })}</div>}
             </div>
           </div>

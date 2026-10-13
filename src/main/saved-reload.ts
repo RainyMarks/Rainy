@@ -36,7 +36,7 @@ export function createSavedReload(options: SavedReloadOptions): (ignoreCache?: b
       catch (error) { saved = { ok: false, error: error instanceof Error ? error.message : String(error) } }
       if (options.isClosing()) return
       if (saved.ok) options.reload(ignoreCache)
-      else await options.reportFailure(saved.error ?? localized({ zh: '工具未能确认草稿已保存，请重试。', en: 'RainyAgent could not confirm that your drafts were saved. Try again.' }))
+      else await options.reportFailure(saved.error ?? localized({ zh: '工具未能确认草稿已保存，请重试。', en: 'Rainy could not confirm that your drafts were saved. Try again.' }))
     })().finally(() => { pending = undefined })
     return pending
   }

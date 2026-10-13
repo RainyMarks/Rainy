@@ -110,7 +110,7 @@ export class OptionalModules {
    * @returns settled installation.
    */
   install(id: CarrierModuleId, progress?: (completed: number, total: number) => void): Promise<void> {
-    if (this.closed) return Promise.reject(new Error(localized({ zh: 'RainyAgent 正在关闭', en: 'RainyAgent is closing.' })))
+    if (this.closed) return Promise.reject(new Error(localized({ zh: 'Rainy 正在关闭', en: 'Rainy is closing.' })))
     if (this.running) return Promise.reject(new Error(localized({ zh: '另一个组件正在下载，请稍候', en: 'Another component is downloading. Please wait.' })))
     this.abort = new AbortController()
     this.running = this.run(id, this.abort.signal, progress).finally(() => { this.running = undefined; this.abort = undefined })

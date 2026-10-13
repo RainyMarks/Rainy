@@ -202,7 +202,7 @@ export class McpManager {
 
   private async connect(connection: Connection): Promise<void> {
     const { config } = connection
-    const client = new Client({ name: 'RainyAgent', version: '2' })
+    const client = new Client({ name: 'Rainy', version: '2' })
     /** The server's latest stderr, which says why a command that exits at once did not start. */
     let stderr = ''
     try {

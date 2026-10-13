@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "173fa695d56126acf5658db45e12165b3e0def9f2702229a9ebd7612655eff7b",
+  "version": "2a68f2c9bee511637fe443430c2c298645e84882cc8ddf44e6d16e35da5d5c62",
   "files": {
     "css/_base.css": {
       "sha256": "fad6f41cbf9834d82bbcf5b67b077070a3cc580b56719066e34a18b0f1a176a6",
@@ -303,8 +303,8 @@
       "type": "text/javascript"
     },
     "js/tools/AudioInjectTool.js": {
-      "sha256": "657c16cf066ddd738a696e2e72719102859bb3bd07df7ce734baefcc34bebb6e",
-      "size": 41681,
+      "sha256": "96195a7a5b5df252db526f158e8d68c24990f7ac617fb0d6e61d298f93566415",
+      "size": 41676,
       "type": "text/javascript"
     },
     "js/tools/BijectionTool.js": {
@@ -323,8 +323,8 @@
       "type": "text/javascript"
     },
     "js/tools/DocxInjectTool.js": {
-      "sha256": "bb63bbf066299aa579509594f860d51d5dbb4b3cf017560e1114353b4b39e5fb",
-      "size": 30343,
+      "sha256": "3aa0e947ee14cfb1ecbce8ba510b611a9a9da4f2a36fe0c0f53eac833bdd023b",
+      "size": 30306,
       "type": "text/javascript"
     },
     "js/tools/EmojiTool.js": {
@@ -2183,8 +2183,8 @@
       "type": "text/html"
     },
     "templates/audioinject.html": {
-      "sha256": "080f800d51128ecc6413756ea710950da19ed7377247718434c323291a2553b4",
-      "size": 16837,
+      "sha256": "a68e159849ed209fe1046fdbdc549af8bbe5c629d968e2e05aa7546f11816cd7",
+      "size": 16832,
       "type": "text/html"
     },
     "templates/bijection.html": {

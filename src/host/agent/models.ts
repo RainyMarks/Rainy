@@ -292,7 +292,7 @@ export class Models {
       throw new RpcError('not-saved', localized({ zh: '请先保存当前模型设置，再验证这份已保存的配置。', en: 'Save the current model settings first, then check the saved configuration.' }))
     }
     const resolved = this.resolve({ provider: saved.provider, model: saved.model, thinking: saved.thinking })!
-    const reply = await this.complete(resolved, 'Connection diagnostic. Reply only with RainyAgent connected.', [], 180_000)
+    const reply = await this.complete(resolved, 'Connection diagnostic. Reply only with Rainy connected.', [], 180_000)
     if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new RpcError('probe-failed', reply.errorMessage ?? localized({ zh: '连接失败。', en: 'The connection failed.' }))
     let text = reply.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('').slice(0, 300)
     let toolCall = false
@@ -317,7 +317,7 @@ export class Models {
       const detail = error instanceof Error ? error.message : localized({ zh: '本地服务未就绪。', en: 'The local service is not ready.' })
       throw new Error(localized({
         zh: `当前执行环境无法连接已加载的 Strata：${detail} Windows 本地模型请使用 Windows 执行环境；不会切换到云端。`,
-        en: `This execution environment cannot reach the loaded Strata model: ${detail} Use the Windows execution environment for local Windows models; RainyAgent does not switch to a cloud model.`,
+        en: `This execution environment cannot reach the loaded Strata model: ${detail} Use the Windows execution environment for local Windows models; Rainy does not switch to a cloud model.`,
       }))
     }
     if ('expectedContextWindow' in raw && raw.expectedContextWindow !== health.contextWindow) throw new Error(localized({ zh: 'Strata 的实际上下文已改变，请刷新后重新连接。', en: 'The Strata context length changed. Refresh and connect again.' }))

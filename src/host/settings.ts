@@ -287,8 +287,8 @@ export class Settings {
         en: `The saved API keys for ${services.en} cannot be opened with the current Windows data protection key, for example after the Windows account password was reset. Enter them again; the encrypted values stay in .credentials.sealed.json.`,
       })
       : localized({
-        zh: `Windows 数据保护当前不可用，无法读取加密保存的 ${services.zh} API 密钥。可以稍后重启 RainyAgent 再试，或重新填写密钥（将不加密保存）。`,
-        en: `Windows data protection is unavailable, so the encrypted API keys for ${services.en} cannot be read. Restart RainyAgent later, or enter the keys again; they will then be stored unencrypted.`,
+        zh: `Windows 数据保护当前不可用，无法读取加密保存的 ${services.zh} API 密钥。可以稍后重启 Rainy 再试，或重新填写密钥（将不加密保存）。`,
+        en: `Windows data protection is unavailable, so the encrypted API keys for ${services.en} cannot be read. Restart Rainy later, or enter the keys again; they will then be stored unencrypted.`,
       })
   }
 

@@ -69,7 +69,7 @@ export function authenticateToolChannel(input: unknown, keys: ReleaseKeyring): N
   const identity = z.object({ keyId }).parse(raw)
   const key = keys.keys[identity.keyId]
   if (!key || !verify(null, Buffer.concat([Buffer.from(TOOL_CHANNEL_SIGNATURE_DOMAIN), payload]), key, Buffer.from(envelope.signature, 'base64'))) {
-    throw new Error(localized({ zh: '工具更新签名无效，请重试或更新 RainyAgent', en: 'The tool update signature is invalid. Try again or update RainyAgent.' }))
+    throw new Error(localized({ zh: '工具更新签名无效，请重试或更新 Rainy', en: 'The tool update signature is invalid. Try again or update Rainy.' }))
   }
   const channel = channelSchema.parse(raw)
   const metadata = validateToolDownloadInputs(channel.source, channel.metadata)

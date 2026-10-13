@@ -36,6 +36,6 @@ export class Activity {
 
   /** @throws Error while the carrier is replacing this Host. */
   assertCanStart(): void {
-    if (this.frozen) throw new Error(localized({ zh: '执行环境正在切换，请等待应用重新打开。', en: 'The execution environment is switching. Wait for RainyAgent to open again.' }))
+    if (this.frozen) throw new Error(localized({ zh: '执行环境正在切换，请等待应用重新打开。', en: 'The execution environment is switching. Wait for Rainy to open again.' }))
   }
 }

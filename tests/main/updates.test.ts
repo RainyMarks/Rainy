@@ -239,5 +239,5 @@ it.each(['throw', 'reject'] as const)('contains a native notice %s without losin
     return Promise.reject(error)
   })
   await expect(f.controller.check()).resolves.toEqual({ phase: 'ready', version: '1.1.0' })
-  expect(log).toHaveBeenCalledWith('RainyAgent update notice failed:', expect.any(Error))
+  expect(log).toHaveBeenCalledWith('Rainy update notice failed:', expect.any(Error))
 })

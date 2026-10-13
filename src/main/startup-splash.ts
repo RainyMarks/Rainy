@@ -13,7 +13,7 @@ export const WINDOW_BACKGROUND = { dark: '#171717', light: '#f7f7f7' } as const
  */
 export function startupPage(dark: boolean): string {
   const background = dark ? WINDOW_BACKGROUND.dark : WINDOW_BACKGROUND.light
-  const html = `<!doctype html><html lang="${currentLocale()}"><head><meta charset="utf-8"><title>RainyAgent</title><style>
+  const html = `<!doctype html><html lang="${currentLocale()}"><head><meta charset="utf-8"><title>Rainy</title><style>
 :root { color-scheme: ${dark ? 'dark' : 'light'}; --fg: ${dark ? '#ebebeb' : '#171717'}; --muted: ${dark ? '#8c8c8c' : '#6e6e6e'};
   --track: ${dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.08)'}; --accent: var(--fg); }
 * { box-sizing: border-box; }
@@ -28,7 +28,7 @@ h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: .2px; }
 @keyframes slide { from { transform: translateX(-100%) } to { transform: translateX(280%) } }
 p { margin: 0; min-height: 20px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .bar[data-indeterminate] .fill { animation: none; width: 100%; opacity: .35; } }
-</style></head><body><div class="drag"></div><main><h1>RainyAgent</h1>
+</style></head><body><div class="drag"></div><main><h1>Rainy</h1>
 <div class="bar" data-indeterminate><div class="fill"></div></div><p id="step">${localized({ zh: '正在启动…', en: 'Starting…' })}</p></main>
 <script>
 window.__rainyStartup = (state) => {

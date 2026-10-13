@@ -249,7 +249,7 @@ export class NativeToolsDownloader {
    * @returns settled operation.
    */
   start(request: NativeToolsRequest): Promise<void> {
-    if (this.closed) return Promise.reject(new Error(localized({ zh: 'RainyAgent 正在关闭', en: 'RainyAgent is closing.' })))
+    if (this.closed) return Promise.reject(new Error(localized({ zh: 'Rainy 正在关闭', en: 'Rainy is closing.' })))
     if (this.running) {
       return Promise.reject(new Error(localized({ zh: '另一个工具操作正在进行，请等待完成或先取消',
         en: 'Another tool operation is in progress. Wait for it to finish or cancel it first.' })))

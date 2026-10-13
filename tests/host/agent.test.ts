@@ -39,7 +39,7 @@ describe('agent', () => {
     expect(snapshot.summary.cwd).toBe(h.project)
     // The second request carries the tool result back to the model.
     expect(JSON.stringify(server.requests[1])).toContain('rainy-hello')
-    expect(JSON.stringify(server.requests[0])).toContain('You are RainyAgent')
+    expect(JSON.stringify(server.requests[0])).toContain('You are Rainy')
     const file = await readFile(join(h.home, 'chats', `${chat.id}.jsonl`), 'utf8')
     expect(file.split('\n').filter(Boolean).length).toBeGreaterThanOrEqual(6)
     expect(h.events.some(item => item.event === 'session.entry')).toBe(true)

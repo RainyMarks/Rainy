@@ -102,7 +102,7 @@ export async function installWindowsComponent(options: {
   if (expected.platform !== 'windows') throw new Error('This component belongs to another execution target.')
   const root = resolve(options.root)
   const archive = join(resolve(options.mediaDirectory), expected.file)
-  if ((await stat(archive)).size !== expected.bytes || await componentDigest(archive) !== expected.sha256) throw new Error(localized({ zh: '离线组件包缺失或已损坏，请重新安装 RainyAgent。', en: 'The offline component archive is missing or corrupt. Reinstall RainyAgent.' }))
+  if ((await stat(archive)).size !== expected.bytes || await componentDigest(archive) !== expected.sha256) throw new Error(localized({ zh: '离线组件包缺失或已损坏，请重新安装 Rainy。', en: 'The offline component archive is missing or corrupt. Reinstall Rainy.' }))
   await mkdir(root, { recursive: true, mode: 0o700 })
   const destination = join(root, expected.id, expected.sha256.slice(0, 32))
   const emit = (message: string): void => { try { options.progress?.(message) } catch (error) { console.error('Component progress callback failed:', error) } }
