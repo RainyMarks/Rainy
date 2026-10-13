@@ -4,51 +4,77 @@
 
 # RainyAgent
 
-**An AI coding workbench for CTF players on Windows: editor, AI assistant and a 38-tool CTF kit in one window.**
+**The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 38 security tools without leaving the window.**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/RainyAgent?label=release&color=3b82f6)](https://github.com/RainyMarks/RainyAgent/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/RainyAgent/total?color=10b981)](https://github.com/RainyMarks/RainyAgent/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
 [![License](https://img.shields.io/badge/license-source%20available-f59e0b)](LICENSE)
+[![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?logo=x)](https://x.com/RainyMarksqwq)
 
 English | [中文](README.zh.md)
 
-[**Download for Windows**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
+[**Download for Windows (189 MB)**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
 
 </div>
 
-![RainyAgent workspace: editor, terminal and AI assistant](assets/workbench.png)
+![RainyAgent: editor, terminal and a solved XOR challenge](assets/workbench.png)
 
-Write a solve script, run it, ask the AI why it fails, then open Wireshark or CyberChef without leaving the window. RainyAgent runs commands in native Windows or WSL2, connects to any compatible model service or API, and can run supported models locally with the Strata engine. Develop by NCUCyberBase.
+RainyAgent puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by NCUCyberBase.
 
-## Highlights
+## Why RainyAgent
 
 | | |
 |---|---|
-| **Light by design** | One package with no plugin framework: an Electron window, a small Node Host and a React page. Tools, the Strata engine, PHP and the WSL runtime are downloaded only when you need them. |
-| **AI that works in your project** | The assistant reads, searches and edits project files, runs commands and remembers the project across conversations. By default it asks before running a command; switch a chat to read-only or full auto, and undo any file change it made in one click. Skills are picked up from `.rainy/skills`; MCP servers (including an IDA preset) and a global prompt are configured in Settings. |
-| **A real editor** | A CodeMirror 6 editor with tabs, search and replace, completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Images, Markdown, PDF, audio and video open in previews, and any file opens in a hex view. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
-| **38 CTF tools, one click each** | Web, traffic, reverse engineering, forensics, steganography, audio and encoding tools, each downloaded separately. Updates download only the tools that changed. |
-| **Windows or WSL2** | Start in native Windows; switch the project to a WSL2 environment whenever a challenge needs Linux. |
-| **Your model, your choice** | Use any OpenAI- or Anthropic-compatible service, a local server, or Strata local inference on an NVIDIA GPU. Model requests follow the system proxy or one you set. Keys stay on your machine, encrypted with Windows data protection. |
+| **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file change it makes can be undone in one click. Add skills in `.rainy/skills` and MCP servers (including an IDA preset) in Settings. |
+| **38 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, dnSpy, StegSolve, Binwalk, Audacity, Sonic Visualiser and more, sorted into web, traffic, reverse engineering, forensics, stego, audio and encoding. Each tool downloads on its own, works offline, and updates only when it changes. |
+| **See inside any file** | Images open with zoom, pixel colors and one-click color channels and bit planes. Binaries open in a hex view with a data inspector and a binwalk-style scan for embedded files. Markdown, PDF, audio and video preview in place. |
+| **A real editor and debugger** | CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
+| **Windows or WSL2** | Start in native Windows; move a project to a WSL2 environment whenever a challenge needs Linux tools. |
+| **Your model, your keys** | Keys stay on your machine, encrypted with Windows data protection. Model requests follow the system proxy or one you set. There is no telemetry; crash reports stay local. |
+| **Light** | A 189 MB installer. Tools, the Strata engine, PHP and the WSL runtime download only when you need them. |
 
-![CTF tools: download each tool when you need it](assets/ctf-tools.png)
+<a id="tour"></a>
+## A quick look
+
+**Stego in one click.** Step through color channels and bit planes; this flag hides in bit 0 of the red channel.
+
+![A hidden flag revealed in the red channel's lowest bit](assets/stego.png)
+
+**Hex view with an inspector.** Read any byte as integers, floats or UTF-8, and scan the whole file for embedded PNG, ZIP, ELF and other headers.
+
+![Hex view of a ZIP file with the data inspector and embedded file scan](assets/hex.png)
+
+**Tools when you need them.** Search the catalog by name or use, and download only what the challenge needs.
+
+![CTF tools catalog](assets/ctf-tools.png)
 
 <a id="whats-new"></a>
-## What's new in 2.0
+## What's new in 2.1
 
-RainyAgent 2.0 is a rewrite: the DeepSeek Harness plugin platform is gone, and the app is one package built on pi-ai and pi-agent-core.
+- **VS Code-style previews**:
+  - Images with channels and bit planes.
+  - Markdown with source, preview and split views.
+  - PDF, audio and video.
+  - A hex view for any file, with a data inspector and an embedded-file scan.
+  - GBK and UTF-16 text.
+- **AI you control**:
+  - Read-only, ask, and full auto permission modes, with an approval bar for commands, MCP tools and writes outside the project.
+  - One-click undo of the agent's file changes.
+  - New file search and content search tools.
+- **Network and privacy**:
+  - Model requests follow the system proxy (including PAC) or one you set.
+  - API keys are encrypted with Windows data protection.
+  - Crash reports stay local, and Settings can export a scrubbed diagnostics zip.
+- **35% smaller installer**: 189 MB (293 MB for 2.0).
+- **2.1.1**:
+  - Save errors in Settings are explained beside the button.
+  - Open chats keep their own permission mode.
+  - Model changes reach open chats at once.
+  - About 40 smaller fixes.
+  - See the [release notes](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1).
 
-- **Lighter**: the installer is 293 MB (325 MB for 1.0.10) and the WSL runtime about 310 MB (was about 340 MB).
-- **CodeMirror 6 editor**: replaces Monaco and loads on demand; tabs, completion, hover, go to definition, rename, diagnostics and diffs remain.
-- **Chat history**: search chats, see them grouped as pinned, current project and other projects, and rename, pin, archive or delete them.
-- **Cheaper compaction**: compaction reuses the chat's prompt cache, and the chat shows when it is compacting.
-- **MCP and skills**: MCP servers are configured once in Settings, Streamable HTTP servers accept request headers such as `Authorization`, and skills are read from `.rainy/skills` automatically.
-- **Presets in the model list**: DeepSeek V4.1 Flash, Claude Opus 5.5 and Claude Haiku 5.5 are listed beside your saved models; select **Load** to use one.
-
-### Upgrading from 1.x
-
-RainyAgent 2.0 imports your saved models, API keys and global prompt from 1.x on first start. Chats from 1.x use the old Harness session format and are not imported; per-chat extension settings are replaced by the global MCP settings and automatic skills.
+Upgrading from 1.x: on first start RainyAgent imports your saved models, API keys and global prompt. Chats from 1.x use an older format and are not imported.
 
 <a id="run"></a>
 ## Download and start
@@ -62,7 +88,7 @@ RainyAgent 2.0 imports your saved models, API keys and global prompt from 1.x on
 |---|---|---|
 | Strata engine | about 560 MB | **Settings → Runtime environments → Optional components** |
 | PHP | about 38 MB | **Settings → Runtime environments → Optional components** |
-| WSL runtime | about 310 MB | Downloaded automatically on the first WSL launch |
+| WSL runtime | about 296 MB | Downloaded automatically on the first WSL launch |
 | CTF tools | 1 MB – 400 MB each | **CTF tools → Common tools** |
 
 RainyAgent checks for stable releases and downloads them in the background. A downloaded update offers **Later** or **Restart and install**; ordinary exit does not install it, and updates never download your tools again. See [tool installation and updates](docs/desktop.md#ctf-workbench) for details.
@@ -78,7 +104,7 @@ RainyAgent checks for stable releases and downloads them in the background. A do
 
 The selected Windows or WSL environment must be able to reach the service. Keys are stored encrypted in that environment's private credential store, and RainyAgent never silently switches to another model.
 
-For Claude, select **Load** next to **Claude Opus 5.5** or **Claude Haiku 5.5** in the model list of **Settings → Models** and enter your Anthropic API key; both presets share the key. The Haiku preset uses a 100K window so each request stays in Claude Haiku 5.5's lower price tier. A relay works the same way: keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), and RainyAgent applies that model's adaptive thinking and effort levels. Claude sessions keep the prompt cache for an hour, so continuing a conversation reads the earlier context from the cache.
+The model list includes presets for **DeepSeek V4.1 Flash**, **Claude Opus 5.5** and **Claude Haiku 5.5**: select **Load**, enter your API key and save. Both Claude presets share one Anthropic key. The Haiku preset uses a 100K window so each request stays in Claude Haiku 5.5's lower price tier. A relay works the same way: keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), and RainyAgent applies that model's adaptive thinking and effort levels. Claude sessions keep the prompt cache for an hour, so continuing a conversation reads the earlier context from the cache.
 
 ### Strata local model
 
@@ -100,12 +126,16 @@ git clone https://github.com/RainyMarks/RainyAgent.git
 cd RainyAgent
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.0.0 -ComponentSource release/offline-2.0.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.1.1 -ComponentSource release/offline-2.1.1/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `2.1.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
+
+## Support the project
+
+If RainyAgent helped you solve a challenge, a ⭐ on this repository helps other players find it. Follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X for releases and CTF tips. Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues).
 
 ## License and attribution
 
@@ -113,4 +143,4 @@ RainyAgent is maintained independently of DeepSeek. Versions 1.x were built on [
 
 RainyAgent integration code uses the [RainyAgent Source Available License 1.0](LICENSE.RainyAgent). Personal and internal business use, modification, and noncommercial redistribution are free; sale, paid hosting, and commercial redistribution require written permission. This is a source-available project, not an OSI-approved open-source distribution. See [license scope](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-Report problems through [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues). Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).

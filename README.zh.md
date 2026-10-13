@@ -4,51 +4,76 @@
 
 # RainyAgent
 
-**为 CTF 选手打造的 Windows AI 编程工作台：编辑器、AI 助手和 38 款 CTF 工具，一个窗口全搞定。**
+**为 CTF 打造的 Windows AI 智能体工作台：写解题脚本、运行、让 AI 找出哪里不对，再打开 38 款安全工具中的任意一款，全程不离开这个窗口。**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/RainyAgent?label=release&color=3b82f6)](https://github.com/RainyMarks/RainyAgent/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/RainyAgent/total?color=10b981)](https://github.com/RainyMarks/RainyAgent/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
 [![License](https://img.shields.io/badge/license-source%20available-f59e0b)](LICENSE)
+[![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?logo=x)](https://x.com/RainyMarksqwq)
 
 [English](README.md) | 中文
 
-[**下载 Windows 版**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [2.0 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（189 MB）**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [2.1 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
-![RainyAgent 工作区：编辑器、终端与 AI 助手](assets/workbench.png)
+![RainyAgent：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
 
-写解题脚本、运行、让 AI 帮你看哪里出错，再顺手打开 Wireshark 或 CyberChef，全程不用离开这个窗口。RainyAgent 可在 Windows 原生或 WSL2 中执行命令，可连接任意兼容的模型服务或 API，也能用 Strata 引擎在本机运行受支持的模型。Develop by NCUCyberBase.
+RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by NCUCyberBase.
 
-## 亮点
+## 为什么选 RainyAgent
 
 | | |
 |---|---|
-| **轻量设计** | 单一代码包，没有插件框架：一个 Electron 窗口、一个小型 Node Host 和一个 React 页面。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
-| **懂你项目的 AI** | AI 助手读写项目文件、搜索代码、执行命令，并跨对话记住项目内容。运行命令前默认先问你，也可以切换为只读或完全自动；AI 改过的文件可以一键撤销。Skills 自动从 `.rainy/skills` 读取；MCP 服务（含 IDA 预设）和全局提示词在设置中配置。 |
-| **真正的编辑器** | CodeMirror 6 编辑器，支持标签页、查找替换、补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。图片、Markdown、PDF、音视频直接预览，任何文件都能以十六进制查看。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
-| **38 款 CTF 工具，一键下载** | 涵盖 Web、流量、逆向、取证、隐写、音频和编码等工具，每款单独下载。更新时只下载有变化的工具。 |
-| **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 时，随时把项目切换到 WSL2。 |
-| **模型自己选** | 支持任意 OpenAI 或 Anthropic 兼容服务、本地服务，也可在 NVIDIA 显卡上用 Strata 本地推理。模型请求可跟随系统代理或使用你设置的代理。密钥只保存在你的电脑上，并用 Windows 数据保护加密。 |
+| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的每个文件都能一键撤销。Skills 放在 `.rainy/skills`，MCP 服务（含 IDA 预设）在设置中添加。 |
+| **38 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、dnSpy、StegSolve、Binwalk、Audacity、Sonic Visualiser 等，按 Web、流量、逆向、取证、隐写、音频、编码分类。每款单独下载、离线可用，有变化时才更新。 |
+| **看清任何文件** | 图片支持缩放、查看像素颜色，一键切换颜色通道和位平面；二进制文件用十六进制查看，带数据检查器和类似 binwalk 的内嵌文件扫描；Markdown、PDF、音视频直接预览。 |
+| **真正的编辑器和调试器** | CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
+| **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 工具时，随时把项目切换到 WSL2。 |
+| **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
+| **轻量** | 安装包 189 MB。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
 
-![CTF 工具：用到哪款就下载哪款](assets/ctf-tools.png)
+<a id="tour"></a>
+## 看一眼
+
+**一键查看隐写。** 逐个切换颜色通道和位平面：这道题的 flag 藏在红色通道的最低位。
+
+![红色通道最低位里藏着的 flag](assets/zh/stego.png)
+
+**带数据检查器的十六进制视图。** 任意字节都能按整数、浮点数或 UTF-8 解读，还能在整个文件里扫描内嵌的 PNG、ZIP、ELF 等文件头。
+
+![ZIP 文件的十六进制视图、数据检查器和内嵌文件扫描](assets/zh/hex.png)
+
+**用到哪款工具就下载哪款。** 按名称或用途搜索，只下载这道题需要的工具。
+
+![CTF 工具目录](assets/zh/ctf-tools.png)
 
 <a id="whats-new"></a>
-## 2.0 新变化
+## 2.1 新变化
 
-2.0 是一次重写：RainyAgent 不再基于 DeepSeek Harness 插件平台，改为基于 pi-ai 与 pi-agent-core 的单一代码包。
+- **像 VS Code 一样预览文件**：
+  - 图片可看颜色通道和位平面。
+  - Markdown 有源码、预览、分栏三种视图。
+  - PDF、音视频直接打开。
+  - 任何文件都能用十六进制查看，带数据检查器和内嵌文件扫描。
+  - GBK、UTF-16 文本正确显示。
+- **AI 更可控**：
+  - 三种权限模式：只读、询问、完全自动。运行命令、调用 MCP 工具、写项目外文件前会显示批准栏。
+  - AI 改过的文件可一键撤销。
+  - 新增文件名搜索和文件内容搜索工具。
+- **网络与隐私**：
+  - 模型请求可跟随系统代理（含 PAC）或使用你设置的代理。
+  - API 密钥用 Windows 数据保护加密。
+  - 崩溃记录只保存在本机，设置里可以导出抹去敏感信息的诊断压缩包。
+- **安装包小了 35%**：189 MB（2.0 为 293 MB）。
+- **2.1.1**：
+  - 设置保存失败时，原因显示在按钮旁。
+  - 已打开的对话保留各自的权限。
+  - 修改模型后，已打开的对话立即生效。
+  - 另有约 40 处修复，见[发布说明](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1)。
 
-- **更轻**：安装包 293 MB（1.0.10 为 325 MB），WSL 运行环境约 310 MB（原约 340 MB）。
-- **CodeMirror 6 编辑器**：取代 Monaco，按需加载；标签页、补全、悬停提示、转到定义、重命名、诊断和差异对比都保留。
-- **对话历史**：可搜索，按置顶、当前项目、其他项目分组，支持重命名、置顶、归档和删除。
-- **压缩更省钱**：上下文压缩复用对话的提示词缓存，压缩时对话里会显示“正在压缩上下文…”。
-- **MCP 与 Skills**：MCP 服务在设置中统一配置，Streamable HTTP 服务可填写请求头（如 `Authorization`）；Skills 从 `.rainy/skills` 自动读取。
-- **预设进了模型列表**：DeepSeek V4.1 Flash、Claude Opus 5.5 和 Claude Haiku 5.5 预设与已保存的模型列在一起，点击**载入**即可使用。
-
-### 从 1.x 升级
-
-2.0 首次启动时会从 1.x 导入已保存的模型、API 密钥和全局提示词。1.x 的对话使用旧的 Harness 会话格式，不会导入；按对话设置的扩展改为全局 MCP 设置和自动读取的 Skills。
+从 1.x 升级：首次启动会导入 1.x 保存的模型、API 密钥和全局提示词。1.x 的对话格式较旧，不会导入。
 
 <a id="run"></a>
 ## 下载与开始使用
@@ -62,7 +87,7 @@
 |---|---|---|
 | Strata 引擎 | 约 560 MB | **设置 → 运行环境 → 可选组件** |
 | PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
-| WSL 运行环境 | 约 310 MB | 首次以 WSL 启动时自动下载 |
+| WSL 运行环境 | 约 296 MB | 首次以 WSL 启动时自动下载 |
 | CTF 工具 | 每款 1 MB – 400 MB | **CTF 工具 → 常用工具** |
 
 RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新，更新也不会重新下载你的工具。详见[工具安装与更新](docs/desktop.zh.md#ctf-workbench)。
@@ -78,7 +103,7 @@ RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择
 
 所选 Windows 或 WSL 环境必须能访问服务地址。密钥加密保存在该环境的私有凭据存储中，RainyAgent 不会静默切换到其他模型。
 
-使用 Claude 时，在**设置 → 模型**的模型列表中点击 **Claude Opus 5.5** 或 **Claude Haiku 5.5** 旁的**载入**，并填写 Anthropic API 密钥，两个预设共用同一个密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），RainyAgent 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
+模型列表里有 **DeepSeek V4.1 Flash**、**Claude Opus 5.5** 和 **Claude Haiku 5.5** 三个预设：点击**载入**，填写 API 密钥后保存即可。两个 Claude 预设共用同一个 Anthropic 密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），RainyAgent 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
 
 ### Strata 本地模型
 
@@ -100,12 +125,16 @@ git clone https://github.com/RainyMarks/RainyAgent.git
 cd RainyAgent
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.0.0 -ComponentSource release/offline-2.0.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.1.1 -ComponentSource release/offline-2.1.1/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.1.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
+
+## 支持这个项目
+
+如果 RainyAgent 帮你解出了题，给仓库点个 ⭐ 能让更多选手看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新和 CTF 技巧。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues)。
 
 ## 许可与归属
 
@@ -113,4 +142,4 @@ RainyAgent 由独立团队维护。1.x 版本基于 [DeepSeek Harness 0.1.7-rc.2
 
 RainyAgent 集成代码使用 [RainyAgent Source Available License 1.0](LICENSE.RainyAgent)。个人和企业内部使用、修改及非商业再分发均免费；销售、收费托管和商业再分发需要书面许可。本项目属于源码可用项目，不是 OSI 认可的开源发行版。具体范围见[许可说明](LICENSE)和[第三方声明](THIRD_PARTY_NOTICES.md)。
 
-问题反馈请使用 [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues)。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md)开始。
+开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md)开始。
