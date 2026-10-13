@@ -342,7 +342,7 @@ describe('human IDE execution', () => {
     const f = fixture()
     await expect(f.request({ op: 'debug.start', workspaceId, configuration: { ...configuration, language: 'php', program: 'main.py' }, breakpoints: [] }))
       .rejects.toThrow('no PHP debug adapter')
-    expect(ideExecutionFailure(new ExecutableNotFoundError('gdb'))).toEqual({ code: 'dependency-unavailable', message: 'Executable not found: gdb' })
+    expect(ideExecutionFailure(new ExecutableNotFoundError('gdb'))).toEqual({ code: 'dependency-unavailable', message: '找不到可执行程序：gdb。请在 设置 → 运行环境 中选择或准备它。' })
     expect(ideExecutionFailure(new Error('other'))).toEqual({ code: 'execution-error', message: 'other' })
   })
 })

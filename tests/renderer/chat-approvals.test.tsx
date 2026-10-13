@@ -66,8 +66,18 @@ it('asks before a command runs and sends the answer to the Host', async () => {
   await showWaiting('ask-1')
   expect(hasText('等待批准')).toBe(true)
   expect(document.body.textContent).toContain('python3 solve.py')
+  // The command has not started while it waits.
+  expect(hasText('运行中')).toBe(false)
   await click(button('总是允许 python3'))
   expect(calls('chat.approve')).toEqual([{ sessionId: 'ask-1', toolCallId: 'c1', decision: 'always' }])
+})
+
+it('shows the next chat the default mode Settings just chose', async () => {
+  handle('security.status', () => ({ defaultMode: 'ask' as const, rules: { commands: [], tools: [] } }))
+  await render(<ChatPane workspace={workspace} sessionId={null} onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
+  await waitFor(() => { expect(all('[data-permission="ask"]')).toHaveLength(1) })
+  await emit('security.changed', { defaultMode: 'auto' })
+  await waitFor(() => { expect(all('[data-permission="auto"]')).toHaveLength(1) })
 })
 
 it('denies with Esc, or with an instruction typed into the bar', async () => {

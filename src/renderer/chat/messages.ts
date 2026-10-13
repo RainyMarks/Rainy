@@ -175,6 +175,10 @@ export const { useT: useChatT, t: chatT } = defineMessages({
   sendFailed: '发送失败：{message}',
   selectionTemplate: '请查看 {path} 第 {start}-{end} 行：\n\n```{language}\n{code}\n```\n',
   disconnected: '与 RainyAgent 的连接已断开，正在重连…',
+  chatLoadFailed: '无法打开这个对话：{message}',
+  historyLoadFailed: '无法读取对话历史：{message}',
+  retry: '重试',
+  attachPathFailed: '无法取得 {name} 的路径，没有添加引用。',
 }, {
   assistant: 'AI assistant',
   newChat: 'New chat',
@@ -349,4 +353,8 @@ export const { useT: useChatT, t: chatT } = defineMessages({
   sendFailed: 'Send failed: {message}',
   selectionTemplate: 'Please look at {path} lines {start}-{end}:\n\n```{language}\n{code}\n```\n',
   disconnected: 'Connection to RainyAgent lost; reconnecting…',
+  chatLoadFailed: 'Could not open this chat: {message}',
+  historyLoadFailed: 'Could not read the chat history: {message}',
+  retry: 'Retry',
+  attachPathFailed: 'Could not get the path of {name}, so no reference was added.',
 })

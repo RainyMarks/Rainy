@@ -46,7 +46,7 @@ describe('verified offline components', () => {
     await installWindowsComponent(value.options)
     const before = await readFile(join(value.root, 'active.json'), 'utf8')
     await writeFile(value.archive, 'damaged')
-    await expect(installWindowsComponent(value.options)).rejects.toThrow('corrupt')
+    await expect(installWindowsComponent(value.options)).rejects.toThrow('离线组件包缺失或已损坏，请重新安装 RainyAgent。')
     expect(await readFile(join(value.root, 'active.json'), 'utf8')).toBe(before)
   })
   it('rechecks installed files before reusing an existing generation', async () => {
@@ -63,7 +63,7 @@ describe('verified offline components', () => {
   it('rejects a destination that would exceed native Windows library loading limits', async () => {
     const value = await fixture()
     const root = join(value.root, 'a'.repeat(140))
-    await expect(installWindowsComponent({ ...value.options, root })).rejects.toThrow('too long')
+    await expect(installWindowsComponent({ ...value.options, root })).rejects.toThrow('组件路径过长')
     await expect(readFile(join(root, 'active.json'))).rejects.toHaveProperty('code', 'ENOENT')
   })
 })

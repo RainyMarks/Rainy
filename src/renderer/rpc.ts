@@ -98,7 +98,7 @@ class HostClient {
       this.setState('closed')
       // Requests sent on the lost connection never get answers.
       for (const id of this.sent) {
-        this.pending.get(id)?.reject(new HostError({ code: 'disconnected', message: 'Connection to RainyAgent was lost.' }))
+        this.pending.get(id)?.reject(new HostError({ code: 'disconnected', message: disconnectedText() }))
         this.pending.delete(id)
       }
       this.sent.clear()
@@ -123,6 +123,18 @@ class HostClient {
     if (frame.error !== undefined) pending.reject(new HostError(frame.error))
     else pending.resolve(frame.result)
   }
+}
+
+/** Message of a request lost with its connection; the page replaces it with one in the interface language. */
+let disconnectedText = (): string => 'The connection to RainyAgent was lost, so this action did not finish.'
+
+/**
+ * Word the error of requests lost with their connection. This module cannot import the message tables, which read
+ * preferences through it.
+ * @param text Returns the message when a request fails.
+ */
+export function describeDisconnection(text: () => string): void {
+  disconnectedText = text
 }
 
 /** The renderer's single Host connection. */

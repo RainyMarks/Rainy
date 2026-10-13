@@ -124,7 +124,11 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
 
   mcp.sync(settings.get().mcpServers)
   mcp.onChange(() => { void extensionsStatus(lastExtensionsCwd).then(status => { rpc.emit('extensions.changed', status) }) })
-  models.onChange(status => { rpc.emit('models.changed', status) })
+  models.onChange((status) => {
+    rpc.emit('models.changed', status)
+    // Open chats show the default model and its context window; both may have changed.
+    for (const live of sessions.values()) live.refresh()
+  })
   void sweepSpill(join(env.home, 'spill')).catch((error: unknown) => { log(`[spill] sweep failed: ${String(error)}`) })
   void snapshots.sweep(SPILL_RETENTION_MS).catch((error: unknown) => { log(`[snapshots] sweep failed: ${String(error)}`) })
 
@@ -217,8 +221,9 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('sessions.search', async ({ query, limit }) => (await store.search(query, Math.min(limit ?? 20, 50))).map(hit => ({ summary: summary(hit.chat.id), snippet: hit.snippet })))
   rpc.register('sessions.create', async ({ workspaceId, cwd, permission }) => {
     const directory = cwdFor(workspaceId) ?? cwd ?? env.home
-    const mode = permission === undefined ? undefined : permissionSchema.parse(permission)
-    const chat = await store.create({ workspaceId, cwd: directory, ...(mode === undefined ? {} : { permission: mode }) })
+    // Every chat records its mode, so a later change of the default in Settings does not reach it.
+    const mode = permission === undefined ? settings.defaultPermission() : permissionSchema.parse(permission)
+    const chat = await store.create({ workspaceId, cwd: directory, permission: mode })
     const created = summary(chat.id)
     rpc.emit('sessions.changed', created)
     return created
@@ -261,7 +266,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     while (end + 1 < file.entries.length && file.entries[end + 1]!.kind === 'toolResult') end++
     const chat = await store.create({
       workspaceId: file.chat.workspaceId, cwd: file.chat.cwd, parent: { sessionId, entryId }, entries: file.entries.slice(0, end + 1),
-      title: localized({ zh: `${file.chat.title || '新对话'}（分支）`, en: `${file.chat.title || 'New chat'} (branch)` }), model: file.chat.model, ...(file.chat.permission === undefined ? {} : { permission: file.chat.permission }),
+      title: localized({ zh: `${file.chat.title || '新对话'}（分支）`, en: `${file.chat.title || 'New chat'} (branch)` }), model: file.chat.model, permission: file.chat.permission ?? settings.defaultPermission(),
     })
     const created = summary(chat.id)
     rpc.emit('sessions.changed', created)
@@ -338,9 +343,22 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   // ── security ──
   rpc.register('security.status', ({ workspaceId }) => securityStatus(workspaceId))
   rpc.register('security.setDefault', async ({ mode }) => {
-    await settings.setDefaultPermission(permissionSchema.parse(mode))
+    const next = permissionSchema.parse(mode)
+    const previous = settings.defaultPermission()
+    if (next !== previous) {
+      // Chats from before 2.1.1 have no mode of their own; they keep the one they have been running with.
+      for (const chat of store.list()) {
+        if (chat.permission !== undefined) continue
+        const live = sessions.get(chat.id)
+        if (live === undefined) await store.setMeta(chat.id, { permission: previous })
+        else await live.setPermission(previous)
+      }
+    }
+    await settings.setDefaultPermission(next)
     for (const live of sessions.values()) live.refresh()
-    return securityStatus(undefined)
+    const status = securityStatus(undefined)
+    rpc.emit('security.changed', { defaultMode: status.defaultMode })
+    return status
   })
   rpc.register('security.removeRule', async (params) => {
     const { workspaceId, kind, rule } = removeRuleSchema.parse(params)

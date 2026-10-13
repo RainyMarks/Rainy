@@ -6,6 +6,7 @@ import { assets } from '../../src/editor/editor.ts'
 import { languageKey, lspLanguageId, serverLanguage } from '../../src/editor/languages.ts'
 import { sanitizeDocumentation } from '../../src/editor/lsp.ts'
 import { directoryUri, uriInside, uriKey } from '../../src/editor/uri.ts'
+import { IDE_LANGUAGE_RESTART_CODE } from '../../src/shared/ide-files-protocol.ts'
 import type { EditorCallbacks, EditorDocument, EditorInstance } from '../../src/renderer/ide/editor-types.ts'
 
 const labels = {
@@ -121,4 +122,33 @@ it('switches its built-in phrases when the locale changes', async () => {
   expect(shownView(container).state.phrase('Find')).toBe('Find')
   editor.setLabels({ ...labels, locale: 'zh' })
   expect(shownView(container).state.phrase('Find')).toBe('查找')
+})
+
+it('reopens a language connection the Host closed to restart its server, and reports other closes', async () => {
+  const sockets: FakeSocket[] = []
+  class FakeSocket extends EventTarget {
+    constructor(readonly url: string | URL) { super(); sockets.push(this) }
+    send(): void {}
+    close(): void {}
+  }
+  vi.stubGlobal('WebSocket', FakeSocket)
+  try {
+    const events = callbacks()
+    const container = document.createElement('div')
+    document.body.append(container)
+    editor = await assets.create(container, events, labels)
+    await editor.setWorkspace({ id: 'w', path: '/project', title: 'project', roots: [{ rootId: 'primary', path: '/project', title: 'project' }] })
+    editor.updateDocuments([{ ...document1, uri: 'file:///project/main.py' }])
+    expect(sockets).toHaveLength(1)
+    const closed = (code: number, reason: string): Event => Object.assign(new Event('close'), { code, reason })
+    sockets[0]!.dispatchEvent(closed(IDE_LANGUAGE_RESTART_CODE, 'Language environment changed'))
+    expect(sockets).toHaveLength(2)
+    expect(String(sockets[1]!.url)).toBe(String(sockets[0]!.url))
+    expect(events.languageState).not.toHaveBeenCalledWith('primary:python', 'error', expect.anything())
+    sockets[1]!.dispatchEvent(closed(1011, 'Language server stopped'))
+    expect(sockets).toHaveLength(2)
+    expect(events.languageState).toHaveBeenLastCalledWith('primary:python', 'error', 'Language server stopped')
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

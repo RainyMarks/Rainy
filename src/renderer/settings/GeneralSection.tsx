@@ -42,7 +42,7 @@ const shortcuts: readonly { keys: readonly string[]; key: SettingsMessage }[] = 
 ]
 
 function change(value: Partial<UiPreferences>): void {
-  setPrefs(value).catch((error: unknown) => { toast(errorText(error)) })
+  setPrefs(value).catch((error: unknown) => { toast(errorText(error), { tone: 'error' }) })
 }
 
 function changeSize(field: 'uiFontSize' | 'codeFontSize', value: number): void {
@@ -61,7 +61,7 @@ export function GeneralSection(): JSX.Element {
     if (diagnostics === undefined) return
     setExporting(true)
     diagnostics.export().then((path) => { if (path !== null) toast(t('diagnosticsSaved', { path }), { tone: 'success' }) },
-      (error: unknown) => { toast(errorText(error)) }).finally(() => { setExporting(false) })
+      (error: unknown) => { toast(errorText(error), { tone: 'error' }) }).finally(() => { setExporting(false) })
   }
   const sizes = [
     { field: 'uiFontSize', value: prefs.uiFontSize, title: 'fontSizeTitle', description: 'fontSizeDescription', up: 'fontSizeIncrease', down: 'fontSizeDecrease' },

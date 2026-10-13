@@ -11,7 +11,12 @@ import { Field, Loading, Notice, Select } from './parts.tsx'
 import type { StrataActions, StrataSnapshot } from './strata-controller.ts'
 import css from './sections.module.css'
 
-interface Props { snapshot: StrataSnapshot; actions: StrataActions }
+interface Props {
+  snapshot: StrataSnapshot
+  actions: StrataActions
+  /** Context window of the saved Strata model profile, which keeps budgeting with it until the next connect. */
+  savedContext?: number | undefined
+}
 interface Form {
   modelPath: string
   mtpPath: string
@@ -67,7 +72,7 @@ export function StrataSettings(props: Props): JSX.Element {
   </details>
 }
 
-function StrataForm({ snapshot, actions, status }: Props & { status: StrataStatus }): JSX.Element {
+function StrataForm({ snapshot, actions, status, savedContext }: Props & { status: StrataStatus }): JSX.Element {
   const t = useT()
   const [form, setForm] = useState(() => formOf(status.settings))
   const saved = useRef(formOf(status.settings))
@@ -145,6 +150,8 @@ function StrataForm({ snapshot, actions, status }: Props & { status: StrataStatu
     {status.progress !== null && <Notice tone="status">{status.progress}</Notice>}
     {status.error !== null && <Notice tone="error">{status.error}</Notice>}
     {status.server?.loaded === true && <p className={css.muted}>{t('strataHealth', { model: status.server.model, context: status.server.contextWindow.toLocaleString('en-US') })}</p>}
+    {status.server?.loaded === true && savedContext !== undefined && savedContext !== status.server.contextWindow
+      && <Notice>{t('strataContextStale', { saved: savedContext.toLocaleString('en-US'), actual: status.server.contextWindow.toLocaleString('en-US') })}</Notice>}
     {status.server?.owned === false && <p className={css.muted}>{t('strataExternalNote')}</p>}
     {status.server?.authenticationRequired === true && <Notice>{t('strataAuthentication')}</Notice>}
     <div className={css.actions}>

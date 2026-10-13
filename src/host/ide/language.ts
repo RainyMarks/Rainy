@@ -6,7 +6,7 @@ import type { RawData, WebSocket } from 'ws'
 import { z } from 'zod'
 import { assertNever, brandString } from '../../shared/brand.ts'
 import type { IdeExecutionConfiguration } from '../../shared/ide-execution-protocol.ts'
-import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import { IDE_LANGUAGE_RESTART_CODE, type IdeRootId, type WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { ProcessHandle } from '../process.ts'
 import type { ResolvedWorkspaceEnvironment } from '../runtime/environments.ts'
 import type { IdeSubprocess } from './execution-process.ts'
@@ -114,6 +114,9 @@ interface Connection {
   readonly socket: WebSocket
   readonly child: ProcessHandle
   readonly workspaceId: WorkspaceId
+  /** The process choice the server started with, and the mounted directory it serves. */
+  readonly spec: IdeLanguageSpec
+  readonly rootId: IdeRootId | undefined
   closePromise?: Promise<void>
   closing: boolean
 }
@@ -190,8 +193,9 @@ export class IdeLanguageService {
     socket.on('message', hold)
     void (async () => {
       let spec: IdeLanguageSpec
+      let query: z.infer<typeof languageQuery>
       try {
-        const query = languageQuery.parse(Object.fromEntries(url.searchParams))
+        query = languageQuery.parse(Object.fromEntries(url.searchParams))
         spec = await this.resolve(query.workspaceId, query.language, query.rootId)
       } catch (error) {
         socket.close(1008, 'Invalid editor language request')
@@ -200,7 +204,7 @@ export class IdeLanguageService {
       }
       socket.off('message', hold)
       if (socket.readyState !== OPEN) return
-      try { this.attach(socket, spec, early) } catch (error) {
+      try { this.attach(socket, spec, early, query.rootId) } catch (error) {
         socket.close(1011, 'Language server could not start')
         this.options.log(`IDE language startup failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
       }
@@ -212,8 +216,9 @@ export class IdeLanguageService {
    * @param socket Accepted WebSocket.
    * @param spec Resolved process.
    * @param early Messages received before the process existed.
+   * @param rootId Mounted directory the spec was resolved for; omitted means the primary directory.
    */
-  attach(socket: WebSocket, spec: IdeLanguageSpec, early: readonly Received[] = []): void {
+  attach(socket: WebSocket, spec: IdeLanguageSpec, early: readonly Received[] = [], rootId?: IdeRootId): void {
     this.options.assertUsable()
     if (this.closing || this.connections.size >= this.options.limits.maxConnections) {
       socket.close(1013, 'Editor language capacity reached')
@@ -223,7 +228,7 @@ export class IdeLanguageService {
     const child = this.options.subprocess.spawn({ argv: spec.argv, cwd: spec.root, stdin: 'pipe', graceMs: limits.killGraceMs,
       environment: { ...spec.environment, PYTHONDONTWRITEBYTECODE: '1' } })
     child.stderr.resume()
-    const connection: Connection = { socket, child, workspaceId: spec.workspaceId, closing: false }
+    const connection: Connection = { socket, child, workspaceId: spec.workspaceId, spec, rootId, closing: false }
     this.connections.add(connection)
     const stop = (): void => {
       void this.closeConnection(connection).catch((error: unknown) => { this.options.log(`Editor language shutdown failed: ${String(error)}`) })
@@ -288,13 +293,35 @@ export class IdeLanguageService {
       .map(connection => this.closeConnection(connection)))
   }
 
-  private closeConnection(connection: Connection): Promise<void> {
+  /**
+   * Restart the project's language servers whose process choice changed, such as the PATH after another interpreter
+   * was selected. Their connections close with {@link IDE_LANGUAGE_RESTART_CODE} so the editor opens them again.
+   * @param workspaceId Project identity.
+   * @returns Completion after the replaced processes stopped.
+   */
+  async refreshWorkspace(workspaceId: WorkspaceId): Promise<void> {
+    const stale: Connection[] = []
+    for (const connection of [...this.connections].filter(entry => entry.workspaceId === workspaceId && !entry.closing)) {
+      let next: IdeLanguageSpec
+      try { next = await this.resolve(workspaceId, connection.spec.language, connection.rootId) } catch (error) {
+        this.options.log(`IDE language refresh skipped: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      const started = connection.spec
+      if (JSON.stringify([next.argv, next.environment ?? {}]) !== JSON.stringify([started.argv, started.environment ?? {}])) stale.push(connection)
+    }
+    const results = await Promise.allSettled(stale.map(connection => this.closeConnection(connection, IDE_LANGUAGE_RESTART_CODE, 'Language environment changed')))
+    for (const result of results) if (result.status === 'rejected') this.options.log(`Editor language restart failed: ${String(result.reason)}`)
+  }
+
+  private closeConnection(connection: Connection, code?: number, reason?: string): Promise<void> {
     if (connection.closePromise) return connection.closePromise
     connection.closing = true
     connection.closePromise = (async () => {
       connection.socket.removeAllListeners('message')
       connection.child.stdout.removeAllListeners('data')
-      connection.socket.close()
+      if (code === undefined) connection.socket.close()
+      else connection.socket.close(code, reason)
       connection.child.terminate()
       const quiet = await connection.child.waitForExit(AbortSignal.timeout(this.options.limits.shutdownMs))
       this.connections.delete(connection)

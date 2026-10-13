@@ -5,6 +5,7 @@ import { basename, delimiter, isAbsolute, join } from 'node:path'
 import { PassThrough, type Readable, type Writable } from 'node:stream'
 import { createRequire } from 'node:module'
 import type { IPty } from 'node-pty'
+import { localized } from '../shared/locale.ts'
 
 /** Environment names never inherited by child processes. */
 export const SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
@@ -26,7 +27,7 @@ export function scrubbedEnv(base: NodeJS.ProcessEnv = process.env): Record<strin
 export class ExecutableNotFoundError extends Error {
   /** @param command The program that was looked up. */
   constructor(readonly command: string) {
-    super(`Executable not found: ${command}`)
+    super(localized({ zh: `找不到可执行程序：${command}。请在 设置 → 运行环境 中选择或准备它。`, en: `Executable not found: ${command}. Choose or prepare it in Settings → Runtime.` }))
     this.name = 'ExecutableNotFoundError'
   }
 }

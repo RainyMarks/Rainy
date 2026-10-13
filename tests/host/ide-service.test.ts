@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { DEFAULT_CONFIG } from '../../src/shared/config.ts'
 import type { IdeExecutionStatus } from '../../src/shared/ide-execution-protocol.ts'
-import type { IdeFileDocument, IdeWorkspace, IdeWorkspaceState } from '../../src/shared/ide-files-protocol.ts'
+import { IDE_LANGUAGE_RESTART_CODE, type IdeFileDocument, type IdeWorkspace, type IdeWorkspaceState } from '../../src/shared/ide-files-protocol.ts'
 import { createProjectRegistry } from '../../src/shared/project-registry.ts'
 import { Activity } from '../../src/host/activity.ts'
 import type { HostEnvironment } from '../../src/host/env.ts'
@@ -46,7 +46,7 @@ async function host() {
   const cookie = (launch.headers.get('set-cookie') ?? '').split(';')[0] ?? ''
   const origin = `http://127.0.0.1:${server.port}`
   const workspace = await ide.handle({ op: 'workspaces.open', path: project }) as IdeWorkspace
-  return { root, env, project, projects, activity, server, ide, cookie, origin, workspace, log }
+  return { root, env, project, projects, activity, runtime, server, ide, cookie, origin, workspace, log }
 }
 
 async function rpcError(promise: Promise<unknown>): Promise<RpcError> {
@@ -139,6 +139,21 @@ describe('language route', () => {
     const closed = new Promise<number>((resolve) => { socket.once('close', (code) => { resolve(code) }) })
     socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'workspace/didChangeWorkspaceFolders', params: {} }))
     expect(await closed).toBe(1011)
+  }, 60000)
+
+  it('restarts a running language server after another interpreter is selected for its project', async () => {
+    const { origin, cookie, workspace, project, runtime } = await host()
+    const url = `${origin.replace('http', 'ws')}/rainy/ide/lsp?workspaceId=${encodeURIComponent(workspace.workspaceId)}&language=typescript`
+    const socket = new WebSocket(url, { headers: { cookie, origin } })
+    cleanups.push(async () => { socket.terminate() })
+    const messages: unknown[] = []
+    socket.on('message', (data) => { messages.push(JSON.parse(String(data))) })
+    await new Promise<void>((resolve, reject) => { socket.once('open', () => { resolve() }); socket.once('error', reject) })
+    socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { processId: 1, rootUri: pathToFileURL(project).href, capabilities: {} } }))
+    await vi.waitFor(() => { expect(messages.some(message => (message as { id?: unknown }).id === 1)).toBe(true) }, { timeout: 30000, interval: 100 })
+    const closed = new Promise<[number, string]>((resolve) => { socket.once('close', (code, reason) => { resolve([code, String(reason)]) }) })
+    await runtime.handle({ op: 'select', workspaceId: workspace.workspaceId, language: 'node', path: process.execPath })
+    expect(await closed).toEqual([IDE_LANGUAGE_RESTART_CODE, 'Language environment changed'])
   }, 60000)
 
   it('closes language connections with an invalid query or an unauthenticated upgrade', async () => {

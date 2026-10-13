@@ -1,6 +1,7 @@
 /** Interpreter discovery and per-project selection, served through the `runtime` RPC method. */
 import { z } from 'zod'
 import { brandString } from '../../shared/brand.ts'
+import { localized } from '../../shared/locale.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { ProjectRegistry } from '../../shared/project-registry.ts'
 import type { RuntimeRequest, RuntimeSnapshot } from '../../shared/runtime-protocol.ts'
@@ -42,6 +43,12 @@ export interface RuntimeService {
    * @throws Error when the project is unknown or the carrier is replacing this Host.
    */
   resolveWorkspace(id: WorkspaceId): ResolvedWorkspaceEnvironment
+  /**
+   * Observe interpreter selections, so processes started with the previous environment can be replaced.
+   * @param listener Receives the project whose selection was saved.
+   * @returns A function that removes the listener.
+   */
+  onSelectionChange(listener: (workspaceId: WorkspaceId) => void): () => void
 }
 
 /** Dependencies of {@link createRuntime}. */
@@ -82,16 +89,21 @@ export async function createRuntime(deps: RuntimeDependencies): Promise<RuntimeS
   await environments.initialize()
   let operations = 0
   activity.addSource(() => operations > 0)
+  const selectionListeners = new Set<(workspaceId: WorkspaceId) => void>()
 
   async function serve(request: z.infer<typeof requestSchema>): Promise<RuntimeSnapshot> {
     const project = projects.get(request.workspaceId)
-    if (project === undefined) throw new Error('The selected workspace is unavailable.')
+    if (project === undefined) throw new Error(localized({ zh: '所选项目不可用。', en: 'The selected workspace is unavailable.' }))
     await registry.getOrRegister({ workspaceId: project.id, path: project.path, title: project.title })
     switch (request.op) {
       case 'status': return environments.status(request.workspaceId)
       case 'discover': return environments.discover(request.workspaceId)
       case 'probe': return environments.probe(request.workspaceId, request.language, request.path)
-      case 'select': return environments.select(request.workspaceId, request.language, request.path)
+      case 'select': {
+        const snapshot = await environments.select(request.workspaceId, request.language, request.path)
+        for (const listener of selectionListeners) listener(request.workspaceId)
+        return snapshot
+      }
     }
   }
 
@@ -106,7 +118,7 @@ export async function createRuntime(deps: RuntimeDependencies): Promise<RuntimeS
         operations++
         try { return await serve(request) } finally { operations-- }
       } catch (error) {
-        throw new RpcError('runtime-error', error instanceof Error ? error.message : 'Runtime inspection failed.')
+        throw new RpcError('runtime-error', error instanceof Error ? error.message : localized({ zh: '检测运行环境失败。', en: 'Runtime inspection failed.' }))
       }
     },
     resolveDirectory(cwd) {
@@ -116,8 +128,12 @@ export async function createRuntime(deps: RuntimeDependencies): Promise<RuntimeS
     resolveWorkspace(id) {
       activity.assertCanStart()
       const project = projects.get(id)
-      if (project === undefined) throw new Error('The selected workspace is unavailable.')
+      if (project === undefined) throw new Error(localized({ zh: '所选项目不可用。', en: 'The selected workspace is unavailable.' }))
       return environments.resolve(project.path)
+    },
+    onSelectionChange(listener) {
+      selectionListeners.add(listener)
+      return () => { selectionListeners.delete(listener) }
     },
   }
 }

@@ -4,6 +4,9 @@
  * `.credentials.json` stays a version 1 file: empty once its keys are sealed, so an older RainyAgent starts without
  * keys instead of failing, and any key it stores there is sealed on the next start. Without the carrier (development
  * runs) keys stay in `.credentials.json` as before.
+ *
+ * A sealed value no key here can open is never deleted: it stays under its name until the user stores or removes that
+ * key, and then moves to `unreadable` in the same file, so a restored carrier key could still recover it.
  */
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { join } from 'node:path'
@@ -51,14 +54,26 @@ export function credentialSeal(key: Buffer): CredentialSeal {
 }
 
 const plainSchema = z.object({ version: z.literal(1), keys: z.record(z.string(), z.string()) })
-const sealedSchema = z.object({ version: z.literal(2), keys: z.record(z.string(), z.string()) })
+const sealedSchema = z.object({
+  version: z.literal(2),
+  keys: z.record(z.string(), z.string()),
+  /** Unreadable values the user replaced or removed since, newest last; RainyAgent 2.1.0 reads the file without it. */
+  unreadable: z.record(z.string(), z.array(z.string())).optional(),
+})
+
+/** Replaced unreadable values kept per name. */
+const MAX_SET_ASIDE = 8
 
 /** The credential files of one Host home. */
 export class CredentialFiles {
   private readonly plainFile: string
   private readonly sealedFile: string
-  /** Sealed values this key cannot open; kept in the file until their name is stored again. */
+  /** Sealed values this key cannot open; kept in the file under their name until it is stored again or removed. */
   private unreadable: Record<string, string> = {}
+  /** Unreadable values the user replaced or removed, kept in the file's `unreadable` section. */
+  private setAside: Record<string, string[]> = {}
+  /** Without the carrier: names in the sealed file that the plain file does not hold. */
+  private unopened: string[] = []
 
   /**
    * @param home Host home directory.
@@ -74,6 +89,11 @@ export class CredentialFiles {
     return this.sealer !== undefined
   }
 
+  /** @returns Names of stored keys that could not be opened and have not been stored again or removed since. */
+  get unreadableNames(): string[] {
+    return this.sealer === undefined ? [...this.unopened] : Object.keys(this.unreadable)
+  }
+
   /**
    * Read the stored keys. Keys found in the plain file are newer than sealed ones (an older version or a run without the
    * carrier wrote them); they are sealed and removed from the plain file.
@@ -82,11 +102,18 @@ export class CredentialFiles {
   async read(): Promise<Record<string, string>> {
     const plainRaw = await readJson(this.plainFile)
     const plain = plainRaw === undefined ? {} : plainSchema.parse(plainRaw).keys
-    if (this.sealer === undefined) return plain
     const sealedRaw = await readJson(this.sealedFile)
+    if (this.sealer === undefined) {
+      // Only the carrier's key opens the sealed file; it stays untouched for a run that has the key.
+      const sealed = sealedRaw === undefined ? undefined : sealedSchema.safeParse(sealedRaw)
+      this.unopened = sealed?.success === true ? Object.keys(sealed.data.keys).filter(name => !(name in plain)) : []
+      return plain
+    }
+    const file = sealedRaw === undefined ? undefined : sealedSchema.parse(sealedRaw)
     const keys: Record<string, string> = {}
     this.unreadable = {}
-    for (const [name, value] of Object.entries(sealedRaw === undefined ? {} : sealedSchema.parse(sealedRaw).keys)) {
+    this.setAside = file?.unreadable ?? {}
+    for (const [name, value] of Object.entries(file?.keys ?? {})) {
       const opened = this.sealer.open(name, value)
       if (opened === undefined) this.unreadable[name] = value
       else keys[name] = opened
@@ -105,14 +132,20 @@ export class CredentialFiles {
   async write(keys: Record<string, string>, removed: readonly string[] = []): Promise<void> {
     if (this.sealer === undefined) {
       await writeJson(this.plainFile, { version: 1, keys })
+      this.unopened = this.unopened.filter(name => !(name in keys) && !removed.includes(name))
       return
     }
     const sealer = this.sealer
     const kept = Object.fromEntries(Object.entries(this.unreadable).filter(([name]) => !(name in keys) && !removed.includes(name)))
+    const setAside = { ...this.setAside }
+    for (const [name, value] of Object.entries(this.unreadable)) {
+      if (!(name in kept)) setAside[name] = [...(setAside[name] ?? []).filter(item => item !== value), value].slice(-MAX_SET_ASIDE)
+    }
     const sealed = Object.fromEntries(Object.entries(keys).map(([name, value]) => [name, sealer.seal(name, value)]))
     // Sealed first: an interrupted write leaves the plain key in place, and the next start seals it again.
-    await writeJson(this.sealedFile, { version: 2, keys: { ...kept, ...sealed } })
+    await writeJson(this.sealedFile, { version: 2, keys: { ...kept, ...sealed }, ...Object.keys(setAside).length === 0 ? {} : { unreadable: setAside } })
     await writeJson(this.plainFile, { version: 1, keys: {} })
     this.unreadable = kept
+    this.setAside = setAside
   }
 }

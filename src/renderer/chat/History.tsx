@@ -80,7 +80,7 @@ function Row({ chat, current, workspaceId, onSelect, onDelete }: {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const title = chat.title === '' ? t('untitled') : chat.title
-  const call = (promise: Promise<unknown>): void => { promise.catch((error: unknown) => { toast(message(error)) }) }
+  const call = (promise: Promise<unknown>): void => { promise.catch((error: unknown) => { toast(message(error), { tone: 'error' }) }) }
 
   const items: MenuEntry[] = [
     { id: 'rename', label: t('rename') },
@@ -157,7 +157,7 @@ export function History({ currentSessionId, workspaceId, onSelect, onNewChat }: 
     const timer = window.setTimeout(() => {
       host.call('sessions.search', { query: trimmed, limit: 30 }).then((result) => {
         if (seq === searchSeq.current) setHits(result)
-      }, (error: unknown) => { toast(message(error)) })
+      }, (error: unknown) => { toast(message(error), { tone: 'error' }) })
     }, 200)
     return () => { window.clearTimeout(timer) }
   }, [query])
@@ -173,7 +173,7 @@ export function History({ currentSessionId, workspaceId, onSelect, onNewChat }: 
     if (chat === undefined) return
     host.call('sessions.delete', { sessionId: chat.id }).then(() => {
       if (chat.id === currentSessionId) onNewChat()
-    }, (error: unknown) => { toast(message(error)) })
+    }, (error: unknown) => { toast(message(error), { tone: 'error' }) })
   }
 
   return (

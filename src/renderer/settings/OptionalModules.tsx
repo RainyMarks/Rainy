@@ -72,7 +72,9 @@ export function OptionalModules({ only, onChange }: { only?: OptionalModuleId; o
             : module.installed ? t('modulesInstalled', { size: fileSizeText(module.unpackedBytes) }) : t('modulesNotInstalled')}
         </p>
         <div className={css.actions}>
-          {active ? <Button size="sm" variant="outline" onClick={() => { void bridge.cancel() }}>{t('modulesCancel')}</Button>
+          {active ? <Button size="sm" variant="outline" onClick={() => {
+            bridge.cancel().catch((error: unknown) => { if (mounted.current) setProgress(previous => ({ ...previous, phase: 'error', error: errorText(error) })) })
+          }}>{t('modulesCancel')}</Button>
             : module.installed ? <Button size="sm" variant="outline" disabled={busy || running}
               onClick={() => { act(() => bridge.remove(module.id)) }}>{t('modulesRemove')}</Button>
               : <Button size="sm" variant="primary" disabled={busy || running}

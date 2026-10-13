@@ -49,16 +49,22 @@ const sections: readonly { id: SettingsSection; label: SettingsMessage; Icon: ty
 export function SettingsDialog({ open, section, workspace, onClose }: SettingsDialogProps): JSX.Element | null {
   const t = useT()
   const [active, setActive] = useState<SettingsSection>(section ?? 'general')
+  /** Sections opened since the dialog opened; they stay mounted while hidden, so switching keeps unsaved edits. */
+  const [visited, setVisited] = useState<ReadonlySet<SettingsSection>>(() => new Set())
   const [requested, setRequested] = useState({ open, section })
   if (requested.open !== open || requested.section !== section) {
     setRequested({ open, section })
     if (open) setActive(section ?? 'general')
+    if (open && !requested.open) setVisited(new Set())
   }
+  if (open && !visited.has(active)) setVisited(new Set([...visited, active]))
   const panel = useRef<HTMLDivElement>(null)
   const titleId = useId()
   useModalLayer(panel, open, onClose)
   if (!open) return null
   const project = workspace?.workspaceId ?? ''
+  const pane = (id: SettingsSection, content: JSX.Element): JSX.Element | null =>
+    id === active || visited.has(id) ? <div key={id} hidden={id !== active}>{content}</div> : null
   return createPortal(<div className={css.overlay} role="presentation">
     <div className={css.mask} aria-hidden="true" onClick={onClose} />
     <div ref={panel} tabIndex={-1} className={css.panel} role="dialog" aria-modal="true" aria-labelledby={titleId}
@@ -79,12 +85,12 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
           <button type="button" className={css.close} aria-label={t('close')} onClick={onClose}><IconCloseOutlineRegular size={14} /></button>
         </div>
         <div className={css.options}>
-          {active === 'general' && <GeneralSection />}
-          {active === 'models' && <ModelsSection workspace={workspace} />}
-          {active === 'extensions' && <ExtensionsSection key={project} workspace={workspace} />}
-          {active === 'runtime' && <RuntimeSection key={project} workspace={workspace} />}
-          {active === 'memory' && <MemorySection key={project} workspace={workspace} />}
-          {active === 'security' && <SecuritySection key={project} workspace={workspace} />}
+          {pane('general', <GeneralSection />)}
+          {pane('models', <ModelsSection workspace={workspace} />)}
+          {pane('extensions', <ExtensionsSection key={project} workspace={workspace} />)}
+          {pane('runtime', <RuntimeSection key={project} workspace={workspace} />)}
+          {pane('memory', <MemorySection key={project} workspace={workspace} />)}
+          {pane('security', <SecuritySection key={project} workspace={workspace} />)}
         </div>
       </div>
     </div>

@@ -72,7 +72,7 @@ export async function verifyWindowsComponent(directory: string, expected: Enviro
   for (const file of manifest.files) {
     if (known.has(file.path)) throw new Error('The component inventory contains a duplicate path.')
     known.add(file.path)
-    if (/\.(?:dll|pyd|exe)$/iu.test(file.path) && childPath(destination, file.path).length > 240) throw new Error('The component path is too long for Windows native-library loading; use a shorter application data directory.')
+    if (/\.(?:dll|pyd|exe)$/iu.test(file.path) && childPath(destination, file.path).length > 240) throw new Error(localized({ zh: '组件路径过长，Windows 无法加载其中的本机库；请把应用数据目录放到更短的路径。', en: 'The component path is too long for Windows native-library loading; use a shorter application data directory.' }))
     const path = childPath(directory, file.path)
     const info = await lstat(path)
     if (!info.isFile() || info.isSymbolicLink() || info.size !== file.bytes || await componentDigest(path) !== file.sha256) throw new Error(`Component verification failed: ${file.path}`)
@@ -102,7 +102,7 @@ export async function installWindowsComponent(options: {
   if (expected.platform !== 'windows') throw new Error('This component belongs to another execution target.')
   const root = resolve(options.root)
   const archive = join(resolve(options.mediaDirectory), expected.file)
-  if ((await stat(archive)).size !== expected.bytes || await componentDigest(archive) !== expected.sha256) throw new Error('The offline component archive is missing or corrupt.')
+  if ((await stat(archive)).size !== expected.bytes || await componentDigest(archive) !== expected.sha256) throw new Error(localized({ zh: '离线组件包缺失或已损坏，请重新安装 RainyAgent。', en: 'The offline component archive is missing or corrupt. Reinstall RainyAgent.' }))
   await mkdir(root, { recursive: true, mode: 0o700 })
   const destination = join(root, expected.id, expected.sha256.slice(0, 32))
   const emit = (message: string): void => { try { options.progress?.(message) } catch (error) { console.error('Component progress callback failed:', error) } }
@@ -112,7 +112,7 @@ export async function installWindowsComponent(options: {
   else {
     const disk = await statfs(root, { bigint: true })
     const required = BigInt(expected.unpackedBytes) + BigInt(Math.max(32 * 1024 * 1024, Math.ceil(expected.unpackedBytes / 20)))
-    if (disk.bavail * disk.bsize < required) throw new Error('The component destination does not have enough free space for verified extraction.')
+    if (disk.bavail * disk.bsize < required) throw new Error(localized({ zh: '目标磁盘空间不足，无法解压并校验组件。', en: 'The component destination does not have enough free space for verified extraction.' }))
     const staging = join(root, `.component-${randomUUID()}`)
     await mkdir(staging, { mode: 0o700 })
     try {

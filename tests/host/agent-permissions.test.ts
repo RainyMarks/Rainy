@@ -186,6 +186,17 @@ describe('approvals', () => {
     expect(snapshot.permission).toBe('auto')
     expect(JSON.stringify(results(snapshot)[0]!.content)).toContain('after-switch')
   })
+
+  it('keeps an open chat in its mode when the default for new chats changes', async () => {
+    const { h, sessionId } = await start([echo('still-asks'), { text: 'done' }])
+    await h.call('security.setDefault', { mode: 'auto' })
+    expect(h.events).toContainEqual({ event: 'security.changed', data: { defaultMode: 'auto' } })
+    expect((await h.call('sessions.get', { sessionId })).permission).toBe('ask')
+    await h.call('chat.send', { sessionId, text: 'run it' })
+    expect((await pending(h, sessionId)).toolName).toBe(shell)
+    const next = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    expect((await h.call('sessions.get', { sessionId: next.id })).permission).toBe('auto')
+  })
 })
 
 describe('undo', () => {

@@ -51,7 +51,7 @@ export function ModelPicker({ sessionId, selection, disabled = false, openSignal
 
   const choose = (next: ModelSelection): void => {
     const call = sessionId === null ? host.call('models.select', next) : host.call('chat.setModel', { sessionId, ...next })
-    call.catch((error: unknown) => { toast(error instanceof Error ? error.message : String(error)) })
+    call.catch((error: unknown) => { toast(error instanceof Error ? error.message : String(error), { tone: 'error' }) })
   }
 
   const items: MenuEntry[] = []

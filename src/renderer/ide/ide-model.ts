@@ -1042,8 +1042,12 @@ export class IdeModel {
     if (!this.disposed)
       this.patch({
         phase: this.switching ? 'loading' : this.state.getSnapshot().workspace === null ? 'error' : 'ready',
-        error: this.options.describeError?.(error) ?? (error instanceof Error ? error.message : String(error)),
+        error: this.describe(error),
       })
+  }
+  /** @param error Operation failure. @returns Its text in the interface language where the failure code is known. */
+  describe(error: unknown): string {
+    return this.options.describeError?.(error) ?? (error instanceof Error ? error.message : String(error))
   }
 
   /**

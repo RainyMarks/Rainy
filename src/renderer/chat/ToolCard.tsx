@@ -105,7 +105,8 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
   const [undoing, setUndoing] = useState(false)
   const args = record(call.arguments)
   const details = record(result?.details)
-  const isRunning = result === undefined && running !== undefined
+  // A call waiting for approval has not started, whatever the agent's tool phase says.
+  const isRunning = result === undefined && running !== undefined && approval === undefined
   const failed = result?.isError === true
   const refused = details.refused === 'user' || details.refused === 'mode' ? details.refused : undefined
   const state = approval !== undefined ? 'warning' : isRunning ? 'ongoing' : result === undefined ? 'idle' : failed ? 'error' : 'done'
@@ -117,7 +118,7 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
     body = (
       <TerminalBlock command={str(args.command) ?? ''} cwd={str(details.cwd)} output={output}
         exitCode={typeof details.exitCode === 'number' ? details.exitCode : result === undefined ? undefined : null}
-        signal={str(details.signal)} running={isRunning} labels={labels.terminal} />
+        signal={str(details.signal)} running={isRunning} runStateDot={approval === undefined} labels={labels.terminal} />
     )
   } else if (call.name === 'read' && !failed && Array.isArray(details.lines)) {
     const path = str(details.path) ?? str(args.file_path) ?? ''

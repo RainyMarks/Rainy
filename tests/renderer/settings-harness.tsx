@@ -51,7 +51,7 @@ export const rpcModule = {
 }
 
 /** Recorder replacing `toast` from `src/renderer/ui/toasts.tsx`. */
-export const toast = vi.fn<(text: string, options?: { tone?: 'success' }) => void>()
+export const toast = vi.fn<(text: string, options?: { tone?: 'success' | 'error' }) => void>()
 /** Module replacing `src/renderer/ui/toasts.tsx`. */
 export const toastsModule = { toast, ToastHost: () => null }
 

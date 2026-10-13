@@ -104,7 +104,13 @@
   !insertmacro rainyRejectReparse "$INSTDIR\resources"
   !insertmacro rainyRejectReparse "$INSTDIR\resources\environment"
   !insertmacro rainyRejectReparse "$INSTDIR\locales"
+  !insertmacro rainyRejectReparse "$INSTDIR\resources\windows-host"
   SetOutPath $TEMP
+  ; The app deletes its bundled Windows runtime file by file from the inventory; if that fails the files stay and the uninstall goes on.
+  ${If} ${FileExists} "$INSTDIR\resources\windows-host\runtime.json"
+  ${AndIf} ${FileExists} "$INSTDIR\RainyAgent.exe"
+    ExecWait '"$INSTDIR\RainyAgent.exe" --rainy-remove-runtime' $0
+  ${EndIf}
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\RainyAgent.exe"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\chrome_100_percent.pak"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\chrome_200_percent.pak"
@@ -121,6 +127,7 @@
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\vk_swiftshader_icd.json"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\vk_swiftshader.dll"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\vulkan-1.dll"
+  !insertmacro rainyDeleteApplicationFile "$INSTDIR\release-integrity.json"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\app.asar"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\app-update.yml"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\elevate.exe"
@@ -132,6 +139,10 @@
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\native-tools-channel.signed.json"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\native-tools-public-keys.json"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\optional-modules.json"
+  !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\environment-component-catalog.json"
+  !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\install-environment-component.py"
+  !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\release-manifest.signed.json"
+  !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\release-public-keys.json"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\environment\wsl.3.0.1.0.x64.msi"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\environment\ubuntu-26.04.1-wsl-amd64.wsl"
   !insertmacro rainyDeleteApplicationFile "$INSTDIR\resources\environment\media-verification.json"

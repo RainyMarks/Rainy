@@ -3,6 +3,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { PendingApproval, SessionSnapshot, SessionSummary, TranscriptEntry } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
+import { toast } from '../ui/toasts.tsx'
 import { chatT } from './messages.ts'
 
 /** Live output of a running tool. */
@@ -96,6 +97,20 @@ host.onState(() => {
   if (host.state === 'open') for (const id of chats.keys()) void loadChat(id).catch(() => undefined)
 })
 
+function failureText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Load a chat the user picked; a failure leaves the pane empty, so it is announced with a way to try again.
+ * @param sessionId Chat id.
+ */
+function open(sessionId: string): void {
+  void loadChat(sessionId).catch((error: unknown) => {
+    toast(chatT('chatLoadFailed', { message: failureText(error) }), { tone: 'error', actions: [{ label: chatT('retry'), onClick: () => { open(sessionId) } }] })
+  })
+}
+
 /**
  * Follow one chat.
  * @param sessionId Chat id, or `null`.
@@ -103,7 +118,7 @@ host.onState(() => {
  */
 export function useChat(sessionId: string | null): ChatView | undefined {
   useEffect(() => {
-    if (sessionId !== null && !chats.has(sessionId)) void loadChat(sessionId).catch((error: unknown) => { console.error(error) })
+    if (sessionId !== null && !chats.has(sessionId)) open(sessionId)
   }, [sessionId])
   return useSyncExternalStore(
     (listener) => {
@@ -143,7 +158,11 @@ host.onState(() => { if (host.state === 'open' && summaries !== undefined) void 
 
 /** @returns Every chat summary; re-renders on change. */
 export function useSummaries(): SessionSummary[] | undefined {
-  useEffect(() => { if (summaries === undefined) void reloadSummaries().catch((error: unknown) => { console.error(error) }) }, [])
+  useEffect(() => {
+    if (summaries === undefined) {
+      void reloadSummaries().catch((error: unknown) => { toast(chatT('historyLoadFailed', { message: failureText(error) }), { tone: 'error' }) })
+    }
+  }, [])
   return useSyncExternalStore(listener => { summaryListeners.add(listener); return () => { summaryListeners.delete(listener) } }, () => summaries)
 }
 

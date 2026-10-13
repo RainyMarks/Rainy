@@ -158,10 +158,10 @@ export function PdfViewer({ url, bytes }: { url: string; bytes: number }): JSX.E
         texts.push(`--- ${number} ---\n${content.items.map(item => item.str ?? '').join(' ')}`)
       }
       const text = texts.join('\n\n')
-      if (await writeClipboard(text)) toast(t('pdfTextCopied', { count: text.length }), { tone: 'success' })
-      else toast(t('copyFailed'))
+      if (await writeClipboard(text, { quiet: true })) toast(t('pdfTextCopied', { count: text.length }), { tone: 'success' })
+      else toast(t('copyFailed'), { tone: 'error' })
     } catch (failure) {
-      toast(t('pdfFailed', { error: failure instanceof Error ? failure.message : String(failure) }))
+      toast(t('pdfFailed', { error: failure instanceof Error ? failure.message : String(failure) }), { tone: 'error' })
     } finally { setExtracting(false) }
   }
 

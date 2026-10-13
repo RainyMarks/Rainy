@@ -1,6 +1,7 @@
 /** Models section: saved models and the default, the model form, global prompt, context budget and the Strata engine. */
 import { useEffect, useId, useRef, useState } from 'react'
 import clsx from 'clsx'
+import { resolveBudget } from '../../shared/budget.ts'
 import { DEFAULT_CONFIG } from '../../shared/config.ts'
 import type {
   BudgetPreview, ModelApi, ModelDiscoveryInput, ModelSetup, ModelSetupInput, ModelsStatus, ThinkingLevel,
@@ -18,7 +19,7 @@ import { t as lookup, useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
 import { useModelsStatus } from './models-status.ts'
 import { strataBridge } from './native.ts'
-import { Field, Loading, Notice, Select, errorText, useAction } from './parts.tsx'
+import { ActionFailure, Field, Loading, Notice, Select, errorText, useAction } from './parts.tsx'
 import type { SettingsWorkspace } from './parts.tsx'
 import { StrataSettings } from './StrataSettings.tsx'
 import { StrataController, useStrata } from './strata-controller.ts'
@@ -55,9 +56,15 @@ export function emptyModelForm(contextWindow: number): ModelForm {
     api: 'openai-completions', thinking: 'off', thinkingFormat: 'openai', maxTokensField: 'max_tokens' }
 }
 
+/** Before 2.1.1 an empty output limit was saved as the automatic share; such a value reads as automatic again. */
+function automaticOutput(model: ModelSetup): boolean {
+  if (model.maxTokens === undefined) return true
+  try { return model.maxTokens === resolveBudget(model.contextWindow).outputTokens } catch (_invalid) { return false }
+}
+
 function formOf(model: ModelSetup): ModelForm {
   return { provider: model.provider, baseURL: model.baseURL, model: model.model, context: String(model.contextWindow), contextEdited: true,
-    output: model.maxTokens === undefined ? '' : String(model.maxTokens), apiKey: '', local: model.local,
+    output: automaticOutput(model) ? '' : String(model.maxTokens), apiKey: '', local: model.local,
     api: model.api ?? (model.local ? 'openai-completions' : 'openai-responses'), thinking: model.thinking ?? 'off',
     thinkingFormat: model.thinkingFormat ?? 'openai', maxTokensField: model.maxTokensField ?? 'max_tokens' }
 }
@@ -135,7 +142,8 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
   // One list: saved configurations (a saved preset keeps its name), then presets not saved yet.
   const presets = status?.presets ?? []
   const nameOf = (key: string): string => presets.find(preset => keyOf(preset.model) === key)?.name ?? key
-  const unsavedPresets = presets.filter(preset => status?.models.some(model => keyOf(model) === keyOf(preset.model)) !== true)
+  // One profile is kept per provider, so a preset whose provider is saved under another model id is not offered again.
+  const unsavedPresets = presets.filter(preset => status?.models.some(model => model.provider === preset.model.provider) !== true)
   const connection = (): ModelDiscoveryInput => {
     if (!form.provider.trim() || !form.baseURL.trim()) throw new Error(t('settingsRequiredDiscovery'))
     return { provider: form.provider.trim(), baseURL: form.baseURL.trim(), api: form.api,
@@ -154,7 +162,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
     setRemoving(undefined)
     run(async () => {
       accept(await host.call('models.select', { provider: model.provider, model: model.model, ...(thinking === undefined ? {} : { thinking }) }))
-    }, t('settingsApplied'))
+    }, t('settingsApplied'), 'models')
   }
   const remove = (model: ModelSetup): void => {
     const key = keyOf(model)
@@ -163,7 +171,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
     run(async () => {
       accept(await host.call('models.remove', { provider: model.provider }))
       if (editing === key) load(emptyModelForm(config.local), undefined)
-    }, t('modelRemoved', { name: nameOf(key) }))
+    }, t('modelRemoved', { name: nameOf(key) }), 'models')
   }
   const field = (key: 'provider' | 'baseURL' | 'model' | 'context' | 'output' | 'apiKey', label: string, options: { type?: string; wide?: boolean } = {}) =>
     <Field label={label} wide={options.wide}><input className={css.input} aria-label={label} type={options.type ?? 'text'} value={form[key]}
@@ -177,11 +185,13 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       items={items.map(id => ({ id, label: labels?.[id] ?? id }))} onChange={change} /></Field>
   const thinkingLabels: Partial<Record<ThinkingLevel, string>> = { off: t('settingsThinkingOff') }
   const keyStored = status?.credentials.includes(form.provider.trim()) === true
-  const keyLabel = !keyStored ? 'settingsApiKey' : status?.keysEncrypted === true ? 'settingsApiKeyEncrypted' : 'settingsApiKeyStored'
+  const keyLabel = !keyStored ? form.local ? 'settingsApiKey' : 'settingsApiKeyRequired'
+    : status?.keysEncrypted === true ? 'settingsApiKeyEncrypted' : 'settingsApiKeyStored'
 
   return <section className={css.section} data-settings-section="models">
     <h2 className={css.heading}>{t('settingsModels')}</h2>
     {error !== '' && <Notice tone="error">{error}</Notice>}
+    {status?.keysUnreadable !== undefined && <Notice tone="error">{status.keysUnreadable}</Notice>}
     <article className={css.card} data-default-model>
       <div className={css.row}>
         <h3 className={css.subheading}>{t('settingsDefaultModel')}</h3>
@@ -228,6 +238,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
           </li>)}
         </ul>}
       </>}
+      <ActionFailure action={action} place="models" />
     </article>
     <article className={css.card} data-model-form>
       <h3 className={css.subheading}>{editing !== undefined ? t('modelEditTitle', { name: nameOf(editing) })
@@ -249,7 +260,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       </div>
       <details className={css.disclosure}><summary>{t('settingsCompatibility')}</summary><div className={clsx(css.grid, css.disclosed)}>
         {choice(t('settingsProtocol'), form.api, apis, (api) => { setForm(current => ({ ...current, api })) })}
-        {choice(t('settingsThinking'), form.thinking, thinkingLevels, (thinking) => { setForm(current => ({ ...current, thinking })) }, thinkingLabels)}
+        {choice(t('settingsThinking'), form.thinking, status?.thinkingLevels[form.provider.trim()] ?? thinkingLevels, (thinking) => { setForm(current => ({ ...current, thinking })) }, thinkingLabels)}
         {form.api === 'openai-completions' && <>
           {choice(t('settingsThinkingFormat'), form.thinkingFormat, thinkingFormats, (thinkingFormat) => { setForm(current => ({ ...current, thinkingFormat })) })}
           {choice(t('settingsOutputField'), form.maxTokensField, maxTokensFields, (maxTokensField) => { setForm(current => ({ ...current, maxTokensField })) })}
@@ -257,17 +268,21 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       </div></details>
       <div className={css.actions}>
         <Button variant="primary" disabled={busy} onClick={() => { run(async () => {
-          const saved = await host.call('models.configure', setup())
-          setEditing(keyOf(saved)); setDraftPreset(undefined); setForm(current => ({ ...current, apiKey: '' })); setResult(undefined)
-          await refresh()
-        }, t('settingsSaved')) }}>{t('settingsSaveModel')}</Button>
+          const previousProvider = editing === undefined ? undefined : editing.slice(0, editing.indexOf('/'))
+          const saved = await host.call('models.configure', { ...setup(), ...(previousProvider === undefined ? {} : { previousProvider }) })
+          setEditing(keyOf(saved)); setDraftPreset(undefined); setResult(undefined)
+          // Show what was stored: an automatic output limit stays empty and an unsupported reasoning level shows its replacement.
+          const stored = (await refresh())?.models.find(model => keyOf(model) === keyOf(saved))
+          setForm(current => stored === undefined ? { ...current, apiKey: '' } : formOf(stored))
+        }, t('settingsSaved'), 'form') }}>{t('settingsSaveModel')}</Button>
         <Button variant="outline" disabled={busy} onClick={() => { run(async () => {
           setResult({ kind: 'discover', models: await host.call('models.discover', connection()) })
-        }) }}>{t('settingsDiscoverModels')}</Button>
+        }, undefined, 'form') }}>{t('settingsDiscoverModels')}</Button>
         <Button variant="outline" disabled={busy} onClick={() => { run(async () => {
           setResult({ kind: 'probe', ...await host.call('models.probe', setup()) })
-        }) }}>{t('settingsProbeModel')}</Button>
+        }, undefined, 'form') }}>{t('settingsProbeModel')}</Button>
       </div>
+      <ActionFailure action={action} place="form" />
       {result !== undefined && <ModelResult result={result} form={form} t={t} choose={(model) => {
         setForm(current => ({ ...current, model: model.id,
           ...model.contextWindow !== undefined && !current.contextEdited ? { context: String(model.contextWindow) } : {} }))
@@ -276,7 +291,8 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
     <GlobalPromptSettings saved={status?.globalPrompt} action={action} accept={accept} />
     <ProxySettings action={action} />
     <BudgetCard workspace={workspace} status={status} />
-    {strata !== undefined && <StrataCard controller={strata} onConnected={(saved) => { load(formOf(saved), keyOf(saved)) }} />}
+    {strata !== undefined && <StrataCard controller={strata} savedContext={status?.models.find(model => model.provider === 'rainy-strata')?.contextWindow}
+      onConnected={(saved) => { load(formOf(saved), keyOf(saved)) }} />}
   </section>
 }
 
@@ -299,9 +315,13 @@ function ModelResult({ result, form, t, choose }: {
   </div>
 }
 
-function StrataCard({ controller, onConnected }: { controller: StrataController; onConnected(model: ModelSetup): void }): JSX.Element {
+function StrataCard({ controller, savedContext, onConnected }: {
+  controller: StrataController
+  savedContext: number | undefined
+  onConnected(model: ModelSetup): void
+}): JSX.Element {
   const snapshot = useStrata(controller)
-  return <StrataSettings snapshot={snapshot} actions={{ ...controller.actions, strataConnect: async () => {
+  return <StrataSettings snapshot={snapshot} savedContext={savedContext} actions={{ ...controller.actions, strataConnect: async () => {
     const saved = await controller.actions.strataConnect()
     if (saved !== undefined) onConnected(saved)
     return saved

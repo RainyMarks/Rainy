@@ -43,7 +43,7 @@ function OpenQuickOpenDialog({ model, state }: Props) {
       setResult({ query, phase: 'ready', ...found })
       setSelected(0)
     }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setResult({ query, phase: 'error', message: reason instanceof Error ? reason.message : String(reason) })
+      if (!controller.signal.aborted) setResult({ query, phase: 'error', message: model.describe(reason) })
     })
     return () => { controller.abort() }
   }, [query, state.workspace?.workspaceId, model])
@@ -60,7 +60,7 @@ function OpenQuickOpenDialog({ model, state }: Props) {
       await model.openFile(path)
       if (mounted.current && currentQuery.current === query) model.quickOpen(false)
     } catch (reason) {
-      if (mounted.current && currentQuery.current === query) setOpenError(reason instanceof Error ? reason.message : String(reason))
+      if (mounted.current && currentQuery.current === query) setOpenError(model.describe(reason))
     }
   }
   return <Modal open headless className={css.quickDialog} title={t('ideQuickOpen')} onClose={() => { model.quickOpen(false) }}>

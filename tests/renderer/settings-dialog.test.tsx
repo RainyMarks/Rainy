@@ -7,7 +7,7 @@ import type { SettingsDialogProps } from '../../src/renderer/settings/SettingsDi
 import { settingsMessages } from '../../src/renderer/settings/messages.ts'
 import { getPrefs } from '../../src/renderer/prefs.ts'
 import { act } from 'react'
-import { all, button, cleanup, click, emit, fakeHost, findButton, handle, hasText, render, toast, waitFor } from './settings-harness.tsx'
+import { all, button, cleanup, click, emit, fakeHost, findButton, handle, hasText, render, toast, type, waitFor } from './settings-harness.tsx'
 
 vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harness.tsx')).rpcModule)
 vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./settings-harness.tsx')).toastsModule)
@@ -50,6 +50,23 @@ it('opens on the requested section, follows section requests and navigates betwe
   expect(document.querySelector('[data-settings-dialog]')).toBeNull()
   await view.rerender(dialog({ section: undefined }))
   expect(panel().dataset['section']).toBe('general')
+})
+
+it('keeps an unsaved edit when switching sections, and starts fresh after closing', async () => {
+  handle('models.status', () => ({ models: [], credentials: [], selected: null, thinkingLevels: {}, presets: [], globalPrompt: { text: '', maxChars: 4000 } }))
+  handle('network.status', () => ({ settings: { mode: 'system' as const }, effective: null, system: null }))
+  const view = await render(dialog({ section: 'models' }))
+  const prompt = (): HTMLTextAreaElement => document.querySelector<HTMLTextAreaElement>('[data-global-prompt] textarea')!
+  await waitFor(() => { expect(prompt().disabled).toBe(false) })
+  await type(prompt(), '先读题再动手')
+  await click(button(zh.navGeneral))
+  expect(panel().dataset['section']).toBe('general')
+  await click(button(zh.navModels))
+  expect(prompt().value).toBe('先读题再动手')
+  await view.rerender(dialog({ open: false, section: 'models' }))
+  await view.rerender(dialog({ section: 'models' }))
+  await waitFor(() => { expect(prompt().disabled).toBe(false) })
+  expect(prompt().value).toBe('')
 })
 
 it('closes on Escape, the close button and the mask', async () => {
@@ -141,6 +158,6 @@ it('reports a rejected preference change', async () => {
   handle('prefs.set', () => { throw new Error('settings.json is read-only') })
   await render(dialog())
   await click(button(zh.appearanceLight))
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith('settings.json is read-only') })
+  await waitFor(() => { expect(toast).toHaveBeenCalledWith('settings.json is read-only', { tone: 'error' }) })
   expect(findButton(zh.appearanceLight)).toBeDefined()
 })

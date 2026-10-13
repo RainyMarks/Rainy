@@ -45,8 +45,11 @@ export function RunConfigurationDialog({ open, close, state, model }: Props) {
   const [configurePreset, setConfigurePreset] = useState('')
   const [buildPreset, setBuildPreset] = useState('')
   const [error, setError] = useState('')
+  /** Name of the saved profile being edited; a save under another name renames it instead of adding a copy. */
+  const [savedName, setSavedName] = useState<string | undefined>()
   const load = (next: IdeRunConfiguration): void => {
     setProfile(next)
+    setSavedName(state.data.execution?.profiles.some(entry => entry.name === next.name) === true ? next.name : undefined)
     setArguments(JSON.stringify(next.arguments ?? []))
     setEnvironment(JSON.stringify(next.environment ?? {}))
     setFlags(JSON.stringify(next.build?.kind === 'single-file' ? (next.build.flags ?? []) : []))
@@ -115,11 +118,17 @@ export function RunConfigurationDialog({ open, close, state, model }: Props) {
             },
       }
       const current = state.data.execution ?? { profiles: [], activeProfile: null, breakpoints: [], watches: [] }
+      const renamed = savedName !== undefined && savedName !== configuration.name
+      if (renamed && current.profiles.some(entry => entry.name === configuration.name)) throw new Error(t('ideProfileNameTaken', { name: configuration.name }))
       const file = openFile()
+      // A renamed profile keeps its place; leaving the old one behind would let it shadow the edit for the same program.
+      const replaced = current.profiles.findIndex(entry => entry.name === (renamed ? savedName : configuration.name))
+      const profiles = current.profiles.filter(entry => entry.name !== configuration.name && entry.name !== savedName)
+      profiles.splice(replaced < 0 ? profiles.length : Math.min(replaced, profiles.length), 0, configuration)
       // Settings for the open file apply whenever it is open; a profile for another program stays pinned until the user unpins it.
       model.execution({
         ...current,
-        profiles: [...current.profiles.filter(entry => entry.name !== configuration.name), configuration],
+        profiles,
         activeProfile: file !== undefined && runsFile(configuration, file) ? null : configuration.name,
       })
       close()

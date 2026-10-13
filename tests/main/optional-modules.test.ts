@@ -6,7 +6,7 @@ import { join, relative } from 'node:path'
 import { c } from 'tar'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OptionalModules } from '../../src/main/optional-modules.ts'
-import { RETIRED_RESOURCES, removeRetiredResources } from '../../src/main/retired-resources.ts'
+import { RETIRED_RESOURCES, pruneWindowsHost, removeRetiredResources } from '../../src/main/retired-resources.ts'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -143,5 +143,30 @@ describe('retired carrier resources', () => {
     expect(await removeRetiredResources(root)).toEqual(['strata-runtime', 'linux-runtime.tar.gz'])
     expect(await readdir(root)).toEqual(['optional-modules.json'])
     expect(RETIRED_RESOURCES).not.toContain('optional-modules.json')
+  })
+
+  it('removes Windows runtime files the inventory no longer lists, and everything file by file for the uninstaller', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rainy-retired-'))
+    roots.push(root)
+    const host = join(root, 'windows-host')
+    const files: Record<string, string> = {
+      'node/node.exe': 'node', 'app/dist/host.js': 'host', 'node_modules/kept/index.js': 'kept',
+      'pwsh/pwsh.exe': 'old shell', 'pwsh/Modules/a.psd1': 'old module', 'node_modules/kept/old.js': 'stale',
+    }
+    for (const [path, value] of Object.entries(files)) {
+      await mkdir(join(host, path, '..'), { recursive: true })
+      await writeFile(join(host, path), value)
+    }
+    await writeFile(join(host, 'runtime.json'), JSON.stringify({ version: 1, files: ['node/node.exe', 'App/dist/host.js', 'node_modules/kept/index.js']
+      .map(path => ({ path, bytes: 1, sha256: '0' })) }))
+    expect(await pruneWindowsHost(root)).toBe('old shell'.length + 'old module'.length + 'stale'.length)
+    expect((await readdir(host)).sort()).toEqual(['app', 'node', 'node_modules', 'runtime.json'])
+    expect(await readdir(join(host, 'node_modules/kept'))).toEqual(['index.js'])
+    // A name whose case differs from the inventory is the same file on Windows only.
+    expect(await readdir(join(host, 'app/dist'))).toEqual(process.platform === 'win32' ? ['host.js'] : [])
+    expect(await pruneWindowsHost(root)).toBe(0)
+    await pruneWindowsHost(root, { everything: true })
+    expect(await readdir(root)).toEqual([])
+    expect(await pruneWindowsHost(root)).toBe(0)
   })
 })

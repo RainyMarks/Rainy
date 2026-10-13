@@ -6,6 +6,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { brandString } from '../../src/shared/brand.ts'
+import { followLocale } from '../../src/shared/locale.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import { createProjectRegistry } from '../../src/shared/project-registry.ts'
 import type { RuntimeRequest } from '../../src/shared/runtime-protocol.ts'
@@ -46,7 +47,13 @@ describe('runtime selection', () => {
     const candidate = await probeRuntimeCandidate({ targetId: 'wsl:test', platform: 'linux', language: 'python', path,
       source: 'manual', timeoutMs: 1000, run: async () => JSON.stringify({ platform: 'windows', version: '3.12.14', executable: path, capabilities: [] }) })
     expect(candidate.ready).toBe(false)
-    expect(candidate.error).toContain('workspace runs on linux')
+    expect(candidate.error).toBe('这个解释器运行在 windows 上，而当前项目运行在 linux 上。')
+    followLocale(() => 'en')
+    try {
+      const english = await probeRuntimeCandidate({ targetId: 'wsl:test', platform: 'linux', language: 'python', path,
+        source: 'manual', timeoutMs: 1000, run: async () => JSON.stringify({ platform: 'windows', version: '3.12.14', executable: path, capabilities: [] }) })
+      expect(english.error).toBe('The interpreter runs on windows, but this workspace runs on linux.')
+    } finally { followLocale(() => 'zh') }
   })
 
   it('keeps missing scientific libraries separate from interpreter readiness', async () => {
@@ -62,7 +69,7 @@ describe('runtime selection', () => {
     const candidate = await probeRuntimeCandidate({ targetId: 'wsl:test', platform: 'linux', language: 'cpp', path: join(await directory(), 'clang.exe'),
       source: 'manual', timeoutMs: 1000, run: async command => command.arguments[0] === '--version' ? 'clang version 23.1.2' : 'x86_64-w64-windows-gnu' })
     expect(candidate.ready).toBe(false)
-    expect(candidate.error).toContain('another execution platform')
+    expect(candidate.error).toBe('这个编译器生成的程序属于另一个执行平台。')
   })
 
   it('persists per-workspace choices without changing the process environment', async () => {
@@ -77,7 +84,7 @@ describe('runtime selection', () => {
       }) }
     const runtime = new RuntimeEnvironments(options)
     await runtime.initialize()
-    await expect(runtime.status(WorkspaceId('missing'))).rejects.toThrow('The selected workspace does not exist')
+    await expect(runtime.status(WorkspaceId('missing'))).rejects.toThrow('当前执行环境中没有所选项目。')
     const executable = join(root, 'env', 'python.exe')
     await runtime.select(first, 'python', executable)
     expect(runtime.resolve(join(root, 'first')).executables.python).toBe(executable)
@@ -180,7 +187,7 @@ describe('runtime RPC method', () => {
     expect(status).toMatchObject({ targetId: 'wsl:runtime-test', workspaceId: project.id, selected: {}, candidates: [] })
     expect(await registry.projectForWorkspace(project.id)).toBe(project.id)
     await expect(runtime.handle({ op: 'status' } as unknown as RuntimeRequest)).rejects.toMatchObject({ code: 'invalid-request' })
-    await expect(runtime.handle({ op: 'status', workspaceId: WorkspaceId('missing') })).rejects.toMatchObject({ code: 'runtime-error', message: 'The selected workspace is unavailable.' })
+    await expect(runtime.handle({ op: 'status', workspaceId: WorkspaceId('missing') })).rejects.toMatchObject({ code: 'runtime-error', message: '所选项目不可用。' })
     await expect(runtime.handle({ op: 'select', workspaceId: project.id, language: 'python', path: join(root, 'missing-python') }))
       .rejects.toBeInstanceOf(RpcError)
     const probed = await runtime.handle({ op: 'probe', workspaceId: project.id, language: 'node', path: process.execPath })
@@ -195,7 +202,7 @@ describe('runtime RPC method', () => {
     expect(inside.executables.node).toBe(process.execPath)
     expect(inside.environment.PATH?.split(delimiter)[0]).toBe(dirname(process.execPath))
     expect(runtime.resolveDirectory(tmpdir()).executables.node).toBeUndefined()
-    expect(() => runtime.resolveWorkspace(WorkspaceId('missing'))).toThrow('unavailable')
+    expect(() => runtime.resolveWorkspace(WorkspaceId('missing'))).toThrow('所选项目不可用。')
   })
 
   it('counts discovery as activity and refuses new work while the carrier freezes the Host', async () => {

@@ -71,7 +71,9 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
   }
   const save = (): void => {
     if (form === undefined) return
-    const parsed = parseServerForm(form.value, servers.filter(server => server.name !== form.previousName).map(server => server.name))
+    // The list's switch may have changed the server while the form was open; the form does not edit that state.
+    const enabled = servers.find(server => server.name === form.previousName)?.enabled ?? form.value.enabled
+    const parsed = parseServerForm({ ...form.value, enabled }, servers.filter(server => server.name !== form.previousName).map(server => server.name))
     if (!parsed.ok) { setFormError(t(parsed.error, parsed.vars)); return }
     setFormError(undefined)
     run(async () => {

@@ -8,6 +8,7 @@ import type {
 } from '../../shared/ide-execution-protocol.ts'
 import type { IdeExecutionApi } from './ide-execution-api.ts'
 import { fileKey, fileReference } from './ide-paths.ts'
+import { ideMessages } from './messages.ts'
 import { onPageVisible, pageHidden } from '../app/visibility.ts'
 
 /** Current selected workspace and the execution views rendered from its Host state. */
@@ -260,7 +261,7 @@ export class IdeExecutionModel {
   async evaluate(expression: string, context: 'watch' | 'repl'): Promise<IdeDebugEvaluation> {
     const record = this.current()
     const debug = record === undefined ? undefined : this.debugSnapshot(record)
-    if (record === undefined || debug?.phase !== 'paused') throw new Error('The debugger is not paused in a selected workspace.')
+    if (record === undefined || debug?.phase !== 'paused') throw new Error(ideMessages.t('ideDebugNotPaused'))
     const epoch = record.debugEpoch
     try {
       const result = await this.evaluateInFrame(record, debug.id, expression, context)

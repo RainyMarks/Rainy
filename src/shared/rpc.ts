@@ -37,7 +37,11 @@ export interface ModelSetup {
   maxTokensField?: 'max_tokens' | 'max_completion_tokens' | undefined
 }
 /** Model form submitted by Settings; `apiKey` is stored separately and never echoed. */
-export type ModelSetupInput = ModelSetup & { apiKey?: string | undefined }
+export type ModelSetupInput = ModelSetup & {
+  apiKey?: string | undefined
+  /** The provider id the edited profile was saved under; a different `provider` moves the profile instead of adding one. */
+  previousProvider?: string | undefined
+}
 /** Connection fields required to list a provider's models. */
 export interface ModelDiscoveryInput { provider: string; baseURL: string; api: ModelApi; apiKey?: string | undefined }
 /** The model future chats start with. */
@@ -46,10 +50,12 @@ export interface ModelSelection { provider: string; model: string; thinking?: Th
 /** Model settings shown by Settings → Models and the composer's model picker. */
 export interface ModelsStatus {
   models: ModelSetup[]
-  /** Providers whose credential is stored. */
+  /** Providers of saved models and presets whose credential is stored. */
   credentials: string[]
   /** Whether stored API keys are encrypted with Windows data protection; absent from Hosts before 2.1. */
   keysEncrypted?: boolean
+  /** Which stored keys this Windows account can no longer decrypt, in the interface language; absent when all can. */
+  keysUnreadable?: string | undefined
   selected: ModelSelection | null
   /** Reasoning levels each saved model accepts, keyed by provider (one saved model per provider). */
   thinkingLevels: Record<string, ThinkingLevel[]>
@@ -404,6 +410,8 @@ export interface HostEvents {
   'sessions.changed': SessionSummary
   'sessions.removed': { sessionId: SessionId }
   'models.changed': ModelsStatus
+  /** The default AI permission for new chats changed. */
+  'security.changed': { defaultMode: PermissionMode }
   'prefs.changed': UiPreferences
   'extensions.changed': ExtensionsStatus
   'memory.changed': { workspaceId: WorkspaceId }

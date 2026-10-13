@@ -134,6 +134,7 @@ const runtime: RuntimeService = {
   handle: () => Promise.reject(new Error('not used')),
   resolveDirectory: () => ({ environment: {}, executables: {} }),
   resolveWorkspace: () => ({ environment: {}, executables: {} }),
+  onSelectionChange: () => () => undefined,
 }
 
 /** An agent side over a temp Host home with one project, driven through RPC dispatch. */

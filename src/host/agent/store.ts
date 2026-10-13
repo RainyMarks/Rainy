@@ -181,9 +181,31 @@ export class ChatStore {
    */
   async setMeta(id: SessionId, patch: ChatMetaPatch): Promise<StoredChat> {
     const chat = this.require(id)
-    await this.queue(id).run(() => appendFile(this.path(id), `${JSON.stringify({ type: 'meta', ...patch })}\n`, { mode: 0o600 }))
-    Object.assign(chat, patch)
+    await this.queue(id).run(async () => {
+      await appendFile(this.path(id), `${JSON.stringify({ type: 'meta', ...patch })}\n`, { mode: 0o600 })
+      Object.assign(chat, patch)
+    })
     this.scheduleIndex()
+    return chat
+  }
+
+  /**
+   * Give an untitled chat the title derived from its first message. A title the user set first is kept, even one set
+   * while a loaded session still holds the untitled summary it read from disk.
+   * @param id Chat id.
+   * @param title Automatic title.
+   * @returns The summary with the title it has now.
+   */
+  async setDefaultTitle(id: SessionId, title: string): Promise<StoredChat> {
+    const chat = this.require(id)
+    // Checked inside the chat's queue, after any rename submitted before it was written.
+    const written = await this.queue(id).run(async () => {
+      if (chat.title !== '') return false
+      await appendFile(this.path(id), `${JSON.stringify({ type: 'meta', title })}\n`, { mode: 0o600 })
+      chat.title = title
+      return true
+    })
+    if (written) this.scheduleIndex()
     return chat
   }
 

@@ -79,6 +79,7 @@ export function parseSetup(value: unknown): ModelSetupInput {
     ...(data.thinking === undefined ? {} : { thinking: data.thinking as ThinkingLevel }),
     ...(data.thinkingFormat === undefined ? {} : { thinkingFormat: data.thinkingFormat as ModelSetup['thinkingFormat'] }),
     ...(data.maxTokensField === undefined ? {} : { maxTokensField: data.maxTokensField as ModelSetup['maxTokensField'] }),
+    ...(typeof data.previousProvider === 'string' && /^[a-z][a-z0-9-]{0,47}$/.test(data.previousProvider) ? { previousProvider: data.previousProvider } : {}),
   }
 }
 
@@ -120,10 +121,16 @@ export class Models {
   /** @returns Saved models, keys present, selection, presets and the global prompt. */
   status(): ModelsStatus {
     const data = this.settings.get()
+    // Presets count too: a preset that shares a stored key (both Claude models, an imported DeepSeek key) saves without one.
+    const providers = new Set([...data.models, ...PRESETS.map(preset => preset.model)].map(model => model.provider))
     return {
       models: data.models,
-      credentials: this.settings.providersWithKeys(),
+      credentials: [...providers].filter((provider) => {
+        const key = this.settings.apiKey(provider)
+        return key !== undefined && key !== LOCAL_NO_KEY
+      }),
       keysEncrypted: this.settings.keysSealed,
+      ...(this.settings.unreadableKeysMessage() === undefined ? {} : { keysUnreadable: this.settings.unreadableKeysMessage() }),
       selected: data.selected,
       thinkingLevels: Object.fromEntries(data.models.map(model => [model.provider, thinkingLevels(model)])),
       presets: PRESETS,
@@ -153,20 +160,34 @@ export class Models {
    */
   async configure(raw: unknown): Promise<ModelSelection> {
     const input = parseSetup(raw)
-    const { apiKey, ...setup } = input
-    if (apiKey?.trim()) await this.settings.setApiKey(setup.provider, apiKey.trim())
-    else if (this.settings.apiKey(setup.provider) === undefined) {
-      if (setup.local) await this.settings.setApiKey(setup.provider, LOCAL_NO_KEY)
-      else throw new RpcError('missing-key', localized({ zh: '请填写 API 密钥。', en: 'Enter the API key.' }))
+    const { apiKey, previousProvider, ...setup } = input
+    // Editing a profile under a new provider id moves it; the old id's key comes along unless a new one is typed.
+    const renamed = previousProvider !== undefined && previousProvider !== setup.provider
+      && this.settings.get().models.some(model => model.provider === previousProvider) ? previousProvider : undefined
+    const carried = renamed === undefined ? undefined : this.settings.apiKey(renamed)
+    const stored = this.settings.apiKey(setup.provider) ?? carried
+    resolveBudget(setup.contextWindow, setup.maxTokens)
+    // A local model's placeholder key is no key for an API service.
+    if (!apiKey?.trim() && !setup.local && (stored === undefined || stored === LOCAL_NO_KEY)) {
+      throw new RpcError('missing-key', localized({ zh: '请填写 API 密钥。API 模型需要密钥才能保存。', en: 'Enter the API key. An API model cannot be saved without one.' }))
     }
-    const budget = resolveBudget(setup.contextWindow, setup.maxTokens)
+    if (apiKey?.trim()) await this.settings.setApiKey(setup.provider, apiKey.trim())
+    else if (this.settings.apiKey(setup.provider) === undefined) await this.settings.setApiKey(setup.provider, stored ?? LOCAL_NO_KEY)
     const level = effectiveThinking(setup)
-    const saved: ModelSetup = { ...setup, maxTokens: budget.outputTokens, ...(level === undefined ? {} : { thinking: level }) }
-    const selection: ModelSelection = { provider: saved.provider, model: saved.model, ...(level === undefined || level === 'off' ? {} : { thinking: level }) }
-    await this.settings.update((data) => {
-      data.models = [...data.models.filter(model => model.provider !== saved.provider), saved]
-      data.selected = selection
+    // An empty output limit stays automatic, so a later context change resizes it instead of keeping the old share.
+    const saved: ModelSetup = { ...setup, ...(level === undefined ? {} : { thinking: level }) }
+    const data = this.settings.get()
+    const previous = data.models.find(model => model.provider === saved.provider && model.model === saved.model)
+    const current = data.selected
+    // Re-saving the default with an unchanged form level keeps the level picked in the list.
+    const kept = previous !== undefined && previous.thinking === saved.thinking && current !== null
+      && current.provider === saved.provider && current.model === saved.model && current.thinking !== undefined ? effectiveThinking(saved, current.thinking) : level
+    const selection: ModelSelection = { provider: saved.provider, model: saved.model, ...(kept === undefined || kept === 'off' ? {} : { thinking: kept }) }
+    await this.settings.update((next) => {
+      next.models = [...next.models.filter(model => model.provider !== saved.provider && model.provider !== renamed), saved]
+      next.selected = selection
     })
+    if (renamed !== undefined && !this.settings.get().models.some(model => credentialShared(model.provider, renamed))) await this.settings.setApiKey(renamed, undefined)
     this.publish()
     return selection
   }
@@ -264,7 +285,8 @@ export class Models {
     const input = parseSetup(raw)
     const saved = this.settings.get().models.find(model => model.provider === input.provider && model.model === input.model)
     if (saved === undefined || saved.baseURL !== input.baseURL || saved.api !== input.api || saved.contextWindow !== input.contextWindow
-      || saved.maxTokens !== resolveBudget(input.contextWindow, input.maxTokens).outputTokens || saved.thinking !== effectiveThinking(input)
+      || resolveBudget(saved.contextWindow, saved.maxTokens).outputTokens !== resolveBudget(input.contextWindow, input.maxTokens).outputTokens
+      || saved.thinking !== effectiveThinking(input)
       || (input.api === 'openai-completions' && ((saved.thinkingFormat ?? 'openai') !== (input.thinkingFormat ?? 'openai')
         || (saved.maxTokensField ?? 'max_tokens') !== (input.maxTokensField ?? 'max_tokens')))) {
       throw new RpcError('not-saved', localized({ zh: '请先保存当前模型设置，再验证这份已保存的配置。', en: 'Save the current model settings first, then check the saved configuration.' }))

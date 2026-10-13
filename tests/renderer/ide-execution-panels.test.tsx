@@ -10,6 +10,7 @@ import { IdeBottom } from '../../src/renderer/ide/IdeBottom.tsx'
 import { RunConfigurationDialog } from '../../src/renderer/ide/RunConfigurationDialog.tsx'
 import { IdeExecutionModel } from '../../src/renderer/ide/ide-execution-model.ts'
 import { IdeModel } from '../../src/renderer/ide/ide-model.ts'
+import { runTarget } from '../../src/renderer/ide/run-target.ts'
 import { allByText, byRole, change, cleanup, click, nameOf, render, waitFor } from './ide-dom.tsx'
 
 vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
@@ -118,6 +119,30 @@ describe('CMake run configuration fields', () => {
     change(byRole('textbox', 'CMake 构建预设（可选）'), '')
     click(byRole('button', '保存'))
     expect(model.state.getSnapshot().data.execution?.profiles[0]?.build).toEqual({ kind: 'cmake', buildDirectory: 'build/debug', target: 'main', executable: 'main' })
+  })
+
+  it('renames the edited profile in place, so the open file runs with the edited settings', () => {
+    const other: IdeRunConfiguration = { name: 'script', language: 'python', program: 'tool.py' }
+    const { model } = fixture([cmakeProfile, other])
+    render(<RunConfigurationDialog open close={vi.fn()} state={model.state.getSnapshot()} model={model} />)
+    change(byRole('textbox', '配置名称'), 'CMake fast')
+    change(byRole('textbox', '参数（JSON 数组）'), '["--fast"]')
+    click(byRole('button', '保存'))
+    const execution = model.state.getSnapshot().data.execution
+    expect(execution?.profiles.map(profile => profile.name)).toEqual(['CMake fast', 'script'])
+    expect(runTarget(execution, { path: 'main.cpp', label: 'main.cpp', program: 'main.cpp' })?.configuration).toMatchObject({ name: 'CMake fast', arguments: ['--fast'] })
+  })
+
+  it('refuses to rename a profile to the name of another one', () => {
+    const other: IdeRunConfiguration = { name: 'script', language: 'python', program: 'tool.py' }
+    const { model } = fixture([cmakeProfile, other])
+    const close = vi.fn()
+    render(<RunConfigurationDialog open close={close} state={model.state.getSnapshot()} model={model} />)
+    change(byRole('textbox', '配置名称'), 'script')
+    click(byRole('button', '保存'))
+    expect(byRole('alert').textContent).toBe('已有名为 script 的运行配置。')
+    expect(close).not.toHaveBeenCalled()
+    expect(model.state.getSnapshot().data.execution?.profiles).toEqual([cmakeProfile, other])
   })
 
   it('refuses malformed argument JSON and keeps the dialog open', () => {

@@ -95,7 +95,7 @@ it.each([{ locale: 'zh' as const, copy: zh }, { locale: 'en' as const, copy: en 
   expect([...result.querySelectorAll('button')].map(pill => pill.textContent)).toEqual(['available-small', 'available-large'])
   expect(result.textContent).toContain(copy.settingsDiscovered.replace('{count}', '2'))
   await click(button(copy.settingsSaveModel))
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith(copy.settingsRequiredModel) })
+  await waitFor(() => { expect(hasText(copy.settingsRequiredModel, document.querySelector('[data-model-form]')!)).toBe(true) })
   expect(calls('models.configure')).toEqual([])
   await click(button('available-large'))
   expect(value(copy.settingsModelId)).toBe('available-large')
@@ -121,7 +121,7 @@ it('requires connection details before model discovery', async () => {
   await render(<ModelsSection workspace={workspace} />)
   await addModel()
   await click(button(zh.settingsDiscoverModels))
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith(zh.settingsRequiredDiscovery) })
+  await waitFor(() => { expect(hasText(zh.settingsRequiredDiscovery, document.querySelector('[data-model-form]')!)).toBe(true) })
   expect(calls('models.discover')).toEqual([])
 })
 
@@ -129,7 +129,7 @@ it('rejects a context window or output limit that is not a positive integer', as
   await render(<ModelsSection workspace={workspace} />)
   await type(control(zh.settingsOutput), '12.5')
   await click(button(zh.settingsSaveModel))
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith(zh.settingsInvalidNumber) })
+  await waitFor(() => { expect(hasText(zh.settingsInvalidNumber, document.querySelector('[data-model-form]')!)).toBe(true) })
   expect(calls('models.configure')).toEqual([])
 })
 
@@ -188,6 +188,52 @@ it('names a saved preset after the preset and stops offering it as a preset', as
   expect(hasText('DeepSeek V4.1 Flash', saved)).toBe(true)
   await click(button(zh.modelEdit, saved))
   expect(hasText('编辑 DeepSeek V4.1 Flash')).toBe(true)
+})
+
+it('asks for a key a preset still needs, and shows a failed save inside the form until the next try', async () => {
+  status = modelsStatus({ presets: [deepseekPreset] })
+  handle('models.configure', () => { throw new Error('请填写 API 密钥。API 模型需要密钥才能保存。') })
+  await render(<ModelsSection workspace={workspace} />)
+  await waitFor(() => { expect(document.querySelector('[data-preset]')).not.toBeNull() })
+  await click(button(zh.modelLoadPreset, document.querySelector('[data-preset]')!))
+  expect(control(zh.settingsApiKeyRequired)).toBeDefined()
+  await click(button(zh.settingsSaveModel))
+  const form = document.querySelector('[data-model-form]')!
+  await waitFor(() => { expect(hasText('请填写 API 密钥。API 模型需要密钥才能保存。', form)).toBe(true) })
+  expect(toast).not.toHaveBeenCalledWith('请填写 API 密钥。API 模型需要密钥才能保存。', expect.anything())
+  handle('models.configure', setup => ({ provider: setup.provider, model: setup.model }))
+  await click(button(zh.settingsSaveModel))
+  await waitFor(() => { expect(hasText('请填写 API 密钥。API 模型需要密钥才能保存。', form)).toBe(false) })
+})
+
+it('treats a preset whose shared key is stored as ready to save', async () => {
+  status = modelsStatus({ presets: [deepseekPreset], credentials: ['rainy-deepseek'] })
+  await render(<ModelsSection workspace={workspace} />)
+  await waitFor(() => { expect(document.querySelector('[data-preset]')).not.toBeNull() })
+  await click(button(zh.modelLoadPreset, document.querySelector('[data-preset]')!))
+  expect(control(zh.settingsApiKeyStored)).toBeDefined()
+})
+
+it('stops offering a preset whose provider is saved with another model id', async () => {
+  const other = { ...deepseekPreset.model, model: 'deepseek-custom' }
+  status = modelsStatus({ models: [official, other], presets: [deepseekPreset] })
+  await render(<ModelsSection workspace={workspace} />)
+  await waitFor(() => { expect(document.querySelector('[data-model="rainy-deepseek/deepseek-custom"]')).not.toBeNull() })
+  expect(document.querySelector('[data-preset]')).toBeNull()
+})
+
+it('reads an output limit saved as the automatic share as automatic, and sends the edited profile’s old provider', async () => {
+  const auto: ModelSetup = { provider: 'relay', model: 'm', baseURL: 'http://127.0.0.1:8080/v1', contextWindow: 65536, maxTokens: 10485, local: true }
+  status = modelsStatus({ models: [official, auto] })
+  await render(<ModelsSection workspace={workspace} />)
+  await waitFor(() => { expect(document.querySelector('[data-model="relay/m"]')).not.toBeNull() })
+  await click(button(zh.modelEdit, document.querySelector('[data-model="relay/m"]')!))
+  expect(value(zh.settingsOutput)).toBe('')
+  await type(control(zh.settingsProvider), 'relay-two')
+  await click(button(zh.settingsSaveModel))
+  await waitFor(() => { expect(calls('models.configure')).toHaveLength(1) })
+  expect(calls('models.configure')[0]).toMatchObject({ provider: 'relay-two', previousProvider: 'relay', contextWindow: 65536 })
+  expect(calls('models.configure')[0]).not.toHaveProperty('maxTokens')
 })
 
 it('lists presets when no model is saved yet', async () => {
@@ -304,7 +350,7 @@ it('keeps an unsaved global prompt draft when the Host rejects it', async () => 
   const prompt = control<HTMLTextAreaElement>(zh.settingsGlobalPrompt)
   await type(prompt, 'Draft instructions')
   await click(button(zh.settingsSave, document.querySelector('[data-global-prompt]')!))
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith('全局提示词超过 40 字符上限') })
+  await waitFor(() => { expect(hasText('全局提示词超过 40 字符上限', document.querySelector('[data-global-prompt]')!)).toBe(true) })
   expect(prompt.value).toBe('Draft instructions')
   expect(button(zh.settingsSave, document.querySelector('[data-global-prompt]')!).disabled).toBe(false)
 })

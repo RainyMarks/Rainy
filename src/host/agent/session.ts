@@ -150,12 +150,19 @@ export class ChatSession {
 
   /** @returns The model this chat uses: its own choice, else the default. */
   selection(): ModelSelection | null {
-    return this.chat.model ?? this.services.models.status().selected
+    return this.ownModel() ?? this.services.models.status().selected
   }
 
   /** @returns The resolved model for the next request. */
   resolved(): ResolvedModel | undefined {
-    return this.services.models.resolve(this.chat.model)
+    return this.services.models.resolve(this.ownModel())
+  }
+
+  /** @returns The chat's own model while it is still saved; after it is removed or renamed the chat follows the default. */
+  private ownModel(): ModelSelection | null {
+    const own = this.chat.model
+    if (own === null) return null
+    return this.services.settings.get().models.some(model => model.provider === own.provider && model.model === own.model) ? own : null
   }
 
   /**
@@ -276,8 +283,15 @@ export class ChatSession {
     return result
   }
 
-  /** Publish run state again, after the default mode in Settings changed. */
+  /** Publish run state again after Settings changed the default mode or the models; the meter takes the new window at once. */
   refresh(): void {
+    const resolved = this.resolved()
+    if (this.context !== null && resolved !== undefined) {
+      try {
+        const budget = resolveBudget(resolved.setup.contextWindow, resolved.setup.maxTokens)
+        this.context = { ...this.context, contextWindow: budget.contextWindow, inputLimit: budget.inputLimit, outputTokens: budget.outputTokens, compactAt: compactionThreshold(budget) }
+      } catch (_invalid) { /* A saved profile always has a valid budget; keep the last accounting otherwise. */ }
+    }
     this.publishState()
   }
 
@@ -310,9 +324,10 @@ export class ChatSession {
     if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
     const before = buildContext(this.entries).length
     const entry = await this.compact(resolved, 'manual', undefined)
-    if (entry === undefined) return 'No compactable history yet.'
+    if (entry === undefined) return localized({ zh: '还没有可以压缩的历史。', en: 'There is no history to compact yet.' })
     const after = buildContext(this.entries).length
-    return `Compacted ${before - after + 1} history items (~${entry.tokensBefore} tokens).`
+    const items = before - after + 1
+    return localized({ zh: `已压缩 ${items} 条历史（约 ${entry.tokensBefore} tokens）。`, en: `Compacted ${items} history items (~${entry.tokensBefore} tokens).` })
   }
 
   /** Stop any run and wait for it. */
@@ -329,10 +344,11 @@ export class ChatSession {
     if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
     if (this.chat.title === '') {
       const first = this.meta.get(prompts[0]!)
-      this.chat = await this.services.store.setMeta(this.chat.id, { title: fallbackTitle(first?.kind === 'user' ? first.text : '') })
+      this.chat = await this.services.store.setDefaultTitle(this.chat.id, fallbackTitle(first?.kind === 'user' ? first.text : ''))
     }
     const injections = await this.firstRequestContext(resolved)
     const tools = this.tools()
+    const mcpTools = new Set(this.services.mcp.tools().map(tool => tool.name))
     const system = await this.systemPrompt(tools)
     const declarations = tools.map(tool => toToolDeclaration(tool))
     const initial = createInitialSystemMessage(system, declarations)
@@ -349,6 +365,8 @@ export class ChatSession {
       sessionId: this.chat.id,
       beforeToolCall: async ({ toolCall, args }, signal) => {
         if (this.stopAfterStep) return { block: true, reason: 'Skipped: the user refused an earlier tool call in this step.', terminate: true }
+        // The tool list is fixed for the run; an MCP tool turned off or disconnected since then is refused here.
+        if (mcpTools.has(toolCall.name) && !this.services.mcp.allows(toolCall.name)) return { block: true, reason: 'This MCP tool was turned off in Settings or its server disconnected. Do not call it again.' }
         const decision = await decide({
           mode: this.permission(), toolName: toolCall.name, args, cwd: this.chat.cwd, roots: () => this.canonicalRoots(),
           rules: this.chat.workspaceId === null ? { commands: [], tools: [] } : this.services.settings.permissionRules(this.chat.workspaceId),

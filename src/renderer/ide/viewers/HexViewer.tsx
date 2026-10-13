@@ -133,10 +133,10 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
 
   const copy = async (format: CopyFormat): Promise<void> => {
     if (start === undefined || end === undefined) return
-    if (end - start + 1 > MAX_COPY) { toast(t('hexCopyLimit')); return }
+    if (end - start + 1 > MAX_COPY) { toast(t('hexCopyLimit'), { tone: 'error' }); return }
     try {
-      if (await writeClipboard(formatBytes(await source.read(start, end - start + 1), format))) toast(t('hexCopied'), { tone: 'success' })
-      else toast(t('copyFailed'))
+      if (await writeClipboard(formatBytes(await source.read(start, end - start + 1), format), { quiet: true })) toast(t('hexCopied'), { tone: 'success' })
+      else toast(t('copyFailed'), { tone: 'error' })
     } catch (failure) { fail(failure) }
   }
 
@@ -161,7 +161,7 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
 
   const goto = (text: string): void => {
     const offset = parseOffset(text)
-    if (offset === undefined || offset >= Math.max(1, size)) { toast(t('hexGotoInvalid')); return }
+    if (offset === undefined || offset >= Math.max(1, size)) { toast(t('hexGotoInvalid'), { tone: 'error' }); return }
     select(offset)
     scroller.current?.focus()
   }

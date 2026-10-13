@@ -81,7 +81,7 @@ function ForkAction({ sessionId, entryId, onFork }: { sessionId: string; entryId
         host.call('sessions.fork', { sessionId, entryId }).then((summary) => {
           toast(t('forked'), { tone: 'success' })
           onFork(summary.id)
-        }, (error: unknown) => { toast(error instanceof Error ? error.message : String(error)) })
+        }, (error: unknown) => { toast(error instanceof Error ? error.message : String(error), { tone: 'error' }) })
       }}>
         <IconBranchOutlineRegular size={14} />
       </button>
@@ -404,7 +404,7 @@ export function Transcript({ view, onFork, empty }: { view: ChatView; onFork(ses
     setLoadingOlder(true)
     loadChat(sessionId, true).then(() => {
       requestAnimationFrame(() => { if (element !== null) element.scrollTop = element.scrollHeight - before })
-    }, (error: unknown) => { toast(error instanceof Error ? error.message : String(error)) })
+    }, (error: unknown) => { toast(error instanceof Error ? error.message : String(error), { tone: 'error' }) })
       .finally(() => { setLoadingOlder(false) })
   }
 

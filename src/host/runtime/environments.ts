@@ -8,6 +8,7 @@ import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { brandString } from '../../shared/brand.ts'
+import { localized } from '../../shared/locale.ts'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { ExecutionTargetId } from '../../shared/project-registry.ts'
 import type { RuntimeCandidate, RuntimeEnvironmentId, RuntimeLanguage, RuntimePlatform, RuntimeSnapshot } from '../../shared/runtime-protocol.ts'
@@ -134,18 +135,18 @@ export async function probeRuntimeCandidate(options: {
       ...(options.language === 'php' && options.platform === 'windows' ? { environment: { RAINY_PHP_EXTENSION_DIR: join(dirname(options.path), 'ext') } } : {}) })
     if (options.language === 'c' || options.language === 'cpp') {
       const version = output.split(/\r?\n/u).find(line => line.trim())
-      if (!version || !/gcc|g\+\+|clang|LLVM/i.test(version)) throw new Error('The executable did not identify a supported C/C++ compiler.')
+      if (!version || !/gcc|g\+\+|clang|LLVM/i.test(version)) throw new Error(localized({ zh: '这个程序不是受支持的 C/C++ 编译器（GCC 或 Clang）。', en: 'The executable did not identify a supported C/C++ compiler.' }))
       const triple = (await options.run({ executable: options.path, arguments: ['-dumpmachine'], timeoutMs: options.timeoutMs })).trim()
       const compilerPlatform = /windows|mingw|cygwin|msvc/iu.test(triple) ? 'windows' : /linux/iu.test(triple) ? 'linux' : undefined
-      if (compilerPlatform !== options.platform) throw new Error('The compiler produces programs for another execution platform.')
+      if (compilerPlatform !== options.platform) throw new Error(localized({ zh: '这个编译器生成的程序属于另一个执行平台。', en: 'The compiler produces programs for another execution platform.' }))
       return { ...candidate, version, ready: true, capabilities: [{ name: 'compiler-start', ready: true }] }
     }
     const result = probeResultSchema.parse(JSON.parse(output.trim()))
-    if (result.platform !== options.platform) throw new Error(`The interpreter runs on ${result.platform}, but this workspace runs on ${options.platform}.`)
+    if (result.platform !== options.platform) throw new Error(localized({ zh: `这个解释器运行在 ${result.platform} 上，而当前项目运行在 ${options.platform} 上。`, en: `The interpreter runs on ${result.platform}, but this workspace runs on ${options.platform}.` }))
     return { ...candidate, path: result.executable, version: result.version, ready: true, capabilities: result.capabilities,
       ...(result.prefix === undefined ? {} : { prefix: result.prefix }) }
   } catch (error) {
-    return { ...candidate, error: error instanceof Error ? error.message.slice(0, 1000) : 'Interpreter inspection failed.' }
+    return { ...candidate, error: error instanceof Error ? error.message.slice(0, 1000) : localized({ zh: '检测解释器失败。', en: 'Interpreter inspection failed.' }) }
   }
 }
 
@@ -206,7 +207,7 @@ export class RuntimeEnvironments {
 
   private workspace(workspaceId: WorkspaceId): { path: string } {
     const workspace = this.options.resolveWorkspace(workspaceId)
-    if (!workspace) throw new Error('The selected workspace does not exist in this execution target.')
+    if (!workspace) throw new Error(localized({ zh: '当前执行环境中没有所选项目。', en: 'The selected workspace does not exist in this execution target.' }))
     return workspace
   }
 
@@ -314,7 +315,7 @@ export class RuntimeEnvironments {
       const family = languageSchema.parse(language)
       selected[family] = candidates.find(candidate => candidate.language === family && candidate.path === path)
         ?? { id: identity(this.target, family, path), language: family, path, source: 'manual', platform: this.platform,
-          version: null, ready: false, capabilities: [], error: 'Recheck this environment to confirm its current capabilities.' }
+          version: null, ready: false, capabilities: [], error: localized({ zh: '请重新检测这个环境，确认它当前的能力。', en: 'Recheck this environment to confirm its current capabilities.' }) }
     }
     const snapshot: RuntimeSnapshot = { targetId: this.target, platform: this.platform, workspaceId, selected, candidates }
     if (this.platform === 'windows') {
@@ -343,7 +344,7 @@ export class RuntimeEnvironments {
       let candidate: RuntimeCandidate | undefined
       if (path !== null) {
         candidate = await probeRuntimeCandidate({ targetId: this.target, platform: this.platform, language, path, source: 'manual', timeoutMs: this.options.probeTimeoutMs, run: this.run })
-        if (!candidate.ready) throw new Error(candidate.error ?? 'This interpreter is not usable in the current execution target.')
+        if (!candidate.ready) throw new Error(candidate.error ?? localized({ zh: '这个解释器在当前执行环境中不可用。', en: 'This interpreter is not usable in the current execution target.' }))
       }
       const before = structuredClone(this.state)
       let selected = { ...(this.savedWorkspace(workspaceId)?.selected ?? {}) }

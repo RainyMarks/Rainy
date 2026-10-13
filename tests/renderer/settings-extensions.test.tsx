@@ -163,6 +163,19 @@ it('edits a server with its arguments, environment and an allow-list from the li
   expect(document.querySelector('[data-server="files"]')).toBeNull()
 })
 
+it('keeps a server switched off while its form was open switched off when the form is saved', async () => {
+  await render(<ExtensionsSection workspace={workspace} />)
+  await waitFor(() => { expect(row('files')).not.toBeNull() })
+  await click(button(zh.mcpEdit, row('files')))
+  await click(button('启用 files'))
+  await waitFor(() => { expect(button('启用 files').getAttribute('aria-checked')).toBe('false') })
+  await type(control(zh.mcpArgs), '-y\n@mcp/files\n--verbose')
+  await click(button(zh.settingsSave, form()))
+  await waitFor(() => { expect(calls('extensions.saveServer')).toHaveLength(2) })
+  expect(calls('extensions.saveServer')[1]).toEqual({ previousName: 'files', server: { ...files, enabled: false, args: ['-y', '@mcp/files', '--verbose'] } })
+  await waitFor(() => { expect(button('启用 files').getAttribute('aria-checked')).toBe('false') })
+})
+
 it('adds the IDA server when the desktop found its launcher', async () => {
   status = extensions({ idaAvailable: true })
   handle('extensions.addIda', () => {

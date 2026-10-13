@@ -65,6 +65,10 @@ export interface Workbench {
 const errorMessages: Readonly<Record<string, IdeMessageKey>> = {
   'not-found': 'ideMissingPath', 'invalid-path': 'ideInvalidPath', 'outside-workspace': 'ideOutsideRoot',
   'workspace-unavailable': 'ideUnavailableRoot', 'unsaved-root': 'ideUnsavedRoot', 'root-overlap': 'ideRootOverlap',
+  'already-exists': 'ideAlreadyExists', 'not-file': 'ideNotFile', 'not-directory': 'ideNotDirectory', 'read-only': 'ideReadOnly',
+  'too-large': 'ideTooLarge', 'version-conflict': 'ideVersionConflict', 'permission-denied': 'idePermissionDenied',
+  'workspace-not-found': 'ideWorkspaceNotFound', 'revision-conflict': 'ideRecoveryConflict', 'state-too-large': 'ideStateTooLarge',
+  'confirmation-required': 'ideConfirmationRequired', aborted: 'ideAborted', closed: 'ideClosed', 'diff-unavailable': 'ideDiffUnavailable',
 }
 
 /**

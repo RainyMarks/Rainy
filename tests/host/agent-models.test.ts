@@ -69,3 +69,49 @@ it('sends the reasoning level a chat selects in the provider’s wire format', a
   expect(reply.stopReason).toBe('stop')
   expect(server.requests[0]).toMatchObject({ model: 'qwen3', enable_thinking: true })
 })
+
+it('keeps an empty output limit automatic, so a later context change resizes it', async () => {
+  const { models: target, settings } = await models()
+  const local = { provider: 'local', baseURL: 'http://127.0.0.1:8080/v1', model: 'm', contextWindow: 65536, local: true }
+  await target.configure(local)
+  expect(settings.get().models[0]!.maxTokens).toBeUndefined()
+  await target.configure({ ...local, contextWindow: 16384 })
+  expect(target.resolve()!.model.maxTokens).toBe(2621)
+  await target.configure({ ...local, contextWindow: 16384, maxTokens: 4000 })
+  expect(settings.get().models[0]!.maxTokens).toBe(4000)
+})
+
+it('explains how to fix an output limit that leaves no room for input', async () => {
+  const { models: target } = await models()
+  await expect(target.configure({ provider: 'local', baseURL: 'http://127.0.0.1:8080/v1', model: 'm', contextWindow: 65536, maxTokens: 64000, local: true }))
+    .rejects.toThrow('留空自动分配')
+})
+
+it('reports presets that already have a key, and asks for one when a local model becomes an API model', async () => {
+  const { models: target } = await models({ DEEPSEEK_API_KEY: 'sk-imported' })
+  expect(target.status().credentials).toContain('rainy-deepseek')
+  const local = { provider: 'relay', baseURL: 'http://127.0.0.1:8080/v1', model: 'm', contextWindow: 65536, local: true }
+  await target.configure(local)
+  expect(target.status().credentials).not.toContain('relay')
+  await expect(target.configure({ ...local, local: false, api: 'openai-completions' })).rejects.toThrow('API 密钥')
+  await target.configure({ ...local, local: false, api: 'openai-completions', apiKey: 'sk-relay' })
+  expect(target.status().credentials).toContain('relay')
+})
+
+it('moves a profile saved under a new provider id instead of adding a second one', async () => {
+  const { models: target, settings } = await models()
+  const first = { provider: 'relay', baseURL: 'https://relay.example.test/v1', model: 'm', contextWindow: 65536, local: false, api: 'openai-completions' as const }
+  await target.configure({ ...first, apiKey: 'sk-relay' })
+  await target.configure({ ...first, provider: 'relay-two', previousProvider: 'relay' })
+  expect(settings.get().models.map(model => model.provider)).toEqual(['relay-two'])
+  expect(settings.apiKey('relay-two')).toBe('sk-relay')
+  expect(settings.apiKey('relay')).toBeUndefined()
+})
+
+it('keeps the reasoning level picked in the list when the default is saved again unchanged', async () => {
+  const { models: target } = await models()
+  await target.configure({ ...CLAUDE_OPUS, apiKey: 'sk-ant-test' })
+  await target.select({ provider: CLAUDE_OPUS.provider, model: CLAUDE_OPUS.model, thinking: 'max' })
+  expect((await target.configure({ ...CLAUDE_OPUS, contextWindow: 300000 })).thinking).toBe('max')
+  expect((await target.configure({ ...CLAUDE_OPUS, thinking: 'low' })).thinking).toBe('low')
+})

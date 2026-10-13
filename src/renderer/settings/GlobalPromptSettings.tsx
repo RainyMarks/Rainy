@@ -5,7 +5,7 @@ import type { ModelsStatus } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
 import { Button } from '../ui/Button.tsx'
 import { useT } from './messages.ts'
-import type { SettingsAction } from './parts.tsx'
+import { ActionFailure, type SettingsAction } from './parts.tsx'
 import css from './sections.module.css'
 
 /** Saved prompt, the section's operation runner and the status publisher. */
@@ -35,8 +35,9 @@ export function GlobalPromptSettings({ saved, action, accept }: GlobalPromptSett
     <div className={css.row}>
       <span className={css.muted}>{t('settingsGlobalPromptCount', { count: text.length.toLocaleString('en-US'), max: maxChars.toLocaleString('en-US') })}</span>
       <Button variant="primary" disabled={!changed || action.busy || text.length > maxChars} onClick={() => {
-        action.run(async () => { accept(await host.call('prompt.global', { text })); setDraft(undefined) }, t('settingsSaved'))
+        action.run(async () => { accept(await host.call('prompt.global', { text })); setDraft(undefined) }, t('settingsSaved'), 'prompt')
       }}>{t('settingsSave')}</Button>
     </div>
+    <ActionFailure action={action} place="prompt" />
   </article>
 }

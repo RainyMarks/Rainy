@@ -20,6 +20,8 @@ const zh = {
   browserLoading: '加载中…',
   browserShowHidden: '显示隐藏文件',
   browserLocations: '位置',
+  copyFailed: '复制失败：系统剪贴板拒绝了写入，请点击窗口后重试。',
+  connectionLost: '与 RainyAgent 的连接已断开，这次操作没有完成。',
 }
 
 const en: Readonly<Record<keyof typeof zh, string>> = {
@@ -41,6 +43,8 @@ const en: Readonly<Record<keyof typeof zh, string>> = {
   browserLoading: 'Loading…',
   browserShowHidden: 'Show hidden files',
   browserLocations: 'Locations',
+  copyFailed: 'Copy failed: the system clipboard refused the text. Click the window and try again.',
+  connectionLost: 'The connection to RainyAgent was lost, so this action did not finish.',
 }
 
 /** Window chrome strings. */

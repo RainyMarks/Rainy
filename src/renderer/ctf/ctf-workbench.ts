@@ -42,7 +42,7 @@ export function createCtfWorkbench(config: Pick<Config, 'readyTimeoutMs' | 'flus
 } = {}): CtfWorkbench {
   const { t } = ctfMessages
   const notify = (message: string, kind: 'success' | 'error' | 'warning'): void => {
-    toast(message, kind === 'success' ? { tone: 'success' } : {})
+    toast(message, kind === 'warning' ? {} : { tone: kind })
   }
   const bridge = new CtfWorkbenchBridge({ origin: location.origin, readyTimeoutMs: config.readyTimeoutMs,
     flushTimeoutMs: config.flushTimeoutMs, toast: notify, flushFailureMessage: () => t('ctfSaveFailed') })

@@ -4,7 +4,7 @@ import type { ProxySettings as ProxyChoice, ProxyStatus, ProxyTestResult } from 
 import { host } from '../rpc.ts'
 import { Button } from '../ui/Button.tsx'
 import { useT } from './messages.ts'
-import { Notice, Select, SettingRow, errorText, type SettingsAction } from './parts.tsx'
+import { ActionFailure, Notice, Select, SettingRow, errorText, type SettingsAction } from './parts.tsx'
 import css from './sections.module.css'
 
 /**
@@ -23,6 +23,8 @@ export function ProxySettings({ action }: { action: SettingsAction }): JSX.Eleme
     host.call('network.status').then((value) => {
       setStatus(value); setMode(value.settings.mode); setUrl(value.settings.url ?? '')
     }, (failure: unknown) => { setError(errorText(failure)) })
+    // The address in effect is the one for the default model's service, so it is read again when the models change.
+    return host.on('models.changed', () => { host.call('network.status').then(setStatus, () => undefined) })
   }, [])
   const choice: ProxyChoice = mode === 'manual' ? { mode, url } : { mode }
   const changed = status !== undefined && (status.settings.mode !== mode || (mode === 'manual' && (status.settings.url ?? '') !== url.trim()))
@@ -50,9 +52,10 @@ export function ProxySettings({ action }: { action: SettingsAction }): JSX.Eleme
         {testing ? t('proxyTesting') : t('proxyTest')}
       </Button>
       <Button variant="primary" disabled={!changed || action.busy || (mode === 'manual' && url.trim() === '')} onClick={() => {
-        action.run(async () => { const next = await host.call('network.set', choice); setStatus(next); setUrl(next.settings.url ?? '') }, t('settingsSaved'))
+        action.run(async () => { const next = await host.call('network.set', choice); setStatus(next); setUrl(next.settings.url ?? '') }, t('settingsSaved'), 'proxy')
       }}>{t('settingsSave')}</Button>
     </div>
+    <ActionFailure action={action} place="proxy" />
     {test !== undefined && <Notice tone={test.ok ? 'status' : 'error'}>
       {test.ok ? t('proxyTestOk', { url: test.url, status: test.status ?? 0, ms: test.ms }) : t('proxyTestFailed', { error: test.error ?? '' })}
     </Notice>}

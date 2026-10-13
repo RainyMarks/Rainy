@@ -1,14 +1,35 @@
 // Host clipboard write shared by Web UI copy controls. Success feedback stays
-// with each control; this helper only reports whether the host accepted a write.
+// with each control; a refused write is announced through the page's notice
+// (see onClipboardRefused) unless the caller shows the failure itself.
+
+const refusals = new Set<() => void>()
+
+/**
+ * Observe refused writes; most copy controls only show success, so the page
+ * says once, here, that a copy failed.
+ * @param listener - called after each refused write that was not quiet.
+ * @returns a function that removes the listener.
+ */
+export function onClipboardRefused(listener: () => void): () => void {
+  refusals.add(listener)
+  return () => { refusals.delete(listener) }
+}
 
 /**
  * Write text to the host clipboard, preferring the async Clipboard API and
  * falling back to `execCommand('copy')` on hosts (jsdom, insecure contexts)
  * that omit it.
  * @param text - the exact text to place on the clipboard.
+ * @param options - `quiet` when the caller reports a refusal itself.
  * @returns true only when the host accepted the write.
  */
-export async function writeClipboard(text: string): Promise<boolean> {
+export async function writeClipboard(text: string, options: { quiet?: boolean } = {}): Promise<boolean> {
+  const accepted = await write(text)
+  if (!accepted && options.quiet !== true) for (const listener of refusals) listener()
+  return accepted
+}
+
+async function write(text: string): Promise<boolean> {
   // lib.dom types clipboard non-optional, but insecure contexts omit it —
   // that runtime gap is exactly what this guard detects.
   /* oxlint-disable-next-line typescript/no-unnecessary-condition */

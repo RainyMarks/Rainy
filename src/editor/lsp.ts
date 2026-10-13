@@ -5,6 +5,7 @@ import {
   findReferencesKeymap, hoverTooltips, jumpToDefinitionKeymap, LSPClient, LSPPlugin, serverCompletion, serverDiagnostics, signatureHelp,
   Workspace, type Transport, type WorkspaceFile,
 } from '@codemirror/lsp-client'
+import { IDE_LANGUAGE_RESTART_CODE } from '../shared/ide-files-protocol.ts'
 import { directoryUri, uriKey } from './uri.ts'
 
 /** LSP position. */
@@ -198,9 +199,10 @@ export class LanguageConnection {
    * Open the connection.
    * @param target Project root and server language.
    * @param host Editor services.
-   * @param onClose Called once when the socket closes without `close()`, with the reason.
+   * @param onClose Called once when the socket closes without `close()`, with the reason and whether the Host asks for
+   *   a new connection because it stopped the server to start it in a changed environment.
    */
-  constructor(readonly target: LanguageTarget, host: LanguageHost, onClose: (message: string) => void) {
+  constructor(readonly target: LanguageTarget, host: LanguageHost, onClose: (message: string, restart: boolean) => void) {
     const url = new URL('/rainy/ide/lsp', location.href)
     url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     url.searchParams.set('workspaceId', target.workspaceId)
@@ -254,7 +256,7 @@ export class LanguageConnection {
       this.socket.addEventListener('close', (event) => {
         const message = event.reason !== '' ? event.reason : 'Language service connection closed.'
         reject(new Error(message))
-        if (!this.closed) { this.closed = true; this.client.disconnect(); onClose(message) }
+        if (!this.closed) { this.closed = true; this.client.disconnect(); onClose(message, event.code === IDE_LANGUAGE_RESTART_CODE) }
       }, { once: true })
     })
     // Rejections are reported through `onClose` or the caller awaiting `ready`.

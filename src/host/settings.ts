@@ -4,6 +4,7 @@ import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
+import { localized } from '../shared/locale.ts'
 import type { McpServerConfig, ModelSelection, ModelSetup, PermissionMode, PermissionRules, ProxySettings, UiPreferences } from '../shared/rpc.ts'
 import { CredentialFiles, type CredentialSeal } from './credentials.ts'
 import { readJson, SerialQueue, writeJson } from './files.ts'
@@ -121,6 +122,17 @@ export function credentialName(provider: string): string {
   return `RAINY_${provider.replaceAll('-', '_').toUpperCase()}_KEY`
 }
 
+/**
+ * @param name Credential name from {@link credentialName}.
+ * @returns The service the key belongs to, as Settings names it.
+ */
+function credentialLabel(name: string): string {
+  if (name === 'DEEPSEEK_API_KEY') return 'DeepSeek'
+  if (name === 'ANTHROPIC_API_KEY') return 'Claude'
+  const provider = /^RAINY_(.+)_KEY$/.exec(name)?.[1]
+  return provider === undefined ? name : provider.toLowerCase().replaceAll('_', '-')
+}
+
 /** Placeholder stored for local models that accept any key. */
 export const LOCAL_NO_KEY = 'rainy-local-no-key'
 
@@ -151,6 +163,8 @@ export class Settings {
   async load(): Promise<void> {
     const raw = await readJson(this.settingsFile)
     if (raw === undefined) {
+      // Keys stored before settings.json went missing stay, unreadable ones included; a 1.x import only adds keys.
+      this.keys = await this.credentials.read()
       await this.importLegacy()
       await writeJson(this.settingsFile, this.data)
       await this.credentials.write(this.keys)
@@ -254,6 +268,30 @@ export class Settings {
     return this.env[name] || this.keys[name]
   }
 
+  /** @returns Credential names of stored keys this Host cannot open and no environment variable replaces. */
+  unreadableKeys(): string[] {
+    return this.credentials.unreadableNames.filter(name => !this.env[name] && this.keys[name] === undefined)
+  }
+
+  /**
+   * Explain stored keys that could not be opened, for Settings → Models. Called when shown, so it follows the language.
+   * @returns The message naming the affected services, or `undefined` when every stored key is readable.
+   */
+  unreadableKeysMessage(): string | undefined {
+    const names = this.unreadableKeys()
+    if (names.length === 0) return undefined
+    const services = { zh: names.map(credentialLabel).join('、'), en: names.map(credentialLabel).join(', ') }
+    return this.credentials.sealed
+      ? localized({
+        zh: `已保存的 ${services.zh} API 密钥无法用当前的 Windows 数据保护密钥解开（例如重置过 Windows 账户密码后），请重新填写。原来的加密内容仍保留在 .credentials.sealed.json 中。`,
+        en: `The saved API keys for ${services.en} cannot be opened with the current Windows data protection key, for example after the Windows account password was reset. Enter them again; the encrypted values stay in .credentials.sealed.json.`,
+      })
+      : localized({
+        zh: `Windows 数据保护当前不可用，无法读取加密保存的 ${services.zh} API 密钥。可以稍后重启 RainyAgent 再试，或重新填写密钥（将不加密保存）。`,
+        en: `Windows data protection is unavailable, so the encrypted API keys for ${services.en} cannot be read. Restart RainyAgent later, or enter the keys again; they will then be stored unencrypted.`,
+      })
+  }
+
   /** @returns Providers whose real key is available; the local-model placeholder does not count. */
   providersWithKeys(): string[] {
     return this.data.models.map(model => model.provider).filter((provider) => {
@@ -293,7 +331,7 @@ export class Settings {
         }
       }
     }
-    Object.assign(this.keys, refs)
+    this.keys = { ...refs, ...this.keys }
     const patch = await readText(join(this.home, 'profiles', 'rainy', 'cordis.patch.yml'))
     if (patch === undefined) return
     const entries: Record<string, unknown>[] = []

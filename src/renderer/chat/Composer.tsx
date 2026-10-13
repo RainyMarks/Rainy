@@ -202,17 +202,17 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
   const addImages = async (files: readonly File[]): Promise<void> => {
     const accepted: ImageContent[] = []
     for (const file of files) {
-      if (!IMAGE_TYPES.has(file.type)) { toast(t('imageUnsupported', { name: file.name })); continue }
-      if (file.size > MAX_IMAGE_BYTES) { toast(t('imageTooLarge', { name: file.name })); continue }
+      if (!IMAGE_TYPES.has(file.type)) { toast(t('imageUnsupported', { name: file.name }), { tone: 'error' }); continue }
+      if (file.size > MAX_IMAGE_BYTES) { toast(t('imageTooLarge', { name: file.name }), { tone: 'error' }); continue }
       try {
         accepted.push(await toImage(file))
       } catch (error) {
-        toast(`${file.name}: ${error instanceof Error ? error.message : String(error)}`)
+        toast(`${file.name}: ${error instanceof Error ? error.message : String(error)}`, { tone: 'error' })
       }
     }
     setImages((current) => {
       const next = [...current, ...accepted]
-      if (next.length > MAX_IMAGES) toast(t('imageLimit', { count: MAX_IMAGES }))
+      if (next.length > MAX_IMAGES) toast(t('imageLimit', { count: MAX_IMAGES }), { tone: 'error' })
       return next.slice(0, MAX_IMAGES)
     })
   }
@@ -285,7 +285,13 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
     if (files.length === 0) return
     event.preventDefault()
     const imageFiles = files.filter(file => file.type.startsWith('image/'))
-    const paths = files.filter(file => !file.type.startsWith('image/')).map(file => window.__RAINY_HOST_PATHS__?.pathFor(file) ?? '').filter(path => path !== '')
+    const paths: string[] = []
+    for (const file of files.filter(entry => !entry.type.startsWith('image/'))) {
+      const path = window.__RAINY_HOST_PATHS__?.pathFor(file) ?? ''
+      // The desktop maps a dropped file to a path the Host can read; a browser, or a WSL path it cannot map, gives none.
+      if (path === '') toast(t('attachPathFailed', { name: file.name }), { tone: 'error' })
+      else paths.push(path)
+    }
     if (imageFiles.length > 0) void addImages(imageFiles)
     if (paths.length > 0) {
       const caret = input.current?.selectionStart ?? text.length
@@ -309,7 +315,7 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
               <span className={css.queueText}>{item.text === '' ? `[${item.imageCount}]` : item.text}</span>
               {sessionId !== null && (
                 <button type="button" className={css.iconButton} aria-label={t('removeQueued')} onClick={() => {
-                  host.call('chat.unqueue', { sessionId, id: item.id }).catch((error: unknown) => { toast(error instanceof Error ? error.message : String(error)) })
+                  host.call('chat.unqueue', { sessionId, id: item.id }).catch((error: unknown) => { toast(error instanceof Error ? error.message : String(error), { tone: 'error' }) })
                 }}><IconCloseOutlineRegular size={12} /></button>
               )}
             </li>

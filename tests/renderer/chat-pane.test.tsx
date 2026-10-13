@@ -189,3 +189,29 @@ it('shows whether a compaction’s summary request reused the chat’s cache, an
   expect(document.body.textContent).toContain('摘要请求复用了对话缓存 · 输入 1.5k · 缓存 88k · 输出 300')
   expect(document.body.textContent).toContain('读了 main.py。')
 })
+
+it('says when a picked chat cannot be opened, and opens it when the user retries', async () => {
+  const { toast } = await import('./settings-harness.tsx')
+  let reads = 0
+  handle('sessions.get', ({ sessionId }) => {
+    reads++
+    if (reads === 1) throw new Error('chat file unreadable')
+    return snapshot(sessionId, turn)
+  })
+  await render(<ChatPane workspace={workspace} sessionId="broken-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
+  await waitFor(() => { expect(toast).toHaveBeenCalledWith('无法打开这个对话：chat file unreadable', expect.objectContaining({ tone: 'error' })) })
+  const options = toast.mock.calls.at(-1)?.[1] as { actions?: { label: string; onClick(): void }[] } | undefined
+  expect(options?.actions?.map(action => action.label)).toEqual(['重试'])
+  await act(async () => { options?.actions?.[0]?.onClick() })
+  await waitFor(() => { expect(document.body.textContent).toContain('文件只有一行 print。') })
+})
+
+it('says which dropped file it could not reference instead of ignoring it', async () => {
+  const { toast } = await import('./settings-harness.tsx')
+  await render(<ChatPane workspace={workspace} sessionId={null} onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
+  const drop = new Event('drop', { bubbles: true, cancelable: true })
+  Object.defineProperty(drop, 'dataTransfer', { value: { files: [new File(['x'], 'notes.txt', { type: 'text/plain' })], types: ['Files'] } })
+  await act(async () => { input().parentElement?.dispatchEvent(drop) })
+  expect(toast).toHaveBeenCalledWith('无法取得 notes.txt 的路径，没有添加引用。', { tone: 'error' })
+  expect(input().value).toBe('')
+})

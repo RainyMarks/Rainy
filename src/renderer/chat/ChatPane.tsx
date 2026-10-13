@@ -57,13 +57,14 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
   const [nextMode, setNextMode] = useState<PermissionMode | undefined>()
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('ask')
   useEffect(() => {
-    if (sessionId !== null) return
+    if (sessionId !== null) return undefined
     void host.call('security.status', {}).then((status) => { setDefaultMode(status.defaultMode) }, () => undefined)
+    return host.on('security.changed', ({ defaultMode: mode }) => { setDefaultMode(mode) })
   }, [sessionId])
   const permission = view?.permission ?? nextMode ?? defaultMode
   const changePermission = (mode: PermissionMode): void => {
     if (sessionId === null) { setNextMode(mode); return }
-    host.call('chat.setPermission', { sessionId, mode }).catch((error: unknown) => { toast(message(error)) })
+    host.call('chat.setPermission', { sessionId, mode }).catch((error: unknown) => { toast(message(error), { tone: 'error' }) })
   }
 
   /**
@@ -88,7 +89,7 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
       await host.call('chat.send', { sessionId: target, text, ...(images.length === 0 ? {} : { images }), mode })
       return true
     } catch (error) {
-      toast(t('sendFailed', { message: message(error) }))
+      toast(t('sendFailed', { message: message(error) }), { tone: 'error' })
       return false
     }
   }
@@ -102,11 +103,11 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
   }), [])
 
   const stop = (): void => {
-    if (sessionId !== null) host.call('chat.abort', { sessionId }).catch((error: unknown) => { toast(message(error)) })
+    if (sessionId !== null) host.call('chat.abort', { sessionId }).catch((error: unknown) => { toast(message(error), { tone: 'error' }) })
   }
   const compact = (): void => {
     if (sessionId === null) return
-    host.call('chat.compact', { sessionId }).then((result) => { if (result.message !== '') toast(result.message) }, (error: unknown) => { toast(message(error)) })
+    host.call('chat.compact', { sessionId }).then((result) => { if (result.message !== '') toast(result.message) }, (error: unknown) => { toast(message(error), { tone: 'error' }) })
   }
   const newChat = (): void => { onSessionChange(null) }
 

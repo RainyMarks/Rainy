@@ -256,7 +256,7 @@ describe('window layout', () => {
       .mockRejectedValueOnce(new IdeRequestError('version-conflict', 'helper changed on disk'))
       .mockResolvedValueOnce({ ...source, path: 'helper.py', content: 'other helper', version: 'v2' as IdeFileVersion })
     click(byRole('button', '运行：Python'))
-    await waitFor(() => { expect(byRole('alert').textContent).toContain('helper changed on disk') })
+    await waitFor(() => { expect(byRole('alert').textContent).toContain('磁盘上的文件在打开或预览后已被修改，请比较或刷新后再试。') })
     expect(h.request.mock.calls.filter(([body]) => body.op === 'files.save').map(([body]) => ('path' in body ? body.path : '')))
       .toEqual(['main.py', 'helper.py'])
     expect(launch).not.toHaveBeenCalled()

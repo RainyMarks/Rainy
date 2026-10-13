@@ -106,7 +106,7 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
     const canvas = view.current
     if (channel === 'original' || canvas === null || natural === undefined) return
     const source = readPixels()
-    if (source === undefined) { toast(t('channelTooLarge')); setChannel('original'); return }
+    if (source === undefined) { toast(t('channelTooLarge'), { tone: 'error' }); setChannel('original'); return }
     canvas.width = source.width
     canvas.height = source.height
     canvas.getContext('2d')?.putImageData(channelPixels(source, channel), 0, 0)
@@ -195,7 +195,7 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
       emit('chat.attach', { files: [new File([blob], `${stem}${channel === 'original' ? '' : `-${channel}`}.png`, { type: 'image/png' })] })
       toast(t('imageAttached'), { tone: 'success' })
     } catch (error) {
-      toast(t('imageAttachFailed', { error: error instanceof Error ? error.message : String(error) }))
+      toast(t('imageAttachFailed', { error: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
     }
   }
 
@@ -217,12 +217,12 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
         <button type="button" className={css.toolButton} title={t('zoomActual')} aria-pressed={zoom === 1} disabled={failed} onClick={() => { zoomTo(1) }}>1:1</button>
         <span className={css.separator} />
         <span>{t('imageChannel')}</span>
-        <button type="button" className={css.toolButton} aria-label="◀" disabled={failed || natural === undefined} onClick={() => { cycle(-1) }}>◀</button>
+        <button type="button" className={css.toolButton} title={t('channelPrevious')} aria-label={t('channelPrevious')} disabled={failed || natural === undefined} onClick={() => { cycle(-1) }}>◀</button>
         <select aria-label={t('imageChannel')} value={channel} disabled={failed || natural === undefined}
           onChange={(event) => { setChannel(event.target.value as ImageChannel) }}>
           {IMAGE_CHANNELS.map(value => <option key={value} value={value}>{channelLabel(value)}</option>)}
         </select>
-        <button type="button" className={css.toolButton} aria-label="▶" disabled={failed || natural === undefined} onClick={() => { cycle(1) }}>▶</button>
+        <button type="button" className={css.toolButton} title={t('channelNext')} aria-label={t('channelNext')} disabled={failed || natural === undefined} onClick={() => { cycle(1) }}>▶</button>
         <span className={css.grow} />
         <button type="button" className={css.toolButton} title={t('imageAttachTitle')} disabled={failed || natural === undefined} onClick={() => { void attach() }}>{t('imageAttach')}</button>
       </div>

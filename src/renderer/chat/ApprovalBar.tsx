@@ -28,7 +28,7 @@ export function ApprovalBar({ sessionId, approval }: { sessionId: string; approv
     setBusy(true)
     host.call('chat.approve', { sessionId, toolCallId: approval.toolCallId, decision, ...(decision === 'deny' && reason.trim() !== '' ? { reason: reason.trim() } : {}) })
       .catch((error: unknown) => {
-        toast(t('approvalFailed', { message: error instanceof Error ? error.message : String(error) }))
+        toast(t('approvalFailed', { message: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
         setBusy(false)
       })
   }

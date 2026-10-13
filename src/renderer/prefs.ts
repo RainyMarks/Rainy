@@ -9,6 +9,8 @@ const DEFAULT_PREFS: UiPreferences = {
 }
 
 let current: UiPreferences = DEFAULT_PREFS
+/** Whether `current` holds the user's preferences rather than the defaults shown before the Host answered. */
+let known = false
 const listeners = new Set<() => void>()
 const darkQuery = typeof window === 'undefined' ? undefined : window.matchMedia('(prefers-color-scheme: dark)')
 
@@ -19,10 +21,14 @@ function apply(prefs: UiPreferences): void {
   document.documentElement.lang = prefs.locale === 'zh' ? 'zh-CN' : 'en'
   document.documentElement.style.setProperty('--dsh-content-font-size', `${prefs.uiFontSize}px`)
   document.documentElement.style.setProperty('--dsh-code-font-size', `${prefs.codeFontSize}px`)
+  // The desktop themes native menus and dialogs from this attribute, and takes the page language as the user's only
+  // while it is present (`src/preload/preload-chrome.ts`), so the defaults never reach it.
+  if (known) document.documentElement.setAttribute('data-ds-theme-source', prefs.theme)
 }
 
 function publish(prefs: UiPreferences): void {
   current = prefs
+  known = true
   apply(prefs)
   for (const listener of listeners) listener()
 }

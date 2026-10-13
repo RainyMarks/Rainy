@@ -3,6 +3,12 @@ import type { Branded } from './brand.ts'
 import type { IdeExecutionConfiguration } from './ide-execution-protocol.ts'
 import type { IdeTabView } from './ide-preview.ts'
 
+/**
+ * Close code of a `/rainy/ide/lsp` connection whose server the Host stopped because the project's interpreter
+ * environment changed; the editor opens the connection again to get a server started in the new environment.
+ */
+export const IDE_LANGUAGE_RESTART_CODE = 1012
+
 /** Durable project identity. */
 export type WorkspaceId = Branded<'WorkspaceId'>
 /** Chat identity. */

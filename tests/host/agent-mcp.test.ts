@@ -79,3 +79,22 @@ it('saves valid headers and rejects malformed or case-duplicate names', async ()
   await reloaded.load()
   expect(reloaded.get().mcpServers[0]?.headers).toEqual({ Authorization: 'Bearer token-1' })
 })
+
+it('answers whether a tool is still allowed, so a run refuses one turned off after it started', async () => {
+  const { url } = await echoServer()
+  const manager = new McpManager(() => undefined)
+  cleanups.push(() => manager.close())
+  manager.sync([{ name: 'web', enabled: true, transport: 'streamable-http', url, tools: ['echo'] }])
+  await ready(manager, 'web')
+  expect(manager.allows('mcp__web__echo')).toBe(true)
+  expect(manager.allows('mcp__web__hidden')).toBe(false)
+  manager.sync([{ name: 'web', enabled: true, transport: 'streamable-http', url, tools: ['hidden'] }])
+  expect(manager.allows('mcp__web__echo')).toBe(false)
+})
+
+it('says which command did not start instead of a bare connection error', async () => {
+  const manager = new McpManager(() => undefined)
+  cleanups.push(() => manager.close())
+  manager.sync([{ name: 'missing', enabled: true, transport: 'stdio', command: 'rainy-no-such-command-qa', args: [], tools: [] }])
+  await expect(ready(manager, 'missing')).rejects.toThrow(/找不到启动命令 rainy-no-such-command-qa|启动命令运行后立即退出了/u)
+})

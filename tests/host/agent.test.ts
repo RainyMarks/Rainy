@@ -45,6 +45,22 @@ describe('agent', () => {
     expect(h.events.some(item => item.event === 'session.entry')).toBe(true)
   })
 
+  it('keeps the title the user gave an untitled, already opened chat when its first message runs', async () => {
+    server = new FakeOpenAI([{ text: 'Hi.' }])
+    await server.start()
+    const h = await harness(server, cleanups)
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    // Opening the chat loads its session with the untitled summary read from disk.
+    await h.call('sessions.get', { sessionId: chat.id })
+    await h.call('sessions.rename', { sessionId: chat.id, title: 'Heap notes' })
+    await h.call('chat.send', { sessionId: chat.id, text: 'first message please' })
+    await idle(h, chat.id)
+    expect((await h.call('sessions.get', { sessionId: chat.id })).summary.title).toBe('Heap notes')
+    expect((await h.call('sessions.list', {})).find(item => item.id === chat.id)?.title).toBe('Heap notes')
+    const file = await readFile(join(h.home, 'chats', `${chat.id}.jsonl`), 'utf8')
+    expect(file).not.toContain('"title":"first message please"')
+  })
+
   it('refuses to edit a file the chat has not read, then edits after reading', async () => {
     server = new FakeOpenAI([
       { toolCalls: [{ name: 'edit', arguments: { file_path: 'notes.txt', old_string: 'alpha', new_string: 'beta' } }] },
@@ -105,6 +121,28 @@ describe('agent', () => {
     expect(snapshot.entries.filter(entry => entry.kind === 'turn')).toHaveLength(2)
   })
 
+  it('shows a changed model window at once and follows the default after its own model is removed', async () => {
+    server = new FakeOpenAI([{ text: 'first' }, { text: 'second' }])
+    await server.start()
+    const h = await harness(server, cleanups)
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    await h.call('chat.send', { sessionId: chat.id, text: 'hello' })
+    await idle(h, chat.id)
+    expect((await h.call('sessions.get', { sessionId: chat.id })).context?.contextWindow).toBe(32768)
+    const fake = { provider: 'fake', baseURL: server.baseURL, model: 'fake-model', local: true, api: 'openai-completions' as const }
+    await h.call('models.configure', { ...fake, contextWindow: 65536 })
+    const resized = await h.call('sessions.get', { sessionId: chat.id })
+    expect(resized.context).toMatchObject({ contextWindow: 65536, inputLimit: resolveBudget(65536).inputLimit })
+    await h.call('models.configure', { ...fake, provider: 'other', model: 'other-model', contextWindow: 32768 })
+    await h.call('chat.setModel', { sessionId: chat.id, provider: 'other', model: 'other-model' })
+    await h.call('models.select', { provider: 'fake', model: 'fake-model' })
+    await h.call('models.remove', { provider: 'other' })
+    expect((await h.call('sessions.get', { sessionId: chat.id })).model).toMatchObject({ provider: 'fake', model: 'fake-model' })
+    await h.call('chat.send', { sessionId: chat.id, text: 'again' })
+    await idle(h, chat.id)
+    expect(server.requests.at(-1)).toMatchObject({ model: 'fake-model' })
+  })
+
   it('forks a chat at a reply and keeps that reply’s tool results', async () => {
     server = new FakeOpenAI([{ text: 'answer one' }, { text: 'answer two' }])
     await server.start()
@@ -162,7 +200,7 @@ describe('agent', () => {
       await idle(h, chat.id)
     }
     const result = await h.call('chat.compact', { sessionId: chat.id })
-    expect(result.message).toMatch(/^Compacted/)
+    expect(result.message).toMatch(/^已压缩 \d+ 条历史（约 \d+ tokens）。$/)
     // Same model, tools, system prompt, history and options; no tool_choice; only the reply and the instruction added.
     const previous = split(server.requests[2])
     const shared = split(server.requests[3])

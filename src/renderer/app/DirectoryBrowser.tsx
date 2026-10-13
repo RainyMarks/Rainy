@@ -11,6 +11,7 @@ import {
 } from '../ui/index.ts'
 import { callIde } from '../ide/ide-api.ts'
 import { useAppT } from './messages.ts'
+import { describeIdeError } from './workbench.ts'
 import css from './DirectoryBrowser.module.css'
 
 type Entry = IdeDirectoryListing['entries'][number]
@@ -57,7 +58,7 @@ export function pathCrumbs(path: string): { readonly name: string; readonly path
 }
 
 function failureText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return describeIdeError(error)
 }
 
 function Column({ entries, selected, showHidden, filter, busy, onPick }: {

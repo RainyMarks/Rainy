@@ -20,33 +20,52 @@ export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** One operation at a time per section, with its outcome shown as a toast. */
+/** One operation at a time per section; success shows as a toast, a failure stays beside the control that started it. */
 export interface SettingsAction {
   /** Whether an operation is running. */
   busy: boolean
+  /** The latest failure and the place that started it; cleared when the next operation starts. */
+  failure: { place: string | undefined; text: string } | undefined
   /**
    * Run an operation unless another one is running.
-   * @param operation The work; a rejection becomes an error toast.
+   * @param operation The work.
    * @param success Toast text after it resolves.
+   * @param place Where {@link ActionFailure} shows a rejection; without one it becomes an error toast.
    */
-  run(operation: () => Promise<void>, success?: string): void
+  run(operation: () => Promise<void>, success?: string, place?: string): void
 }
 
 /** @returns The section's operation runner. */
 export function useAction(): SettingsAction {
   const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<SettingsAction['failure']>()
   const pending = useRef(false)
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-  const run = useCallback((operation: () => Promise<void>, success?: string): void => {
+  const run = useCallback((operation: () => Promise<void>, success?: string, place?: string): void => {
     if (pending.current) return
     pending.current = true
     setBusy(true)
+    setFailure(undefined)
     void operation().then(() => { if (success !== undefined) toast(success, { tone: 'success' }) })
-      .catch((error: unknown) => { toast(errorText(error)) })
+      .catch((error: unknown) => {
+        const text = errorText(error)
+        if (place === undefined || !mounted.current) toast(text, { tone: 'error' })
+        else setFailure({ place, text })
+      })
       .finally(() => { pending.current = false; if (mounted.current) setBusy(false) })
   }, [])
-  return { busy, run }
+  return { busy, failure, run }
+}
+
+/**
+ * The failure of an operation started at `place`, shown until the next operation starts.
+ * @param props.action The section's runner.
+ * @param props.place The place name passed to `run`.
+ * @returns The error notice, or nothing.
+ */
+export function ActionFailure({ action, place }: { action: SettingsAction; place: string }): JSX.Element | null {
+  return action.failure?.place === place ? <Notice tone="error">{action.failure.text}</Notice> : null
 }
 
 /** One option of a {@link Select}. */

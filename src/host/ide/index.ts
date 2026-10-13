@@ -100,6 +100,10 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
     subprocess: localIdeSubprocess, resolveWorkspace, resolveEnvironment, assertUsable, tools, log, limits: IDE_LANGUAGE_LIMITS,
     configuration: async id => (await state.get(id)).data.execution,
   })
+  // A server started before another interpreter was selected would keep resolving imports and tools on the old PATH.
+  const stopRuntimeChanges = runtime.onSelectionChange((workspaceId) => {
+    void language.refreshWorkspace(workspaceId).catch((error: unknown) => { log(`IDE language refresh failed: ${String(error)}`) })
+  })
   const lifetime = new AbortController()
   let closing: Promise<void> | undefined
 
@@ -163,6 +167,7 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
     close() {
       closing ??= (async () => {
         lifetime.abort()
+        stopRuntimeChanges()
         hints.close()
         const results = await Promise.allSettled([language.close(), execution.dispose(), files.close(), state.close()])
         removeActivity()

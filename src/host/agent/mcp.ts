@@ -5,6 +5,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { ImageContent, TextContent, TSchema } from '@earendil-works/pi-ai'
+import { localized } from '../../shared/locale.ts'
 import type { McpServerConfig, McpServerStatus } from '../../shared/rpc.ts'
 import { scrubbedEnv } from '../process.ts'
 
@@ -43,6 +44,16 @@ interface Connection {
   tools: { name: string; description: string; inputSchema: Record<string, unknown>; readOnly: boolean }[]
   instructions: string
   closing?: boolean | undefined
+}
+
+/**
+ * @param chunk Output of a server command.
+ * @returns Its text; on Windows, output that is not UTF-8 (cmd.exe errors on a Chinese system) is read in the console's GBK.
+ */
+function consoleText(chunk: Buffer): string {
+  const text = chunk.toString('utf8')
+  if (process.platform !== 'win32' || !text.includes('\uFFFD')) return text
+  try { return new TextDecoder('gbk').decode(chunk) } catch (_unsupported) { return text }
 }
 
 /** Keeps one connection per enabled server. */
@@ -131,6 +142,21 @@ export class McpManager {
     return names
   }
 
+  /**
+   * @param name A model-facing MCP tool name.
+   * @returns Whether its server is connected and Settings still allows the tool; a run checks this before each call.
+   */
+  allows(name: string): boolean {
+    for (const connection of this.connections.values()) {
+      if (connection.state !== 'ready' || connection.client === undefined) continue
+      for (const tool of connection.tools) {
+        if (mcpToolName(connection.config.name, tool.name) !== name) continue
+        return connection.config.tools.length === 0 || connection.config.tools.includes(tool.name) || connection.config.tools.includes(name)
+      }
+    }
+    return false
+  }
+
   /** @returns Allowed tools of connected servers as agent tools. */
   tools(): AgentTool[] {
     const tools: AgentTool[] = []
@@ -177,11 +203,19 @@ export class McpManager {
   private async connect(connection: Connection): Promise<void> {
     const { config } = connection
     const client = new Client({ name: 'RainyAgent', version: '2' })
+    /** The server's latest stderr, which says why a command that exits at once did not start. */
+    let stderr = ''
     try {
       const transport = config.transport === 'stdio'
         ? new StdioClientTransport({ command: config.command!, args: config.args ?? [], env: { ...scrubbedEnv(), ...config.env }, stderr: 'pipe' })
         : new StreamableHTTPClientTransport(new URL(config.url!), { fetch: this.request, ...(config.headers === undefined ? {} : { requestInit: { headers: config.headers } }) })
-      if (transport instanceof StdioClientTransport) transport.stderr?.on('data', (chunk: Buffer) => { this.log(`[mcp:${config.name}] ${chunk.toString('utf8').trimEnd()}`) })
+      if (transport instanceof StdioClientTransport) {
+        transport.stderr?.on('data', (chunk: Buffer) => {
+          const text = consoleText(chunk)
+          stderr = (stderr + text).slice(-600)
+          this.log(`[mcp:${config.name}] ${text.trimEnd()}`)
+        })
+      }
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
       const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS })
       if (connection.closing) { await client.close(); return }
@@ -195,14 +229,22 @@ export class McpManager {
       client.onclose = () => {
         if (connection.closing) return
         connection.state = 'error'
-        connection.error = 'The server closed the connection.'
+        connection.error = localized({ zh: 'MCP 服务器断开了连接。', en: 'The server closed the connection.' })
         connection.client = undefined
         this.notify()
       }
     } catch (error) {
       connection.state = 'error'
-      connection.error = error instanceof Error ? error.message : String(error)
-      this.log(`[mcp:${config.name}] ${connection.error}`)
+      const reason = error instanceof Error ? error.message : String(error)
+      const output = stderr.trim().split(/\r?\n/u).slice(-3).join(' ').trim()
+      connection.error = config.transport !== 'stdio' ? reason
+        : /\bENOENT\b/u.test(reason)
+          ? localized({ zh: `找不到启动命令 ${config.command ?? ''}。请检查命令名称，或填写完整路径。`, en: `The command ${config.command ?? ''} was not found. Check its name, or enter its full path.` })
+          : /connection closed/iu.test(reason)
+            ? localized({ zh: `启动命令运行后立即退出了。${output === '' ? '请检查命令、参数和环境变量。' : `输出：${output}`}`,
+              en: `The command exited right after starting. ${output === '' ? 'Check the command, arguments and environment variables.' : `Output: ${output}`}` })
+            : reason
+      this.log(`[mcp:${config.name}] ${reason}`)
       await client.close().catch(() => undefined)
     }
     this.notify()

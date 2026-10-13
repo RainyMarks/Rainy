@@ -15,11 +15,11 @@ export async function revertChanges(sessionId: string, toolCallIds: readonly str
     if (result.reverted.length > 0) toast(chatT('undoDone', { count: result.reverted.length }), { tone: 'success' })
     for (const failure of result.failed) {
       const reason = failure.reason === 'changed' ? chatT('undoChanged') : failure.reason === 'unavailable' ? chatT('undoUnavailable') : chatT('undoError')
-      toast(chatT('undoFailed', { path: failure.path === '' ? '…' : failure.path, reason }))
+      toast(chatT('undoFailed', { path: failure.path === '' ? '…' : failure.path, reason }), { tone: 'error' })
     }
     return result
   } catch (error) {
-    toast(error instanceof Error ? error.message : String(error))
+    toast(error instanceof Error ? error.message : String(error), { tone: 'error' })
     return undefined
   }
 }

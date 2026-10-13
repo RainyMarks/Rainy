@@ -23,7 +23,7 @@ import { prepareDesktopEnvironment } from './native-environment-window.ts'
 import { installNativeTools } from './native-tool-windows.ts'
 import { runToolPackMaintenance } from './toolpack-maintenance.ts'
 import { OptionalModules } from './optional-modules.ts'
-import { removeRetiredResources } from './retired-resources.ts'
+import { pruneWindowsHost, removeRetiredResources } from './retired-resources.ts'
 import { acquireToolPackLock } from './toolpack.ts'
 import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
@@ -620,7 +620,7 @@ async function start(): Promise<void> {
       const projects = createProjectRegistry({ root: carrierState, targetId: target.id })
       if (workspaceId) {
         const snapshot = await transport.inspectProject(workspaceId)
-        if (!snapshot) throw new Error('The selected project is unavailable for target migration.')
+        if (!snapshot) throw new Error(localized({ zh: '当前项目不可用，无法带到新的执行环境。', en: 'The selected project is unavailable for target migration.' }))
         const records = await projects.list()
         const project = records.find(item => item.projectId === snapshot.projectId)
         if (!project) {
@@ -628,7 +628,7 @@ async function start(): Promise<void> {
             en: 'The current project is not registered yet. Refresh the Runtime page and try again.' }) }
         }
         const current = project.bindings.find(binding => binding.targetId === target.id && binding.workspaceId === workspaceId)
-        if (!current) throw new Error('The current project binding is unavailable.')
+        if (!current) throw new Error(localized({ zh: '当前项目在这个执行环境中的记录不可用，请刷新运行环境页面后重试。', en: 'The current project binding is unavailable. Refresh the Runtime page and try again.' }))
         // Windows paths are the shared form between the current and the selected target.
         const mapToSelected = async (path: string): Promise<string> => {
           const windowsPath = target.kind === 'windows' ? path : await wslPath(distro, '-w', path)
@@ -741,7 +741,7 @@ async function start(): Promise<void> {
   handleIpc('rainy:runtime-switch', async (event, value) => {
     if (!trustedSender(event) || value === null || typeof value !== 'object' || !('targetId' in value) || typeof value.targetId !== 'string') throw new Error('Invalid execution target request.')
     const selected = (await listExecutionTargets()).find(item => item.id === value.targetId)
-    if (!selected) throw new Error('The selected execution target is unavailable.')
+    if (!selected) throw new Error(localized({ zh: '所选执行环境已不可用，例如 WSL 发行版已被移除。', en: 'The selected execution target is unavailable, for example because its WSL distribution was removed.' }))
     return switchTarget(selected, 'workspaceId' in value && typeof value.workspaceId === 'string' ? brandString<WorkspaceId>(value.workspaceId) : undefined)
   })
   const admitStrata = (event: Electron.IpcMainInvokeEvent, mutate = false): void => {
@@ -859,6 +859,9 @@ async function start(): Promise<void> {
 `)
       }, (error: unknown) => { appendFileSync(logPath, `Retired resources were not removed: ${errorText(error)}
 `) })
+      void pruneWindowsHost(resourceRoot).then((bytes) => {
+        if (bytes > 0) appendFileSync(logPath, `Removed ${Math.round(bytes / 1024 ** 2)} MiB of Windows runtime files that earlier versions left behind\n`)
+      }, (error: unknown) => { appendFileSync(logPath, `Old Windows runtime files were not removed: ${errorText(error)}\n`) })
     }
     void nativeTools.maintain().then((bytes) => {
       if (bytes > 0) appendFileSync(logPath, `Removed ${Math.round(bytes / 1024 ** 2)} MiB of program files from tool upgrade backups\n`)
@@ -902,7 +905,12 @@ async function runBackgroundChecks(options: {
 }
 
 const maintenanceIndex = process.argv.indexOf('--rainy-install-tools')
-if (maintenanceIndex >= 0) {
+// The uninstaller removes the bundled Windows runtime through the app, file by file from its inventory, instead of deleting a folder tree.
+if (process.argv.includes('--rainy-remove-runtime')) {
+  void app.whenReady().then(async () => { if (app.isPackaged) await pruneWindowsHost(process.resourcesPath, { everything: true }); app.exit(0) })
+    .catch((error: unknown) => { console.error('Removing the Windows runtime failed', error); app.exit(1) })
+}
+else if (maintenanceIndex >= 0) {
   const mediaDirectory = process.argv.at(maintenanceIndex + 1)
   void app.whenReady().then(async () => {
     if (mediaDirectory === undefined || !win32.isAbsolute(mediaDirectory)) { app.exit(2); return }

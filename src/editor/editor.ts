@@ -523,13 +523,14 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       const created = new LanguageConnection(
         { workspaceId: workspace.id, rootId: root.rootId, root: root.path, title: root.title, language, pythonPath: workspace.pythonPath },
         this,
-        (message) => {
+        (message, restart) => {
           if (this.connections.get(identity) !== created) return
           this.connections.delete(identity)
-          for (const item of this.documents.values()) {
-            if (item.connection === created) { item.connection = undefined; item.view.dispatch({ effects: lspSlot.reconfigure([]) }) }
-          }
-          this.callbacks.languageState(identity, 'error', message)
+          const served = [...this.documents.values()].filter(item => item.connection === created)
+          for (const item of served) { item.connection = undefined; item.view.dispatch({ effects: lspSlot.reconfigure([]) }) }
+          // The Host replaced the server for a changed interpreter environment; reopen the documents with a new one.
+          if (restart && !this.disposed) for (const item of served) this.attachLanguageServer(item)
+          else this.callbacks.languageState(identity, 'error', message)
         },
       )
       connection = created

@@ -51,6 +51,29 @@ export async function listExecutionTargets(): Promise<ExecutionTarget[]> {
   }))]
 }
 
+/** Pending updates per preferences file; each reads the file only after the previous one wrote it. */
+const updates = new Map<string, Promise<void>>()
+
+/**
+ * Read, change and atomically rewrite the desktop preferences, after every update to the same file submitted before.
+ * Concurrent updates of different fields (the language and the execution target) would otherwise each write back the
+ * file as they read it and lose the other's change.
+ * @param settingsPath - private desktop preferences.
+ * @param change - returns the fields to replace, given the current preferences.
+ * @returns completion after this update was written.
+ */
+function updateDesktopPreferences(settingsPath: string, change: (preferences: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+  const update = (updates.get(settingsPath) ?? Promise.resolve()).then(async () => {
+    const preferences = await readDesktopPreferences(settingsPath)
+    await mkdir(dirname(settingsPath), { recursive: true })
+    await writeEnvironmentRecord(settingsPath, { ...preferences, ...change(preferences) })
+  })
+  const settled = update.catch(() => undefined)
+  updates.set(settingsPath, settled)
+  void settled.then(() => { if (updates.get(settingsPath) === settled) updates.delete(settingsPath) })
+  return update
+}
+
 /**
  * Remember the interface language, for dialogs shown before the page loads.
  * @param settingsPath - private desktop preferences.
@@ -58,9 +81,7 @@ export async function listExecutionTargets(): Promise<ExecutionTarget[]> {
  * @returns completion after an atomic preference update.
  */
 export async function saveDesktopLocale(settingsPath: string, locale: 'zh' | 'en'): Promise<void> {
-  const preferences = await readDesktopPreferences(settingsPath)
-  await mkdir(dirname(settingsPath), { recursive: true })
-  await writeEnvironmentRecord(settingsPath, { ...preferences, locale })
+  return updateDesktopPreferences(settingsPath, () => ({ locale }))
 }
 
 /**
@@ -70,9 +91,8 @@ export async function saveDesktopLocale(settingsPath: string, locale: 'zh' | 'en
  * @returns completion after an atomic preference update.
  */
 export async function saveExecutionTarget(settingsPath: string, target: ExecutionTarget, pending?: PendingProjectTarget): Promise<void> {
-  const preferences = await readDesktopPreferences(settingsPath)
-  await mkdir(dirname(settingsPath), { recursive: true })
-  const updated = { ...preferences, executionTarget: targetSchema.parse(target), ...(target.kind === 'wsl' ? { distro: target.distro } : {}),
-    pendingProject: pending ?? null }
-  await writeEnvironmentRecord(settingsPath, updated)
+  const executionTarget = targetSchema.parse(target)
+  return updateDesktopPreferences(settingsPath, () => ({
+    executionTarget, ...(target.kind === 'wsl' ? { distro: target.distro } : {}), pendingProject: pending ?? null,
+  }))
 }

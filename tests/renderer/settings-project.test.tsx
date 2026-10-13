@@ -197,11 +197,11 @@ it('clears the waiting message and reports a failed preparation or a refused tar
   h.native.switchTarget.mockResolvedValueOnce({ ok: false, error: '请先结束运行中的 AI 任务' })
   await render(<RuntimeSection workspace={projectA} />)
   await click(button(zh.settingsPrepareEnvironments))
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith('离线包校验失败') })
+  await waitFor(() => { expect(toast).toHaveBeenCalledWith('离线包校验失败', { tone: 'error' }) })
   expect(hasText(zh.settingsPreparingEnvironments)).toBe(false)
   expect(button(zh.settingsPrepareEnvironments).disabled).toBe(false)
   await choose(zh.settingsExecutionTarget, 'Ubuntu')
-  await waitFor(() => { expect(toast).toHaveBeenCalledWith('请先结束运行中的 AI 任务') })
+  await waitFor(() => { expect(toast).toHaveBeenCalledWith('请先结束运行中的 AI 任务', { tone: 'error' }) })
 })
 
 function modules(installed: boolean) {
@@ -237,6 +237,16 @@ it('lists components with their download size and downloads one on request', asy
   expect(h.bridge.install).toHaveBeenCalledExactlyOnceWith('php')
   await waitFor(() => { expect(findButton(zh.modulesRemove)).toBeDefined() })
   expect(document.querySelector('[data-module="php"]')?.textContent).toContain('已下载，占用 96MB')
+})
+
+it('shows why a download could not be cancelled', async () => {
+  const h = modules(false)
+  h.bridge.cancel.mockRejectedValueOnce(new Error('下载已在校验，无法取消'))
+  await render(<OptionalModules />)
+  await waitFor(() => { expect(findButton('下载（36MB）')).toBeDefined() })
+  await h.progress({ phase: 'downloading', module: 'php', completedBytes: 18, totalBytes: 36, error: '' })
+  await click(button(zh.modulesCancel))
+  await waitFor(() => { expect(document.querySelector('[role="alert"]')?.textContent).toBe('下载已在校验，无法取消') })
 })
 
 it('removes an installed component and shows only the requested one inline', async () => {
