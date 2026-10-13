@@ -1,4 +1,4 @@
-/* Settings window: a centered 760×500 panel with the section list on the left; long sections scroll inside the content column. */
+/* Settings window: a large panel with a text-only section list on a sidebar fill, and the section page in a centered column that scrolls. */
 
 .overlay {
   position: fixed;
@@ -7,7 +7,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: max(24px, var(--dsh-frame-top-clearance, 24px)) 24px;
+  padding: max(24px, var(--dsh-frame-top-clearance, 24px)) 48px 32px;
 }
 
 .mask {
@@ -22,13 +22,14 @@
   position: relative;
   z-index: 1;
   display: flex;
-  width: 760px;
+  width: 1120px;
   max-width: 100%;
-  height: 500px;
+  height: 720px;
   max-height: 100%;
   overflow: hidden;
   border-radius: var(--dsw-radius-panel);
-  background: var(--dsw-alias-bg-layer-2);
+  background: var(--dsw-alias-bg-base);
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
   box-shadow: var(--dsw-elevation-prominent);
   animation: settingsEnter var(--ds-transition-duration) var(--ds-ease-in-out);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
@@ -48,23 +49,23 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  width: 188px;
-  padding: 22px 12px 12px;
+  width: 224px;
+  padding: 20px 10px 10px;
+  background: var(--dsw-specific-sidebar-fill);
+  font-family: var(--dsw-font-family);
 }
 
 .navTitle {
-  padding: 0 12px;
-  font-size: calc(var(--dsh-content-font-size) + 2px);
-  line-height: 24px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-primary);
+  padding: 0 10px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .navList {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-height: 0;
   overflow-y: auto;
 }
@@ -72,29 +73,34 @@
 .navCell {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 40px;
-  padding: 9px 16px 9px 12px;
+  flex: none;
+  height: 34px;
+  padding: 0 10px;
   border: none;
   border-radius: var(--dsw-radius-md);
   background: transparent;
   cursor: pointer;
   font-size: var(--dsh-content-font-size);
   line-height: 22px;
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-secondary);
   text-align: left;
+  text-decoration: none;
 }
 
 .navCell:hover {
-  background: var(--dsw-specific-sidebar-nav-item-hover);
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 .navCell.active {
   background: var(--dsw-specific-sidebar-nav-item-active);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
 }
 
-.navIcon {
-  flex: none;
+.navCell:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
 
 .navLabel {
@@ -105,50 +111,102 @@
   text-overflow: ellipsis;
 }
 
+/* Shortcuts, feedback and the application identity sit at the foot of the list, above a hairline. */
+.navFooter {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 12px 10px 4px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+.identityMark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--dsw-radius-sm);
+}
+
+.identityText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.identityName {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.identityVersion {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
 .content {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
 
-.header {
-  flex: none;
-  display: flex;
-  justify-content: flex-end;
-  height: 48px;
-  padding: 14px 14px 6px;
-}
-
 .close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   cursor: pointer;
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .close:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 .options {
   flex: 1;
   min-height: 0;
-  padding: 0 24px 24px;
+  padding: 44px 56px 56px;
   overflow-y: auto;
 }
 
+/* The page keeps a readable measure and centers in wide windows. */
+.page {
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+@media (max-width: 900px) {
+  .options { padding: 40px 28px 40px; }
+}
+
 @media (max-width: 640px) {
-  .nav { width: 64px; padding-inline: 8px; }
-  .navTitle, .navLabel { display: none; }
-  .navCell { justify-content: center; padding: 0; }
+  .nav { width: 168px; }
+  .identity { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

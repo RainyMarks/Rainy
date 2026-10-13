@@ -1,4 +1,4 @@
-/** General section: language, appearance, font sizes, chat preferences, shortcut reference, diagnostics export and version. */
+/** General section (language, appearance, font sizes, chat preferences, diagnostics export and version) and the shortcut list. */
 import clsx from 'clsx'
 import { useState } from 'react'
 import type { UiPreferences } from '../../shared/rpc.ts'
@@ -7,25 +7,17 @@ import { Button } from '../ui/Button.tsx'
 import { ShortcutKeys } from '../ui/ShortcutKeys.tsx'
 import { Switch } from '../ui/Switch.tsx'
 import { toast } from '../ui/toasts.tsx'
-import {
-  IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, IconDarkOutlineMedium, IconFollowsystemOutlineMedium, IconLightOutlineMedium,
-} from '../ui/icons/index.tsx'
+import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from '../ui/icons/index.tsx'
 import { useT } from './messages.ts'
 import { diagnosticsBridge } from './native.ts'
 import type { SettingsMessage } from './messages.ts'
-import { Select, SettingRow, errorText } from './parts.tsx'
+import { Choice, SettingRow, errorText } from './parts.tsx'
 import css from './sections.module.css'
 
 /** Smallest and largest interface and code font sizes, in px. */
 export const FONT_SIZE_RANGE = { min: 12, max: 17 } as const
 /** Font sizes restored by the reset button; they match the Host defaults. */
 export const DEFAULT_FONT_SIZES = { uiFontSize: 14, codeFontSize: 13 } as const
-
-const themes = [
-  { id: 'light', key: 'appearanceLight', Icon: IconLightOutlineMedium },
-  { id: 'dark', key: 'appearanceDark', Icon: IconDarkOutlineMedium },
-  { id: 'system', key: 'appearanceSystem', Icon: IconFollowsystemOutlineMedium },
-] as const
 
 const shortcuts: readonly { keys: readonly string[]; key: SettingsMessage }[] = [
   { keys: ['Ctrl', 'Alt', 'P'], key: 'shortcutQuickOpen' },
@@ -68,18 +60,18 @@ export function GeneralSection(): JSX.Element {
     { field: 'codeFontSize', value: prefs.codeFontSize, title: 'codeFontSizeTitle', description: 'codeFontSizeDescription', up: 'codeFontSizeIncrease', down: 'codeFontSizeDecrease' },
   ] as const
   return <section className={css.section} data-settings-section="general">
-    <div className={css.rows}>
+    <h2 className={css.heading}>{t('navGeneral')}</h2>
+    <p className={css.lead}>{t('generalLead')}</p>
+    <h3 className={css.groupTitle}>{t('groupAppearance')}</h3>
+    <div className={css.group}>
       <SettingRow title={t('languageTitle')}>
-        <Select label={t('languageTitle')} value={prefs.locale} onChange={(locale) => { change({ locale }) }}
+        <Choice label={t('languageTitle')} value={prefs.locale} onChange={(locale) => { change({ locale }) }}
           items={[{ id: 'zh', label: t('languageZh') }, { id: 'en', label: t('languageEn') }]} />
       </SettingRow>
-      <div className={css.settingGroup}>
-        <div className={css.settingTitle}>{t('appearanceTitle')}</div>
-        <div className={css.cubes}>
-          {themes.map(({ id, key, Icon }) => <button key={id} type="button" className={clsx(css.cube, prefs.theme === id && css.cubeSelected)}
-            aria-pressed={prefs.theme === id} onClick={() => { change({ theme: id }) }}><Icon />{t(key)}</button>)}
-        </div>
-      </div>
+      <SettingRow title={t('appearanceTitle')}>
+        <Choice label={t('appearanceTitle')} value={prefs.theme} onChange={(theme) => { change({ theme }) }}
+          items={[{ id: 'light', label: t('appearanceLight') }, { id: 'dark', label: t('appearanceDark') }, { id: 'system', label: t('appearanceSystem') }]} />
+      </SettingRow>
       <div className={css.settingGroup}>
         {sizes.map(size => <SettingRow key={size.field} title={t(size.title)} description={t(size.description)}>
           <div className={css.stepperControl}>
@@ -101,32 +93,45 @@ export function GeneralSection(): JSX.Element {
             onClick={() => { change({ ...DEFAULT_FONT_SIZES }) }}>{t('fontSizeReset')}</button>
         </div>
       </div>
+    </div>
+    <h3 className={css.groupTitle}>{t('groupChat')}</h3>
+    <div className={css.group}>
       <SettingRow title={t('busyEnterTitle')} description={t('busyEnterDescription')}>
-        <Select label={t('busyEnterTitle')} value={prefs.busyEnter} onChange={(busyEnter) => { change({ busyEnter }) }}
+        <Choice label={t('busyEnterTitle')} value={prefs.busyEnter} onChange={(busyEnter) => { change({ busyEnter }) }}
           items={[{ id: 'queue', label: t('busyEnterQueue') }, { id: 'steer', label: t('busyEnterSteer') }]} />
       </SettingRow>
       <SettingRow title={t('stepDetailTitle')} description={t('stepDetailDescription')}>
-        <Select label={t('stepDetailTitle')} value={prefs.stepDetail} onChange={(stepDetail) => { change({ stepDetail }) }}
+        <Choice label={t('stepDetailTitle')} value={prefs.stepDetail} onChange={(stepDetail) => { change({ stepDetail }) }}
           items={[{ id: 'compact', label: t('stepDetailCompact') }, { id: 'standard', label: t('stepDetailStandard') },
             { id: 'detailed', label: t('stepDetailDetailed') }]} />
       </SettingRow>
       <SettingRow title={t('usageTitle')} description={t('usageDescription')}>
         <Switch label={t('usageTitle')} checked={prefs.showUsage} onChange={(showUsage) => { change({ showUsage }) }} />
       </SettingRow>
-      <div className={css.settingGroup} data-shortcuts>
-        <div className={css.settingTitle}>{t('shortcutsTitle')}</div>
-        <div className={css.settingDescription}>{t('shortcutsDescription')}</div>
-        <dl className={css.shortcuts}>
-          {shortcuts.map(shortcut => <div key={shortcut.key} className={css.shortcut}>
-            <dt>{t(shortcut.key)}</dt>
-            <dd><ShortcutKeys keys={shortcut.keys} /></dd>
-          </div>)}
-        </dl>
-      </div>
-      {diagnostics !== undefined && <SettingRow title={t('diagnosticsTitle')} description={t('diagnosticsDescription')}>
-        <Button variant="outline" disabled={exporting} onClick={exportDiagnostics}>{t(exporting ? 'diagnosticsExporting' : 'diagnosticsExport')}</Button>
-      </SettingRow>}
-      {version !== undefined && <div className={css.version}>{t('currentVersion', { version })}</div>}
     </div>
+    {(diagnostics !== undefined || version !== undefined) && <>
+      <h3 className={css.groupTitle}>{t('groupAbout')}</h3>
+      <div className={css.group}>
+        {diagnostics !== undefined && <SettingRow title={t('diagnosticsTitle')} description={t('diagnosticsDescription')}>
+          <Button variant="outline" size="sm" disabled={exporting} onClick={exportDiagnostics}>{t(exporting ? 'diagnosticsExporting' : 'diagnosticsExport')}</Button>
+        </SettingRow>}
+        {version !== undefined && <SettingRow title={t('currentVersion', { version })} />}
+      </div>
+    </>}
+  </section>
+}
+
+/** @returns The shortcut list, opened from the foot of the settings navigation. */
+export function ShortcutsSection(): JSX.Element {
+  const t = useT()
+  return <section className={css.section} data-settings-section="shortcuts">
+    <h2 className={css.heading}>{t('shortcutsTitle')}</h2>
+    <p className={css.lead}>{t('shortcutsDescription')}</p>
+    <dl className={clsx(css.group, css.shortcuts)} data-shortcuts>
+      {shortcuts.map(shortcut => <div key={shortcut.key} className={css.shortcut}>
+        <dt>{t(shortcut.key)}</dt>
+        <dd><ShortcutKeys keys={shortcut.keys} className={css.keycaps} /></dd>
+      </div>)}
+    </dl>
   </section>
 }

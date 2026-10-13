@@ -190,6 +190,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
 
   return <section className={css.section} data-settings-section="models">
     <h2 className={css.heading}>{t('settingsModels')}</h2>
+    <p className={css.lead}>{t('modelsLead')}</p>
     {error !== '' && <Notice tone="error">{error}</Notice>}
     {status?.keysUnreadable !== undefined && <Notice tone="error">{status.keysUnreadable}</Notice>}
     <article className={css.card} data-default-model>
@@ -233,7 +234,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
               })}</div>
             </div>
             <div className={css.actions}>
-              <Button size="sm" disabled={busy} onClick={() => { load(formOf(preset.model), undefined, preset.name) }}>{t('modelLoadPreset')}</Button>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => { load(formOf(preset.model), undefined, preset.name) }}>{t('modelLoadPreset')}</Button>
             </div>
           </li>)}
         </ul>}

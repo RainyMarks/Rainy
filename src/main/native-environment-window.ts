@@ -41,7 +41,7 @@ export async function prepareDesktopEnvironment(options: {
 }): Promise<ReadyDesktopEnvironment> {
   const pageURL = setupPageURL(options.pagePath)
   const window = new BrowserWindow({ title: 'RainyAgent', width: 900, height: 670, minWidth: 680, minHeight: 520,
-    show: false, icon: options.icon, backgroundColor: '#16191e', ...options.parent === undefined ? {} : { parent: options.parent },
+    show: false, icon: options.icon, backgroundColor: '#171717', ...options.parent === undefined ? {} : { parent: options.parent },
     webPreferences: { preload: options.preloadPath, additionalArguments: [`--rainy-setup-page=${encodeURIComponent(pageURL)}`],
       nodeIntegration: false, contextIsolation: true, sandbox: true } })
   window.setMenu(null)

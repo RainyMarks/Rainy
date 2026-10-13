@@ -79,7 +79,7 @@
   margin: 0;
   font-size: 16px;
   line-height: 24px;
-  font-weight: 500; /* figma wt510, rendered 500 */
+  font-weight: 600;
   color: var(--dsw-alias-label-primary);
 }
 

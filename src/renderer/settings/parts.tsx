@@ -103,6 +103,31 @@ export function Select<V extends string>({ label, value, items, onChange, disabl
   </div>
 }
 
+/** One option of a {@link Choice}. */
+export interface ChoiceItem<V extends string> { id: V; label: string }
+
+/**
+ * A segmented choice among two or three options; the option buttons report the current value as their pressed state.
+ * @param props.label Accessible name of the group.
+ * @param props.value Selected option id.
+ * @param props.items Options in display order.
+ * @param props.onChange Receives a newly chosen id; choosing the current option does nothing.
+ * @param props.disabled Whether every option is disabled.
+ * @returns The group.
+ */
+export function Choice<V extends string>({ label, value, items, onChange, disabled = false }: {
+  label: string
+  value: V
+  items: readonly ChoiceItem<V>[]
+  onChange(value: V): void
+  disabled?: boolean | undefined
+}): JSX.Element {
+  return <div className={css.choices} role="group" aria-label={label}>
+    {items.map(item => <button key={item.id} type="button" className={css.choice} aria-pressed={item.id === value} disabled={disabled}
+      onClick={() => { if (item.id !== value) onChange(item.id) }}>{item.label}</button>)}
+  </div>
+}
+
 /**
  * A labelled form control.
  * @param props.label Visible label.

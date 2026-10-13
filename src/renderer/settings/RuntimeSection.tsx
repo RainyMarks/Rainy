@@ -63,6 +63,7 @@ export function RuntimeSection({ workspace }: { workspace: SettingsWorkspace }):
   }
   return <section className={css.section} data-settings-section="runtime">
     <h2 className={css.heading}>{t('settingsRuntime')}</h2>
+    <p className={css.lead}>{t('runtimeLead')}</p>
     {targets !== undefined && native !== undefined && <Field label={t('settingsExecutionTarget')}>
       <Select label={t('settingsExecutionTarget')} value={targets.current.id} disabled={busy}
         items={targets.targets.map(target => ({ id: target.id, label: target.label }))}

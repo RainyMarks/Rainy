@@ -53,7 +53,7 @@ export function MemorySection({ workspace }: { workspace: SettingsWorkspace }): 
       <div className={css.actions}><Button variant="outline" disabled={busy} onClick={() => { run(reload) }}>{t('settingsRefresh')}</Button></div>
       {error !== '' && <Notice tone="error">{error}</Notice>}
       {snapshot === undefined ? error === '' && <Loading label={t('loading')} /> : <>
-        <div className={css.rows}>
+        <div className={css.group}>
           <SettingRow title={t('settingsMemoryUse')}>
             <Switch label={t('settingsMemoryUse')} checked={snapshot.enabled} disabled={busy} onChange={(enabled) => {
               apply(() => host.call('memory.setEnabled', { workspaceId, enabled }))

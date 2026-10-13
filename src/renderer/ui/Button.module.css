@@ -50,14 +50,14 @@
   background: var(--dsw-alias-interactive-bg-active);
 }
 
-/* Outlined actions use the same neutral stroke as settings links. */
+/* Secondary actions sit on a solid neutral fill without a stroke. */
 .outline {
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  background: transparent;
+  border: 0;
+  background: var(--dsw-alias-control-fill);
 }
 
 .outline:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-alias-control-fill-hover);
 }
 
 .toolbar {

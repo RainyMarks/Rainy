@@ -1,14 +1,14 @@
 :root {
-  --toolpack-track: #e8ebf2;
-  --toolpack-fill: #4b60a8;
-  --toolpack-muted: #666e7f;
+  --toolpack-track: #ebebeb;
+  --toolpack-fill: #171717;
+  --toolpack-muted: #6e6e6e;
   --toolpack-error: #a24542;
 }
 
 .brand,
 h1,
 .state {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .phase-line {
@@ -77,9 +77,9 @@ button:disabled { cursor: default; }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --toolpack-track: #353b48;
-    --toolpack-fill: #9eb2f3;
-    --toolpack-muted: #a7aebd;
+    --toolpack-track: #2d2d2d;
+    --toolpack-fill: #ebebeb;
+    --toolpack-muted: #8c8c8c;
     --toolpack-error: #efaaa6;
   }
 }

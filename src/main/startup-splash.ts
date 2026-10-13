@@ -4,7 +4,7 @@ import { currentLocale, localized } from '../shared/locale.ts'
 import { CAPTION_HEIGHT } from './window-chrome.ts'
 
 /** Window background colors shared by the native window and the startup page, so neither flashes. */
-export const WINDOW_BACKGROUND = { dark: '#16191e', light: '#f6f7f9' } as const
+export const WINDOW_BACKGROUND = { dark: '#171717', light: '#f7f7f7' } as const
 
 /**
  * Render the self-contained startup page; it loads no files and runs no remote content.
@@ -14,8 +14,8 @@ export const WINDOW_BACKGROUND = { dark: '#16191e', light: '#f6f7f9' } as const
 export function startupPage(dark: boolean): string {
   const background = dark ? WINDOW_BACKGROUND.dark : WINDOW_BACKGROUND.light
   const html = `<!doctype html><html lang="${currentLocale()}"><head><meta charset="utf-8"><title>RainyAgent</title><style>
-:root { color-scheme: ${dark ? 'dark' : 'light'}; --fg: ${dark ? '#e8eaed' : '#1d2129'}; --muted: ${dark ? '#9aa0a6' : '#6b7280'};
-  --track: ${dark ? 'rgba(255,255,255,.08)' : 'rgba(17,24,39,.08)'}; --accent: #4d6bfe; }
+:root { color-scheme: ${dark ? 'dark' : 'light'}; --fg: ${dark ? '#ebebeb' : '#171717'}; --muted: ${dark ? '#8c8c8c' : '#6e6e6e'};
+  --track: ${dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.08)'}; --accent: var(--fg); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: ${background}; color: var(--fg); font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI",
   "Microsoft YaHei UI", system-ui, sans-serif; -webkit-user-select: none; user-select: none; cursor: default; }

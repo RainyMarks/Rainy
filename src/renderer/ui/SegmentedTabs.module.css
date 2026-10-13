@@ -2,17 +2,19 @@
   position: relative;
   display: grid;
   padding: 4px;
-  border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-module-platform);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-segment-track);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-segment-stroke);
 }
 
 .indicator {
   position: absolute;
   inset: 4px auto 4px 4px;
   box-sizing: border-box;
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-3);
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-segment-thumb);
+  box-shadow: var(--dsw-alias-segment-shadow);
   transition: transform 180ms ease;
   pointer-events: none;
 }
@@ -20,9 +22,9 @@
 .tab {
   position: relative;
   justify-content: center;
-  height: 34px;
-  padding: 0 12px;
-  border-radius: var(--dsw-radius-md);
+  height: 30px;
+  padding: 0 14px;
+  border-radius: var(--dsw-radius-sm);
   font-size: var(--dsw-ui-font-size);
   line-height: 20px;
   background: transparent;

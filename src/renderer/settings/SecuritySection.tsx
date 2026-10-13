@@ -40,7 +40,7 @@ export function SecuritySection({ workspace }: { workspace: SettingsWorkspace })
     <p className={css.muted}>{t('settingsSecurityNote')}</p>
     {error !== '' && <Notice tone="error">{error}</Notice>}
     {status === undefined ? error === '' && <Loading label={t('loading')} /> : <>
-      <div className={css.rows}>
+      <div className={css.group}>
         <SettingRow title={t('securityDefaultMode')} description={t('securityDefaultModeNote')}>
           <Select label={t('securityDefaultMode')} value={status.defaultMode} items={modes} disabled={busy} onChange={(mode) => {
             run(async () => {

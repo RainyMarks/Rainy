@@ -82,8 +82,8 @@ it('closes on Escape, the close button and the mask', async () => {
 
 it('stores language, appearance, chat preferences and usage display through the Host', async () => {
   await render(dialog())
-  await click(button(zh.languageTitle))
-  await click(all<HTMLElement>('[role="menuitem"]').find(item => item.textContent === 'English')!)
+  expect(button(zh.languageZh).getAttribute('aria-pressed')).toBe('true')
+  await click(button(zh.languageEn))
   await waitFor(() => { expect(stored.locale).toBe('en') })
   expect(hasText(en.navGeneral)).toBe(true)
   expect(getPrefs().locale).toBe('en')
@@ -93,12 +93,13 @@ it('stores language, appearance, chat preferences and usage display through the 
   expect(button(en.appearanceDark).getAttribute('aria-pressed')).toBe('true')
   expect(button(en.appearanceSystem).getAttribute('aria-pressed')).toBe('false')
 
-  await click(button(en.busyEnterTitle))
-  await click(all<HTMLElement>('[role="menuitem"]').find(item => item.textContent === en.busyEnterSteer)!)
+  await click(button(en.busyEnterSteer))
   expect(stored.busyEnter).toBe('steer')
-  await click(button(en.stepDetailTitle))
-  await click(all<HTMLElement>('[role="menuitem"]').find(item => item.textContent === en.stepDetailDetailed)!)
+  expect(button(en.busyEnterSteer).getAttribute('aria-pressed')).toBe('true')
+  await click(button(en.stepDetailDetailed))
   expect(stored.stepDetail).toBe('detailed')
+  // Choosing the option already selected stores nothing.
+  await click(button(en.stepDetailDetailed))
   await click(button(en.usageTitle))
   expect(stored.showUsage).toBe(false)
   expect(button(en.usageTitle).getAttribute('aria-checked')).toBe('false')
@@ -124,9 +125,19 @@ it('steps font sizes within 12 to 17 px and resets both to the defaults', async 
   expect(button(zh.fontSizeReset).disabled).toBe(true)
 })
 
-it('lists the keyboard shortcuts and the current version', async () => {
+it('shows the version, links to feedback and lists the keyboard shortcuts from the foot of the navigation', async () => {
   window.__RAINY_AGENT__ = { name: 'RainyAgent', version: '2.0.0', environment: 'Windows' }
   await render(dialog())
+  expect(hasText('当前版本：2.0.0')).toBe(true)
+  expect(hasText('版本 2.0.0')).toBe(true)
+  expect(findButton(zh.diagnosticsExport)).toBeUndefined()
+  const feedback = document.querySelector<HTMLAnchorElement>('[data-settings-footer="feedback"]')!
+  expect([feedback.textContent, feedback.getAttribute('href'), feedback.target])
+    .toEqual([zh.navFeedback, 'https://github.com/RainyMarks/RainyAgent/issues', '_blank'])
+  expect(document.querySelector('[data-shortcuts]')).toBeNull()
+  await click(button(zh.shortcutsTitle))
+  expect(panel().dataset['section']).toBe('shortcuts')
+  expect(button(zh.shortcutsTitle).getAttribute('aria-current')).toBe('page')
   const rows = all('[data-shortcuts] dt').map(row => `${row.textContent}: ${[...row.nextElementSibling!.querySelectorAll('kbd')].map(key => key.textContent).join('+')}`)
   expect(rows).toEqual([
     `${zh.shortcutQuickOpen}: Ctrl+Alt+P`, `${zh.shortcutSettings}: Ctrl+,`, `${zh.shortcutNewChat}: Ctrl+Alt+N`,
@@ -134,8 +145,6 @@ it('lists the keyboard shortcuts and the current version', async () => {
     `${zh.shortcutSend}: Enter`, `${zh.shortcutNewline}: Shift+Enter`, `${zh.shortcutAlternate}: Ctrl+Enter`,
     `${zh.shortcutStop}: Esc+Esc`, `${zh.shortcutReload}: F5`,
   ])
-  expect(hasText('当前版本：2.0.0')).toBe(true)
-  expect(findButton(zh.diagnosticsExport)).toBeUndefined()
 })
 
 it('exports diagnostics through the desktop and reports where the file went', async () => {

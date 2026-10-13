@@ -4,6 +4,10 @@ import { defineMessages } from '../i18n.ts'
 const zh = {
   title: '设置', close: '关闭', loading: '正在加载…',
   navGeneral: '通用设置', navModels: '模型', navExtensions: 'Skills 与 MCP', navRuntime: '运行环境', navMemory: '项目记忆', navSecurity: '安全',
+  navFeedback: '提供反馈', appVersion: '版本 {version}',
+  generalLead: '界面语言、外观、字号和对话方式。', groupAppearance: '语言与外观', groupChat: '对话', groupAbout: '关于',
+  modelsLead: '连接模型服务、选择默认模型，并设置全局提示词和网络代理。',
+  runtimeLead: '选择命令在哪里运行，并管理项目使用的解释器和可选组件。',
 
   languageTitle: '语言', languageZh: '简体中文', languageEn: 'English',
   appearanceTitle: '外观', appearanceLight: '浅色', appearanceDark: '深色', appearanceSystem: '跟随系统',
@@ -128,6 +132,11 @@ const zh = {
 const en: Record<keyof typeof zh, string> = {
   title: 'Settings', close: 'Close', loading: 'Loading…',
   navGeneral: 'General', navModels: 'Models', navExtensions: 'Skills and MCP', navRuntime: 'Runtime', navMemory: 'Project memory', navSecurity: 'Security',
+  navFeedback: 'Send feedback', appVersion: 'Version {version}',
+  generalLead: 'Language, appearance, text size and how chats behave.', groupAppearance: 'Language and appearance', groupChat: 'Chats',
+  groupAbout: 'About',
+  modelsLead: 'Connect model services, choose the default model, and set the global prompt and network proxy.',
+  runtimeLead: 'Choose where commands run, and manage the interpreters and optional components a project uses.',
 
   languageTitle: 'Language', languageZh: '简体中文', languageEn: 'English',
   appearanceTitle: 'Appearance', appearanceLight: 'Light', appearanceDark: 'Dark', appearanceSystem: 'System',

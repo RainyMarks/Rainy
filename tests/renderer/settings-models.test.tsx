@@ -319,7 +319,8 @@ it.each([{ locale: 'zh' as const, copy: zh }, { locale: 'en' as const, copy: en 
   const { container } = await render(<ModelsSection workspace={workspace} />)
   const page = container.querySelector('[data-settings-section="models"]')!
   expect(page.querySelector('h2')?.textContent).toBe(copy.settingsModels)
-  const blocks = [...page.children].slice(1)
+  expect(page.children[1]?.textContent).toBe(copy.modelsLead)
+  const blocks = [...page.children].slice(2)
   expect(blocks.map(block => block.querySelector('h3, summary > span')?.textContent))
     .toEqual([copy.settingsDefaultModel, copy.modelEditTitle.replace('{name}', 'official/large'), copy.settingsGlobalPrompt, copy.proxyTitle, copy.settingsContextBudget, copy.strataTitle])
   expect(page.querySelector<HTMLDetailsElement>('details[data-strata]')?.open).toBe(false)

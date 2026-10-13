@@ -1,15 +1,12 @@
-/** Settings window: General, Models, Skills & MCP, Runtime and Memory sections. */
+/** Settings window: General, Models, Skills & MCP, Runtime, Memory and Security sections, plus the shortcut list. */
 import { useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
-import {
-  IconCloseOutlineRegular, IconCodeOutlineMedium, IconDataOutlineMedium, IconDatabaseOutlineMedium, IconSettingsOutlineMedium, IconShieldOutlineMedium,
-  IconSkillOutlineMedium,
-} from '../ui/icons/index.tsx'
+import { IconCloseOutlineRegular } from '../ui/icons/index.tsx'
 import { useModalLayer } from '../ui/useModalLayer.ts'
 import { ExtensionsSection } from './ExtensionsSection.tsx'
-import { GeneralSection } from './GeneralSection.tsx'
+import { GeneralSection, ShortcutsSection } from './GeneralSection.tsx'
 import { MemorySection } from './MemorySection.tsx'
 import { useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
@@ -18,8 +15,11 @@ import { RuntimeSection } from './RuntimeSection.tsx'
 import { SecuritySection } from './SecuritySection.tsx'
 import css from './SettingsDialog.module.css'
 
-/** Section identifiers, in navigation order. */
-export type SettingsSection = 'general' | 'models' | 'extensions' | 'runtime' | 'memory' | 'security'
+/** Section identifiers: the navigation list in order, then the shortcut list at the foot of the navigation. */
+export type SettingsSection = 'general' | 'models' | 'extensions' | 'runtime' | 'memory' | 'security' | 'shortcuts'
+
+/** Where "Send feedback" leads; the desktop app opens it in the system browser. */
+const FEEDBACK_URL = 'https://github.com/RainyMarks/RainyAgent/issues'
 
 /** Inputs from the window layout. */
 export interface SettingsDialogProps {
@@ -31,17 +31,18 @@ export interface SettingsDialogProps {
   onClose(): void
 }
 
-const sections: readonly { id: SettingsSection; label: SettingsMessage; Icon: typeof IconSettingsOutlineMedium }[] = [
-  { id: 'general', label: 'navGeneral', Icon: IconSettingsOutlineMedium },
-  { id: 'models', label: 'navModels', Icon: IconDataOutlineMedium },
-  { id: 'extensions', label: 'navExtensions', Icon: IconSkillOutlineMedium },
-  { id: 'runtime', label: 'navRuntime', Icon: IconCodeOutlineMedium },
-  { id: 'memory', label: 'navMemory', Icon: IconDatabaseOutlineMedium },
-  { id: 'security', label: 'navSecurity', Icon: IconShieldOutlineMedium },
+const sections: readonly { id: SettingsSection; label: SettingsMessage }[] = [
+  { id: 'general', label: 'navGeneral' },
+  { id: 'models', label: 'navModels' },
+  { id: 'extensions', label: 'navExtensions' },
+  { id: 'runtime', label: 'navRuntime' },
+  { id: 'memory', label: 'navMemory' },
+  { id: 'security', label: 'navSecurity' },
 ]
 
 /**
- * Modal settings window with a section list on the left. Escape, the mask and the close button close it.
+ * Modal settings window with a text-only section list on the left; its foot holds the shortcut list, the feedback link and the version.
+ * Escape, the mask and the close button close it.
  * Opening it, or changing `section` while it is open, shows the requested section.
  * @param props Dialog inputs.
  * @returns The dialog, or nothing while closed.
@@ -63,6 +64,7 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
   useModalLayer(panel, open, onClose)
   if (!open) return null
   const project = workspace?.workspaceId ?? ''
+  const version = typeof window === 'undefined' ? undefined : window.__RAINY_AGENT__?.version
   const pane = (id: SettingsSection, content: JSX.Element): JSX.Element | null =>
     id === active || visited.has(id) ? <div key={id} hidden={id !== active}>{content}</div> : null
   return createPortal(<div className={css.overlay} role="presentation">
@@ -72,25 +74,41 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
       <nav className={css.nav} aria-labelledby={titleId}>
         <div className={css.navTitle} id={titleId}>{t('title')}</div>
         <div className={css.navList}>
-          {sections.map(({ id, label, Icon }) => <button key={id} type="button" className={clsx(css.navCell, id === active && css.active)}
+          {sections.map(({ id, label }) => <button key={id} type="button" className={clsx(css.navCell, id === active && css.active)}
             aria-current={id === active ? 'page' : undefined} data-modal-autofocus={id === active ? '' : undefined}
             data-settings-nav={id} onClick={() => { setActive(id) }}>
-            <Icon className={css.navIcon} size={16} />
             <span className={css.navLabel}>{t(label)}</span>
           </button>)}
         </div>
+        <div className={css.navFooter}>
+          <button type="button" className={clsx(css.navCell, active === 'shortcuts' && css.active)} aria-current={active === 'shortcuts' ? 'page' : undefined}
+            data-modal-autofocus={active === 'shortcuts' ? '' : undefined} data-settings-footer="shortcuts" onClick={() => { setActive('shortcuts') }}>
+            <span className={css.navLabel}>{t('shortcutsTitle')}</span>
+          </button>
+          <a className={css.navCell} href={FEEDBACK_URL} target="_blank" rel="noreferrer" data-settings-footer="feedback">
+            <span className={css.navLabel}>{t('navFeedback')}</span>
+          </a>
+          <div className={css.identity}>
+            <img src="/rainy/icon.png" alt="" className={css.identityMark} />
+            <div className={css.identityText}>
+              <div className={css.identityName}>RainyAgent</div>
+              {version !== undefined && <div className={css.identityVersion}>{t('appVersion', { version })}</div>}
+            </div>
+          </div>
+        </div>
       </nav>
       <div className={css.content}>
-        <div className={css.header}>
-          <button type="button" className={css.close} aria-label={t('close')} onClick={onClose}><IconCloseOutlineRegular size={14} /></button>
-        </div>
+        <button type="button" className={css.close} aria-label={t('close')} onClick={onClose}><IconCloseOutlineRegular size={16} /></button>
         <div className={css.options}>
-          {pane('general', <GeneralSection />)}
-          {pane('models', <ModelsSection workspace={workspace} />)}
-          {pane('extensions', <ExtensionsSection key={project} workspace={workspace} />)}
-          {pane('runtime', <RuntimeSection key={project} workspace={workspace} />)}
-          {pane('memory', <MemorySection key={project} workspace={workspace} />)}
-          {pane('security', <SecuritySection key={project} workspace={workspace} />)}
+          <div className={css.page}>
+            {pane('general', <GeneralSection />)}
+            {pane('models', <ModelsSection workspace={workspace} />)}
+            {pane('extensions', <ExtensionsSection key={project} workspace={workspace} />)}
+            {pane('runtime', <RuntimeSection key={project} workspace={workspace} />)}
+            {pane('memory', <MemorySection key={project} workspace={workspace} />)}
+            {pane('security', <SecuritySection key={project} workspace={workspace} />)}
+            {pane('shortcuts', <ShortcutsSection />)}
+          </div>
         </div>
       </div>
     </div>
