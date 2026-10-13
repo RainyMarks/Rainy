@@ -159,11 +159,12 @@ describe('retired carrier resources', () => {
     }
     await writeFile(join(host, 'runtime.json'), JSON.stringify({ version: 1, files: ['node/node.exe', 'App/dist/host.js', 'node_modules/kept/index.js']
       .map(path => ({ path, bytes: 1, sha256: '0' })) }))
-    expect(await pruneWindowsHost(root)).toBe('old shell'.length + 'old module'.length + 'stale'.length)
-    expect((await readdir(host)).sort()).toEqual(['app', 'node', 'node_modules', 'runtime.json'])
+    // A name whose case differs from the inventory is the same file on Windows only; elsewhere it is a stray file.
+    const windows = process.platform === 'win32'
+    expect(await pruneWindowsHost(root)).toBe('old shell'.length + 'old module'.length + 'stale'.length + (windows ? 0 : 'host'.length))
+    expect((await readdir(host)).sort()).toEqual(windows ? ['app', 'node', 'node_modules', 'runtime.json'] : ['node', 'node_modules', 'runtime.json'])
     expect(await readdir(join(host, 'node_modules/kept'))).toEqual(['index.js'])
-    // A name whose case differs from the inventory is the same file on Windows only.
-    expect(await readdir(join(host, 'app/dist'))).toEqual(process.platform === 'win32' ? ['host.js'] : [])
+    if (windows) expect(await readdir(join(host, 'app/dist'))).toEqual(['host.js'])
     expect(await pruneWindowsHost(root)).toBe(0)
     await pruneWindowsHost(root, { everything: true })
     expect(await readdir(root)).toEqual([])
