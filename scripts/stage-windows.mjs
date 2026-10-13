@@ -77,7 +77,7 @@ async function copyApp(target) {
   const manifest = JSON.parse(await readFile(join(app, 'package.json'), 'utf8'))
   await writeFile(join(target, 'package.json'), JSON.stringify({ name: manifest.name, productName: manifest.productName, version: manifest.version,
     private: true, type: 'module', license: manifest.license }, null, 2) + '\n')
-  for (const name of ['LICENSE', 'LICENSE.RainyAgent', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md']) await cp(join(app, name), join(target, name))
+  for (const name of ['LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md']) await cp(join(app, name), join(target, name))
   await cp(join(app, 'dist/host.js'), join(target, 'dist/host.js'))
   await cp(join(app, 'dist/renderer'), join(target, 'dist/renderer'), { recursive: true, filter: file => !file.endsWith('.map') })
   // Strata is an optional module downloaded by the carrier, never part of the Host.

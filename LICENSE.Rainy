@@ -1,10 +1,10 @@
-RainyAgent Source Available License 1.0
+Rainy Source Available License 1.0
 
-Copyright (c) 2026 NCUCyberBase and the RainyAgent contributors
+Copyright (c) 2026 RainyMarks and the Rainy contributors
 
 1. Scope and existing rights
 
-This license applies to RainyAgent-specific code and documentation in this
+This license applies to Rainy-specific code and documentation in this
 repository, including src/, scripts/, tests/, docs/, toolpacks/ and the README
 files, except material identified as derived from DeepSeek Harness or as
 third-party material in its own headers or notices or in THIRD_PARTY_NOTICES.md.
@@ -37,7 +37,7 @@ You may redistribute unmodified or modified copies without charge for
 noncommercial purposes, provided recipients receive this license, the
 copyright notices, and the applicable third-party notices. You must identify
 your modifications and must not represent a modified distribution as an
-official NCUCyberBase release.
+official RainyMarks release.
 
 3. Uses requiring separate permission
 

@@ -155,7 +155,7 @@ After a completed turn, generation waits for 60 seconds without foreground work 
 
 ## Usage license and release integrity
 
-[RainyAgent source-available terms](../LICENSE) permit personal and internal business use without a license fee, modification, and noncommercial redistribution; sale, paid hosting, and commercial redistribution require separate written permission. Startup and execution do not read device codes, activation codes or expiry dates, and settings contains no activation controls. Existing activation files remain in place and do not affect startup or execution. Projects, model settings and chats retain their existing storage locations.
+[Rainy source-available terms](../LICENSE) permit personal and internal business use without a license fee, modification, and noncommercial redistribution; sale, paid hosting, and commercial redistribution require separate written permission. Startup and execution do not read device codes, activation codes or expiry dates, and settings contains no activation controls. Existing activation files remain in place and do not affect startup or execution. Projects, model settings and chats retain their existing storage locations.
 
 The production carrier authenticates its resource inventory using a public release key embedded at build time and retains Electron ASAR integrity protection. Build keys are independent of user data: the default lives in the ignored build directory, or RAINY_RELEASE_SIGNING_KEY selects an existing Ed25519 private-key file; private keys never enter the distribution. Windows Authenticode signing uses a separately configured certificate.
 

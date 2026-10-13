@@ -73,7 +73,7 @@ def copy_app(source, destination):
     manifest = json.loads((source / 'package.json').read_text())
     (destination / 'package.json').write_text(json.dumps({'name': manifest['name'], 'productName': manifest['productName'],
         'version': manifest['version'], 'private': True, 'type': 'module', 'license': manifest['license']}, indent=2) + '\n')
-    for name in ('LICENSE', 'LICENSE.RainyAgent', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md'):
+    for name in ('LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(source / name, destination / name)
     (destination / 'dist').mkdir(exist_ok=True)
     shutil.copy2(source / 'dist/host.js', destination / 'dist/host.js')
