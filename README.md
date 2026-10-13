@@ -73,6 +73,7 @@ RainyAgent puts an AI coding agent, a real editor and debugger, and a 38-tool CT
   - Model changes reach open chats at once.
   - About 40 smaller fixes.
   - See the [release notes](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1).
+- **2.1.2**: squarer corners throughout, and the browser workbench is now the **AI security toolkit**.
 
 Upgrading from 1.x: on first start RainyAgent imports your saved models, API keys and global prompt. Chats from 1.x use an older format and are not imported.
 
@@ -126,10 +127,10 @@ git clone https://github.com/RainyMarks/RainyAgent.git
 cd RainyAgent
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.1.1 -ComponentSource release/offline-2.1.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.1.2 -ComponentSource release/offline-2.1.2/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `2.1.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `2.1.2` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 
