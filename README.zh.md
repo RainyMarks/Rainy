@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（189 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.2 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（187 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.2 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -32,7 +32,7 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CT
 | **真正的编辑器和调试器** | CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
 | **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 工具时，随时把项目切换到 WSL2。 |
 | **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
-| **轻量** | 安装包 189 MB。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
+| **轻量** | 安装包 187 MB。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
 
 <a id="tour"></a>
 ## 看一眼
