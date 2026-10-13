@@ -52,7 +52,7 @@
 .topbar button { -webkit-app-region: no-drag; }
 .topStart, .topEnd { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .topEnd { justify-content: flex-end; }
-.topMark { width: 18px; height: 18px; flex: none; margin: 0 8px 0 2px; border-radius: 5px; }
+.topMark { width: 18px; height: 18px; flex: none; margin: 0 8px 0 2px; border-radius: 3px; }
 .topStart .button { height: 28px; padding: 0 9px; color: var(--dsw-alias-label-secondary); }
 .topStart .button:hover, .topStart .button[aria-expanded='true'] { color: var(--dsw-alias-label-primary); }
 .commandCenter { display: flex; align-items: stretch; width: clamp(240px, 36vw, 520px); height: 28px; box-sizing: border-box; overflow: hidden;
@@ -81,7 +81,7 @@
 /* Empty editor area: welcome without a project, quick actions without an open file. */
 .welcome { height: 100%; display: grid; place-items: center; box-sizing: border-box; padding: 32px 24px; overflow: auto; }
 .welcomeBody { width: min(440px, 100%); display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
-.welcomeMark { width: 52px; height: 52px; margin-bottom: 6px; border-radius: 14px; }
+.welcomeMark { width: 52px; height: 52px; margin-bottom: 6px; border-radius: 8px; }
 .welcomeTitle { margin: 0; color: var(--dsw-alias-label-primary); font-size: 20px; line-height: 28px; font-weight: 600; }
 .welcomeText { margin: 0; max-width: 380px; color: var(--dsw-alias-label-secondary); }
 .welcomeActions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; }

@@ -2,6 +2,10 @@
 
 The bundled source is pinned to `spindriftpapilio/icesky` commit `e0321b41ade55b288466203c68fad96ab6c18455`. The upstream README is stored byte-for-byte as `UPSTREAM_README.txt` so it is not treated as a RainyAgent bilingual document. [The desktop README](../../README.md) owns the user-visible behavior and focused validation commands.
 
+## Name
+
+RainyAgent presents the workbench as “AI 安全工具箱” (AI security toolkit). The page title, tool fallbacks, download file names and the default author, company and artist metadata of generated DOCX and audio samples no longer use the upstream name, and the upstream WeChat account card and image are removed. Code identifiers, storage keys and the `icesky.*` recipe formats keep their names so existing drafts and recipes still load.
+
 ## Embedding and requests
 
 RainyAgent changes `js/utils/openaiClient.js` so OpenAI-compatible and Anthropic requests use the authenticated local `/api/` relay for all configured Base URLs, including WSL localhost endpoints. The relay forwards each request without persisting its key or body. The root application workspace owns one workbench iframe. `css/rainy-embed.css` and the runtime bridge adapt its layout, resolved semantic colors, typography and locale to the application. Bridge messages require the expected source window and origin.

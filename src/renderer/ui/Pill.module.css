@@ -5,8 +5,7 @@
   height: 24px;
   padding: 0 8px;
   border: none;
-  border-radius: 999px;
-  corner-shape: round;
+  border-radius: var(--dsw-radius-sm);
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);

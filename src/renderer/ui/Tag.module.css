@@ -1,11 +1,10 @@
-/* Capsule geometry is fixed: a tag reads as one size everywhere, and only its
+/* Tag geometry is fixed: a tag reads as one size everywhere, and only its
  * palette varies. Tone colors ride background/border/color so a render site can
  * still position the tag with its own class without touching the palette. */
 .tag {
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  corner-shape: round;
+  border-radius: var(--dsw-radius-xs);
   padding: 1px 8px;
   font-size: 11px;
   line-height: 17px;

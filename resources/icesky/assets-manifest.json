@@ -1,30 +1,30 @@
 {
   "format": 1,
-  "version": "e7f90204910519e18f705a6b66f156126bbd7fd50037607edcc93a831a80dfbc",
+  "version": "173fa695d56126acf5658db45e12165b3e0def9f2702229a9ebd7612655eff7b",
   "files": {
     "css/_base.css": {
-      "sha256": "9fc2ac1f26543ffca2be236d64b4bd0e664750512aff25bb7437a700598eda8e",
+      "sha256": "fad6f41cbf9834d82bbcf5b67b077070a3cc580b56719066e34a18b0f1a176a6",
       "size": 4295,
       "type": "text/css"
     },
     "css/_layout.css": {
-      "sha256": "ae1b271460fb4593b7f0a2f30963e212fbe4dcd62ad4aa4c04f15aad87056ebb",
-      "size": 9786,
+      "sha256": "693e324af473cfbec4909b558c62b6ecb192dc478c1ff575da7ea1733929c867",
+      "size": 9789,
       "type": "text/css"
     },
     "css/_variables.css": {
-      "sha256": "61f589e9aa91f6a3bbd750355798f2166f13bf384e977e035805721fb3b5c121",
-      "size": 1657,
+      "sha256": "ad9dff25b51d3d32d8687cd3f234d7c573bb6c2d2e2d7b915187d2e2c7691db2",
+      "size": 1654,
       "type": "text/css"
     },
     "css/components/_appearance.css": {
-      "sha256": "7931cccdfc82311bb532bb5c218f8a4e1f65a8e4f143d04b20264772b7b90395",
-      "size": 20232,
+      "sha256": "83d042aa4b403147309c9f35230f31a658c707de4b622c6757b4484920d62890",
+      "size": 20226,
       "type": "text/css"
     },
     "css/components/_components.css": {
-      "sha256": "bbce54c1e2a908b6bc32d864f95d116a0eb67903478c104c26716e6f6866aaf7",
-      "size": 4768,
+      "sha256": "944cb4b0dbbbf62a0f9aa3dc40a16514d055ee233eeb015891ce6bc4d6dc8446",
+      "size": 4769,
       "type": "text/css"
     },
     "css/components/_dialogtemplate-workspace.css": {
@@ -38,33 +38,33 @@
       "type": "text/css"
     },
     "css/components/_pitaxonomy-workspace.css": {
-      "sha256": "64fe7689dd9ff0341e140570425686924c5c398368969bd18ccc094159b5bed0",
-      "size": 10276,
+      "sha256": "5db45ef5605d7166f32aceb4ab46ed278d775b9832b264addd0d5a2bb17fb3f0",
+      "size": 10274,
       "type": "text/css"
     },
     "css/components/_polish.css": {
-      "sha256": "a87c5eaefcfff0dc6a40a8bfa19656b85d60dbc759616ac79a37f5fb27431db6",
-      "size": 5120,
+      "sha256": "9d95b8d36cb16103bad71f770ea20df73770d6cf193fcfaf9886ccc49a2823c6",
+      "size": 5116,
       "type": "text/css"
     },
     "css/components/_reference-layout.css": {
-      "sha256": "9227d736dde615740c9e16d12ffe16fae8bffe08af19e6014f3045bfb3c7f239",
-      "size": 219574,
+      "sha256": "0b714720997baa45eadb35873a5d28d88b379cc7a95da35b5545bea155e729bf",
+      "size": 219338,
       "type": "text/css"
     },
     "css/components/_tool-hierarchy.css": {
-      "sha256": "76104f036ee11e0ac729911f4051669364b4755434597c0146fb42ab1358cfd3",
-      "size": 7523,
+      "sha256": "f1c592941c970f66d602763ba0c8db83b5722eedba1b30a7846a6879a7d7c91b",
+      "size": 7522,
       "type": "text/css"
     },
     "css/components/_tool-layout.css": {
-      "sha256": "2fe182b0afbbb7189028f922b79d90115fd6eae1425e3f1db356a6199af6d9de",
+      "sha256": "f96b27500089039ba8b575481e10bf744b149b0b857bbbabbe33a82a9cbc4968",
       "size": 15073,
       "type": "text/css"
     },
     "css/components/_workspace.css": {
-      "sha256": "ef24d9b78a3f97070e574cd5845d42ad58ebbb1b9274f5dcbb397dabea15a0d8",
-      "size": 5020,
+      "sha256": "3a3bbe8784cfd083a1566d1f2783b053a559d798e1340d289e9c13dda7cc3250",
+      "size": 5022,
       "type": "text/css"
     },
     "css/notification.css": {
@@ -73,18 +73,18 @@
       "type": "text/css"
     },
     "css/rainy-embed.css": {
-      "sha256": "d3a9d9ef90a8b72752861d4ba6ac70546d73deff1fcab88f85965f59001ad1b4",
+      "sha256": "d1237a34dce9ec69c6c88c9553e3bf227992d8609996db689198b762af504d18",
       "size": 8795,
       "type": "text/css"
     },
     "css/style.css": {
-      "sha256": "519f87331197c2d27f1af2525ac907e0d13b9de52caae4cc2ecb9e92c3f62673",
-      "size": 318561,
+      "sha256": "0851818aa79b1c30f60bc13c6c23f33f1199fe6dd601858b8273cf329994def2",
+      "size": 318316,
       "type": "text/css"
     },
     "css/tools.css": {
-      "sha256": "7d8d3913f333ef7b2a82c069752c6b0c6bc90054185b864b3dc8cd08782b582b",
-      "size": 308180,
+      "sha256": "2d7f3cfb99dadf5ccaf6a30608f8f845ce69bdeff40e919bf3406551adf71143",
+      "size": 307929,
       "type": "text/css"
     },
     "css/tools/asciismuggler.css": {
@@ -93,8 +93,8 @@
       "type": "text/css"
     },
     "css/tools/bijection.css": {
-      "sha256": "1b3ec64a492f66bc6c1ae6f41d6e30b8aff5742a11dac09f589fcf83ddbd28df",
-      "size": 6478,
+      "sha256": "8ae4be1d48bf60fa698bca3a6706a3e14965b898048be2fd35e1f64231e6302e",
+      "size": 6474,
       "type": "text/css"
     },
     "css/tools/emoji.css": {
@@ -113,13 +113,13 @@
       "type": "text/css"
     },
     "css/tools/injectiongenerator.css": {
-      "sha256": "fdf3841585de89e001e93748968defff0a7bca5d35088c51da0e66056df56893",
+      "sha256": "e57b8150aeb02645248a3061b1bf977a35809e4736a98bb9a436a8fe500a8048",
       "size": 2452,
       "type": "text/css"
     },
     "css/tools/jailbreaklibrary.css": {
-      "sha256": "902e8dcb54a62152c7c2606ceba86fa5453a2e4ea11ef4a8f861890a902d5c1e",
-      "size": 9893,
+      "sha256": "ecaceec924232a09dfc7c663615895b82598043471d85903ea171a708b061a8a",
+      "size": 9891,
       "type": "text/css"
     },
     "css/tools/promptcraft.css": {
@@ -128,13 +128,13 @@
       "type": "text/css"
     },
     "css/tools/richtextinject.css": {
-      "sha256": "d15867c2a06c7fde5ecf26938e6641b998df299664da3fed91d7427738c5a69a",
-      "size": 4434,
+      "sha256": "bf919f6d1e7c3ab430dca986cc1d32960ed0866194910d7683fb79ca92494ea1",
+      "size": 4433,
       "type": "text/css"
     },
     "css/tools/samplebuilder.css": {
-      "sha256": "06c088946e9c721421085aa42c7f3a2d862174245ae2af47de9a18b7a048b0a9",
-      "size": 2573,
+      "sha256": "dd71b7f274275e0dbdbb7e58477b97fbf31237404de71a7f9bc2df061ab9ba2d",
+      "size": 2572,
       "type": "text/css"
     },
     "css/tools/tokenade.css": {
@@ -148,8 +148,8 @@
       "type": "text/css"
     },
     "css/tools/transform.css": {
-      "sha256": "c80cd3cf73b846a4a5187b962337488a54689a5602ac769994ecf8e0ae2f39e1",
-      "size": 6169,
+      "sha256": "1affee32d00b6f2c5f2c452a3d77c957cc328df30395bc6ccf7d0e97e58d265d",
+      "size": 6167,
       "type": "text/css"
     },
     "css/vendor/fontawesome/css/fontawesome.min.css": {
@@ -188,8 +188,8 @@
       "type": "image/jpeg"
     },
     "index.html": {
-      "sha256": "f43352e7ddbe5acbd09feb044677156a487c6cb9dc169c8cd63ff05bc62e46fe",
-      "size": 23789,
+      "sha256": "51be50648163d7b6ec59b375f231aaf3e9f80fa829ed6c2583c6867ad97e5920",
+      "size": 23634,
       "type": "text/html"
     },
     "js/app.js": {
@@ -223,8 +223,8 @@
       "type": "text/javascript"
     },
     "js/app/runtime.js": {
-      "sha256": "5d538f704c112d7202dd79a409b99c622d1fd3ba2807394275fa7e0c07f25bd4",
-      "size": 30731,
+      "sha256": "247cec47c4e9ab8d90262ff434b5fc825f71f90fa946b32d1ccd166110d940f1",
+      "size": 30747,
       "type": "text/javascript"
     },
     "js/bundles/transforms-bundle.js": {
@@ -303,13 +303,13 @@
       "type": "text/javascript"
     },
     "js/tools/AudioInjectTool.js": {
-      "sha256": "0e99f31d9f3c668f8f5872470dedb7b318adee8d8dbee35bc8b7859f61894ce2",
-      "size": 41684,
+      "sha256": "657c16cf066ddd738a696e2e72719102859bb3bd07df7ce734baefcc34bebb6e",
+      "size": 41681,
       "type": "text/javascript"
     },
     "js/tools/BijectionTool.js": {
-      "sha256": "5e06aaa925f0ce2732d5eca90eaa941f82a19a0505dccb6a36a998d6de2a0ba0",
-      "size": 11483,
+      "sha256": "717014b4236a376e48d5f9980dce89f5d2f41a2151a39b04fc3dc2dfb5f50e1e",
+      "size": 11469,
       "type": "text/javascript"
     },
     "js/tools/DecodeTool.js": {
@@ -323,8 +323,8 @@
       "type": "text/javascript"
     },
     "js/tools/DocxInjectTool.js": {
-      "sha256": "6453171c649bace055992679eb4353072c352b55b21ee56232ea5ef4ea89e32b",
-      "size": 30357,
+      "sha256": "bb63bbf066299aa579509594f860d51d5dbb4b3cf017560e1114353b4b39e5fb",
+      "size": 30343,
       "type": "text/javascript"
     },
     "js/tools/EmojiTool.js": {
@@ -353,8 +353,8 @@
       "type": "text/javascript"
     },
     "js/tools/MutationTool.js": {
-      "sha256": "5a74488eafe1d4ba700b9b253099b2c98fb17f24c19d5efbbab49b29d4ebfa19",
-      "size": 12079,
+      "sha256": "8d12d3b3fa463aeb340a4ec2d92c6c54fdd2c2aaf15b8b68914c6694608c4893",
+      "size": 12065,
       "type": "text/javascript"
     },
     "js/tools/PdfInjectTool.js": {
@@ -378,8 +378,8 @@
       "type": "text/javascript"
     },
     "js/tools/SampleBuilderTool.js": {
-      "sha256": "911d094808057b3d895903f6a14b5d0ea40d91f9962c7abb89a7282e8592884a",
-      "size": 23918,
+      "sha256": "fade9e0fa1b491112109bc040de22ca27aa7ef9ed6e556a97e8209e1a2509fff",
+      "size": 23928,
       "type": "text/javascript"
     },
     "js/tools/SplitterTool.js": {
@@ -478,13 +478,13 @@
       "type": "text/javascript"
     },
     "js/utils/history.js": {
-      "sha256": "907ede874f8442e5d4c99458dc8219e3ca55d868090cfb7aea0c24b143053630",
-      "size": 881,
+      "sha256": "fb7c622f99297960cdbce3fe6be9841ec6fa242e227d986d53240192e343b26c",
+      "size": 893,
       "type": "text/javascript"
     },
     "js/utils/localization.js": {
-      "sha256": "4c85559073f0067127134ad322d084afdf8a0c53dfec44b568c61d420ee1e894",
-      "size": 12553,
+      "sha256": "fdad2b7fdb1597eb9f1c3ab438838fd87de7043f3b9d76f4a876888e3d085564",
+      "size": 12536,
       "type": "text/javascript"
     },
     "js/utils/notifications.js": {
@@ -2183,8 +2183,8 @@
       "type": "text/html"
     },
     "templates/audioinject.html": {
-      "sha256": "89e6c873db46361a865fa2fd58fb842fb163fbbb447d48354b31fea4b89acec5",
-      "size": 16839,
+      "sha256": "080f800d51128ecc6413756ea710950da19ed7377247718434c323291a2553b4",
+      "size": 16837,
       "type": "text/html"
     },
     "templates/bijection.html": {
@@ -2291,11 +2291,6 @@
       "sha256": "1cb6b603770e6ee3a88d0b7164ed87cf6cb25d8b37bfdb5b7f40e6227057f038",
       "size": 1073350,
       "type": "image/png"
-    },
-    "wechat.jpg": {
-      "sha256": "f78fb3909797a22e73e24f5ed8e93f953a9779012614a238fcf00f6743a898ac",
-      "size": 149902,
-      "type": "image/jpeg"
     }
   }
 }

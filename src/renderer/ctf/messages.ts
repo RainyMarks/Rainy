@@ -1,9 +1,9 @@
-/** Chinese and English strings of the CTF workbench: the common tool catalog and the IceSky frame. */
+/** Chinese and English strings of the CTF workbench: the common tool catalog and the AI security toolkit frame. */
 import { defineMessages } from '../i18n.ts'
 
 const zh = {
   ctf: 'CTF 工具',
-  ctfFrameTitle: 'IceSky 人工工具工作台',
+  ctfFrameTitle: 'AI 安全工具箱',
   ctfClose: '收起 CTF 工具',
   ctfLoading: '正在加载 CTF 工具',
   ctfLoadFailed: '工具未能加载，请重试',
@@ -13,7 +13,7 @@ const zh = {
   ctfSaved: '已保存',
   ctfUnsaved: '未保存',
   toolsCatalog: '常用工具',
-  toolsIceSky: 'IceSky',
+  toolsAiKit: 'AI 安全工具箱',
   toolsView: '工具工作区',
   toolsSearch: '搜索名称或用途',
   toolsCategories: '工具分类',
@@ -30,7 +30,7 @@ const zh = {
   toolsGroupOther: '其他',
   toolsRefresh: '刷新工具状态',
   toolsDesktopOnly: '在 RainyAgent 桌面应用中使用常用工具',
-  toolsDesktopHint: '当前仍可打开 IceSky 工作台',
+  toolsDesktopHint: '当前仍可打开 AI 安全工具箱',
   toolsLoadFailed: '工具目录未能读取，请重试',
   toolsLoading: '正在读取工具目录',
   toolsEmpty: '没有匹配的工具',
@@ -125,7 +125,7 @@ const zh = {
 
 const en: Readonly<Record<keyof typeof zh, string>> = {
   ctf: 'CTF tools',
-  ctfFrameTitle: 'IceSky human workbench',
+  ctfFrameTitle: 'AI security toolkit',
   ctfClose: 'Hide CTF tools',
   ctfLoading: 'Loading CTF tools',
   ctfLoadFailed: 'The workbench could not load. Retry to continue',
@@ -135,7 +135,7 @@ const en: Readonly<Record<keyof typeof zh, string>> = {
   ctfSaved: 'Saved',
   ctfUnsaved: 'Not saved',
   toolsCatalog: 'Common tools',
-  toolsIceSky: 'IceSky',
+  toolsAiKit: 'AI security toolkit',
   toolsView: 'Tool workspace',
   toolsSearch: 'Search names or uses',
   toolsCategories: 'Tool categories',
@@ -152,7 +152,7 @@ const en: Readonly<Record<keyof typeof zh, string>> = {
   toolsGroupOther: 'Other',
   toolsRefresh: 'Refresh tool status',
   toolsDesktopOnly: 'Use common tools in the RainyAgent desktop app',
-  toolsDesktopHint: 'The IceSky workbench is available here',
+  toolsDesktopHint: 'The AI security toolkit is available here',
   toolsLoadFailed: 'The tool directory could not load. Retry to continue',
   toolsLoading: 'Loading tool directory',
   toolsEmpty: 'No matching tools',

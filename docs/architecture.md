@@ -33,7 +33,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
 | `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route, change hints |
 | `runtime/` | Interpreter discovery and selection, project registry shared with main |
-| `icesky/` | The IceSky iframe: static files, model relay, drafts |
+| `icesky/` | The AI security toolkit iframe (bundled under `resources/icesky`): static files, model relay, drafts |
 
 ### Agent
 

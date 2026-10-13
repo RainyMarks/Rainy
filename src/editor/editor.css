@@ -71,7 +71,7 @@
   flex-direction: column;
   min-width: 200px;
   padding: 4px;
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--dsw-alias-bg-base);
   box-shadow: var(--dsw-elevation-prominent);
 }
@@ -79,7 +79,7 @@
 .rainy-editor-menu button {
   padding: 6px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font-size: 13px;

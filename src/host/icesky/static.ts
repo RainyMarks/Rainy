@@ -47,9 +47,9 @@ export class IceSkyStaticAssets {
     const manifest = manifestSchema.parse(JSON.parse(await readFile(resolve(root, 'assets-manifest.json'), 'utf8')))
     const digest = createHash('sha256').update(JSON.stringify(manifest.files)).digest('hex')
     if (digest !== manifest.version || !Object.hasOwn(manifest.files, 'index.html')
-      || Object.keys(manifest.files).some(name => !safeName(name))) throw new Error('IceSky asset manifest is invalid.')
+      || Object.keys(manifest.files).some(name => !safeName(name))) throw new Error('The AI security toolkit asset manifest is invalid.')
     const index = await readFile(resolve(root, 'index.html'))
-    if (createHash('sha256').update(index).digest('hex') !== manifest.files['index.html'].sha256) throw new Error('IceSky index differs from the built resource manifest.')
+    if (createHash('sha256').update(index).digest('hex') !== manifest.files['index.html'].sha256) throw new Error('The AI security toolkit index differs from the built resource manifest.')
     const owner = new IceSkyStaticAssets(root, manifest.version, manifest.files)
     for (const embedded of [false, true]) {
       const base = `<base href="/rainy/icesky/v/${manifest.version}/"><meta name="rainy-icesky-version" content="${manifest.version}">`

@@ -80,7 +80,7 @@ try:
   ice = http.open(origin.scheme+'://'+origin.netloc+'/rainy/icesky/index.html?embed=rainy', timeout=20)
   assert ice.status == 200
   html = ice.read().decode('utf8')
-  assert 'IceSky' in html or '冰天' in html
+  assert 'AI 安全工具箱' in html
   interfaces = sorted(name for _, name in socket.if_nameindex())
   assert interfaces == ['lo'], interfaces
   print(json.dumps({'status':'passed','user':subprocess.check_output(['id','-un'],text=True).strip(),'interfaces':interfaces, 'hostReady':True,'mainHTTP':response.status,'iceSkyHTTP':ice.status,'node':subprocess.check_output([node,'--version'],text=True).strip()}))

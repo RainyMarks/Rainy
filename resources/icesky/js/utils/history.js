@@ -9,7 +9,7 @@ window.HistoryUtils = {
   removeFromHistory(history, id) { const index = history.findIndex(item => item.id === id); if (index >= 0) history.splice(index, 1) },
   getHistorySource(id, details = {}) {
     const tool = window.ICE_SKY_TOOLS?.find(item => item.id === id)
-    const name = tool?.name || id || 'IceSky'
+    const name = tool?.name || id || 'AI 安全工具箱'
     return id === 'transforms' && details.activeTransform?.name ? `${name}: ${details.activeTransform.name}` : name
   },
 }

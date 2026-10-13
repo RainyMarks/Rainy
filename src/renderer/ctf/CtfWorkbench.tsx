@@ -41,7 +41,7 @@ export function CtfWorkbench({ owner, sessionId, active, dark }: {
     <header className={css.header}>
       <SegmentedTabs label={t('toolsView')} value={view} onChange={selectView} items={[
         { value: 'catalog', label: t('toolsCatalog'), id: 'rainy-tools-tab', panelId: 'rainy-tools-panel' },
-        { value: 'icesky', label: t('toolsIceSky'), id: 'rainy-icesky-tab', panelId: 'rainy-icesky-panel' },
+        { value: 'icesky', label: t('toolsAiKit'), id: 'rainy-icesky-tab', panelId: 'rainy-icesky-panel' },
       ]} />
       {state.saving !== 'idle' && <span className={css.status} role="status">
         {t(state.saving === 'saving' ? 'ctfSaving' : state.saving === 'saved' ? 'ctfSaved' : 'ctfUnsaved')}

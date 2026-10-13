@@ -410,7 +410,7 @@
     options.data.registeredTools = window.toolRegistry.getAll()
     if (!options.data.registeredTools.some(tool => tool.id === options.data.activeTab && !tool.hidden)) options.data.activeTab = 'transforms'
     options.computed = { ...options.computed,
-      currentToolName() { return this.registeredTools.find(tool => tool.id === this.activeTab)?.name ?? 'IceSky' },
+      currentToolName() { return this.registeredTools.find(tool => tool.id === this.activeTab)?.name ?? 'AI 安全工具箱' },
       quickTools() {
         const ids = [...new Set([...this.pinnedToolIds, ...this.recentToolIds.slice(0, 3)])]
         return ids.map(id => this.registeredTools.find(tool => tool.id === id)).filter(Boolean)
@@ -427,7 +427,7 @@
       switchToTab(id) { void openTool(id).catch(error => this.showNotification(error.message, 'error')) },
       retryTool() { void activate(root.activeTab).catch(() => {}) },
       retrySave() { void flush().catch(() => {}) },
-      exportDraft() { this.downloadTextFile('icesky-draft.json', JSON.stringify(currentSnapshot(), null, 2), 'application/json;charset=utf-8') },
+      exportDraft() { this.downloadTextFile('ai-toolkit-draft.json', JSON.stringify(currentSnapshot(), null, 2), 'application/json;charset=utf-8') },
       toggleToolPin(id) {
         const existing = this.pinnedToolIds.indexOf(id)
         if (existing < 0) this.pinnedToolIds.push(id)

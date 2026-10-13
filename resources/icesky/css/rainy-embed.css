@@ -139,8 +139,8 @@ body.dark-theme {
   --font-size-body: var(--rainy-font-size, 14px);
   --font-size-caption: var(--rainy-font-size, 14px);
   --font-size-tool-title: var(--rainy-font-size, 14px);
-  --radius-small: 6px;
-  --radius-medium: 8px;
+  --radius-small: 4px;
+  --radius-medium: 6px;
   --radius-large: 8px;
   --radius-xlarge: 8px;
   color: var(--text-primary);
@@ -264,7 +264,7 @@ body :is(.workbench-tool-card:hover, .action-button:hover) {
 .rainy-pin-tool {
   padding: 4px 6px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
@@ -298,7 +298,7 @@ body :is(.workbench-tool-card:hover, .action-button:hover) {
   align-items: center;
   gap: 4px;
   padding: 2px !important;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 .workbench-tool-main {
