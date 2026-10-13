@@ -2,9 +2,9 @@
 
 English | [中文](desktop.zh.md)
 
-Rainy is a Windows x64 Electron carrier whose core installer includes the Windows Host. The Strata engine, Windows PHP and the WSL Linux runtime are optional components, and native tools are downloaded per tool. Model weights remain user-supplied. It preserves the upstream Agent loop, session persistence and Web chat with four default tools: `read`, `write`, `edit`, and the selected platform shell (`pwsh` or `bash`). The upstream baseline is version 0.1.7-rc.2.
+Rainy is a Windows x64 Electron carrier whose core installer includes the Windows Host. The Strata engine, Windows PHP and the WSL Linux runtime are optional components, and native tools are downloaded per tool. Model weights remain user-supplied. The agent runs on [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core) with the tools `read`, `write`, `edit`, `grep`, `glob` and the selected platform shell (`pwsh` or `bash`), plus the MCP tools the user enables.
 
-The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns the product workflow, configuration reference and source build instructions. [Validation](validation.md) distinguishes simulated providers from real API runs and records unresolved acceptance items. [Attribution](../THIRD_PARTY_NOTICES.md) describes the upstream and packaged dependencies.
+The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns the product workflow, configuration reference and source build instructions. [Validation](validation.md) distinguishes simulated providers from real API runs and records unresolved acceptance items. [Attribution](../THIRD_PARTY_NOTICES.md) describes the packaged dependencies and their licenses.
 
 ## Offline installation and recovery
 

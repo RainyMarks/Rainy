@@ -149,8 +149,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 
 ## 许可与归属
 
-Rainy 由独立团队维护。1.x 版本基于 [DeepSeek Harness 0.1.7-rc.2，提交 477b4f420553e8a52c2fbccc464d7561b239c443](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443)。2.0 用 [pi-ai 与 pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-ai) 取代了该平台；源自它的界面基础组件和设计令牌继续使用 [MIT](LICENSE.upstream)。
-
 Rainy 集成代码使用 [RainyAgent Source Available License 1.0](LICENSE.RainyAgent)。个人和企业内部使用、修改及非商业再分发均免费；销售、收费托管和商业再分发需要书面许可。本项目属于源码可用项目，不是 OSI 认可的开源发行版。具体范围见[许可说明](LICENSE)和[第三方声明](THIRD_PARTY_NOTICES.md)。
 
 开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md)开始。

@@ -2,9 +2,9 @@
 
 [English](desktop.md) | 中文
 
-Rainy 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 WSL Linux 运行环境是可选组件，原生工具按工具单独下载。模型权重由用户自行提供。它保留上游 Agent 循环、会话持久化和 Web 聊天界面，默认组合四个工具：`read`、`write`、`edit`，以及所选平台的 Shell（`pwsh` 或 `bash`）。上游基线为 0.1.7-rc.2 版本。
+Rainy 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 WSL Linux 运行环境是可选组件，原生工具按工具单独下载。模型权重由用户自行提供。智能体基于 [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core)，内置 `read`、`write`、`edit`、`grep`、`glob` 和所选平台的 Shell（`pwsh` 或 `bash`），另加用户启用的 MCP 工具。
 
-[中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍上游和打包依赖。
+[中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍打包的依赖及其许可。
 
 ## 离线安装与恢复
 

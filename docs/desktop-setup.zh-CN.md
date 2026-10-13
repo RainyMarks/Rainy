@@ -1,6 +1,6 @@
 # Rainy 桌面版
 
-本指南说明离线安装、常用工具、模型设置及从源码打包。Rainy 复用固定版本 DSH 的 Agent 循环、会话协议和共享 Web 界面；Windows Electron 管理窗口、Windows 原生或 WSL Host 生命周期及供人操作的 Windows 工具。功能范围和测量结果见 [验收记录](validation.md)。
+本指南说明离线安装、常用工具、模型设置及从源码打包。Rainy 由 Windows Electron 外壳、按执行环境运行的 Host（Windows 原生或 WSL）和一个 React 页面组成：外壳管理窗口、Host 生命周期及供人操作的 Windows 工具，Host 运行智能体、编辑器服务和文件操作。功能范围和测量结果见 [验收记录](validation.md)。
 
 ## 安装与使用
 
@@ -145,4 +145,4 @@ Windows Host 构建先按官方 SHA-256 校验 Node ZIP，再使用 Windows 随�
 
 38 表示工具包目录的工具数量。命令行和离线网页功能检查按当前工具、版本与被测产物分别记录，旧版验收总数不沿用到新版。无头浏览器截图或 GIF 使用明确标注的桥接适配器，展示真实目录数据、搜索、分类和收藏。Windows 原生工具界面、首次启动提示、UAC 和干净机重启仍未验收。最终逐工具矩阵关联具体产物，不能由目录可用状态或进程创建成功推定。
 
-源码保留上游模块以便追踪更新，生产启动组合和打包依赖另行裁剪。部分 DSH 内部库仍有传递依赖，但未装载的工具不会进入模型请求。安装包的 Windows Authenticode 签名状态和更新验收以本次发行记录为准。原始上游许可及组件归属见 [第三方说明](../THIRD_PARTY_NOTICES.md)。
+安装包的 Windows Authenticode 签名状态和更新验收以本次发行记录为准。组件许可与归属见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

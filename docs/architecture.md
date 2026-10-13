@@ -64,7 +64,7 @@ The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Window
 | `runtime-environments.json` | Interpreter selections per project |
 | `<carrier-state>/project-memory/<projectId>/memory.v1.json` | Project memory, shared by the Windows and WSL Hosts |
 
-Chats from RainyAgent 1.x use the DeepSeek Harness session format and are not imported. Models, API keys and the global prompt are imported once from the 1.x profile.
+Chats from RainyAgent 1.x use an older session format and are not imported. Models, API keys and the global prompt are imported once from the 1.x profile.
 
 ### Transcript entries
 
