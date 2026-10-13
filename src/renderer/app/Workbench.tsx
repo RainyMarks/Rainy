@@ -73,7 +73,14 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const sessionId = useStore(workbench.session)
   const prefs = usePrefs()
   const dark = useDarkTheme()
-  const appearance = useMemo<EditorAppearance>(() => ({ dark, fontSize: prefs.codeFontSize }), [dark, prefs.codeFontSize])
+  const appearance = useMemo<EditorAppearance>(() => {
+    // `prefs.ts` has applied the color scheme and code font named in the dependencies by the time this runs.
+    const style = getComputedStyle(document.body)
+    const value = (name: string): string => style.getPropertyValue(name).trim()
+    const [fontFamily, background, foreground] = [value('--ds-font-family-code'), value('--dsw-alias-bg-base'), value('--dsw-alias-label-primary')]
+    return { dark, fontSize: prefs.codeFontSize, ...fontFamily === '' ? {} : { fontFamily },
+      ...background === '' || foreground === '' ? {} : { background, foreground } }
+  }, [dark, prefs.codeFontSize, prefs.codeFont, prefs.colorScheme])
   const [navigation, setNavigation] = useState<'files' | 'history'>('files')
   const [selected, setSelected] = useState<IdeFileEntry | undefined>()
   const [selectedRootId, setSelectedRootId] = useState<IdeRootId | undefined>()

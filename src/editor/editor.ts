@@ -187,6 +187,8 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
   private workspace: EditorWorkspace | undefined
   private activePath: string | undefined
   private dark = false
+  /** Code font family list last applied; `undefined` until the page supplies one. */
+  private fontFamily: string | undefined
   private disposed = false
   private menu: HTMLElement | undefined
   private menuCleanup: (() => void) | undefined
@@ -250,6 +252,11 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
 
   setAppearance(appearance: EditorAppearance): void {
     const style = this.container.style
+    // The code font comes from the page's stylesheet; a new one changes character widths, so the views measure again.
+    if (appearance.fontFamily !== this.fontFamily) {
+      this.fontFamily = appearance.fontFamily
+      for (const open of this.documents.values()) open.view.requestMeasure()
+    }
     style.setProperty('--rainy-editor-font-size', `${appearance.fontSize}px`)
     if (appearance.background !== undefined) style.setProperty('--rainy-editor-background', appearance.background)
     else style.removeProperty('--rainy-editor-background')

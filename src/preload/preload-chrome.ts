@@ -110,7 +110,7 @@ export function installWindowChrome(): void {
       schedule()
     }
     const changes = new MutationObserver(collect)
-    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-ds-dark-theme', 'data-rightbar-collapsed', 'data-sidebar-right-panel'] })
+    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-ds-dark-theme', 'data-color-scheme', 'data-rightbar-collapsed', 'data-sidebar-right-panel'] })
     changes.observe(root, { attributes: true, attributeFilter: ['data-ds-theme-source', 'lang'] })
     changes.observe(document.head, { childList: true, subtree: true, characterData: true })
     resize.observe(document.body)

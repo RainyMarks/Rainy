@@ -145,6 +145,7 @@ body.dark-theme {
   --radius-xlarge: 8px;
   color: var(--text-primary);
   background: var(--bg-page);
+  font-family: var(--rainy-font-family, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif);
   font-size: var(--font-size-body);
   line-height: 1.5;
 }
@@ -173,7 +174,7 @@ body :is(select, input[type="text"], input[type="number"], input[type="search"],
 }
 
 body :is(textarea, pre, code, .token-chip__text, .token-chip__id, .tokenizer-source-text) {
-  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-family: var(--rainy-code-font-family, ui-monospace, 'Cascadia Code', Consolas, monospace);
   font-size: var(--rainy-code-font-size, 13px);
 }
 

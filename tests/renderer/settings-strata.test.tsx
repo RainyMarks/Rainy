@@ -17,7 +17,7 @@ const en = settingsMessages.en
 const controllers: StrataController[] = []
 
 beforeEach(async () => {
-  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true })
+  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '' })
 })
 afterEach(async () => { await cleanup(); for (const controller of controllers.splice(0)) controller.dispose() })
 
@@ -37,7 +37,7 @@ function fixture() {
 }
 
 it.each([{ locale: 'zh' as const, copy: zh }, { locale: 'en' as const, copy: en }])('shows the bundled engine and required MTP weights without request settings in $locale', async ({ locale, copy }) => {
-  await emit('prefs.changed', { locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true })
+  await emit('prefs.changed', { locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '' })
   const h = fixture()
   const { container } = await h.mount()
   expect(hasText(copy.strataSupported)).toBe(true)

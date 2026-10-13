@@ -1,4 +1,4 @@
-/** General section (language, appearance, font sizes, chat preferences, diagnostics export and version) and the shortcut list. */
+/** General section (language, chat preferences, diagnostics export and version) and the shortcut list. */
 import clsx from 'clsx'
 import { useState } from 'react'
 import type { UiPreferences } from '../../shared/rpc.ts'
@@ -7,17 +7,11 @@ import { Button } from '../ui/Button.tsx'
 import { ShortcutKeys } from '../ui/ShortcutKeys.tsx'
 import { Switch } from '../ui/Switch.tsx'
 import { toast } from '../ui/toasts.tsx'
-import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from '../ui/icons/index.tsx'
 import { useT } from './messages.ts'
 import { diagnosticsBridge } from './native.ts'
 import type { SettingsMessage } from './messages.ts'
 import { Choice, SettingRow, errorText } from './parts.tsx'
 import css from './sections.module.css'
-
-/** Smallest and largest interface and code font sizes, in px. */
-export const FONT_SIZE_RANGE = { min: 12, max: 17 } as const
-/** Font sizes restored by the reset button; they match the Host defaults. */
-export const DEFAULT_FONT_SIZES = { uiFontSize: 14, codeFontSize: 13 } as const
 
 const shortcuts: readonly { keys: readonly string[]; key: SettingsMessage }[] = [
   { keys: ['Ctrl', 'Alt', 'P'], key: 'shortcutQuickOpen' },
@@ -37,11 +31,6 @@ function change(value: Partial<UiPreferences>): void {
   setPrefs(value).catch((error: unknown) => { toast(errorText(error), { tone: 'error' }) })
 }
 
-function changeSize(field: 'uiFontSize' | 'codeFontSize', value: number): void {
-  const size = Math.min(FONT_SIZE_RANGE.max, Math.max(FONT_SIZE_RANGE.min, value))
-  change(field === 'uiFontSize' ? { uiFontSize: size } : { codeFontSize: size })
-}
-
 /** @returns The General section; every change is stored by the Host through `prefs.set`. */
 export function GeneralSection(): JSX.Element {
   const t = useT()
@@ -55,44 +44,14 @@ export function GeneralSection(): JSX.Element {
     diagnostics.export().then((path) => { if (path !== null) toast(t('diagnosticsSaved', { path }), { tone: 'success' }) },
       (error: unknown) => { toast(errorText(error), { tone: 'error' }) }).finally(() => { setExporting(false) })
   }
-  const sizes = [
-    { field: 'uiFontSize', value: prefs.uiFontSize, title: 'fontSizeTitle', description: 'fontSizeDescription', up: 'fontSizeIncrease', down: 'fontSizeDecrease' },
-    { field: 'codeFontSize', value: prefs.codeFontSize, title: 'codeFontSizeTitle', description: 'codeFontSizeDescription', up: 'codeFontSizeIncrease', down: 'codeFontSizeDecrease' },
-  ] as const
   return <section className={css.section} data-settings-section="general">
     <h2 className={css.heading}>{t('navGeneral')}</h2>
     <p className={css.lead}>{t('generalLead')}</p>
-    <h3 className={css.groupTitle}>{t('groupAppearance')}</h3>
     <div className={css.group}>
       <SettingRow title={t('languageTitle')}>
         <Choice label={t('languageTitle')} value={prefs.locale} onChange={(locale) => { change({ locale }) }}
           items={[{ id: 'zh', label: t('languageZh') }, { id: 'en', label: t('languageEn') }]} />
       </SettingRow>
-      <SettingRow title={t('appearanceTitle')}>
-        <Choice label={t('appearanceTitle')} value={prefs.theme} onChange={(theme) => { change({ theme }) }}
-          items={[{ id: 'light', label: t('appearanceLight') }, { id: 'dark', label: t('appearanceDark') }, { id: 'system', label: t('appearanceSystem') }]} />
-      </SettingRow>
-      <div className={css.settingGroup}>
-        {sizes.map(size => <SettingRow key={size.field} title={t(size.title)} description={t(size.description)}>
-          <div className={css.stepperControl}>
-            <div className={css.stepper}>
-              <span className={css.stepperValue} data-font-size={size.field}>{size.value}</span>
-              <span className={css.stepperArrows}>
-                <button type="button" className={css.stepperArrow} aria-label={t(size.up)} disabled={size.value >= FONT_SIZE_RANGE.max}
-                  onClick={() => { changeSize(size.field, size.value + 1) }}><IconChevronUpOutlineRegular size={9} /></button>
-                <button type="button" className={css.stepperArrow} aria-label={t(size.down)} disabled={size.value <= FONT_SIZE_RANGE.min}
-                  onClick={() => { changeSize(size.field, size.value - 1) }}><IconChevronDownOutlineRegular size={9} /></button>
-              </span>
-            </div>
-            <span className={css.muted}>{t('fontSizeUnit')}</span>
-          </div>
-        </SettingRow>)}
-        <div className={css.resetRow}>
-          <button type="button" className={css.linkButton}
-            disabled={prefs.uiFontSize === DEFAULT_FONT_SIZES.uiFontSize && prefs.codeFontSize === DEFAULT_FONT_SIZES.codeFontSize}
-            onClick={() => { change({ ...DEFAULT_FONT_SIZES }) }}>{t('fontSizeReset')}</button>
-        </div>
-      </div>
     </div>
     <h3 className={css.groupTitle}>{t('groupChat')}</h3>
     <div className={css.group}>

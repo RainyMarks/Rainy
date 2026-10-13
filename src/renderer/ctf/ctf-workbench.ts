@@ -3,7 +3,7 @@ import type { Config } from '../../shared/config.ts'
 import type { NativeToolsBridge } from '../../shared/native-tools-protocol.ts'
 import { createStore, toast, type Store } from '../ui/index.ts'
 import { CtfWorkbenchBridge } from './ctf-bridge.ts'
-import { readCtfColors } from './ctf-colors.ts'
+import { readCtfColors, readCtfFonts } from './ctf-colors.ts'
 import type { CtfConfiguration, DesktopWorkbenchBridge } from './ctf-protocol.ts'
 import { NativeToolsController } from './native-tools.ts'
 import { ctfMessages } from './messages.ts'
@@ -25,7 +25,7 @@ export interface CtfWorkbench {
    * Publish the chat context, appearance and visibility to the IceSky frame.
    * @param input Current chat (`null` for drafts outside any chat), appearance and whether the IceSky tab is on screen.
    */
-  configure(input: { sessionId: string | null; appearance: Omit<CtfConfiguration['appearance'], 'colors'>; visible: boolean }): void
+  configure(input: { sessionId: string | null; appearance: Omit<CtfConfiguration['appearance'], 'colors' | 'fonts'>; visible: boolean }): void
   /** Stop listening to the frame and the desktop bridges. */
   dispose(): void
 }
@@ -85,9 +85,10 @@ export function createCtfWorkbench(config: Pick<Config, 'readyTimeoutMs' | 'flus
     frameLoaded,
     configure: ({ sessionId, appearance, visible }) => {
       const colors = readCtfColors(document)
+      const fonts = readCtfFonts(document)
       bridge.configure({
         context: sessionId === null ? { kind: 'standalone' } : { kind: 'session', id: sessionId },
-        appearance: { ...appearance, ...colors === undefined ? {} : { colors } },
+        appearance: { ...appearance, ...colors === undefined ? {} : { colors }, ...fonts === undefined ? {} : { fonts } },
         visible,
       })
       if (visible) {

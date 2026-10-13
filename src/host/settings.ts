@@ -4,6 +4,7 @@ import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
+import { ACCENTS, COLOR_SCHEMES, FONT_SETTING_MAX, fontFamilies } from '../shared/appearance.ts'
 import { localized } from '../shared/locale.ts'
 import type { McpServerConfig, ModelSelection, ModelSetup, PermissionMode, PermissionRules, ProxySettings, UiPreferences } from '../shared/rpc.ts'
 import { CredentialFiles, type CredentialSeal } from './credentials.ts'
@@ -60,7 +61,9 @@ function validHeaders(headers: Record<string, string> | undefined): boolean {
 /** Interface defaults for a new installation. */
 export const DEFAULT_PREFS: Readonly<UiPreferences> = {
   locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true,
+  colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '',
 }
+const fontSetting = z.string().max(FONT_SETTING_MAX).refine(value => fontFamilies(value) !== undefined, 'Invalid font family list')
 const prefsSchema = z.object({
   locale: z.enum(['zh', 'en']),
   theme: z.enum(['system', 'light', 'dark']),
@@ -69,6 +72,20 @@ const prefsSchema = z.object({
   busyEnter: z.enum(['queue', 'steer']),
   stepDetail: z.enum(['compact', 'standard', 'detailed']),
   showUsage: z.boolean(),
+  colorScheme: z.enum(COLOR_SCHEMES),
+  accent: z.enum(ACCENTS),
+  uiFont: fontSetting,
+  codeFont: fontSetting,
+})
+/** Stored preferences. A value this version does not accept, such as a color scheme a newer version added, is dropped
+ *  instead of failing the whole file. */
+const storedPrefsSchema = z.record(z.string(), z.unknown()).transform((stored) => {
+  const kept: Record<string, unknown> = {}
+  for (const [key, field] of Object.entries(prefsSchema.shape)) {
+    const parsed = field.safeParse(stored[key])
+    if (parsed.success) kept[key] = parsed.data
+  }
+  return kept as Partial<UiPreferences>
 })
 
 /** Remembered approvals per project; lists are capped so a runaway model cannot grow the file without bound. */
@@ -88,7 +105,7 @@ const fileSchema = z.object({
   selected: z.object({ provider: z.string(), model: z.string(), thinking: thinking.optional() }).nullable(),
   globalPrompt: z.string().max(GLOBAL_PROMPT_MAX_CHARS),
   mcpServers: z.array(serverSchema),
-  ui: prefsSchema.partial(),
+  ui: storedPrefsSchema,
   workbench: z.record(z.string(), z.unknown()).optional(),
   security: securitySchema.optional(),
   proxy: z.object({ mode: z.enum(['system', 'off', 'manual']), url: z.string().max(2048).optional() }).optional(),

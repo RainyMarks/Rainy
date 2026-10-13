@@ -44,6 +44,8 @@ export interface EditorProblem {
 export interface EditorAppearance {
   readonly dark: boolean
   readonly fontSize: number
+  /** CSS font family list of code. */
+  readonly fontFamily?: string
   readonly background?: string
   readonly foreground?: string
 }

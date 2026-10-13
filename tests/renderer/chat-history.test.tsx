@@ -12,7 +12,7 @@ vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./setting
 
 const current = 'w-current' as WorkspaceId
 const other = 'w-other' as WorkspaceId
-const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true }
+const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '' }
 const now = Date.now()
 
 function chat(id: string, change: Partial<SessionSummary> = {}): SessionSummary {

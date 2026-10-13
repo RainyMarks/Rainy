@@ -27,6 +27,14 @@ export interface CtfAppearance {
   readonly locale: 'zh' | 'en'
   /** Omitted before host tokens are available; the frame retains its fallback palette. */
   readonly colors?: CtfColors
+  /** The host's interface and code font family lists; omitted before its styles are available. */
+  readonly fonts?: CtfFonts
+}
+
+/** CSS font family lists of the host page. */
+export interface CtfFonts {
+  readonly ui: string
+  readonly code: string
 }
 
 /** Host configuration applied serially by the frame. */

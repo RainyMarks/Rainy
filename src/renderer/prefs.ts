@@ -1,11 +1,13 @@
-/** Interface preferences stored by the Host, with theme and font sizes applied to the page. */
+/** Interface preferences stored by the Host, with theme, color scheme, accent, fonts and font sizes applied to the page. */
 import { useSyncExternalStore } from 'react'
+import { effectiveAccent, fontListPrefix } from '../shared/appearance.ts'
 import type { UiPreferences } from '../shared/rpc.ts'
 import { host } from './rpc.ts'
 
 /** Defaults until the Host answers; they match the Host's own defaults. */
 const DEFAULT_PREFS: UiPreferences = {
   locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true,
+  colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '',
 }
 
 let current: UiPreferences = DEFAULT_PREFS
@@ -19,17 +21,27 @@ function apply(prefs: UiPreferences): void {
   const dark = prefs.theme === 'dark' || (prefs.theme === 'system' && darkQuery?.matches === true)
   document.body.toggleAttribute('data-ds-dark-theme', dark)
   document.documentElement.lang = prefs.locale === 'zh' ? 'zh-CN' : 'en'
-  document.documentElement.style.setProperty('--dsh-content-font-size', `${prefs.uiFontSize}px`)
-  document.documentElement.style.setProperty('--dsh-code-font-size', `${prefs.codeFontSize}px`)
+  document.body.setAttribute('data-color-scheme', prefs.colorScheme)
+  document.body.setAttribute('data-accent', effectiveAccent(prefs.colorScheme, prefs.accent))
+  const style = document.documentElement.style
+  style.setProperty('--dsh-content-font-size', `${prefs.uiFontSize}px`)
+  style.setProperty('--dsh-code-font-size', `${prefs.codeFontSize}px`)
+  // The font stacks in `theme/base.css` start with these lists; each name ends with a comma.
+  for (const [name, value] of [['--rainy-ui-font', prefs.uiFont], ['--rainy-code-font', prefs.codeFont]] as const) {
+    const prefix = fontListPrefix(value)
+    if (prefix === '') style.removeProperty(name)
+    else style.setProperty(name, prefix)
+  }
   // The desktop themes native menus and dialogs from this attribute, and takes the page language as the user's only
   // while it is present (`src/preload/preload-chrome.ts`), so the defaults never reach it.
   if (known) document.documentElement.setAttribute('data-ds-theme-source', prefs.theme)
 }
 
 function publish(prefs: UiPreferences): void {
-  current = prefs
+  // Defaults fill fields a Host of another version leaves out.
+  current = { ...DEFAULT_PREFS, ...prefs }
   known = true
-  apply(prefs)
+  apply(current)
   for (const listener of listeners) listener()
 }
 

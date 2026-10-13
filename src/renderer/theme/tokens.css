@@ -20,18 +20,6 @@ body {
   --dsw-static-blue-800: rgb(30, 64, 175);
   --dsw-static-blue-900: rgb(14, 48, 116);
   --dsw-static-blue-950: rgb(23, 37, 84);
-  --dsw-static-deepseek-100: rgb(228, 237, 253);
-  --dsw-static-deepseek-200: rgb(211, 226, 255);
-  --dsw-static-deepseek-300: rgb(183, 200, 254);
-  /* Brightened from the platform rgb(103, 158, 254) at the designer's request: legibility on the dark toast surface. */
-  --dsw-static-deepseek-400: rgb(122, 170, 255);
-  --dsw-static-deepseek-450: rgb(86, 134, 254);
-  --dsw-static-deepseek-500: rgb(65, 118, 230);
-  --dsw-static-deepseek-50: rgb(237, 243, 254);
-  --dsw-static-deepseek-600: rgb(72, 104, 178);
-  --dsw-static-deepseek-700-delete: rgb(47, 76, 143);
-  --dsw-static-deepseek-800: rgb(52, 65, 91);
-  --dsw-static-deepseek-900: rgb(40, 49, 66);
   --dsw-static-green-100: rgb(230, 250, 237);
   --dsw-static-green-400: rgb(78, 209, 126);
   --dsw-static-green-500: rgb(34, 197, 94);
@@ -81,30 +69,6 @@ body {
   --dsw-static-red-600: rgb(236, 19, 19);
   --dsw-static-red-600-a08: rgb(236 19 19 / 8%);
   --dsw-static-red-900: rgb(87, 12, 12);
-  /* Neutral grays without a blue cast: the surfaces and labels of both themes. */
-  --dsw-static-gray-00: rgb(255, 255, 255);
-  --dsw-static-gray-25: rgb(250, 250, 250);
-  --dsw-static-gray-40: rgb(247, 247, 247);
-  --dsw-static-gray-50: rgb(245, 245, 245);
-  --dsw-static-gray-75: rgb(240, 240, 240);
-  --dsw-static-gray-100: rgb(235, 235, 235);
-  --dsw-static-gray-150: rgb(227, 227, 227);
-  --dsw-static-gray-200: rgb(217, 217, 217);
-  --dsw-static-gray-300: rgb(196, 196, 196);
-  --dsw-static-gray-400: rgb(163, 163, 163);
-  --dsw-static-gray-500: rgb(140, 140, 140);
-  --dsw-static-gray-600: rgb(110, 110, 110);
-  --dsw-static-gray-700: rgb(82, 82, 82);
-  --dsw-static-gray-750: rgb(58, 58, 58);
-  --dsw-static-gray-775: rgb(51, 51, 51);
-  --dsw-static-gray-800: rgb(45, 45, 45);
-  --dsw-static-gray-825: rgb(38, 38, 38);
-  --dsw-static-gray-850: rgb(33, 33, 33);
-  --dsw-static-gray-875: rgb(28, 28, 28);
-  --dsw-static-gray-900: rgb(23, 23, 23);
-  --dsw-static-gray-925: rgb(20, 20, 20);
-  --dsw-static-gray-950: rgb(17, 17, 17);
-  --dsw-static-gray-1000: rgb(10, 10, 10);
 }
 
 body[data-ds-dark-theme] {
@@ -125,18 +89,6 @@ body[data-ds-dark-theme] {
   --dsw-static-blue-800: rgb(30, 64, 175);
   --dsw-static-blue-900: rgb(14, 48, 116);
   --dsw-static-blue-950: rgb(23, 37, 84);
-  --dsw-static-deepseek-100: rgb(228, 237, 253);
-  --dsw-static-deepseek-200: rgb(211, 226, 255);
-  --dsw-static-deepseek-300: rgb(183, 200, 254);
-  /* Brightened from the platform rgb(103, 158, 254) at the designer's request: legibility on the dark toast surface. */
-  --dsw-static-deepseek-400: rgb(122, 170, 255);
-  --dsw-static-deepseek-450: rgb(86, 134, 254);
-  --dsw-static-deepseek-500: rgb(65, 118, 230);
-  --dsw-static-deepseek-50: rgb(237, 243, 254);
-  --dsw-static-deepseek-600: rgb(72, 104, 178);
-  --dsw-static-deepseek-700-delete: rgb(47, 76, 143);
-  --dsw-static-deepseek-800: rgb(52, 65, 91);
-  --dsw-static-deepseek-900: rgb(40, 49, 66);
   --dsw-static-green-100: rgb(230, 250, 237);
   --dsw-static-green-400: rgb(78, 209, 126);
   --dsw-static-green-500: rgb(34, 197, 94);
@@ -212,7 +164,7 @@ body {
   --dsw-alias-border-l3: rgba(0, 0, 0, 0.12);
   --dsw-alias-border-l4: rgba(0, 0, 0, 0.16);
   --dsw-alias-brand-primary-invert: var(--dsw-static-gray-950);
-  --dsw-alias-brand-primary-new-colorprimary-new-color: rgb(65, 118, 230);
+  --dsw-alias-brand-primary-new-colorprimary-new-color: var(--dsw-static-deepseek-500);
   --dsw-alias-brand-primary: var(--dsw-static-gray-950);
   --dsw-alias-brand-text: var(--dsw-static-gray-950);
   --dsw-alias-button-contrast-fill: var(--dsw-static-gray-700);

@@ -69,7 +69,13 @@ export function ActionFailure({ action, place }: { action: SettingsAction; place
 }
 
 /** One option of a {@link Select}. */
-export interface SelectItem<V extends string> { id: V; label: string; disabled?: boolean | undefined }
+export interface SelectItem<V extends string> {
+  id: V
+  label: string
+  disabled?: boolean | undefined
+  /** CSS font family the label is shown in, such as the font the option names. */
+  font?: string | undefined
+}
 
 /**
  * A dropdown choice built on the shared menu.
@@ -78,27 +84,32 @@ export interface SelectItem<V extends string> { id: V; label: string; disabled?:
  * @param props.items Options in display order.
  * @param props.onChange Receives the chosen id.
  * @param props.disabled Whether the trigger is disabled.
+ * @param props.className Extra class of the wrapper, such as a fixed width.
  * @returns The trigger and its menu.
  */
-export function Select<V extends string>({ label, value, items, onChange, disabled = false }: {
+export function Select<V extends string>({ label, value, items, onChange, disabled = false, className }: {
   label: string
   value: V
   items: readonly SelectItem<V>[]
   onChange(value: V): void
   disabled?: boolean | undefined
+  className?: string | undefined
 }): JSX.Element {
   const [open, setOpen] = useState(false)
-  return <div className={css.select}>
+  const chosen = items.find(item => item.id === value)
+  const labelled = (item: SelectItem<V>): ReactNode => item.font === undefined ? item.label : <span style={{ fontFamily: item.font }}>{item.label}</span>
+  return <div className={clsx(css.select, className)}>
     <Menu open={open} onClose={() => { setOpen(false) }} portal compact selectedId={value}
       anchor={<Button variant="outline" className={css.selectButton} aria-label={label} aria-haspopup="menu"
         aria-expanded={open} disabled={disabled} onClick={() => { setOpen(!open) }}>
-        <span>{items.find(item => item.id === value)?.label ?? value}</span><IconChevronDownOutlineRegular size={14} />
+        <span style={chosen?.font === undefined ? undefined : { fontFamily: chosen.font }}>{chosen?.label ?? value}</span>
+        <IconChevronDownOutlineRegular size={14} />
       </Button>}
-      items={items.map(item => ({ id: item.id, label: item.label, disabled: item.disabled === true }))}
+      items={items.map(item => ({ id: item.id, label: labelled(item), disabled: item.disabled === true }))}
       onSelect={(id) => {
         setOpen(false)
-        const chosen = items.find(item => item.id === id)
-        if (chosen !== undefined) onChange(chosen.id)
+        const picked = items.find(item => item.id === id)
+        if (picked !== undefined) onChange(picked.id)
       }} />
   </div>
 }

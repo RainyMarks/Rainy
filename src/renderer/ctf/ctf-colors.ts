@@ -1,5 +1,5 @@
-/** Sample the host palette after its theme presenter has updated the document. */
-import type { CtfColors } from './ctf-protocol.ts'
+/** Sample the host palette and fonts after its theme presenter has updated the document. */
+import type { CtfColors, CtfFonts } from './ctf-protocol.ts'
 
 /**
  * Parse semantic token values through the owning browser's CSS color implementation.
@@ -42,4 +42,15 @@ export function readCtfColors(document: Document): CtfColors | undefined {
   } finally {
     probe.remove()
   }
+}
+
+/**
+ * @param document - host document after theme presentation.
+ * @returns the interface and code font family lists, or undefined while its styles are unavailable.
+ */
+export function readCtfFonts(document: Document): CtfFonts | undefined {
+  const style = document.defaultView?.getComputedStyle(document.body)
+  const ui = style?.getPropertyValue('--dsw-font-family').trim() ?? ''
+  const code = style?.getPropertyValue('--ds-font-family-code').trim() ?? ''
+  return ui === '' || code === '' ? undefined : { ui, code }
 }

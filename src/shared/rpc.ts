@@ -7,6 +7,7 @@
  * - event    `{ event, data }` from the Host, broadcast to every connected renderer
  */
 import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai'
+import type { Accent, ColorScheme } from './appearance.ts'
 import type { IdeExecutionRequest, IdeExecutionResponseMap } from './ide-execution-protocol.ts'
 import type { IdeFilesFailure, IdeFilesRequest, IdeFilesResults, IdeStateRequest, WorkspaceId } from './ide-files-protocol.ts'
 import type { RuntimeRequest, RuntimeSnapshot } from './runtime-protocol.ts'
@@ -93,6 +94,14 @@ export interface UiPreferences {
   stepDetail: 'compact' | 'standard' | 'detailed'
   /** Whether per-turn token usage is shown. */
   showUsage: boolean
+  /** Gray ramp of every surface and label. */
+  colorScheme: ColorScheme
+  /** Color of links, focus rings and switches; `auto` follows the color scheme. */
+  accent: Accent
+  /** Interface font families before the default ones, separated by commas; empty for the default. */
+  uiFont: string
+  /** Code font families before the default ones, separated by commas; empty for the default. */
+  codeFont: string
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */

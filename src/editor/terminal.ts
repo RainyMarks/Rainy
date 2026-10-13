@@ -16,6 +16,9 @@ const terminalThemes = {
     brightMagenta: '#d670d6', brightCyan: '#29b8db', brightWhite: '#e5e5e5' },
 }
 
+/** Code font until the page supplies its own; the same families as `--ds-font-family-code`. */
+const DEFAULT_FONT_FAMILY = "'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier, monospace"
+
 /**
  * Mount a terminal.
  * @param container Mount point; the terminal fits it whenever it resizes.
@@ -25,7 +28,7 @@ const terminalThemes = {
  */
 export function createTerminal(container: HTMLElement, data: (text: string) => void, resize: (cols: number, rows: number) => void): EditorTerminal {
   const terminal = new Terminal({ fontSize: 13, cursorBlink: true, allowProposedApi: false, convertEol: false,
-    fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace", theme: terminalThemes.light })
+    fontFamily: DEFAULT_FONT_FAMILY, theme: terminalThemes.light })
   const fit = new FitAddon()
   terminal.loadAddon(fit)
   terminal.open(container)
@@ -36,8 +39,16 @@ export function createTerminal(container: HTMLElement, data: (text: string) => v
   observer.observe(container)
   fitVisible()
   const setAppearance = (appearance: EditorAppearance): void => {
-    terminal.options.theme = appearance.dark ? terminalThemes.dark : terminalThemes.light
-    if (terminal.options.fontSize !== appearance.fontSize) { terminal.options.fontSize = appearance.fontSize; fitVisible() }
+    const palette = appearance.dark ? terminalThemes.dark : terminalThemes.light
+    // The page's surface and text colors follow its color scheme; the ANSI colors stay.
+    const background = appearance.background ?? palette.background
+    const foreground = appearance.foreground ?? palette.foreground
+    terminal.options.theme = { ...palette, background, foreground, cursor: foreground, cursorAccent: background }
+    const fontFamily = appearance.fontFamily ?? DEFAULT_FONT_FAMILY
+    if (terminal.options.fontSize === appearance.fontSize && terminal.options.fontFamily === fontFamily) return
+    terminal.options.fontSize = appearance.fontSize
+    terminal.options.fontFamily = fontFamily
+    fitVisible()
   }
   return { write: (text) => { terminal.write(text) }, reset: () => { terminal.reset() }, fit: fitVisible, focus: () => { terminal.focus() },
     setAppearance, dispose: () => { observer.disconnect(); onData.dispose(); onResize.dispose(); terminal.dispose() } }

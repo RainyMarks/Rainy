@@ -29,10 +29,11 @@ export function CtfWorkbench({ owner, sessionId, active, dark }: {
   const loaded = useStore(owner.frameLoaded)
   useEffect(() => { void owner.tools.load() }, [owner])
   const visible = active && view === 'icesky'
+  // The colors and fonts are read from the page's styles, so the color scheme, accent and fonts are dependencies too.
   useEffect(() => {
     owner.configure({ sessionId, visible,
       appearance: { dark, fontSize: prefs.uiFontSize, codeFontSize: prefs.codeFontSize, locale: prefs.locale } })
-  }, [owner, sessionId, visible, dark, prefs.uiFontSize, prefs.codeFontSize, prefs.locale])
+  }, [owner, sessionId, visible, dark, prefs.uiFontSize, prefs.codeFontSize, prefs.locale, prefs.colorScheme, prefs.accent, prefs.uiFont, prefs.codeFont])
   const selectView = (next: CtfView): void => { owner.view.set(next) }
   const attach = useCallback((frame: HTMLIFrameElement | null) => { owner.bridge.attach(frame) }, [owner])
   const error = state.phase === 'error' || state.saving === 'error'

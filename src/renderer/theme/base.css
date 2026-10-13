@@ -2,14 +2,16 @@
  * upstream (deepsuite theme/global.css) — supplied here so the composite
  * --dsw-font-* variables resolve and motion rides the upstream curve. Code
  * font stack deliberately omits a bare `monospace` tail (Windows CJK falls
- * back to SimSun otherwise). */
+ * back to SimSun otherwise). The fonts chosen in Settings → Appearance come
+ * first: `prefs.ts` sets --rainy-ui-font and --rainy-code-font to quoted names
+ * each followed by a comma, and leaves them unset for the defaults. */
 :root {
   /* Windows 11's Segoe UI Variable for Latin and Microsoft YaHei UI for Chinese; Segoe UI covers Windows 10. */
-  --dsw-font-family: 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Microsoft YaHei UI',
-    'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --dsw-font-family-display: 'Segoe UI Variable Display', var(--dsw-font-family);
+  --dsw-font-family: var(--rainy-ui-font,) 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+    'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --dsw-font-family-display: var(--rainy-ui-font,) 'Segoe UI Variable Display', var(--dsw-font-family);
   --dsw-font-family-brand: 'Montserrat', var(--dsw-font-family);
-  --ds-font-family-code: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
+  --ds-font-family-code: var(--rainy-code-font,) 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --ds-transition-duration: 0.2s;

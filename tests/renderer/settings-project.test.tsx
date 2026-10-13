@@ -26,7 +26,7 @@ const calls = (method: string) => fakeHost.call.mock.calls.filter(([name]) => na
 const memory = (change: Partial<ProjectMemoryStatus> = {}): ProjectMemoryStatus => ({ enabled: true, generationEnabled: true, revision: 4, items: [], ...change })
 
 beforeEach(async () => {
-  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true })
+  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '' })
 })
 afterEach(async () => {
   await cleanup()

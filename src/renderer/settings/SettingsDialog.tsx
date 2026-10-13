@@ -1,10 +1,11 @@
-/** Settings window: General, Models, Skills & MCP, Runtime, Memory and Security sections, plus the shortcut list. */
+/** Settings window: General, Appearance, Models, Skills & MCP, Runtime, Memory and Security sections, plus the shortcut list. */
 import { useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { IconCloseOutlineRegular } from '../ui/icons/index.tsx'
 import { useModalLayer } from '../ui/useModalLayer.ts'
+import { AppearanceSection } from './AppearanceSection.tsx'
 import { ExtensionsSection } from './ExtensionsSection.tsx'
 import { GeneralSection, ShortcutsSection } from './GeneralSection.tsx'
 import { MemorySection } from './MemorySection.tsx'
@@ -16,7 +17,7 @@ import { SecuritySection } from './SecuritySection.tsx'
 import css from './SettingsDialog.module.css'
 
 /** Section identifiers: the navigation list in order, then the shortcut list at the foot of the navigation. */
-export type SettingsSection = 'general' | 'models' | 'extensions' | 'runtime' | 'memory' | 'security' | 'shortcuts'
+export type SettingsSection = 'general' | 'appearance' | 'models' | 'extensions' | 'runtime' | 'memory' | 'security' | 'shortcuts'
 
 /** Where "Send feedback" leads; the desktop app opens it in the system browser. */
 const FEEDBACK_URL = 'https://github.com/RainyMarks/RainyAgent/issues'
@@ -33,6 +34,7 @@ export interface SettingsDialogProps {
 
 const sections: readonly { id: SettingsSection; label: SettingsMessage }[] = [
   { id: 'general', label: 'navGeneral' },
+  { id: 'appearance', label: 'navAppearance' },
   { id: 'models', label: 'navModels' },
   { id: 'extensions', label: 'navExtensions' },
   { id: 'runtime', label: 'navRuntime' },
@@ -102,6 +104,7 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
         <div className={css.options}>
           <div className={css.page}>
             {pane('general', <GeneralSection />)}
+            {pane('appearance', <AppearanceSection />)}
             {pane('models', <ModelsSection workspace={workspace} />)}
             {pane('extensions', <ExtensionsSection key={project} workspace={workspace} />)}
             {pane('runtime', <RuntimeSection key={project} workspace={workspace} />)}

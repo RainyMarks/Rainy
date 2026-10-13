@@ -130,6 +130,10 @@
       }
     }
     document.documentElement.style.backgroundColor = appearance.colors?.background ?? (dark ? '#181818' : '#ffffff')
+    for (const [name, value] of [['--rainy-font-family', appearance.fonts?.ui], ['--rainy-code-font-family', appearance.fonts?.code]]) {
+      if (typeof value === 'string' && value.length <= 1000 && CSS.supports('font-family', value)) document.documentElement.style.setProperty(name, value)
+      else document.documentElement.style.removeProperty(name)
+    }
     const font = Number(appearance.fontSize)
     const code = Number(appearance.codeFontSize)
     if (Number.isFinite(font) && font >= 8 && font <= 48) document.documentElement.style.setProperty('--rainy-font-size', `${font}px`)
