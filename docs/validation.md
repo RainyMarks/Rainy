@@ -1,5 +1,25 @@
 # Rainy 验收记录
 
+## 2.2.1（2026-10-13）
+
+被测产物为 `Rainy-2.2.1-windows-x64-setup.exe`（187,413,842 字节，SHA-256 `258eb7dc20137a634b4379e7c1632385224112148aee9f1ac3552a61f5b787a7`），构建自提交 `b77225fb2c`；之后的提交只修改本验收记录。WSL 运行环境分片为 294,252,245 字节（SHA-256 `84bc159019a9ed205ba958a6ef5f635f2cbbff92cd8b37dfcdc98d5f0932656f`），PHP 分片与 2.2.0 相同。
+
+### 改动
+
+- 许可证文件 `LICENSE.RainyAgent` 改为 `LICENSE.Rainy`，名称改为 Rainy Source Available License 1.0，版权方改为 RainyMarks and the Rainy contributors；条款不变。根目录 `LICENSE`、README 和文档同步。Windows Host 与 WSL 运行环境随附改名后的文件。
+
+### 检查
+
+- **测试**：本机 Windows 11 上 Vitest 86 个文件 789 项通过（10 项按平台跳过），node:test 130 项通过（2 项跳过）。
+- **安装包内容**：7-Zip 解开后 9,332 个文件与 `release/win-unpacked` 逐一一致。Windows Host 中只有 `LICENSE`、`LICENSE.Rainy` 和 `LICENSE.upstream`，WSL 运行环境归档中同样只有 `app/LICENSE.Rainy` 与 `app/LICENSE.upstream`，没有遗留旧文件名。
+- **试运行**：用临时用户数据启动，约 5 秒显示工作台。名称为 Rainy、版本为 2.2.1，38 款工具可用，页面错误为零，关闭窗口后进程全部退出。
+- **完整流程**：打包程序在临时用户数据下打开示例题目，运行 `solve.py` 得到 flag，切换图片位平面，以十六进制查看 ZIP 并扫描内嵌文件，打开 CTF 工具目录和 AI 安全工具箱，页面与控制台错误为零。
+- **WSL 运行环境**：在临时 HOME 中安装约 5.8 秒，Linux Host 约 0.2 秒就绪，启动页返回 HTTP 200。
+
+### 验收范围
+
+界面与 2.2.0 相同，没有重复外观检查；没有测试从 2.2.0 自动更新到 2.2.1，没有调用真实模型。
+
 ## 2.2.0（2026-10-13）
 
 被测产物为 `Rainy-2.2.0-windows-x64-setup.exe`（187,413,681 字节，SHA-256 `bb5e092eb3a273b419daa0fee0a3123f129d39948b8f79cc5918cb79579d8040`），构建自提交 `23b0a2c325`；之后的提交只修改 README 中的安装包大小和本验收记录。WSL 运行环境分片为 294,251,832 字节（SHA-256 `73412c8792120ce5f86bfd4caa3850490f8b6880e69448cf54b63b9a92492666`），PHP 分片与 2.1.2 相同。
