@@ -37,7 +37,7 @@ export async function prepareOptionalModules(options) {
   if (!strata) throw new Error('The Strata build input is not pinned')
   const local = await digest(options.strataArchive)
   if (local.bytes !== strata.bytes || local.sha256 !== strata.sha256) throw new Error('The local Strata archive differs from the pinned build input')
-  const baseUrl = `https://github.com/RainyMarks/RainyAgent/releases/download/v${options.releaseVersion}-resources/`
+  const baseUrl = `https://github.com/RainyMarks/Rainy/releases/download/v${options.releaseVersion}-resources/`
   const scratch = await mkdtemp(join(tmpdir(), 'rainy-modules-'))
   const uploads = []
   try {

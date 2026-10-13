@@ -16,7 +16,7 @@ afterEach(async () => {
   }
 })
 const hash = (value: Buffer): string => createHash('sha256').update(value).digest('hex')
-const baseUrl = 'https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.6-resources/'
+const baseUrl = 'https://github.com/RainyMarks/Rainy/releases/download/v2.2.0-resources/'
 const href = (input: RequestInfo | URL): string => typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
 
 async function archive(root: string, name: string, files: Record<string, string>): Promise<Buffer> {

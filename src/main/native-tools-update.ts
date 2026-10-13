@@ -10,14 +10,15 @@ import { parseNativeToolCatalog } from './native-tools.ts'
 /** Tool-channel signatures cannot be reused as application resource signatures or as earlier channel formats. */
 export const TOOL_CHANNEL_SIGNATURE_DOMAIN = 'RainyAgent/tool-channel/v2\0'
 /** Publisher location of the newest signed per-tool channel. */
-export const TOOL_CHANNEL_URL = 'https://raw.githubusercontent.com/RainyMarks/RainyAgent/main/toolpacks/native-tools-channel.v2.signed.json'
+export const TOOL_CHANNEL_URL = 'https://raw.githubusercontent.com/RainyMarks/Rainy/main/toolpacks/native-tools-channel.v2.signed.json'
 const hash = z.string().regex(/^[a-f0-9]{64}$/)
 const keyId = z.string().regex(/^[a-f0-9]{32}$/)
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
-/** Download location of each unit archive; unchanged archives stay in the release that first published them. */
+/** Download location of each unit archive; unchanged archives stay in the release that first published them. Releases
+ * published before the repository was renamed from RainyAgent keep their URLs, which GitHub redirects. */
 export const toolDownloadSourceSchema = z.object({ version: z.literal(2), packId: hash,
   archives: z.array(z.object({ file: z.string().regex(TOOL_UNIT_ARCHIVE), bytes, sha256: hash,
-    baseUrl: z.string().regex(/^https:\/\/github\.com\/RainyMarks\/RainyAgent\/releases\/download\/v\d+\.\d+\.\d+-resources\/$/),
+    baseUrl: z.string().regex(/^https:\/\/github\.com\/RainyMarks\/(?:RainyAgent|Rainy)\/releases\/download\/v\d+\.\d+\.\d+-resources\/$/),
     pieces: z.array(z.object({ file: z.string().regex(/^rainy-[a-f0-9]{20}\.\d{3}$/), bytes, sha256: hash }).strict()).min(1),
   }).strict()).min(1),
 }).strict()

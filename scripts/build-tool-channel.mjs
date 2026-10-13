@@ -20,7 +20,7 @@ export async function buildToolChannel(options) {
   const previous = options.previousSource === undefined ? undefined : JSON.parse(await readFile(options.previousSource, 'utf8'))
   if (previous !== undefined && (previous.version !== 2 || !Array.isArray(previous.archives))) throw new Error('The previous source must use format 2')
   const known = new Map((previous?.archives ?? []).map(archive => [archive.file, archive]))
-  const baseUrl = `https://github.com/RainyMarks/RainyAgent/releases/download/v${options.releaseVersion}-resources/`
+  const baseUrl = `https://github.com/RainyMarks/Rainy/releases/download/v${options.releaseVersion}-resources/`
   const fresh = metadata.archives.filter(archive => known.get(archive.file)?.sha256 !== archive.sha256)
   const uploads = []
   const published = new Map()

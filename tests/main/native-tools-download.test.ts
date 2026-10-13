@@ -10,7 +10,7 @@ import { NativeToolsDownloader } from '../../src/main/native-tools-download.ts'
 import type { NativeToolsDownloadOptions } from '../../src/main/native-tools-download.ts'
 import { createNativeToolPackInstaller } from '../../src/main/toolpack.ts'
 import { releasePublicKeyId } from '../../src/main/release-trust.ts'
-import { TOOL_CHANNEL_SIGNATURE_DOMAIN, TOOL_CHANNEL_URL } from '../../src/main/native-tools-update.ts'
+import { TOOL_CHANNEL_SIGNATURE_DOMAIN, TOOL_CHANNEL_URL, toolDownloadSourceSchema } from '../../src/main/native-tools-update.ts'
 import { NativeToolsLibrary } from '../../src/main/native-tools.ts'
 import { brandString } from '../../src/shared/brand.ts'
 import type { Branded } from '../../src/shared/brand.ts'
@@ -290,5 +290,20 @@ describe('per-tool downloads', () => {
     expect(await owner.maintain()).toBe('alpha one'.length)
     expect(await readdir(backup)).toEqual(['saves'])
     expect((await readdir(h.options.cacheRoot)).sort()).toEqual([`metadata-${h.first.metadata.id}.json`])
+  })
+})
+
+describe('download sources', () => {
+  it('accept release archives under the current and former repository names only', () => {
+    const source = (baseUrl: string): unknown => ({ version: 2, packId: 'a'.repeat(64), archives: [{
+      file: `rainy-unit-${'b'.repeat(20)}.tar.gz`, bytes: 1, sha256: 'c'.repeat(64), baseUrl,
+      pieces: [{ file: `rainy-${'d'.repeat(20)}.001`, bytes: 1, sha256: 'e'.repeat(64) }],
+    }] })
+    for (const repository of ['RainyMarks/RainyAgent', 'RainyMarks/Rainy']) {
+      expect(toolDownloadSourceSchema.safeParse(source(`https://github.com/${repository}/releases/download/v1.0.6-resources/`)).success).toBe(true)
+    }
+    for (const repository of ['RainyMarks/RainyAgentX', 'someone/Rainy', 'RainyMarks/Rainy/releases/download/v1.0.6-resources/../../x']) {
+      expect(toolDownloadSourceSchema.safeParse(source(`https://github.com/${repository}/releases/download/v1.0.6-resources/`)).success).toBe(false)
+    }
   })
 })

@@ -72,7 +72,7 @@ export class RainyUpdates {
    * @param hooks Native UI and saved-shutdown callbacks.
    */
   constructor(private readonly updater: RainyUpdater, private readonly hooks: RainyUpdateHooks) {
-    updater.setFeedURL({ provider: 'github', owner: 'RainyMarks', repo: 'RainyAgent' })
+    updater.setFeedURL({ provider: 'github', owner: 'RainyMarks', repo: 'Rainy' })
     updater.autoDownload = false
     updater.autoInstallOnAppQuit = false
     updater.channel = 'latest'

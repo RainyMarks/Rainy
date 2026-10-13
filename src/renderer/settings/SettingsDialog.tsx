@@ -20,7 +20,7 @@ import css from './SettingsDialog.module.css'
 export type SettingsSection = 'general' | 'appearance' | 'models' | 'extensions' | 'runtime' | 'memory' | 'security' | 'shortcuts'
 
 /** Where "Send feedback" leads; the desktop app opens it in the system browser. */
-const FEEDBACK_URL = 'https://github.com/RainyMarks/RainyAgent/issues'
+const FEEDBACK_URL = 'https://github.com/RainyMarks/Rainy/issues'
 
 /** Inputs from the window layout. */
 export interface SettingsDialogProps {

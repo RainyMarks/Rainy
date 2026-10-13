@@ -8,7 +8,7 @@ Rainy 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Host。
 
 ## 离线安装与恢复
 
-[2.0.0 发行包](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.0.0)提供核心安装程序。[2.0.0 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.0.0-resources)存放 PHP 组件和 WSL 运行环境分片；[1.0.6 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.6-resources)存放原生工具归档。[1.0.0 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.0-resources)仍存放 Strata 归档、`environment/` WSL 安装介质和 `environment-components/` 运行环境归档。核心可直接在 Windows 原生启动，无需 WSL 或科学计算库。源码打包按[输入清单](../toolpacks/build-inputs.v1.json)把固定版本的输入恢复至 `release/offline-2.0.0`。原生工具为可选项：可在目录中按工具联网下载；离线安装时，把全部 `rainy-unit-*.tar.gz` 归档放在安装程序旁，安装程序会安装其中每个单元。不带这些归档时，安装程序保留现有工具。
+[2.0.0 发行包](https://github.com/RainyMarks/Rainy/releases/tag/v2.0.0)提供核心安装程序。[2.0.0 资源存档](https://github.com/RainyMarks/Rainy/releases/tag/v2.0.0-resources)存放 PHP 组件和 WSL 运行环境分片；[1.0.6 资源存档](https://github.com/RainyMarks/Rainy/releases/tag/v1.0.6-resources)存放原生工具归档。[1.0.0 资源存档](https://github.com/RainyMarks/Rainy/releases/tag/v1.0.0-resources)仍存放 Strata 归档、`environment/` WSL 安装介质和 `environment-components/` 运行环境归档。核心可直接在 Windows 原生启动，无需 WSL 或科学计算库。源码打包按[输入清单](../toolpacks/build-inputs.v1.json)把固定版本的输入恢复至 `release/offline-2.0.0`。原生工具为可选项：可在目录中按工具联网下载；离线安装时，把全部 `rainy-unit-*.tar.gz` 归档放在安装程序旁，安装程序会安装其中每个单元。不带这些归档时，安装程序保留现有工具。
 
 工具安装窗口显示当前阶段、文件及阶段进度。点击取消后请求安全停止，并等待必要的回滚。使用同一组归档重新运行安装程序时，会重新校验归档并复用已校验的暂存文件。归档损坏或空间不足会在工具目录替换前停止安装。更新前请保存工作并关闭 Rainy、原生工具及其命令行窗口；安装程序报告占用，不自动结束这些进程。
 
@@ -30,7 +30,7 @@ WSL 运行环境（约 310 MB）与每个 Rainy 版本对应，发布在 2.0.0 �
 
 ## 应用更新
 
-安装版在启动时检查 GitHub `RainyMarks/RainyAgent` 的稳定发行版，并在有新版本时后台下载核心更新。“帮助 → 检查更新”提供手动状态查看与重试。准备完成后可选择“稍后”或“重启安装”；只有确认、草稿保存和 Host 清理完成后才启动安装。保存失败会保留应用窗口。普通退出不会安装已下载的更新，更新器不会选择预发布版或降级已安装版本。
+安装版在启动时检查 GitHub `RainyMarks/Rainy` 的稳定发行版，并在有新版本时后台下载核心更新。“帮助 → 检查更新”提供手动状态查看与重试。准备完成后可选择“稍后”或“重启安装”；只有确认、草稿保存和 Host 清理完成后才启动安装。保存失败会保留应用窗口。普通退出不会安装已下载的更新，更新器不会选择预发布版或降级已安装版本。
 
 自动更新替换核心应用并保留已安装的工具与环境，不会重新下载原生工具、WSL 介质或 CPU/CUDA 环境组件；更新后首次以 WSL 启动时会下载该版本的 WSL 运行环境。CPU/CUDA 环境组件仍从匹配的离线发行文件导入。[验收记录](validation.md)按发布产物记录已经完成的更新检查。
 

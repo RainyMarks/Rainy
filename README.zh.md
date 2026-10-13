@@ -6,15 +6,15 @@
 
 **为 CTF 打造的 Windows AI 智能体工作台：写解题脚本、运行、让 AI 找出哪里不对，再打开 38 款安全工具中的任意一款，全程不离开这个窗口。**
 
-[![Release](https://img.shields.io/github/v/release/RainyMarks/RainyAgent?label=release&color=3b82f6)](https://github.com/RainyMarks/RainyAgent/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/RainyMarks/RainyAgent/total?color=10b981)](https://github.com/RainyMarks/RainyAgent/releases)
+[![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
 [![License](https://img.shields.io/badge/license-source%20available-f59e0b)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?logo=x)](https://x.com/RainyMarksqwq)
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（189 MB）**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [2.2 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（189 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.2 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -81,7 +81,7 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CT
   - 设置保存失败时，原因显示在按钮旁。
   - 已打开的对话保留各自的权限。
   - 修改模型后，已打开的对话立即生效。
-  - 另有约 40 处修复，见[发布说明](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1)。
+  - 另有约 40 处修复，见[发布说明](https://github.com/RainyMarks/Rainy/releases/tag/v2.1.1)。
 - **2.1.2**：界面圆角整体调小，浏览器工具台更名为 **AI 安全工具箱**。
 
 从 1.x 升级：首次启动会导入 1.x 保存的模型、API 密钥和全局提示词。1.x 的对话格式较旧，不会导入。
@@ -89,7 +89,7 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CT
 <a id="run"></a>
 ## 下载与开始使用
 
-1. 下载并安装[最新版 Windows x64 安装包](https://github.com/RainyMarks/RainyAgent/releases/latest)，无需激活码。
+1. 下载并安装[最新版 Windows x64 安装包](https://github.com/RainyMarks/Rainy/releases/latest)，无需激活码。
 2. 从桌面快捷方式打开 Rainy，选择**文件 → 打开文件夹**。
 3. 在**设置 → 模型**中连接模型（见[连接模型](#connect-a-model)），然后打开右侧的 **AI 助手**。
 4. 进入 **CTF 工具 → 常用工具**，下载需要的工具，或点击**全部下载**。已下载的工具离线也能用。
@@ -132,8 +132,8 @@ Strata 引擎包含 [Niko1221/Strata 0.1.39](https://github.com/Niko1221/Strata/
 构建 Windows 发行包需要 Node.js `^22.19 || >=24`、pnpm `11.7.0`，以及[构建指南](docs/desktop-setup.zh-CN.md#从源码构建)列出的 Windows/WSL 环境。`build-inputs/strata-runtime.tar.gz` 等固定版本的二进制资源由 bootstrap 命令从发行资产恢复，不存放在 Git 中。
 
 ```powershell
-git clone https://github.com/RainyMarks/RainyAgent.git
-cd RainyAgent
+git clone https://github.com/RainyMarks/Rainy.git
+cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.0 -ComponentSource release/offline-2.2.0/environment-components
@@ -145,7 +145,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 
 ## 支持这个项目
 
-如果 Rainy 帮你解出了题，给仓库点个 ⭐ 能让更多选手看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新和 CTF 技巧。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues)。
+如果 Rainy 帮你解出了题，给仓库点个 ⭐ 能让更多选手看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新和 CTF 技巧。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues)。
 
 ## 许可与归属
 

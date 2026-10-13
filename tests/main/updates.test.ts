@@ -43,7 +43,7 @@ function fixture(enabled = true) {
 
 it('uses the public stable feed and never installs on an ordinary quit', async () => {
   const f = fixture()
-  expect(f.updater.setFeedURL).toHaveBeenCalledWith({ provider: 'github', owner: 'RainyMarks', repo: 'RainyAgent' })
+  expect(f.updater.setFeedURL).toHaveBeenCalledWith({ provider: 'github', owner: 'RainyMarks', repo: 'Rainy' })
   expect(f.updater).toMatchObject({ autoDownload: false, autoInstallOnAppQuit: false,
     allowPrerelease: false, allowDowngrade: false, channel: 'latest' })
   await expect(f.controller.check()).resolves.toEqual({ phase: 'ready', version: '1.1.0' })

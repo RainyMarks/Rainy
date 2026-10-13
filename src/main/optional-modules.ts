@@ -20,7 +20,7 @@ const descriptorSchema = z.object({ version: z.literal(1), modules: z.array(z.ob
   kind: z.enum(['directory', 'file']),
   file: z.string().regex(/^[a-z0-9][a-z0-9.-]*\.tar\.gz$/),
   bytes: bytes.refine(value => value > 0), sha256: hash, unpackedBytes: bytes,
-  baseUrl: z.string().regex(/^https:\/\/github\.com\/RainyMarks\/RainyAgent\/releases\/download\/v\d+\.\d+\.\d+-resources\/$/),
+  baseUrl: z.string().regex(/^https:\/\/github\.com\/RainyMarks\/(?:RainyAgent|Rainy)\/releases\/download\/v\d+\.\d+\.\d+-resources\/$/),
   pieces: z.array(z.object({ file: z.string().regex(/^rainy-[a-f0-9]{20}\.\d{3}$/), bytes, sha256: hash }).strict()).min(1),
 }).strict()) }).strict().superRefine((value, context) => {
   if (new Set(value.modules.map(module => module.id)).size !== value.modules.length) context.addIssue({ code: 'custom', message: 'Duplicate module' })

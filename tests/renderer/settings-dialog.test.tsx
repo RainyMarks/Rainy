@@ -208,7 +208,7 @@ it('shows the version, links to feedback and lists the keyboard shortcuts from t
   expect(findButton(zh.diagnosticsExport)).toBeUndefined()
   const feedback = document.querySelector<HTMLAnchorElement>('[data-settings-footer="feedback"]')!
   expect([feedback.textContent, feedback.getAttribute('href'), feedback.target])
-    .toEqual([zh.navFeedback, 'https://github.com/RainyMarks/RainyAgent/issues', '_blank'])
+    .toEqual([zh.navFeedback, 'https://github.com/RainyMarks/Rainy/issues', '_blank'])
   expect(document.querySelector('[data-shortcuts]')).toBeNull()
   await click(button(zh.shortcutsTitle))
   expect(panel().dataset['section']).toBe('shortcuts')

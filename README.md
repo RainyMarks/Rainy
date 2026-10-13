@@ -6,15 +6,15 @@
 
 **The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 38 security tools without leaving the window.**
 
-[![Release](https://img.shields.io/github/v/release/RainyMarks/RainyAgent?label=release&color=3b82f6)](https://github.com/RainyMarks/RainyAgent/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/RainyMarks/RainyAgent/total?color=10b981)](https://github.com/RainyMarks/RainyAgent/releases)
+[![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
 [![License](https://img.shields.io/badge/license-source%20available-f59e0b)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?logo=x)](https://x.com/RainyMarksqwq)
 
 English | [中文](README.zh.md)
 
-[**Download for Windows (189 MB)**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
+[**Download for Windows (189 MB)**](https://github.com/RainyMarks/Rainy/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
 
 </div>
 
@@ -82,7 +82,7 @@ Rainy puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit
   - Open chats keep their own permission mode.
   - Model changes reach open chats at once.
   - About 40 smaller fixes.
-  - See the [release notes](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1).
+  - See the [release notes](https://github.com/RainyMarks/Rainy/releases/tag/v2.1.1).
 - **2.1.2**: squarer corners throughout, and the browser workbench is now the **AI security toolkit**.
 
 Upgrading from 1.x: on first start Rainy imports your saved models, API keys and global prompt. Chats from 1.x use an older format and are not imported.
@@ -90,7 +90,7 @@ Upgrading from 1.x: on first start Rainy imports your saved models, API keys and
 <a id="run"></a>
 ## Download and start
 
-1. Download [the latest Windows x64 installer](https://github.com/RainyMarks/RainyAgent/releases/latest) and install it. No activation code is required.
+1. Download [the latest Windows x64 installer](https://github.com/RainyMarks/Rainy/releases/latest) and install it. No activation code is required.
 2. Open Rainy from the desktop shortcut and choose **File → Open folder**.
 3. Connect a model in **Settings → Models** (see [Connect a model](#connect-a-model)), then open **AI assistant** on the right.
 4. Open **CTF tools → Common tools** and download the tools you need, or select **Download all**. Downloaded tools also work offline.
@@ -133,8 +133,8 @@ If a WSL environment under NAT cannot reach the Windows loopback server, use the
 Building the Windows release requires Node.js `^22.19 || >=24`, pnpm `11.7.0`, and the Windows/WSL prerequisites in the [build guide](docs/desktop-setup.zh-CN.md#从源码构建). Pinned binaries such as `build-inputs/strata-runtime.tar.gz` are restored from release assets by the bootstrap command rather than stored in Git.
 
 ```powershell
-git clone https://github.com/RainyMarks/RainyAgent.git
-cd RainyAgent
+git clone https://github.com/RainyMarks/Rainy.git
+cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.0 -ComponentSource release/offline-2.2.0/environment-components
@@ -146,7 +146,7 @@ For development, `pnpm run dev` builds the app and starts a Host without Electro
 
 ## Support the project
 
-If Rainy helped you solve a challenge, a ⭐ on this repository helps other players find it. Follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X for releases and CTF tips. Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues).
+If Rainy helped you solve a challenge, a ⭐ on this repository helps other players find it. Follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X for releases and CTF tips. Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/RainyMarks/Rainy/issues).
 
 ## License and attribution
 
