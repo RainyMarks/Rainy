@@ -166,6 +166,8 @@ describe('retired carrier resources', () => {
     expect(await readdir(join(host, 'node_modules/kept'))).toEqual(['index.js'])
     if (windows) expect(await readdir(join(host, 'app/dist'))).toEqual(['host.js'])
     expect(await pruneWindowsHost(root)).toBe(0)
+    // The package itself ships an empty folder (npm's tap-snapshots); the uninstaller's removal takes it too.
+    await mkdir(join(host, 'node/node_modules/npm/tap-snapshots'), { recursive: true })
     await pruneWindowsHost(root, { everything: true })
     expect(await readdir(root)).toEqual([])
     expect(await pruneWindowsHost(root)).toBe(0)

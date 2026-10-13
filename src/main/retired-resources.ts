@@ -27,7 +27,7 @@ export async function removeRetiredResources(resourceRoot: string): Promise<stri
 /**
  * Delete files below `windows-host` that its inventory does not list. An installer update overwrites the files it ships
  * but never removes ones a newer version dropped, such as the PowerShell 7 that 2.0 carried. Links are left alone, and a
- * folder is removed only when this emptied it.
+ * folder is removed only when this emptied it, or, for the uninstaller, when it is empty (the package ships empty ones).
  * @param resourceRoot - the packaged carrier's resource directory.
  * @param options - `everything` also removes the listed files and the inventory: the uninstaller's file-by-file removal.
  * @returns bytes removed; 0 when the inventory is missing or unreadable.
@@ -48,7 +48,7 @@ export async function pruneWindowsHost(resourceRoot: string, options: { everythi
   }
   if (options.everything === true) listed.clear()
   let removed = 0
-  /** @returns whether the folder is now empty because of removals made here. */
+  /** @returns whether the folder is now empty and may go: emptied here, or empty while removing everything. */
   const prune = async (directory: string, relative: string): Promise<boolean> => {
     let empty = true
     let changed = false
@@ -65,7 +65,7 @@ export async function pruneWindowsHost(resourceRoot: string, options: { everythi
         changed = true
       }
     }
-    return empty && changed
+    return empty && (changed || options.everything === true)
   }
   if (await prune(root, '') && options.everything === true) await rmdir(root)
   return removed
