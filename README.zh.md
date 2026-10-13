@@ -73,6 +73,7 @@ RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 �
   - 修改模型后，已打开的对话立即生效。
   - 另有约 40 处修复，见[发布说明](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1)。
 - **2.1.2**：界面圆角整体调小，浏览器工具台更名为 **AI 安全工具箱**。
+- **2.1.3**：界面换上更沉稳的中性灰，标题加粗，按钮改为实心；设置窗口加大，每页有标题和说明，选项按卡片分组。
 
 从 1.x 升级：首次启动会导入 1.x 保存的模型、API 密钥和全局提示词。1.x 的对话格式较旧，不会导入。
 
@@ -126,10 +127,10 @@ git clone https://github.com/RainyMarks/RainyAgent.git
 cd RainyAgent
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.1.2 -ComponentSource release/offline-2.1.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.1.3 -ComponentSource release/offline-2.1.3/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.1.2` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.1.3` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
