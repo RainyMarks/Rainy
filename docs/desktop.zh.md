@@ -1,8 +1,8 @@
-# RainyAgent 桌面版
+# Rainy 桌面版
 
 [English](desktop.md) | 中文
 
-RainyAgent 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 WSL Linux 运行环境是可选组件，原生工具按工具单独下载。模型权重由用户自行提供。它保留上游 Agent 循环、会话持久化和 Web 聊天界面，默认组合四个工具：`read`、`write`、`edit`，以及所选平台的 Shell（`pwsh` 或 `bash`）。上游基线为 0.1.7-rc.2 版本。
+Rainy 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 WSL Linux 运行环境是可选组件，原生工具按工具单独下载。模型权重由用户自行提供。它保留上游 Agent 循环、会话持久化和 Web 聊天界面，默认组合四个工具：`read`、`write`、`edit`，以及所选平台的 Shell（`pwsh` 或 `bash`）。上游基线为 0.1.7-rc.2 版本。
 
 [中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍上游和打包依赖。
 
@@ -10,7 +10,7 @@ RainyAgent 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Ho
 
 [2.0.0 发行包](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.0.0)提供核心安装程序。[2.0.0 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.0.0-resources)存放 PHP 组件和 WSL 运行环境分片；[1.0.6 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.6-resources)存放原生工具归档。[1.0.0 资源存档](https://github.com/RainyMarks/RainyAgent/releases/tag/v1.0.0-resources)仍存放 Strata 归档、`environment/` WSL 安装介质和 `environment-components/` 运行环境归档。核心可直接在 Windows 原生启动，无需 WSL 或科学计算库。源码打包按[输入清单](../toolpacks/build-inputs.v1.json)把固定版本的输入恢复至 `release/offline-2.0.0`。原生工具为可选项：可在目录中按工具联网下载；离线安装时，把全部 `rainy-unit-*.tar.gz` 归档放在安装程序旁，安装程序会安装其中每个单元。不带这些归档时，安装程序保留现有工具。
 
-工具安装窗口显示当前阶段、文件及阶段进度。点击取消后请求安全停止，并等待必要的回滚。使用同一组归档重新运行安装程序时，会重新校验归档并复用已校验的暂存文件。归档损坏或空间不足会在工具目录替换前停止安装。更新前请保存工作并关闭 RainyAgent、原生工具及其命令行窗口；安装程序报告占用，不自动结束这些进程。
+工具安装窗口显示当前阶段、文件及阶段进度。点击取消后请求安全停止，并等待必要的回滚。使用同一组归档重新运行安装程序时，会重新校验归档并复用已校验的暂存文件。归档损坏或空间不足会在工具目录替换前停止安装。更新前请保存工作并关闭 Rainy、原生工具及其命令行窗口；安装程序报告占用，不自动结束这些进程。
 
 第三方 Electron ASAR 归档按完整二进制文件安装、校验和备份。目录检查和离线 HTTP 响应通过未修改的磁盘文件系统读取这些文件。载体自身的打包页面继续使用正常的 ASAR 加载与完整性保护。[真实 Electron 测试](../tests/manual/toolpack-electron.mjs) 在私有临时目录检查安装、取消、重试、用户文件保留、目录检查及原始归档传输。
 
@@ -24,7 +24,7 @@ RainyAgent 使用 Windows x64 Electron 外壳；核心安装包包含 Windows Ho
 
 “设置 → 运行环境 → 可选组件”可下载和删除 Strata 引擎（约 560 MB）及 PHP。Strata 引擎就是已作为 1.0.0 构建输入 `build-inputs/strata-runtime.tar.gz` 发布的归档；[Strata 本地推理](#strata-local-inference)说明其内容和用法。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。
 
-WSL 运行环境（约 310 MB）与每个 RainyAgent 版本对应，发布在 2.0.0 资源存档中。安装或更新后首次以 WSL 启动时自动下载，启动页显示进度；发行版中已解包本版本运行环境时不下载。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境，保留本版本以及仍有进程在使用的运行环境。
+WSL 运行环境（约 310 MB）与每个 Rainy 版本对应，发布在 2.0.0 资源存档中。安装或更新后首次以 WSL 启动时自动下载，启动页显示进度；发行版中已解包本版本运行环境时不下载。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境，保留本版本以及仍有进程在使用的运行环境。
 
 启动约 60 秒后，安装版会删除旧安装程序留在 `resources` 目录中的资源：`strata-runtime`、`php`、`linux-runtime.tar.gz`、`native-tools-metadata.json`、`native-tools-download.json` 和 `native-tools-catalog.json`。
 
@@ -36,7 +36,7 @@ WSL 运行环境（约 310 MB）与每个 RainyAgent 版本对应，发布在 2.
 
 ## 诊断信息
 
-RainyAgent 用 Electron 的崩溃记录功能在本机保存窗口崩溃信息，不会上传。“设置 → 通用 → 诊断信息 → 导出…”会把版本和系统信息、执行后端日志和 Strata 日志的末尾部分，以及最近 5 份崩溃记录打包成 zip，并在文件夹中显示。日志里的密钥、令牌、密码和 Windows 用户名会被隐去；设置、对话和 API 密钥不会被打包。报错、对话框和菜单跟随“设置 → 通用”中选择的界面语言。
+Rainy 用 Electron 的崩溃记录功能在本机保存窗口崩溃信息，不会上传。“设置 → 通用 → 诊断信息 → 导出…”会把版本和系统信息、执行后端日志和 Strata 日志的末尾部分，以及最近 5 份崩溃记录打包成 zip，并在文件夹中显示。日志里的密钥、令牌、密码和 Windows 用户名会被隐去；设置、对话和 API 密钥不会被打包。报错、对话框和菜单跟随“设置 → 通用”中选择的界面语言。
 
 ## 运行时约定
 
@@ -79,7 +79,7 @@ CodeMirror 6 编辑器提供多文件标签、按文件类型加载的语法高�
 
 每个工具目录、每个共享运行时（Java 21、.NET 8）和目录文件都是一个安装单元，各有独立归档 `rainy-unit-<20 位十六进制>.tar.gz`。归档名由该单元的文件清单得出，因此未变化的工具在各发行版间沿用同一归档，不会再次下载。1.0.6 版共有 41 个归档，合计约 2.1 GB；最大的 IDA 约 383 MB，7-Zip 等小工具约 1 MB。1.0.6 之前由离线安装程序放入应用目录的工具在原处更新；其他情况下工具位于 `%APPDATA%\RainyAgent\native-tools`。
 
-工具通道使用签名格式 2：`toolpacks/native-tools-channel.v2.signed.json`（签名域 `RainyAgent/tool-channel/v2`）及下载来源 `toolpacks/native-tools-source.v2.json`。RainyAgent 2.x 从 `main` 分支获取该文件的新修订。`apps/rainy-desktop/toolpacks/` 保留已安装 1.x 客户端读取的位置：供 1.0.6 及以后版本使用的 `native-tools-channel.v2.signed.json` 逐字节副本，以及供 1.0.5 及更早版本使用的版本 1 `native-tools-channel.signed.json`。`build-tool-channel.mjs` 与 `sign-tool-channel.mjs` 的输出为 `toolpacks/native-tools-channel.v2.signed.json` 时会同时重写该副本。安装程序以 `resources/native-tools-channel.signed.json` 附带通道；应用采用随包通道与缓存通道中修订号较高者，并忽略发布者的旧修订。应用拒绝无效签名和不匹配的目录，也不会从通道接受新的信任公钥。发布者先打包已暂存的工具，再以更大的 `--revision` 构建并签名通道：
+工具通道使用签名格式 2：`toolpacks/native-tools-channel.v2.signed.json`（签名域 `RainyAgent/tool-channel/v2`）及下载来源 `toolpacks/native-tools-source.v2.json`。Rainy 2.x 从 `main` 分支获取该文件的新修订。`apps/rainy-desktop/toolpacks/` 保留已安装 1.x 客户端读取的位置：供 1.0.6 及以后版本使用的 `native-tools-channel.v2.signed.json` 逐字节副本，以及供 1.0.5 及更早版本使用的版本 1 `native-tools-channel.signed.json`。`build-tool-channel.mjs` 与 `sign-tool-channel.mjs` 的输出为 `toolpacks/native-tools-channel.v2.signed.json` 时会同时重写该副本。安装程序以 `resources/native-tools-channel.signed.json` 附带通道；应用采用随包通道与缓存通道中修订号较高者，并忽略发布者的旧修订。应用拒绝无效签名和不匹配的目录，也不会从通道接受新的信任公钥。发布者先打包已暂存的工具，再以更大的 `--revision` 构建并签名通道：
 
 ```sh
 node scripts/package-native-tools.mjs --stage <stage> --output <dir> [--previous <earlier metadata.json>]
@@ -106,13 +106,13 @@ x64dbg 与 x32dbg 共用一个条目，分别提供启动按钮。FFmpeg 包含 
 
 Yakit 1.4.8-0919 的 `bins/yak.zip` 包含官方 Yak 引擎 1.4.8-beta19，供其内置引擎恢复机制使用，无需另行下载该引擎。Yakit 遵循已配置的 `YAKIT_HOME`；Windows 默认目录为 `Yakit.exe` 旁的 `yakit-projects`。工具包保留 Yakit 的 [AGPLv3 许可证](https://github.com/yaklang/yakit/blob/v1.4.8-0919/LICENSE.md)及上游声明。ImHex 继续位于 Reverse 分类，用于二进制编辑。
 
-IDA 附带独立的 Python 3.12.14、匹配的 SIP 绑定和 `imp` 兼容模块。RainyAgent 为它使用应用数据目录下独立的 `IDAUSR`，并清除继承的 Python、Qt 环境设置。StegSolve 和 JADX 使用共享的 Java 21.0.12.1；dnSpy 6.6.0 附带 .NET Desktop 10.0.9。原生工具启动时只搜索包内程序和 Windows 系统工具，不依赖第三方系统 PATH。正常的操作系统 DLL 和设备驱动仍由 Windows 提供。
+IDA 附带独立的 Python 3.12.14、匹配的 SIP 绑定和 `imp` 兼容模块。Rainy 为它使用应用数据目录下独立的 `IDAUSR`，并清除继承的 Python、Qt 环境设置。StegSolve 和 JADX 使用共享的 Java 21.0.12.1；dnSpy 6.6.0 附带 .NET Desktop 10.0.9。原生工具启动时只搜索包内程序和 Windows 系统工具，不依赖第三方系统 PATH。正常的操作系统 DLL 和设备驱动仍由 Windows 提供。
 
 Windows 版 multimon-ng 读取 16 位单声道 raw 音频；同目录附带 SoX，用于转换其他格式。在含有 `sample.wav` 的目录中运行 `sox.exe -R -t wav sample.wav -esigned-integer -b 16 -r 22050 -t raw sample.raw`，再运行 `multimon-ng.exe -a DTMF -t raw sample.raw`。工具卡片会打开显示帮助内容的终端，不会自动采集麦克风声音。
 
 工具文件缺失的卡片提供“修复”，只重新下载文件缺失或 SHA-256 不符的单元。
 
-**AI 安全工具箱**标签打开内置的浏览器工作台。一个保留的 iframe 提供其原有 22 个手动工具，各工具的模板与组件在首次选择时加载。切回目录会保留该 iframe；看不到它超过 10 分钟后会卸载以释放内存，但前提是草稿已保存，且其中没有选中的本地文件或生成的文件。再次选择该标签时从已保存的草稿恢复。每个会话拥有独立草稿；未选中会话或处于空白“新会话”页面时打开工具箱，会使用单独的通用草稿。工作台跟随应用的主题和字号。导航与状态控件跟随应用语言，捆绑工具正文保留原有语言。
+**AI 安全工具箱**标签打开内置的浏览器工作台。一个保留的 iframe 提供其原有 22 个手动工具，各工具的模板与组件在首次选择时加载。切回目录会保留该 iframe；看不到它超过 10 分钟后会卸载以释放内存，但前提是草稿已保存，且其中没有选中的本地文件或生成的文件。再次选择该标签时从已保存的草稿恢复。每个会话拥有独立草稿；未选中会话或处于空白“新会话”页面时打开工具箱，会使用单独的通用草稿。工作台跟随应用的颜色模式、配色、字体和字号。导航与状态控件跟随应用语言，捆绑工具正文保留原有语言。
 
 所选 Host 的持久化存储保留可编辑文本、选项、文本结果和文件元信息。草稿不恢复文件内容或生成的二进制产物；重启后，恢复的草稿会在需要时提示重新选择本地文件。草稿不包含 API 凭据。AI 请求经认证的限量转发连接工具箱内配置的接口，包括所选执行目标的本地端点；转发层不留存请求密钥或正文。
 
@@ -141,11 +141,11 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 “设置 → 模型 → 全局提示词”保存的指令（最多 4,000 个字符）会进入所有对话的系统提示，包括已打开的对话。压缩摘要、项目记忆和连接检查使用各自的提示词；留空则不添加内容。
 
-模型设置保存在所选 Host 的 `settings.json`。API 密钥保存在 `.credentials.sealed.json`（权限 0600），用一把由 Windows 数据保护（DPAPI）为当前 Windows 账户保管的钥匙加密；同名环境变量优先。旧版本保存的密钥会在首次启动时加密；如果 Windows 再也无法打开这把钥匙（例如管理员重置了账户密码），需要重新填写 API 密钥。新的 API 模型默认使用 OpenAI Responses，本地模型默认使用 Chat Completions，均可按服务修改。模型列表先显示已保存的配置（由预设保存的配置沿用预设名称），再显示尚未保存的预设；点击“载入”把预设填入表单。DeepSeek 预设使用 1,000,000 上下文 tokens。两个 Claude 预设共用 Anthropic 密钥，只提供模型支持的推理档位，并将提示词缓存保留一小时。发现模型只需要供应商、Base URL、协议和可选密钥，不保存任何内容；保存和单独的流式/工具调用检查需要完整配置。RainyAgent 不会静默替换为其他模型。首次启动时会一次性导入 1.x profile 中的模型、密钥和全局提示词；1.x 的对话不导入。
+模型设置保存在所选 Host 的 `settings.json`。API 密钥保存在 `.credentials.sealed.json`（权限 0600），用一把由 Windows 数据保护（DPAPI）为当前 Windows 账户保管的钥匙加密；同名环境变量优先。旧版本保存的密钥会在首次启动时加密；如果 Windows 再也无法打开这把钥匙（例如管理员重置了账户密码），需要重新填写 API 密钥。新的 API 模型默认使用 OpenAI Responses，本地模型默认使用 Chat Completions，均可按服务修改。模型列表先显示已保存的配置（由预设保存的配置沿用预设名称），再显示尚未保存的预设；点击“载入”把预设填入表单。DeepSeek 预设使用 1,000,000 上下文 tokens。两个 Claude 预设共用 Anthropic 密钥，只提供模型支持的推理档位，并将提示词缓存保留一小时。发现模型只需要供应商、Base URL、协议和可选密钥，不保存任何内容；保存和单独的流式/工具调用检查需要完整配置。Rainy 不会静默替换为其他模型。首次启动时会一次性导入 1.x profile 中的模型、密钥和全局提示词；1.x 的对话不导入。
 
 Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL.md` 的文件夹。系统提示中只放它们的名称和描述（合计最多 4,096 tokens），模型需要时再读取对应文件。MCP 服务在“设置 → Skills 与 MCP”中统一配置，通过 stdio（命令、参数、环境变量）或 streamable HTTP（URL 和 `Authorization` 等请求头）服务所有对话。环境变量和请求头保存在 `settings.json` 中，不在保存模型密钥的凭据存储中。其工具名为 `mcp__<服务>__<工具>`，调用 60 秒超时，服务说明会加入系统提示。IDA 预设通过 `uvx` 启动 IDA MCP 服务。
 
-每个对话可在输入框旁选择权限：“只读”只能读取和搜索文件；“询问”（默认）在项目内直接读写，运行命令、调用 MCP 工具和写入项目外文件前先询问；“完全自动”不再询问。“总是允许”按项目记住简单命令前缀或 MCP 工具，可在“设置 → 安全”中查看。写入和编辑会保存修改前的内容（单个文件不超过 16 MiB），可撤销单次修改或整轮修改，文件之后又被改动过时不会覆盖；命令造成的改动不在撤销范围内。grep 和 glob 工具使用 ripgrep 搜索。读取工具按行分页，默认 2,000 行、每行 2,000 字符、50 KiB；长行截断标记清晰可见，原文件不受影响。写入和编辑要求先读取已存在的文件，并保留其 BOM 与主要换行符。Shell 命令（WSL 中为 `bash`，Windows 中为 `pwsh`）默认 60 秒超时，最长 10 分钟。RainyAgent 不再内置 PowerShell：`pwsh` 优先使用 Windows 基础环境组件、Program Files 或 PATH 中的 PowerShell 7，否则使用 Windows 自带的 Windows PowerShell 5.1；后者不支持 `&&` 和 `||`，系统提示词会注明当前版本；较长输出在回复中保留开头和结尾，完整文本保存在 Host 临时目录的文件中。工作区指令（`AGENTS.md`、`CLAUDE.md` 及其 `.local` 版本，最多 64 KiB）在对话首次请求前加入一次，智能体进入子目录工作时再加入该目录的指令。对话标题取自第一条用户消息。
+每个对话可在输入框旁选择权限：“只读”只能读取和搜索文件；“询问”（默认）在项目内直接读写，运行命令、调用 MCP 工具和写入项目外文件前先询问；“完全自动”不再询问。“总是允许”按项目记住简单命令前缀或 MCP 工具，可在“设置 → 安全”中查看。写入和编辑会保存修改前的内容（单个文件不超过 16 MiB），可撤销单次修改或整轮修改，文件之后又被改动过时不会覆盖；命令造成的改动不在撤销范围内。grep 和 glob 工具使用 ripgrep 搜索。读取工具按行分页，默认 2,000 行、每行 2,000 字符、50 KiB；长行截断标记清晰可见，原文件不受影响。写入和编辑要求先读取已存在的文件，并保留其 BOM 与主要换行符。Shell 命令（WSL 中为 `bash`，Windows 中为 `pwsh`）默认 60 秒超时，最长 10 分钟。Rainy 不再内置 PowerShell：`pwsh` 优先使用 Windows 基础环境组件、Program Files 或 PATH 中的 PowerShell 7，否则使用 Windows 自带的 Windows PowerShell 5.1；后者不支持 `&&` 和 `||`，系统提示词会注明当前版本；较长输出在回复中保留开头和结尾，完整文本保存在 Host 临时目录的文件中。工作区指令（`AGENTS.md`、`CLAUDE.md` 及其 `.local` 版本，最多 64 KiB）在对话首次请求前加入一次，智能体进入子目录工作时再加入该目录的指令。对话标题取自第一条用户消息。
 
 ## 项目记忆
 
@@ -155,7 +155,7 @@ Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL
 
 ## 使用许可与发行完整性
 
-[RainyAgent 源码可用许可](../LICENSE)允许个人和企业内部免费使用、修改及非商业再分发；销售、收费托管和商业再分发需要另行书面许可。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
+[Rainy 源码可用许可](../LICENSE)允许个人和企业内部免费使用、修改及非商业再分发；销售、收费托管和商业再分发需要另行书面许可。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
 
 生产载体使用构建时嵌入的发行公钥验证资源清单，并保留 Electron ASAR 完整性保护。构建密钥独立于用户数据：默认保存在被忽略的 build 目录，也可通过 RAINY_RELEASE_SIGNING_KEY 指定已有 Ed25519 私钥文件；私钥不进入发行包。Windows Authenticode 签名使用另行配置的证书。
 

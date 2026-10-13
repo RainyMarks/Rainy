@@ -1,6 +1,6 @@
-# RainyAgent architecture
+# Rainy architecture
 
-RainyAgent is one Windows desktop application built from one package. There is no plugin framework: every part is a plain TypeScript module that `src/host/index.ts`, `src/main/main.ts` or `src/renderer/main.tsx` constructs explicitly. The model layer is [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and the agent loop is [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core).
+Rainy is one Windows desktop application built from one package. There is no plugin framework: every part is a plain TypeScript module that `src/host/index.ts`, `src/main/main.ts` or `src/renderer/main.tsx` constructs explicitly. The model layer is [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and the agent loop is [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core).
 
 ## Processes
 
@@ -76,6 +76,7 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 
 - The page does not poll for changes it can be told about. `ide/hints.ts` in the Host watches the directories of files open in editor tabs (with `fs.watch`, up to 64 per project folder, including the folder of a deleted file) and run and debug events, and sends a throttled `ide.hint` event; the page then fetches the state with its usual requests, and checks open files at once when tabs open or close. The fallback polls (`editorPollMs`, 10 s; `executionPollMs`, 1 s during a run) cover lost hints and unwatchable folders, and stop while the window is hidden. Watchers close when the page has not checked a folder's files for 30 seconds (three fallback polls when that is longer), because Windows cannot rename a watched folder.
 - KaTeX and its stylesheet load only for a message that contains `$`; highlight.js grammars load per language on first use (`ui/highlight.ts`).
+- Interface preferences live in the Host's `settings.json` (`prefs.get`, `prefs.set`) and `prefs.ts` applies them. A color scheme replaces the gray ramp in `theme/schemes.css` and an accent its blue ramp, through the `data-color-scheme` and `data-accent` attributes of `<body>`; chosen fonts go in front of the font stacks in `theme/base.css`. The editor and terminal get the code font and surface colors through `EditorAppearance`, and the IceSky iframe gets the colors and fonts through its bridge.
 
 | Folder | Content |
 |---|---|
@@ -83,7 +84,7 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 | `chat/` | Transcript, markdown, tool cards, composer, model picker, context meter, history list |
 | `ide/` | Editor tabs, editor mount, file viewers, quick open, run configurations, terminal, problems, debug |
 | `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost |
-| `settings/` | General, Models, Skills & MCP, Runtime and Memory sections |
+| `settings/` | General, Appearance, Models, Skills & MCP, Runtime, Memory and Security sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
 
 Each folder keeps its Chinese and English strings in a `messages.ts` built with `defineMessages` from `i18n.ts`.

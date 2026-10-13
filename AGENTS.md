@@ -1,6 +1,6 @@
 # AGENTS.md
 
-RainyAgent is a Windows desktop AI coding workbench for CTF work: an Electron shell, a Node Host per execution target (Windows or WSL) and one React page. It is a single package with no plugin framework. Read [docs/architecture.md](docs/architecture.md) before changing the Host, the RPC protocol or persisted files.
+Rainy is a Windows desktop AI coding workbench for CTF work: an Electron shell, a Node Host per execution target (Windows or WSL) and one React page. It is a single package with no plugin framework. Read [docs/architecture.md](docs/architecture.md) before changing the Host, the RPC protocol or persisted files.
 
 ## Layout
 

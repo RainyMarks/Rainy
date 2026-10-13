@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="resources/icon.png" width="96" alt="RainyAgent">
+<img src="resources/icon.png" width="96" alt="Rainy">
 
-# RainyAgent
+# Rainy
 
 **The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 38 security tools without leaving the window.**
 
@@ -18,11 +18,11 @@ English | [中文](README.zh.md)
 
 </div>
 
-![RainyAgent: editor, terminal and a solved XOR challenge](assets/workbench.png)
+![Rainy: editor, terminal and a solved XOR challenge](assets/workbench.png)
 
-RainyAgent puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by NCUCyberBase.
+Rainy puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
 
-## Why RainyAgent
+## Why Rainy
 
 | | |
 |---|---|
@@ -50,6 +50,16 @@ RainyAgent puts an AI coding agent, a real editor and debugger, and a 38-tool CT
 ![CTF tools catalog](assets/ctf-tools.png)
 
 <a id="whats-new"></a>
+## What's new in 2.2
+
+- **RainyAgent is now Rainy.** Same app and repository: 2.2 installs over earlier versions and keeps your settings, chats and tools.
+- **Appearance settings**:
+  - Seven color schemes: Graphite, Slate, Midnight, Sand, Forest, Rose and Pure black.
+  - An accent color for links, switches and focus rings, or the scheme's own.
+  - Interface and code fonts, chosen from the fonts installed on your PC or typed in.
+  - The editor, terminal and AI security toolkit follow your choices.
+- **A calmer look**: neutral grays, semibold titles, filled buttons, and a larger Settings window with a title on every page, grouped cards and segmented choices.
+
 ## What's new in 2.1
 
 - **VS Code-style previews**:
@@ -74,15 +84,14 @@ RainyAgent puts an AI coding agent, a real editor and debugger, and a 38-tool CT
   - About 40 smaller fixes.
   - See the [release notes](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1).
 - **2.1.2**: squarer corners throughout, and the browser workbench is now the **AI security toolkit**.
-- **2.1.3**: a calmer look: neutral grays without a blue cast, semibold titles, filled buttons, and a larger Settings window with a page title, grouped cards and segmented choices.
 
-Upgrading from 1.x: on first start RainyAgent imports your saved models, API keys and global prompt. Chats from 1.x use an older format and are not imported.
+Upgrading from 1.x: on first start Rainy imports your saved models, API keys and global prompt. Chats from 1.x use an older format and are not imported.
 
 <a id="run"></a>
 ## Download and start
 
 1. Download [the latest Windows x64 installer](https://github.com/RainyMarks/RainyAgent/releases/latest) and install it. No activation code is required.
-2. Open RainyAgent from the desktop shortcut and choose **File → Open folder**.
+2. Open Rainy from the desktop shortcut and choose **File → Open folder**.
 3. Connect a model in **Settings → Models** (see [Connect a model](#connect-a-model)), then open **AI assistant** on the right.
 4. Open **CTF tools → Common tools** and download the tools you need, or select **Download all**. Downloaded tools also work offline.
 
@@ -93,7 +102,7 @@ Upgrading from 1.x: on first start RainyAgent imports your saved models, API key
 | WSL runtime | about 296 MB | Downloaded automatically on the first WSL launch |
 | CTF tools | 1 MB – 400 MB each | **CTF tools → Common tools** |
 
-RainyAgent checks for stable releases and downloads them in the background. A downloaded update offers **Later** or **Restart and install**; ordinary exit does not install it, and updates never download your tools again. See [tool installation and updates](docs/desktop.md#ctf-workbench) for details.
+Rainy checks for stable releases and downloads them in the background. A downloaded update offers **Later** or **Restart and install**; ordinary exit does not install it, and updates never download your tools again. See [tool installation and updates](docs/desktop.md#ctf-workbench) for details.
 
 <a id="connect-a-model"></a>
 ## Connect a model
@@ -104,9 +113,9 @@ RainyAgent checks for stable releases and downloads them in the background. A do
 2. Select **Discover models** or enter the model ID manually.
 3. Set the service's actual context window and output limit, save, then run the streaming and tool-call check.
 
-The selected Windows or WSL environment must be able to reach the service. Keys are stored encrypted in that environment's private credential store, and RainyAgent never silently switches to another model.
+The selected Windows or WSL environment must be able to reach the service. Keys are stored encrypted in that environment's private credential store, and Rainy never silently switches to another model.
 
-The model list includes presets for **DeepSeek V4.1 Flash**, **Claude Opus 5.5** and **Claude Haiku 5.5**: select **Load**, enter your API key and save. Both Claude presets share one Anthropic key. The Haiku preset uses a 100K window so each request stays in Claude Haiku 5.5's lower price tier. A relay works the same way: keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), and RainyAgent applies that model's adaptive thinking and effort levels. Claude sessions keep the prompt cache for an hour, so continuing a conversation reads the earlier context from the cache.
+The model list includes presets for **DeepSeek V4.1 Flash**, **Claude Opus 5.5** and **Claude Haiku 5.5**: select **Load**, enter your API key and save. Both Claude presets share one Anthropic key. The Haiku preset uses a 100K window so each request stays in Claude Haiku 5.5's lower price tier. A relay works the same way: keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), and Rainy applies that model's adaptive thinking and effort levels. Claude sessions keep the prompt cache for an hour, so continuing a conversation reads the earlier context from the cache.
 
 ### Strata local model
 
@@ -137,12 +146,12 @@ For development, `pnpm run dev` builds the app and starts a Host without Electro
 
 ## Support the project
 
-If RainyAgent helped you solve a challenge, a ⭐ on this repository helps other players find it. Follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X for releases and CTF tips. Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues).
+If Rainy helped you solve a challenge, a ⭐ on this repository helps other players find it. Follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X for releases and CTF tips. Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues).
 
 ## License and attribution
 
-RainyAgent is maintained independently of DeepSeek. Versions 1.x were built on [DeepSeek Harness 0.1.7-rc.2, commit 477b4f420553e8a52c2fbccc464d7561b239c443](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443). Version 2.0 replaces that platform with [pi-ai and pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-ai); the interface primitives and design tokens derived from it remain under [MIT](LICENSE.upstream).
+Rainy is maintained independently of DeepSeek. Versions 1.x were built on [DeepSeek Harness 0.1.7-rc.2, commit 477b4f420553e8a52c2fbccc464d7561b239c443](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443). Version 2.0 replaces that platform with [pi-ai and pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-ai); the interface primitives and design tokens derived from it remain under [MIT](LICENSE.upstream).
 
-RainyAgent integration code uses the [RainyAgent Source Available License 1.0](LICENSE.RainyAgent). Personal and internal business use, modification, and noncommercial redistribution are free; sale, paid hosting, and commercial redistribution require written permission. This is a source-available project, not an OSI-approved open-source distribution. See [license scope](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Rainy integration code uses the [RainyAgent Source Available License 1.0](LICENSE.RainyAgent). Personal and internal business use, modification, and noncommercial redistribution are free; sale, paid hosting, and commercial redistribution require written permission. This is a source-available project, not an OSI-approved open-source distribution. See [license scope](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).

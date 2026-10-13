@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="resources/icon.png" width="96" alt="RainyAgent">
+<img src="resources/icon.png" width="96" alt="Rainy">
 
-# RainyAgent
+# Rainy
 
 **为 CTF 打造的 Windows AI 智能体工作台：写解题脚本、运行、让 AI 找出哪里不对，再打开 38 款安全工具中的任意一款，全程不离开这个窗口。**
 
@@ -14,15 +14,15 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（189 MB）**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [2.1 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（189 MB）**](https://github.com/RainyMarks/RainyAgent/releases/latest) · [2.2 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
-![RainyAgent：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
+![Rainy：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
 
-RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by NCUCyberBase.
+Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
 
-## 为什么选 RainyAgent
+## 为什么选 Rainy
 
 | | |
 |---|---|
@@ -50,6 +50,16 @@ RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 �
 ![CTF 工具目录](assets/zh/ctf-tools.png)
 
 <a id="whats-new"></a>
+## 2.2 新变化
+
+- **RainyAgent 更名为 Rainy。** 应用和仓库不变：2.2 直接覆盖安装旧版本，设置、对话和工具都会保留。
+- **外观设置**：
+  - 七套配色：石墨、石板、午夜、暖沙、松林、玫瑰、纯黑。
+  - 强调色可自选，用于链接、开关和焦点框，也可跟随配色。
+  - 界面字体和代码字体可从电脑已安装的字体中选，也可手动输入。
+  - 编辑器、终端和 AI 安全工具箱都会跟着变。
+- **更沉稳的界面**：中性灰配色，标题加粗，按钮改为实心；设置窗口加大，每页有标题和说明，选项按卡片分组。
+
 ## 2.1 新变化
 
 - **像 VS Code 一样预览文件**：
@@ -73,7 +83,6 @@ RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 �
   - 修改模型后，已打开的对话立即生效。
   - 另有约 40 处修复，见[发布说明](https://github.com/RainyMarks/RainyAgent/releases/tag/v2.1.1)。
 - **2.1.2**：界面圆角整体调小，浏览器工具台更名为 **AI 安全工具箱**。
-- **2.1.3**：界面换上更沉稳的中性灰，标题加粗，按钮改为实心；设置窗口加大，每页有标题和说明，选项按卡片分组。
 
 从 1.x 升级：首次启动会导入 1.x 保存的模型、API 密钥和全局提示词。1.x 的对话格式较旧，不会导入。
 
@@ -81,7 +90,7 @@ RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 �
 ## 下载与开始使用
 
 1. 下载并安装[最新版 Windows x64 安装包](https://github.com/RainyMarks/RainyAgent/releases/latest)，无需激活码。
-2. 从桌面快捷方式打开 RainyAgent，选择**文件 → 打开文件夹**。
+2. 从桌面快捷方式打开 Rainy，选择**文件 → 打开文件夹**。
 3. 在**设置 → 模型**中连接模型（见[连接模型](#connect-a-model)），然后打开右侧的 **AI 助手**。
 4. 进入 **CTF 工具 → 常用工具**，下载需要的工具，或点击**全部下载**。已下载的工具离线也能用。
 
@@ -92,7 +101,7 @@ RainyAgent 把 AI 编程智能体、真正的编辑器与调试器，以及 38 �
 | WSL 运行环境 | 约 296 MB | 首次以 WSL 启动时自动下载 |
 | CTF 工具 | 每款 1 MB – 400 MB | **CTF 工具 → 常用工具** |
 
-RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新，更新也不会重新下载你的工具。详见[工具安装与更新](docs/desktop.zh.md#ctf-workbench)。
+Rainy 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新，更新也不会重新下载你的工具。详见[工具安装与更新](docs/desktop.zh.md#ctf-workbench)。
 
 <a id="connect-a-model"></a>
 ## 连接模型
@@ -103,9 +112,9 @@ RainyAgent 会检查稳定版更新并在后台下载。下载完成后可选择
 2. 点击**发现模型**，或手动填写模型 ID。
 3. 设置服务实际的上下文窗口和输出上限，保存后执行流式与工具调用检查。
 
-所选 Windows 或 WSL 环境必须能访问服务地址。密钥加密保存在该环境的私有凭据存储中，RainyAgent 不会静默切换到其他模型。
+所选 Windows 或 WSL 环境必须能访问服务地址。密钥加密保存在该环境的私有凭据存储中，Rainy 不会静默切换到其他模型。
 
-模型列表里有 **DeepSeek V4.1 Flash**、**Claude Opus 5.5** 和 **Claude Haiku 5.5** 三个预设：点击**载入**，填写 API 密钥后保存即可。两个 Claude 预设共用同一个 Anthropic 密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），RainyAgent 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
+模型列表里有 **DeepSeek V4.1 Flash**、**Claude Opus 5.5** 和 **Claude Haiku 5.5** 三个预设：点击**载入**，填写 API 密钥后保存即可。两个 Claude 预设共用同一个 Anthropic 密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），Rainy 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
 
 ### Strata 本地模型
 
@@ -136,12 +145,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 
 ## 支持这个项目
 
-如果 RainyAgent 帮你解出了题，给仓库点个 ⭐ 能让更多选手看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新和 CTF 技巧。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues)。
+如果 Rainy 帮你解出了题，给仓库点个 ⭐ 能让更多选手看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新和 CTF 技巧。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/RainyAgent/issues)。
 
 ## 许可与归属
 
-RainyAgent 由独立团队维护。1.x 版本基于 [DeepSeek Harness 0.1.7-rc.2，提交 477b4f420553e8a52c2fbccc464d7561b239c443](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443)。2.0 用 [pi-ai 与 pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-ai) 取代了该平台；源自它的界面基础组件和设计令牌继续使用 [MIT](LICENSE.upstream)。
+Rainy 由独立团队维护。1.x 版本基于 [DeepSeek Harness 0.1.7-rc.2，提交 477b4f420553e8a52c2fbccc464d7561b239c443](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443)。2.0 用 [pi-ai 与 pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-ai) 取代了该平台；源自它的界面基础组件和设计令牌继续使用 [MIT](LICENSE.upstream)。
 
-RainyAgent 集成代码使用 [RainyAgent Source Available License 1.0](LICENSE.RainyAgent)。个人和企业内部使用、修改及非商业再分发均免费；销售、收费托管和商业再分发需要书面许可。本项目属于源码可用项目，不是 OSI 认可的开源发行版。具体范围见[许可说明](LICENSE)和[第三方声明](THIRD_PARTY_NOTICES.md)。
+Rainy 集成代码使用 [RainyAgent Source Available License 1.0](LICENSE.RainyAgent)。个人和企业内部使用、修改及非商业再分发均免费；销售、收费托管和商业再分发需要书面许可。本项目属于源码可用项目，不是 OSI 认可的开源发行版。具体范围见[许可说明](LICENSE)和[第三方声明](THIRD_PARTY_NOTICES.md)。
 
 开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md)开始。
