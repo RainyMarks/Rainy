@@ -59,6 +59,7 @@ Rainy puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit
   - Interface and code fonts, chosen from the fonts installed on your PC or typed in.
   - The editor, terminal and AI security toolkit follow your choices.
 - **A calmer look**: neutral grays, semibold titles, filled buttons, and a larger Settings window with a title on every page, grouped cards and segmented choices.
+- **2.2.1**: the license is now the Rainy Source Available License, held by RainyMarks; its terms are unchanged.
 
 ## What's new in 2.1
 
@@ -137,10 +138,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.0 -ComponentSource release/offline-2.2.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.1 -ComponentSource release/offline-2.2.1/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `2.2.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `2.2.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 

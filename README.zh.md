@@ -59,6 +59,7 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 38 款 CT
   - 界面字体和代码字体可从电脑已安装的字体中选，也可手动输入。
   - 编辑器、终端和 AI 安全工具箱都会跟着变。
 - **更沉稳的界面**：中性灰配色，标题加粗，按钮改为实心；设置窗口加大，每页有标题和说明，选项按卡片分组。
+- **2.2.1**：许可证更名为 Rainy Source Available License，版权方改为 RainyMarks，条款不变。
 
 ## 2.1 新变化
 
@@ -136,10 +137,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.0 -ComponentSource release/offline-2.2.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.1 -ComponentSource release/offline-2.2.1/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.2.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.2.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
