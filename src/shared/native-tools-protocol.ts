@@ -7,7 +7,8 @@ export const nativeToolIds = ['yakit', 'cyberchef', '7zip', 'exiftool', 'wiresha
   'imagemagick', 'ida', 'x64dbg', 'die', 'imhex', 'jadx', 'dnspy', 'pyinstxtractor-ng',
   'winmerge', 'qalculate', 'sonic-visualiser', 'tesseract-ocr', 'sox', 'tweakpng',
   'multimon-ng', 'gnu-strings', 'gimp', 'curl', 'jq', 'yq', 'sqlite', 'sqlite-browser',
-  'qpdf', 'ripgrep', 'bruno', 'pcapfix'] as const
+  'qpdf', 'ripgrep', 'bruno', 'pcapfix', 'ffuf', 'gobuster', 'feroxbuster',
+  'nuclei', 'rizin', 'upx', 'b3sum'] as const
 
 /** Known tool identities and validated IDs supplied by signed publisher catalogs. */
 export type NativeToolId = typeof nativeToolIds[number] | Branded<'NativeToolId'>

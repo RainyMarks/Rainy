@@ -1375,6 +1375,279 @@
       "entrySha256": "c6db4347f18d9e412601ac9aa093b04351a1f3f73a16adb06eabe8e7ce6f93ff",
       "fileCount": 17,
       "bytes": 4080510
+    },
+    {
+      "id": "ffuf",
+      "category": "web",
+      "name": "ffuf",
+      "description": {
+        "zh": "用字典探测 HTTP 路径、参数和虚拟主机。",
+        "en": "Fuzz HTTP paths, parameters, and virtual hosts with wordlists."
+      },
+      "keywords": [
+        "web",
+        "fuzz",
+        "http",
+        "目录",
+        "字典"
+      ],
+      "version": "2.3.0",
+      "entry": {
+        "kind": "console",
+        "path": "tools/ffuf/ffuf.exe",
+        "cwd": "tools/ffuf",
+        "args": [
+          "-h"
+        ]
+      },
+      "roots": [
+        "tools/ffuf"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/ffuf/ffuf/releases/tag/v2.3.0",
+        "license": "MIT",
+        "licenseUrl": "https://github.com/ffuf/ffuf/blob/v2.3.0/LICENSE",
+        "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "fc037eb381e871ef416f9097380eee5daf8d8c99c7af6a7ef3880748f89ed1ea",
+      "fileCount": 4,
+      "bytes": 10976298
+    },
+    {
+      "id": "gobuster",
+      "category": "web",
+      "name": "Gobuster",
+      "description": {
+        "zh": "枚举网站目录、DNS 名称与虚拟主机。",
+        "en": "Enumerate web directories, DNS names, and virtual hosts."
+      },
+      "keywords": [
+        "web",
+        "directory",
+        "dns",
+        "目录",
+        "枚举"
+      ],
+      "version": "3.8.2",
+      "entry": {
+        "kind": "console",
+        "path": "tools/gobuster/gobuster.exe",
+        "cwd": "tools/gobuster",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/gobuster"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/OJ/gobuster/releases/tag/v3.8.2",
+        "license": "Apache-2.0",
+        "licenseUrl": "https://github.com/OJ/gobuster/blob/v3.8.2/LICENSE",
+        "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "25bd7bbefb7e61f9aaddceed3a51deca1646aeb87465f0797910949f17da53d1",
+      "fileCount": 3,
+      "bytes": 10009387
+    },
+    {
+      "id": "feroxbuster",
+      "category": "web",
+      "name": "feroxbuster",
+      "description": {
+        "zh": "递归发现网站目录和资源。",
+        "en": "Recursively discover web directories and resources."
+      },
+      "keywords": [
+        "web",
+        "directory",
+        "recursive",
+        "目录",
+        "递归"
+      ],
+      "version": "2.13.1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/feroxbuster/feroxbuster.exe",
+        "cwd": "tools/feroxbuster",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/feroxbuster"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/epi052/feroxbuster/releases/tag/v2.13.1",
+        "license": "MIT",
+        "licenseUrl": "https://github.com/epi052/feroxbuster/blob/v2.13.1/LICENSE",
+        "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "c22086118e39ced7c01defccdeb13c0a3392dd07f52d9dfa48cb42f6e43bdbca",
+      "fileCount": 2,
+      "bytes": 6083625
+    },
+    {
+      "id": "nuclei",
+      "category": "web",
+      "name": "Nuclei",
+      "description": {
+        "zh": "用模板检查已授权目标的 Web 安全问题。",
+        "en": "Check authorized web targets with security templates."
+      },
+      "keywords": [
+        "web",
+        "template",
+        "scanner",
+        "模板",
+        "扫描"
+      ],
+      "version": "3.11.1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/nuclei/nuclei.exe",
+        "cwd": "tools/nuclei",
+        "args": [
+          "-h"
+        ]
+      },
+      "roots": [
+        "tools/nuclei"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/projectdiscovery/nuclei/releases/tag/v3.11.1",
+        "license": "MIT",
+        "licenseUrl": "https://github.com/projectdiscovery/nuclei/blob/v3.11.1/LICENSE.md",
+        "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "73d5e5b0dde9ea5d5fc15dcc34c756148ccae20dc431a21e611af11b8649b480",
+      "fileCount": 10,
+      "bytes": 145410378
+    },
+    {
+      "id": "rizin",
+      "category": "reverse",
+      "name": "Rizin",
+      "description": {
+        "zh": "分析可执行文件、反汇编并调试。",
+        "en": "Analyze, disassemble, and debug executable files."
+      },
+      "keywords": [
+        "reverse",
+        "disassembly",
+        "debug",
+        "逆向",
+        "反汇编"
+      ],
+      "version": "0.9.1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/rizin/bin/rizin.exe",
+        "cwd": "tools/rizin",
+        "args": [
+          "-h"
+        ]
+      },
+      "roots": [
+        "tools/rizin"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/rizinorg/rizin/releases/tag/v0.9.1",
+        "license": "LGPL-3.0",
+        "licenseUrl": "https://github.com/rizinorg/rizin/blob/v0.9.1/COPYING.LESSER",
+        "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "4e23543e17d41242152cd38f8bbeafd161ce50af970848794de407f86cc5cca7",
+      "fileCount": 663,
+      "bytes": 67891660
+    },
+    {
+      "id": "upx",
+      "category": "reverse",
+      "name": "UPX",
+      "description": {
+        "zh": "检查和解压 UPX 打包的程序。",
+        "en": "Inspect and unpack UPX-packed programs."
+      },
+      "keywords": [
+        "reverse",
+        "packer",
+        "unpack",
+        "脱壳",
+        "解包"
+      ],
+      "version": "5.2.1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/upx/upx.exe",
+        "cwd": "tools/upx",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/upx"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/upx/upx/releases/tag/v5.2.1",
+        "license": "GPL-2.0 with UPX exception",
+        "licenseUrl": "https://github.com/upx/upx/blob/v5.2.1/LICENSE",
+        "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "d20ebe0b7b22b6be968c8c34be61f94ddea12cb11462e2cec27f548ef9574df8",
+      "fileCount": 9,
+      "bytes": 805804
+    },
+    {
+      "id": "b3sum",
+      "category": "misc",
+      "name": "b3sum",
+      "description": {
+        "zh": "计算和校验文件的 BLAKE3 摘要。",
+        "en": "Calculate and verify BLAKE3 file digests."
+      },
+      "keywords": [
+        "hash",
+        "checksum",
+        "blake3",
+        "哈希",
+        "校验"
+      ],
+      "version": "1.8.7",
+      "entry": {
+        "kind": "console",
+        "path": "tools/b3sum/b3sum.exe",
+        "cwd": "tools/b3sum",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/b3sum"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.7",
+        "license": "Apache-2.0",
+        "licenseUrl": "https://github.com/BLAKE3-team/BLAKE3/blob/1.8.7/LICENSE_A2",
+        "versionEvidence": "Publisher release SHA-256"
+      },
+      "available": true,
+      "entrySha256": "fce0c2406a1e92b49fedd02a48a67dc5ba71c3a85eb80a2f950ed985f90e76e2",
+      "fileCount": 4,
+      "bytes": 1052116
     }
   ]
 }

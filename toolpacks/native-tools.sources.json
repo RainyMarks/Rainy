@@ -1997,6 +1997,92 @@
           "sha256": "af1387eaf1b07d392a746d564b9b7a2dda6ee26576892da59a99132e26750fd7"
         }
       ]
+    },
+    {
+      "id": "ffuf",
+      "category": "web",
+      "name": "ffuf",
+      "description": { "zh": "用字典探测 HTTP 路径、参数和虚拟主机。", "en": "Fuzz HTTP paths, parameters, and virtual hosts with wordlists." },
+      "keywords": ["web", "fuzz", "http", "目录", "字典"],
+      "version": "2.3.0",
+      "entry": { "kind": "console", "path": "tools/ffuf/ffuf.exe", "cwd": "tools/ffuf", "args": ["-h"] },
+      "roots": ["tools/ffuf"],
+      "source": { "kind": "upstream", "url": "https://github.com/ffuf/ffuf/releases/tag/v2.3.0", "license": "MIT", "licenseUrl": "https://github.com/ffuf/ffuf/blob/v2.3.0/LICENSE", "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256" },
+      "archives": [{ "format": "zip", "url": "https://github.com/ffuf/ffuf/releases/download/v2.3.0/ffuf_2.3.0_windows_amd64.zip", "sha256": "091c8a22d0c7fbe07d343b3ae2c213dbd37b38a8a2ed40631fcd3128ea1764fb", "to": "tools/ffuf", "requiredFiles": [{ "path": "ffuf.exe", "sha256": "fc037eb381e871ef416f9097380eee5daf8d8c99c7af6a7ef3880748f89ed1ea" }] }]
+    },
+    {
+      "id": "gobuster",
+      "category": "web",
+      "name": "Gobuster",
+      "description": { "zh": "枚举网站目录、DNS 名称与虚拟主机。", "en": "Enumerate web directories, DNS names, and virtual hosts." },
+      "keywords": ["web", "directory", "dns", "目录", "枚举"],
+      "version": "3.8.2",
+      "entry": { "kind": "console", "path": "tools/gobuster/gobuster.exe", "cwd": "tools/gobuster", "args": ["--help"] },
+      "roots": ["tools/gobuster"],
+      "source": { "kind": "upstream", "url": "https://github.com/OJ/gobuster/releases/tag/v3.8.2", "license": "Apache-2.0", "licenseUrl": "https://github.com/OJ/gobuster/blob/v3.8.2/LICENSE", "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256" },
+      "archives": [{ "format": "zip", "url": "https://github.com/OJ/gobuster/releases/download/v3.8.2/gobuster_Windows_x86_64.zip", "sha256": "677abe8e56c5455804225ad2264dc6e9981e99673ef3ccd6a2fa2af8a2e92aba", "to": "tools/gobuster", "requiredFiles": [{ "path": "gobuster.exe", "sha256": "25bd7bbefb7e61f9aaddceed3a51deca1646aeb87465f0797910949f17da53d1" }] }]
+    },
+    {
+      "id": "feroxbuster",
+      "category": "web",
+      "name": "feroxbuster",
+      "description": { "zh": "递归发现网站目录和资源。", "en": "Recursively discover web directories and resources." },
+      "keywords": ["web", "directory", "recursive", "目录", "递归"],
+      "version": "2.13.1",
+      "entry": { "kind": "console", "path": "tools/feroxbuster/feroxbuster.exe", "cwd": "tools/feroxbuster", "args": ["--help"] },
+      "roots": ["tools/feroxbuster"],
+      "source": { "kind": "upstream", "url": "https://github.com/epi052/feroxbuster/releases/tag/v2.13.1", "license": "MIT", "licenseUrl": "https://github.com/epi052/feroxbuster/blob/v2.13.1/LICENSE", "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256" },
+      "archives": [{ "format": "zip", "url": "https://github.com/epi052/feroxbuster/releases/download/v2.13.1/x86_64-windows-feroxbuster.exe.zip", "sha256": "6255fc1998220833d22b221e5c740895ada2a5fbaf31587e799276c59da7dab2", "to": "tools/feroxbuster", "requiredFiles": [{ "path": "feroxbuster.exe", "sha256": "c22086118e39ced7c01defccdeb13c0a3392dd07f52d9dfa48cb42f6e43bdbca" }] }],
+      "downloads": [{ "url": "https://raw.githubusercontent.com/epi052/feroxbuster/v2.13.1/LICENSE", "path": "tools/feroxbuster/LICENSE.txt", "sha256": "0d275c4c71c7c6281cfb4086c15aa1aa748399653bd550c62cca4ce7fc0387a6" }]
+    },
+    {
+      "id": "nuclei",
+      "category": "web",
+      "name": "Nuclei",
+      "description": { "zh": "用模板检查已授权目标的 Web 安全问题。", "en": "Check authorized web targets with security templates." },
+      "keywords": ["web", "template", "scanner", "模板", "扫描"],
+      "version": "3.11.1",
+      "entry": { "kind": "console", "path": "tools/nuclei/nuclei.exe", "cwd": "tools/nuclei", "args": ["-h"] },
+      "roots": ["tools/nuclei"],
+      "source": { "kind": "upstream", "url": "https://github.com/projectdiscovery/nuclei/releases/tag/v3.11.1", "license": "MIT", "licenseUrl": "https://github.com/projectdiscovery/nuclei/blob/v3.11.1/LICENSE.md", "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256" },
+      "archives": [{ "format": "zip", "url": "https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_windows_amd64.zip", "sha256": "bb6cb9ff8939b753f6fcab06fd30a15f5bc61d8382a597871334c007a85ff9d2", "to": "tools/nuclei", "requiredFiles": [{ "path": "nuclei.exe", "sha256": "73d5e5b0dde9ea5d5fc15dcc34c756148ccae20dc431a21e611af11b8649b480" }] }]
+    },
+    {
+      "id": "rizin",
+      "category": "reverse",
+      "name": "Rizin",
+      "description": { "zh": "分析可执行文件、反汇编并调试。", "en": "Analyze, disassemble, and debug executable files." },
+      "keywords": ["reverse", "disassembly", "debug", "逆向", "反汇编"],
+      "version": "0.9.1",
+      "entry": { "kind": "console", "path": "tools/rizin/bin/rizin.exe", "cwd": "tools/rizin", "args": ["-h"] },
+      "roots": ["tools/rizin"],
+      "source": { "kind": "upstream", "url": "https://github.com/rizinorg/rizin/releases/tag/v0.9.1", "license": "LGPL-3.0", "licenseUrl": "https://github.com/rizinorg/rizin/blob/v0.9.1/COPYING.LESSER", "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256" },
+      "archives": [{ "format": "zip", "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-windows-shared64-v0.9.1.zip", "sha256": "45ffa004e26653eaee8d262b8e6eeae09402a7d319c1f20a2ba794bd6af1cc28", "to": "tools/rizin", "from": "rizin-win-installer-clang_cl-64", "requiredFiles": [{ "path": "bin/rizin.exe", "sha256": "4e23543e17d41242152cd38f8bbeafd161ce50af970848794de407f86cc5cca7" }] }],
+      "downloads": [{ "url": "https://raw.githubusercontent.com/rizinorg/rizin/v0.9.1/COPYING", "path": "tools/rizin/COPYING.txt", "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903" }, { "url": "https://raw.githubusercontent.com/rizinorg/rizin/v0.9.1/COPYING.LESSER", "path": "tools/rizin/COPYING.LESSER.txt", "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768" }]
+    },
+    {
+      "id": "upx",
+      "category": "reverse",
+      "name": "UPX",
+      "description": { "zh": "检查和解压 UPX 打包的程序。", "en": "Inspect and unpack UPX-packed programs." },
+      "keywords": ["reverse", "packer", "unpack", "脱壳", "解包"],
+      "version": "5.2.1",
+      "entry": { "kind": "console", "path": "tools/upx/upx.exe", "cwd": "tools/upx", "args": ["--help"] },
+      "roots": ["tools/upx"],
+      "source": { "kind": "upstream", "url": "https://github.com/upx/upx/releases/tag/v5.2.1", "license": "GPL-2.0 with UPX exception", "licenseUrl": "https://github.com/upx/upx/blob/v5.2.1/LICENSE", "versionEvidence": "Publisher release SHA-256 and extracted executable SHA-256" },
+      "archives": [{ "format": "zip", "url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip", "sha256": "eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda", "to": "tools/upx", "from": "upx-5.2.1-win64", "requiredFiles": [{ "path": "upx.exe", "sha256": "d20ebe0b7b22b6be968c8c34be61f94ddea12cb11462e2cec27f548ef9574df8" }] }]
+    },
+    {
+      "id": "b3sum",
+      "category": "misc",
+      "name": "b3sum",
+      "description": { "zh": "计算和校验文件的 BLAKE3 摘要。", "en": "Calculate and verify BLAKE3 file digests." },
+      "keywords": ["hash", "checksum", "blake3", "哈希", "校验"],
+      "version": "1.8.7",
+      "entry": { "kind": "console", "path": "tools/b3sum/b3sum.exe", "cwd": "tools/b3sum", "args": ["--help"] },
+      "roots": ["tools/b3sum"],
+      "source": { "kind": "upstream", "url": "https://github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.7", "license": "Apache-2.0", "licenseUrl": "https://github.com/BLAKE3-team/BLAKE3/blob/1.8.7/LICENSE_A2", "versionEvidence": "Publisher release SHA-256" },
+      "downloads": [{ "url": "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.8.7/b3sum_windows_x64_bin.exe", "path": "tools/b3sum/b3sum.exe", "sha256": "fce0c2406a1e92b49fedd02a48a67dc5ba71c3a85eb80a2f950ed985f90e76e2" }, { "url": "https://raw.githubusercontent.com/BLAKE3-team/BLAKE3/1.8.7/LICENSE_A2", "path": "tools/b3sum/LICENSE_A2.txt", "sha256": "00fcc7a934ddbc9ece2a7cc063ac788e284b703b1d705ccbba72d462aa97921e" }, { "url": "https://raw.githubusercontent.com/BLAKE3-team/BLAKE3/1.8.7/LICENSE_A2LLVM", "path": "tools/b3sum/LICENSE_A2LLVM.txt", "sha256": "a5695f57ea0c221e0e8b7d784ff774c35e88c3d3270353646a925880bb3492cc" }, { "url": "https://raw.githubusercontent.com/BLAKE3-team/BLAKE3/1.8.7/LICENSE_CC0", "path": "tools/b3sum/LICENSE_CC0.txt", "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499" }]
     }
   ],
   "sourceLayout": "ctf-all-in-one-dist"

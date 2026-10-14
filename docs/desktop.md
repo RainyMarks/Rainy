@@ -90,17 +90,15 @@ Upload the printed pieces to the `v<version>-resources` release and commit both 
 
 Common tools summarizes how many tools are downloaded. The card of a tool that is not downloaded shows Download with the tool's size instead of Open; a downloaded tool shows Open and Remove, which asks for a second click to confirm. An Update available tag marks outdated tools. The top buttons Download all (size) and Update downloaded tools (size) sit beside Check tool updates. Every transport piece and archive is checked by SHA-256 before installation; downloads support cancellation, Range resume and retry. Downloading a tool also installs the runtimes it needs and brings the other downloaded tools to the same catalog revision, downloading only changed units. Remove deletes the tool and any runtime that no remaining tool uses, without network access. Installed tools remain available offline across restarts and application updates. First visiting the catalog checks the signed tool channel; Check tool updates repeats the check.
 
-The CTF entry works before a conversation is selected. Its default Common tools tab lists tools under task groups, searches names and uses, filters by group or by Downloaded, and shows favorites, recent launch requests, versions and availability. Favorites and recent entries belong to the Windows user and are shared across conversations. Saved Burp favorites migrate to Yakit; old Burp recent-launch entries are removed without recording a Yakit launch. The tool-package catalog contains these 38 entries; tools added by later catalogs appear under Web, Reverse engineering or Other according to their signed category:
+The CTF entry works before a conversation is selected. Its default Common tools tab lists tools under the signed Misc, Web and Reverse categories, searches names and uses, filters by category or by Downloaded, and shows favorites, recent launch requests, versions and availability. Favorites and recent entries belong to the Windows user and are shared across conversations. Saved Burp favorites migrate to Yakit; old Burp recent-launch entries are removed without recording a Yakit launch. The current tool channel contains 45 entries:
 
 | Group | Entries |
 |---|---|
-| Web & APIs · 3 | Yakit, Bruno, curl |
-| Traffic · 2 | Wireshark, pcapfix |
-| Reverse engineering · 7 | IDA, x64dbg/x32dbg, Detect It Easy, ImHex, JADX, dnSpy, PyInstaller Extractor |
-| Forensics & files · 7 | Binwalk, ExifTool, 7-Zip, GNU strings, qpdf, WinMerge, ripgrep |
-| Stego & images · 8 | StegSolve, ImageLSBViewer, PNGcheck, TweakPNG, ImageMagick, GIMP, Tesseract OCR, QRazyBox |
-| Audio & signals · 5 | Audacity, Sonic Visualiser, SoX, multimon-ng, FFmpeg |
-| Encoding & data · 6 | CyberChef, Qalculate!, jq, yq, SQLite, DB Browser for SQLite |
+| Misc · 26 | 7-Zip, ExifTool, Wireshark, Binwalk, FFmpeg, Audacity, StegSolve, PNGcheck, QRazyBox, ImageLSBViewer, ImageMagick, WinMerge, Qalculate!, Sonic Visualiser, Tesseract OCR, SoX, TweakPNG, multimon-ng, GNU strings, GIMP, SQLite, DB Browser for SQLite, qpdf, ripgrep, pcapfix, b3sum |
+| Web · 10 | Yakit, CyberChef, curl, jq, yq, Bruno, ffuf, Gobuster, feroxbuster, Nuclei |
+| Reverse · 9 | IDA, x64dbg/x32dbg, Detect It Easy, ImHex, JADX, dnSpy, PyInstaller Extractor, Rizin, UPX |
+
+This catalog revision retains the original 38 tool versions and adds ffuf, Gobuster, feroxbuster, Nuclei, Rizin, UPX and b3sum as independently downloadable units. Nuclei's external templates are not part of its executable unit; scans that need those templates require the user to provide or obtain them.
 
 x64dbg and x32dbg share one entry with separate launch controls. FFmpeg includes ffprobe and ffplay. Desktop programs open independently in a normal window, command-line tools use prepared Windows terminals, and offline web tools use isolated windows without the native launch bridge. The success message says “Launch request sent for {name}”; it confirms platform acceptance of the request. File availability, interface readiness and functional acceptance are separate observations. `status: ready` means required files and dependencies exist; the separate `verified` flag reflects recorded acceptance for the matching catalog. Unverified tools stay labeled Not verified, and missing dependencies disable launch. The directory does not add Agent tools or prompts.
 
@@ -167,7 +165,7 @@ The release target is Windows x64; signing status and platform/model acceptance 
 
 The [release validation record](validation.md) owns measured browser performance and acceptance coverage. Local OCR, PDF rendering and BPE run in the browser; individual acceptance cases do not establish document fidelity for every input or long-running OCR stability.
 
-The count of 38 describes tool-package content, not the number of tools that passed functional acceptance. Command-line and offline-web checks are recorded per tool and artifact; the previous release's acceptance total does not apply to this expanded catalog. Native third-party GUI behavior, first-run prompts and actual UAC consent interaction require separate acceptance. Clean-Windows installation and restart results are recorded per artifact in the final acceptance record. Headless directory evidence uses an explicit bridge adapter and covers the directory interface. Per-tool acceptance remains separate from directory, installer and environment tests; the final validation record must identify the tested artifact and remaining cases.
+The count of 45 describes tool-package content, not the number of tools that passed functional acceptance. Command-line and offline-web checks are recorded per tool and artifact; the previous release's acceptance total does not apply to this expanded catalog. Native third-party GUI behavior, first-run prompts and actual UAC consent interaction require separate acceptance. Clean-Windows installation and restart results are recorded per artifact in the final acceptance record. Headless directory evidence uses an explicit bridge adapter and covers the directory interface. Per-tool acceptance remains separate from directory, installer and environment tests; the final validation record must identify the tested artifact and remaining cases.
 
 <details>
 <summary>AI security toolkit build and focused checks</summary>

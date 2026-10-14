@@ -398,11 +398,18 @@ for (const source of ['copy', 'archive', 'download', 'generated']) {
   })
 }
 
-test('the shipped definition has thirty-eight tools and a packaged x32dbg variant', async () => {
+test('the shipped definition has forty-five tools in the signed categories and a packaged x32dbg variant', async () => {
   const definition = validateDefinition(JSON.parse(await readFile(new URL('../../toolpacks/native-tools.sources.json', import.meta.url), 'utf8')))
-  assert.equal(definition.tools.length, 38)
-  assert.deepEqual(definition.tools.filter(tool => tool.category === 'web').map(tool => tool.id), ['yakit', 'cyberchef', 'curl', 'jq', 'yq', 'bruno'])
-  assert.equal(definition.tools.filter(tool => tool.category === 'misc').length, 25)
+  assert.equal(definition.tools.length, 45)
+  assert.deepEqual(definition.tools.filter(tool => tool.category === 'web').map(tool => tool.id),
+    ['yakit', 'cyberchef', 'curl', 'jq', 'yq', 'bruno', 'ffuf', 'gobuster', 'feroxbuster', 'nuclei'])
+  assert.equal(definition.tools.filter(tool => tool.category === 'misc').length, 26)
+  assert.equal(definition.tools.filter(tool => tool.category === 'reverse').length, 9)
+  for (const tool of definition.tools.slice(-7)) {
+    assert.equal(tool.source.kind, 'upstream')
+    assert.ok(tool.archives?.length || tool.downloads?.length)
+    for (const item of [...(tool.archives ?? []), ...(tool.downloads ?? [])]) assert.match(item.sha256, /^[a-f0-9]{64}$/)
+  }
   assert.equal(definition.tools.some(tool => tool.id === 'burp-community'), false)
   const yakit = definition.tools.find(tool => tool.id === 'yakit')
   assert.equal(yakit.entry.kind, 'gui')

@@ -22,6 +22,7 @@ tmp/
 
 # Local acceptance evidence
 /validation/
+/.playwright-mcp/
 
 # Release signing keys are builder-owned and never published.
 **/release-signing-key.pem

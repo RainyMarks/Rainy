@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "packId": "0ce4cd501de4c2188efed475686188e344bbd5f293c744bfde481b6f6cf348b3",
+  "packId": "42216f341d97a17f17f3fed4ed3c2b48c70047dfda962d5ddb134ba6ad4daeef",
   "archives": [
     {
       "file": "rainy-unit-4f903bf5f0995cc9cbc1.tar.gz",
@@ -51,6 +51,19 @@
           "file": "rainy-ac5050a695d3de30e122.001",
           "bytes": 25398468,
           "sha256": "a8e22ef2b9c716ad60e901e0d9eb7c4254034ba0588683642e4fc53682297ffe"
+        }
+      ]
+    },
+    {
+      "file": "rainy-unit-88097e7419fcf17cb377.tar.gz",
+      "bytes": 422563,
+      "sha256": "a9896d61fd7a4232ddbc264af1a55f828e0de75b0bc3c079c3f0b8d46ed1cf01",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-1d9a1c349c717bcf2b4f.001",
+          "bytes": 422563,
+          "sha256": "a9896d61fd7a4232ddbc264af1a55f828e0de75b0bc3c079c3f0b8d46ed1cf01"
         }
       ]
     },
@@ -146,6 +159,19 @@
       ]
     },
     {
+      "file": "rainy-unit-af3a58754f33f30e8d8a.tar.gz",
+      "bytes": 2716120,
+      "sha256": "aceb42f7af0ce472a369b6ee81d3382659b0071567d03fd583684cc596f02266",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-ea7c4c1b8ed751f6a435.001",
+          "bytes": 2716120,
+          "sha256": "aceb42f7af0ce472a369b6ee81d3382659b0071567d03fd583684cc596f02266"
+        }
+      ]
+    },
+    {
       "file": "rainy-unit-7ca1ce5536f17c1418b4.tar.gz",
       "bytes": 184783277,
       "sha256": "edc714424a86b86ecd34c43c4f814da5f36f8d05fae4bd3b6b79b509321a773d",
@@ -155,6 +181,19 @@
           "file": "rainy-1ce7a93737d16af688ea.001",
           "bytes": 184783277,
           "sha256": "edc714424a86b86ecd34c43c4f814da5f36f8d05fae4bd3b6b79b509321a773d"
+        }
+      ]
+    },
+    {
+      "file": "rainy-unit-a89e7d3c99a54ddc5ccd.tar.gz",
+      "bytes": 4504585,
+      "sha256": "715fde7b02de944db645ae4568ebe6bab30d7d2a5f766ad7630a7198b328c778",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-2095666fdf302c513ff4.001",
+          "bytes": 4504585,
+          "sha256": "715fde7b02de944db645ae4568ebe6bab30d7d2a5f766ad7630a7198b328c778"
         }
       ]
     },
@@ -181,6 +220,19 @@
           "file": "rainy-78f47117ad7bc6adc30c.001",
           "bytes": 516458,
           "sha256": "f5400367b23870f82e35c1f7f5ebce1a17712a9fc75ab5dfca365a1432301661"
+        }
+      ]
+    },
+    {
+      "file": "rainy-unit-3e22da30e57564ab4320.tar.gz",
+      "bytes": 3942969,
+      "sha256": "618c97039d2f1a43777c1ae48599c8dc9b4e04112c395b80bde49bc93cccf574",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-9d0bd97fddec7e1b1ad5.001",
+          "bytes": 3942969,
+          "sha256": "618c97039d2f1a43777c1ae48599c8dc9b4e04112c395b80bde49bc93cccf574"
         }
       ]
     },
@@ -276,6 +328,19 @@
       ]
     },
     {
+      "file": "rainy-unit-b62c0f480c12427db17a.tar.gz",
+      "bytes": 46124154,
+      "sha256": "8218c194a985b2c65176114941abbf8c150e8ad2aedcd40a78a1cef9802c41bd",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-d635e770c7935252b5d4.001",
+          "bytes": 46124154,
+          "sha256": "8218c194a985b2c65176114941abbf8c150e8ad2aedcd40a78a1cef9802c41bd"
+        }
+      ]
+    },
+    {
       "file": "rainy-unit-366cd88ad5490230fb48.tar.gz",
       "bytes": 1488003,
       "sha256": "9bdf329210324b1034a793c15f86fdd3fe4914039cf3208c883114dc775961c4",
@@ -363,6 +428,19 @@
           "file": "rainy-623d2b9a80a1c19546a2.001",
           "bytes": 1883553,
           "sha256": "11a480df0e3257bb0f1cc2f4caed4079511d78115834aa8deff016366e1c164d"
+        }
+      ]
+    },
+    {
+      "file": "rainy-unit-e4ba84d1c84f22c7e10c.tar.gz",
+      "bytes": 12133448,
+      "sha256": "dbe49ff59afc7063006151d75f60c4066985dfe20b7402ec6810f59be65a4c71",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-ca5f6c47db5895402078.001",
+          "bytes": 12133448,
+          "sha256": "dbe49ff59afc7063006151d75f60c4066985dfe20b7402ec6810f59be65a4c71"
         }
       ]
     },
@@ -458,6 +536,19 @@
       ]
     },
     {
+      "file": "rainy-unit-18f76cfbee1c0f4071b5.tar.gz",
+      "bytes": 676212,
+      "sha256": "8f895758ed19ae1d7223a6bfe955324509f607b1ac846f28bc90907d2943bcfd",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
+      "pieces": [
+        {
+          "file": "rainy-01e5f7569f029ff69368.001",
+          "bytes": 676212,
+          "sha256": "8f895758ed19ae1d7223a6bfe955324509f607b1ac846f28bc90907d2943bcfd"
+        }
+      ]
+    },
+    {
       "file": "rainy-unit-38cf4fd1e7eb0a6935fa.tar.gz",
       "bytes": 13631947,
       "sha256": "6f9e92d9d7010ceb0e12ec425c95e9379ebab55dba8a9067f4562b6705599f1d",
@@ -523,15 +614,15 @@
       ]
     },
     {
-      "file": "rainy-unit-f3de7270d4177236932b.tar.gz",
-      "bytes": 9092,
-      "sha256": "438179c44984e1351ea2da1387a201771cd821e8420be622d2987e3b48589daa",
-      "baseUrl": "https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.6-resources/",
+      "file": "rainy-unit-cf7d7620ca3574fb149a.tar.gz",
+      "bytes": 10524,
+      "sha256": "6fa35489eec13858c25f8ccdcc92bce4f30cf2b5577ce351c39d640be6784c95",
+      "baseUrl": "https://github.com/RainyMarks/Rainy/releases/download/v2.2.1-resources/",
       "pieces": [
         {
-          "file": "rainy-c0a7cd6904ad1f013f0c.001",
-          "bytes": 9092,
-          "sha256": "438179c44984e1351ea2da1387a201771cd821e8420be622d2987e3b48589daa"
+          "file": "rainy-c53cbe200ef3435cbdce.001",
+          "bytes": 10524,
+          "sha256": "6fa35489eec13858c25f8ccdcc92bce4f30cf2b5577ce351c39d640be6784c95"
         }
       ]
     }

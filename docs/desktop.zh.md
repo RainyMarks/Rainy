@@ -90,17 +90,15 @@ node scripts/build-tool-channel.mjs --metadata <dir>/native-tools-metadata.json 
 
 “常用工具”顶部汇总“已下载 N / M 款工具”。未下载工具的卡片以“下载 · 大小”代替“打开”；已下载工具显示“打开”和“移除”，移除需再次点击确认。“有更新”标签标出过期工具。顶部按钮“全部下载（大小）”和“更新已下载的工具（大小）”位于“检查工具更新”旁。安装前逐个校验传输分片和归档的 SHA-256；下载支持取消、断点续传和重试。下载某个工具时会同时安装它需要的运行时，并把其他已下载工具更新到同一目录修订，只下载有变化的单元。“移除”删除该工具以及不再被剩余工具使用的运行时，无需联网。已安装工具可离线使用，重启和应用更新后仍保留。首次访问目录会检查签名工具通道，“检查工具更新”可再次检查。
 
-未选择会话时也能打开 CTF 入口。默认“常用工具”页按任务分组列出工具，可搜索名称和用途、按分组或“已下载”筛选，并显示收藏、最近启动请求、版本及可用状态。收藏和最近记录属于 Windows 用户，在会话之间共享。已保存的 Burp 收藏迁移到 Yakit；旧 Burp 最近启动记录会移除，不会据此记录一次 Yakit 启动。工具包目录包含以下 38 项；后续目录新增的工具按其签名分类显示在“Web 与接口”“逆向调试”或“其他”下：
+未选择会话时也能打开 CTF 入口。默认“常用工具”页按签名目录中的 Misc、Web、Reverse 三类列出工具，可搜索名称和用途、按分类或“已下载”筛选，并显示收藏、最近启动请求、版本及可用状态。收藏和最近记录属于 Windows 用户，在会话之间共享。已保存的 Burp 收藏迁移到 Yakit；旧 Burp 最近启动记录会移除，不会据此记录一次 Yakit 启动。当前工具通道包含以下 45 项：
 
 | 分组 | 条目 |
 |---|---|
-| Web 与接口 · 3 | Yakit、Bruno、curl |
-| 流量分析 · 2 | Wireshark、pcapfix |
-| 逆向调试 · 7 | IDA、x64dbg/x32dbg、Detect It Easy、ImHex、JADX、dnSpy、PyInstaller Extractor |
-| 取证与文件 · 7 | Binwalk、ExifTool、7-Zip、GNU strings、qpdf、WinMerge、ripgrep |
-| 隐写与图像 · 8 | StegSolve、ImageLSBViewer、PNGcheck、TweakPNG、ImageMagick、GIMP、Tesseract OCR、QRazyBox |
-| 音频与信号 · 5 | Audacity、Sonic Visualiser、SoX、multimon-ng、FFmpeg |
-| 编码与数据 · 6 | CyberChef、Qalculate!、jq、yq、SQLite、DB Browser for SQLite |
+| Misc · 26 | 7-Zip、ExifTool、Wireshark、Binwalk、FFmpeg、Audacity、StegSolve、PNGcheck、QRazyBox、ImageLSBViewer、ImageMagick、WinMerge、Qalculate!、Sonic Visualiser、Tesseract OCR、SoX、TweakPNG、multimon-ng、GNU strings、GIMP、SQLite、DB Browser for SQLite、qpdf、ripgrep、pcapfix、b3sum |
+| Web · 10 | Yakit、CyberChef、curl、jq、yq、Bruno、ffuf、Gobuster、feroxbuster、Nuclei |
+| Reverse · 9 | IDA、x64dbg/x32dbg、Detect It Easy、ImHex、JADX、dnSpy、PyInstaller Extractor、Rizin、UPX |
+
+这次目录修订保留原有 38 款工具的版本，新增 ffuf、Gobuster、feroxbuster、Nuclei、Rizin、UPX、b3sum，均可单独下载。Nuclei 的外部模板不包含在程序单元中；需要模板的扫描由用户自行提供或获取模板。
 
 x64dbg 与 x32dbg 共用一个条目，分别提供启动按钮。FFmpeg 包含 ffprobe 和 ffplay。桌面程序以普通窗口独立打开，命令行工具使用准备好环境的 Windows 终端，离线网页使用不带原生启动桥接的隔离窗口。成功提示为“已发送 {name} 的启动请求”，仅确认系统已接受请求。文件可用、界面就绪和功能验收属于不同观察。`status: ready` 表示所需文件及依赖存在；独立的 `verified` 标志对应匹配目录的已记录验收。未经验证的工具保留“待验证”标记，缺少依赖时禁止启动。目录不增加 Agent 工具或提示词。
 
@@ -167,7 +165,7 @@ Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL
 
 [发行验收记录](validation.md)负责浏览器性能测量与验收范围。本地 OCR、PDF 渲染和 BPE 在浏览器中运行；单项验收不代表所有输入文档的保真度或长时间 OCR 稳定性。
 
-38 表示工具包内容数量，不代表通过功能验收的工具数量。命令行与离线网页检查按工具和产物分别记录，旧发行版的验收总数不适用于扩充后的目录。原生第三方 GUI 行为、首次启动提示和实际 UAC 同意交互仍需独立验收。干净 Windows 的安装与重启结果由最终验收记录按被测产物分别记录。无头浏览器的目录证据使用明确的桥接适配器，覆盖目录界面。逐工具验收与目录、安装器和环境测试分别记录；最终验收记录需关联被测产物和剩余项目。
+45 表示工具包内容数量，不代表通过功能验收的工具数量。命令行与离线网页检查按工具和产物分别记录，旧发行版的验收总数不适用于扩充后的目录。原生第三方 GUI 行为、首次启动提示和实际 UAC 同意交互仍需独立验收。干净 Windows 的安装与重启结果由最终验收记录按被测产物分别记录。无头浏览器的目录证据使用明确的桥接适配器，覆盖目录界面。逐工具验收与目录、安装器和环境测试分别记录；最终验收记录需关联被测产物和剩余项目。
 
 <details>
 <summary>AI 安全工具箱构建与定向检查</summary>

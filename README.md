@@ -4,7 +4,7 @@
 
 # Rainy
 
-**The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 38 security tools without leaving the window.**
+**The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 45 security tools without leaving the window.**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
@@ -20,14 +20,14 @@ English | [中文](README.zh.md)
 
 ![Rainy: editor, terminal and a solved XOR challenge](assets/workbench.png)
 
-Rainy puts an AI coding agent, a real editor and debugger, and a 38-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
+Rainy puts an AI coding agent, a real editor and debugger, and a 45-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
 
 ## Why Rainy
 
 | | |
 |---|---|
 | **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file change it makes can be undone in one click. Add skills in `.rainy/skills` and MCP servers (including an IDA preset) in Settings. |
-| **38 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, dnSpy, StegSolve, Binwalk, Audacity, Sonic Visualiser and more, sorted into web, traffic, reverse engineering, forensics, stego, audio and encoding. Each tool downloads on its own, works offline, and updates only when it changes. |
+| **45 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, ffuf, Gobuster, Nuclei, Rizin and more, sorted into Misc, Web and Reverse. Each tool downloads on its own, remains installed offline, and updates only when it changes. |
 | **See inside any file** | Images open with zoom, pixel colors and one-click color channels and bit planes. Binaries open in a hex view with a data inspector and a binwalk-style scan for embedded files. Markdown, PDF, audio and video preview in place. |
 | **A real editor and debugger** | CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **Windows or WSL2** | Start in native Windows; move a project to a WSL2 environment whenever a challenge needs Linux tools. |

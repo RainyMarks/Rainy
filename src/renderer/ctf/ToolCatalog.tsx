@@ -19,7 +19,8 @@ const purpose: Record<typeof nativeToolIds[number], CtfMessageKey> = {
   'tesseract-ocr': 'toolTesseract', sox: 'toolSox', tweakpng: 'toolTweakPng', 'multimon-ng': 'toolMultimon',
   'gnu-strings': 'toolStrings', gimp: 'toolGimp', curl: 'toolCurl', jq: 'toolJq', yq: 'toolYq',
   sqlite: 'toolSqlite', 'sqlite-browser': 'toolSqliteBrowser', qpdf: 'toolQpdf', ripgrep: 'toolRipgrep',
-  bruno: 'toolBruno', pcapfix: 'toolPcapfix',
+  bruno: 'toolBruno', pcapfix: 'toolPcapfix', ffuf: 'toolFfuf', gobuster: 'toolGobuster',
+  feroxbuster: 'toolFeroxbuster', nuclei: 'toolNuclei', rizin: 'toolRizin', upx: 'toolUpx', b3sum: 'toolB3sum',
 }
 const kindCopy = { desktop: 'toolsDesktop', terminal: 'toolsTerminal', web: 'toolsOfflineWeb' } as const
 type Filter = 'all' | 'installed' | 'favorites' | 'recent' | ToolGroup
