@@ -14,7 +14,7 @@
 
 English | [中文](README.zh.md)
 
-[**Download for Windows (187 MB)**](https://github.com/RainyMarks/Rainy/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
+[**Download for Windows (188 MB)**](https://github.com/RainyMarks/Rainy/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
 
 </div>
 
@@ -32,7 +32,7 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 | **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **Windows or WSL2** | Start in native Windows; move a project to a WSL2 environment whenever a challenge needs Linux tools. |
 | **Your model, your keys** | Keys stay on your machine, encrypted with Windows data protection. Model requests follow the system proxy or one you set. There is no telemetry; crash reports stay local. |
-| **Light** | A 187 MB installer. Tools, the Strata engine, PHP and the WSL runtime download only when you need them. |
+| **Light** | A 188 MB installer. Tools, the Strata engine, PHP and the WSL runtime download only when you need them. |
 
 <a id="tour"></a>
 ## A quick look
