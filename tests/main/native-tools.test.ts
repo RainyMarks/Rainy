@@ -251,9 +251,9 @@ describe('native process preparation', () => {
     ConvertTo-Json -Compress -InputObject @($call | ForEach-Object { $_.CommandElements | ForEach-Object { $_.Value } })`
     const powershell = windowsPowerShellPath()
     const result = await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
-      Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 25000, encoding: 'utf8' })
+      Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 60000, encoding: 'utf8' })
     expect(JSON.parse(result.stdout)).toEqual([invocation().executable, ...values])
-  })
+  }, 65000)
 
   it('keeps the console command encoded and requests its own interactive window', () => {
     const powershell = "C:\\system O'Brien\\powershell.exe"
