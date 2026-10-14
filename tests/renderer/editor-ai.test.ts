@@ -2,6 +2,7 @@
 /** Editor AI: ghost-text suggestions appear after a pause, follow typing and accept with Tab; Ctrl+K rewrites the selected lines in place until accepted or rejected. */
 import { afterEach, expect, it, vi } from 'vitest'
 import { EditorView, runScopeHandlers } from '@codemirror/view'
+import { lineHunks } from '../../src/editor/ai.ts'
 import { assets } from '../../src/editor/editor.ts'
 import type { EditorCallbacks, EditorDocument, EditorInstance, EditorRewriteRequest, EditorSuggestRequest } from '../../src/renderer/ide/editor-types.ts'
 
@@ -111,6 +112,45 @@ it('rewrites the selected lines with Ctrl+K, shows the old and new lines, and re
   expect(view.state.doc.toString()).toBe('a = 1\nbb = 20\nc = 3 = 2\nprint(a + b)\n')
   expect(container.querySelector('.rainy-ai-prompt')).toBeNull()
   expect(container.querySelector('.rainy-ai-added')).toBeNull()
+})
+
+it('compares the old and new lines so only changed lines are marked', () => {
+  expect(lineHunks('a\nb', 'a\nb')).toEqual([])
+  expect(lineHunks('return x', 'if not x:\n    raise E\nreturn x')).toEqual([{ at: 0, end: 2, removed: [] }])
+  expect(lineHunks('a\nb\nc', 'a\nB\nc')).toEqual([{ at: 1, end: 2, removed: ['b'] }])
+  expect(lineHunks('a\nb\nc\nd', 'a\nc')).toEqual([{ at: 1, end: 1, removed: ['b'] }, { at: 2, end: 2, removed: ['d'] }])
+  expect(lineHunks('x\na\ny\nb', 'a\nz\nb\nw')).toEqual([
+    { at: 0, end: 0, removed: ['x'] }, { at: 1, end: 2, removed: ['y'] }, { at: 3, end: 4, removed: [] }])
+})
+
+it('marks only the changed lines of a rewrite and shows removed last lines below the region', async () => {
+  const rewrite = vi.fn(async () => 'if a:\n    raise E\nb = 2')
+  const { view, container } = await open({ rewrite })
+  view.dispatch({ selection: { anchor: 6, head: 11 } })
+  key(view, { key: 'k', ctrlKey: true })
+  const input = container.querySelector<HTMLInputElement>('.rainy-ai-input')!
+  input.value = 'check a'
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await vi.waitFor(() => { expect(container.querySelectorAll('.rainy-ai-added')).toHaveLength(2) })
+  expect(container.querySelector('.rainy-ai-removed')).toBeNull()
+  expect([...container.querySelectorAll('.rainy-ai-added')].map(line => line.textContent)).toEqual(['if a:', '    raise E'])
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  // A rewrite that drops the region's last line shows it below the region.
+  rewrite.mockResolvedValueOnce('a = 1')
+  // happy-dom reports a focused editor's selection change while CodeMirror is still writing it.
+  view.contentDOM.blur()
+  view.dispatch({ selection: { anchor: 0, head: 11 } })
+  key(view, { key: 'k', ctrlKey: true })
+  const again = container.querySelector<HTMLInputElement>('.rainy-ai-input')!
+  again.value = 'drop b'
+  again.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await vi.waitFor(() => { expect(view.state.doc.toString()).toBe('a = 1\nprint(a + b)\n') })
+  expect(container.querySelector('.rainy-ai-added')).toBeNull()
+  const removed = container.querySelector('.rainy-ai-removed')!
+  expect(removed.textContent).toBe('b = 2')
+  // It sits after the first line, below the region.
+  const lines = [...container.querySelector('.cm-content')!.children]
+  expect(lines.indexOf(removed.closest('.cm-content > *')!)).toBeGreaterThan(lines.findIndex(line => line.textContent === 'a = 1'))
 })
 
 it('shows a failure in the prompt and leaves the code alone; Markdown keeps Ctrl+K for its preview chord', async () => {

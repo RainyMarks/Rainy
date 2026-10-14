@@ -168,12 +168,76 @@ class RemovedLines extends WidgetType {
   override ignoreEvent(): boolean { return true }
 }
 
+/** Lines of the new text, `[at, end)`, that replaced the `removed` lines of the original. */
+interface LineHunk {
+  readonly at: number
+  readonly end: number
+  readonly removed: readonly string[]
+}
+
+/** Above this many line pairs, the differing middle counts as one change instead of being compared line by line. */
+const DIFF_LIMIT = 250_000
+
+/**
+ * Compare two texts line by line.
+ * @returns The changed runs of lines, in order; empty when the texts are the same.
+ */
+export function lineHunks(original: string, text: string): LineHunk[] {
+  const before = original.split('\n')
+  const after = text.split('\n')
+  let head = 0
+  while (head < before.length && head < after.length && before[head] === after[head]) head++
+  let tail = 0
+  while (tail < before.length - head && tail < after.length - head && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail++
+  const old = before.slice(head, before.length - tail)
+  const next = after.slice(head, after.length - tail)
+  if (old.length === 0 && next.length === 0) return []
+  if (old.length === 0 || next.length === 0 || old.length * next.length > DIFF_LIMIT) return [{ at: head, end: head + next.length, removed: old }]
+  // Longest common subsequence of lines, filled from the end so the walk below can go forwards.
+  const width = next.length + 1
+  const common = new Uint32Array((old.length + 1) * width)
+  for (let i = old.length - 1; i >= 0; i--) {
+    for (let j = next.length - 1; j >= 0; j--) {
+      common[i * width + j] = old[i] === next[j] ? common[(i + 1) * width + j + 1]! + 1 : Math.max(common[(i + 1) * width + j]!, common[i * width + j + 1]!)
+    }
+  }
+  const hunks: LineHunk[] = []
+  let removed: string[] = []
+  let start = -1
+  const flush = (at: number): void => {
+    if (start >= 0 || removed.length > 0) hunks.push({ at: head + (start >= 0 ? start : at), end: head + at, removed })
+    removed = []
+    start = -1
+  }
+  let i = 0
+  let j = 0
+  while (i < old.length || j < next.length) {
+    if (i < old.length && j < next.length && old[i] === next[j]) { flush(j); i++; j++ }
+    else if (j < next.length && (i === old.length || common[i * width + j + 1]! >= common[(i + 1) * width + j]!)) { if (start < 0) start = j; j++ }
+    else removed.push(old[i++]!)
+  }
+  flush(j)
+  return hunks
+}
+
 function aiEditDecorations(value: AiEdit, state: EditorState): DecorationSet {
   const ranges = [Decoration.widget({ widget: new PromptWidget(value.session), block: true, side: -2 }).range(state.doc.lineAt(value.from).from)]
-  if (value.original !== undefined) {
-    if (value.original !== '') ranges.push(Decoration.widget({ widget: new RemovedLines(value.original), block: true, side: -1 }).range(state.doc.lineAt(value.from).from))
-    if (value.to > value.from) {
-      for (let line = state.doc.lineAt(value.from).number; line <= state.doc.lineAt(value.to).number; line++) ranges.push(addedLine.range(state.doc.line(line).from))
+  if (value.original === '') {
+    // Inserted at the cursor: every line it touches is new.
+    for (let line = state.doc.lineAt(value.from).number; line <= state.doc.lineAt(value.to).number && value.to > value.from; line++) ranges.push(addedLine.range(state.doc.line(line).from))
+  } else if (value.original !== undefined) {
+    // Whole lines were replaced: mark only the lines that changed, with what they replaced shown above them.
+    const first = state.doc.lineAt(value.from).number
+    const last = state.doc.lineAt(value.to).number
+    for (const hunk of lineHunks(value.original, state.sliceDoc(value.from, value.to))) {
+      if (hunk.removed.length > 0) {
+        // Removed lines go above the line now in their place, or below the region when they were its last lines.
+        const widget = new RemovedLines(hunk.removed.join('\n'))
+        ranges.push(first + hunk.at <= last
+          ? Decoration.widget({ widget, block: true, side: -1 }).range(state.doc.line(first + hunk.at).from)
+          : Decoration.widget({ widget, block: true, side: 1 }).range(value.to))
+      }
+      for (let index = hunk.at; index < hunk.end; index++) ranges.push(addedLine.range(state.doc.line(first + index).from))
     }
   }
   return Decoration.set(ranges, true)
