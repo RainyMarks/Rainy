@@ -1,5 +1,6 @@
 /** Tool discovery, per-tool downloads and native launch controls in the CTF workbench. */
 import { useState } from 'react'
+import { useLocale } from '../i18n.ts'
 import { Button, Input, Pill, Tag, Tooltip, fileSizeText, IconSearchOutlineRegular, IconRefreshOutlineRegular,
   IconPinOutlineRegular, IconPinFillRegular, IconDownloadOutlineRegular, IconTrashOutlineRegular } from '../ui/index.ts'
 import { nativeToolIds } from '../../shared/native-tools-protocol.ts'
@@ -49,6 +50,7 @@ export interface ToolCatalogActions {
 export function ToolCatalog({ state, loadTools, launchTool, toggleFavorite, operateTools, cancelDownload, checkToolUpdates }:
   ToolCatalogActions & { readonly state: NativeToolsState }) {
   const t = useCtfT()
+  const locale = useLocale()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [removing, setRemoving] = useState<NativeToolId | undefined>()
@@ -59,8 +61,9 @@ export function ToolCatalog({ state, loadTools, launchTool, toggleFavorite, oper
   const available = state.tools.filter(tool => tool.status === 'available')
   const outdated = state.tools.filter(tool => tool.outdated)
   const updatable = installed.length > 0 && (outdated.length > 0 || state.catalogOutdated)
-  const description = (id: NativeToolId): string => {
-    const known = nativeToolIds.find(value => value === id)
+  const description = (tool: NativeToolSummary): string => {
+    if (tool.description?.[locale]) return tool.description[locale]
+    const known = nativeToolIds.find(value => value === tool.id)
     return t(known === undefined ? 'toolExtra' : purpose[known])
   }
   const progress = t(download.phase === 'verifying' ? 'toolsProgressVerify' : download.phase === 'downloading' ? 'toolsProgressDownload'
@@ -73,7 +76,7 @@ export function ToolCatalog({ state, loadTools, launchTool, toggleFavorite, oper
     if (filter === 'favorites' && !favoriteIds.includes(tool.id)) return false
     if (filter === 'recent' && !recentIds.includes(tool.id)) return false
     if (!views.some(view => view.id === filter) && toolGroup(tool) !== filter) return false
-    return search === '' || `${tool.name} ${tool.id} ${description(tool.id)}`.toLocaleLowerCase().includes(search)
+    return search === '' || `${tool.name} ${tool.id} ${description(tool)}`.toLocaleLowerCase().includes(search)
   })
   if (filter === 'recent') tools.sort((a, b) => recentIds.indexOf(a.id) - recentIds.indexOf(b.id))
   // The complete unfiltered list reads by task; filtered views stay flat and tag each tool with its group.
@@ -92,7 +95,7 @@ export function ToolCatalog({ state, loadTools, launchTool, toggleFavorite, oper
     return <li key={tool.id} className={css.card} data-tool-id={tool.id}>
       <div className={css.details}>
         <div className={css.nameRow}><h3>{tool.name}</h3>{showGroup && <Tag>{t(groupCopy[toolGroup(tool)])}</Tag>}</div>
-        <p className={css.purpose}>{description(tool.id)}</p>
+        <p className={css.purpose}>{description(tool)}</p>
         <div className={css.metadata}>
           <span>{tool.version || t('toolsVersionUnknown')}</span><span>{t(kindCopy[tool.launchKind])}</span>
           <Tag tone={tool.status === 'missing' ? 'warning' : tool.status === 'ready' && tool.verified ? 'success' : 'neutral'}>

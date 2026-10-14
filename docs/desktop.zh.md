@@ -90,15 +90,15 @@ node scripts/build-tool-channel.mjs --metadata <dir>/native-tools-metadata.json 
 
 “常用工具”顶部汇总“已下载 N / M 款工具”。未下载工具的卡片以“下载 · 大小”代替“打开”；已下载工具显示“打开”和“移除”，移除需再次点击确认。“有更新”标签标出过期工具。顶部按钮“全部下载（大小）”和“更新已下载的工具（大小）”位于“检查工具更新”旁。安装前逐个校验传输分片和归档的 SHA-256；下载支持取消、断点续传和重试。下载某个工具时会同时安装它需要的运行时，并把其他已下载工具更新到同一目录修订，只下载有变化的单元。“移除”删除该工具以及不再被剩余工具使用的运行时，无需联网。已安装工具可离线使用，重启和应用更新后仍保留。首次访问目录会检查签名工具通道，“检查工具更新”可再次检查。
 
-未选择会话时也能打开 CTF 入口。默认“常用工具”页按签名目录中的 Misc、Web、Reverse 三类列出工具，可搜索名称和用途、按分类或“已下载”筛选，并显示收藏、最近启动请求、版本及可用状态。收藏和最近记录属于 Windows 用户，在会话之间共享。已保存的 Burp 收藏迁移到 Yakit；旧 Burp 最近启动记录会移除，不会据此记录一次 Yakit 启动。当前工具通道包含以下 45 项：
+未选择会话时也能打开 CTF 入口。默认“常用工具”页按签名目录中的 Misc、Web、Reverse 三类列出工具，可搜索名称和用途、按分类或“已下载”筛选，并显示收藏、最近启动请求、版本及可用状态。新发布工具的中英文用途直接来自已认证目录。收藏和最近记录属于 Windows 用户，在会话之间共享。已保存的 Burp 收藏迁移到 Yakit；旧 Burp 最近启动记录会移除，不会据此记录一次 Yakit 启动。当前工具通道包含以下 66 项：
 
 | 分组 | 条目 |
 |---|---|
-| Misc · 26 | 7-Zip、ExifTool、Wireshark、Binwalk、FFmpeg、Audacity、StegSolve、PNGcheck、QRazyBox、ImageLSBViewer、ImageMagick、WinMerge、Qalculate!、Sonic Visualiser、Tesseract OCR、SoX、TweakPNG、multimon-ng、GNU strings、GIMP、SQLite、DB Browser for SQLite、qpdf、ripgrep、pcapfix、b3sum |
-| Web · 10 | Yakit、CyberChef、curl、jq、yq、Bruno、ffuf、Gobuster、feroxbuster、Nuclei |
-| Reverse · 9 | IDA、x64dbg/x32dbg、Detect It Easy、ImHex、JADX、dnSpy、PyInstaller Extractor、Rizin、UPX |
+| Misc · 34 | 7-Zip、ExifTool、Wireshark、Binwalk、FFmpeg、Audacity、StegSolve、PNGcheck、QRazyBox、ImageLSBViewer、ImageMagick、WinMerge、Qalculate!、Sonic Visualiser、Tesseract OCR、SoX、TweakPNG、multimon-ng、GNU strings、GIMP、SQLite、DB Browser for SQLite、qpdf、ripgrep、pcapfix、b3sum、Hashcat、Kinovea、OpenPuff、SilentEye、steghide、WinSCP、John the Ripper、PowerShell 7 |
+| Web · 15 | Yakit、CyberChef、curl、jq、yq、Bruno、ffuf、Gobuster、feroxbuster、Nuclei、dirsearch、Wfuzz、sqlmap、GNU Wget、AntSword |
+| Reverse · 17 | IDA、x64dbg/x32dbg、Detect It Easy、ImHex、JADX、dnSpy、PyInstaller Extractor、Rizin、UPX、de4dot、radare2、Cutter、REHex、MemProcFS、RetDec、pycdc、Volatility 3 |
 
-这次目录修订保留原有 38 款工具的版本，新增 ffuf、Gobuster、feroxbuster、Nuclei、Rizin、UPX、b3sum，均可单独下载。Nuclei 的外部模板不包含在程序单元中；需要模板的扫描由用户自行提供或获取模板。
+这版目录保留原有 38 款工具的版本、修订 2 新增的 7 款，并从用户的 `7z.dist` 工具集合中新增 21 款独立下载工具。MemProcFS 与 Volatility 3 使用官方 Windows 发布包。没有重复导入 Burp 和 IDA；导入单元排除了本地凭据、历史记录、日志和缓存。这次导入仅发布能确认再分发条件的工具；应用运行依赖、重复工具和授权不明的商业程序没有新增到目录。Nuclei 的外部模板不包含在程序单元中；需要模板的扫描由用户自行提供或获取模板。
 
 x64dbg 与 x32dbg 共用一个条目，分别提供启动按钮。FFmpeg 包含 ffprobe 和 ffplay。桌面程序以普通窗口独立打开，命令行工具使用准备好环境的 Windows 终端，离线网页使用不带原生启动桥接的隔离窗口。成功提示为“已发送 {name} 的启动请求”，仅确认系统已接受请求。文件可用、界面就绪和功能验收属于不同观察。`status: ready` 表示所需文件及依赖存在；独立的 `verified` 标志对应匹配目录的已记录验收。未经验证的工具保留“待验证”标记，缺少依赖时禁止启动。目录不增加 Agent 工具或提示词。
 

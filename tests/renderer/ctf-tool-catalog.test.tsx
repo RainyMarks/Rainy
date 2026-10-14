@@ -6,6 +6,7 @@ import { ToolCatalog } from '../../src/renderer/ctf/ToolCatalog.tsx'
 import { CtfWorkbench } from '../../src/renderer/ctf/CtfWorkbench.tsx'
 import { createCtfWorkbench, type CtfWorkbench as CtfWorkbenchOwner } from '../../src/renderer/ctf/ctf-workbench.ts'
 import type { NativeToolsState } from '../../src/renderer/ctf/native-tools.ts'
+import type { NativeToolId } from '../../src/shared/native-tools-protocol.ts'
 import { allByRole, allByText, byRole, change, cleanup, click, queryByRole, render } from './ide-dom.tsx'
 
 vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
@@ -112,6 +113,16 @@ describe('common tool catalog', () => {
     expect(h.toggleFavorite).toHaveBeenCalledExactlyOnceWith('cyberchef')
     click(byRole('button', '最近使用'))
     expect(allByRole('heading').map(row => row.textContent)).toEqual(['x64dbg', 'CyberChef'])
+  })
+
+  it('shows and searches descriptions supplied by a signed catalog for new tools', () => {
+    const imported = { ...pending, id: 'winscp' as NativeToolId, name: 'WinSCP',
+      description: { zh: '通过 SFTP 和 SCP 传输文件', en: 'Transfer files over SFTP and SCP' } }
+    fixture({ ...state, tools: [...state.tools, imported] })
+    expect(allByText('通过 SFTP 和 SCP 传输文件', card('WinSCP'))).toHaveLength(1)
+    change(byRole('textbox'), 'SFTP')
+    expect(allByRole('listitem')).toHaveLength(1)
+    expect(byRole('heading', 'WinSCP')).toBeTruthy()
   })
 
   it('distinguishes unverified from missing and disables overlapping launches', () => {

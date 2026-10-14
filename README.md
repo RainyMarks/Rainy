@@ -4,7 +4,7 @@
 
 # Rainy
 
-**The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 45 security tools without leaving the window.**
+**The AI agent workbench for CTF on Windows. Write the solve script, run it, ask the AI why it fails, and open any of 66 security tools without leaving the window.**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
@@ -20,14 +20,14 @@ English | [中文](README.zh.md)
 
 ![Rainy: editor, terminal and a solved XOR challenge](assets/workbench.png)
 
-Rainy puts an AI coding agent, a real editor and debugger, and a 45-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
+Rainy puts an AI coding agent, a real editor and debugger, and a 66-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
 
 ## Why Rainy
 
 | | |
 |---|---|
 | **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file change it makes can be undone in one click. Add skills in `.rainy/skills` and MCP servers (including an IDA preset) in Settings. |
-| **45 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, ffuf, Gobuster, Nuclei, Rizin and more, sorted into Misc, Web and Reverse. Each tool downloads on its own, remains installed offline, and updates only when it changes. |
+| **66 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, Hashcat, sqlmap, Volatility 3 and more, sorted into Misc, Web and Reverse. Each tool downloads on its own, remains installed offline, and updates only when it changes. |
 | **See inside any file** | Images open with zoom, pixel colors and one-click color channels and bit planes. Binaries open in a hex view with a data inspector and a binwalk-style scan for embedded files. Markdown, PDF, audio and video preview in place. |
 | **A real editor and debugger** | CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **Windows or WSL2** | Start in native Windows; move a project to a WSL2 environment whenever a challenge needs Linux tools. |
@@ -101,7 +101,7 @@ Upgrading from 1.x: on first start Rainy imports your saved models, API keys and
 | Strata engine | about 560 MB | **Settings → Runtime environments → Optional components** |
 | PHP | about 38 MB | **Settings → Runtime environments → Optional components** |
 | WSL runtime | about 296 MB | Downloaded automatically on the first WSL launch |
-| CTF tools | 1 MB – 400 MB each | **CTF tools → Common tools** |
+| CTF tools | Size varies by tool and is shown before download | **CTF tools → Common tools** |
 
 Rainy checks for stable releases and downloads them in the background. A downloaded update offers **Later** or **Restart and install**; ordinary exit does not install it, and updates never download your tools again. See [tool installation and updates](docs/desktop.md#ctf-workbench) for details.
 

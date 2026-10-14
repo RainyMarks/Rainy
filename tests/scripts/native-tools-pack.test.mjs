@@ -206,6 +206,29 @@ test('runtime ZIP package paths cannot write outside their temporary extraction 
   await assert.rejects(stat(resolve(state.cacheRoot, 'outside.txt')), { code: 'ENOENT' })
 })
 
+test('publisher ZIPs with Windows separators are extracted beneath the owned root', async t => {
+  const state = await fixture(t)
+  const bytes = zipSync({ 'bin\\helper.dll': Buffer.from('library') })
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  state.definition.tools[0].archives = [{ format: 'zip', url: 'https://example.invalid/tool.zip', to: 'tools/sample', sha256: digest }]
+  await mkdir(state.cacheRoot)
+  await writeFile(resolve(state.cacheRoot, `${digest}.download`), bytes)
+  await preparePack(state)
+  assert.equal(await readFile(resolve(state.stageRoot, 'tools/sample/bin/helper.dll'), 'utf8'), 'library')
+  await verifyPack(state.stageRoot)
+})
+
+test('publisher ZIPs with Windows traversal separators stay rejected', async t => {
+  const state = await fixture(t)
+  const bytes = zipSync({ '..\\outside.txt': Buffer.from('invalid archive path') })
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  state.definition.tools[0].archives = [{ format: 'zip', url: 'https://example.invalid/tool.zip', to: 'tools/sample', sha256: digest }]
+  await mkdir(state.cacheRoot)
+  await writeFile(resolve(state.cacheRoot, `${digest}.download`), bytes)
+  await assert.rejects(preparePack(state), /Invalid package path/)
+  await assert.rejects(stat(resolve(state.cacheRoot, 'outside.txt')), { code: 'ENOENT' })
+})
+
 test('NSIS payload listing rejects traversal, duplicate paths, links, and ambiguous records before extraction', () => {
   const root = resolve(tmpdir(), 'native-archive-listing')
   assert.deepEqual(validateArchiveListing('Path = bins\\yak.zip\nSize = 20\n\nPath = Yakit.exe\nSize = 40\n', root), ['bins/yak.zip', 'yakit.exe'])
@@ -398,18 +421,23 @@ for (const source of ['copy', 'archive', 'download', 'generated']) {
   })
 }
 
-test('the shipped definition has forty-five tools in the signed categories and a packaged x32dbg variant', async () => {
+test('the shipped definition has sixty-six tools in signed categories and a packaged x32dbg variant', async () => {
   const definition = validateDefinition(JSON.parse(await readFile(new URL('../../toolpacks/native-tools.sources.json', import.meta.url), 'utf8')))
-  assert.equal(definition.tools.length, 45)
+  assert.equal(definition.tools.length, 66)
   assert.deepEqual(definition.tools.filter(tool => tool.category === 'web').map(tool => tool.id),
-    ['yakit', 'cyberchef', 'curl', 'jq', 'yq', 'bruno', 'ffuf', 'gobuster', 'feroxbuster', 'nuclei'])
-  assert.equal(definition.tools.filter(tool => tool.category === 'misc').length, 26)
-  assert.equal(definition.tools.filter(tool => tool.category === 'reverse').length, 9)
-  for (const tool of definition.tools.slice(-7)) {
+    ['yakit', 'cyberchef', 'curl', 'jq', 'yq', 'bruno', 'ffuf', 'gobuster', 'feroxbuster', 'nuclei',
+      'dirsearch', 'wfuzz', 'sqlmap', 'wget', 'antsword'])
+  assert.equal(definition.tools.filter(tool => tool.category === 'misc').length, 34)
+  assert.equal(definition.tools.filter(tool => tool.category === 'reverse').length, 17)
+  for (const tool of definition.tools.slice(38, 45)) {
     assert.equal(tool.source.kind, 'upstream')
     assert.ok(tool.archives?.length || tool.downloads?.length)
     for (const item of [...(tool.archives ?? []), ...(tool.downloads ?? [])]) assert.match(item.sha256, /^[a-f0-9]{64}$/)
   }
+  assert.deepEqual(definition.tools.slice(45).map(tool => tool.id),
+    ['hashcat', 'kinovea', 'openpuff', 'silenteye', 'de4dot', 'radare2', 'cutter', 'rehex',
+      'dirsearch', 'wfuzz', 'steghide', 'winscp', 'memprocfs', 'retdec', 'sqlmap', 'pycdc',
+      'john', 'powershell-7', 'wget', 'antsword', 'volatility3'])
   assert.equal(definition.tools.some(tool => tool.id === 'burp-community'), false)
   const yakit = definition.tools.find(tool => tool.id === 'yakit')
   assert.equal(yakit.entry.kind, 'gui')

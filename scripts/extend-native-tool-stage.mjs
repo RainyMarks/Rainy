@@ -31,7 +31,7 @@ export async function extendNativeToolStage(options) {
   const oldCatalog = await json(child(base, 'tools/manifest.json'))
   const newCatalog = await json(child(addition, 'tools/manifest.json'))
   const newInventory = await verifyPack(addition)
-  if (baseline.version !== 1 || !Array.isArray(baseline.files) || oldCatalog.version !== 1
+  if (![1, 2].includes(baseline.version) || !Array.isArray(baseline.files) || oldCatalog.version !== 1
     || newCatalog.version !== 1 || !Array.isArray(fullSource.tools)) throw new Error('Invalid native tool extension inputs')
   const oldManifest = baseline.files.find(file => file.path === 'tools/manifest.json')
   if (!oldManifest || digest(await readFile(child(base, oldManifest.path))) !== oldManifest.sha256) {

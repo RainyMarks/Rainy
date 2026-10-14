@@ -83,7 +83,7 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 | `app/` | Window layout: top bar, file pane, editor area, AI pane, bottom panel, status bar |
 | `chat/` | Transcript, markdown, tool cards, composer, model picker, context meter, history list |
 | `ide/` | Editor tabs, editor mount, file viewers, quick open, run configurations, terminal, problems, debug |
-| `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost |
+| `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost. The signed catalog supplies localized descriptions for future tools through the existing main-window bridge |
 | `settings/` | General, Appearance, Models, Skills & MCP, Runtime, Memory and Security sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
 

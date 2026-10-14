@@ -1648,6 +1648,780 @@
       "entrySha256": "fce0c2406a1e92b49fedd02a48a67dc5ba71c3a85eb80a2f950ed985f90e76e2",
       "fileCount": 4,
       "bytes": 1052116
+    },
+    {
+      "id": "hashcat",
+      "category": "misc",
+      "name": "Hashcat",
+      "description": {
+        "zh": "GPU 哈希口令恢复工具。",
+        "en": "GPU accelerated password hash recovery."
+      },
+      "keywords": [
+        "hashcat",
+        "misc"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/hashcat/hashcat.exe",
+        "cwd": "tools/hashcat",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/hashcat"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/hashcat/hashcat",
+        "license": "MIT",
+        "versionEvidence": "7z.dist bundled executable SHA-256 7b8f860a9d02f27b53a4ae3acea611cdbfb14fecca401a26a0a17d4038899421"
+      },
+      "available": true,
+      "entrySha256": "7b8f860a9d02f27b53a4ae3acea611cdbfb14fecca401a26a0a17d4038899421",
+      "fileCount": 2993,
+      "bytes": 378917752
+    },
+    {
+      "id": "kinovea",
+      "category": "misc",
+      "name": "Kinovea",
+      "description": {
+        "zh": "逐帧检查视频和图像。",
+        "en": "Inspect video frames and images."
+      },
+      "keywords": [
+        "kinovea",
+        "misc"
+      ],
+      "version": "2024.1.1",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/kinovea/Kinovea.exe",
+        "cwd": "tools/kinovea"
+      },
+      "roots": [
+        "tools/kinovea"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://www.kinovea.org/",
+        "license": "GPL-2.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 08409f150866384ec40dae7ff72774c29ee53a6a5e8b609295331209a9b23df7"
+      },
+      "available": true,
+      "entrySha256": "08409f150866384ec40dae7ff72774c29ee53a6a5e8b609295331209a9b23df7",
+      "fileCount": 294,
+      "bytes": 124594390
+    },
+    {
+      "id": "openpuff",
+      "category": "misc",
+      "name": "OpenPuff",
+      "description": {
+        "zh": "分析和制作隐写内容。",
+        "en": "Inspect and create steganographic content."
+      },
+      "keywords": [
+        "openpuff",
+        "misc"
+      ],
+      "version": "4.00",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/openpuff/OpenPuff.exe",
+        "cwd": "tools/openpuff"
+      },
+      "roots": [
+        "tools/openpuff"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "http://embeddedsw.net/",
+        "license": "CC-BY-ND-3.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 313cd6f15118804bb72f38b256f66dd340bab36298f96723ba45c3d84c237e54"
+      },
+      "available": true,
+      "entrySha256": "313cd6f15118804bb72f38b256f66dd340bab36298f96723ba45c3d84c237e54",
+      "fileCount": 77,
+      "bytes": 9051785
+    },
+    {
+      "id": "silenteye",
+      "category": "misc",
+      "name": "SilentEye",
+      "description": {
+        "zh": "在图像或音频中嵌入与提取信息。",
+        "en": "Embed and extract data in images and audio."
+      },
+      "keywords": [
+        "silenteye",
+        "misc"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/silenteye/silenteye.exe",
+        "cwd": "tools/silenteye"
+      },
+      "roots": [
+        "tools/silenteye"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/achillean/silenteye",
+        "license": "GPL-3.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 dfaea576a9fd1db5c560088c82a24a0f7c8fbf504f36c65b666bba92860c7cfa"
+      },
+      "available": true,
+      "entrySha256": "dfaea576a9fd1db5c560088c82a24a0f7c8fbf504f36c65b666bba92860c7cfa",
+      "fileCount": 37,
+      "bytes": 42184235
+    },
+    {
+      "id": "de4dot",
+      "category": "reverse",
+      "name": "de4dot",
+      "description": {
+        "zh": "清理和反混淆 .NET 程序集。",
+        "en": "Deobfuscate .NET assemblies."
+      },
+      "keywords": [
+        "de4dot",
+        "reverse"
+      ],
+      "version": "3.1.41592",
+      "entry": {
+        "kind": "console",
+        "path": "tools/de4dot/de4dot.exe",
+        "cwd": "tools/de4dot",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/de4dot"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/de4dot/de4dot",
+        "license": "GPL-3.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 e3ad3dc32ffc79784edab81bc7b78a410164a29dc85f77e1e22c5549668d368b"
+      },
+      "available": true,
+      "entrySha256": "e3ad3dc32ffc79784edab81bc7b78a410164a29dc85f77e1e22c5549668d368b",
+      "fileCount": 48,
+      "bytes": 3317670
+    },
+    {
+      "id": "radare2",
+      "category": "reverse",
+      "name": "radare2",
+      "description": {
+        "zh": "在终端中分析和调试二进制文件。",
+        "en": "Analyze and debug binaries in a terminal."
+      },
+      "keywords": [
+        "radare2",
+        "reverse"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/radare2/bin/radare2.exe",
+        "cwd": "tools/radare2",
+        "args": [
+          "-h"
+        ]
+      },
+      "roots": [
+        "tools/radare2"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/radareorg/radare2",
+        "license": "LGPL-3.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 b377a27f4f07c0bb5b911ec9f0b1bd622344869822486150663f30f8d933aa5e",
+        "licenseUrl": "https://raw.githubusercontent.com/radareorg/radare2/3e6327375fb09e1cab106704144a96ba1afd0e3d/COPYING.md"
+      },
+      "available": true,
+      "entrySha256": "b377a27f4f07c0bb5b911ec9f0b1bd622344869822486150663f30f8d933aa5e",
+      "fileCount": 714,
+      "bytes": 38298503
+    },
+    {
+      "id": "cutter",
+      "category": "reverse",
+      "name": "Cutter",
+      "description": {
+        "zh": "使用图形界面分析和调试二进制文件。",
+        "en": "Analyze and debug binaries in a graphical interface."
+      },
+      "keywords": [
+        "cutter",
+        "reverse"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/cutter/cutter.exe",
+        "cwd": "tools/cutter"
+      },
+      "roots": [
+        "tools/cutter"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/rizinorg/cutter",
+        "license": "GPL-3.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 ab7b08da86d985ab54f2f20777cbe3e4b32fb8c6bf0ab1b6a73ff86b3759f550",
+        "licenseUrl": "https://raw.githubusercontent.com/rizinorg/cutter/d7f11b220884a6cc8549da955b744bd318645103/COPYING"
+      },
+      "available": true,
+      "entrySha256": "ab7b08da86d985ab54f2f20777cbe3e4b32fb8c6bf0ab1b6a73ff86b3759f550",
+      "fileCount": 1351,
+      "bytes": 676673236
+    },
+    {
+      "id": "rehex",
+      "category": "reverse",
+      "name": "REHex",
+      "description": {
+        "zh": "编辑和分析十六进制文件。",
+        "en": "Edit and inspect binary files in hex."
+      },
+      "keywords": [
+        "rehex",
+        "reverse"
+      ],
+      "version": "0.63.0",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/rehex/rehex.exe",
+        "cwd": "tools/rehex"
+      },
+      "roots": [
+        "tools/rehex"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/solemnwarning/rehex",
+        "license": "GPL-2.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 190c2764cfa96b9f70d7218687e5939aadc313ae6afae0e8ea8dec33f2385b38",
+        "licenseUrl": "https://raw.githubusercontent.com/solemnwarning/rehex/0727b33720e3b4a6197aef562e7a59b257ef4e19/LICENSE.txt"
+      },
+      "available": true,
+      "entrySha256": "190c2764cfa96b9f70d7218687e5939aadc313ae6afae0e8ea8dec33f2385b38",
+      "fileCount": 30,
+      "bytes": 29263687
+    },
+    {
+      "id": "dirsearch",
+      "category": "web",
+      "name": "dirsearch",
+      "description": {
+        "zh": "扫描网站目录和文件路径。",
+        "en": "Scan website directories and paths."
+      },
+      "keywords": [
+        "dirsearch",
+        "web"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/dirsearch/dirsearch.exe",
+        "cwd": "tools/dirsearch",
+        "args": [
+          "-h"
+        ]
+      },
+      "roots": [
+        "tools/dirsearch"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/maurosoria/dirsearch",
+        "license": "GPL-2.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 59bbe76c20ad4d0fa1cfd74b9d475de0449aff119f1ae325e001ffe7b58a86d8",
+        "licenseUrl": "https://raw.githubusercontent.com/xmendez/wfuzz/2263cd0932fef333118cd197656f709141bab615/LICENSE"
+      },
+      "available": true,
+      "entrySha256": "59bbe76c20ad4d0fa1cfd74b9d475de0449aff119f1ae325e001ffe7b58a86d8",
+      "fileCount": 741,
+      "bytes": 134463686
+    },
+    {
+      "id": "wfuzz",
+      "category": "web",
+      "name": "Wfuzz",
+      "description": {
+        "zh": "对 HTTP 请求参数和路径执行模糊测试。",
+        "en": "Fuzz HTTP request parameters and paths."
+      },
+      "keywords": [
+        "wfuzz",
+        "web"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/wfuzz/wfuzz-cli.exe",
+        "cwd": "tools/wfuzz",
+        "args": [
+          "-h"
+        ]
+      },
+      "roots": [
+        "tools/wfuzz"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/xmendez/wfuzz",
+        "license": "GPL-2.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 a35affbd546ce0fa729dc55556afb15efbf0c63304aede64cb791bfd4fb14321",
+        "licenseUrl": "https://raw.githubusercontent.com/xmendez/wfuzz/2263cd0932fef333118cd197656f709141bab615/LICENSE"
+      },
+      "available": true,
+      "entrySha256": "a35affbd546ce0fa729dc55556afb15efbf0c63304aede64cb791bfd4fb14321",
+      "fileCount": 235,
+      "bytes": 96891063
+    },
+    {
+      "id": "steghide",
+      "category": "misc",
+      "name": "steghide",
+      "description": {
+        "zh": "在媒体文件中嵌入与提取隐藏数据。",
+        "en": "Embed and extract hidden data in media files."
+      },
+      "keywords": [
+        "steghide",
+        "misc"
+      ],
+      "version": "0.5.1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/steghide/steghide.exe",
+        "cwd": "tools/steghide",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/steghide"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/StegHigh/steghide",
+        "license": "GPL-2.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 3cae09664fcd4ae2a30225a0a7575bc616b2b84480e531be2cc67a3130cc33d1",
+        "licenseUrl": "https://raw.githubusercontent.com/StegHigh/steghide/baaea530b2b4004abf88ed7f4c17fab025d52772/COPYING"
+      },
+      "available": true,
+      "entrySha256": "3cae09664fcd4ae2a30225a0a7575bc616b2b84480e531be2cc67a3130cc33d1",
+      "fileCount": 13,
+      "bytes": 3236323
+    },
+    {
+      "id": "winscp",
+      "category": "misc",
+      "name": "WinSCP",
+      "description": {
+        "zh": "通过 SFTP 和 SCP 传输文件。",
+        "en": "Transfer files over SFTP and SCP."
+      },
+      "keywords": [
+        "winscp",
+        "misc"
+      ],
+      "version": "6.3.7",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/winscp/WinSCP.exe",
+        "cwd": "tools/winscp"
+      },
+      "roots": [
+        "tools/winscp"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/winscp/winscp",
+        "license": "GPL-3.0",
+        "versionEvidence": "7z.dist bundled executable SHA-256 fa80de7f70b93e7d1d7d3eb2267c063f4a002f0b05edc6620866264d9d6068f0",
+        "licenseUrl": "https://raw.githubusercontent.com/winscp/winscp/8f67d22382b88b1cb266bb393c393addbb1d881f/license.txt"
+      },
+      "available": true,
+      "entrySha256": "fa80de7f70b93e7d1d7d3eb2267c063f4a002f0b05edc6620866264d9d6068f0",
+      "fileCount": 4,
+      "bytes": 24618636
+    },
+    {
+      "id": "memprocfs",
+      "category": "reverse",
+      "name": "MemProcFS",
+      "description": {
+        "zh": "分析内存镜像并以文件系统方式浏览取证数据。",
+        "en": "Inspect memory images and forensic data as a file system."
+      },
+      "keywords": [
+        "memory",
+        "forensics",
+        "取证",
+        "内存"
+      ],
+      "version": "5.10.1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/memprocfs/MemProcFS.exe",
+        "cwd": "tools/memprocfs",
+        "args": [
+          "-help"
+        ],
+        "requiredFiles": [
+          "tools/memprocfs/vmm.dll",
+          "tools/memprocfs/leechcore.dll"
+        ]
+      },
+      "roots": [
+        "tools/memprocfs"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/ufrisk/MemProcFS/releases/tag/v5.10",
+        "license": "AGPL-3.0",
+        "licenseUrl": "https://github.com/ufrisk/MemProcFS/blob/master/LICENSE",
+        "versionEvidence": "Official v5.10 release archive and executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "58026fb3a62c4b9a7a5fda24a67aa9c3a61586df5f819af73e3ff5d2d39ff750",
+      "fileCount": 40,
+      "bytes": 10076322
+    },
+    {
+      "id": "retdec",
+      "category": "reverse",
+      "name": "RetDec",
+      "description": {
+        "zh": "反编译可执行文件并检查程序集信息。",
+        "en": "Decompile executables and inspect binary metadata."
+      },
+      "keywords": [
+        "decompiler",
+        "binary",
+        "反编译"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/retdec/bin/retdec-decompiler.exe",
+        "cwd": "tools/retdec/bin",
+        "args": [
+          "--help"
+        ],
+        "requiredFiles": [
+          "tools/retdec/share/retdec/LICENSE"
+        ]
+      },
+      "roots": [
+        "tools/retdec"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/avast/retdec",
+        "license": "MIT",
+        "versionEvidence": "Bundled executable SHA-256 5441b6e8da5cca9fe03f1a6d9012d7c0795623e21d64075ed06cb5e03341c623"
+      },
+      "available": true,
+      "entrySha256": "5441b6e8da5cca9fe03f1a6d9012d7c0795623e21d64075ed06cb5e03341c623",
+      "fileCount": 1670,
+      "bytes": 1289106892
+    },
+    {
+      "id": "sqlmap",
+      "category": "web",
+      "name": "sqlmap",
+      "description": {
+        "zh": "检查授权目标中的 SQL 注入问题。",
+        "en": "Check authorized targets for SQL injection."
+      },
+      "keywords": [
+        "sql",
+        "injection",
+        "database",
+        "注入"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/sqlmap/python/python.exe",
+        "cwd": "tools/sqlmap",
+        "args": [
+          "sqlmap.py",
+          "-h"
+        ],
+        "pythonRoot": "tools/sqlmap/python",
+        "requiredFiles": [
+          "tools/sqlmap/sqlmap.py",
+          "tools/sqlmap/python/python310.dll",
+          "tools/sqlmap/LICENSE.txt"
+        ]
+      },
+      "roots": [
+        "tools/sqlmap"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/sqlmapproject/sqlmap",
+        "license": "GPL-2.0",
+        "licenseUrl": "https://raw.githubusercontent.com/sqlmapproject/sqlmap/5b180533c1e83cad47fcd4f7795f8d78c8e2e518/LICENSE",
+        "versionEvidence": "Bundled sqlmap.py SHA-256 20f10e75379cd6e859960b2e82cfb7dc54045b2875e2554c8fa3ed8c3c1fe46d; private Python 3.10.11"
+      },
+      "available": true,
+      "entrySha256": "3cce33d75d6fdae4e004d0bdf149320b3147482a9caf370079dcb9c191a1b260",
+      "fileCount": 1483,
+      "bytes": 41484416
+    },
+    {
+      "id": "pycdc",
+      "category": "reverse",
+      "name": "pycdc",
+      "description": {
+        "zh": "反编译 Python 字节码文件。",
+        "en": "Decompile Python bytecode files."
+      },
+      "keywords": [
+        "python",
+        "bytecode",
+        "decompile",
+        "反编译"
+      ],
+      "version": "bundled-8.8",
+      "entry": {
+        "kind": "console",
+        "path": "tools/pycdc/pycdc.exe",
+        "cwd": "tools/pycdc",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/pycdc"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/zrax/pycdc",
+        "license": "GPL-3.0",
+        "licenseUrl": "https://raw.githubusercontent.com/zrax/pycdc/b4289760970dbc399684f1e155ec6d1ea1cc787e/LICENSE",
+        "versionEvidence": "Bundled executable SHA-256 c190b7acb80ebe8dce294f812798abb689cac388df3b9a0d575a30f242b29011"
+      },
+      "available": true,
+      "entrySha256": "c190b7acb80ebe8dce294f812798abb689cac388df3b9a0d575a30f242b29011",
+      "fileCount": 3,
+      "bytes": 6285790
+    },
+    {
+      "id": "john",
+      "category": "misc",
+      "name": "John the Ripper",
+      "description": {
+        "zh": "离线恢复和审计口令哈希。",
+        "en": "Recover and audit password hashes offline."
+      },
+      "keywords": [
+        "password",
+        "hash",
+        "cracking",
+        "口令"
+      ],
+      "version": "1.9.0-jumbo-1",
+      "entry": {
+        "kind": "console",
+        "path": "tools/john/bin/john.exe",
+        "cwd": "tools/john/bin",
+        "args": [
+          "--list=build-info"
+        ],
+        "requiredFiles": [
+          "tools/john/bin/john.conf",
+          "tools/john/bin/cygwin1.dll"
+        ]
+      },
+      "roots": [
+        "tools/john"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/openwall/john",
+        "license": "GPL-2.0-or-later",
+        "licenseUrl": "https://raw.githubusercontent.com/openwall/john/5184bc0b8c105f8c5978b112e723d65b2de3e63e/LICENSE",
+        "versionEvidence": "john.exe --list=build-info and executable SHA-256 51836842fdb98ffc6960170b05041ebf7123765b88eabc7dd39ea1bd74f8f4e3"
+      },
+      "available": true,
+      "entrySha256": "51836842fdb98ffc6960170b05041ebf7123765b88eabc7dd39ea1bd74f8f4e3",
+      "fileCount": 533,
+      "bytes": 496718896
+    },
+    {
+      "id": "powershell-7",
+      "category": "misc",
+      "name": "PowerShell 7",
+      "description": {
+        "zh": "运行 PowerShell 7 脚本和命令。",
+        "en": "Run PowerShell 7 scripts and commands."
+      },
+      "keywords": [
+        "powershell",
+        "shell",
+        "script",
+        "脚本"
+      ],
+      "version": "7.5.4",
+      "entry": {
+        "kind": "console",
+        "path": "tools/powershell-7/pwsh.exe",
+        "cwd": "tools/powershell-7",
+        "args": [
+          "--version"
+        ],
+        "requiredFiles": [
+          "tools/powershell-7/LICENSE.txt"
+        ]
+      },
+      "roots": [
+        "tools/powershell-7"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/PowerShell/PowerShell",
+        "license": "MIT",
+        "versionEvidence": "pwsh.exe --version and executable SHA-256 a7ad362b22e0e289772cccf78c7af3b99e32f3084e675392e4a9ffddf380bf05"
+      },
+      "available": true,
+      "entrySha256": "a7ad362b22e0e289772cccf78c7af3b99e32f3084e675392e4a9ffddf380bf05",
+      "fileCount": 928,
+      "bytes": 292053335
+    },
+    {
+      "id": "wget",
+      "category": "web",
+      "name": "GNU Wget",
+      "description": {
+        "zh": "通过 HTTP 和 HTTPS 下载文件。",
+        "en": "Download files over HTTP and HTTPS."
+      },
+      "keywords": [
+        "download",
+        "http",
+        "wget",
+        "下载"
+      ],
+      "version": "1.24.5",
+      "entry": {
+        "kind": "console",
+        "path": "tools/wget/wget.exe",
+        "cwd": "tools/wget",
+        "args": [
+          "--help"
+        ]
+      },
+      "roots": [
+        "tools/wget"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://www.gnu.org/software/wget/",
+        "license": "GPL-3.0-or-later",
+        "licenseUrl": "https://www.gnu.org/licenses/gpl-3.0.txt",
+        "versionEvidence": "wget.exe --version and executable SHA-256 1cfaaf5e35d3c23516218c1d4b4236238a36c1c46d99ef486d1aeb8052549c55"
+      },
+      "available": true,
+      "entrySha256": "1cfaaf5e35d3c23516218c1d4b4236238a36c1c46d99ef486d1aeb8052549c55",
+      "fileCount": 19,
+      "bytes": 12063060
+    },
+    {
+      "id": "antsword",
+      "category": "web",
+      "name": "AntSword",
+      "description": {
+        "zh": "在授权环境中管理 WebShell 连接。",
+        "en": "Manage web shell connections in authorized environments."
+      },
+      "keywords": [
+        "webshell",
+        "web",
+        "蚁剑"
+      ],
+      "version": "4.0.3-loader/2.1.15-core",
+      "entry": {
+        "kind": "gui",
+        "path": "tools/antsword/loader/AntSword.exe",
+        "cwd": "tools/antsword/loader",
+        "requiredFiles": [
+          "tools/antsword/loader/LICENSE",
+          "tools/antsword/core/LICENSE"
+        ]
+      },
+      "roots": [
+        "tools/antsword"
+      ],
+      "source": {
+        "kind": "local",
+        "url": "https://github.com/AntSwordProject/antSword",
+        "license": "MIT",
+        "versionEvidence": "Bundled loader executable SHA-256 11041baa8de6248b732b64179db5832ef0febcac5d13ed2386a3eb7360b1c63b"
+      },
+      "preserve": [
+        "tools/antsword/core/antData"
+      ],
+      "available": true,
+      "entrySha256": "11041baa8de6248b732b64179db5832ef0febcac5d13ed2386a3eb7360b1c63b",
+      "fileCount": 5990,
+      "bytes": 223284738
+    },
+    {
+      "id": "volatility3",
+      "category": "reverse",
+      "name": "Volatility 3",
+      "description": {
+        "zh": "分析内存镜像和操作系统取证信息。",
+        "en": "Analyze memory images and operating-system forensic evidence."
+      },
+      "keywords": [
+        "memory",
+        "forensics",
+        "取证",
+        "volatility"
+      ],
+      "version": "2.28.2",
+      "entry": {
+        "kind": "console",
+        "path": "tools/volatility3/vol.exe",
+        "cwd": "tools/volatility3",
+        "args": [
+          "-h"
+        ],
+        "requiredFiles": [
+          "tools/volatility3/LICENSE.txt"
+        ]
+      },
+      "roots": [
+        "tools/volatility3"
+      ],
+      "source": {
+        "kind": "upstream",
+        "url": "https://github.com/volatilityfoundation/volatility3/releases/tag/v2.28.2",
+        "license": "VSL-1.0",
+        "licenseUrl": "https://github.com/volatilityfoundation/volatility3/blob/v2.28.2/LICENSE.txt",
+        "versionEvidence": "Official release archive and executable SHA-256"
+      },
+      "available": true,
+      "entrySha256": "c8d6e74cbb68326c8f42f2bd6d01643e5963e4c19d715f10a7a5ee6e41b421d4",
+      "fileCount": 4,
+      "bytes": 44694750
     }
   ]
 }

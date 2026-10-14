@@ -24,6 +24,8 @@ export interface NativeToolsUpdateState {
 export interface NativeToolSummary {
   readonly id: NativeToolId
   readonly name: string
+  /** Description authenticated by the publisher catalog; older local catalogs may omit it. */
+  readonly description?: { readonly zh: string; readonly en: string }
   readonly category: 'web' | 'misc' | 'reverse'
   readonly version: string
   readonly launchKind: 'desktop' | 'terminal' | 'web'

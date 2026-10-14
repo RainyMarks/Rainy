@@ -63,12 +63,14 @@ describe('native tool catalog', () => {
   })
   it('lists tools not yet downloaded from the newest catalog and launches installed ones with their own entries', async () => {
     const onlineRoot = join(userData, 'native-tools')
-    const newest = JSON.stringify({ version: 1, tools: [{ ...installedTool(), version: 'next' }] })
+    const newest = JSON.stringify({ version: 1, tools: [{ ...installedTool(), version: 'next',
+      description: { zh: '查看压缩包', en: 'Inspect archives' } }] })
     let inventory: NativeToolsInventorySource = { root: onlineRoot, catalogText: newest, catalogOutdated: false, updateBytes: 0,
       states: new Map([['7zip', { installed: false, outdated: false, downloadBytes: 42 }]]) }
     const start = vi.fn()
     const library = new NativeToolsLibrary({ installRoot, userData, inventory: async () => inventory, start })
-    expect((await library.listTools()).tools).toMatchObject([{ id: '7zip', status: 'available', version: 'next', downloadBytes: 42, missing: [] }])
+    expect((await library.listTools()).tools).toMatchObject([{ id: '7zip', status: 'available', version: 'next',
+      description: { zh: '查看压缩包', en: 'Inspect archives' }, downloadBytes: 42, missing: [] }])
     expect(await library.launchTool('7zip')).toMatchObject({ ok: false })
     expect(start).not.toHaveBeenCalled()
     await mkdir(join(onlineRoot, 'tools/7zip'), { recursive: true })

@@ -309,8 +309,10 @@ async function extractZip(bytes, root, label) {
   const names = new Set()
   const files = []
   for (const { name, data: contents } of readZip(bytes)) {
-    const directory = name.endsWith('/')
-    const normalized = directory ? name.slice(0, -1) : name
+    // Some publisher ZIPs use Windows separators. Normalize before the strict path check.
+    const portable = name.replaceAll('\\', '/')
+    const directory = portable.endsWith('/')
+    const normalized = directory ? portable.slice(0, -1) : portable
     const target = childPath(root, normalized)
     if (names.has(normalized.toLowerCase())) throw new Error(`Duplicate ${label} ZIP entry: ${name}`)
     names.add(normalized.toLowerCase())

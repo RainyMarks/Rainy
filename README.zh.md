@@ -4,7 +4,7 @@
 
 # Rainy
 
-**为 CTF 打造的 Windows AI 智能体工作台：写解题脚本、运行、让 AI 找出哪里不对，再打开 45 款安全工具中的任意一款，全程不离开这个窗口。**
+**为 CTF 打造的 Windows AI 智能体工作台：写解题脚本、运行、让 AI 找出哪里不对，再打开 66 款安全工具中的任意一款，全程不离开这个窗口。**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
@@ -20,14 +20,14 @@
 
 ![Rainy：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
 
-Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 45 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
+Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 66 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
 
 ## 为什么选 Rainy
 
 | | |
 |---|---|
 | **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的每个文件都能一键撤销。Skills 放在 `.rainy/skills`，MCP 服务（含 IDA 预设）在设置中添加。 |
-| **45 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、ffuf、Gobuster、Nuclei、Rizin 等，按 Misc、Web、Reverse 分类。每款单独下载，下载后可离线保留，有变化时才更新。 |
+| **66 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、Hashcat、sqlmap、Volatility 3 等，按 Misc、Web、Reverse 分类。每款单独下载，下载后可离线保留，有变化时才更新。 |
 | **看清任何文件** | 图片支持缩放、查看像素颜色，一键切换颜色通道和位平面；二进制文件用十六进制查看，带数据检查器和类似 binwalk 的内嵌文件扫描；Markdown、PDF、音视频直接预览。 |
 | **真正的编辑器和调试器** | CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
 | **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 工具时，随时把项目切换到 WSL2。 |
@@ -100,7 +100,7 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 45 款 CT
 | Strata 引擎 | 约 560 MB | **设置 → 运行环境 → 可选组件** |
 | PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
 | WSL 运行环境 | 约 296 MB | 首次以 WSL 启动时自动下载 |
-| CTF 工具 | 每款 1 MB – 400 MB | **CTF 工具 → 常用工具** |
+| CTF 工具 | 大小因工具而异，下载前会显示 | **CTF 工具 → 常用工具** |
 
 Rainy 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新，更新也不会重新下载你的工具。详见[工具安装与更新](docs/desktop.zh.md#ctf-workbench)。
 

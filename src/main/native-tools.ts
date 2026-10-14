@@ -3,14 +3,12 @@ import { dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { localized } from '../shared/locale.ts'
-import { nativeToolIds } from '../shared/native-tools-protocol.ts'
 import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult } from '../shared/native-tools-protocol.ts'
 import { renameToolPackPath } from './toolpack-files.ts'
 import { toolPackFileSystem } from './toolpack-fs.ts'
 
 const { readFile, writeFile, mkdir, realpath, stat, rm } = toolPackFileSystem.promises
 
-const ids = nativeToolIds
 const toolIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
   .refine(value => value !== 'burp-community' && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(value)).transform(value => value as NativeToolId)
 const storedToolIdSchema = z.union([toolIdSchema, z.literal('burp-community')])
@@ -26,6 +24,7 @@ const entrySchema = z.object({
 })
 const toolSchema = z.object({
   id: storedToolIdSchema, category: z.enum(['web', 'misc', 'reverse']), name: z.string().min(1),
+  description: z.object({ zh: z.string().min(1), en: z.string().min(1) }).optional(),
   version: z.string(), entry: entrySchema, roots: z.array(relativePath).min(1),
   variants: z.array(z.object({ id: z.literal('x32'), name: z.string(), entry: entrySchema })).optional(),
   preserve: z.array(relativePath).optional(),
@@ -256,7 +255,7 @@ export class NativeToolsLibrary {
     const [{ tools, verified, catalogOutdated, updateBytes }, preferences] = await Promise.all([this.catalog(), this.preferences()])
     return {
       tools: await Promise.all(tools.map(async (tool) => {
-        const summary = { id: tool.id, name: tool.name, category: tool.category, version: tool.version,
+        const summary = { id: tool.id, name: tool.name, description: tool.description, category: tool.category, version: tool.version,
           launchKind: tool.entry.kind === 'console' ? 'terminal' as const : tool.entry.kind === 'web' ? 'web' as const : 'desktop' as const,
           verified: verified.has(tool.id), outdated: tool.state?.outdated ?? false, downloadBytes: tool.state?.downloadBytes ?? 0 }
         if (tool.state?.installed === false) {
@@ -345,7 +344,7 @@ export class NativeToolsLibrary {
       ...entry.dotnetRoot ? { dotnetRoot: await resolveNativePath(root, entry.dotnetRoot) } : {},
       ...entry.pythonRoot ? { pythonRoot: await resolveNativePath(root, entry.pythonRoot) } : {},
     })
-    try { await this.change((current) => { current.recent = [id, ...current.recent.filter(value => value !== id)].slice(0, ids.length) }) }
+    try { await this.change((current) => { current.recent = [id, ...current.recent.filter(value => value !== id)].slice(0, tools.length) }) }
     catch (error) {
       return { ok: true, warning: localized({ zh: `工具已打开，但最近使用记录未保存：${error instanceof Error ? error.message : String(error)}`,
         en: `The tool opened, but the recently used list was not saved: ${error instanceof Error ? error.message : String(error)}` }) }
