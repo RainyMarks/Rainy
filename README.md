@@ -20,7 +20,7 @@ English | [中文](README.zh.md)
 
 ![Rainy: editor, terminal and a solved XOR challenge](assets/workbench.png)
 
-Rainy puts an AI coding agent, a real editor and debugger, and a 66-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
+Rainy puts an AI coding agent, a real editor and debugger with AI suggestions and Ctrl+K edits, and a 66-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
 
 ## Why Rainy
 
@@ -29,13 +29,17 @@ Rainy puts an AI coding agent, a real editor and debugger, and a 66-tool CTF kit
 | **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file change it makes can be undone in one click. Add skills in `.rainy/skills` and MCP servers (including an IDA preset) in Settings. |
 | **66 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, Hashcat, sqlmap, Volatility 3 and more, sorted into Misc, Web and Reverse. Each tool downloads on its own, remains installed offline, and updates only when it changes. |
 | **See inside any file** | Images open with zoom, pixel colors and one-click color channels and bit planes. Binaries open in a hex view with a data inspector and a binwalk-style scan for embedded files. Markdown, PDF, audio and video preview in place. |
-| **A real editor and debugger** | CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
+| **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **Windows or WSL2** | Start in native Windows; move a project to a WSL2 environment whenever a challenge needs Linux tools. |
 | **Your model, your keys** | Keys stay on your machine, encrypted with Windows data protection. Model requests follow the system proxy or one you set. There is no telemetry; crash reports stay local. |
 | **Light** | A 187 MB installer. Tools, the Strata engine, PHP and the WSL runtime download only when you need them. |
 
 <a id="tour"></a>
 ## A quick look
+
+**Edit with AI in place.** Select code, press Ctrl+K and describe the change. The new lines appear in green, anything they replace in red, until you accept or reject them.
+
+![Ctrl+K adding an empty-key check to a function, with the new lines marked in green](assets/ai-edit.png)
 
 **Stego in one click.** Step through color channels and bit planes; this flag hides in bit 0 of the red channel.
 
@@ -50,6 +54,15 @@ Rainy puts an AI coding agent, a real editor and debugger, and a 66-tool CTF kit
 ![CTF tools catalog](assets/ctf-tools.png)
 
 <a id="whats-new"></a>
+## What's new in 2.3
+
+- **AI in the editor**:
+  - Suggestions as you type: pause, and a grey suggestion appears after the cursor. Tab accepts it, Ctrl+Right takes one word, Esc dismisses it.
+  - Suggestions are off by default because each one is a model request. Turn them on in **Settings → Models** or from the status bar, and pick a fast, inexpensive model for them.
+  - Ctrl+K edits: select code (or place the cursor), press Ctrl+K or choose **Edit with AI** from the context menu, and describe the change.
+  - The new code streams into the editor. Only the lines that changed are marked; Ctrl+Enter accepts and Esc puts the original back.
+- **66 CTF tools**, including Hashcat, sqlmap, Volatility 3, MemProcFS, RetDec and pycdc, now sorted into three groups: Misc, Web and Reverse.
+
 ## What's new in 2.2
 
 - **RainyAgent is now Rainy**, with a new icon. 2.2 installs over earlier versions and keeps your settings, chats and tools. The repository is now RainyMarks/Rainy; old links still work.
@@ -138,10 +151,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.1 -ComponentSource release/offline-2.2.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.3.0 -ComponentSource release/offline-2.3.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `2.2.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `2.3.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 

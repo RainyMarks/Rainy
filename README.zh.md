@@ -20,7 +20,7 @@
 
 ![Rainy：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
 
-Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 66 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
+Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器，以及 66 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
 
 ## 为什么选 Rainy
 
@@ -29,13 +29,17 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 66 款 CT
 | **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的每个文件都能一键撤销。Skills 放在 `.rainy/skills`，MCP 服务（含 IDA 预设）在设置中添加。 |
 | **66 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、Hashcat、sqlmap、Volatility 3 等，按 Misc、Web、Reverse 分类。每款单独下载，下载后可离线保留，有变化时才更新。 |
 | **看清任何文件** | 图片支持缩放、查看像素颜色，一键切换颜色通道和位平面；二进制文件用十六进制查看，带数据检查器和类似 binwalk 的内嵌文件扫描；Markdown、PDF、音视频直接预览。 |
-| **真正的编辑器和调试器** | CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
+| **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
 | **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 工具时，随时把项目切换到 WSL2。 |
 | **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
 | **轻量** | 安装包 187 MB。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
 
 <a id="tour"></a>
 ## 看一眼
+
+**就地用 AI 改代码。** 选中代码，按 Ctrl+K，写下要怎样改。新代码标为绿色，被替换的内容标为红色，由你决定接受还是拒绝。
+
+![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 **一键查看隐写。** 逐个切换颜色通道和位平面：这道题的 flag 藏在红色通道的最低位。
 
@@ -50,6 +54,15 @@ Rainy 把 AI 编程智能体、真正的编辑器与调试器，以及 66 款 CT
 ![CTF 工具目录](assets/zh/ctf-tools.png)
 
 <a id="whats-new"></a>
+## 2.3 新变化
+
+- **编辑器里的 AI**：
+  - 边写边补全：打字停顿时，光标后出现灰色建议。按 Tab 接受，Ctrl+→ 只取一个词，Esc 忽略。
+  - 每条建议都会请求一次模型，所以默认关闭。可在**设置 → 模型**或底部状态栏打开，并单独选一个响应快、价格低的模型。
+  - Ctrl+K 改代码：选中代码（或把光标放在要插入的位置），按 Ctrl+K 或右键选择**用 AI 修改**，写下要怎样改。
+  - 新代码边生成边写进编辑器，只标出真正改动的行；Ctrl+Enter 接受，Esc 恢复原样。
+- **CTF 工具增至 66 款**，新增 Hashcat、sqlmap、Volatility 3、MemProcFS、RetDec、pycdc 等，分为 Misc、Web、Reverse 三组。
+
 ## 2.2 新变化
 
 - **RainyAgent 更名为 Rainy**，并换上新图标。2.2 直接覆盖安装旧版本，设置、对话和工具都会保留。仓库改名为 RainyMarks/Rainy，旧链接仍然可用。
@@ -137,10 +150,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.2.1 -ComponentSource release/offline-2.2.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.3.0 -ComponentSource release/offline-2.3.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.2.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.3.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
