@@ -10,7 +10,8 @@ import { IDE_LANGUAGE_RESTART_CODE } from '../../src/shared/ide-files-protocol.t
 import type { EditorCallbacks, EditorDocument, EditorInstance } from '../../src/renderer/ide/editor-types.ts'
 
 const labels = {
-  save: '保存', format: '格式化', sendSelection: '发送', toggleBreakpoint: '断点', gotoDefinition: '定义', findReferences: '引用', rename: '重命名', locale: 'zh' as const,
+  save: '保存', format: '格式化', sendSelection: '发送', toggleBreakpoint: '断点', gotoDefinition: '定义', findReferences: '引用', rename: '重命名', aiEdit: 'AI 修改', aiEditPlaceholder: '要求', aiEditGenerate: '生成', aiEditGenerating: '生成中', aiEditStop: '停止',
+  aiEditAccept: '接受', aiEditReject: '拒绝', aiEditReview: '请审阅', aiEditUnchanged: '没有改动', aiEditUnavailable: '不可用', locale: 'zh' as const,
 }
 
 function callbacks() {

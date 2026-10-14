@@ -13,6 +13,7 @@ import { Pill } from '../ui/Pill.tsx'
 import { SegmentedControl } from '../ui/SegmentedControl.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import { toast } from '../ui/toasts.tsx'
+import { EditorAiSettings } from './EditorAiSettings.tsx'
 import { GlobalPromptSettings } from './GlobalPromptSettings.tsx'
 import { ProxySettings } from './ProxySettings.tsx'
 import { t as lookup, useT } from './messages.ts'
@@ -289,6 +290,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
           ...model.contextWindow !== undefined && !current.contextEdited ? { context: String(model.contextWindow) } : {} }))
       }} />}
     </article>
+    <EditorAiSettings status={status} />
     <GlobalPromptSettings saved={status?.globalPrompt} action={action} accept={accept} />
     <ProxySettings action={action} />
     <BudgetCard workspace={workspace} status={status} />

@@ -10,7 +10,7 @@ import {
   IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, IconShieldOutlineRegular, Menu,
   ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
 } from '../ui/index.ts'
-import { usePrefs } from '../prefs.ts'
+import { setPrefs, usePrefs } from '../prefs.ts'
 import { ChatPane } from '../chat/ChatPane.tsx'
 import { History } from '../chat/History.tsx'
 import { SettingsDialog, type SettingsSection } from '../settings/SettingsDialog.tsx'
@@ -684,6 +684,10 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
           {caret !== undefined && <span className={css.statusItem}>{t('ideStatusPosition', { line: caret.endLine, column: caret.endColumn })}</span>}
           {caret !== undefined && caret.text.length > 0 && <span className={css.statusItem}>{t('ideStatusSelected', { count: caret.text.length })}</span>}
           {active !== undefined && (active.document.content !== null ? <>
+            <button type="button" className={`${css.statusItem} ${css.statusButton}`} aria-pressed={prefs.inlineCompletion} title={t('ideSuggestToggle')}
+              data-suggest-toggle onClick={() => { setPrefs({ inlineCompletion: !prefs.inlineCompletion }).catch(() => undefined) }}>
+              {t(prefs.inlineCompletion ? 'ideSuggestOn' : 'ideSuggestOff')}
+            </button>
             <span className={css.statusItem}>{active.language ?? sourceLanguage(active.document.path)}</span>
             <span className={css.statusItem}>{active.document.eol.toUpperCase()}</span>
             <span className={css.statusItem}>{t('ideEncoding')}{active.document.bom ? ` ${t('ideBom')}` : ''}</span>

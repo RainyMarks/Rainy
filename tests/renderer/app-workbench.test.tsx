@@ -8,6 +8,7 @@ import { emit } from '../../src/renderer/app/bus.ts'
 import { allByRole, byRole, change, cleanup, click, findByRole, keyDown, queryByRole, waitFor } from './ide-dom.tsx'
 import { chatState, resetChatState } from './app-chat-mock.tsx'
 import { assets, disposeWindows, document as source, mountWindow } from './app-fixture.tsx'
+import { host } from './ide-host-mock.ts'
 
 vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
 vi.mock('../../src/renderer/chat/ChatPane.tsx', () => import('./app-chat-mock.tsx'))
@@ -327,7 +328,20 @@ describe('window layout', () => {
     })
     const status = h.view.container.querySelector('[data-rainy-status]')
     expect([...status?.children ?? []].map(item => item.textContent).filter(text => text !== '')).toEqual(
-      ['行 1，列 6', '已选 5 个字符', 'python', 'LF', 'UTF-8'])
+      ['行 1，列 6', '已选 5 个字符', 'AI 补全：关', 'python', 'LF', 'UTF-8'])
     expect(allByRole('alert')).toHaveLength(0)
+  })
+
+  it('turns suggestions while typing on and off from the status bar', async () => {
+    const h = await mountWindow()
+    const toggle = h.view.container.querySelector<HTMLElement>('[data-suggest-toggle]')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    click(toggle)
+    expect(toggle.textContent).toBe('AI 补全：开')
+    expect(vi.mocked(host.call)).toHaveBeenCalledWith('prefs.set', { inlineCompletion: true })
+    await waitFor(() => { expect(vi.mocked(h.editor.setAssist)).toHaveBeenLastCalledWith({ suggestions: true }) })
+    click(toggle)
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(vi.mocked(host.call)).toHaveBeenLastCalledWith('prefs.set', { inlineCompletion: false })
   })
 })

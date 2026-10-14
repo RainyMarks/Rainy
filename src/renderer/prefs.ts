@@ -7,7 +7,7 @@ import { host } from './rpc.ts'
 /** Defaults until the Host answers; they match the Host's own defaults. */
 const DEFAULT_PREFS: UiPreferences = {
   locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true,
-  colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '',
+  colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '',
 }
 
 let current: UiPreferences = DEFAULT_PREFS

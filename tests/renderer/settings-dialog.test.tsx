@@ -21,7 +21,7 @@ vi.mock('../../src/renderer/settings/fonts.ts', async (original) => {
 
 const zh = settingsMessages.zh
 const en = settingsMessages.en
-const defaults: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '' }
+const defaults: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' }
 let stored: UiPreferences
 
 beforeEach(async () => {

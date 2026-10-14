@@ -102,6 +102,10 @@ export interface UiPreferences {
   uiFont: string
   /** Code font families before the default ones, separated by commas; empty for the default. */
   codeFont: string
+  /** Whether the editor asks the model for ghost-text suggestions while typing. */
+  inlineCompletion: boolean
+  /** Provider id of the model behind suggestions; empty to use the chat model. */
+  completionModel: string
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */
@@ -272,6 +276,38 @@ export interface SessionSnapshot {
   error?: string | undefined
 }
 
+/** Text around the editor cursor for a ghost-text suggestion. */
+export interface InlineCompletionRequest {
+  /** Workspace-relative path, shown to the model. */
+  path: string
+  language?: string | undefined
+  /** Text before the cursor, ending at it. */
+  prefix: string
+  /** Text after the cursor. */
+  suffix: string
+}
+
+/** A suggestion, or why there is none; an empty `text` with no `error` means nothing fits. */
+export interface InlineCompletionResult {
+  text: string
+  error?: string | undefined
+}
+
+/** A selection to rewrite for an instruction (Ctrl+K in the editor). */
+export interface InlineEditRequest {
+  /** Names the request for `inline.progress` and `inline.cancel`. */
+  requestId: string
+  path: string
+  language?: string | undefined
+  /** Text before the selection. */
+  before: string
+  /** Selected text; empty to insert at the cursor. */
+  selection: string
+  /** Text after the selection. */
+  after: string
+  instruction: string
+}
+
 /** `@` completion row. */
 export interface CompletionItem {
   kind: 'file' | 'directory' | 'session'
@@ -374,6 +410,12 @@ export interface HostMethods {
   'chat.setModel': [{ sessionId: SessionId } & ModelSelection, ModelSelection]
   'chat.compact': [{ sessionId: SessionId }, { message: string }]
   'chat.complete': [{ sessionId?: SessionId | undefined; workspaceId?: WorkspaceId | null | undefined; query: string }, CompletionItem[]]
+  /** Ghost-text suggestion at the editor cursor; a newer request ends the previous one. */
+  'inline.complete': [InlineCompletionRequest, InlineCompletionResult]
+  /** Replacement text for an editor selection; progress arrives as `inline.progress`. */
+  'inline.edit': [InlineEditRequest, { text: string }]
+  /** Stop an `inline.edit` request. */
+  'inline.cancel': [{ requestId: string }, void]
   'chat.setPermission': [{ sessionId: SessionId; mode: PermissionMode }, PermissionMode]
   'chat.approve': [{ sessionId: SessionId; toolCallId: string; decision: ApprovalDecision; reason?: string | undefined }, void]
   /** Undo write and edit calls of the chat, newest first; files changed since are left alone. */
@@ -426,6 +468,8 @@ export interface HostEvents {
   'memory.changed': { workspaceId: WorkspaceId }
   /** A file of an open editor tab or a run of the workspace changed; the page polls now instead of waiting. */
   'ide.hint': { workspaceId: WorkspaceId; kind: 'files' | 'execution' }
+  /** Replacement text an `inline.edit` request has produced so far. */
+  'inline.progress': { requestId: string; text: string }
 }
 export type HostEvent = keyof HostEvents
 

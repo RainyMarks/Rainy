@@ -59,6 +59,18 @@ export interface EditorActionLabels {
   readonly gotoDefinition: string
   readonly findReferences: string
   readonly rename: string
+  /** Context-menu item and name of the Ctrl+K prompt. */
+  readonly aiEdit: string
+  readonly aiEditPlaceholder: string
+  readonly aiEditGenerate: string
+  readonly aiEditGenerating: string
+  readonly aiEditStop: string
+  readonly aiEditAccept: string
+  readonly aiEditReject: string
+  /** Status line once a result is shown in place. */
+  readonly aiEditReview: string
+  readonly aiEditUnchanged: string
+  readonly aiEditUnavailable: string
   /** Interface language of the editor's own panels (search, go to line, folding). */
   readonly locale: 'zh' | 'en'
 }
@@ -72,6 +84,24 @@ export interface EditorWorkspace {
   readonly roots?: readonly { readonly rootId: string; readonly path: string; readonly title: string }[] | undefined
   readonly pythonPath?: string | undefined
   readonly compileCommandsDirectory?: string | undefined
+}
+
+/** Text around the cursor for a ghost-text suggestion. */
+export interface EditorSuggestRequest {
+  readonly path: string
+  readonly language: string
+  readonly prefix: string
+  readonly suffix: string
+}
+
+/** A selection to rewrite, with its surroundings and the instruction typed after Ctrl+K. */
+export interface EditorRewriteRequest {
+  readonly path: string
+  readonly language: string
+  readonly before: string
+  readonly selection: string
+  readonly after: string
+  readonly instruction: string
 }
 
 /** Editor events; the IDE model owns buffers and saves, the editor never writes files. */
@@ -88,6 +118,10 @@ export interface EditorCallbacks {
   readonly format: () => void
   readonly sendSelection: () => void
   readonly breakpoint: (path: string, line: number) => void
+  /** Ghost-text suggestion at the cursor, or '' for none; the signal aborts when the user keeps typing. */
+  readonly suggest?: ((request: EditorSuggestRequest, signal: AbortSignal) => Promise<string>) | undefined
+  /** Replacement for a selection; `progress` receives the text so far. Rejects with a message to show. */
+  readonly rewrite?: ((request: EditorRewriteRequest, progress: (text: string) => void, signal: AbortSignal) => Promise<string>) | undefined
   /** First visible line while the user scrolls, with a fraction for the part of it scrolled past; drives preview sync. */
   readonly scroll?: ((path: string, line: number) => void) | undefined
 }
@@ -108,6 +142,8 @@ export interface EditorInstance {
   showDiff(path: string, original: string, editable: boolean): void
   /** @param appearance Resolved host appearance. */
   setAppearance(appearance: EditorAppearance): void
+  /** @param options Whether ghost-text suggestions are requested while typing. */
+  setAssist(options: { readonly suggestions: boolean }): void
   /** @param labels Labels after a locale change; open panels and menus keep their text until they reopen. */
   setLabels(labels: EditorActionLabels): void
   /** @param breakpoints Persisted source line breakpoints. @param stopped Optional paused source position. */
@@ -119,7 +155,7 @@ export interface EditorInstance {
   reveal(path: string, line: number, column: number): void
   /**
    * Run an editor command on the shown document.
-   * @param command One of `rainy.save`, `rainy.format`, `rainy.selection`, `find`, `replace`, `gotoLine`, `undo`, `redo`,
+   * @param command One of `rainy.save`, `rainy.format`, `rainy.selection`, `rainy.aiEdit`, `find`, `replace`, `gotoLine`, `undo`, `redo`,
    *   `selectAll`, `toggleComment`, `gotoDefinition`, `findReferences`, `rename`, `formatDocument`.
    * @returns Completion; rejects for an unknown command.
    */

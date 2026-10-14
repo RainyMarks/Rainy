@@ -15,6 +15,7 @@ import type {
   EditorActionLabels, EditorAppearance, EditorAssets, EditorCallbacks, EditorDocument, EditorInstance, EditorProblem, EditorView as EditorViewState,
   EditorWorkspace,
 } from '../renderer/ide/editor-types.ts'
+import { aiExtensions, startAiEdit, type AiHost } from './ai.ts'
 import { languageKey, loadLanguage, lspLanguageId, serverLanguage } from './languages.ts'
 import { chinesePhrases } from './phrases.ts'
 import { LanguageConnection, type LanguageHost, type LspDiagnostic, type LspPosition, type LspTextEdit } from './lsp.ts'
@@ -22,6 +23,14 @@ import { createTerminal } from './terminal.ts'
 import { editorHighlighting, editorTheme } from './theme.ts'
 import { uriInside, uriKey } from './uri.ts'
 import './editor.css'
+
+/** Characters around the cursor or selection that the editor sends for a suggestion or a rewrite. */
+const SUGGEST_BEFORE = 4000
+const SUGGEST_AFTER = 1500
+const REWRITE_BEFORE = 8000
+const REWRITE_AFTER = 4000
+/** Documents with a preview keep Ctrl+K for the Ctrl+K V chord; their AI rewrite is in the context menu. */
+const PREVIEW_DOCUMENT = /\.(?:md|markdown|mdx|svg)$/iu
 
 /** Marks transactions that apply text the IDE model already holds, so they are not reported back as edits. */
 const external = Annotation.define<boolean>()
@@ -176,6 +185,8 @@ interface OpenDocument {
   diff: { original: string; editable: boolean } | undefined
   /** The view state the IDE saved has been applied. */
   restored: boolean
+  /** Model calls and settings behind the view's suggestions and Ctrl+K. */
+  ai: AiHost
 }
 
 class WorkspaceEditor implements EditorInstance, LanguageHost {
@@ -187,6 +198,8 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
   private workspace: EditorWorkspace | undefined
   private activePath: string | undefined
   private dark = false
+  /** Whether ghost-text suggestions are on. */
+  private suggestions = false
   /** Code font family list last applied; `undefined` until the page supplies one. */
   private fontFamily: string | undefined
   private disposed = false
@@ -267,6 +280,10 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     for (const open of this.documents.values()) open.view.dispatch({ effects: darkSlot.reconfigure(EditorView.darkTheme.of(this.dark)) })
   }
 
+  setAssist(options: { readonly suggestions: boolean }): void {
+    this.suggestions = options.suggestions
+  }
+
   setLabels(labels: EditorActionLabels): void {
     const previous = this.labels.locale
     this.labels = labels
@@ -297,6 +314,11 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       case 'rainy.format':
       case 'formatDocument': this.callbacks.format(); break
       case 'rainy.selection': this.callbacks.sendSelection(); break
+      case 'rainy.aiEdit': {
+        const open = this.activePath === undefined ? undefined : this.documents.get(this.activePath)
+        if (open !== undefined) startAiEdit(open.view, open.ai)
+        break
+      }
       case 'find':
       case 'replace': run(openSearchPanel); break
       case 'gotoLine': run(gotoLine); break
@@ -412,7 +434,8 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     host.className = 'rainy-editor-surface'
     host.hidden = true
     this.container.append(host)
-    const pending: Omit<OpenDocument, 'view'> = { document, key: languageKey(document.path, document.language), host, connection: undefined, diff: undefined, restored: false }
+    const base: Omit<OpenDocument, 'view' | 'ai'> = { document, key: languageKey(document.path, document.language), host, connection: undefined, diff: undefined, restored: false }
+    const pending: Omit<OpenDocument, 'view'> = Object.assign(base, { ai: this.aiHost(base) })
     const view = new EditorView({ parent: host, state: EditorState.create({ doc: document.text, extensions: this.extensions(pending) }) })
     const open: OpenDocument = Object.assign(pending, { view })
     open.view.dispatch({ effects: setBreakpoints.of(this.breakpointsFor(document.path)) })
@@ -422,6 +445,27 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     this.loadLanguageInto(open)
     this.attachLanguageServer(open)
     return open
+  }
+
+  /** @returns The AI host of one document: its suggestions and rewrites go through the page's model calls. */
+  private aiHost(open: Omit<OpenDocument, 'view' | 'ai'>): AiHost {
+    const request = (): { path: string; language: string } => ({ path: open.document.path, language: open.document.language })
+    return {
+      suggestions: () => this.suggestions && this.callbacks.suggest !== undefined,
+      editable: () => !open.document.readOnly && open.diff === undefined,
+      ctrlK: () => !PREVIEW_DOCUMENT.test(open.document.path),
+      suggest: async (view, pos, signal) => this.callbacks.suggest === undefined ? '' : this.callbacks.suggest({
+        ...request(), prefix: view.state.sliceDoc(Math.max(0, pos - SUGGEST_BEFORE), pos), suffix: view.state.sliceDoc(pos, pos + SUGGEST_AFTER),
+      }, signal),
+      rewrite: async (view, from, to, instruction, progress, signal) => {
+        if (this.callbacks.rewrite === undefined) throw new Error(this.labels.aiEditUnavailable)
+        return this.callbacks.rewrite({
+          ...request(), before: view.state.sliceDoc(Math.max(0, from - REWRITE_BEFORE), from), selection: view.state.sliceDoc(from, to),
+          after: view.state.sliceDoc(to, to + REWRITE_AFTER), instruction,
+        }, progress, signal)
+      },
+      labels: () => this.labels,
+    }
   }
 
   private extensions(open: Omit<OpenDocument, 'view'>): Extension {
@@ -457,6 +501,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       phrasesSlot.of(phrasesFor(this.labels.locale)),
       breakpointField,
       renameField,
+      aiExtensions(open.ai),
       editorTheme,
       editorHighlighting,
       keymap.of([
@@ -681,6 +726,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     const hasSelection = !view.state.selection.main.empty
     const language = LSPPlugin.get(view) !== null
     const items: { label: string; enabled: boolean; run(): void }[] = [
+      { label: this.labels.aiEdit, enabled: !open.document.readOnly && open.diff === undefined, run: () => { startAiEdit(view, open.ai) } },
       { label: this.labels.sendSelection, enabled: hasSelection, run: () => { this.callbacks.sendSelection() } },
       { label: this.labels.gotoDefinition, enabled: language, run: () => { jumpToDefinition(view) } },
       { label: this.labels.findReferences, enabled: language, run: () => { findReferences(view) } },

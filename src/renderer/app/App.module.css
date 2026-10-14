@@ -104,5 +104,8 @@
   border-top: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-specific-sidebar-fill); color: var(--dsw-alias-label-secondary);
   font-size: 11px; white-space: nowrap; }
 .statusItem { display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 7px; }
+.statusButton { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.statusButton:hover { background: var(--dsw-alias-control-fill-hover); color: var(--dsw-alias-label-primary); }
+.statusButton[aria-pressed="false"] { color: var(--dsw-alias-label-tertiary); }
 .statusItem[data-activity] { color: var(--dsw-alias-state-business-primary); }
 .statusDot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-success-primary, #2ea44f); }

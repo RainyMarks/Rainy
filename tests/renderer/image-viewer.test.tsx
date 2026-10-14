@@ -8,7 +8,7 @@ vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harne
 afterEach(async () => { await cleanup() })
 
 it('names the channel step buttons instead of reading out arrow glyphs', async () => {
-  await emit('prefs.changed', { locale: 'en', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '' })
+  await emit('prefs.changed', { locale: 'en', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
   await render(<ImageViewer url="/rainy/ide/raw?path=a.png" name="a.png" bytes={10} />)
   const labels = [...document.querySelectorAll('button')].map(button => button.getAttribute('aria-label')).filter(label => label !== null)
   expect(labels).toEqual(expect.arrayContaining(['Previous channel', 'Next channel']))

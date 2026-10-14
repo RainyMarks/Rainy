@@ -19,6 +19,7 @@ import type { Settings } from '../settings.ts'
 import { estimateMessages } from './compaction.ts'
 import { completeChats, completeFiles } from './complete.ts'
 import { loadBaseline, renderBaseline } from './instructions.ts'
+import { InlineAssist } from './inline.ts'
 import { idaServer, McpManager } from './mcp.ts'
 import { ProjectMemory } from './memory/index.ts'
 import { DEEPSEEK_FLASH, Models } from './models.ts'
@@ -296,6 +297,12 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     return [...files, ...completeChats(store.list(), query, sessionId)]
   })
 
+  // ── editor AI ──
+  const inline = new InlineAssist(models, settings, (requestId, text) => { rpc.emit('inline.progress', { requestId, text }) })
+  rpc.register('inline.complete', request => inline.complete(request))
+  rpc.register('inline.edit', request => inline.edit(request))
+  rpc.register('inline.cancel', ({ requestId }) => { inline.cancel(requestId) })
+
   // ── network ──
   const proxySchema = z.object({ mode: z.enum(['system', 'off', 'manual']), url: z.string().max(2048).optional() })
   /** The choice from Settings, where a masked password stands for the stored one. */
@@ -390,6 +397,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     controlStatus: () => ({ models: models.status().models, selected: models.status().selected }),
     connectStrata: params => models.connectStrata(params),
     async close() {
+      inline.close()
       await Promise.allSettled([...sessions.values()].map(chat => chat.close()))
       await memory.close()
       await mcp.close()

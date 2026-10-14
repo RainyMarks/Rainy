@@ -97,3 +97,119 @@
   color: var(--dsw-alias-label-tertiary);
   cursor: default;
 }
+
+/* Ghost-text suggestion after the cursor; Tab accepts it. */
+.rainy-ghost-text {
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* Ctrl+K: the prompt box above the region, the replaced lines in red and the new lines in green. */
+.rainy-ai-prompt {
+  padding: 4px 8px 6px;
+  font-family: var(--dsw-font-family);
+  font-size: 13px;
+  white-space: normal;
+  cursor: default;
+}
+
+.rainy-ai-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  max-width: 720px;
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.rainy-ai-input {
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+
+.rainy-ai-input:focus {
+  outline: none;
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.rainy-ai-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.rainy-ai-button {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-control-fill);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.rainy-ai-button:hover {
+  background: var(--dsw-alias-control-fill-hover);
+}
+
+.rainy-ai-primary {
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-inverted);
+}
+
+.rainy-ai-primary:hover {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.rainy-ai-status {
+  grid-column: 1 / -1;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rainy-ai-status:empty {
+  display: none;
+}
+
+.rainy-ai-status.rainy-ai-error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.rainy-ai-preview {
+  grid-column: 1 / -1;
+  max-height: 180px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--rainy-editor-font-size, 13px);
+  white-space: pre;
+}
+
+.rainy-ai-removed {
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
+  color: var(--dsw-alias-label-tertiary);
+  white-space: pre;
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, transparent);
+}
+
+.cm-line.rainy-ai-added {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent);
+}

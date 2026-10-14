@@ -3,6 +3,8 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { EditorActionLabels, EditorAppearance, EditorInstance } from './editor-types.ts'
 import { loadEditorAssets } from './editor-loader.ts'
+import { rewrite, suggest } from './ai-assist.ts'
+import { usePrefs } from '../prefs.ts'
 import { MAX_DECODE_BYTES, sourceLanguage, sourceUri, type IdeModel, type IdeState } from './ide-model.ts'
 import { fileKey, workspaceRoots } from './ide-paths.ts'
 import { selectedPythonExecutable } from './run-target.ts'
@@ -46,7 +48,9 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   const activePath = useRef<string | null>(null)
   const actionLabels: EditorActionLabels = { save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'),
     toggleBreakpoint: t('ideToggleBreakpoint'), gotoDefinition: t('ideGotoDefinition'), findReferences: t('ideFindReferences'),
-    rename: t('ideRenameSymbol'), locale }
+    rename: t('ideRenameSymbol'), aiEdit: t('ideAiEdit'), aiEditPlaceholder: t('ideAiEditPlaceholder'), aiEditGenerate: t('ideAiEditGenerate'),
+    aiEditGenerating: t('ideAiEditGenerating'), aiEditStop: t('ideAiEditStop'), aiEditAccept: t('ideAiEditAccept'), aiEditReject: t('ideAiEditReject'),
+    aiEditReview: t('ideAiEditReview'), aiEditUnchanged: t('ideAiEditUnchanged'), aiEditUnavailable: t('ideAiEditUnavailable'), locale }
   const labels = useRef(actionLabels)
   labels.current = actionLabels
   const [ready, setReady] = useState(false)
@@ -84,6 +88,8 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
             format: () => { void model.format().catch((error: unknown) => { model.fail(error) }) },
             sendSelection: () => { callbacks.current.sendSelection() },
             breakpoint: (path, line) => { callbacks.current.breakpoint(path, line) },
+            suggest,
+            rewrite,
             scroll: (path, line) => { if (path === activePath.current) scrollSync.editorScrolled(line) },
           },
           labels.current,
@@ -189,6 +195,10 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   useEffect(() => {
     instance.current?.setLabels(labels.current)
   }, [ready, locale])
+  const suggestions = usePrefs().inlineCompletion
+  useEffect(() => {
+    instance.current?.setAssist({ suggestions })
+  }, [ready, suggestions])
   useEffect(() => {
     instance.current?.setBreakpoints(state.data.execution?.breakpoints.map(source => ({
       path: fileKey(source.path, source.rootId), lines: source.lines,
