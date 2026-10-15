@@ -111,8 +111,6 @@ describe('workbench events', () => {
     const h = await mountWindow()
     act(() => { emit('pane.show', { pane: 'bottom' }) })
     expect(h.workbench.model.state.getSnapshot().data.layout.bottomVisible).toBe(true)
-    act(() => { emit('pane.show', { pane: 'ctf' }) })
-    expect(byRole('tab', 'CTF 工具').getAttribute('aria-selected')).toBe('true')
     act(() => { emit('pane.show', { pane: 'settings', section: 'memory' }) })
     expect(byRole('dialog', 'settings:dialog').dataset.section).toBe('memory')
     click(byRole('button', 'settings:close'))

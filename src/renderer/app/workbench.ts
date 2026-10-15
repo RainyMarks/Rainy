@@ -1,7 +1,6 @@
-/** Composition of the IDE models, the CTF workbench and the chat shown beside them. */
+/** Composition of the IDE models and the chat shown beside them. */
 import { DEFAULT_CONFIG, type Config } from '../../shared/config.ts'
 import type { IdeWorkspace } from '../../shared/ide-files-protocol.ts'
-import type { NativeToolsBridge } from '../../shared/native-tools-protocol.ts'
 import type { SessionSummary } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
 import { createStore, type Store } from '../ui/store.ts'
@@ -12,8 +11,7 @@ import { IdeExecutionModel } from '../ide/ide-execution-model.ts'
 import { IdeDirectorySelection } from '../ide/ide-directory-selection.ts'
 import { absoluteFilePath, fileKey, fileLabel, keyFromAbsolute } from '../ide/ide-paths.ts'
 import { ideMessages, type IdeMessageKey } from '../ide/messages.ts'
-import { createCtfWorkbench, type CtfWorkbench } from '../ctf/ctf-workbench.ts'
-import type { DesktopWorkbenchBridge } from '../ctf/ctf-protocol.ts'
+import type { DesktopWorkbenchBridge } from './desktop-bridge.ts'
 import { emit, on, type WorkbenchEvents } from './bus.ts'
 
 /** Native folder picker exposed by the Electron preload as `__RAINY_IDE_NATIVE__`. */
@@ -27,7 +25,6 @@ export interface WorkbenchOptions {
   readonly files?: IdeFilesApi | undefined
   readonly execution?: IdeExecutionApi | undefined
   readonly native?: NativeIdeBridge | undefined
-  readonly tools?: NativeToolsBridge | undefined
   readonly desktop?: DesktopWorkbenchBridge | undefined
   /** Whether a remembered chat belongs to a project; defaults to the Host's chat list of that project. */
   readonly sessionInWorkspace?: ((sessionId: string, workspace: IdeWorkspace) => Promise<boolean>) | undefined
@@ -38,7 +35,6 @@ export interface Workbench {
   readonly model: IdeModel
   readonly execution: IdeExecutionModel
   readonly directory: IdeDirectorySelection
-  readonly ctf: CtfWorkbench
   /** Chat shown in the AI pane; `null` shows the new-chat composer. */
   readonly session: Store<string | null>
   /** Whether the desktop's native folder picker is available. */
@@ -137,7 +133,6 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     choose: async () => (await native?.selectDirectory())?.path ?? null,
     adopt: (path, mode) => mode === 'attach' ? model.attachRoot(path) : model.openWorkspace(path),
   })
-  const ctf = createCtfWorkbench(config, { tools: options.tools, desktop: options.desktop })
 
   const showSession = (sessionId: string | null): void => {
     session.set(sessionId)
@@ -233,7 +228,6 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     model,
     execution,
     directory,
-    ctf,
     session,
     nativeDirectory: native !== undefined,
     start: () => {
@@ -247,7 +241,6 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     dispose: async () => {
       directory.dispose()
       for (const dispose of disposers.splice(0)) dispose()
-      ctf.dispose()
       await execution.dispose()
       model.dispose()
     },
@@ -261,7 +254,6 @@ export function sharedWorkbench(): Workbench {
   shared ??= createWorkbench({
     config: window.__RAINY_WORKBENCH_CONFIG__,
     native: window.__RAINY_IDE_NATIVE__,
-    tools: window.__RAINY_TOOLS__,
     desktop: window.__RAINY_WORKBENCH__,
   })
   return shared

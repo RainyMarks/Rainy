@@ -39,7 +39,7 @@ function openEnabled(): Promise<HTMLElement> {
 }
 
 describe('window layout', () => {
-  it('opens optional panes and tool tabs only on demand from an empty workspace', async () => {
+  it('opens optional panes only on demand from an empty workspace', async () => {
     const h = await mountWindow(950)
     act(() => {
       const current = h.workbench.model.state.getSnapshot()
@@ -49,10 +49,6 @@ describe('window layout', () => {
     expect(queryByRole('tablist')).toBeNull()
     expect(queryByRole('button', '运行：Python')).toBeNull()
     expect(byRole('tree', '文件')).toBeTruthy()
-    click(byRole('button', 'CTF 工具'))
-    expect(byRole('tab', 'CTF 工具')).toBeTruthy()
-    click(byRole('button', '收起 CTF 工具'))
-    expect(queryByRole('tablist')).toBeNull()
     click(byRole('button', '显示或隐藏 AI 助手'))
     expect(byRole('complementary', 'AI 助手').contains(chatPane())).toBe(true)
     expect(chatState).toMatchObject({ mounts: 1, unmounts: 0 })
@@ -166,12 +162,11 @@ describe('window layout', () => {
     await findByRole('dialog', '选择工作区目录')
   })
 
-  it('keeps the same chat and draft while resizing, switching tool tabs, and hiding the AI pane', async () => {
+  it('keeps the same chat and draft while resizing and hiding the AI pane', async () => {
     const h = await mountWindow()
     click(byRole('button', '显示或隐藏 AI 助手'))
     const chat = byRole('textbox', 'chat:draft') as HTMLInputElement
     change(chat, 'unfinished chat draft')
-    click(byRole('button', 'CTF 工具'))
     h.rerender(950)
     click(byRole('button', '视图'))
     click(byRole('menuitem', '专注编辑'))

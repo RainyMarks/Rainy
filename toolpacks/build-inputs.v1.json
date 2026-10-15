@@ -280,53 +280,6 @@
           "sha256": "28b1a0d013640a2ac95898ea705fa186e5b4ff767a1c1b49257161bc106599c6"
         }
       ]
-    },
-    {
-      "path": "native-tools-0ce4cd501de4c218.tar.gz.001",
-      "category": "offline",
-      "bytes": 2130386405,
-      "sha256": "9bec82e5fac5d9650fec85d717d154c525b7a00a5bf92ed6e4dccc8ade321c25",
-      "pieces": [
-        {
-          "file": "rainy-e39742884d12b79f9375.001",
-          "bytes": 1073741824,
-          "sha256": "38b88991c0f19ff3afcd6008f5163aca809f4e4bd6499e660202677463ab8e50"
-        },
-        {
-          "file": "rainy-e39742884d12b79f9375.002",
-          "bytes": 1056644581,
-          "sha256": "0663446643892b019b85edb3f1891cb2a24a99c33bf40c0b0edd57dbb92d08d0"
-        }
-      ],
-      "baseUrl": "https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.5-resources/"
-    },
-    {
-      "path": "native-tools-metadata.json",
-      "category": "offline",
-      "bytes": 4299905,
-      "sha256": "eb54ed930eaa3d1e6e702daf4e8cb9fe538390b881f5eee5d04a5e61c90f5962",
-      "pieces": [
-        {
-          "file": "rainy-4a25b91892119232771a.001",
-          "bytes": 4299905,
-          "sha256": "eb54ed930eaa3d1e6e702daf4e8cb9fe538390b881f5eee5d04a5e61c90f5962"
-        }
-      ],
-      "baseUrl": "https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.5-resources/"
-    },
-    {
-      "path": "工具清单.json",
-      "category": "offline",
-      "bytes": 38329,
-      "sha256": "a00df5e580b8213a47c51cd3fc21c59fe9b327fcb0b219c89b922632e4704a9a",
-      "pieces": [
-        {
-          "file": "rainy-2c1f506d2acb8cd9b264.001",
-          "bytes": 38329,
-          "sha256": "a00df5e580b8213a47c51cd3fc21c59fe9b327fcb0b219c89b922632e4704a9a"
-        }
-      ],
-      "baseUrl": "https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.5-resources/"
     }
   ]
 }

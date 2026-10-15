@@ -1,4 +1,4 @@
-/** The window: top bar, file pane, editor area with the CTF workbench, AI pane, bottom panel and status bar. */
+/** The window: top bar, side pane, editor area with the project map, AI pane, bottom panel and status bar. */
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent, ReactNode } from 'react'
 import type { IdeFileEntry, IdeRootId } from '../../shared/ide-files-protocol.ts'
@@ -7,7 +7,7 @@ import {
   Button, FileTypeIcon, fileSizeText, IconAction, IconBugOutline, IconCheckOutlineRegular, IconChevronDownOutlineRegular,
   IconChevronLeftOutlineRegular, IconCloseOutlineRegular, IconEllipsisOutlineRegular, IconFolderCloseRegular,
   IconPanelBottomOutline, IconPanelLeftOutlineRegular, IconPanelRightOutline, IconPlayOutlineRegular, IconPlusOutlineRegular,
-  IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, IconShieldOutlineRegular, Menu,
+  IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, Menu,
   IconBranchOutlineRegular, IconFilesOutline, IconSourceControlOutline, ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
 } from '../ui/index.ts'
 import { GitView } from '../git/GitView.tsx'
@@ -25,8 +25,6 @@ import { ReviewBar } from '../review/ReviewBar.tsx'
 import { ChatPane } from '../chat/ChatPane.tsx'
 import { History } from '../chat/History.tsx'
 import { SettingsDialog, type SettingsSection } from '../settings/SettingsDialog.tsx'
-import { CtfWorkbench } from '../ctf/CtfWorkbench.tsx'
-import { useCtfT } from '../ctf/messages.ts'
 import type { EditorAppearance, EditorInstance } from '../ide/editor-types.ts'
 import { sourceLanguage } from '../ide/ide-model.ts'
 import { IdeEditor } from '../ide/IdeEditor.tsx'
@@ -80,7 +78,6 @@ export interface WorkbenchLayoutProps {
 export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeight: height, listDirectory, createDirectory }: WorkbenchLayoutProps) {
   const t = useIdeT()
   const tv = useViewerT()
-  const tc = useCtfT()
   const tm = useMapT()
   const ta = useAppT()
   const ts = useSearchT()
@@ -112,10 +109,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const [directoryBusy, setDirectoryBusy] = useState(false)
   const [directoryMode, setDirectoryMode] = useState<'open' | 'attach'>('open')
   const [narrowNavigation, setNarrowNavigation] = useState(false)
-  const [toolsOpen, setToolsOpen] = useState(state.center === 'tools')
-  const [toolsVisited, setToolsVisited] = useState(state.center === 'tools')
   const [settings, setSettings] = useState<{ readonly open: boolean; readonly section?: SettingsSection | undefined }>({ open: false })
-  useEffect(() => { if (state.center === 'tools') { setToolsOpen(true); setToolsVisited(true) } }, [state.center])
   const [mapOpen, setMapOpen] = useState(state.center === 'map')
   useEffect(() => { if (state.center === 'map') setMapOpen(true) }, [state.center])
   const editor = useRef<EditorInstance | undefined>(undefined)
@@ -377,7 +371,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
       },
       agent: () => { model.layout({ agentVisible: !layout.agentVisible }) },
       bottom: () => { model.layout({ bottomVisible: !layout.bottomVisible }) },
-      tools: () => { model.center('tools') },
       palette: () => { setPalette('') },
       searchFiles: () => { openSearch(false) },
       replaceFiles: () => { openSearch(true) },
@@ -414,7 +407,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     if (pane === 'ai') model.layout({ agentVisible: true })
     else if (pane === 'files' || pane === 'history') showLeft(pane)
     else if (pane === 'bottom') model.layout({ bottomVisible: true })
-    else if (pane === 'ctf') model.center('tools')
     else if (pane === 'settings') openSettings(settingsSections.find(entry => entry === section) ?? 'general')
   }
   useEffect(() => on('pane.show', ({ pane, section }) => { showPane.current(pane, section) }), [])
@@ -483,7 +475,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
           { id: 'sourceControl', label: ta('cmdSourceControl'), disabled: state.workspace === null },
           { id: 'agent', label: t('ideToggleAgent') },
           { id: 'bottom', label: t('ideToggleBottom') },
-          { id: 'tools', label: t('ideTools') },
         ]
   const workspaceMenu: MenuEntry[] = [
     ...state.workspaces.map(workspace => ({ id: workspace.workspaceId, label: workspace.title })),
@@ -535,7 +526,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     { id: 'view.problems', category: ta('catView'), label: ta('cmdProblems'), run: () => { model.layout({ bottomVisible: true, bottomTab: 'problems' }) } },
     { id: 'view.terminal', category: ta('catView'), label: ta('cmdNewTerminal'), keys: ['Ctrl', '+', '`'], disabled: noWorkspace, run: newTerminal },
     { id: 'view.map', category: ta('catView'), label: ta('cmdMap'), disabled: noWorkspace, run: () => { model.center('map') } },
-    { id: 'view.tools', category: ta('catView'), label: ta('cmdTools'), run: () => { model.center('tools') } },
     { id: 'run.file', category: ta('catRun'), label: ta('cmdRunFile'), disabled: !editing, run: () => { run(launch(false)) } },
     { id: 'run.debug', category: ta('catRun'), label: ta('cmdDebugFile'), disabled: !editing || target?.configuration.language === 'php', run: () => { run(launch(true)) } },
     { id: 'run.profiles', category: ta('catRun'), label: t('ideRunProfiles'), disabled: noWorkspace, run: () => { setRunConfiguration(true) } },
@@ -626,9 +616,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
             <IconAction label={tm('mapTitle')} pressed={state.center === 'map'} disabled={state.workspace === null} onClick={() => { model.center('map') }}>
               <IconMapOutline size={16} />
             </IconAction>
-            <IconAction label={tc('ctf')} pressed={state.center === 'tools'} onClick={() => { model.center('tools') }}>
-              <IconShieldOutlineRegular size={16} />
-            </IconAction>
             <IconAction label={ta('settings')} onClick={() => { openSettings('models') }}>
               <IconSettingsOutlineRegular size={16} />
             </IconAction>
@@ -713,7 +700,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         </aside>
         <main className={`${css.pane} ${css.center}`}>
           <div className={css.editorArea}>
-            <div className={css.editorHeader} hidden={state.data.tabs.length === 0 && !toolsOpen && !mapOpen}>
+            <div className={css.editorHeader} hidden={state.data.tabs.length === 0 && !mapOpen}>
               <div className={css.tabs} role="tablist" aria-label={t('ideExplorer')}>
                 {state.data.tabs.map(file => (
                   <div className={css.tab} key={file.path} data-active={(activePath === file.path && state.center === 'editor') || undefined}>
@@ -733,13 +720,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                   <button type="button" role="tab" aria-selected={state.center === 'map'} className={css.button}
                     onClick={() => { model.center('map') }}><IconMapOutline size={14} /><span className={css.tabName}>{tm('mapTitle')}</span></button>
                   <IconAction label={tm('mapClose')} onClick={() => { setMapOpen(false); if (state.center === 'map') model.center('editor') }}>
-                    <IconCloseOutlineRegular size={12} />
-                  </IconAction>
-                </div>}
-                {toolsOpen && <div className={css.tab} data-active={state.center === 'tools' || undefined}>
-                  <button type="button" role="tab" aria-selected={state.center === 'tools'} className={css.button}
-                    onClick={() => { model.center('tools') }}>{tc('ctf')}</button>
-                  <IconAction label={tc('ctfClose')} onClick={() => { setToolsOpen(false); model.center('editor') }}>
                     <IconCloseOutlineRegular size={12} />
                   </IconAction>
                 </div>}
@@ -823,9 +803,6 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                 <ProjectMapView workspace={state.workspace} visible={state.center === 'map'} changes={changes} activity={aiActivity}
                   openFile={(path) => { run(model.openFile(path)) }} ask={askAi} />
               </Suspense>}
-            </div>
-            <div className={css.centerBody} hidden={state.center !== 'tools'}>
-              {toolsVisited && <CtfWorkbench owner={workbench.ctf} sessionId={sessionId} active={state.center === 'tools'} dark={dark} />}
             </div>
           </div>
           <div className={css.bottom} hidden={!layout.bottomVisible}

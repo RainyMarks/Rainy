@@ -158,9 +158,8 @@ test('build bootstrap extracts pinned IDE and Windows resources and prepares the
   await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/ide-resources.tar.gz'), gzip: true }, ['manifest.json'])
   await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/strata-runtime.tar.gz'), gzip: true }, ['manifest.json'])
   await tar.c({ cwd: basic, file: join(f.source, 'environment-components/windows-basic.tar.gz'), gzip: true }, ['pwsh'])
-  await f.put('native-tools-metadata.json', '{}\n')
   await f.put('environment/media-verification.json', '{}\n')
-  const files = ['build-inputs/ide-resources.tar.gz', 'build-inputs/strata-runtime.tar.gz', 'environment-components/windows-basic.tar.gz', 'native-tools-metadata.json', 'environment/media-verification.json']
+  const files = ['build-inputs/ide-resources.tar.gz', 'build-inputs/strata-runtime.tar.gz', 'environment-components/windows-basic.tar.gz', 'environment/media-verification.json']
     .map(path => ({ path, category: path.startsWith('build-inputs/') ? 'build-input' : 'offline' }))
   const manifest = await packReleaseAssets({ sourceRoot: f.source, outputDirectory: join(f.root, 'build-parts'), files, releaseVersion: '1.0.0', baseUrl })
   const app = join(f.root, 'app')

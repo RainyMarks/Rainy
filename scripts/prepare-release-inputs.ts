@@ -2,7 +2,6 @@
 import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { componentDigest, environmentComponentSchema } from '../src/main/environment-components.ts'
-import { toolPackMetadataSchema } from '../src/main/toolpack-format.ts'
 import { environmentMedia } from '../src/main/environment-media.ts'
 
 const app = resolve(import.meta.dirname, '..')
@@ -13,7 +12,6 @@ function option(name: string): string | undefined {
 }
 const output = resolve(option('--output') ?? join(app, `release/offline-${version}`))
 const components = resolve(option('--components') ?? join(output, 'environment-components'))
-const tools = option('--tools')
 async function publish(source: string, destination: string, expected: { bytes: number; sha256: string }): Promise<void> {
   if ((await stat(source)).size !== expected.bytes || await componentDigest(source) !== expected.sha256) throw new Error(`Offline input checksum differs: ${source}`)
   await mkdir(dirname(destination), { recursive: true })
@@ -25,17 +23,6 @@ async function publish(source: string, destination: string, expected: { bytes: n
   }
 }
 await mkdir(output, { recursive: true })
-if (tools) {
-  const source = resolve(tools)
-  const metadataText = await readFile(join(source, 'native-tools-metadata.json'), 'utf8')
-  const metadata = toolPackMetadataSchema.parse(JSON.parse(metadataText))
-  // A per-tool pack lists one archive per unit; earlier packs list split volumes.
-  const media = metadata.version === 1 ? metadata.volumes : metadata.archives
-  for (const volume of media) await publish(join(source, volume.file), join(output, volume.file), volume)
-  await writeFile(join(output, 'native-tools-metadata.json'), metadataText)
-  await copyFile(join(source, '工具清单.json'), join(output, '工具清单.json'))
-  console.log(JSON.stringify({ reusedToolPack: metadata.id, files: media.length }))
-}
 const catalog = []
 for (const id of ['windows-basic', 'windows-science-cpu', 'windows-science-cuda', 'windows-cpp', 'linux-basic', 'linux-science-cpu', 'linux-science-cuda']) {
   const descriptor = environmentComponentSchema.parse(JSON.parse(await readFile(join(components, `${id}.json`), 'utf8')))

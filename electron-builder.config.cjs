@@ -5,16 +5,13 @@ process.env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ';
 
 module.exports = {
   // Rainy is the product name; the executable keeps its earlier name so installed shortcuts, pinned icons and the
-  // uninstaller steps in resources/native-tools-installer.nsh keep working across the rename.
+  // uninstaller steps in resources/installer.nsh keep working across the rename.
   appId: 'dev.rainy.agent', productName: 'Rainy', executableName: 'RainyAgent',
   publish: { provider: 'github', owner: 'RainyMarks', repo: 'Rainy', releaseType: 'release' },
   // scripts/prepare-shell.mjs stages build/shell from dist/main.cjs, dist/preload.cjs and dist/setup.
   directories: { app: 'build/shell', output: 'release' },
   files: ['package.json', 'main.cjs', 'preload.cjs', 'setup/**', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '!**/node_modules/**'],
   extraResources: [
-    // The signed per-tool channel; tools themselves are downloaded one by one.
-    { from: 'toolpacks/native-tools-channel.v2.signed.json', to: 'native-tools-channel.signed.json' },
-    { from: 'resources/native-tools-public-keys.json', to: 'native-tools-public-keys.json' },
     // Strata, PHP and the Linux runtime are downloaded when first needed; this pins their archives.
     { from: 'runtime/optional-modules.json', to: 'optional-modules.json' },
     { from: 'build/icon.ico', to: 'icon.ico' },
@@ -32,6 +29,6 @@ module.exports = {
   electronFuses: { runAsNode: false, enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false, enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true },
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'build/icon.ico', signExecutable: Boolean(process.env.CSC_LINK) },
-  nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, shortcutName: 'Rainy', deleteAppDataOnUninstall: false, include: 'resources/native-tools-installer.nsh' },
+  nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, shortcutName: 'Rainy', deleteAppDataOnUninstall: false, include: 'resources/installer.nsh' },
   artifactName: 'Rainy-${version}-windows-x64-setup.${ext}',
 };

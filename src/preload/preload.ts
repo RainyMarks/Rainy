@@ -2,8 +2,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { installWindowChrome } from './preload-chrome.ts'
 import type { EnvironmentAction, EnvironmentSnapshot } from '../main/environment.ts'
-import type { NativeToolCatalog, NativeToolId, NativeToolLaunchResult, NativeToolsDownloadState, NativeToolsUpdateState } from '../shared/native-tools-protocol.ts'
-import type { ToolPackWindowProgress } from '../main/toolpack-maintenance.ts'
 import type { IdeNativeDirectory } from '../main/ide-native.ts'
 import type { IdeEnvironmentAction, IdeEnvironmentSnapshot } from '../main/ide-environment.ts'
 import type { StrataNativeHost, StrataModelPicker, StrataSettings } from '../shared/strata-protocol.ts'
@@ -11,10 +9,8 @@ import type { OptionalModuleId, OptionalModulesBridge, OptionalModulesState } fr
 
 /** Payload sent by the main process on each progress channel. */
 interface ProgressChannels {
-  'rainy:toolpack-progress': ToolPackWindowProgress
   'rainy:environment-progress': EnvironmentSnapshot
   'rainy:ide-environment-progress': IdeEnvironmentSnapshot
-  'rainy:tools-download-progress': NativeToolsDownloadState
   'rainy:modules-progress': OptionalModulesState
   /** Validated by the receiving bridge, which forwards only the message text. */
   'rainy:component-progress': unknown
@@ -32,14 +28,6 @@ function isSetupPage(argumentName: string): boolean {
   const prefix = `--${argumentName}=`
   const argument = process.argv.find(value => value.startsWith(prefix))
   return process.isMainFrame && argument !== undefined && location.href === decodeURIComponent(argument.slice(prefix.length))
-}
-
-if (isSetupPage('rainy-toolpack-page')) {
-  contextBridge.exposeInMainWorld('__RAINY_TOOLPACK__', {
-    getProgress: (): Promise<ToolPackWindowProgress> => ipcRenderer.invoke('rainy:toolpack-status'),
-    cancel: (): Promise<void> => ipcRenderer.invoke('rainy:toolpack-cancel'),
-    onProgress: (listener: (snapshot: ToolPackWindowProgress) => void) => subscribe('rainy:toolpack-progress', listener),
-  })
 }
 
 if (isSetupPage('rainy-setup-page')) {
@@ -99,18 +87,6 @@ if (process.isMainFrame && location.protocol === 'http:' && location.hostname ==
     onProgress: receive => subscribe('rainy:modules-progress', receive),
   }
   contextBridge.exposeInMainWorld('__RAINY_MODULES__', modules)
-  contextBridge.exposeInMainWorld('__RAINY_TOOLS__', {
-    checkToolUpdates: (): Promise<NativeToolsUpdateState> => ipcRenderer.invoke('rainy:tools-check-updates'),
-    getDownloadState: (): Promise<NativeToolsDownloadState> => ipcRenderer.invoke('rainy:tools-download-state'),
-    installTools: (ids: readonly NativeToolId[]): Promise<void> => ipcRenderer.invoke('rainy:tools-install', ids),
-    removeTool: (id: NativeToolId): Promise<void> => ipcRenderer.invoke('rainy:tools-remove', id),
-    repairTools: (): Promise<void> => ipcRenderer.invoke('rainy:tools-repair'),
-    cancelDownload: (): Promise<void> => ipcRenderer.invoke('rainy:tools-download-cancel'),
-    onDownloadProgress: (receive: (state: NativeToolsDownloadState) => void) => subscribe('rainy:tools-download-progress', receive),
-    listTools: (): Promise<NativeToolCatalog> => ipcRenderer.invoke('rainy:tools-list'),
-    launchTool: (id: NativeToolId, variant?: 'x32'): Promise<NativeToolLaunchResult> => ipcRenderer.invoke('rainy:tools-launch', { id, ...variant === undefined ? {} : { variant } }),
-    setFavorites: (ids: readonly NativeToolId[]): Promise<void> => ipcRenderer.invoke('rainy:tools-favorites', ids),
-  })
   const saves = new Set<() => Promise<{ readonly ok: boolean; readonly error?: string }>>()
   contextBridge.exposeInMainWorld('__RAINY_WORKBENCH__', {
     onFlush(flush: () => Promise<{ readonly ok: boolean; readonly error?: string }>): () => void {

@@ -14,7 +14,7 @@ export interface WorkbenchEvents {
   /** Review a chat's changes to one file in the editor; `path` is absolute on the Host. */
   'review.open': { sessionId: string; path: string; toolCallIds: readonly string[] }
   /** Show a pane of the window. */
-  'pane.show': { pane: 'ai' | 'files' | 'bottom' | 'history' | 'settings' | 'ctf'; section?: string | undefined }
+  'pane.show': { pane: 'ai' | 'files' | 'bottom' | 'history' | 'settings'; section?: string | undefined }
 }
 
 type Listener<E extends keyof WorkbenchEvents> = (payload: WorkbenchEvents[E]) => void

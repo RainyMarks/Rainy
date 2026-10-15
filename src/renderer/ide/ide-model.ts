@@ -63,7 +63,7 @@ export interface IdeState {
   readonly problems: readonly EditorProblem[]
   readonly selection: EditorSelection | undefined
   readonly languageStates: Readonly<Record<string, string>>
-  readonly center: 'editor' | 'tools' | 'map'
+  readonly center: 'editor' | 'map'
   readonly quickOpen: boolean
   readonly reveal?: { readonly path: string; readonly line: number; readonly column: number; readonly length?: number | undefined }
 }
@@ -1051,7 +1051,7 @@ export class IdeModel {
   execution(execution: IdeExecutionConfiguration): void {
     this.setData({ execution })
   }
-  /** Select a retained central surface. @param center Editor or tool workbench. */
+  /** Select a retained central surface. @param center Editor or project map. */
   center(center: IdeState['center']): void {
     this.patch({ center })
   }

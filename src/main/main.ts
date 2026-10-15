@@ -20,11 +20,8 @@ import { createStrataManager } from './strata.ts'
 import { resolveBudget } from '../shared/budget.ts'
 import { randomUUID } from 'node:crypto'
 import { prepareDesktopEnvironment } from './native-environment-window.ts'
-import { installNativeTools } from './native-tool-windows.ts'
-import { runToolPackMaintenance } from './toolpack-maintenance.ts'
 import { OptionalModules } from './optional-modules.ts'
 import { pruneWindowsHost, removeRetiredResources } from './retired-resources.ts'
-import { acquireToolPackLock } from './toolpack.ts'
 import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
 import { listExecutionTargets, readDesktopPreferences, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget } from './execution-targets.ts'
@@ -32,7 +29,7 @@ import type { ExecutionTarget, PendingProjectTarget } from './execution-targets.
 import { createProjectRegistry } from '../shared/project-registry.ts'
 import { environmentComponentSchema, installWindowsComponent, readEnvironmentComponentCatalog } from './environment-components.ts'
 import { readFile, stat } from 'node:fs/promises'
-import { embeddedReleaseKeys, parseReleaseKeyring } from './release-trust.ts'
+import { embeddedReleaseKeys } from './release-trust.ts'
 import { ensureReleaseIntegrity, ReleaseIntegrityError } from './release-integrity.ts'
 import type { ReleaseIntegrity } from './release-integrity.ts'
 import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splash.ts'
@@ -56,11 +53,9 @@ app.setPath('crashDumps', join(app.getPath('userData'), 'Crashpad'))
 crashReporter.start({ uploadToServer: false })
 let transport: HostTransport | undefined
 let flushWorkbench: () => Promise<DraftFlushResult> = () => Promise.resolve({ ok: true })
-let closeNativeTools: () => Promise<void> = () => Promise.resolve()
 let closeIdeEnvironment: () => Promise<void> = () => Promise.resolve()
 let closeStrata: () => Promise<void> = () => Promise.resolve()
 let closeModules: () => Promise<void> = () => Promise.resolve()
-let releaseToolPack: (() => Promise<void>) | undefined
 let componentInstallation: Promise<void> | undefined
 /** Read or created once per run; every Host started in this run encrypts API keys with it. */
 let credentialKeyOnce: Promise<string | null> | undefined
@@ -80,8 +75,8 @@ const lifecycle = createDesktopLifecycle({
       buttons: [localized({ zh: '重试保存并退出', en: 'Retry saving and quit' }), localized({ zh: '取消退出', en: 'Do not quit' })], defaultId: 0, cancelId: 1 })
     return answer.response === 0
   },
-  cleanup: [async () => { await componentInstallation }, () => closeIdeEnvironment(), () => closeNativeTools(),
-    async () => { await transport?.stop() }, () => closeStrata(), () => closeModules(), async () => { await releaseToolPack?.() }],
+  cleanup: [async () => { await componentInstallation }, () => closeIdeEnvironment(),
+    async () => { await transport?.stop() }, () => closeStrata(), () => closeModules()],
   reportCleanupFailure: (error) => { cleanupFailed = true; console.error('Rainy cleanup failed:', error) },
   exit: () => { app.quit() },
   restart: () => { app.relaunch(); quitAfterSave(true) },
@@ -110,17 +105,6 @@ async function wslPaths(distro: string, paths: readonly string[]): Promise<strin
     throw new Error(localized({ zh: 'WSL 路径转换结果无效。', en: 'WSL did not convert the paths correctly.' }))
   }
   return lines
-}
-
-/** @param logPath - carrier log for a missing launcher. @returns the Windows uvx executable used by the official IDA MCP server. */
-async function findUvx(logPath: string): Promise<string | undefined> {
-  try {
-    const candidates = (await run('where.exe', ['uvx.exe'], { windowsHide: true, timeout: 5000 })).stdout
-    return candidates.split(/\r?\n/).find(path => win32.isAbsolute(path) && existsSync(path))
-  } catch (error) {
-    appendFileSync(logPath, `IDA MCP launcher unavailable: ${error instanceof Error ? error.name : 'unknown error'}\n`)
-    return undefined
-  }
 }
 
 /** @param value - persisted preference. @param target - resolved target. @returns whether the preference already records it. */
@@ -167,7 +151,7 @@ async function start(): Promise<void> {
   const settingsPath = join(userData, 'desktop.json')
   const installRoot = app.isPackaged ? dirname(app.getPath('exe')) : resolve(__dirname, '..')
   const resourceRoot = app.isPackaged ? process.resourcesPath : resolve(__dirname, '..', 'runtime')
-  const [lock, preferences] = await Promise.all([acquireToolPackLock(installRoot), readDesktopPreferences(settingsPath)])
+  const preferences = await readDesktopPreferences(settingsPath)
   // Dialogs, menus and errors follow the interface language the page last reported; the system language before that.
   let interfaceLocale: Locale = preferences.locale === 'zh' || preferences.locale === 'en' ? preferences.locale : systemLocale()
   followLocale(() => interfaceLocale)
@@ -176,14 +160,12 @@ async function start(): Promise<void> {
     interfaceLocale = locale
     void saveDesktopLocale(settingsPath, locale).catch((error: unknown) => { appendFileSync(logPath, `The interface language was not saved: ${errorText(error)}\n`) })
   }
-  releaseToolPack = lock
   let target = savedExecutionTarget(preferences)
   // A launch that already recorded its resolved WSL target skips the environment window and the registry lookup.
   const knownTarget = target.kind === 'wsl' && preferences.executionTarget !== undefined
-  // Booting the WSL VM and locating the IDA launcher overlap with resource admission and the first paint.
+  // Booting the WSL VM overlaps with resource admission and the first paint.
   if (knownTarget) void run('wsl.exe', ['-d', requireWslDistribution(target), '--exec', 'true'], { windowsHide: true, timeout: 120000 })
     .catch((error: unknown) => { appendFileSync(logPath, `WSL warm-up failed: ${errorText(error)}\n`) })
-  const uvxLookup = findUvx(logPath)
   const preloadPath = join(__dirname, 'preload.cjs')
   const icon = app.isPackaged ? join(resourceRoot, 'icon.ico') : resolve(__dirname, '../build/icon.ico')
   const dark = nativeTheme.shouldUseDarkColors
@@ -246,7 +228,6 @@ async function start(): Promise<void> {
     pagePath: join(__dirname, 'setup/index.html'), mediaRoot: join(resourceRoot, 'environment'), icon, parent: window }
   const carrierState = join(userData, 'carrier-state')
   mkdirSync(carrierState, { recursive: true })
-  const uvx = await uvxLookup
   const runtimeFiles = {
     metadata: join(resourceRoot, 'linux-runtime.json'),
     installer: app.isPackaged ? join(resourceRoot, 'install-runtime.py') : resolve(__dirname, '../scripts/install-runtime.py'),
@@ -283,8 +264,8 @@ async function start(): Promise<void> {
   const prepareWsl = async (distribution: string) => {
     const startingWsl = (): string => localized({ zh: `正在启动 WSL · ${distribution}…`, en: `Starting WSL · ${distribution}…` })
     progress.step(startingWsl())
-    const [archive, metadata, installer, state, mappedUvx] = await wslPaths(distribution,
-      [await linuxRuntimeArchive(), runtimeFiles.metadata, runtimeFiles.installer, carrierState, ...uvx === undefined ? [] : [uvx]])
+    const [archive, metadata, installer, state] = await wslPaths(distribution,
+      [await linuxRuntimeArchive(), runtimeFiles.metadata, runtimeFiles.installer, carrierState])
     const install = async (): Promise<unknown> => JSON.parse((await run('wsl.exe', ['-d', distribution, '--exec', 'python3', installer, archive, metadata],
       { windowsHide: true, timeout: 180000 })).stdout)
     let installed = await install()
@@ -309,7 +290,7 @@ async function start(): Promise<void> {
       const result: unknown = JSON.parse(stdout)
       return result !== null && typeof result === 'object' && 'removed' in result && Array.isArray(result.removed) ? result.removed.map(String) : []
     }
-    return { installed, carrierState: state, uvx: mappedUvx, pruneRuntimes }
+    return { installed, carrierState: state, pruneRuntimes }
   }
   let prepared: Awaited<ReturnType<typeof prepareWsl>> | undefined
   let windowsInstead = false
@@ -457,7 +438,6 @@ async function start(): Promise<void> {
     || !(target.kind === 'windows' ? win32.isAbsolute(installed.host) : posix.isAbsolute(installed.host))) {
     throw new Error(localized({ zh: '执行环境运行文件无效。', en: 'The runtime files of the execution environment are invalid.' }))
   }
-  const idaMcpCommand = prepared === undefined ? uvx : prepared.uvx
   // The PHP component is downloaded from settings; the Host notices it at its fixed path without restarting.
   const checkoutPhp = resolve(__dirname, '../runtime/component-stage/windows-basic/php/php.exe')
   const builtinPhp = !app.isPackaged && existsSync(checkoutPhp) ? checkoutPhp : join(modulesRoot, 'php', 'php.exe')
@@ -481,7 +461,7 @@ async function start(): Promise<void> {
     hostEnvironment.RAINY_PENDING_PROJECT_PATH = pending.path
     if ('roots' in pending && Array.isArray(pending.roots)) hostEnvironment.RAINY_PENDING_PROJECT_ROOTS = JSON.stringify(pending.roots)
   }
-  const hostOptions: HostOptions = { entry: installed.host, node: installed.node, idaMcpCommand, environment: hostEnvironment,
+  const hostOptions: HostOptions = { entry: installed.host, node: installed.node, environment: hostEnvironment,
     resolveProxy: url => systemProxyFor(window.webContents.session, url),
     credentialKey: () => credentialKeyOnce ??= credentialKey(userData, safeStorage, (line) => { appendFileSync(logPath, `${line}\n`) }),
     configureDeepSeek: process.env.RAINY_CONFIGURE_DEEPSEEK === '1',
@@ -501,15 +481,6 @@ async function start(): Promise<void> {
   if ((preferences.pendingProject !== undefined && preferences.pendingProject !== null) || !sameTarget(preferences.executionTarget, target))
     await saveExecutionTarget(settingsPath, target)
   const origin = new URL(ready.url).origin
-  const toolKeys = parseReleaseKeyring(JSON.parse(await readFile(app.isPackaged
-    ? join(resourceRoot, 'native-tools-public-keys.json') : join(installRoot, 'resources/native-tools-public-keys.json'), 'utf8')))
-  const nativeTools = installNativeTools({ window, origin,
-    installRoot: app.isPackaged ? installRoot : join(installRoot, `toolpacks/stage-${app.getVersion()}`), userData: app.getPath('userData'),
-    download: {
-      keys: toolKeys, installRootLocked: app.isPackaged,
-      channelPath: app.isPackaged ? join(resourceRoot, 'native-tools-channel.signed.json') : join(installRoot, 'toolpacks/native-tools-channel.v2.signed.json'),
-    } })
-  closeNativeTools = () => nativeTools.close()
   const trustedSender = (event: Pick<Electron.IpcMainEvent, 'sender' | 'senderFrame'>) => event.sender === window.webContents
     && event.senderFrame === window.webContents.mainFrame && new URL(event.senderFrame.url).origin === origin
   const ideEnvironment = target.kind === 'wsl' ? createIdeEnvironmentWindow({ parent: window, distro,
@@ -863,9 +834,6 @@ async function start(): Promise<void> {
         if (bytes > 0) appendFileSync(logPath, `Removed ${Math.round(bytes / 1024 ** 2)} MiB of Windows runtime files that earlier versions left behind\n`)
       }, (error: unknown) => { appendFileSync(logPath, `Old Windows runtime files were not removed: ${errorText(error)}\n`) })
     }
-    void nativeTools.maintain().then((bytes) => {
-      if (bytes > 0) appendFileSync(logPath, `Removed ${Math.round(bytes / 1024 ** 2)} MiB of program files from tool upgrade backups\n`)
-    })
     if (app.isPackaged && prepared !== undefined) {
       void prepared.pruneRuntimes().then((removed) => {
         if (removed.length) appendFileSync(logPath, `Removed ${removed.length} WSL runtimes that earlier versions unpacked\n`)
@@ -904,18 +872,10 @@ async function runBackgroundChecks(options: {
   } catch (error) { appendFileSync(options.logPath, `Execution target refresh failed: ${errorText(error)}\n`) }
 }
 
-const maintenanceIndex = process.argv.indexOf('--rainy-install-tools')
 // The uninstaller removes the bundled Windows runtime through the app, file by file from its inventory, instead of deleting a folder tree.
 if (process.argv.includes('--rainy-remove-runtime')) {
   void app.whenReady().then(async () => { if (app.isPackaged) await pruneWindowsHost(process.resourcesPath, { everything: true }); app.exit(0) })
     .catch((error: unknown) => { console.error('Removing the Windows runtime failed', error); app.exit(1) })
-}
-else if (maintenanceIndex >= 0) {
-  const mediaDirectory = process.argv.at(maintenanceIndex + 1)
-  void app.whenReady().then(async () => {
-    if (mediaDirectory === undefined || !win32.isAbsolute(mediaDirectory)) { app.exit(2); return }
-    app.exit(await runToolPackMaintenance(mediaDirectory, process.argv.includes('--rainy-tools-silent')))
-  }).catch((error: unknown) => { console.error('Offline tool installation failed', error); app.exit(1) })
 }
 else if (!app.requestSingleInstanceLock()) app.quit()
 else {

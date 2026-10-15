@@ -161,7 +161,7 @@ export async function bootstrapReleaseInputs(options) {
   const app = resolve(options.appDirectory)
   const packageInfo = JSON.parse(await readFile(join(app, 'package.json'), 'utf8'))
   if (packageInfo.version !== manifest.releaseVersion) throw new Error('Release input version differs from the desktop package')
-  const required = ['build-inputs/ide-resources.tar.gz', 'build-inputs/strata-runtime.tar.gz', 'environment-components/windows-basic.tar.gz', 'native-tools-metadata.json',
+  const required = ['build-inputs/ide-resources.tar.gz', 'build-inputs/strata-runtime.tar.gz', 'environment-components/windows-basic.tar.gz',
     'environment/media-verification.json']
   for (const path of required) if (!manifest.files.some(entry => entry.path === path && entry.category !== 'installer')) throw new Error(`Required build input is absent: ${path}`)
   const offline = join(app, `release/offline-${manifest.releaseVersion}`)
