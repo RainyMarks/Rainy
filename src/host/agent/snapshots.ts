@@ -51,14 +51,21 @@ export class ChangeSnapshots {
   }
 
   /**
-   * Put a file back to its content before one change, if it still holds what that change wrote.
-   * @param sessionIds The chat and the chats it was forked from, nearest first; a fork can undo its parent's changes.
+   * What a file held before one change.
+   * @param sessionIds The chat and the chats it was forked from, nearest first.
    * @param toolCallId The write or edit call.
-   * @returns The restored path, or why nothing was restored.
+   * @returns The bytes, `null` when the change created the file, or `undefined` when they are not kept.
    */
-  async revert(sessionIds: readonly string[], toolCallId: string): Promise<{ path: string } | RevertFailure> {
+  async original(sessionIds: readonly string[], toolCallId: string): Promise<Buffer | null | undefined> {
+    const found = await this.find(sessionIds, toolCallId)
+    if (found === undefined) return undefined
+    if (found.record.before === null) return null
+    const bytes = await readFile(join(found.directory, `${fileStem(toolCallId)}.bin`)).catch(() => undefined)
+    return bytes !== undefined && digest(bytes) === found.record.before ? bytes : undefined
+  }
+
+  private async find(sessionIds: readonly string[], toolCallId: string): Promise<{ directory: string; record: z.infer<typeof recordSchema> } | undefined> {
     const stem = fileStem(toolCallId)
-    let found: { directory: string; record: z.infer<typeof recordSchema> } | undefined
     for (const sessionId of sessionIds) {
       const directory = join(this.root, sessionId)
       const text = await readFile(join(directory, `${stem}.json`), 'utf8').catch(() => undefined)
@@ -66,8 +73,20 @@ export class ChangeSnapshots {
       let raw: unknown
       try { raw = JSON.parse(text) } catch (_damaged) { continue }
       const parsed = recordSchema.safeParse(raw)
-      if (parsed.success) { found = { directory, record: parsed.data }; break }
+      if (parsed.success) return { directory, record: parsed.data }
     }
+    return undefined
+  }
+
+  /**
+   * Put a file back to its content before one change, if it still holds what that change wrote.
+   * @param sessionIds The chat and the chats it was forked from, nearest first; a fork can undo its parent's changes.
+   * @param toolCallId The write or edit call.
+   * @returns The restored path, or why nothing was restored.
+   */
+  async revert(sessionIds: readonly string[], toolCallId: string): Promise<{ path: string } | RevertFailure> {
+    const stem = fileStem(toolCallId)
+    const found = await this.find(sessionIds, toolCallId)
     if (found === undefined) return { reason: 'unavailable', path: '', message: 'The original content is no longer kept.' }
     const { directory, record } = found
     let current: Buffer

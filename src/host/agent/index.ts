@@ -11,6 +11,7 @@ import type { ProjectRegistry } from '../../shared/project-registry.ts'
 import type { BudgetPreview, ExtensionsStatus, McpServerConfig, ProxySettings, SecurityStatus, SessionSummary } from '../../shared/rpc.ts'
 import type { Activity } from '../activity.ts'
 import type { HostEnvironment } from '../env.ts'
+import { ProjectMaps } from '../map/index.ts'
 import { PASSWORD_MASK, proxyUrl, type Network } from '../network.ts'
 import type { Projects } from '../projects.ts'
 import { RpcError, type RpcHub } from '../rpc.ts'
@@ -39,6 +40,9 @@ const approveSchema = z.object({
   sessionId: z.string().min(1), toolCallId: z.string().min(1).max(512), decision: z.enum(['allow', 'always', 'deny']), reason: z.string().max(4000).optional(),
 })
 const revertSchema = z.object({ sessionId: z.string().min(1), toolCallIds: z.array(z.string().min(1).max(512)).min(1).max(1000) })
+const changeBaseSchema = z.object({ sessionId: z.string().min(1), path: z.string().min(1).max(4096) })
+const mapGetSchema = z.object({ workspaceId: z.string().min(1), refresh: z.boolean().optional() })
+const mapExplainSchema = z.object({ workspaceId: z.string().min(1) })
 const removeRuleSchema = z.object({ workspaceId: z.string().min(1), kind: z.enum(['command', 'tool']), rule: z.string().min(1).max(200) })
 
 /**
@@ -286,6 +290,27 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     if (live === undefined) throw new RpcError('not-found', localized({ zh: '这个操作已不在等待批准。', en: 'This action is no longer waiting for approval.' }))
     await live.approve(toolCallId, decision, reason)
   })
+  rpc.register('chat.changes', async (params) => {
+    const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(params)
+    return (await session(sessionId)).changes()
+  })
+  rpc.register('chat.changeBase', async (params) => {
+    const { sessionId, path } = changeBaseSchema.parse(params)
+    return (await session(sessionId)).changeBase(path)
+  })
+  rpc.register('chat.keep', async (params) => {
+    const { sessionId, toolCallIds } = revertSchema.parse(params)
+    await (await session(sessionId)).keep(toolCallIds)
+  })
+  const maps = new ProjectMaps({ projects, models, settings, directory: join(env.home, 'maps'), ripgrep: services.ripgrep, log })
+  rpc.register('map.get', async (params) => {
+    const { workspaceId, refresh } = mapGetSchema.parse(params)
+    return maps.get(brandString<WorkspaceId>(workspaceId), refresh === true)
+  })
+  rpc.register('map.explain', async (params) => {
+    const { workspaceId } = mapExplainSchema.parse(params)
+    return maps.explain(brandString<WorkspaceId>(workspaceId))
+  })
   rpc.register('chat.revert', async (params) => {
     const { sessionId, toolCallIds } = revertSchema.parse(params)
     return (await session(sessionId)).revert(toolCallIds)
@@ -398,6 +423,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     connectStrata: params => models.connectStrata(params),
     async close() {
       inline.close()
+      maps.close()
       await Promise.allSettled([...sessions.values()].map(chat => chat.close()))
       await memory.close()
       await mcp.close()

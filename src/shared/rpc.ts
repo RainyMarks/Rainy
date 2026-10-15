@@ -10,6 +10,7 @@ import type { AssistantMessage, ImageContent, TextContent } from '@earendil-work
 import type { Accent, ColorScheme } from './appearance.ts'
 import type { IdeExecutionRequest, IdeExecutionResponseMap } from './ide-execution-protocol.ts'
 import type { IdeFilesFailure, IdeFilesRequest, IdeFilesResults, IdeStateRequest, WorkspaceId } from './ide-files-protocol.ts'
+import type { MapExplanation, ProjectMap } from './map-protocol.ts'
 import type { RuntimeRequest, RuntimeSnapshot } from './runtime-protocol.ts'
 
 export type { WorkspaceId }
@@ -244,6 +245,27 @@ export interface RevertResult {
   failed: { toolCallId: string; path: string; reason: 'changed' | 'unavailable' | 'failed'; message: string }[]
 }
 
+/** A file the agent changed in a chat whose changes the user has neither kept nor undone. */
+export interface ChatChange {
+  /** Absolute path on the Host. */
+  path: string
+  /** Path as the chat shows it: relative to its working directory when inside it. */
+  display: string
+  /** Write and edit calls behind the change, oldest first. */
+  toolCallIds: string[]
+  /** The agent created the file. */
+  created: boolean
+  /** The file no longer exists. */
+  deleted: boolean
+  /** Lines added and removed since before the first change; 0 when the change cannot be compared. */
+  added: number
+  removed: number
+  /** The text before the changes is kept, so they can be reviewed side by side. */
+  comparable: boolean
+  /** Every call kept the content it replaced, so the change can be undone. */
+  undoable: boolean
+}
+
 /** A message waiting for the current run to reach a step boundary (steer) or to finish (queue). */
 export interface QueuedMessage { id: string; text: string; mode: 'queue' | 'steer'; imageCount: number }
 
@@ -420,6 +442,17 @@ export interface HostMethods {
   'chat.approve': [{ sessionId: SessionId; toolCallId: string; decision: ApprovalDecision; reason?: string | undefined }, void]
   /** Undo write and edit calls of the chat, newest first; files changed since are left alone. */
   'chat.revert': [{ sessionId: SessionId; toolCallIds: string[] }, RevertResult]
+  /** Files the chat's agent changed that are not yet kept or undone. */
+  'chat.changes': [{ sessionId: SessionId }, ChatChange[]]
+  /** A changed file's text before the chat's changes and now. */
+  'chat.changeBase': [{ sessionId: SessionId; path: string }, { base: string; current: string | null }]
+  /** Mark write and edit calls as reviewed and kept. */
+  'chat.keep': [{ sessionId: SessionId; toolCallIds: string[] }, void]
+
+  /** The project map; a recent one is reused unless `refresh` is set. */
+  'map.get': [{ workspaceId: WorkspaceId; refresh?: boolean | undefined }, ProjectMap]
+  /** Ask the chat model to describe the project's parts; the answer is kept with the project. */
+  'map.explain': [{ workspaceId: WorkspaceId }, MapExplanation]
 
   'security.status': [{ workspaceId?: WorkspaceId | null | undefined }, SecurityStatus]
   'security.setDefault': [{ mode: PermissionMode }, SecurityStatus]
@@ -450,6 +483,8 @@ export interface HostEvents {
   'session.entry': { sessionId: SessionId; entry: TranscriptEntry }
   /** Streaming progress of the current request; `message` is the partial assistant message. */
   'session.stream': { sessionId: SessionId; message: AssistantMessage | null }
+  /** The chat's list of changed files may have changed: a write or edit finished, or changes were kept or undone. */
+  'session.changes': { sessionId: SessionId }
   /** Partial output of a running tool. */
   'session.tool': { sessionId: SessionId; toolCallId: string; toolName: string; phase: 'start' | 'update' | 'end'; args?: unknown; partial?: string | undefined }
   /** Run status, queue or model changed. */

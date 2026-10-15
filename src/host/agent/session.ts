@@ -1,15 +1,17 @@
 /** One chat: transcript on disk, a pi-agent-core Agent while it runs, and the events the renderer follows. */
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import {
   createInitialSystemMessage, isContextOverflow, toToolDeclaration, type Api, type AssistantMessage, type ImageContent, type Message, type Model,
   type Tool, type ToolResultMessage, type UserMessage,
 } from '@earendil-works/pi-ai'
 import { EstimateCalibration, resolveBudget, type Budget } from '../../shared/budget.ts'
+import { lineChangeCounts } from '../../shared/line-diff.ts'
 import type {
-  ApprovalDecision, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RevertResult, SessionRunStatus, SessionSnapshot,
-  SessionSummary, TranscriptEntry, UsageSummary,
+  ApprovalDecision, ChatChange, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RevertResult, SessionRunStatus,
+  SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
 } from '../../shared/rpc.ts'
 import { resolvePowerShell } from '../process.ts'
 import { RpcError } from '../rpc.ts'
@@ -99,7 +101,11 @@ export class ChatSession {
   /** Calls refused by the user or by read-only mode; their transcript entries say so for the UI. */
   private readonly refused = new Map<string, 'user' | 'mode'>()
 
-  private constructor(private readonly services: AgentServices, private chat: StoredChat, private readonly entries: TranscriptEntry[]) {}
+  private constructor(
+    private readonly services: AgentServices, private chat: StoredChat, private readonly entries: TranscriptEntry[],
+    /** Write and edit calls whose changes the user reviewed and kept. */
+    private readonly kept: Set<string>,
+  ) {}
 
   /**
    * Load a chat from disk.
@@ -109,7 +115,7 @@ export class ChatSession {
    */
   static async open(services: AgentServices, id: string): Promise<ChatSession> {
     const file = await services.store.read(id)
-    return new ChatSession(services, file.chat, file.entries)
+    return new ChatSession(services, file.chat, file.entries, new Set(file.kept))
   }
 
   /** @returns Chat id. */
@@ -279,8 +285,84 @@ export class ChatSession {
         text: `The user undid ${result.reverted.length} of your file changes. These files are back to their content before those changes; `
           + `read them again before changing them:\n${paths.map(path => `- ${path}`).join('\n')}`,
       })
+      this.services.rpc.emit('session.changes', { sessionId: this.chat.id })
     }
     return result
+  }
+
+  /**
+   * Files the agent changed in this chat whose changes the user has neither kept nor undone. A file back to its
+   * content before the changes is left out.
+   * @returns The files in the order the agent first changed them.
+   */
+  async changes(): Promise<ChatChange[]> {
+    const lineage = this.lineage()
+    const result: ChatChange[] = []
+    for (const group of this.pendingChanges()) {
+      const first = group.calls[0]!
+      const before = first.created ? null : await this.services.snapshots.original(lineage, first.id)
+      const current = await readFile(group.path).catch(() => undefined)
+      const baseText = before === undefined ? undefined : before === null ? '' : changeText(before)
+      const currentText = current === undefined ? '' : changeText(current)
+      const comparable = baseText !== undefined && currentText !== undefined
+      if (comparable && baseText === currentText) continue
+      const counts = comparable ? lineChangeCounts(baseText, currentText) : { added: 0, removed: 0 }
+      result.push({
+        path: group.path, display: pathForModel(this.chat.cwd, group.path), toolCallIds: group.calls.map(call => call.id),
+        created: first.created, deleted: current === undefined, ...counts, comparable,
+        undoable: group.calls.every(call => call.undoable),
+      })
+    }
+    return result
+  }
+
+  /**
+   * A changed file's text before the agent's changes in this chat, for a side-by-side review.
+   * @param path Absolute path from {@link changes}.
+   * @returns The text before the changes (empty for a created file) and now (`null` when the file is gone).
+   * @throws RpcError when the file has no pending change or its previous content is not kept as text.
+   */
+  async changeBase(path: string): Promise<{ base: string; current: string | null }> {
+    const key = pathKey(path)
+    const group = this.pendingChanges().find(item => pathKey(item.path) === key)
+    if (group === undefined) throw new RpcError('not-found', localized({ zh: '这个文件没有待审查的改动。', en: 'This file has no changes to review.' }))
+    const first = group.calls[0]!
+    const before = first.created ? null : await this.services.snapshots.original(this.lineage(), first.id)
+    const base = before === undefined ? undefined : before === null ? '' : changeText(before)
+    if (base === undefined) throw new RpcError('unavailable', localized({ zh: '改动前的内容没有保留，无法对比。', en: 'The content before the change is not kept, so it cannot be compared.' }))
+    const current = await readFile(group.path).catch(() => undefined)
+    return { base, current: current === undefined ? null : changeText(current) ?? null }
+  }
+
+  /**
+   * Record that the user reviewed and kept the changes of some write and edit calls.
+   * @param toolCallIds The calls; ids that are not pending changes of this chat are ignored.
+   */
+  async keep(toolCallIds: readonly string[]): Promise<void> {
+    const pending = new Set(this.pendingChanges().flatMap(group => group.calls.map(call => call.id)))
+    const ids = [...new Set(toolCallIds)].filter(id => pending.has(id))
+    if (ids.length === 0) return
+    await this.services.store.keep(this.chat.id, ids)
+    for (const id of ids) this.kept.add(id)
+    this.services.rpc.emit('session.changes', { sessionId: this.chat.id })
+  }
+
+  /** Write and edit calls neither kept nor undone, grouped by file in the order of each file's first change. */
+  private pendingChanges(): { path: string; calls: { id: string; created: boolean; undoable: boolean }[] }[] {
+    const reverted = new Set(this.entries.flatMap(entry => entry.kind === 'context' ? entry.reverted ?? [] : []))
+    const groups = new Map<string, { path: string; calls: { id: string; created: boolean; undoable: boolean }[] }>()
+    for (const entry of this.entries) {
+      if (entry.kind !== 'toolResult' || (entry.toolName !== 'write' && entry.toolName !== 'edit') || entry.isError) continue
+      if (reverted.has(entry.toolCallId) || this.kept.has(entry.toolCallId)) continue
+      const details = entry.details as { path?: unknown; operation?: unknown; undoable?: unknown } | undefined
+      if (typeof details?.path !== 'string') continue
+      const path = isAbsolute(details.path) ? details.path : resolve(this.chat.cwd, details.path)
+      const key = pathKey(path)
+      let group = groups.get(key)
+      if (group === undefined) { group = { path, calls: [] }; groups.set(key, group) }
+      group.calls.push({ id: entry.toolCallId, created: details.operation === 'create', undoable: details.undoable === true })
+    }
+    return [...groups.values()]
   }
 
   /** Publish run state again after Settings changed the default mode or the models; the meter takes the new window at once. */
@@ -557,6 +639,7 @@ export class ChatSession {
         content: message.content, isError: message.isError, ...(details === undefined ? {} : { details }),
         ...(started === undefined ? {} : { durationMs: Date.now() - started }),
       })
+      if ((message.toolName === 'write' || message.toolName === 'edit') && !message.isError) this.services.rpc.emit('session.changes', { sessionId: this.chat.id })
     }
   }
 
@@ -808,6 +891,18 @@ export class ChatSession {
       ...(this.error === undefined ? {} : { error: this.error }),
     })
   }
+}
+
+/** Text of a changed file for comparison: without a byte-order mark and with LF line ends; `undefined` for binary or huge files. */
+function changeText(bytes: Uint8Array): string | undefined {
+  if (bytes.length > 4 * 1024 * 1024 || bytes.subarray(0, 8192).includes(0)) return undefined
+  const text = Buffer.from(bytes).toString('utf8')
+  return (text.startsWith('\ufeff') ? text.slice(1) : text).replaceAll('\r\n', '\n')
+}
+
+/** @returns How the platform's file system compares a path. */
+function pathKey(path: string): string {
+  return process.platform === 'win32' ? path.toLowerCase() : path
 }
 
 /**

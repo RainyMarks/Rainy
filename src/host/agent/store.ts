@@ -65,6 +65,8 @@ const indexSchema = z.object({
 export interface ChatFile {
   chat: StoredChat
   entries: TranscriptEntry[]
+  /** Write and edit calls whose changes the user reviewed and kept (`review` lines; older readers skip them). */
+  kept: string[]
 }
 
 const ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/
@@ -174,6 +176,17 @@ export class ChatStore {
   }
 
   /**
+   * Record that the user reviewed and kept the changes of some write and edit calls.
+   * @param id Chat id.
+   * @param toolCallIds The calls.
+   */
+  async keep(id: SessionId, toolCallIds: readonly string[]): Promise<void> {
+    if (toolCallIds.length === 0) return
+    this.require(id)
+    await this.queue(id).run(() => appendFile(this.path(id), `${JSON.stringify({ type: 'review', kept: toolCallIds })}\n`, { mode: 0o600 }))
+  }
+
+  /**
    * Record metadata changes.
    * @param id Chat id.
    * @param patch Fields to change.
@@ -280,6 +293,7 @@ export class ChatStore {
       ...(header.parent === undefined ? {} : { parent: header.parent }),
     }
     const entries: TranscriptEntry[] = []
+    const kept: string[] = []
     for (let index = 1; index < lines.length; index++) {
       const line = lines[index]!
       if (line === '') continue
@@ -296,8 +310,12 @@ export class ChatStore {
         if (meta.model !== undefined) chat.model = meta.model
         if (meta.permission !== undefined) chat.permission = meta.permission
       } else if (type === 'entry' && !headerOnly) entries.push((record as { entry: TranscriptEntry }).entry)
+      else if (type === 'review' && !headerOnly) {
+        const ids = (record as { kept?: unknown }).kept
+        if (Array.isArray(ids)) for (const value of ids) if (typeof value === 'string') kept.push(value)
+      }
     }
-    return { chat, entries }
+    return { chat, entries, kept }
   }
 
   private require(id: SessionId): StoredChat {
