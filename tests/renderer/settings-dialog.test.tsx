@@ -215,7 +215,9 @@ it('shows the version, links to feedback and lists the keyboard shortcuts from t
   expect(button(zh.shortcutsTitle).getAttribute('aria-current')).toBe('page')
   const rows = all('[data-shortcuts] dt').map(row => `${row.textContent}: ${[...row.nextElementSibling!.querySelectorAll('kbd')].map(key => key.textContent).join('+')}`)
   expect(rows).toEqual([
-    `${zh.shortcutQuickOpen}: Ctrl+Alt+P`, `${zh.shortcutSettings}: Ctrl+,`, `${zh.shortcutNewChat}: Ctrl+Alt+N`,
+    `${zh.shortcutQuickOpen}: Ctrl+Alt+P`, `${zh.shortcutPalette}: Ctrl+Shift+P`, `${zh.shortcutSearchFiles}: Ctrl+Shift+F`,
+    `${zh.shortcutReplaceFiles}: Ctrl+Shift+H`, `${zh.shortcutSourceControl}: Ctrl+Shift+G`, `${zh.shortcutExplorer}: Ctrl+Shift+E`,
+    `${zh.shortcutAiEdit}: Ctrl+K`, `${zh.shortcutSettings}: Ctrl+,`, `${zh.shortcutNewChat}: Ctrl+Alt+N`,
     `${zh.shortcutSearchChats}: Ctrl+Alt+K`, `${zh.shortcutOpenFolder}: Ctrl+Alt+O`, `${zh.shortcutTerminal}: Ctrl+\``,
     `${zh.shortcutSend}: Enter`, `${zh.shortcutNewline}: Shift+Enter`, `${zh.shortcutAlternate}: Ctrl+Enter`,
     `${zh.shortcutStop}: Esc+Esc`, `${zh.shortcutReload}: F5`,

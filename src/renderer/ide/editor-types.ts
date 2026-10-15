@@ -159,8 +159,8 @@ export interface EditorInstance {
     breakpoints: readonly { readonly path: string; readonly lines: readonly number[] }[],
     stopped?: { readonly path: string; readonly line: number },
   ): void
-  /** @param path Source path. @param line One-based line. @param column One-based column. */
-  reveal(path: string, line: number, column: number): void
+  /** @param path Source path. @param line One-based line. @param column One-based column. @param length Characters to select. */
+  reveal(path: string, line: number, column: number, length?: number): void
   /**
    * Run an editor command on the shown document.
    * @param command One of `rainy.save`, `rainy.format`, `rainy.selection`, `rainy.aiEdit`, `rainy.nextChange`, `rainy.previousChange`,

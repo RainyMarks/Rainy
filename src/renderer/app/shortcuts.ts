@@ -3,6 +3,8 @@ import { useEffect, useRef } from 'react'
 
 /** Key caps of the quick-open shortcut. */
 export const QUICK_OPEN_KEYS: readonly string[] = ['Ctrl', '+', 'Alt', '+', 'P']
+/** Key caps of the command palette. */
+export const PALETTE_KEYS: readonly string[] = ['Ctrl', '+', 'Shift', '+', 'P']
 
 /** Actions bound to the window shortcuts. */
 export interface ShortcutHandlers {
@@ -24,10 +26,21 @@ export interface ShortcutHandlers {
   readonly previewToSide: () => boolean
   /** @returns Whether the active tab has a preview, so Ctrl+K starts a chord instead of reaching the page. */
   readonly canPreview: () => boolean
+  /** Ctrl+Shift+P or F1 */
+  readonly commandPalette: () => void
+  /** Ctrl+Shift+F */
+  readonly searchFiles: () => void
+  /** Ctrl+Shift+H */
+  readonly replaceFiles: () => void
+  /** Ctrl+Shift+G */
+  readonly sourceControl: () => void
+  /** Ctrl+Shift+E */
+  readonly explorer: () => void
 }
 
 /** Commands of single key presses; `previewChord` is the first half of Ctrl+K V. */
 export type ShortcutCommand = 'quickOpen' | 'settings' | 'newChat' | 'searchHistory' | 'openFolder' | 'newTerminal' | 'togglePreview' | 'previewChord'
+  | 'commandPalette' | 'searchFiles' | 'replaceFiles' | 'sourceControl' | 'explorer'
 
 /** Milliseconds the second key of a chord may follow the first. */
 const CHORD_MS = 2000
@@ -37,8 +50,20 @@ const CHORD_MS = 2000
  * @returns The bound command, if any.
  */
 export function shortcutCommand(event: Pick<KeyboardEvent, 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey' | 'isComposing' | 'code'>): ShortcutCommand | undefined {
+  if (event.code === 'F1' && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) return 'commandPalette'
   if (!event.ctrlKey || event.metaKey || event.isComposing) return undefined
-  if (event.shiftKey) return !event.altKey && event.code === 'KeyV' ? 'togglePreview' : undefined
+  if (event.shiftKey) {
+    if (event.altKey) return undefined
+    switch (event.code) {
+      case 'KeyV': return 'togglePreview'
+      case 'KeyP': return 'commandPalette'
+      case 'KeyF': return 'searchFiles'
+      case 'KeyH': return 'replaceFiles'
+      case 'KeyG': return 'sourceControl'
+      case 'KeyE': return 'explorer'
+      default: return undefined
+    }
+  }
   if (event.altKey) {
     switch (event.code) {
       case 'KeyP': return 'quickOpen'

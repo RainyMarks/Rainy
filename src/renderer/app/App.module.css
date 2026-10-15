@@ -16,6 +16,16 @@
 .paneTitle { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .retained { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .explorerHeader { display: flex; align-items: center; flex: none; min-height: 36px; gap: 4px; padding: 0 8px 0 12px; }
+/* Files, search and Git, one tab each at the top of the side pane. */
+.sideTabs { display: flex; align-items: center; gap: 2px; flex: none; padding: 6px 8px 0; }
+.sideTab { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 28px; padding: 0; border: 0;
+  border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.sideTab:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.sideTab[aria-pressed='true'] { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-button-ghost-active-fill); }
+.sideTab:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: -2px; }
+.sideBadge { position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: 7px;
+  background: var(--dsw-alias-state-business-primary); color: #fff; font-size: 9.5px; font-weight: 600; line-height: 14px; text-align: center; }
+.statusCount { margin-left: 4px; color: var(--dsw-alias-label-tertiary); }
 .explorerActions, .editorActions { display: flex; align-items: center; gap: 2px; flex: none; }
 .editorActions { padding: 0 6px; }
 .viewSwitch { display: flex; align-items: center; gap: 1px; padding: 2px; margin-right: 4px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-1); }

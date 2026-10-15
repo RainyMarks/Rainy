@@ -24,6 +24,9 @@ import { editorHighlighting, editorTheme } from './theme.ts'
 import { uriInside, uriKey } from './uri.ts'
 import './editor.css'
 
+/** CodeMirror's search keys without Ctrl+Shift+G, which opens source control as in VS Code; Shift+F3 still finds the previous match. */
+const editorSearchKeymap = searchKeymap.map(({ shift, ...binding }) => binding.key === 'Mod-g' || shift === undefined ? binding : { ...binding, shift })
+
 /** Characters around the cursor or selection that the editor sends for a suggestion or a rewrite. */
 const SUGGEST_BEFORE = 4000
 const SUGGEST_AFTER = 1500
@@ -302,11 +305,12 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     for (const [path, open] of this.documents) open.view.dispatch({ effects: setBreakpoints.of(this.breakpointsFor(path)) })
   }
 
-  reveal(path: string, line: number, column: number): void {
+  reveal(path: string, line: number, column: number, length = 0): void {
     const open = path === this.activePath ? this.documents.get(path) : this.activate(path)
     if (open === undefined) return
     const anchor = positionOf(open.view.state, line, column)
-    open.view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) })
+    const head = Math.min(anchor + length, open.view.state.doc.lineAt(anchor).to)
+    open.view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) })
     open.view.focus()
   }
 
@@ -522,7 +526,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
         { key: 'Mod-g', run: gotoLine, preventDefault: true },
         { key: 'Mod-h', run: openSearchPanel, preventDefault: true },
         { key: 'F2', run: this.renameCommand, preventDefault: true },
-        ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab,
+        ...closeBracketsKeymap, ...defaultKeymap, ...editorSearchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab,
       ]),
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !update.transactions.every(transaction => transaction.annotation(external) === true)) {

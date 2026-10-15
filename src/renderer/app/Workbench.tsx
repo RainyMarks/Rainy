@@ -8,8 +8,13 @@ import {
   IconChevronLeftOutlineRegular, IconCloseOutlineRegular, IconEllipsisOutlineRegular, IconFolderCloseRegular,
   IconPanelBottomOutline, IconPanelLeftOutlineRegular, IconPanelRightOutline, IconPlayOutlineRegular, IconPlusOutlineRegular,
   IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, IconShieldOutlineRegular, Menu,
-  ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
+  IconBranchOutlineRegular, IconFilesOutline, IconSourceControlOutline, ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
 } from '../ui/index.ts'
+import { GitView } from '../git/GitView.tsx'
+import { refreshGit, useGitStatus } from '../git/git-store.ts'
+import { useGitT } from '../git/messages.ts'
+import { SearchView, type SearchFocus } from '../search/SearchView.tsx'
+import { useSearchT } from '../search/messages.ts'
 import { setPrefs, usePrefs } from '../prefs.ts'
 import { useAiActivity } from '../map/activity.ts'
 import { useMapT } from '../map/messages.ts'
@@ -43,7 +48,9 @@ import { NoFile, Welcome } from './EmptyStates.tsx'
 import { clampAgent, clampBottom, clampSidebar, isNarrow, RESIZE_STEP } from './layout.ts'
 import { useAppT } from './messages.ts'
 import { PromptDialog, type PendingPrompt, type PromptRequest } from './PromptDialog.tsx'
-import { modalOpen, QUICK_OPEN_KEYS, useGlobalShortcuts } from './shortcuts.ts'
+import { CommandPalette } from './CommandPalette.tsx'
+import type { PaletteCommand } from './commands.ts'
+import { modalOpen, PALETTE_KEYS, QUICK_OPEN_KEYS, useGlobalShortcuts } from './shortcuts.ts'
 import type { Workbench } from './workbench.ts'
 import css from './App.module.css'
 
@@ -76,6 +83,8 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const tc = useCtfT()
   const tm = useMapT()
   const ta = useAppT()
+  const ts = useSearchT()
+  const tg = useGitT()
   const { model, execution, directory } = workbench
   const state = useStore(model.state)
   const executionState = useStore(execution.state)
@@ -91,7 +100,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     return { dark, fontSize: prefs.codeFontSize, ...fontFamily === '' ? {} : { fontFamily },
       ...background === '' || foreground === '' ? {} : { background, foreground } }
   }, [dark, prefs.codeFontSize, prefs.codeFont, prefs.colorScheme])
-  const [navigation, setNavigation] = useState<'files' | 'history'>('files')
+  const [navigation, setNavigation] = useState<'files' | 'search' | 'git' | 'history'>('files')
+  const [searchFocus, setSearchFocus] = useState<SearchFocus | undefined>()
+  const [palette, setPalette] = useState<string | undefined>()
   const [selected, setSelected] = useState<IdeFileEntry | undefined>()
   const [selectedRootId, setSelectedRootId] = useState<IdeRootId | undefined>()
   const [menu, setMenu] = useState<MenuId | undefined>()
@@ -124,6 +135,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     void operation().catch((error: unknown) => { model.fail(error) }).finally(() => { setReviewBusy(false) })
   }
   const changes = useChanges(sessionId)
+  const gitStatus = useGitStatus(state.workspace?.workspaceId ?? null).status
+  const gitChanges = gitStatus?.repositories.reduce((sum, repository) => sum + repository.files.length, 0) ?? 0
+  const gitBranch = gitStatus?.repositories[0]
   const aiActivity = useAiActivity()
   const treeMarks = useMemo(() => {
     const files = aiMarks(state.workspace, changes, aiActivity.active)
@@ -293,7 +307,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     if (debugging) await execution.debug(config)
     else await execution.run(config)
   }
-  const showLeft = (mode: 'files' | 'history'): void => {
+  const showLeft = (mode: 'files' | 'search' | 'git' | 'history'): void => {
     setNavigation(mode)
     setNarrowNavigation(narrow)
     model.layout({ sidebarVisible: true })
@@ -307,6 +321,19 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     model.layout({ agentVisible: true })
   }
   const openSettings = (section: SettingsSection): void => { setSettings({ open: true, section }) }
+  /** Show the search pane, filled with the selected text when it is a single line. */
+  const openSearch = (replace: boolean): void => {
+    if (state.workspace === null) return
+    const text = state.selection?.text ?? ''
+    setSearchFocus({ at: Date.now(), ...text !== '' && !text.includes('\n') && text.length <= 200 ? { text } : {}, replace })
+    showLeft('search')
+  }
+  const showSourceControl = (focusMessage = false): void => {
+    if (state.workspace === null) return
+    showLeft('git')
+    void refreshGit()
+    if (focusMessage) requestAnimationFrame(() => { document.querySelector<HTMLTextAreaElement>('[data-git-message]')?.focus() })
+  }
   const newTerminal = (): void => {
     if (state.workspace === null) return
     model.layout({ bottomVisible: true, bottomTab: 'terminal' })
@@ -351,6 +378,10 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
       agent: () => { model.layout({ agentVisible: !layout.agentVisible }) },
       bottom: () => { model.layout({ bottomVisible: !layout.bottomVisible }) },
       tools: () => { model.center('tools') },
+      palette: () => { setPalette('') },
+      searchFiles: () => { openSearch(false) },
+      replaceFiles: () => { openSearch(true) },
+      sourceControl: () => { showSourceControl() },
     }
     actions[id]?.()
   }
@@ -371,6 +402,11 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     togglePreview: () => views.length > 0 && showView(currentView === 'preview' ? 'source' : 'preview'),
     previewToSide: () => views.length > 0 && showView('split'),
     canPreview: () => editing && views.length > 0,
+    commandPalette: () => { setPalette('') },
+    searchFiles: () => { openSearch(false) },
+    replaceFiles: () => { openSearch(true) },
+    sourceControl: () => { showSourceControl() },
+    explorer: () => { showLeft('files') },
   }
   useGlobalShortcuts(shortcuts)
   const showPane = useRef<(pane: string, section: string | undefined) => void>(() => undefined)
@@ -435,12 +471,16 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         ? [
           { id: 'find', label: t('ideFind') },
           { id: 'replace', label: t('ideReplace') },
+          { id: 'searchFiles', label: ts('searchInFiles'), disabled: state.workspace === null },
+          { id: 'replaceFiles', label: ts('replaceInFiles'), disabled: state.workspace === null },
           { id: 'line', label: t('ideGoLine') },
           { id: 'format', label: t('ideFormat') },
         ]
         : [
+          { id: 'palette', label: ta('cmdPalette') },
           { id: 'focus', label: t('ideFocusEditor') },
           { id: 'files', label: t('ideToggleFiles') },
+          { id: 'sourceControl', label: ta('cmdSourceControl'), disabled: state.workspace === null },
           { id: 'agent', label: t('ideToggleAgent') },
           { id: 'bottom', label: t('ideToggleBottom') },
           { id: 'tools', label: t('ideTools') },
@@ -465,6 +505,57 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     }
   }
   const toggle = (id: MenuId): void => { setMenu(menu === id ? undefined : id) }
+  const noWorkspace = state.workspace === null
+  const sectionLabels: Record<SettingsSection, string> = {
+    general: ta('settingsGeneral'), appearance: ta('settingsAppearance'), models: ta('settingsModels'), extensions: ta('settingsExtensions'),
+    runtime: ta('settingsRuntime'), memory: ta('settingsMemory'), security: ta('settingsSecurity'), shortcuts: ta('settingsShortcuts'),
+  }
+  const paletteCommands: PaletteCommand[] = [
+    { id: 'file.openFolder', category: ta('catFile'), label: t('ideOpenFolder'), keys: ['Ctrl', '+', 'Alt', '+', 'O'], run: () => { openDirectory('open') } },
+    { id: 'file.quickOpen', category: ta('catFile'), label: t('ideQuickOpen'), keys: QUICK_OPEN_KEYS, disabled: noWorkspace, run: () => { model.quickOpen(true) } },
+    { id: 'file.new', category: ta('catFile'), label: t('ideNewFile'), disabled: noWorkspace, run: () => { run(create(false)) } },
+    { id: 'file.newFolder', category: ta('catFile'), label: t('ideNewFolder'), disabled: noWorkspace, run: () => { run(create(true)) } },
+    { id: 'file.save', category: ta('catFile'), label: t('ideSave'), keys: ['Ctrl', '+', 'S'], disabled: activePath === null || active?.source === 'snippet', run: () => { run(model.save()) } },
+    { id: 'file.saveAll', category: ta('catFile'), label: t('ideSaveAll'), disabled: activePath === null, run: () => { run(model.saveAll()) } },
+    { id: 'file.close', category: ta('catFile'), label: ta('cmdCloseEditor'), disabled: activePath === null, run: () => { if (activePath !== null) run(closeFile(activePath)) } },
+    { id: 'edit.find', category: ta('catEdit'), label: t('ideFind'), keys: ['Ctrl', '+', 'F'], disabled: !editing, run: () => { action('find') } },
+    { id: 'edit.replace', category: ta('catEdit'), label: t('ideReplace'), keys: ['Ctrl', '+', 'H'], disabled: !editing, run: () => { action('replace') } },
+    { id: 'edit.line', category: ta('catEdit'), label: t('ideGoLine'), keys: ['Ctrl', '+', 'G'], disabled: !editing, run: () => { action('line') } },
+    { id: 'edit.format', category: ta('catEdit'), label: t('ideFormat'), keys: ['Shift', '+', 'Alt', '+', 'F'], disabled: !editing, run: () => { action('format') } },
+    { id: 'edit.compare', category: ta('catEdit'), label: t('ideCompare'), disabled: !editing || active?.source === 'snippet', run: () => { action('compare') } },
+    { id: 'edit.searchFiles', category: ta('catEdit'), label: ta('cmdSearch'), keys: ['Ctrl', '+', 'Shift', '+', 'F'], disabled: noWorkspace, run: () => { openSearch(false) } },
+    { id: 'edit.replaceFiles', category: ta('catEdit'), label: ta('cmdReplace'), keys: ['Ctrl', '+', 'Shift', '+', 'H'], disabled: noWorkspace, run: () => { openSearch(true) } },
+    { id: 'view.palette', category: ta('catView'), label: ta('cmdPalette'), keys: PALETTE_KEYS, run: () => { setPalette('') } },
+    { id: 'view.explorer', category: ta('catView'), label: ta('cmdExplorer'), keys: ['Ctrl', '+', 'Shift', '+', 'E'], run: () => { showLeft('files') } },
+    { id: 'view.sourceControl', category: ta('catView'), label: ta('cmdSourceControl'), keys: ['Ctrl', '+', 'Shift', '+', 'G'], disabled: noWorkspace, run: () => { showSourceControl() } },
+    { id: 'view.files', category: ta('catView'), label: t('ideToggleFiles'), run: () => { action('files') } },
+    { id: 'view.bottom', category: ta('catView'), label: t('ideToggleBottom'), run: () => { action('bottom') } },
+    { id: 'view.agent', category: ta('catView'), label: t('ideToggleAgent'), run: () => { action('agent') } },
+    { id: 'view.focus', category: ta('catView'), label: t('ideFocusEditor'), run: () => { action('focus') } },
+    { id: 'view.problems', category: ta('catView'), label: ta('cmdProblems'), run: () => { model.layout({ bottomVisible: true, bottomTab: 'problems' }) } },
+    { id: 'view.terminal', category: ta('catView'), label: ta('cmdNewTerminal'), keys: ['Ctrl', '+', '`'], disabled: noWorkspace, run: newTerminal },
+    { id: 'view.map', category: ta('catView'), label: ta('cmdMap'), disabled: noWorkspace, run: () => { model.center('map') } },
+    { id: 'view.tools', category: ta('catView'), label: ta('cmdTools'), run: () => { model.center('tools') } },
+    { id: 'run.file', category: ta('catRun'), label: ta('cmdRunFile'), disabled: !editing, run: () => { run(launch(false)) } },
+    { id: 'run.debug', category: ta('catRun'), label: ta('cmdDebugFile'), disabled: !editing || target?.configuration.language === 'php', run: () => { run(launch(true)) } },
+    { id: 'run.profiles', category: ta('catRun'), label: t('ideRunProfiles'), disabled: noWorkspace, run: () => { setRunConfiguration(true) } },
+    { id: 'ai.newChat', category: ta('catAi'), label: ta('cmdNewChat'), keys: ['Ctrl', '+', 'Alt', '+', 'N'], run: newChat },
+    { id: 'ai.history', category: ta('catAi'), label: ta('cmdHistory'), keys: ['Ctrl', '+', 'Alt', '+', 'K'], run: shortcuts.searchHistory },
+    { id: 'ai.edit', category: ta('catAi'), label: ta('cmdAiEdit'), keys: ['Ctrl', '+', 'K'], disabled: !editing, run: () => { void editor.current?.action('rainy.aiEdit') } },
+    { id: 'ai.selection', category: ta('catAi'), label: t('ideSendSelection'), disabled: state.selection === undefined, run: () => { workbench.sendSelection() } },
+    { id: 'ai.suggest', category: ta('catAi'), label: ta('cmdToggleSuggest'), run: () => { setPrefs({ inlineCompletion: !prefs.inlineCompletion }).catch(() => undefined) } },
+    { id: 'git.commit', category: ta('catGit'), label: ta('cmdGitCommit'), disabled: noWorkspace, run: () => { showSourceControl(true) } },
+    { id: 'git.refresh', category: ta('catGit'), label: ta('cmdGitRefresh'), disabled: noWorkspace, run: () => { void refreshGit() } },
+    { id: 'settings.open', category: ta('catSettings'), label: ta('settings'), keys: ['Ctrl', '+', ','], run: () => { openSettings('general') } },
+    ...(Object.keys(sectionLabels) as SettingsSection[]).map(section => ({
+      id: `settings.${section}`, category: ta('catSettings'), label: sectionLabels[section], run: () => { openSettings(section) },
+    })),
+    { id: 'settings.themeLight', category: ta('catSettings'), label: ta('cmdThemeLight'), run: () => { setPrefs({ theme: 'light' }).catch(() => undefined) } },
+    { id: 'settings.themeDark', category: ta('catSettings'), label: ta('cmdThemeDark'), run: () => { setPrefs({ theme: 'dark' }).catch(() => undefined) } },
+    { id: 'settings.themeSystem', category: ta('catSettings'), label: ta('cmdThemeSystem'), run: () => { setPrefs({ theme: 'system' }).catch(() => undefined) } },
+    { id: 'settings.language', category: ta('catSettings'), label: ta('cmdLanguage'), run: () => { setPrefs({ locale: prefs.locale === 'zh' ? 'en' : 'zh' }).catch(() => undefined) } },
+    { id: 'help.menu', category: ta('catHelp'), label: ta('cmdHelp'), run: help },
+  ]
 
   return (
     <div className={css.app} data-app-frame>
@@ -547,12 +638,25 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
       <div className={css.root} data-rainy-ide style={{ gridTemplateColumns: `${leftWidth}px minmax(0, 1fr) ${rightWidth}px` }}>
         <aside className={`${css.pane} ${css.left}${narrow && leftVisible ? ` ${css.overlay}` : ''}`} hidden={!leftVisible}
           aria-label={t('ideWorkspace')} style={narrow && leftVisible ? { position: 'absolute', width: leftPanelWidth } : undefined}>
+          {navigation !== 'history' && <div className={css.sideTabs} role="group" aria-label={t('ideWorkspace')}>
+            {([['files', ta('sideExplorer'), <IconFilesOutline key="files" size={16} />], ['search', ts('searchTitle'), <IconSearchOutlineRegular key="search" size={16} />],
+              ['git', tg('gitTitle'), <IconSourceControlOutline key="git" size={16} />]] as const).map(([id, label, icon]) => (
+              <Tooltip key={id} label={label} side="bottom" portal>
+                <button type="button" className={css.sideTab} aria-pressed={navigation === id} aria-label={label} data-side-tab={id}
+                  onClick={() => { if (id === 'search') openSearch(false); else if (id === 'git') showSourceControl(); else showLeft('files') }}>
+                  {icon}
+                  {id === 'git' && gitChanges > 0 && <span className={css.sideBadge} data-git-badge>{gitChanges > 999 ? '999+' : gitChanges}</span>}
+                </button>
+              </Tooltip>
+            ))}
+          </div>}
           <div className={css.explorerHeader}>
             {navigation === 'history' && <IconAction label={t('ideBackToFiles')} onClick={() => { setNavigation('files') }}>
               <IconChevronLeftOutlineRegular size={14} />
             </IconAction>}
             <span className={css.paneTitle} title={state.workspace?.path}>
-              {navigation === 'history' ? t('ideHistory') : (state.workspace?.title ?? t('ideExplorer'))}
+              {navigation === 'history' ? t('ideHistory') : navigation === 'search' ? ts('searchTitle') : navigation === 'git' ? tg('gitTitle')
+                : (state.workspace?.title ?? t('ideExplorer'))}
             </span>
             {navigation === 'files' && <div className={css.explorerActions}>
               <IconAction label={t('ideAddFolder')} disabled={state.phase === 'loading' || directoryPending} onClick={() => { openDirectory('attach') }}>
@@ -596,6 +700,12 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                 }))
               }} marks={treeMarks} />
           </div>
+          <div className={css.retained} hidden={navigation !== 'search'}>
+            <SearchView model={model} state={state} focus={searchFocus} />
+          </div>
+          {navigation === 'git' && leftVisible && <div className={css.retained}>
+            <GitView model={model} state={state} />
+          </div>}
           <div className={css.retained} hidden={navigation !== 'history'} ref={history}>
             <History currentSessionId={sessionId} workspaceId={state.workspace?.workspaceId ?? null} onNewChat={newChat}
               onSelect={(summary) => { setNarrowNavigation(false); void workbench.openSession(summary) }} />
@@ -738,6 +848,11 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
             <span className={css.statusDot} aria-hidden="true" />{environment.environment}
           </span>}
           {state.saving && <span className={css.statusItem}>{t('ideRecoverySaving')}</span>}
+          {gitBranch !== undefined && <button type="button" className={`${css.statusItem} ${css.statusButton}`} title={tg('gitPanel')} data-git-branch
+            onClick={() => { showSourceControl() }}>
+            <IconBranchOutlineRegular size={12} />{gitBranch.branch ?? gitBranch.head ?? tg('gitNoCommits')}
+            {gitChanges > 0 && <span className={css.statusCount}>{gitChanges}</span>}
+          </button>}
           {activity !== undefined && <span className={css.statusItem} data-activity>{activity}</span>}
           <span className={css.spacer} />
           {caret !== undefined && <span className={css.statusItem}>{t('ideStatusPosition', { line: caret.endLine, column: caret.endColumn })}</span>}
@@ -759,7 +874,8 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         {layout.agentVisible && resize('right', width - rightWidth)}
       </div>
       <PromptDialog prompt={prompt} close={resolvePrompt} />
-      <QuickOpenDialog model={model} state={state} />
+      <QuickOpenDialog model={model} state={state} onCommands={(query) => { model.quickOpen(false); setPalette(query) }} />
+      <CommandPalette query={palette} commands={paletteCommands} onClose={() => { setPalette(undefined) }} />
       <DirectoryBrowser open={directoryOpen} busy={directoryBusy} onOpen={adoptDirectory} onClose={() => { setDirectoryOpen(false) }}
         listDirectory={listDirectory} createDirectory={createDirectory} />
       <RunConfigurationDialog open={runConfiguration} close={() => { setRunConfiguration(false) }} state={state} model={model} />

@@ -65,7 +65,7 @@ export interface IdeState {
   readonly languageStates: Readonly<Record<string, string>>
   readonly center: 'editor' | 'tools' | 'map'
   readonly quickOpen: boolean
-  readonly reveal?: { readonly path: string; readonly line: number; readonly column: number }
+  readonly reveal?: { readonly path: string; readonly line: number; readonly column: number; readonly length?: number | undefined }
 }
 
 /** The owner supplies chat restoration and error text. */
@@ -1060,9 +1060,10 @@ export class IdeModel {
    * @param path Relative or contained absolute source.
    * @param line One-based line.
    * @param column One-based column.
+   * @param length Characters to select from there, such as a search match.
    * @returns Completed navigation.
    */
-  async reveal(path: string, line: number, column: number): Promise<void> {
+  async reveal(path: string, line: number, column: number, length = 0): Promise<void> {
     const workspace = this.state.getSnapshot().workspace
     if (workspace === null) return
     const absolute = path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path)
@@ -1070,7 +1071,7 @@ export class IdeModel {
     if (relative === undefined) return
     await this.openFile(relative)
     if (this.state.getSnapshot().workspace?.workspaceId !== workspace.workspaceId) return
-    this.patch({ reveal: { path: relative, line, column } })
+    this.patch({ reveal: { path: relative, line, column, ...length > 0 ? { length } : {} } })
   }
   /** Publish a selection that may be explicitly sent to chat. @param selection Current source selection. */
   selection(selection: EditorSelection | undefined): void {

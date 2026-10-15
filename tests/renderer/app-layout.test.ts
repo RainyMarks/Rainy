@@ -38,6 +38,12 @@ describe('window shortcuts', () => {
       .toEqual(['togglePreview', 'previewChord', undefined, undefined])
   })
 
+  it('maps the command palette, search, replace, source control and explorer, with F1 for the palette too', () => {
+    expect([key('KeyP', { shiftKey: true }), key('KeyF', { shiftKey: true }), key('KeyH', { shiftKey: true }), key('KeyG', { shiftKey: true }),
+      key('KeyE', { shiftKey: true }), key('F1', { ctrlKey: false }), key('F1')])
+      .toEqual(['commandPalette', 'searchFiles', 'replaceFiles', 'sourceControl', 'explorer', 'commandPalette', undefined])
+  })
+
   it('ignores other modifiers, plain keys and keys typed during composition', () => {
     expect([key('KeyP'), key('KeyP', { altKey: true, shiftKey: true }), key('Comma', { ctrlKey: false }),
       key('KeyN', { altKey: true, isComposing: true }), key('KeyS')]).toEqual([undefined, undefined, undefined, undefined, undefined])

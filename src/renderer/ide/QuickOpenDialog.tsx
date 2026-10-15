@@ -6,7 +6,12 @@ import { fileLabel } from './ide-paths.ts'
 import { useIdeT } from './messages.ts'
 import css from './Ide.module.css'
 
-type Props = { model: IdeModel; state: IdeState }
+type Props = {
+  model: IdeModel
+  state: IdeState
+  /** Typing `>` first switches to the command palette with the rest of the text. */
+  onCommands?: ((query: string) => void) | undefined
+}
 type SearchResult = { query: string } & (
   | { phase: 'ready'; paths: readonly string[]; truncated: boolean }
   | { phase: 'error'; message: string }
@@ -20,7 +25,7 @@ export function QuickOpenDialog(props: Props) {
   return props.state.quickOpen ? <OpenQuickOpenDialog key={props.state.workspace?.workspaceId ?? ''} {...props} /> : null
 }
 
-function OpenQuickOpenDialog({ model, state }: Props) {
+function OpenQuickOpenDialog({ model, state, onCommands }: Props) {
   const t = useIdeT()
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<SearchResult>()
@@ -70,6 +75,7 @@ function OpenQuickOpenDialog({ model, state }: Props) {
         aria-activedescendant={paths.length === 0 ? undefined : `rainy-quick-file-${selected}`} aria-label={t('ideQuickOpen')}
         placeholder={t('ideSearchPlaceholder')} value={query} onChange={(event) => {
           if (event.target.value === query) return
+          if (onCommands !== undefined && event.target.value.startsWith('>')) { onCommands(event.target.value.slice(1)); return }
           setQuery(event.target.value); setResult(undefined); setOpenError(''); setSelected(0)
         }} onKeyDown={(event) => {
           if (isComposingKey(event.nativeEvent)) return

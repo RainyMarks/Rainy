@@ -35,3 +35,18 @@ export const IconPanelRightOutline = (props: IconProps) => <Glyph {...props}>
   <rect x="1.5" y="1.5" width="13" height="13" rx="1" />
   <path d="M10.5 1.5v13" />
 </Glyph>
+
+/** File explorer: a page with a folded corner over another. */
+export const IconFilesOutline = (props: IconProps) => <Glyph {...props}>
+  <path d="M5.5 1.5h4l3 3v7a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" />
+  <path d="M9.5 1.5v3h3" />
+  <path d="M2.5 4.5v9a1 1 0 0 0 1 1h6" />
+</Glyph>
+
+/** Source control: two commits on a branch joining a third. */
+export const IconSourceControlOutline = (props: IconProps) => <Glyph {...props}>
+  <circle cx="4.5" cy="3.5" r="1.5" />
+  <circle cx="4.5" cy="12.5" r="1.5" />
+  <circle cx="11.5" cy="5.5" r="1.5" />
+  <path d="M4.5 5v6M11.5 7c0 2.5-2 3.5-5.5 4.2" />
+</Glyph>

@@ -215,7 +215,9 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
   }, [ready, workspaceReady, state.data.execution?.breakpoints, stopped?.path, stopped?.line])
   useEffect(() => {
     if (workspaceReady !== undefined && state.reveal?.path === path && state.reveal !== revealed.current) {
-      instance.current?.reveal(state.reveal.path, state.reveal.line, state.reveal.column)
+      const { path: target, line, column, length } = state.reveal
+      if (length === undefined) instance.current?.reveal(target, line, column)
+      else instance.current?.reveal(target, line, column, length)
       revealed.current = state.reveal
     }
   }, [workspaceReady, state.reveal, path])

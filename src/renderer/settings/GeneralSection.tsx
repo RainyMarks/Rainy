@@ -15,6 +15,12 @@ import css from './sections.module.css'
 
 const shortcuts: readonly { keys: readonly string[]; key: SettingsMessage }[] = [
   { keys: ['Ctrl', 'Alt', 'P'], key: 'shortcutQuickOpen' },
+  { keys: ['Ctrl', 'Shift', 'P'], key: 'shortcutPalette' },
+  { keys: ['Ctrl', 'Shift', 'F'], key: 'shortcutSearchFiles' },
+  { keys: ['Ctrl', 'Shift', 'H'], key: 'shortcutReplaceFiles' },
+  { keys: ['Ctrl', 'Shift', 'G'], key: 'shortcutSourceControl' },
+  { keys: ['Ctrl', 'Shift', 'E'], key: 'shortcutExplorer' },
+  { keys: ['Ctrl', 'K'], key: 'shortcutAiEdit' },
   { keys: ['Ctrl', ','], key: 'shortcutSettings' },
   { keys: ['Ctrl', 'Alt', 'N'], key: 'shortcutNewChat' },
   { keys: ['Ctrl', 'Alt', 'K'], key: 'shortcutSearchChats' },
