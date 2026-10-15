@@ -9,8 +9,10 @@
 import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai'
 import type { Accent, ColorScheme } from './appearance.ts'
 import type { IdeExecutionRequest, IdeExecutionResponseMap } from './ide-execution-protocol.ts'
-import type { IdeFilesFailure, IdeFilesRequest, IdeFilesResults, IdeStateRequest, WorkspaceId } from './ide-files-protocol.ts'
+import type { IdeFilesFailure, IdeFilesRequest, IdeFilesResults, IdeRootId, IdeStateRequest, WorkspaceId } from './ide-files-protocol.ts'
+import type { GitStatus } from './git-protocol.ts'
 import type { MapExplanation, ProjectMap } from './map-protocol.ts'
+import type { TextReplaceRequest, TextReplaceResult, TextSearchRequest, TextSearchResult } from './text-search.ts'
 import type { RuntimeRequest, RuntimeSnapshot } from './runtime-protocol.ts'
 
 export type { WorkspaceId }
@@ -478,6 +480,21 @@ export interface HostMethods {
   'map.get': [{ workspaceId: WorkspaceId; refresh?: boolean | undefined }, ProjectMap]
   /** Ask the chat model to describe the project's parts; the answer is kept with the project. */
   'map.explain': [{ workspaceId: WorkspaceId }, MapExplanation]
+
+  /** Search every root of a project; a newer search of the same project ends the older one. */
+  'search.text': [TextSearchRequest, TextSearchResult]
+  /** Replace every match in the listed files on disk. */
+  'search.replace': [TextReplaceRequest, TextReplaceResult]
+
+  'git.status': [{ workspaceId: WorkspaceId }, GitStatus]
+  'git.stage': [{ workspaceId: WorkspaceId; rootId: IdeRootId; paths: string[] }, void]
+  'git.unstage': [{ workspaceId: WorkspaceId; rootId: IdeRootId; paths: string[] }, void]
+  /** Throw away working-tree changes; new files are deleted. */
+  'git.discard': [{ workspaceId: WorkspaceId; rootId: IdeRootId; paths: string[] }, void]
+  'git.commit': [{ workspaceId: WorkspaceId; rootId: IdeRootId; message: string; stageAll?: boolean | undefined }, { commit: string }]
+  'git.init': [{ workspaceId: WorkspaceId; rootId: IdeRootId }, void]
+  /** A commit message for the staged changes (or all of them when nothing is staged), written by the chat model. */
+  'git.message': [{ workspaceId: WorkspaceId; rootId: IdeRootId }, { message: string }]
 
   'security.status': [{ workspaceId?: WorkspaceId | null | undefined }, SecurityStatus]
   'security.setDefault': [{ mode: PermissionMode }, SecurityStatus]

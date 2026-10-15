@@ -13,6 +13,7 @@ import type {
 } from '../../shared/ide-files-protocol.ts'
 import { workspaceView, type Projects } from '../projects.ts'
 import { createDirectory, listDirectories } from './directories.ts'
+import { ideChildEnvironment } from './execution-process.ts'
 import { ideContains, IdeOperationError, ideRelativePath } from './files-core.ts'
 import { LocalIdeFileSystem, renameNoReplace, type IdePathInfo, type IdeTargetInfo } from './files-fs.ts'
 import { searchIdeFiles } from './files-search.ts'
@@ -102,6 +103,8 @@ export interface RainyIdeFilesOptions {
   readonly now?: () => number
   /** Directories of the files a change check observed, so they can be watched for change hints. */
   readonly onChangesChecked?: ((workspaceId: WorkspaceId, rootId: IdeRootId, directories: readonly string[]) => void) | undefined
+  /** PATH and other variables for Git in a directory, so the Windows basic component's MinGit serves without an installed Git. */
+  readonly gitEnvironment?: ((directory: string) => Record<string, string>) | undefined
 }
 
 interface Observation {
@@ -535,7 +538,9 @@ export class RainyIdeFiles {
   }
 
   private async git(root: string, args: string[], signal?: AbortSignal): Promise<Buffer> {
-    const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/KEY|SECRET|TOKEN|PASSWORD|^GIT_/iu.test(key)))
+    let overlay: Record<string, string> = {}
+    try { overlay = this.options.gitEnvironment?.(root) ?? {} } catch (_replacing) { /* An installed Git is still found on the plain PATH. */ }
+    const environment = Object.fromEntries(Object.entries(ideChildEnvironment(overlay)).filter(([key]) => !/KEY|SECRET|TOKEN|PASSWORD|^GIT_/iu.test(key)))
     const result = await promisify(execFile)('git', ['-c', 'core.fsmonitor=false', '-C', root, ...args], {
       encoding: 'buffer', timeout: this.options.config.gitTimeoutMs, maxBuffer: this.options.config.maxTextBytes,
       windowsHide: true, signal, env: { ...environment, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },

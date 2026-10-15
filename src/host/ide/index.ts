@@ -84,6 +84,7 @@ export async function createIde(deps: IdeDependencies): Promise<IdeService> {
   const files = new RainyIdeFiles({
     projects, config: resolveIdeFilesConfig(),
     onChangesChecked: (workspaceId, rootId, directories) => { if (deps.hint !== undefined) hints.watchDirectories(workspaceId, rootId, directories) },
+    gitEnvironment: directory => runtime.resolveDirectory(directory).environment,
   })
   const state = await RainyIdeStateStore.open({ directory: join(env.home, 'ide'), projects, config: resolveIdeStateConfig(), log })
   const assertUsable = (): void => { activity.assertCanStart() }

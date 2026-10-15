@@ -204,8 +204,13 @@ export function spawnProcess(spec: ProcessSpec): ProcessHandle {
     child.once('exit', (exitCode, signal) => { resolve({ exitCode, signal }) })
   })
   let stopping: Promise<void> | undefined
+  let gone = false
+  child.once('exit', () => { gone = true })
   const terminate = (): void => {
     if (stopping !== undefined || child.pid === undefined) return
+    // Windows finds the tree through the child's process id, which is gone, and may already name another program,
+    // once the child has exited.
+    if (gone && process.platform === 'win32') return
     stopping = killTree(child.pid, graceMs, exited.catch(() => undefined))
   }
   const onAbort = (): void => { terminate() }

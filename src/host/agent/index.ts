@@ -5,17 +5,19 @@ import { toToolDeclaration, type Tool } from '@earendil-works/pi-ai'
 import { z } from 'zod'
 import { resolveBudget } from '../../shared/budget.ts'
 import { brandString } from '../../shared/brand.ts'
-import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { localized } from '../../shared/locale.ts'
 import type { ProjectRegistry } from '../../shared/project-registry.ts'
 import type { BudgetPreview, ExtensionsStatus, McpServerConfig, ProxySettings, SecurityStatus, SessionSummary } from '../../shared/rpc.ts'
 import type { Activity } from '../activity.ts'
 import type { HostEnvironment } from '../env.ts'
+import { GitService } from '../git/index.ts'
 import { ProjectMaps } from '../map/index.ts'
 import { PASSWORD_MASK, proxyUrl, type Network } from '../network.ts'
 import type { Projects } from '../projects.ts'
 import { RpcError, type RpcHub } from '../rpc.ts'
 import type { RuntimeService } from '../runtime/index.ts'
+import { TextSearch } from '../search/index.ts'
 import type { Settings } from '../settings.ts'
 import { estimateMessages } from './compaction.ts'
 import { completeChats, completeFiles } from './complete.ts'
@@ -43,6 +45,17 @@ const revertSchema = z.object({ sessionId: z.string().min(1), toolCallIds: z.arr
 const changeBaseSchema = z.object({ sessionId: z.string().min(1), path: z.string().min(1).max(4096) })
 const mapGetSchema = z.object({ workspaceId: z.string().min(1), refresh: z.boolean().optional() })
 const mapExplainSchema = z.object({ workspaceId: z.string().min(1) })
+const searchSchema = z.object({
+  workspaceId: z.string().min(1), pattern: z.string().max(2000), regex: z.boolean(), caseSensitive: z.boolean(), wholeWord: z.boolean(),
+  include: z.string().max(2000), exclude: z.string().max(2000),
+})
+const replaceSchema = searchSchema.extend({
+  replacement: z.string().max(100_000),
+  files: z.array(z.object({ rootId: z.string().min(1).max(128), path: z.string().min(1).max(4096) })).max(20_000),
+})
+const gitRootSchema = z.object({ workspaceId: z.string().min(1), rootId: z.string().min(1).max(128) })
+const gitPathsSchema = gitRootSchema.extend({ paths: z.array(z.string().min(1).max(4096)).min(1).max(20_000) })
+const gitCommitSchema = gitRootSchema.extend({ message: z.string().max(100_000), stageAll: z.boolean().optional() })
 const removeRuleSchema = z.object({ workspaceId: z.string().min(1), kind: z.enum(['command', 'tool']), rule: z.string().min(1).max(200) })
 
 /**
@@ -312,6 +325,33 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     const { workspaceId } = mapExplainSchema.parse(params)
     return maps.explain(brandString<WorkspaceId>(workspaceId))
   })
+
+  // ── search and Git ──
+  const search = new TextSearch({ projects, ripgrep: services.ripgrep })
+  rpc.register('search.text', async (params) => {
+    const request = searchSchema.parse(params)
+    return search.search({ ...request, workspaceId: brandString<WorkspaceId>(request.workspaceId) })
+  })
+  rpc.register('search.replace', async (params) => {
+    const request = replaceSchema.parse(params)
+    return search.replace({ ...request, workspaceId: brandString<WorkspaceId>(request.workspaceId),
+      files: request.files.map(file => ({ rootId: brandString<IdeRootId>(file.rootId), path: file.path })) })
+  })
+  const git = new GitService({ projects, runtime: deps.runtime, models, settings, log })
+  const gitRoot = (params: unknown) => {
+    const { workspaceId, rootId } = gitRootSchema.parse(params)
+    return [brandString<WorkspaceId>(workspaceId), brandString<IdeRootId>(rootId)] as const
+  }
+  rpc.register('git.status', async (params) => git.status(brandString<WorkspaceId>(mapExplainSchema.parse(params).workspaceId)))
+  rpc.register('git.stage', async (params) => { await git.stage(...gitRoot(params), gitPathsSchema.parse(params).paths) })
+  rpc.register('git.unstage', async (params) => { await git.unstage(...gitRoot(params), gitPathsSchema.parse(params).paths) })
+  rpc.register('git.discard', async (params) => { await git.discard(...gitRoot(params), gitPathsSchema.parse(params).paths) })
+  rpc.register('git.commit', async (params) => {
+    const { message, stageAll } = gitCommitSchema.parse(params)
+    return git.commit(...gitRoot(params), message, stageAll === true)
+  })
+  rpc.register('git.init', async (params) => { await git.init(...gitRoot(params)) })
+  rpc.register('git.message', async (params) => git.message(...gitRoot(params)))
   rpc.register('chat.revert', async (params) => {
     const { sessionId, toolCallIds } = revertSchema.parse(params)
     return (await session(sessionId)).revert(toolCallIds)
@@ -425,6 +465,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     async close() {
       inline.close()
       maps.close()
+      search.close()
       await Promise.allSettled([...sessions.values()].map(chat => chat.close()))
       await memory.close()
       await mcp.close()
