@@ -107,6 +107,8 @@ export interface UiPreferences {
   inlineCompletion: boolean
   /** Provider id of the model behind suggestions; empty to use the chat model. */
   completionModel: string
+  /** The agent's changes are kept when the next message starts a run, without clicking Keep on each file. */
+  autoKeepChanges: boolean
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */

@@ -448,9 +448,14 @@ export class ChatSession {
     this.services.activity.assertCanStart()
     const resolved = this.resolved()
     if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
+    const first = prompts[0] === undefined ? undefined : this.meta.get(prompts[0])
     if (this.chat.title === '') {
-      const first = prompts[0] === undefined ? undefined : this.meta.get(prompts[0])
       this.chat = await this.services.store.setDefaultTitle(this.chat.id, fallbackTitle(first?.kind === 'user' ? first.text : ''))
+    }
+    // A new message keeps what the agent changed before it, unless the user keeps or undoes each change.
+    if (first?.kind === 'user' && this.services.settings.prefs().autoKeepChanges) {
+      await this.keep(this.pendingChanges().flatMap(group => group.calls.map(call => call.id)))
+        .catch((error: unknown) => { this.services.log(`[review] ${String(error)}`) })
     }
     const injections = await this.firstRequestContext(resolved)
     const tools = this.tools()

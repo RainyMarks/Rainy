@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ChatChange, RevertResult } from '../../src/shared/rpc.ts'
 import { on } from '../../src/renderer/app/bus.ts'
+import { getPrefs } from '../../src/renderer/prefs.ts'
 import { ChangesBar } from '../../src/renderer/review/ChangesBar.tsx'
 import { all, button, cleanup, click, emit, fakeHost, flush, handle, hasText, render, waitFor } from './settings-harness.tsx'
 
@@ -58,6 +59,18 @@ it('lists the changed files with their counts and keeps, undoes or reviews each'
   await click(rowButton('lib/helper.py', '撤销'))
   await waitFor(() => { expect(document.querySelector('[data-changes]')).toBeNull() })
   expect(fakeHost.call).toHaveBeenCalledWith('chat.revert', { sessionId: 's1', toolCallIds: ['w3'] })
+})
+
+it('says the changes are kept with the next message while Settings keeps them automatically', async () => {
+  const hint = '发出下一条消息时会自动保留这些修改（可在“设置 → 安全”中关闭）'
+  await render(<ChangesBar sessionId="s1" busy={false} />)
+  await waitFor(() => { expect(hasText('AI 改了 2 个文件')).toBe(true) })
+  await click(document.querySelector<HTMLButtonElement>('[data-changes] button[aria-expanded]')!)
+  expect(hasText(hint)).toBe(true)
+  await emit('prefs.changed', { ...getPrefs(), autoKeepChanges: false })
+  expect(hasText(hint)).toBe(false)
+  expect(all('[data-change]')).toHaveLength(2)
+  await emit('prefs.changed', { ...getPrefs(), autoKeepChanges: true })
 })
 
 it('undoes every file after confirmation, refreshes on Host notice, and waits for the chat to finish before undoing', async () => {

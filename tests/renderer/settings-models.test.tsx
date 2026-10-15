@@ -35,7 +35,7 @@ beforeEach(async () => {
   handle('models.configure', setup => ({ provider: setup.provider, model: setup.model }))
   handle('models.discover', () => [])
   handle('models.probe', () => ({ stream: true, toolCall: true }))
-  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
+  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true })
 })
 afterEach(async () => { await cleanup(); setBridge('__RAINY_STRATA_NATIVE__', undefined); delete window.__RAINY_WORKBENCH_CONFIG__ })
 
@@ -80,7 +80,7 @@ it('switches untouched new-model defaults between the configured local and API w
 })
 
 it.each([{ locale: 'zh' as const, copy: zh }, { locale: 'en' as const, copy: en }])('discovers models before a model or context is entered in $locale', async ({ locale, copy }) => {
-  await emit('prefs.changed', { locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
+  await emit('prefs.changed', { locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true })
   handle('models.discover', () => [{ id: 'available-small' }, { id: 'available-large', contextWindow: 131072 }])
   await render(<ModelsSection workspace={workspace} />)
   await click(button(copy.settingsAddModel, document.querySelector('[data-default-model]')!))
@@ -314,7 +314,7 @@ it('previews the current project before its first message and states the estimat
 })
 
 it.each([{ locale: 'zh' as const, copy: zh }, { locale: 'en' as const, copy: en }])('puts the default model first and keeps the local engine collapsed in $locale', async ({ locale, copy }) => {
-  await emit('prefs.changed', { locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
+  await emit('prefs.changed', { locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true })
   setBridge('__RAINY_STRATA_NATIVE__', strataBridge())
   const { container } = await render(<ModelsSection workspace={workspace} />)
   const page = container.querySelector('[data-settings-section="models"]')!

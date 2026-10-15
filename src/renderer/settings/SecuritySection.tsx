@@ -1,8 +1,11 @@
 /** Security section: the mode new chats start in, and the commands and MCP tools the current project allows without asking. */
 import { useEffect, useRef, useState } from 'react'
 import type { PermissionMode, SecurityStatus } from '../../shared/rpc.ts'
+import { setPrefs, usePrefs } from '../prefs.ts'
 import { host } from '../rpc.ts'
 import { Button } from '../ui/Button.tsx'
+import { Switch } from '../ui/Switch.tsx'
+import { toast } from '../ui/toasts.tsx'
 import { useT } from './messages.ts'
 import { Loading, Notice, Select, SettingRow, errorText, useAction } from './parts.tsx'
 import type { SettingsWorkspace } from './parts.tsx'
@@ -14,6 +17,7 @@ import css from './sections.module.css'
  */
 export function SecuritySection({ workspace }: { workspace: SettingsWorkspace }): JSX.Element {
   const t = useT()
+  const prefs = usePrefs()
   const workspaceId = workspace?.workspaceId
   const [status, setStatus] = useState<SecurityStatus | undefined>()
   const [error, setError] = useState('')
@@ -47,6 +51,11 @@ export function SecuritySection({ workspace }: { workspace: SettingsWorkspace })
               const next = await host.call('security.setDefault', { mode })
               setStatus(previous => previous === undefined ? previous : { ...previous, defaultMode: next.defaultMode })
             }, t('settingsApplied'))
+          }} />
+        </SettingRow>
+        <SettingRow title={t('securityAutoKeep')} description={t('securityAutoKeepNote')}>
+          <Switch label={t('securityAutoKeep')} checked={prefs.autoKeepChanges} onChange={(autoKeepChanges) => {
+            setPrefs({ autoKeepChanges }).catch((failure: unknown) => { toast(errorText(failure), { tone: 'error' }) })
           }} />
         </SettingRow>
       </div>

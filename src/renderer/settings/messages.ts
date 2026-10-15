@@ -98,6 +98,8 @@ const zh = {
   settingsSecurity: '安全', settingsSecurityNote: 'AI 运行命令、调用 MCP 工具或写项目外的文件前，是否先问你。每个对话也可以在输入框旁单独切换。',
   securityDefaultMode: '新对话的权限', securityDefaultModeNote: '已有对话保留各自的设置',
   securityModeReadOnly: '只读：只能读取和搜索', securityModeAsk: '询问：命令、MCP 工具和项目外写入先问你', securityModeAuto: '完全自动：不再询问',
+  securityAutoKeep: '自动保留 AI 的修改',
+  securityAutoKeepNote: 'AI 改过的文件仍会列在输入框上方，可以审查或撤销；发出下一条消息时自动保留，不用逐个点“保留”。关闭后，改动会一直列着，直到你逐个保留或撤销。',
   securityRules: '已记住的规则', securityRulesNote: '批准时选择“总是允许”会记在当前项目里。命令规则只匹配简单命令：含有 ; & | > < $ ( ) 等的命令仍会每次询问。',
   securityNoRules: '当前项目还没有记住的规则', securityRuleCommand: '命令', securityRuleTool: 'MCP 工具', securityRemoveRule: '移除',
   settingsBudgetParts: '估算分项：系统 {system} · 工具 {tools} · 扩展说明 {extensions} · 项目与全局指令 {instructions} · 记忆 {memory}'
@@ -257,6 +259,8 @@ const en: Record<keyof typeof zh, string> = {
   settingsSecurity: 'Security', settingsSecurityNote: 'Whether the AI asks you before running commands, calling MCP tools or writing outside the project. Each chat can also switch this next to its input box.',
   securityDefaultMode: 'Mode of new chats', securityDefaultModeNote: 'Existing chats keep their own mode',
   securityModeReadOnly: 'Read-only: read and search only', securityModeAsk: 'Ask: commands, MCP tools and outside writes ask first', securityModeAuto: 'Full auto: never ask',
+  securityAutoKeep: 'Keep the AI’s changes automatically',
+  securityAutoKeepNote: 'Files the AI changed are still listed above the message box to review or undo, and are kept when you send your next message, so you do not click Keep on each one. When this is off, changes stay listed until you keep or undo each one.',
   securityRules: 'Remembered rules', securityRulesNote: '"Always allow" in an approval is remembered for the current project. Command rules match simple commands only: commands with ; & | > < $ ( ) and similar still ask every time.',
   securityNoRules: 'No rules remembered for this project yet', securityRuleCommand: 'Command', securityRuleTool: 'MCP tool', securityRemoveRule: 'Remove',
   settingsBudgetParts: 'Estimated parts: system {system} · tools {tools} · extension instructions {extensions}'

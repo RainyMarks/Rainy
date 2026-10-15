@@ -58,6 +58,27 @@ describe('changes to review', () => {
     expect(await h.call('chat.changes', { sessionId: chat.id })).toEqual([])
   })
 
+  it.each([true, false])('keeps earlier changes when the next message starts a run, when that is on (%s)', async (autoKeep) => {
+    server = new FakeOpenAI([
+      { toolCalls: [{ name: 'write', arguments: { file_path: 'a.txt', content: 'one\n' } }] },
+      { text: 'done' },
+      { text: 'ok' },
+    ])
+    await server.start()
+    const h = await harness(server, cleanups)
+    if (!autoKeep) await h.settings.setPrefs({ autoKeepChanges: false })
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    await h.call('chat.send', { sessionId: chat.id, text: 'make a file' })
+    await idle(h, chat.id)
+    expect((await h.call('chat.changes', { sessionId: chat.id })).map(change => change.display)).toEqual(['a.txt'])
+    const before = h.events.filter(event => event.event === 'session.changes').length
+    await h.call('chat.send', { sessionId: chat.id, text: 'thanks' })
+    await idle(h, chat.id)
+    expect((await h.call('chat.changes', { sessionId: chat.id })).map(change => change.display)).toEqual(autoKeep ? [] : ['a.txt'])
+    expect(h.events.filter(event => event.event === 'session.changes')).toHaveLength(before + (autoKeep ? 1 : 0))
+    expect(await readFile(join(h.project, 'a.txt'), 'utf8')).toBe('one\n')
+  })
+
   it('leaves out a file the agent changed back', async () => {
     server = new FakeOpenAI([
       { toolCalls: [{ name: 'read', arguments: { file_path: 'a.txt' } }] },

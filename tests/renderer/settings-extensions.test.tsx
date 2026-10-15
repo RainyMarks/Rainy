@@ -45,7 +45,7 @@ beforeEach(async () => {
     return status
   })
   handle('extensions.removeServer', ({ name }) => { status = { ...status, skills: [], servers: status.servers.filter(entry => entry.name !== name) }; return status })
-  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
+  await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true })
 })
 afterEach(async () => { await cleanup() })
 

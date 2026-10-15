@@ -159,6 +159,7 @@ export interface Harness {
   project: string
   agent: AgentService
   home: string
+  settings: Settings
 }
 
 /**
@@ -195,7 +196,7 @@ export async function harness(server: { baseURL: string }, cleanups: (() => Prom
   }
   await call('models.configure', { provider: 'fake', baseURL: server.baseURL, model: 'fake-model', contextWindow: 32768, local: true, api: 'openai-completions' })
   await call('security.setDefault', { mode })
-  return { call, events, workspaceId: opened.id, project: opened.path, agent, home: env.home }
+  return { call, events, workspaceId: opened.id, project: opened.path, agent, home: env.home, settings }
 }
 
 /** Wait until a chat stops running. */

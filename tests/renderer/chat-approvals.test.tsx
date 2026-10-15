@@ -14,7 +14,7 @@ vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./setting
 
 const workspaceId = 'w1' as WorkspaceId
 const workspace = { workspaceId, path: '/project', title: 'project' }
-const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' }
+const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true }
 const models: ModelsStatus = {
   models: [{ provider: 'fake', model: 'fake-model', baseURL: 'http://127.0.0.1/v1', contextWindow: 32768, local: true }],
   credentials: [], selected: { provider: 'fake', model: 'fake-model' }, thinkingLevels: { fake: ['off'] }, presets: [], globalPrompt: { text: '', maxChars: 4000 },
@@ -161,4 +161,15 @@ it('sets the default mode and removes remembered rules in Settings → Security'
   await click(button('移除', row))
   expect(calls('security.removeRule')).toEqual([{ workspaceId, kind: 'command', rule: 'git status' }])
   await waitFor(() => { expect(hasText('git status')).toBe(false) })
+})
+
+it('turns off keeping the agent changes automatically in Settings → Security', async () => {
+  handle('security.status', () => ({ defaultMode: 'ask' as const, rules: { commands: [], tools: [] } }))
+  handle('prefs.set', change => ({ ...prefs, ...change }))
+  await render(<SecuritySection workspace={workspace} />)
+  const toggle = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="自动保留 AI 的修改"]')!
+  expect(toggle.getAttribute('aria-checked')).toBe('true')
+  await click(toggle)
+  expect(calls('prefs.set')).toEqual([{ autoKeepChanges: false }])
+  await waitFor(() => { expect(toggle.getAttribute('aria-checked')).toBe('false') })
 })

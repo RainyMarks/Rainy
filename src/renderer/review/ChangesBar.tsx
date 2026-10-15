@@ -3,6 +3,7 @@ import { useState } from 'react'
 import clsx from 'clsx'
 import type { ChatChange } from '../../shared/rpc.ts'
 import { emit } from '../app/bus.ts'
+import { usePrefs } from '../prefs.ts'
 import { revertChanges } from '../chat/revert.ts'
 import { host } from '../rpc.ts'
 import { Button, FileTypeIcon, IconChevronDownOutlineRegular, Modal, toast } from '../ui/index.ts'
@@ -25,6 +26,7 @@ function split(display: string): { name: string; directory: string } {
 export function ChangesBar({ sessionId, busy }: { sessionId: string; busy: boolean }): JSX.Element | null {
   const t = useReviewT()
   const changes = useChanges(sessionId)
+  const { autoKeepChanges } = usePrefs()
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState(false)
   const [confirmUndo, setConfirmUndo] = useState(false)
@@ -88,6 +90,7 @@ export function ChangesBar({ sessionId, busy }: { sessionId: string; busy: boole
               </li>
             )
           })}
+          {autoKeepChanges && <li className={css.hint}>{t('changesAutoKeep')}</li>}
         </ul>
       )}
       <Modal open={confirmUndo} onClose={() => { setConfirmUndo(false) }} title={t('changesUndoAllTitle')} closeLabel={t('close')}

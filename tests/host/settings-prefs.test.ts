@@ -19,8 +19,8 @@ async function settings(file?: unknown): Promise<Settings> {
 }
 
 it('starts with the graphite scheme, the automatic accent and the default fonts', async () => {
-  expect((await settings()).prefs()).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
-  expect(DEFAULT_PREFS).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '' })
+  expect((await settings()).prefs()).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true })
+  expect(DEFAULT_PREFS).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true })
 })
 
 it('stores a color scheme, an accent and font lists, and rejects values outside the choices', async () => {
@@ -41,6 +41,14 @@ it('drops a stored value it does not accept and keeps the rest of the file', asy
   await store.setPrefs({ showUsage: false })
   const written = JSON.parse(await readFile(join(homes[0]!, 'settings.json'), 'utf8')) as { ui: Record<string, unknown> }
   expect(written.ui).toEqual({ locale: 'en', theme: 'dark', accent: 'violet', showUsage: false })
+})
+
+it('keeps the agent changes automatically by default, also with a file written before the choice existed', async () => {
+  const store = await settings({ version: 1, models: [], selected: null, globalPrompt: '', mcpServers: [], ui: { locale: 'zh' } })
+  expect(store.prefs().autoKeepChanges).toBe(true)
+  await store.setPrefs({ autoKeepChanges: false })
+  expect(store.prefs().autoKeepChanges).toBe(false)
+  await expect(store.setPrefs({ autoKeepChanges: 'yes' } as never)).rejects.toThrow()
 })
 
 it('normalizes typed font lists and quotes family names for CSS', () => {
