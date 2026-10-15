@@ -2,6 +2,7 @@
 import type { IdeFileEntry, IdeRootId } from '../../shared/ide-files-protocol.ts'
 import { FileTypeIcon, IconAction, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCloseOutlineRegular,
   IconFolderCloseRegular } from '../ui/index.ts'
+import type { AiMark } from '../map/marks.ts'
 import type { IdeState } from './ide-model.ts'
 import { fileKey, fileLabel, workspaceRoots } from './ide-paths.ts'
 import { useIdeT } from './messages.ts'
@@ -11,13 +12,28 @@ function isFolder(entry: IdeFileEntry): boolean {
   return entry.kind === 'directory' || entry.targetKind === 'directory'
 }
 
-function Level({ state, directory, level, selected, select, activate }: {
+/** What the agent is doing to files, shown next to their names. */
+interface TreeMarks {
+  readonly files: ReadonlyMap<string, AiMark>
+  /** Folders holding a marked file. */
+  readonly directories: ReadonlySet<string>
+}
+
+function Mark({ mark }: { mark: AiMark | 'inside' }) {
+  const t = useIdeT()
+  const title = mark === 'reading' ? t('ideAiReading') : mark === 'writing' ? t('ideAiWriting') : mark === 'created' ? t('ideAiCreated')
+    : mark === 'changed' ? t('ideAiChanged') : t('ideAiInside')
+  return <span className={css.treeMark} data-mark={mark} title={title} aria-label={title} />
+}
+
+function Level({ state, directory, level, selected, select, activate, marks }: {
   state: IdeState
   directory: string
   level: number
   selected: string | undefined
   select: (entry: IdeFileEntry) => void
   activate: (entry: IdeFileEntry) => void
+  marks: TreeMarks | undefined
 }) {
   const entries = [...(state.directories[directory]?.entries ?? [])].sort((left, right) =>
     Number(isFolder(right)) - Number(isFolder(left)) || left.name.localeCompare(right.name))
@@ -44,10 +60,13 @@ function Level({ state, directory, level, selected, select, activate }: {
                 : <FileTypeIcon path={entry.name} size={16} />}
             </span>
             <span className={css.treeName}>{entry.name}</span>
+            {folder
+              ? !expanded && marks?.directories.has(entry.path) === true && <Mark mark="inside" />
+              : marks?.files.get(entry.path) !== undefined && <Mark mark={marks.files.get(entry.path)!} />}
           </button>
         </div>
         {folder && expanded && (
-          <Level state={state} directory={entry.path} level={level + 1} selected={selected} select={select} activate={activate} />
+          <Level state={state} directory={entry.path} level={level + 1} selected={selected} select={select} activate={activate} marks={marks} />
         )}
       </div>
     )
@@ -63,9 +82,10 @@ function Level({ state, directory, level, selected, select, activate }: {
  * @param props.selectRoot Selects a root header.
  * @param props.activate Opens a file or toggles a folder.
  * @param props.removeRoot Detaches a secondary root.
+ * @param props.marks Files the agent is reading, writing, or changed without review, and the folders holding them.
  * @returns The tree.
  */
-export function FileTree({ state, selected, selectedRootId, select, selectRoot, activate, removeRoot }: {
+export function FileTree({ state, selected, selectedRootId, select, selectRoot, activate, removeRoot, marks }: {
   state: IdeState
   selected: string | undefined
   selectedRootId: IdeRootId | undefined
@@ -73,6 +93,7 @@ export function FileTree({ state, selected, selectedRootId, select, selectRoot, 
   selectRoot: (rootId: IdeRootId) => void
   activate: (entry: IdeFileEntry) => void
   removeRoot: (rootId: IdeRootId) => void
+  marks?: TreeMarks | undefined
 }) {
   const t = useIdeT()
   const roots = state.workspace === null ? [] : workspaceRoots(state.workspace)
@@ -92,7 +113,7 @@ export function FileTree({ state, selected, selectedRootId, select, selectRoot, 
         {!root.primary && state.phase === 'ready' && state.directories[fileKey('', root.rootId)] === undefined
           && <p className={`${css.notice} ${css.error}`} role="status">{t('ideUnavailableRoot')}</p>}
         <Level state={state} directory={fileKey('', root.rootId)} level={roots.length > 1 ? 1 : 0}
-          selected={selected} select={(entry) => { select(entry, root.rootId) }} activate={activate} />
+          selected={selected} select={(entry) => { select(entry, root.rootId) }} activate={activate} marks={marks} />
       </div>)}
     </div>
   )

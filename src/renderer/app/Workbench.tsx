@@ -7,10 +7,17 @@ import {
   Button, FileTypeIcon, fileSizeText, IconAction, IconBugOutline, IconCheckOutlineRegular, IconChevronDownOutlineRegular,
   IconChevronLeftOutlineRegular, IconCloseOutlineRegular, IconEllipsisOutlineRegular, IconFolderCloseRegular,
   IconPanelBottomOutline, IconPanelLeftOutlineRegular, IconPanelRightOutline, IconPlayOutlineRegular, IconPlusOutlineRegular,
-  IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, IconShieldOutlineRegular, Menu,
+  IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, IconShieldOutlineRegular, Menu,
   ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
 } from '../ui/index.ts'
 import { setPrefs, usePrefs } from '../prefs.ts'
+import { useAiActivity } from '../map/activity.ts'
+import { useMapT } from '../map/messages.ts'
+import { ProjectMapView } from '../map/ProjectMap.tsx'
+import { aiMarks, markedDirectories } from '../map/marks.ts'
+import { useChanges } from '../review/changes-store.ts'
+import { finishReview, openReview, undoReview } from '../review/review-actions.ts'
+import { ReviewBar } from '../review/ReviewBar.tsx'
 import { ChatPane } from '../chat/ChatPane.tsx'
 import { History } from '../chat/History.tsx'
 import { SettingsDialog, type SettingsSection } from '../settings/SettingsDialog.tsx'
@@ -30,7 +37,7 @@ import {
 import { useIdeT } from '../ide/messages.ts'
 import { useViewerT } from '../ide/viewers/messages.ts'
 import { defaultView, switchableViews } from '../ide/viewers/viewer-choice.ts'
-import { on } from './bus.ts'
+import { emit, on } from './bus.ts'
 import { useDarkTheme } from './appearance.ts'
 import { DirectoryBrowser, type CreateDirectory, type ListDirectory } from './DirectoryBrowser.tsx'
 import { NoFile, Welcome } from './EmptyStates.tsx'
@@ -65,6 +72,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const t = useIdeT()
   const tv = useViewerT()
   const tc = useCtfT()
+  const tm = useMapT()
   const ta = useAppT()
   const { model, execution, directory } = workbench
   const state = useStore(model.state)
@@ -95,7 +103,30 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const [toolsVisited, setToolsVisited] = useState(state.center === 'tools')
   const [settings, setSettings] = useState<{ readonly open: boolean; readonly section?: SettingsSection | undefined }>({ open: false })
   useEffect(() => { if (state.center === 'tools') { setToolsOpen(true); setToolsVisited(true) } }, [state.center])
+  const [mapOpen, setMapOpen] = useState(state.center === 'map')
+  useEffect(() => { if (state.center === 'map') setMapOpen(true) }, [state.center])
   const editor = useRef<EditorInstance | undefined>(undefined)
+  const [reviewBusy, setReviewBusy] = useState(false)
+  useEffect(() => on('review.open', ({ sessionId: chat, path, toolCallIds }) => {
+    void openReview(model, chat, path, toolCallIds).catch((error: unknown) => { model.fail(error) })
+  }), [model])
+  /** Send a message to the AI in the current chat, showing the AI pane. */
+  const askAi = (text: string): void => {
+    const workspace = model.state.getSnapshot().workspace
+    if (workspace === null) return
+    model.layout({ agentVisible: true })
+    emit('chat.send', { workspaceId: workspace.workspaceId, text })
+  }
+  const reviewStep = (operation: () => Promise<unknown>): void => {
+    setReviewBusy(true)
+    void operation().catch((error: unknown) => { model.fail(error) }).finally(() => { setReviewBusy(false) })
+  }
+  const changes = useChanges(sessionId)
+  const aiActivity = useAiActivity()
+  const treeMarks = useMemo(() => {
+    const files = aiMarks(state.workspace, changes, aiActivity.active)
+    return { files, directories: markedDirectories(files) }
+  }, [state.workspace, changes, aiActivity.active])
   const history = useRef<HTMLDivElement>(null)
   const drag = useRef<{ side: Side; origin: number; size: number } | undefined>(undefined)
   const layout = state.data.layout
@@ -112,6 +143,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const active = activePath === null ? undefined : state.buffers[activePath]
   const tab = state.data.tabs.find(entry => entry.path === activePath)
   const editing = state.center === 'editor' && active !== undefined
+  const reviewing = editing && active.comparison?.kind === 'ai' ? active.comparison.review : undefined
   const views = activePath === null || active === undefined ? [] : switchableViews(activePath, active.document.readOnlyReason)
   const currentView = tab?.view ?? (activePath === null ? 'source' : defaultView(activePath))
   /** Store a view, leaving the tab without an explicit choice when it picks its type's default. */
@@ -498,6 +530,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
             </IconAction>
           </div>
           <div className={css.toolGroup}>
+            <IconAction label={tm('mapTitle')} pressed={state.center === 'map'} disabled={state.workspace === null} onClick={() => { model.center('map') }}>
+              <IconMapOutline size={16} />
+            </IconAction>
             <IconAction label={tc('ctf')} pressed={state.center === 'tools'} onClick={() => { model.center('tools') }}>
               <IconShieldOutlineRegular size={16} />
             </IconAction>
@@ -557,7 +592,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                 run(model.removeRoot(rootId).then(() => {
                   if (selectedRootId === rootId) { setSelected(undefined); setSelectedRootId(undefined) }
                 }))
-              }} />
+              }} marks={treeMarks} />
           </div>
           <div className={css.retained} hidden={navigation !== 'history'} ref={history}>
             <History currentSessionId={sessionId} workspaceId={state.workspace?.workspaceId ?? null} onNewChat={newChat}
@@ -566,7 +601,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         </aside>
         <main className={`${css.pane} ${css.center}`}>
           <div className={css.editorArea}>
-            <div className={css.editorHeader} hidden={state.data.tabs.length === 0 && !toolsOpen}>
+            <div className={css.editorHeader} hidden={state.data.tabs.length === 0 && !toolsOpen && !mapOpen}>
               <div className={css.tabs} role="tablist" aria-label={t('ideExplorer')}>
                 {state.data.tabs.map(file => (
                   <div className={css.tab} key={file.path} data-active={(activePath === file.path && state.center === 'editor') || undefined}>
@@ -582,6 +617,13 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                     </IconAction>
                   </div>
                 ))}
+                {mapOpen && <div className={css.tab} data-active={state.center === 'map' || undefined}>
+                  <button type="button" role="tab" aria-selected={state.center === 'map'} className={css.button}
+                    onClick={() => { model.center('map') }}><IconMapOutline size={14} /><span className={css.tabName}>{tm('mapTitle')}</span></button>
+                  <IconAction label={tm('mapClose')} onClick={() => { setMapOpen(false); if (state.center === 'map') model.center('editor') }}>
+                    <IconCloseOutlineRegular size={12} />
+                  </IconAction>
+                </div>}
                 {toolsOpen && <div className={css.tab} data-active={state.center === 'tools' || undefined}>
                   <button type="button" role="tab" aria-selected={state.center === 'tools'} className={css.button}
                     onClick={() => { model.center('tools') }}>{tc('ctf')}</button>
@@ -615,6 +657,14 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                   ]} onSelect={action} />
               </div>}
             </div>
+            {reviewing !== undefined && activePath !== null && (
+              <ReviewBar remaining={reviewing.remaining} busy={reviewBusy}
+                onPrevious={() => { void editor.current?.action('rainy.previousChange') }}
+                onNext={() => { void editor.current?.action('rainy.nextChange') }}
+                onKeep={() => { void editor.current?.action('rainy.keepAll') }}
+                onUndo={() => { reviewStep(() => undoReview(model, editor.current, activePath)) }}
+                onClose={() => { model.endReview(activePath) }} />
+            )}
             {state.error && <div className={`${css.notice} ${css.error}`} role="alert">{state.error}</div>}
             {active?.comparison?.kind === 'snippet' && activePath !== null && (
               <div className={css.notice}>
@@ -645,6 +695,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                 appearance={appearance}
                 sendSelection={() => { workbench.sendSelection() }}
                 attach={(value) => { editor.current = value }}
+                review={(path, remaining) => { if (remaining === 0) reviewStep(() => finishReview(model, path)) }}
                 breakpoint={(path, line) => { run(execution.toggleBreakpoint(path, line)) }}
                 stopped={stopped}
                 empty={state.workspace === null
@@ -655,6 +706,10 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                     agent={layout.agentVisible ? undefined : () => { model.layout({ agentVisible: true }) }} />}
               />
             </div>
+            <div className={css.centerBody} hidden={state.center !== 'map'}>
+              {mapOpen && <ProjectMapView workspace={state.workspace} visible={state.center === 'map'} changes={changes} activity={aiActivity}
+                openFile={(path) => { run(model.openFile(path)) }} ask={askAi} />}
+            </div>
             <div className={css.centerBody} hidden={state.center !== 'tools'}>
               {toolsVisited && <CtfWorkbench owner={workbench.ctf} sessionId={sessionId} active={state.center === 'tools'} dark={dark} />}
             </div>
@@ -663,7 +718,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
             style={{ height: layout.bottomVisible ? bottomHeight : 0, minHeight: layout.bottomVisible ? undefined : 0 }}>
             {resize('bottom')}
             <IdeBottom state={state} executionState={executionState} execution={execution} model={model} appearance={appearance}
-              reveal={(path, line, column) => { run(model.reveal(path, line, column)) }} />
+              reveal={(path, line, column) => { run(model.reveal(path, line, column)) }} ask={askAi} />
           </div>
         </main>
         <aside className={`${css.pane} ${css.agent}`} hidden={!layout.agentVisible} aria-label={t('ideAgent')}>

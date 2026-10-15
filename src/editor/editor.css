@@ -213,3 +213,37 @@
 .cm-line.rainy-ai-added {
   background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent);
 }
+
+/* Keep and undo buttons on each change while the agent's changes are reviewed. */
+.cm-editor .cm-deletedChunk .cm-chunkButtons {
+  display: flex;
+  gap: 4px;
+  top: 1px;
+  z-index: 2;
+}
+
+.cm-editor .cm-deletedChunk .rainy-review-button {
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--dsw-radius-md);
+  font-family: var(--dsw-font-family);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.cm-editor .cm-deletedChunk .rainy-review-keep {
+  background: var(--dsw-alias-state-success-primary);
+  color: var(--dsw-alias-label-primary-inverted);
+}
+
+.cm-editor .cm-deletedChunk .rainy-review-undo {
+  border-color: var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+}
+
+.cm-editor .cm-deletedChunk .rainy-review-button:hover {
+  filter: brightness(1.1);
+}

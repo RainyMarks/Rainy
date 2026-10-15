@@ -1,5 +1,5 @@
 /** CodeMirror 6 editors, language-server clients and the xterm terminal behind the IDE's `EditorAssets` interface. */
-import { Annotation, Compartment, EditorState, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state'
+import { Annotation, ChangeSet, Compartment, EditorState, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state'
 import {
   crosshairCursor, Decoration, drawSelection, dropCursor, EditorView, gutter, GutterMarker, highlightActiveLine, highlightActiveLineGutter,
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection, showPanel, type Command, type DecorationSet, type Panel,
@@ -9,7 +9,7 @@ import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit } fr
 import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
 import { lintKeymap } from '@codemirror/lint'
-import { unifiedMergeView } from '@codemirror/merge'
+import { getChunks, getOriginalDoc, goToNextChunk, goToPreviousChunk, unifiedMergeView, updateOriginalDoc } from '@codemirror/merge'
 import { findReferences, jumpToDefinition, LSPPlugin } from '@codemirror/lsp-client'
 import type {
   EditorActionLabels, EditorAppearance, EditorAssets, EditorCallbacks, EditorDocument, EditorInstance, EditorProblem, EditorView as EditorViewState,
@@ -181,8 +181,8 @@ interface OpenDocument {
   host: HTMLDivElement
   /** Connection whose plugin the view holds. */
   connection: LanguageConnection | undefined
-  /** Comparison text while the document shows as a diff. */
-  diff: { original: string; editable: boolean } | undefined
+  /** Comparison text while the document shows as a diff; `review` adds keep and undo buttons to each change. */
+  diff: { original: string; editable: boolean; review: boolean } | undefined
   /** The view state the IDE saved has been applied. */
   restored: boolean
   /** Model calls and settings behind the view's suggestions and Ctrl+K. */
@@ -252,13 +252,16 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     }
   }
 
-  showDiff(path: string, original: string, editable: boolean): void {
+  showDiff(path: string, original: string, editable: boolean, review = false): void {
     const open = this.activate(path)
     if (open === undefined) return
-    if (open.diff?.original === original && open.diff.editable === editable) return
-    open.diff = { original, editable }
+    if (open.diff?.original === original && open.diff.editable === editable && open.diff.review === review) return
+    open.diff = { original, editable, review }
     open.view.dispatch({ effects: [
-      diffSlot.reconfigure(unifiedMergeView({ original, mergeControls: false, gutter: true, highlightChanges: true, syntaxHighlightDeletions: true })),
+      diffSlot.reconfigure(unifiedMergeView({
+        original, gutter: true, highlightChanges: true, syntaxHighlightDeletions: true,
+        mergeControls: review ? (type, action) => this.reviewButton(type, action) : false,
+      })),
       readOnlySlot.reconfigure(this.readOnly(open)),
     ] })
   }
@@ -317,6 +320,14 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       case 'rainy.aiEdit': {
         const open = this.activePath === undefined ? undefined : this.documents.get(this.activePath)
         if (open !== undefined) startAiEdit(open.view, open.ai)
+        break
+      }
+      case 'rainy.nextChange': run(goToNextChunk); break
+      case 'rainy.previousChange': run(goToPreviousChunk); break
+      case 'rainy.keepAll':
+      case 'rainy.undoAll': {
+        const open = this.activePath === undefined ? undefined : this.documents.get(this.activePath)
+        if (open?.diff !== undefined) this.resolveAll(open, command === 'rainy.keepAll')
         break
       }
       case 'find':
@@ -516,6 +527,8 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
         if (update.docChanged && !update.transactions.every(transaction => transaction.annotation(external) === true)) {
           this.callbacks.change(open.document.path, update.state.doc.toString())
         }
+        if (open.diff?.review === true && update.transactions.some(transaction => transaction.isUserEvent('accept') || transaction.isUserEvent('revert')
+          || (transaction.docChanged && transaction.annotation(external) !== true))) this.reportReview(open, update.state)
         if ((update.selectionSet || update.docChanged) && this.activePath === open.document.path) {
           this.publishSelection(open.document, update.view)
           this.scheduleView(open.document.path, update.view)
@@ -528,6 +541,41 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       darkSlot.of(EditorView.darkTheme.of(this.dark)),
       indentSlot.of(indentUnit.of(detectIndent(open.document.text))),
     ]
+  }
+
+  /** A keep or undo button of one change in a review. */
+  private reviewButton(type: 'accept' | 'reject', action: (event: MouseEvent) => void): HTMLElement {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `rainy-review-button rainy-review-${type === 'accept' ? 'keep' : 'undo'}`
+    button.textContent = type === 'accept' ? this.labels.reviewKeep : this.labels.reviewUndo
+    button.title = type === 'accept' ? this.labels.reviewKeepTitle : this.labels.reviewUndoTitle
+    // Like CodeMirror's own buttons, act on press so the click does not move the cursor first.
+    button.addEventListener('mousedown', action)
+    button.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') action(new MouseEvent('mousedown', { cancelable: true }))
+    })
+    return button
+  }
+
+  /** Tell the IDE what a review has kept and how many changes are left. */
+  private reportReview(open: Omit<OpenDocument, 'view'>, state: EditorState): void {
+    const original = getOriginalDoc(state).toString()
+    // The page passes the new comparison text back; it must not reset the view.
+    if (open.diff !== undefined) open.diff = { ...open.diff, original }
+    this.callbacks.review?.(open.document.path, { original, remaining: getChunks(state)?.chunks.length ?? 0 })
+  }
+
+  /** Keep or undo every change left in a review. */
+  private resolveAll(open: OpenDocument, keep: boolean): void {
+    const state = open.view.state
+    const original = getOriginalDoc(state)
+    if (keep) {
+      const changes = ChangeSet.of({ from: 0, to: original.length, insert: state.doc }, original.length)
+      open.view.dispatch({ effects: updateOriginalDoc.of({ doc: changes.apply(original), changes }), userEvent: 'accept' })
+    } else {
+      open.view.dispatch({ changes: { from: 0, to: state.doc.length, insert: original }, userEvent: 'revert' })
+    }
   }
 
   private loadLanguageInto(open: OpenDocument): void {

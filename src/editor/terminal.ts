@@ -51,5 +51,6 @@ export function createTerminal(container: HTMLElement, data: (text: string) => v
     fitVisible()
   }
   return { write: (text) => { terminal.write(text) }, reset: () => { terminal.reset() }, fit: fitVisible, focus: () => { terminal.focus() },
+    selection: () => terminal.getSelection(),
     setAppearance, dispose: () => { observer.disconnect(); onData.dispose(); onResize.dispose(); terminal.dispose() } }
 }

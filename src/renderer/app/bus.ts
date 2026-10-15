@@ -11,6 +11,8 @@ export interface WorkbenchEvents {
   'chat.send': { text: string; workspaceId: WorkspaceId }
   /** Attach images to the AI composer without sending (used by the image viewer). */
   'chat.attach': { files: readonly File[] }
+  /** Review a chat's changes to one file in the editor; `path` is absolute on the Host. */
+  'review.open': { sessionId: string; path: string; toolCallIds: readonly string[] }
   /** Show a pane of the window. */
   'pane.show': { pane: 'ai' | 'files' | 'bottom' | 'history' | 'settings' | 'ctf'; section?: string | undefined }
 }

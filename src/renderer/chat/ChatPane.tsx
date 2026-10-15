@@ -5,6 +5,7 @@ import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { PermissionMode } from '../../shared/rpc.ts'
 import { on } from '../app/bus.ts'
 import { getPrefs } from '../prefs.ts'
+import { ChangesBar } from '../review/ChangesBar.tsx'
 import { host, useConnectionState } from '../rpc.ts'
 import { IconAction, IconClockOutlineRegular, IconCloseOutlineRegular, IconNewChatOutlineRegular, toast } from '../ui/index.ts'
 import { loadChat, useChat } from './chat-store.ts'
@@ -124,6 +125,7 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
       {sessionId === null || view === undefined
         ? <div className={css.empty}>{sessionId === null && <Hero hasProject={workspace !== null} />}</div>
         : <Transcript view={view} onFork={onSessionChange} empty={<Hero hasProject={workspace !== null} />} />}
+      {sessionId !== null && <ChangesBar sessionId={sessionId} busy={busy} />}
       <Composer sessionId={sessionId} workspaceId={view?.summary.workspaceId ?? workspace?.workspaceId ?? null} busy={busy || creating}
         model={view?.model ?? null} context={view?.context ?? null} queue={view?.queue ?? []} permission={permission} onPermission={changePermission}
         onSend={(text, images, mode) => send(text, images, mode)} onStop={stop} onCompact={compact} onNewChat={newChat} />

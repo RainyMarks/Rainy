@@ -35,9 +35,12 @@ export interface IdeBuffer {
   readonly language?: string | undefined
   readonly comparison?: {
     readonly original: string
-    readonly kind: 'git' | 'conflict' | 'snippet'
+    /** `ai`: the agent's changes, compared with the text before them and kept or undone part by part. */
+    readonly kind: 'git' | 'conflict' | 'snippet' | 'ai'
     readonly version?: IdeFileVersion
     readonly target?: string | undefined
+    /** For `ai`: the chat and calls behind the changes, and how many changes are left once the editor reported. */
+    readonly review?: { readonly sessionId: string; readonly toolCallIds: readonly string[]; readonly remaining?: number | undefined } | undefined
   }
   /** Read-only text of a file that is not UTF-8, decoded in the page; `replaced` counts undecodable sequences. */
   readonly decoded?: { readonly encoding: string; readonly text: string; readonly replaced: number } | undefined
@@ -60,7 +63,7 @@ export interface IdeState {
   readonly problems: readonly EditorProblem[]
   readonly selection: EditorSelection | undefined
   readonly languageStates: Readonly<Record<string, string>>
-  readonly center: 'editor' | 'tools'
+  readonly center: 'editor' | 'tools' | 'map'
   readonly quickOpen: boolean
   readonly reveal?: { readonly path: string; readonly line: number; readonly column: number }
 }
@@ -851,6 +854,50 @@ export class IdeModel {
       activePath: path,
       tabs: current.data.tabs.map(tab => (tab.path === path ? { ...tab, kind: 'diff' } : tab)),
     })
+  }
+
+  /**
+   * Show the agent's changes to a file as a diff whose parts can each be kept or undone.
+   * @param path Source.
+   * @param original Text before the changes.
+   * @param review Chat and calls behind the changes.
+   * @returns Whether the file opened.
+   */
+  async review(path: string, original: string, review: { sessionId: string; toolCallIds: readonly string[] }): Promise<boolean> {
+    if (await this.openFile(path) === undefined) return false
+    const current = this.state.getSnapshot()
+    const buffer = current.buffers[path]
+    if (buffer === undefined) return false
+    this.patch({
+      buffers: { ...current.buffers, [path]: { ...buffer, comparison: { original, kind: 'ai', review: { sessionId: review.sessionId, toolCallIds: [...review.toolCallIds] } } } },
+      center: 'editor',
+    })
+    this.setData({ activePath: path, tabs: current.data.tabs.map(tab => (tab.path === path ? { ...tab, kind: 'diff' } : tab)) })
+    return true
+  }
+
+  /**
+   * Record a review's progress reported by the editor.
+   * @param path Source.
+   * @param original Comparison text after the kept parts.
+   * @param remaining Changes left.
+   */
+  reviewed(path: string, original: string, remaining: number): void {
+    const current = this.state.getSnapshot()
+    const buffer = current.buffers[path]
+    const comparison = buffer?.comparison
+    if (buffer === undefined || comparison?.kind !== 'ai' || comparison.review === undefined) return
+    this.patch({ buffers: { ...current.buffers, [path]: { ...buffer, comparison: { ...comparison, original, review: { ...comparison.review, remaining } } } } })
+  }
+
+  /** Leave a review and show the plain file. @param path Source. */
+  endReview(path: string): void {
+    const current = this.state.getSnapshot()
+    const buffer = current.buffers[path]
+    if (buffer === undefined || buffer.comparison?.kind !== 'ai') return
+    const { comparison: _ended, ...rest } = buffer
+    this.patch({ buffers: { ...current.buffers, [path]: rest } })
+    this.setData({ tabs: current.data.tabs.map(tab => (tab.path === path ? { ...tab, kind: 'file' } : tab)) })
   }
 
   /** Return from a diff to the editable file. @param path Source. */

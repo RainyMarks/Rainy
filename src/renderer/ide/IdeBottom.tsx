@@ -1,6 +1,6 @@
 /** Terminal, diagnostics, run output, and launch-only debugger panels. */
 import { useEffect, useRef, useState } from 'react'
-import { Button, Choice, IconAction, IconCloseOutlineRegular, IconPlusOutlineRegular, IconStopFillRegular } from '../ui/index.ts'
+import { Button, Choice, IconAction, IconCloseOutlineRegular, IconPlusOutlineRegular, IconSendOutlineRegular, IconStopFillRegular } from '../ui/index.ts'
 import type { IdeModel, IdeState } from './ide-model.ts'
 import type { IdeExecutionModel, IdeExecutionState } from './ide-execution-model.ts'
 import type { EditorAppearance, EditorTerminal } from './editor-types.ts'
@@ -16,14 +16,35 @@ interface Props {
   readonly model: IdeModel
   readonly reveal: (path: string, line: number, column: number) => void
   readonly appearance: EditorAppearance
+  /** Send a message to the AI, for fixing a problem or explaining terminal output. */
+  readonly ask?: ((text: string) => void) | undefined
 }
 
-function TerminalPanel({ execution, snapshot, model, visible, appearance }: {
+/** Terminal output lines sent to the AI when nothing is selected. */
+const SENT_LINES = 120
+const SENT_CHARS = 8000
+
+/**
+ * Terminal output as plain text: escape sequences removed, and each line as it ended up after carriage returns.
+ * @param output Raw output.
+ * @returns The text.
+ */
+export function plainTerminalText(output: string): string {
+  return output
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/gu, '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '')
+    .replace(/\u001b[@-Z\\-_]/gu, '')
+    .replaceAll('\r\n', '\n')
+    .split('\n').map(line => line.slice(line.lastIndexOf('\r') + 1)).join('\n')
+}
+
+function TerminalPanel({ execution, snapshot, model, visible, appearance, attach }: {
   execution: IdeExecutionModel
   snapshot: IdeExecutionState
   model: IdeModel
   visible: boolean
   appearance: EditorAppearance
+  attach: (terminal: EditorTerminal | undefined) => void
 }) {
   const container = useRef<HTMLDivElement>(null)
   const terminal = useRef<EditorTerminal | undefined>(undefined)
@@ -42,11 +63,13 @@ function TerminalPanel({ execution, snapshot, model, visible, appearance }: {
           (data) => { void execution.input(data).catch((error: unknown) => { model.fail(error) }) },
           (cols, rows) => { void execution.resize(cols, rows).catch((error: unknown) => { model.fail(error) }) },
         )
+        attach(terminal.current)
         setReady(value => value + 1)
       })
       .catch((error: unknown) => { model.fail(error) })
     return () => {
       disposed = true
+      attach(undefined)
       terminal.current?.dispose()
       terminal.current = undefined
     }
@@ -103,8 +126,9 @@ function Variables({ reference, state, execution, run }: {
  * @param props Workspace source and execution snapshots plus explicit actions.
  * @returns Bottom tabs with terminal, problems, output and debugger controls.
  */
-export function IdeBottom({ state, executionState, execution, model, reveal, appearance }: Props) {
+export function IdeBottom({ state, executionState, execution, model, reveal, appearance, ask }: Props) {
   const t = useIdeT()
+  const terminal = useRef<EditorTerminal | undefined>(undefined)
   const [watch, setWatch] = useState('')
   const [expression, setExpression] = useState('')
   const [evaluated, setEvaluated] = useState('')
@@ -134,6 +158,21 @@ export function IdeBottom({ state, executionState, execution, model, reveal, app
     model.layout({ bottomTab: 'terminal' })
   }
   const tabLabel = { terminal: t('ideTerminal'), problems: t('ideProblems'), output: t('ideOutput'), debug: t('ideDebug') }
+  const selectedOutput = executionState.selected === null ? '' : (executionState.outputs[executionState.selected] ?? '')
+  const sendOutput = (): void => {
+    const selected = selectedTab === 'terminal' ? terminal.current?.selection?.() ?? '' : ''
+    const text = selected.trim() !== '' ? selected : plainTerminalText(selectedOutput).trimEnd().split('\n').slice(-SENT_LINES).join('\n').slice(-SENT_CHARS)
+    if (text.trim() !== '') ask?.(t('ideTerminalAsk', { output: text }))
+  }
+  const fixProblem = (problem: (typeof state.problems)[number]): void => {
+    const lines = state.buffers[problem.path]?.text.split('\n')
+    const first = Math.max(1, problem.line - 3)
+    const code = lines === undefined ? '' : lines.slice(first - 1, problem.line + 3).map((line, index) => `${first + index}: ${line}`).join('\n')
+    ask?.(t('ideProblemAsk', {
+      path: fileLabel(state.workspace, problem.path), line: problem.line, column: problem.column, message: problem.message,
+      language: state.buffers[problem.path]?.language ?? '', code,
+    }))
+  }
   return (
     <>
       <div className={css.panelHeader} role="tablist" aria-label={t('ideToggleBottom')}>
@@ -153,6 +192,11 @@ export function IdeBottom({ state, executionState, execution, model, reveal, app
             if (operation !== undefined) execution.select(operation.id)
           }}
         />
+        {ask !== undefined && (selectedTab === 'terminal' || selectedTab === 'output') && (
+          <IconAction label={t('ideTerminalSend')} disabled={selectedOutput === ''} onClick={sendOutput}>
+            <IconSendOutlineRegular size={15} />
+          </IconAction>
+        )}
         <IconAction label={t('ideNewTerminal')} disabled={state.workspace === null} onClick={newTerminal}>
           <IconPlusOutlineRegular size={16} />
         </IconAction>
@@ -173,7 +217,8 @@ export function IdeBottom({ state, executionState, execution, model, reveal, app
             </Button>
           </div>
         ) : (
-          <TerminalPanel execution={execution} snapshot={executionState} model={model} visible={selectedTab === 'terminal'} appearance={appearance} />
+          <TerminalPanel execution={execution} snapshot={executionState} model={model} visible={selectedTab === 'terminal'} appearance={appearance}
+            attach={(value) => { terminal.current = value }} />
         )}
       </div>
       <div className={css.bottomContent} hidden={selectedTab !== 'problems'}>
@@ -188,6 +233,9 @@ export function IdeBottom({ state, executionState, execution, model, reveal, app
                   <span>{problem.message}</span>
                   <small>{fileLabel(state.workspace, problem.path)}:{problem.line}:{problem.column}</small>
                 </button>
+                {ask !== undefined && (
+                  <button type="button" className={`${css.button} ${css.problemFix}`} onClick={() => { fixProblem(problem) }}>{t('ideProblemFix')}</button>
+                )}
               </li>
             ))}
           </ul>

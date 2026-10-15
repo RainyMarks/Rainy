@@ -22,6 +22,14 @@ export const IconPanelBottomOutline = (props: IconProps) => <Glyph {...props}>
   <path d="M1.5 10.5h13" />
 </Glyph>
 
+/** Project map: three boxes linked as a small architecture. */
+export const IconMapOutline = (props: IconProps) => <Glyph {...props}>
+  <rect x="5.5" y="1.5" width="5" height="3.5" rx="0.75" />
+  <rect x="1.5" y="11" width="5" height="3.5" rx="0.75" />
+  <rect x="9.5" y="11" width="5" height="3.5" rx="0.75" />
+  <path d="M8 5v3M4 11V8.5h8V11" />
+</Glyph>
+
 /** Right panel visibility. */
 export const IconPanelRightOutline = (props: IconProps) => <Glyph {...props}>
   <rect x="1.5" y="1.5" width="13" height="13" rx="1" />

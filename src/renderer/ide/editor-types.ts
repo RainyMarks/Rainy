@@ -71,6 +71,11 @@ export interface EditorActionLabels {
   readonly aiEditReview: string
   readonly aiEditUnchanged: string
   readonly aiEditUnavailable: string
+  /** Buttons on each change while the agent's changes are reviewed. */
+  readonly reviewKeep: string
+  readonly reviewUndo: string
+  readonly reviewKeepTitle: string
+  readonly reviewUndoTitle: string
   /** Interface language of the editor's own panels (search, go to line, folding). */
   readonly locale: 'zh' | 'en'
 }
@@ -124,6 +129,8 @@ export interface EditorCallbacks {
   readonly rewrite?: ((request: EditorRewriteRequest, progress: (text: string) => void, signal: AbortSignal) => Promise<string>) | undefined
   /** First visible line while the user scrolls, with a fraction for the part of it scrolled past; drives preview sync. */
   readonly scroll?: ((path: string, line: number) => void) | undefined
+  /** A review kept or undid a change: the comparison text now, and how many changes are left. */
+  readonly review?: ((path: string, state: { readonly original: string; readonly remaining: number }) => void) | undefined
 }
 
 /** A retained editor: one view per open document, plus its language-server connections. */
@@ -138,8 +145,9 @@ export interface EditorInstance {
    * @param path Selected model.
    * @param original Read-only comparison text.
    * @param editable Whether the modified buffer remains editable.
+   * @param review Give each change keep and undo buttons, and report them through `review`.
    */
-  showDiff(path: string, original: string, editable: boolean): void
+  showDiff(path: string, original: string, editable: boolean, review?: boolean): void
   /** @param appearance Resolved host appearance. */
   setAppearance(appearance: EditorAppearance): void
   /** @param options Whether ghost-text suggestions are requested while typing. */
@@ -155,7 +163,8 @@ export interface EditorInstance {
   reveal(path: string, line: number, column: number): void
   /**
    * Run an editor command on the shown document.
-   * @param command One of `rainy.save`, `rainy.format`, `rainy.selection`, `rainy.aiEdit`, `find`, `replace`, `gotoLine`, `undo`, `redo`,
+   * @param command One of `rainy.save`, `rainy.format`, `rainy.selection`, `rainy.aiEdit`, `rainy.nextChange`, `rainy.previousChange`,
+   *   `rainy.keepAll`, `rainy.undoAll` (the last four in a diff), `find`, `replace`, `gotoLine`, `undo`, `redo`,
    *   `selectAll`, `toggleComment`, `gotoDefinition`, `findReferences`, `rename`, `formatDocument`.
    * @returns Completion; rejects for an unknown command.
    */
@@ -178,6 +187,8 @@ export interface EditorTerminal {
   fit(): void
   /** Place keyboard focus in the terminal. */
   focus(): void
+  /** @returns The text selected in the terminal, or '' when nothing is. */
+  selection?(): string
   /** @param appearance Resolved host appearance; the terminal follows its light or dark scheme. */
   setAppearance(appearance: EditorAppearance): void
   /** Release terminal subscriptions and DOM ownership. */

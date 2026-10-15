@@ -10,6 +10,7 @@ import { fileKey, workspaceRoots } from './ide-paths.ts'
 import { selectedPythonExecutable } from './run-target.ts'
 import { useIdeT } from './messages.ts'
 import { useLocale } from '../i18n.ts'
+import { useReviewT } from '../review/messages.ts'
 import { useViewerT } from './viewers/messages.ts'
 import { ScrollSync } from './viewers/scroll-sync.ts'
 import { chooseViewer, TEXT_ENCODINGS } from './viewers/viewer-choice.ts'
@@ -26,6 +27,8 @@ interface Props {
   readonly sendSelection: () => void
   readonly breakpoint: (path: string, line: number) => void
   readonly attach: (editor: EditorInstance | undefined) => void
+  /** A review of the agent's changes kept or undid a change; `remaining` changes are left. */
+  readonly review?: ((path: string, remaining: number) => void) | undefined
   readonly stopped?: { readonly path: string; readonly line: number } | undefined
   /** Shown instead of the editor while no file is open. */
   readonly empty?: ReactNode
@@ -35,22 +38,24 @@ interface Props {
  * @param props The workspace model, appearance and editor callbacks.
  * @returns The editor mount, the viewer of the active tab and loading state.
  */
-export function IdeEditor({ model, state, appearance, sendSelection, breakpoint, attach, stopped, empty }: Props) {
+export function IdeEditor({ model, state, appearance, sendSelection, breakpoint, attach, review, stopped, empty }: Props) {
   const t = useIdeT()
+  const tr = useReviewT()
   const tv = useViewerT()
   const locale = useLocale()
   const container = useRef<HTMLDivElement>(null)
   const instance = useRef<EditorInstance | undefined>(undefined)
   const revealed = useRef<IdeState['reveal']>()
-  const callbacks = useRef({ sendSelection, breakpoint, attach })
-  callbacks.current = { sendSelection, breakpoint, attach }
+  const callbacks = useRef({ sendSelection, breakpoint, attach, review })
+  callbacks.current = { sendSelection, breakpoint, attach, review }
   const scrollSync = useMemo(() => new ScrollSync(), [])
   const activePath = useRef<string | null>(null)
   const actionLabels: EditorActionLabels = { save: t('ideSave'), format: t('ideFormat'), sendSelection: t('ideSendSelection'),
     toggleBreakpoint: t('ideToggleBreakpoint'), gotoDefinition: t('ideGotoDefinition'), findReferences: t('ideFindReferences'),
     rename: t('ideRenameSymbol'), aiEdit: t('ideAiEdit'), aiEditPlaceholder: t('ideAiEditPlaceholder'), aiEditGenerate: t('ideAiEditGenerate'),
     aiEditGenerating: t('ideAiEditGenerating'), aiEditStop: t('ideAiEditStop'), aiEditAccept: t('ideAiEditAccept'), aiEditReject: t('ideAiEditReject'),
-    aiEditReview: t('ideAiEditReview'), aiEditUnchanged: t('ideAiEditUnchanged'), aiEditUnavailable: t('ideAiEditUnavailable'), locale }
+    aiEditReview: t('ideAiEditReview'), aiEditUnchanged: t('ideAiEditUnchanged'), aiEditUnavailable: t('ideAiEditUnavailable'),
+    reviewKeep: tr('reviewKeep'), reviewUndo: tr('reviewUndo'), reviewKeepTitle: tr('reviewKeepTitle'), reviewUndoTitle: tr('reviewUndoTitle'), locale }
   const labels = useRef(actionLabels)
   labels.current = actionLabels
   const [ready, setReady] = useState(false)
@@ -91,6 +96,10 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
             suggest,
             rewrite,
             scroll: (path, line) => { if (path === activePath.current) scrollSync.editorScrolled(line) },
+            review: (path, progress) => {
+              model.reviewed(path, progress.original, progress.remaining)
+              callbacks.current.review?.(path, progress.remaining)
+            },
           },
           labels.current,
         ),
@@ -178,7 +187,7 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
     if (workspaceReady === undefined || path === null || !textReady) return
     const editor = instance.current
     if (tab?.kind === 'diff' && comparison !== undefined)
-      editor?.showDiff(path, comparison.original, buffer?.source !== 'snippet')
+      editor?.showDiff(path, comparison.original, buffer?.source !== 'snippet', comparison.kind === 'ai')
     else
       editor?.show(path, tab?.cursor === undefined ? undefined : { ...tab.cursor, top: tab.scroll?.top ?? 0, left: tab.scroll?.left ?? 0 })
   }, [workspaceReady, path, tab?.kind, comparison, textReady])
