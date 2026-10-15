@@ -55,8 +55,10 @@ if (process.isMainFrame && location.protocol === 'http:' && location.hostname ==
       return path ? String(ipcRenderer.sendSync('rainy:path', path) ?? '') : ''
     },
   })
+  // Folders on this computer cannot be opened on an SSH server; the page browses the server's folders instead.
+  const remote = ipcRenderer.sendSync('rainy:execution-kind') === 'ssh'
   contextBridge.exposeInMainWorld('__RAINY_IDE_NATIVE__', {
-    selectDirectory: (): Promise<IdeNativeDirectory | null> => ipcRenderer.invoke('rainy:ide-directory'),
+    ...remote ? {} : { selectDirectory: (): Promise<IdeNativeDirectory | null> => ipcRenderer.invoke('rainy:ide-directory') },
     prepareDevelopmentTools: (): Promise<void> => ipcRenderer.invoke('rainy:ide-prepare-development'),
   })
   contextBridge.exposeInMainWorld('__RAINY_DIAGNOSTICS__', {
@@ -73,6 +75,8 @@ if (process.isMainFrame && location.protocol === 'http:' && location.hostname ==
   contextBridge.exposeInMainWorld('__RAINY_RUNTIME_NATIVE__', {
     targets: () => ipcRenderer.invoke('rainy:runtime-targets'),
     switchTarget: (request: { targetId: string; workspaceId?: string }) => ipcRenderer.invoke('rainy:runtime-switch', request),
+    addSshHost: (request: { destination: string; port?: number }) => ipcRenderer.invoke('rainy:runtime-ssh-add', request),
+    removeSshHost: (targetId: string) => ipcRenderer.invoke('rainy:runtime-ssh-remove', { targetId }),
     prepare: (): Promise<void> => ipcRenderer.invoke('rainy:ide-prepare-development'),
     onProgress: (listener: (message: string) => void) => subscribe('rainy:component-progress', (value) => {
       if (value !== null && typeof value === 'object' && 'message' in value && typeof value.message === 'string') listener(value.message)

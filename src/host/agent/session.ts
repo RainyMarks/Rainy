@@ -14,6 +14,7 @@ import type {
   SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
 } from '../../shared/rpc.ts'
 import { resolvePowerShell } from '../process.ts'
+import { hostEnvironmentKind } from '../env.ts'
 import { RpcError } from '../rpc.ts'
 import { roots } from '../projects.ts'
 import { buildContext, type ContextItem } from './context.ts'
@@ -859,6 +860,7 @@ export class ChatSession {
       skills: skillsSection(await discoverSkills(this.chat.cwd)),
       globalPrompt: settings.globalPrompt,
       ...(this.services.env.platform === 'win32' ? { powershell: this.powershellEdition() } : {}),
+      ...(hostEnvironmentKind(this.services.env) === 'SSH' ? { remote: true } : {}),
     })
   }
 

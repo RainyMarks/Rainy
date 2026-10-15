@@ -47,6 +47,12 @@ describe('PowerShell edition in the system prompt', () => {
     expect(buildSystemPrompt({ ...base, powershell: 'core' })).toContain('Commands execute in PowerShell 7 on Windows.')
     expect(buildSystemPrompt(base)).toContain('Commands execute in PowerShell on Windows.')
   })
+
+  it('tells the model when Bash runs on a remote server rather than in WSL', () => {
+    const linux = { ...base, cwd: '/home/dev/app', platform: 'linux' as const, tools: ['bash'] }
+    expect(buildSystemPrompt(linux)).toContain('Commands execute in Bash on Linux (WSL).')
+    expect(buildSystemPrompt({ ...linux, remote: true })).toContain('Commands execute in Bash on a remote Linux server reached over SSH')
+  })
 })
 
 describe.runIf(process.platform === 'win32')('command tool on Windows PowerShell 5.1', () => {

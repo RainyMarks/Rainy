@@ -75,6 +75,15 @@ export class OptionalModules {
     return module.kind === 'directory' ? join(this.options.root, id) : join(this.options.root, id, module.file)
   }
 
+  /** Download locations of a module's pieces, for a machine that fetches the archive itself (an SSH server).
+   * @param id - module identity.
+   * @returns pieces in order; their concatenation is the archive.
+   */
+  async pieces(id: CarrierModuleId): Promise<{ url: string; bytes: number; sha256: string }[]> {
+    const module = await this.descriptor(id)
+    return module.pieces.map(piece => ({ url: module.baseUrl + piece.file, bytes: piece.bytes, sha256: piece.sha256 }))
+  }
+
   /** Whether the installed module matches the archive this carrier pins.
    * @param id - module identity.
    * @returns installation state.

@@ -15,8 +15,10 @@ export interface HostEnvironment {
   /** `<appRoot>/resources`. */
   resources: string
   platform: 'win32' | 'linux'
-  /** `windows-local` or `wsl:<guid>`. */
+  /** `windows-local`, `wsl:<guid>` or `ssh:<destination>`. */
   executionTargetId: string
+  /** Name of the execution target for the status bar, such as `WSL · Ubuntu` or `SSH · dev`. */
+  executionTargetLabel?: string | undefined
   /** Directory shared by the Windows and WSL Hosts for project identity and memory. */
   carrierStateRoot: string
   /** Installed offline components (`RAINY_TOOLCHAIN_ROOT`). */
@@ -66,6 +68,7 @@ export function readHostEnvironment(env: NodeJS.ProcessEnv, moduleUrl: string): 
     resources: join(appRoot, 'resources'),
     platform,
     executionTargetId: env.RAINY_EXECUTION_TARGET_ID ?? (platform === 'win32' ? 'windows-local' : 'wsl:legacy'),
+    executionTargetLabel: env.RAINY_EXECUTION_TARGET_LABEL || undefined,
     carrierStateRoot: env.RAINY_CARRIER_STATE_ROOT ?? join(home, 'carrier-state'),
     toolchainRoot: env.RAINY_TOOLCHAIN_ROOT ?? join(home, 'components'),
     builtinPhp: env.RAINY_BUILTIN_PHP || undefined,
@@ -74,4 +77,12 @@ export function readHostEnvironment(env: NodeJS.ProcessEnv, moduleUrl: string): 
     tmp: join(tmpdir(), `rainy-agent-${process.pid}`),
     port,
   }
+}
+
+/**
+ * @param env - Host environment.
+ * @returns the kind of machine the Host runs on, as the status bar and the model see it.
+ */
+export function hostEnvironmentKind(env: Pick<HostEnvironment, 'platform' | 'executionTargetId'>): 'Windows' | 'WSL' | 'SSH' {
+  return env.executionTargetId.startsWith('ssh:') ? 'SSH' : env.platform === 'win32' ? 'Windows' : 'WSL'
 }

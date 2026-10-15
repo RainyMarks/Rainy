@@ -1,13 +1,18 @@
-/** RainyAgent desktop carrier for one explicitly selected native Windows or WSL Host. */
+/** Rainy desktop carrier for one explicitly selected Host: native Windows, a WSL distribution, or a Linux server over SSH. */
 import { app, BrowserWindow, crashReporter, dialog, Menu, screen, shell, ipcMain, nativeTheme, safeStorage } from 'electron'
 import { currentLocale, followLocale, localized, type Locale } from '../shared/locale.ts'
-import { mkdirSync, appendFileSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdirSync, appendFileSync, createReadStream, existsSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import { Transform, type Readable } from 'node:stream'
 import { arch, freemem, release, totalmem, version } from 'node:os'
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { WslHostTransport, WindowsHostTransport } from './transport.ts'
-import type { HostOptions, HostTransport } from './transport.ts'
+import { SshHostTransport, WslHostTransport, WindowsHostTransport } from './transport.ts'
+import type { HostOptions, HostReady, HostTransport } from './transport.ts'
+import { parseSshDestination, remotePython, runSsh, sshFailure, sshName } from './ssh.ts'
+import { startAskpass, type Askpass } from './ssh-askpass.ts'
+import { sshQuestions } from './ssh-prompt.ts'
 import { CAPTION_HEIGHT, captionColors } from './window-chrome.ts'
 import { nativeMenuTemplate } from './native-menus.ts'
 import { createSavedReload, nativeReloadShortcut } from './saved-reload.ts'
@@ -24,7 +29,8 @@ import { OptionalModules } from './optional-modules.ts'
 import { pruneWindowsHost, removeRetiredResources } from './retired-resources.ts'
 import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
-import { listExecutionTargets, readDesktopPreferences, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget } from './execution-targets.ts'
+import { listExecutionTargets, readDesktopPreferences, removeSshHost, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget, saveSshHost,
+  sshDestinationOf, sshTarget, sshTargets, WINDOWS_TARGET } from './execution-targets.ts'
 import type { ExecutionTarget, PendingProjectTarget } from './execution-targets.ts'
 import { createProjectRegistry } from '../shared/project-registry.ts'
 import { environmentComponentSchema, installWindowsComponent, readEnvironmentComponentCatalog } from './environment-components.ts'
@@ -56,6 +62,7 @@ let flushWorkbench: () => Promise<DraftFlushResult> = () => Promise.resolve({ ok
 let closeIdeEnvironment: () => Promise<void> = () => Promise.resolve()
 let closeStrata: () => Promise<void> = () => Promise.resolve()
 let closeModules: () => Promise<void> = () => Promise.resolve()
+let closeAskpass: () => Promise<void> = () => Promise.resolve()
 let componentInstallation: Promise<void> | undefined
 /** Read or created once per run; every Host started in this run encrypts API keys with it. */
 let credentialKeyOnce: Promise<string | null> | undefined
@@ -76,7 +83,7 @@ const lifecycle = createDesktopLifecycle({
     return answer.response === 0
   },
   cleanup: [async () => { await componentInstallation }, () => closeIdeEnvironment(),
-    async () => { await transport?.stop() }, () => closeStrata(), () => closeModules()],
+    async () => { await transport?.stop() }, () => closeStrata(), () => closeModules(), () => closeAskpass()],
   reportCleanupFailure: (error) => { cleanupFailed = true; console.error('Rainy cleanup failed:', error) },
   exit: () => { app.quit() },
   restart: () => { app.relaunch(); quitAfterSave(true) },
@@ -112,6 +119,26 @@ function sameTarget(value: unknown, target: ExecutionTarget): boolean {
   return value !== null && typeof value === 'object' && 'id' in value && value.id === target.id && 'kind' in value && value.kind === target.kind
     && 'label' in value && value.label === target.label && ('distro' in value ? value.distro : undefined) === target.distro
 }
+
+/** @returns a loopback port that was free a moment ago; the SSH Host binds the same number on the server. */
+function freeLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = address !== null && typeof address === 'object' ? address.port : 0
+      server.close(() => { if (port > 0) resolve(port); else reject(new Error('No loopback port is free.')) })
+    })
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
+
+/** @param bytes - a size. @returns whole megabytes, for progress text. */
+const megabytes = (bytes: number): number => Math.round(bytes / 1024 ** 2)
 
 /** Per-phase startup durations written to the carrier log. */
 function startupTimeline(): { mark(phase: string): void; summary(): string } {
@@ -240,20 +267,20 @@ async function start(): Promise<void> {
     for (;;) {
       try {
         await modules.install('linux-runtime', (completed, total) => {
-          progress.step(localized({ zh: `正在下载 WSL 运行环境 ${Math.round(completed / 1024 ** 2)} / ${Math.round(total / 1024 ** 2)} MB`,
-            en: `Downloading the WSL runtime ${Math.round(completed / 1024 ** 2)} / ${Math.round(total / 1024 ** 2)} MB` }), completed / total)
+          progress.step(localized({ zh: `正在下载 Linux 运行环境 ${megabytes(completed)} / ${megabytes(total)} MB`,
+            en: `Downloading the Linux runtime ${megabytes(completed)} / ${megabytes(total)} MB` }), completed / total)
         })
         return true
       } catch (error) {
         const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Rainy',
-          message: localized({ zh: 'WSL 运行环境下载失败', en: 'The WSL runtime could not be downloaded.' }),
-          detail: localized({ zh: `${errorText(error)}\n更新后第一次使用 WSL 时需要联网下载一次，已下载的部分会保留。`,
-            en: `${errorText(error)}\nAfter an update, WSL needs a one-time download the first time you use it. What was already downloaded is kept.` }),
+          message: localized({ zh: 'Linux 运行环境下载失败', en: 'The Linux runtime could not be downloaded.' }),
+          detail: localized({ zh: `${errorText(error)}\n更新后第一次使用 WSL 或 SSH 远程开发时需要联网下载一次，已下载的部分会保留。`,
+            en: `${errorText(error)}\nAfter an update, WSL and SSH remote development need a one-time download the first time you use them. What was already downloaded is kept.` }),
           buttons: [localized({ zh: '重试', en: 'Retry' }), localized({ zh: '改用 Windows 原生运行', en: 'Run on Windows instead' }), localized({ zh: '退出', en: 'Quit' })],
           defaultId: 0, cancelId: 2 })
         if (answer.response === 1) return false
         if (answer.response !== 0) {
-          throw new Error(localized({ zh: '未下载 WSL 运行环境，Rainy 已停止启动。', en: 'Rainy did not start because the WSL runtime was not downloaded.' }))
+          throw new Error(localized({ zh: '未下载 Linux 运行环境，Rainy 已停止启动。', en: 'Rainy did not start because the Linux runtime was not downloaded.' }))
         }
       }
     }
@@ -307,11 +334,107 @@ async function start(): Promise<void> {
     prepared = await prepareWsl(requireWslDistribution(target))
     windowsInstead = prepared === undefined
   }
+  const askpassNode = join(resourceRoot, 'windows-host', 'node', 'node.exe')
+  let askpass: Promise<Askpass> | undefined
+  /** Askpass of one ssh run, so ssh asks its questions in Rainy's windows; none without the bundled node.exe. */
+  const askpassSession = async () => {
+    if (!existsSync(askpassNode)) return undefined
+    askpass ??= startAskpass({ node: askpassNode, directory: userData, ask: sshQuestions(() => window.isDestroyed() ? undefined : window) })
+    const server = await askpass
+    closeAskpass = () => server.close()
+    return server.session()
+  }
+  /** Run the runtime installer on an SSH server and return its JSON answer. */
+  const sshInstaller = async (selected: ExecutionTarget, args: readonly string[], input?: Readable): Promise<unknown> => {
+    const destination = sshDestinationOf(selected)
+    const session = await askpassSession()
+    try {
+      const [installer, metadata] = await Promise.all([readFile(runtimeFiles.installer, 'utf8'), readFile(runtimeFiles.metadata, 'utf8')])
+      const result = await runSsh(destination, remotePython(installer, [args[0]!, metadata, ...args.slice(1)]), {
+        ...(session === undefined ? {} : { environment: session.environment }), ...(input === undefined ? {} : { input }),
+        onErrorLine: (line) => {
+          const fetched = /^RAINY_PROGRESS (\d+) (\d+)$/u.exec(line)
+          if (fetched === null) { appendFileSync(logPath, `ssh ${selected.label}: ${line}\n`); return }
+          const [completed, total] = [Number(fetched[1]), Number(fetched[2])]
+          progress.step(localized({ zh: `服务器正在下载 Linux 运行环境 ${megabytes(completed)} / ${megabytes(total)} MB`,
+            en: `The server is downloading the Linux runtime ${megabytes(completed)} / ${megabytes(total)} MB` }), total > 0 ? completed / total : undefined)
+        } })
+      if (result.code !== 0) {
+        if (/Permission denied/u.test(result.stderr)) session?.failed()
+        throw sshFailure(destination, result.code, result.stderr)
+      }
+      try { return JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '') as unknown }
+      catch (_malformed) {
+        throw new Error(localized({ zh: '服务器返回的安装结果无效。', en: 'The server returned an invalid installation result.' }) + `\n${result.stdout.slice(-400)}`)
+      }
+    } finally { session?.dispose() }
+  }
+  /** Install this version's Linux runtime on the server: as it is, downloaded there, or uploaded from here.
+   * @returns the installed Host, or undefined when the user continues on Windows instead of downloading.
+   */
+  const prepareSsh = async (selected: ExecutionTarget): Promise<{ node: string; host: string } | undefined> => {
+    const name = sshName(sshDestinationOf(selected))
+    progress.step(localized({ zh: `正在连接 ${selected.label}…`, en: `Connecting to ${selected.label}…` }))
+    const pieces = process.env.RAINY_SSH_NO_FETCH === '1' ? [] : await modules.pieces('linux-runtime')
+    let result = await sshInstaller(selected, ['--fetch', JSON.stringify(pieces)])
+    if (isRecord(result) && 'needsArchive' in result) {
+      if ('error' in result) appendFileSync(logPath, `${selected.label} could not download the Linux runtime itself: ${String(result.error)}\n`)
+      const developmentArchive = !app.isPackaged && existsSync(join(resourceRoot, 'linux-runtime.tar.gz'))
+      if (!developmentArchive && !await downloadLinuxRuntime()) return undefined
+      const archive = await linuxRuntimeArchive()
+      const size = (await stat(archive)).size
+      let sent = 0
+      // Counting in the pipeline, not with a 'data' listener, which would start reading before ssh is ready.
+      const input = createReadStream(archive).pipe(new Transform({ transform(chunk: Buffer, _encoding, done) {
+        sent += chunk.length
+        progress.step(localized({ zh: `正在上传 Linux 运行环境到 ${name} ${megabytes(sent)} / ${megabytes(size)} MB`,
+          en: `Uploading the Linux runtime to ${name} ${megabytes(sent)} / ${megabytes(size)} MB` }), sent / size)
+        done(null, chunk)
+      } }))
+      result = await sshInstaller(selected, ['--receive'], input)
+      if (isRecord(result) && 'needsArchive' in result) {
+        throw new Error(localized({ zh: `上传到 ${name} 的 Linux 运行环境校验失败，连接可能中途断开了。`, en: `The Linux runtime uploaded to ${name} failed verification; the connection may have dropped.` }))
+      }
+      if (app.isPackaged) {
+        void modules.remove('linux-runtime').catch((error: unknown) => { appendFileSync(logPath, `The Linux runtime archive was not removed: ${errorText(error)}\n`) })
+      }
+    }
+    if (isRecord(result) && 'unsupported' in result) {
+      throw new Error(localized({ zh: `${name} 是 ${String(result.unsupported)}；SSH 远程开发目前只支持 x86_64 Linux 服务器。`,
+        en: `${name} runs ${String(result.unsupported)}; SSH remote development supports x86_64 Linux servers only.` }))
+    }
+    if (!isRecord(result) || typeof result.node !== 'string' || typeof result.host !== 'string') {
+      throw new Error(localized({ zh: `${name} 上的 Linux 运行环境没有安装成功。`, en: `The Linux runtime was not installed on ${name}.` }))
+    }
+    return { node: result.node, host: result.host }
+  }
+  /** A failed SSH step offers to retry, to continue on Windows when that is still possible, or to quit. */
+  const sshStep = async <T,>(selected: ExecutionTarget, step: () => Promise<T>, windowsAllowed: boolean): Promise<T | undefined> => {
+    for (;;) {
+      try { return await step() }
+      catch (error) {
+        appendFileSync(logPath, `${selected.label}: ${errorText(error)}\n`)
+        const buttons = [localized({ zh: '重试', en: 'Retry' }), ...windowsAllowed ? [localized({ zh: '改用 Windows 原生运行', en: 'Run on Windows instead' })] : [],
+          localized({ zh: '退出', en: 'Quit' })]
+        const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Rainy', noLink: true, buttons, defaultId: 0, cancelId: buttons.length - 1,
+          message: localized({ zh: `无法连接 ${selected.label}`, en: `Rainy cannot connect to ${selected.label}` }), detail: errorText(error) })
+        if (answer.response === 0) continue
+        if (windowsAllowed && answer.response === 1) return undefined
+        throw new Error(localized({ zh: `未连接 ${selected.label}，Rainy 已停止启动。`, en: `Rainy did not start because it could not connect to ${selected.label}.` }))
+      }
+    }
+  }
+  let sshInstalled: { node: string; host: string } | undefined
+  if (target.kind === 'ssh') {
+    const selected = target
+    sshInstalled = await sshStep(selected, () => prepareSsh(selected), true)
+    windowsInstead = sshInstalled === undefined
+  }
   // Like a switch made in settings, continuing on Windows is recorded for later launches.
-  if (windowsInstead) target = (await listExecutionTargets()).find(value => value.kind === 'windows') ?? target
+  if (windowsInstead) target = WINDOWS_TARGET
   if (target.kind === 'wsl' && prepared === undefined) throw new Error(localized({ zh: 'WSL 运行环境未就绪。', en: 'The WSL runtime is not ready.' }))
   timeline.mark('runtime')
-  const distro = target.kind === 'wsl' ? requireWslDistribution(target) : 'Windows'
+  const distro = target.kind === 'wsl' ? requireWslDistribution(target) : target.kind === 'ssh' ? target.label : 'Windows'
   const convert = async (path: string) => target.kind === 'windows' ? path : wslPath(distro, '-u', path)
   const ipcDisposers: (() => void)[] = []
   const onIpc = (channel: string, listener: (event: Electron.IpcMainEvent, value: unknown) => void): void => {
@@ -393,13 +516,25 @@ async function start(): Promise<void> {
   })
   let switchTarget: (selected: ExecutionTarget, workspaceId?: WorkspaceId) => Promise<{ ok: boolean; error?: string }> =
     () => Promise.resolve({ ok: false, error: localized({ zh: '执行环境仍在启动。', en: 'The execution environment is still starting.' }) })
+  /** Windows, the WSL distributions and the SSH hosts; `saved` marks hosts added in Rainy. */
+  const availableTargets = async (): Promise<(ExecutionTarget & { saved?: boolean })[]> => {
+    const [local, remote] = await Promise.all([listExecutionTargets(), sshTargets(await readDesktopPreferences(settingsPath))])
+    return [...local, ...remote]
+  }
+  const findTarget = async (id: string): Promise<ExecutionTarget | undefined> => {
+    const found = (await availableTargets()).find(item => item.id === id)
+    if (found === undefined) return undefined
+    const { saved: _saved, ...selected } = found
+    return selected
+  }
   const selectDistribution = async () => {
-    const targets = await listExecutionTargets()
+    const targets = await availableTargets()
     const result = await dialog.showMessageBox(window, { message: localized({ zh: '选择执行环境', en: 'Choose an execution environment' }),
       detail: localized({ zh: 'Windows 原生与 WSL 使用各自的解释器。已有聊天保留原执行环境；切换前请结束运行中的任务。',
         en: 'Windows native and WSL each use their own interpreters. Existing chats keep their execution environment. Finish running tasks before you switch.' }),
       buttons: [...targets.map(value => value.label), localized({ zh: '取消', en: 'Cancel' })], cancelId: targets.length })
-    const selected = targets.find((_value, index) => index === result.response)
+    const chosen = targets.find((_value, index) => index === result.response)
+    const selected = chosen === undefined ? undefined : await findTarget(chosen.id)
     if (selected && selected.id !== target.id) {
       const changed = await switchTarget(selected)
       if (!changed.ok) throw new Error(changed.error)
@@ -423,6 +558,7 @@ async function start(): Promise<void> {
   ]))
   let installed: unknown
   if (prepared !== undefined) installed = prepared.installed
+  else if (sshInstalled !== undefined) installed = sshInstalled
   else {
     const root = join(resourceRoot, 'windows-host')
     const node = join(root, 'node', 'node.exe')
@@ -443,9 +579,11 @@ async function start(): Promise<void> {
   const builtinPhp = !app.isPackaged && existsSync(checkoutPhp) ? checkoutPhp : join(modulesRoot, 'php', 'php.exe')
   const hostEnvironment: Record<string, string> = {
     RAINY_EXECUTION_TARGET_ID: target.id,
+    RAINY_EXECUTION_TARGET_LABEL: target.label,
     // The Host asks this process for the key that encrypts its API keys.
     RAINY_CARRIER_CREDENTIALS: '1',
-    RAINY_CARRIER_STATE_ROOT: prepared === undefined ? carrierState : prepared.carrierState,
+    // An SSH server keeps its project records and memory in its own home.
+    ...(target.kind === 'ssh' ? {} : { RAINY_CARRIER_STATE_ROOT: prepared === undefined ? carrierState : prepared.carrierState }),
     ...(target.kind === 'windows' ? { RAINY_HOME: join(userData, 'native-home'),
       RAINY_TOOLCHAIN_ROOT: join(userData, 'env'),
       RAINY_BUILTIN_PHP: builtinPhp,
@@ -455,27 +593,69 @@ async function start(): Promise<void> {
       RAINY_CARRIER_PROXY: '1' } : {}),
   }
   const pending = preferences.pendingProject
-  if (pending !== null && typeof pending === 'object' && 'projectId' in pending && typeof pending.projectId === 'string'
+  if (target.kind !== 'ssh' && pending !== null && typeof pending === 'object' && 'projectId' in pending && typeof pending.projectId === 'string'
     && 'path' in pending && typeof pending.path === 'string') {
     hostEnvironment.RAINY_PENDING_PROJECT_ID = pending.projectId
     hostEnvironment.RAINY_PENDING_PROJECT_PATH = pending.path
     if ('roots' in pending && Array.isArray(pending.roots)) hostEnvironment.RAINY_PENDING_PROJECT_ROOTS = JSON.stringify(pending.roots)
   }
+  let hostReady = false
+  /** The last lines ssh wrote, to explain a connection that closed during startup. */
+  const sshSaid: string[] = []
   const hostOptions: HostOptions = { entry: installed.host, node: installed.node, environment: hostEnvironment,
     resolveProxy: url => systemProxyFor(window.webContents.session, url),
     credentialKey: () => credentialKeyOnce ??= credentialKey(userData, safeStorage, (line) => { appendFileSync(logPath, `${line}\n`) }),
     configureDeepSeek: process.env.RAINY_CONFIGURE_DEEPSEEK === '1',
-    onDiagnostic: (text) =>{  appendFileSync(logPath, text + '\n') },
+    onDiagnostic: (text) => {
+      appendFileSync(logPath, text + '\n')
+      if (target.kind === 'ssh') { sshSaid.push(text); if (sshSaid.length > 40) sshSaid.shift() }
+    },
     onExit: (code) => {
-      if (lifecycle.quitting || code === 0 || window.isDestroyed()) return
+      if (!hostReady || lifecycle.quitting || code === 0 || window.isDestroyed()) return
+      if (target.kind === 'ssh') {
+        void dialog.showMessageBox(window, { type: 'warning', title: 'Rainy', noLink: true, defaultId: 0, cancelId: 1,
+          message: localized({ zh: `与 ${target.label} 的连接已断开`, en: `The connection to ${target.label} was lost` }),
+          detail: localized({ zh: '远程后端随连接一起停止了，会话历史保存在服务器上。重新连接会重新打开 Rainy。',
+            en: 'The remote backend stopped with the connection. Chat history is kept on the server. Reconnecting reopens Rainy.' }),
+          buttons: [localized({ zh: '重新连接', en: 'Reconnect' }), localized({ zh: '稍后', en: 'Later' })] })
+          .then((answer) => { if (answer.response === 0) { app.relaunch(); quitAfterSave(true) } })
+        return
+      }
       void dialog.showMessageBox(window, { type: 'error', message: localized({ zh: '执行后端已停止', en: 'The execution backend stopped.' }),
         detail: localized({ zh: `${code === null ? '进程已被终止' : `退出代码：${code}`}。会话历史已保留。`,
           en: `${code === null ? 'The process was terminated' : `Exit code: ${code}`}. Your chat history is kept.` }) })
     },
   }
-  transport = target.kind === 'windows' ? new WindowsHostTransport({ ...hostOptions, cwd: installRoot }) : new WslHostTransport({ ...hostOptions, distro })
+  /** Start the Host over SSH, choosing another port when the chosen one was taken here or on the server. */
+  const startSshHost = async (selected: ExecutionTarget): Promise<HostReady> => {
+    const destination = sshDestinationOf(selected)
+    for (let attempt = 1; ; attempt++) {
+      const session = await askpassSession()
+      sshSaid.length = 0
+      const candidate = new SshHostTransport({ ...hostOptions, target: destination, port: await freeLoopbackPort(),
+        ...(session === undefined ? {} : { askpass: session.environment }) })
+      transport = candidate
+      try { return await candidate.start() }
+      catch (error) {
+        const said = sshSaid.join('\n')
+        if (attempt < 3 && /forwarding|EADDRINUSE|address already in use/iu.test(`${said}\n${errorText(error)}`)) continue
+        if (/Permission denied/u.test(said)) session?.failed()
+        throw /The execution Host stopped/u.test(errorText(error)) ? sshFailure(destination, null, said) : error
+      } finally { session?.dispose() }
+    }
+  }
   progress.step(localized({ zh: '正在启动执行后端…', en: 'Starting the execution backend…' }))
-  const ready = await transport.start()
+  let started: HostReady | undefined
+  if (target.kind === 'ssh') {
+    const selected = target
+    started = await sshStep(selected, () => startSshHost(selected), false)
+  } else {
+    transport = target.kind === 'windows' ? new WindowsHostTransport({ ...hostOptions, cwd: installRoot }) : new WslHostTransport({ ...hostOptions, distro })
+    started = await transport.start()
+  }
+  if (started === undefined) throw new Error('The execution Host did not start.')
+  const ready = started
+  hostReady = true
   timeline.mark('host')
   // Recording the resolved target lets the next launch skip the registry lookup and the environment window.
   if ((preferences.pendingProject !== undefined && preferences.pendingProject !== null) || !sameTarget(preferences.executionTarget, target))
@@ -495,6 +675,12 @@ async function start(): Promise<void> {
         en: 'Rainy is quitting or switching its execution environment. Prepare the runtime environment later.' }))
     }
     const operation = async (): Promise<void> => {
+      if (target.kind === 'ssh') {
+        await dialog.showMessageBox(window, { title: 'Rainy', message: localized({ zh: '在服务器上安装工具', en: 'Install tools on the server' }),
+          detail: localized({ zh: `${target.label} 上的解释器和工具请直接在服务器终端里安装（例如 apt、pip、nvm），然后在运行环境页点击“检测环境”。`,
+            en: `Install interpreters and tools on ${target.label} from a terminal on the server (for example with apt, pip or nvm), then click "Detect existing environments" on the Runtime page.` }) })
+        return
+      }
       const importComponents = localized({ zh: '导入离线组件', en: 'Import offline components' })
       const cancel = localized({ zh: '取消', en: 'Cancel' })
       const choices = target.kind === 'wsl' ? [importComponents, localized({ zh: '准备 Ubuntu 开发工具', en: 'Prepare Ubuntu development tools' }), cancel]
@@ -589,7 +775,8 @@ async function start(): Promise<void> {
       workspaceId ??= (await transport.inspectProject())?.workspaceId
       let pendingProject: PendingProjectTarget | undefined
       const projects = createProjectRegistry({ root: carrierState, targetId: target.id })
-      if (workspaceId) {
+      // An SSH server keeps its own project records; a project does not move between it and this computer.
+      if (workspaceId && target.kind !== 'ssh' && selected.kind !== 'ssh') {
         const snapshot = await transport.inspectProject(workspaceId)
         if (!snapshot) throw new Error(localized({ zh: '当前项目不可用，无法带到新的执行环境。', en: 'The selected project is unavailable for target migration.' }))
         const records = await projects.list()
@@ -651,6 +838,8 @@ async function start(): Promise<void> {
       && (value.theme === 'dark' || value.theme === 'light' || value.theme === 'system')) nativeTheme.themeSource = value.theme
   })
   onIpc('rainy:select-distribution', (event) => { if (trustedSender(event)) requestDistribution() })
+  // The preload asks once, synchronously: an SSH server has no Windows folder picker.
+  onIpc('rainy:execution-kind', (event) => { event.returnValue = trustedSender(event) ? target.kind : '' })
   onIpc('rainy:native-menu', (event, value) => {
     if (!trustedSender(event) || value === null || typeof value !== 'object' || !('menu' in value) || !('locale' in value)
       || (value.menu !== 'edit' && value.menu !== 'help') || (value.locale !== 'zh' && value.locale !== 'en')) return
@@ -661,6 +850,7 @@ async function start(): Promise<void> {
     Menu.buildFromTemplate(template).popup({ window })
   })
   const selectDirectory = createIdeDirectoryPicker(async () => {
+    if (target.kind === 'ssh') return null
     if (target.kind === 'windows') {
       const selected = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] })
       const path = selected.filePaths[0]
@@ -707,12 +897,41 @@ async function start(): Promise<void> {
   })
   handleIpc('rainy:runtime-targets', async (event) => {
     if (!trustedSender(event)) throw new Error('Runtime selection is available only in the Rainy window.')
-    return { current: target, targets: await listExecutionTargets() }
+    return { current: target, targets: await availableTargets() }
+  })
+  handleIpc('rainy:runtime-ssh-add', async (event, value) => {
+    if (!trustedSender(event) || !isRecord(value) || typeof value.destination !== 'string' || (value.port !== undefined && typeof value.port !== 'number')) {
+      throw new Error('Invalid SSH host request.')
+    }
+    const destination = parseSshDestination(value.destination, value.port as number | undefined)
+    // One connection checks the address, the login, the system and python3 before the host is offered.
+    const session = await askpassSession()
+    try {
+      const result = await runSsh(destination, remotePython('import platform\nprint(platform.system(), platform.machine())\n'),
+        { ...(session === undefined ? {} : { environment: session.environment }), timeoutMs: 180000 })
+      if (result.code !== 0) {
+        if (/Permission denied/u.test(result.stderr)) session?.failed()
+        throw sshFailure(destination, result.code, result.stderr)
+      }
+      const [system, machine] = result.stdout.trim().split(/\s+/u)
+      if (system !== 'Linux' || (machine !== 'x86_64' && machine !== 'amd64')) {
+        throw new Error(localized({ zh: `${sshName(destination)} 是 ${system ?? '?'} ${machine ?? '?'}；SSH 远程开发目前只支持 x86_64 Linux 服务器。`,
+          en: `${sshName(destination)} runs ${system ?? '?'} ${machine ?? '?'}; SSH remote development supports x86_64 Linux servers only.` }))
+      }
+    } finally { session?.dispose() }
+    await saveSshHost(settingsPath, destination)
+    return { current: target, targets: await availableTargets(), added: sshTarget(destination).id }
+  })
+  handleIpc('rainy:runtime-ssh-remove', async (event, value) => {
+    if (!trustedSender(event) || !isRecord(value) || typeof value.targetId !== 'string') throw new Error('Invalid SSH host request.')
+    if (value.targetId === target.id) throw new Error(localized({ zh: '不能移除正在使用的 SSH 主机。', en: 'The SSH host in use cannot be removed.' }))
+    await removeSshHost(settingsPath, value.targetId)
+    return { current: target, targets: await availableTargets() }
   })
   handleIpc('rainy:runtime-switch', async (event, value) => {
     if (!trustedSender(event) || value === null || typeof value !== 'object' || !('targetId' in value) || typeof value.targetId !== 'string') throw new Error('Invalid execution target request.')
-    const selected = (await listExecutionTargets()).find(item => item.id === value.targetId)
-    if (!selected) throw new Error(localized({ zh: '所选执行环境已不可用，例如 WSL 发行版已被移除。', en: 'The selected execution target is unavailable, for example because its WSL distribution was removed.' }))
+    const selected = await findTarget(value.targetId)
+    if (!selected) throw new Error(localized({ zh: '所选执行环境已不可用，例如 WSL 发行版或 SSH 主机已被移除。', en: 'The selected execution target is unavailable, for example because its WSL distribution or SSH host was removed.' }))
     return switchTarget(selected, 'workspaceId' in value && typeof value.workspaceId === 'string' ? brandString<WorkspaceId>(value.workspaceId) : undefined)
   })
   const admitStrata = (event: Electron.IpcMainInvokeEvent, mutate = false): void => {
@@ -755,6 +974,10 @@ async function start(): Promise<void> {
   const controlURL = new URL('/rainy/control', origin).href
   handleIpc('rainy:strata-connect', async (event) => {
     admitStrata(event, true)
+    if (target.kind === 'ssh') {
+      throw new Error(localized({ zh: 'SSH 服务器上的后端访问不到这台电脑上的 Strata 本地模型；请在服务器能访问的地址上配置模型。',
+        en: 'The backend on the SSH server cannot reach the Strata local model on this computer. Configure a model at an address the server can reach.' }))
+    }
     const connection = await strata.connection()
     const statusResponse = await window.webContents.session.fetch(controlURL, { credentials: 'include' })
     const status = await controlBody(statusResponse)
@@ -797,6 +1020,8 @@ async function start(): Promise<void> {
     event.returnValue = ''
     if (!trustedSender(event) || typeof path !== 'string' || !win32.isAbsolute(path) || path.includes('\0')) return
     if (target.kind === 'windows') { event.returnValue = path; return }
+    // Files on this computer are not on the SSH server.
+    if (target.kind === 'ssh') return
     try {
       const mapped = mappedPaths.get(path) ?? execFileSync('wsl.exe', ['-d', distro, '--exec', 'wslpath', '-u', path], { windowsHide: true, encoding: 'utf8', timeout: 5000 }).trim()
       if (!posix.isAbsolute(mapped)) return
@@ -833,6 +1058,11 @@ async function start(): Promise<void> {
       void pruneWindowsHost(resourceRoot).then((bytes) => {
         if (bytes > 0) appendFileSync(logPath, `Removed ${Math.round(bytes / 1024 ** 2)} MiB of Windows runtime files that earlier versions left behind\n`)
       }, (error: unknown) => { appendFileSync(logPath, `Old Windows runtime files were not removed: ${errorText(error)}\n`) })
+    }
+    if (app.isPackaged && target.kind === 'ssh') {
+      void sshInstaller(target, ['--prune']).then((result) => {
+        if (isRecord(result) && Array.isArray(result.removed) && result.removed.length) appendFileSync(logPath, `Removed ${result.removed.length} Linux runtimes that earlier versions installed on ${target.label}\n`)
+      }, (error: unknown) => { appendFileSync(logPath, `Earlier Linux runtimes on ${target.label} were not removed: ${errorText(error)}\n`) })
     }
     if (app.isPackaged && prepared !== undefined) {
       void prepared.pruneRuntimes().then((removed) => {

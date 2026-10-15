@@ -401,7 +401,7 @@ export interface BudgetPreview {
 export interface AppInfo {
   name: 'Rainy'
   version: string
-  environment: 'Windows' | 'WSL'
+  environment: 'Windows' | 'WSL' | 'SSH'
   executionTargetId: string
   platform: 'win32' | 'linux'
   home: string

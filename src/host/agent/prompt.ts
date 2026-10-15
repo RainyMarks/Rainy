@@ -14,6 +14,8 @@ export interface PromptInputs {
   skills: string
   /** The user's global prompt from Settings. */
   globalPrompt: string
+  /** The Host runs on a Linux server reached over SSH rather than in WSL. */
+  remote?: boolean | undefined
   /** PowerShell edition on Windows; Windows PowerShell 5.1 (`desktop`) has no `&&` or `||`. */
   powershell?: 'core' | 'desktop' | undefined
 }
@@ -71,6 +73,8 @@ export function buildSystemPrompt(inputs: PromptInputs): string {
   if (inputs.globalPrompt.trim() !== '') sections.push(inputs.globalPrompt.trim())
   sections.push(inputs.platform === 'win32'
     ? `Working directory: ${inputs.cwd}. ${POWERSHELL_NOTES[inputs.powershell ?? 'unknown']}`
-    : `Working directory: ${inputs.cwd}. Commands execute in Bash on Linux (WSL).`)
+    : inputs.remote === true
+      ? `Working directory: ${inputs.cwd}. Commands execute in Bash on a remote Linux server reached over SSH; files and paths are on that server.`
+      : `Working directory: ${inputs.cwd}. Commands execute in Bash on Linux (WSL).`)
   return sections.join('\n\n')
 }

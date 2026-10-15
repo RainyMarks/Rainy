@@ -26,7 +26,7 @@ export interface WindowFixture {
   readonly workbench: Workbench
   readonly request: ReturnType<typeof vi.fn<IdeFilesApi['request']>>
   readonly executionRequest: ReturnType<typeof vi.fn<IdeExecutionApi['request']>>
-  readonly chooseDirectory: ReturnType<typeof vi.fn<NativeIdeBridge['selectDirectory']>>
+  readonly chooseDirectory: ReturnType<typeof vi.fn<NonNullable<NativeIdeBridge['selectDirectory']>>>
   readonly listDirectory: ReturnType<typeof vi.fn<(path: string | undefined, signal: AbortSignal) => Promise<IdeDirectoryListing>>>
   readonly editor: EditorInstance
   readonly view: Rendered
@@ -52,7 +52,7 @@ export async function mountWindow(width = 1440, options: { native?: boolean; ses
   const executionRequest = vi.fn<IdeExecutionApi['request']>((_request, signal) => new Promise((_resolve, reject) => {
     signal?.addEventListener('abort', () => { reject(new DOMException('cancelled', 'AbortError')) }, { once: true })
   }))
-  const chooseDirectory = vi.fn<NativeIdeBridge['selectDirectory']>().mockResolvedValue(null)
+  const chooseDirectory = vi.fn<NonNullable<NativeIdeBridge['selectDirectory']>>().mockResolvedValue(null)
   const listDirectory = vi.fn(async (): Promise<IdeDirectoryListing> => ({ path: '/tmp/project', parent: null, roots: ['/'], entries: [] }))
   const workbench = createWorkbench({
     files: { request: request as IdeFilesApi['request'] },

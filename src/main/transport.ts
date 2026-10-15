@@ -1,4 +1,4 @@
-/** Owned native and WSL Host lifecycle, private control requests and bounded startup. */
+/** Owned native, WSL and SSH Host lifecycle, private control requests and bounded startup. */
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { createConnection } from 'node:net'
@@ -8,6 +8,7 @@ import { posix, win32 } from 'node:path'
 import { z } from 'zod'
 import { brandString } from '../shared/brand.ts'
 import { ProjectId } from '../shared/project-registry.ts'
+import { HOST_LAUNCHER, remotePython, spawnSsh, sshArguments, type SshDestination } from './ssh.ts'
 import type { IdeRootId, WorkspaceId } from '../shared/ide-files-protocol.ts'
 
 /** Host-authoritative roots and stable project identity used during a target switch. */
@@ -58,6 +59,12 @@ export interface HostOptions {
 export interface WslHostOptions extends HostOptions { distro: string }
 /** Native Host working directory, separate from every project directory. */
 export interface WindowsHostOptions extends HostOptions { cwd: string }
+/** Server, the loopback port used on both ends, and the askpass variables of this connection. */
+export interface SshHostOptions extends HostOptions {
+  target: SshDestination
+  port: number
+  askpass?: Readonly<Record<string, string>>
+}
 
 /** @param value - untrusted child control message. @returns verified loopback readiness. */
 export function parseReady(value: unknown): HostReady {
@@ -320,5 +327,31 @@ export class WslHostTransport extends ManagedHostTransport {
     if (!this.host) { child.kill(); return }
     const checkAndStop = 'import os,sys,signal; p=int(sys.argv[1]); f="/proc/%d/cmdline"%p; a=open(f,"rb").read().split(b"\\0") if os.path.exists(f) else []; os.kill(p,signal.SIGTERM) if len(a)>1 and a[0].decode()==sys.argv[2] and a[1].decode()==sys.argv[3] else None'
     execFile('wsl.exe', ['-d', this.settings.distro, '--exec', 'python3', '-c', checkAndStop, String(this.host.pid), this.settings.node, this.settings.entry], { windowsHide: true, timeout: 3000 }, () => child.kill())
+  }
+}
+
+/**
+ * SSH carrier: the Host runs on a Linux server, its control channel is the session's standard streams, and its port
+ * is forwarded to the same loopback port here, so the page's origin matches the one the Host checks.
+ * Closing the session closes the Host's standard input, which stops it.
+ */
+export class SshHostTransport extends ManagedHostTransport {
+  private readonly settings: SshHostOptions
+  /** @param settings - server, forwarded port and the installed Linux runtime paths. */
+  constructor(settings: SshHostOptions) {
+    super(settings)
+    this.settings = settings
+  }
+  protected override async confirmReady(host: HostReady, signal: AbortSignal): Promise<void> {
+    if (Number(new URL(host.url).port) !== this.settings.port) throw new Error('The remote Host did not use the forwarded port.')
+    await waitForWindowsLoopback(host, signal)
+  }
+  protected launch(): ChildProcessWithoutNullStreams {
+    const parameters = JSON.stringify({ node: this.settings.node, host: this.settings.entry,
+      env: { ...environment(this.settings), RAINY_PORT: String(this.settings.port) } })
+    return spawnSsh(sshArguments(this.settings.target, remotePython(HOST_LAUNCHER, [parameters]), this.settings.port), this.settings.askpass)
+  }
+  protected forceStop(child: ChildProcessWithoutNullStreams): void {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
   }
 }

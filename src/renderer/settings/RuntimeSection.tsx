@@ -1,12 +1,13 @@
-/** Runtime section: execution target, interpreters of the current project and optional components. */
+/** Runtime section: execution target, SSH hosts, interpreters of the current project and optional components. */
 import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import type { RuntimeLanguage, RuntimeSnapshot } from '../../shared/runtime-protocol.ts'
 import { host } from '../rpc.ts'
 import { Button } from '../ui/Button.tsx'
+import { toast } from '../ui/index.ts'
 import { useT } from './messages.ts'
 import { runtimeBridge } from './native.ts'
-import type { RuntimeNativeHost } from './native.ts'
+import type { RuntimeNativeHost, RuntimeNativeTargets } from './native.ts'
 import { OptionalModules } from './OptionalModules.tsx'
 import { Field, Loading, Notice, Select, errorText, useAction } from './parts.tsx'
 import type { SettingsWorkspace } from './parts.tsx'
@@ -75,6 +76,11 @@ export function RuntimeSection({ workspace }: { workspace: SettingsWorkspace }):
           })
         }} /></Field>}
     <p className={css.muted}>{t('settingsEnvironmentNote')}</p>
+    {targets !== undefined && native !== undefined && <SshHosts native={native} targets={targets} onTargets={(value) => { if (mounted.current) setTargets(value) }}
+      onSwitch={(targetId) => { run(async () => {
+        const switched = await native.switchTarget({ targetId, ...workspaceId === undefined ? {} : { workspaceId } })
+        if (!switched.ok) throw new Error(switched.error ?? t('settingsMissingCapability'))
+      }) }} />}
     {error !== '' && <Notice tone="error">{error}</Notice>}
     {native !== undefined && <div className={css.actions}>
       <Button variant="outline" disabled={busy} onClick={prepare}>{t('settingsPrepareEnvironments')}</Button>
@@ -119,4 +125,60 @@ export function RuntimeSection({ workspace }: { workspace: SettingsWorkspace }):
     </>}
     <OptionalModules />
   </section>
+}
+
+/**
+ * Add an SSH host after one test connection, and forget hosts added here; `~/.ssh/config` aliases are listed as they are.
+ * @param props.native Execution-target bridge.
+ * @param props.targets Current and available targets.
+ * @param props.onTargets Receives the targets after a change.
+ * @param props.onSwitch Switches to a host.
+ * @returns The card.
+ */
+function SshHosts({ native, targets, onTargets, onSwitch }: {
+  native: RuntimeNativeHost
+  targets: RuntimeNativeTargets
+  onTargets: (targets: RuntimeNativeTargets) => void
+  onSwitch: (targetId: string) => void
+}): JSX.Element {
+  const t = useT()
+  const [destination, setDestination] = useState('')
+  const [port, setPort] = useState('')
+  const { busy, run } = useAction()
+  const hosts = targets.targets.filter(target => target.kind === 'ssh')
+  const add = (): void => {
+    run(async () => {
+      const value = port.trim()
+      const added = await native.addSshHost({ destination: destination.trim(), ...value === '' ? {} : { port: Number(value) } })
+      onTargets(added)
+      setDestination(''); setPort('')
+      toast(t('sshAdded', { name: added.targets.find(target => target.id === added.added)?.label ?? added.added }), { tone: 'success' })
+    })
+  }
+  return <article className={css.card} data-ssh-hosts>
+    <h3 className={css.subheading}>{t('sshTitle')}</h3>
+    <p className={css.muted}>{t('sshLead')}</p>
+    {hosts.length === 0 ? <p className={css.muted}>{t('sshNone')}</p>
+      : <ul className={css.items}>{hosts.map(host => <li key={host.id} className={css.item} data-ssh-host={host.id}>
+        <div className={css.itemText}>
+          <div className={css.itemTitle}><span>{host.label}</span></div>
+          <div className={css.muted}>{host.id === targets.current.id ? t('sshCurrent') : host.saved === true ? '' : t('sshFromConfig')}</div>
+        </div>
+        <div className={css.actions}>
+          {host.id !== targets.current.id && <Button size="sm" variant="outline" disabled={busy} onClick={() => { onSwitch(host.id) }}>{t('sshSwitch')}</Button>}
+          {host.saved === true && host.id !== targets.current.id && <Button size="sm" variant="ghost" disabled={busy}
+            onClick={() => { run(async () => { onTargets(await native.removeSshHost(host.id)) }, t('sshRemoved', { name: host.label })) }}>{t('sshRemove')}</Button>}
+        </div>
+      </li>)}</ul>}
+    <form className={css.grid} onSubmit={(event) => { event.preventDefault(); if (destination.trim() !== '') add() }}>
+      <Field label={t('sshHost')}><input className={css.input} aria-label={t('sshHost')} value={destination} placeholder={t('sshHostPlaceholder')}
+        spellCheck={false} autoComplete="off" disabled={busy} onChange={(event) => { setDestination(event.target.value) }} /></Field>
+      <Field label={t('sshPort')}><input className={css.input} aria-label={t('sshPort')} value={port} placeholder="22" inputMode="numeric"
+        spellCheck={false} autoComplete="off" disabled={busy} onChange={(event) => { setPort(event.target.value.replace(/[^0-9]/gu, '').slice(0, 5)) }} /></Field>
+    </form>
+    <div className={css.actions}>
+      <Button variant="outline" disabled={busy || destination.trim() === ''} onClick={add}>{t('sshAdd')}</Button>
+    </div>
+    {busy && <Notice tone="status">{t('sshConnecting')}</Notice>}
+  </article>
 }

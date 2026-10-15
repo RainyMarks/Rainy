@@ -14,9 +14,9 @@ import { ideMessages, type IdeMessageKey } from '../ide/messages.ts'
 import type { DesktopWorkbenchBridge } from './desktop-bridge.ts'
 import { emit, on, type WorkbenchEvents } from './bus.ts'
 
-/** Native folder picker exposed by the Electron preload as `__RAINY_IDE_NATIVE__`. */
+/** Native folder picker exposed by the Electron preload as `__RAINY_IDE_NATIVE__`; absent on an SSH server, whose folders the page browses. */
 export interface NativeIdeBridge {
-  selectDirectory(): Promise<{ readonly path: string; readonly displayPath: string } | null>
+  selectDirectory?: (() => Promise<{ readonly path: string; readonly displayPath: string } | null>) | undefined
 }
 
 /** Construction inputs; every bridge is optional so the page also runs in a plain browser and in tests. */
@@ -130,7 +130,7 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
   })
   const native = options.native
   const directory = new IdeDirectorySelection({
-    choose: async () => (await native?.selectDirectory())?.path ?? null,
+    choose: async () => (await native?.selectDirectory?.())?.path ?? null,
     adopt: (path, mode) => mode === 'attach' ? model.attachRoot(path) : model.openWorkspace(path),
   })
 
@@ -229,7 +229,7 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     execution,
     directory,
     session,
-    nativeDirectory: native !== undefined,
+    nativeDirectory: native?.selectDirectory !== undefined,
     start: () => {
       if (started) return
       started = true

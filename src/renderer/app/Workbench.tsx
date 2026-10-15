@@ -540,6 +540,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     ...(Object.keys(sectionLabels) as SettingsSection[]).map(section => ({
       id: `settings.${section}`, category: ta('catSettings'), label: sectionLabels[section], run: () => { openSettings(section) },
     })),
+    { id: 'remote.ssh', category: ta('catSettings'), label: ta('cmdSsh'), run: () => { openSettings('runtime') } },
     { id: 'settings.themeLight', category: ta('catSettings'), label: ta('cmdThemeLight'), run: () => { setPrefs({ theme: 'light' }).catch(() => undefined) } },
     { id: 'settings.themeDark', category: ta('catSettings'), label: ta('cmdThemeDark'), run: () => { setPrefs({ theme: 'dark' }).catch(() => undefined) } },
     { id: 'settings.themeSystem', category: ta('catSettings'), label: ta('cmdThemeSystem'), run: () => { setPrefs({ theme: 'system' }).catch(() => undefined) } },
@@ -822,7 +823,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         </aside>
         <footer className={css.statusBar} data-rainy-status>
           {environment !== undefined && <span className={css.statusItem} title={`${environment.name} ${environment.version}`}>
-            <span className={css.statusDot} aria-hidden="true" />{environment.environment}
+            <span className={css.statusDot} aria-hidden="true" />{environment.label ?? environment.environment}
           </span>}
           {state.saving && <span className={css.statusItem}>{t('ideRecoverySaving')}</span>}
           {gitBranch !== undefined && <button type="button" className={`${css.statusItem} ${css.statusButton}`} title={tg('gitPanel')} data-git-branch
