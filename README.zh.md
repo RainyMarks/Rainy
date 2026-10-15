@@ -4,7 +4,7 @@
 
 # Rainy
 
-**为 CTF 打造的 Windows AI 智能体工作台：写解题脚本、运行、让 AI 找出哪里不对，再打开 66 款安全工具中的任意一款，全程不离开这个窗口。**
+**轻量的 Windows AI 编程工作台：能改代码、跑命令的 AI 智能体，内置 AI 的编辑器，还能通过 SSH 在任意 Linux 服务器上用同一套工作台。**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
@@ -14,26 +14,26 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（188 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.5 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.0 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
-![Rainy：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
+![Rainy 通过 SSH 连接 Linux 服务器，AI 在服务器上运行了脚本](assets/zh/workbench.png)
 
-Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器，以及 66 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你；它改过的每个文件都可以在编辑器里逐处审查，保留或撤销。项目地图让你一眼看清任何代码库的结构，以及 AI 正在处理哪些文件。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
+Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器、项目地图、搜索、Git 和终端放进一个小巧的桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你；它改过的每个文件都可以在编辑器里逐处审查，保留或撤销。可以在 Windows 原生环境、WSL2 或通过 SSH 连接的远程 Linux 服务器上工作：连接服务器时，AI、终端和调试器都在代码所在的服务器上运行，窗口仍留在你的电脑上。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。个人使用免费。Developed by RainyMarks.
 
 ## 为什么选 Rainy
 
 | | |
 |---|---|
-| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的文件都会列出来，可在编辑器里逐处保留或撤销。Skills 放在 `.rainy/skills`，MCP 服务（含 IDA 预设）在设置中添加。 |
+| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的文件都会列出来，可在编辑器里逐处保留或撤销。Skills 放在 `.rainy/skills`，MCP 服务在设置中添加。 |
+| **SSH 远程开发** | 从 `~/.ssh/config` 里选一台主机，或填写 `user@host`，Rainy 就把后端放到服务器上运行：AI、终端、运行调试和语言服务都直接处理服务器上的文件，界面留在这台电脑上。使用 Windows 自带的 OpenSSH 客户端，你的密钥、ssh-agent 和 ProxyJump 配置照常可用。 |
 | **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
-| **66 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、Hashcat、sqlmap、Volatility 3 等，按 Misc、Web、Reverse 分类。每款单独下载，下载后可离线保留，有变化时才更新。 |
-| **看清任何文件** | 图片支持缩放、查看像素颜色，一键切换颜色通道和位平面；二进制文件用十六进制查看，带数据检查器和类似 binwalk 的内嵌文件扫描；Markdown、PDF、音视频直接预览。 |
 | **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。全项目搜索替换、命令面板，以及能让 AI 写提交说明的 Git 面板。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
-| **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 工具时，随时把项目切换到 WSL2。 |
+| **预览任何文件** | 图片可缩放、查看像素颜色；Markdown、PDF、音视频直接预览；二进制文件用十六进制查看，带数据检查器；GBK、UTF-16 文本正确显示。 |
+| **Windows、WSL2 或 SSH** | 默认使用 Windows 原生环境；项目需要时，随时切换到 WSL2 或一台 Linux 服务器。 |
 | **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
-| **轻量** | 安装包 188 MB。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
+| **轻量** | 安装包 174 MB。Strata 引擎、PHP 和 Linux 运行环境都是用到时才下载。 |
 
 <a id="tour"></a>
 ## 看一眼
@@ -41,6 +41,10 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 **审查 AI 的修改。** AI 改过的文件列在输入框上方。打开一个，就能在编辑器里看到每处改动，逐处保留或撤销；没处理的会在你发出下一条消息时自动保留。
 
 ![在编辑器里审查 AI 的修改，每处改动旁都有保留和撤销](assets/zh/review.png)
+
+**像在本地一样使用服务器。** 添加一次主机，切换过去，再打开服务器上的文件夹。第一次连接会在服务器的 `~/.rainy-agent` 里安装 Rainy 的后端，之后几秒就能进入工作台。
+
+![设置里的 SSH 远程开发卡片，列出了 ~/.ssh/config 中的主机](assets/zh/ssh.png)
 
 **看清任何项目。** 看项目由哪些部分组成、彼此怎么依赖、用了什么技术栈；还可以让 AI 用一句话说明每个部分是做什么的。
 
@@ -56,96 +60,21 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
-**一键查看隐写。** 逐个切换颜色通道和位平面：这道题的 flag 藏在红色通道的最低位。
-
-![红色通道最低位里藏着的 flag](assets/zh/stego.png)
-
-**带数据检查器的十六进制视图。** 任意字节都能按整数、浮点数或 UTF-8 解读，还能在整个文件里扫描内嵌的 PNG、ZIP、ELF 等文件头。
-
-![ZIP 文件的十六进制视图、数据检查器和内嵌文件扫描](assets/zh/hex.png)
-
-**用到哪款工具就下载哪款。** 按名称或用途搜索，只下载这道题需要的工具。
-
-![CTF 工具目录](assets/zh/ctf-tools.png)
-
 <a id="whats-new"></a>
-## 2.5 新变化
+## 3.0 新变化
 
-- **全项目搜索替换**（Ctrl+Shift+F，替换用 Ctrl+Shift+H）：
-  - 边输入边出结果，按文件分组；可以区分大小写、全字匹配、使用正则表达式，也可以指定包含或排除的文件。
-  - 点击结果会打开文件并选中匹配的文字。
-  - 替换前会先显示每一处“旧文字划掉、新文字补上”的预览；可以全部替换，也可以只替换某个文件。有未保存修改的文件直接在编辑器里替换，不会丢掉你刚打的内容。
-- **源代码管理**（Ctrl+Shift+G）：
-  - 分“暂存的更改”和“更改”两组列出改动，并显示当前分支、领先或落后远端几个提交。可以逐个或一次性暂存、取消暂存、撤销；点击文件查看差异。
-  - **AI 写提交说明**：根据暂存的改动，按你最近提交的风格写好说明。什么都没暂存时，一键“暂存全部并提交”。
-  - 装了 Git 就能用；没装的话，“Windows 基础环境”里自带的 Git 也可以。状态栏显示当前分支，标签上显示改动的文件数。
-- **命令面板**（Ctrl+Shift+P 或 F1）：输入名字就能运行近 50 个命令，并显示对应的快捷键，最近用过的排在前面。在快速打开里输入 > 也会切换到命令面板。
-- 侧边栏顶部新增三个按钮，在文件、搜索和源代码管理之间切换。
-- Windows 上更快：后台程序运行结束后，不再因为重复结束进程多等约 1.5 秒，项目地图因此打开得更快。
+Rainy 从此专注做一款轻量的 AI 编程工作台，不再是 CTF 工具箱。
 
-## 2.4 新变化
+- **SSH 远程开发**：
+  - 新的执行环境类型：装有 python3 的 x86_64 Linux 服务器。`~/.ssh/config` 里的主机会自动列在 **设置 → 运行环境 → SSH 远程开发** 中；其他主机填 `user@host`，端口不是 22 时再填端口。保存前 Rainy 会先连接一次，确认能登录。命令面板里也有 **连接到 SSH 主机…**。
+  - 第一次连接会在服务器的 `~/.rainy-agent` 中安装本版本的 Linux 运行环境。服务器能联网时自己分段下载，每段都校验、断了可以接着下；服务器下载不了（没有外网或太慢）时，由你的电脑下载后通过 SSH 连接传过去。每个压缩包都和签名发行包里记录的校验值比对。不会往系统目录里装任何东西。
+  - 后端只监听服务器的本机回环地址，再由 ssh 把这个端口转发到你电脑上的同一端口。
+  - 第一次连接一台服务器时，会显示它的主机指纹，由你确认是否信任。密码、密钥口令和一次性验证码都在 Rainy 自己的窗口里输入，只保存在内存中，Rainy 关闭就清除。
+  - 连接断开时，Rainy 会提示重新连接；对话记录保存在服务器上。
+- **移除**：CTF 工具目录（66 款可下载工具）、AI 安全工具箱（IceSky）、IDA MCP 预设、图片的颜色通道与位平面视图、十六进制视图的内嵌文件扫描。图片、十六进制、Markdown、PDF 和音视频预览都保留。旧版本下载的工具仍留在安装目录的 `tools` 文件夹里，Rainy 不再管理它们，可以直接删除这个文件夹。
+- 状态栏会显示当前执行环境，例如 `SSH · dev` 或 `WSL · Ubuntu`。
 
-- **项目地图**：在顶栏打开，一眼看清任何项目。
-  - 架构：项目的各个部分画成方框，引用别人的在上、被引用的在下，地基在最底层。双击某个部分可以进去看。
-  - 文件：每个文件画成一块，大小按行数，颜色按语言。
-  - 根据清单文件和 import 认出技术栈（语言、框架和工具）。点 **AI 讲解**，AI 会用几句话说明整个项目和每个部分（请求一次模型），结果会保存下来。
-  - AI 干活时，它正在读或改的文件会在地图和文件树里亮起来。
-- **审查 AI 的修改**：
-  - 一个对话里 AI 改过的文件列在输入框上方，并显示增删的行数。
-  - 点 **审查** 会在编辑器里标出每处改动，可以逐处保留或撤销，也可以全部保留、全部撤销。
-  - 发出下一条消息时自动保留，不用逐个点"保留"。可在 **设置 → 安全** 里关闭，关闭后改动会一直列着，直到你逐个保留或撤销。
-- **随处问 AI**：每个问题旁边有 **用 AI 修复**；终端里有按钮，可把输出（或选中的部分）发给 AI。
-- **对话更稳**：
-  - 模型请求因临时原因失败（过载、限流、连接中断）时会自动重试，显示倒计时，也可以点 **立即重试**。
-  - 思考过程会显示用了多久。
-  - AI 回复时向上滚动，阅读位置不会被拉走。
-  - 使用中文等输入法时，所有输入框里的 Enter 和 Esc 都只用来选词或取消候选，不会误发送或误关闭。
-
-## 2.3 新变化
-
-- **编辑器里的 AI**：
-  - 边写边补全：打字停顿时，光标后出现灰色建议。按 Tab 接受，Ctrl+→ 只取一个词，Esc 忽略。
-  - 每条建议都会请求一次模型，所以默认关闭。可在**设置 → 模型**或底部状态栏打开，并单独选一个响应快、价格低的模型。
-  - Ctrl+K 改代码：选中代码（或把光标放在要插入的位置），按 Ctrl+K 或右键选择**用 AI 修改**，写下要怎样改。
-  - 新代码边生成边写进编辑器，只标出真正改动的行；Ctrl+Enter 接受，Esc 恢复原样。
-- **CTF 工具增至 66 款**，新增 Hashcat、sqlmap、Volatility 3、MemProcFS、RetDec、pycdc 等，分为 Misc、Web、Reverse 三组。
-
-## 2.2 新变化
-
-- **RainyAgent 更名为 Rainy**，并换上新图标。2.2 直接覆盖安装旧版本，设置、对话和工具都会保留。仓库改名为 RainyMarks/Rainy，旧链接仍然可用。
-- **外观设置**：
-  - 七套配色：石墨、石板、午夜、暖沙、松林、玫瑰、纯黑。
-  - 强调色可自选，用于链接、开关和焦点框，也可跟随配色。
-  - 界面字体和代码字体可从电脑已安装的字体中选，也可手动输入。
-  - 编辑器、终端和 AI 安全工具箱都会跟着变。
-- **更沉稳的界面**：中性灰配色，标题加粗，按钮改为实心；设置窗口加大，每页有标题和说明，选项按卡片分组。
-- **2.2.1**：许可证更名为 Rainy Source Available License，版权方改为 RainyMarks，条款不变。
-
-## 2.1 新变化
-
-- **像 VS Code 一样预览文件**：
-  - 图片可看颜色通道和位平面。
-  - Markdown 有源码、预览、分栏三种视图。
-  - PDF、音视频直接打开。
-  - 任何文件都能用十六进制查看，带数据检查器和内嵌文件扫描。
-  - GBK、UTF-16 文本正确显示。
-- **AI 更可控**：
-  - 三种权限模式：只读、询问、完全自动。运行命令、调用 MCP 工具、写项目外文件前会显示批准栏。
-  - AI 改过的文件可一键撤销。
-  - 新增文件名搜索和文件内容搜索工具。
-- **网络与隐私**：
-  - 模型请求可跟随系统代理（含 PAC）或使用你设置的代理。
-  - API 密钥用 Windows 数据保护加密。
-  - 崩溃记录只保存在本机，设置里可以导出抹去敏感信息的诊断压缩包。
-- **安装包小了 35%**：189 MB（2.0 为 293 MB）。
-- **2.1.1**：
-  - 设置保存失败时，原因显示在按钮旁。
-  - 已打开的对话保留各自的权限。
-  - 修改模型后，已打开的对话立即生效。
-  - 另有约 40 处修复，见[发布说明](https://github.com/RainyMarks/Rainy/releases/tag/v2.1.1)。
-- **2.1.2**：界面圆角整体调小，浏览器工具台更名为 **AI 安全工具箱**。
-
-从 1.x 升级：首次启动会导入 1.x 保存的模型、API 密钥和全局提示词。1.x 的对话格式较旧，不会导入。
+更早的版本：2.5 加入了全项目搜索替换、命令面板和 Git 面板；2.4 加入了项目地图和 AI 修改审查；2.3 加入了编辑器内 AI 补全和 Ctrl+K 改代码。每个版本的详细变化见[发布说明](https://github.com/RainyMarks/Rainy/releases)。
 
 <a id="run"></a>
 ## 下载与开始使用
@@ -153,16 +82,24 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 1. 下载并安装[最新版 Windows x64 安装包](https://github.com/RainyMarks/Rainy/releases/latest)，无需激活码。
 2. 从桌面快捷方式打开 Rainy，选择**文件 → 打开文件夹**。
 3. 在**设置 → 模型**中连接模型（见[连接模型](#connect-a-model)），然后打开右侧的 **AI 助手**。
-4. 进入 **CTF 工具 → 常用工具**，下载需要的工具，或点击**全部下载**。已下载的工具离线也能用。
 
 | 可选下载 | 大小 | 位置 |
 |---|---|---|
 | Strata 引擎 | 约 560 MB | **设置 → 运行环境 → 可选组件** |
 | PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
-| WSL 运行环境 | 约 296 MB | 首次以 WSL 启动时自动下载 |
-| CTF 工具 | 大小因工具而异，下载前会显示 | **CTF 工具 → 常用工具** |
+| Linux 运行环境 | 约 280 MB | 第一次使用 WSL 或 SSH 主机时自动下载 |
 
-Rainy 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新，更新也不会重新下载你的工具。详见[工具安装与更新](docs/desktop.zh.md#ctf-workbench)。
+Rainy 会检查稳定版更新并在后台下载。下载完成后可选择**稍后**或**重启安装**；普通退出不会安装更新。
+
+<a id="ssh"></a>
+## SSH 远程开发
+
+1. 先确认在终端里能用 `ssh` 登录。服务器需要是 x86_64 Linux，并装有 `python3`。
+2. 打开**设置 → 运行环境**。`~/.ssh/config` 里的主机已经列在 **SSH 远程开发** 下；要添加其他主机，填写 `user@host`（端口不是 22 时再填端口），点击**连接并添加**。
+3. 点击**切换到此主机**。Rainy 会在服务器上重新打开；第一次需要在服务器上安装后端，耗时相当于下载 280 MB。
+4. 选择**文件 → 浏览当前执行环境文件夹**，打开服务器上的项目。
+
+模型设置按执行环境分别保存，模型请求从服务器发出，所以服务器必须能访问你的模型服务；服务器访问不到这台电脑上的 Strata。详见[桌面指南](docs/desktop.zh.md#ssh-remote-development)。
 
 <a id="connect-a-model"></a>
 ## 连接模型
@@ -173,7 +110,7 @@ Rainy 会检查稳定版更新并在后台下载。下载完成后可选择**稍
 2. 点击**发现模型**，或手动填写模型 ID。
 3. 设置服务实际的上下文窗口和输出上限，保存后执行流式与工具调用检查。
 
-所选 Windows 或 WSL 环境必须能访问服务地址。密钥加密保存在该环境的私有凭据存储中，Rainy 不会静默切换到其他模型。
+所选 Windows、WSL 或 SSH 环境必须能访问服务地址。密钥加密保存在该环境的私有凭据存储中，Rainy 不会静默切换到其他模型。
 
 模型列表里有 **DeepSeek V4.1 Flash**、**Claude Opus 5.5** 和 **Claude Haiku 5.5** 三个预设：点击**载入**，填写 API 密钥后保存即可。两个 Claude 预设共用同一个 Anthropic 密钥。Haiku 预设的上下文为 100K，使每次请求都处于 Claude Haiku 5.5 的低价区间。通过中转服务使用时同样可行：协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（例如 `claude-opus-5-5`、`claude-sonnet-5-5` 或 `claude-haiku-5-5`），Rainy 会按该模型使用自适应思考和对应的推理档位。Claude 对话的提示词缓存保留一小时，继续对话时之前的上下文从缓存读取。
 
@@ -197,16 +134,16 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.5.0 -ComponentSource release/offline-2.5.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.0.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.5.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.0.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
 ## 支持这个项目
 
-如果 Rainy 帮你解出了题，给仓库点个 ⭐ 能让更多选手看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新和 CTF 技巧。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues)。
+如果 Rainy 对你有用，给仓库点个 ⭐ 能让更多人看到它。在 X 上关注 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 获取版本更新。问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues)。
 
 ## 许可与归属
 

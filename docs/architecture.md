@@ -5,20 +5,29 @@ Rainy is one Windows desktop application built from one package. There is no plu
 ## Processes
 
 ```text
-Electron main (src/main)          window, updates, CTF tools, optional modules, Strata, WSL setup
+Electron main (src/main)          window, updates, optional modules, Strata, WSL setup, SSH targets
   │  spawns over stdio (RAINY_CONTROL lines)
   ▼
-Host (src/host), one per execution target: Windows Node or Node inside a WSL distro
+Host (src/host), one per execution target: Windows Node, Node inside a WSL distro, or Node on a Linux server over SSH
   │  HTTP + WebSocket on 127.0.0.1:<random port>, launch-token cookie
   ▼
 Renderer (src/renderer), loaded by the main window from the Host origin
 ```
 
-- Electron main spawns the Host with `node host.js` (Windows) or `wsl.exe --distribution <d> --exec env … node host.js` (WSL). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`). The Host's own requests go the other way and main answers each with a `reply` line: every Host asks `credential-key` once at start, and the Windows Host asks `system-proxy {id, url}` for each origin it connects to. Main resolves that URL with Electron's `session.resolveProxy`, which applies the Windows proxy settings, bypass list and PAC scripts (`src/main/system-proxy.ts`).
+- Electron main spawns the Host with `node host.js` (Windows), `wsl.exe --distribution <d> --exec env … node host.js` (WSL) or `ssh.exe … -- <destination> …` (SSH, see below). The Host prints `RAINY_CONTROL {"type":"ready","protocol":1,"url":…}` on stdout and accepts `stop`, `inspect-activity` and `inspect-project` lines on stdin (`src/main/transport.ts`, `src/host/control.ts`). The Host's own requests go the other way and main answers each with a `reply` line: every Host asks `credential-key` once at start, and the Windows Host asks `system-proxy {id, url}` for each origin it connects to. Main resolves that URL with Electron's `session.resolveProxy`, which applies the Windows proxy settings, bypass list and PAC scripts (`src/main/system-proxy.ts`).
 - The main window loads `ready.url` (`http://127.0.0.1:<port>/?token=…`). The Host answers with an HttpOnly cookie and redirects to `/`. Every later request and WebSocket upgrade must carry that cookie.
 - Main and preload are plain Electron code. Preload exposes the `__RAINY_*` bridges listed in `src/preload/preload.ts`.
 - Errors, dialogs and menus written by main or the Host use `localized({ zh, en })` from `src/shared/locale.ts` in the language chosen in Settings → General: the Host reads it from `settings.json`, main from the page and, before the page loads, from `desktop.json`.
 - Main starts Electron's crash reporter without uploads; `src/main/diagnostics.ts` packs versions, the scrubbed end of the logs and the newest crash dumps into the zip that Settings → General exports.
+
+### SSH targets
+
+An execution target has the kind `windows`, `wsl` or `ssh` (`src/main/execution-targets.ts`). SSH targets come from the aliases in `~/.ssh/config` and from the hosts added in Settings, which are saved as `sshHosts` in `desktop.json`; `RAINY_SSH_CONFIG` points at another config file for development and tests. Switching target restarts the app into the new target.
+
+- `src/main/ssh.ts` validates destinations (`[user@]host` or an alias, never starting with `-`), builds the `ssh` arguments with `--` before the destination, and runs Python on the server through a `python3 -c` loader that receives the script and its arguments as base64, so any login shell (sh, bash, zsh, fish or csh) passes them unchanged. It also turns ssh failures into messages. The client is the Windows OpenSSH `C:\Windows\System32\OpenSSH\ssh.exe`, so the user's config, keys, ssh-agent and ProxyJump apply.
+- `src/main/ssh-askpass.ts` answers ssh's prompts: ssh runs the bundled `windows-host` `node.exe` as `SSH_ASKPASS`, with `NODE_OPTIONS` requiring a small client that forwards the prompt over a named pipe to main. `src/main/ssh-prompt.ts` shows the host-key confirmation and the password, passphrase and one-time-code dialogs; answers are kept in memory for the app run only.
+- First, main installs this version's Linux runtime in `~/.rainy-agent/runtime/<sha256>` on the server with `scripts/install-runtime.py`. `--fetch METADATA PIECES` makes the server download the release pieces itself and verify each one; when that fails or stays below 256 KiB/s after a minute, main downloads the archive and streams it to `--receive METADATA`. Both check the archive against the SHA-256 pinned in the signed release resources. Runtimes of earlier versions are pruned in the background.
+- `SshHostTransport` in `src/main/transport.ts` starts the Host through ssh with `RAINY_PORT` set and `ssh -L` forwarding the same port from 127.0.0.1 on the PC to 127.0.0.1 on the server. It checks that the Host reports the forwarded port and waits for Windows loopback reachability, as for WSL. The Host home is `~/.rainy-agent` on the server, and it keeps its own `carrier-state`, so projects and project memory stay on the server. API keys are sealed there under the key main supplies at each start.
 
 ## Host
 
@@ -29,14 +38,14 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 | `server.ts` | HTTP routes, launch-token auth, static files, the `/rpc` WebSocket, the `/rainy/ide/lsp` WebSocket |
 | `rpc.ts` | Method table and event broadcast; the method and event types are `src/shared/rpc.ts` |
 | `settings.ts` | `settings.json` and the API keys (`credentials.ts`) under the Host home, plus the one-time import of 1.x settings |
-| `network.ts` | The proxy for model requests: follow the system (default), none, or a manual HTTP proxy. Model streaming, model discovery, the IceSky relay and MCP servers over HTTP fetch through it with undici's `ProxyAgent`, which forwards plain-HTTP requests and tunnels HTTPS; loopback, private, `.local` and single-label hosts stay direct. Following the system, the Windows Host asks main per origin (answers kept 30 seconds) and the WSL Host reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Commands and terminals are not proxied |
+| `network.ts` | The proxy for model requests: follow the system (default), none, or a manual HTTP proxy. Model streaming, model discovery and MCP servers over HTTP fetch through it with undici's `ProxyAgent`, which forwards plain-HTTP requests and tunnels HTTPS; loopback, private, `.local` and single-label hosts stay direct. Following the system, the Windows Host asks main per origin (answers kept 30 seconds) and the WSL Host reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Commands and terminals are not proxied |
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
 | `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route, change hints |
 | `map/` | Project maps: the file list, line counts, imports, stack and the AI explanation |
 | `search/` | Text search across a project's roots with ripgrep, and replacement on disk (`search.text`, `search.replace`) |
 | `git/` | The Git pane: status, staging, discarding, committing and the AI commit message (`git.*`) |
 | `runtime/` | Interpreter discovery and selection, project registry shared with main |
-| `icesky/` | The AI security toolkit iframe (bundled under `resources/icesky`): static files, model relay, drafts |
+| `pdfjs.ts` | Serves the pdf.js build in `resources/pdfjs` at `/rainy/pdfjs/` for the PDF viewer |
 
 ### Agent
 
@@ -67,7 +76,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 
 ### Data under the Host home
 
-The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Windows Host and `~/.rainy-agent` inside WSL.
+The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Windows Host, `~/.rainy-agent` inside WSL and `~/.rainy-agent` on an SSH server.
 
 | Path | Content |
 |---|---|
@@ -81,7 +90,7 @@ The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Window
 | `projects.json` | Projects (workspaces) and their roots |
 | `ide/<workspaceId>.json` | Editor tabs, dirty buffers, layout and run configurations |
 | `runtime-environments.json` | Interpreter selections per project |
-| `<carrier-state>/project-memory/<projectId>/memory.v1.json` | Project memory, shared by the Windows and WSL Hosts |
+| `<carrier-state>/project-memory/<projectId>/memory.v1.json` | Project memory, shared by the Windows and WSL Hosts; an SSH Host keeps its own under its home |
 
 Chats from RainyAgent 1.x use an older session format and are not imported. Models, API keys and the global prompt are imported once from the 1.x profile.
 
@@ -95,7 +104,7 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 
 - The page does not poll for changes it can be told about. `ide/hints.ts` in the Host watches the directories of files open in editor tabs (with `fs.watch`, up to 64 per project folder, including the folder of a deleted file) and run and debug events, and sends a throttled `ide.hint` event; the page then fetches the state with its usual requests, and checks open files at once when tabs open or close. The fallback polls (`editorPollMs`, 10 s; `executionPollMs`, 1 s during a run) cover lost hints and unwatchable folders, and stop while the window is hidden. Watchers close when the page has not checked a folder's files for 30 seconds (three fallback polls when that is longer), because Windows cannot rename a watched folder.
 - KaTeX and its stylesheet load only for a message that contains `$`; highlight.js grammars load per language on first use (`ui/highlight.ts`).
-- Interface preferences live in the Host's `settings.json` (`prefs.get`, `prefs.set`) and `prefs.ts` applies them. A color scheme replaces the gray ramp in `theme/schemes.css` and an accent its blue ramp, through the `data-color-scheme` and `data-accent` attributes of `<body>`; chosen fonts go in front of the font stacks in `theme/base.css`. The editor and terminal get the code font and surface colors through `EditorAppearance`, and the IceSky iframe gets the colors and fonts through its bridge.
+- Interface preferences live in the Host's `settings.json` (`prefs.get`, `prefs.set`) and `prefs.ts` applies them. A color scheme replaces the gray ramp in `theme/schemes.css` and an accent its blue ramp, through the `data-color-scheme` and `data-accent` attributes of `<body>`; chosen fonts go in front of the font stacks in `theme/base.css`. The editor and terminal get the code font and surface colors through `EditorAppearance`.
 
 | Folder | Content |
 |---|---|
@@ -106,7 +115,6 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 | `review/` | The changed-files list above the composer, the review bar and the review actions |
 | `search/` | The search pane |
 | `git/` | The Git pane and the shared status store behind its tab badge and the status-bar branch (polled every 3 s while the pane shows, 15 s otherwise, and after file hints) |
-| `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost. The signed catalog supplies localized descriptions for future tools through the existing main-window bridge |
 | `settings/` | General, Appearance, Models, Skills & MCP, Runtime, Memory and Security sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
 
@@ -129,7 +137,7 @@ Each folder keeps its Chinese and English strings in a `messages.ts` built with 
 
 - The Host does not decode images, audio, video or PDF: `files.read` returns `readOnlyReason: 'media'`, and the page loads the bytes from `/rainy/ide/raw` (`src/host/ide/raw.ts`). The route applies the same path checks as every file operation and refuses a file that changed between the check and the open. It answers single `Range` requests and sends `Content-Security-Policy: sandbox`, so a file opened there runs no script; the window also refuses to navigate to it. The URL carries the observed version, so a changed file gets a new URL.
 - SVG is drawn through `<img>`, where its scripts do not run. Markdown is rendered by the chat renderer (`chat/Markdown.tsx`) relative to the document's directory: local images come from the byte route, local links open in the editor, and remote images load only in the system browser.
-- PDF uses the pdf.js build that ships with IceSky, with `isEvalSupported: false` (CVE-2024-4367).
+- PDF uses the pdf.js build in `resources/pdfjs`, which the Host serves at `/rainy/pdfjs/` (`src/host/pdfjs.ts`), with `isEvalSupported: false` (CVE-2024-4367).
 - The hex view reads 64 KiB chunks on demand, so it opens files of any size.
 - Text that is not UTF-8 (GB18030, UTF-16, Big5 and others) is decoded by the page and shown read-only.
 
@@ -141,4 +149,4 @@ Each folder keeps its Chinese and English strings in a `messages.ts` built with 
 - `dist/host.js`: the Host bundle; native and process-launched packages stay in `node_modules`
 - `dist/renderer/`: the Vite build, including the editor chunk and `THIRD_PARTY_NOTICES.txt` with the license texts of every bundled npm package
 
-`scripts/stage-windows.mjs` assembles the Windows Host runtime and `scripts/stage-linux.py` the WSL runtime. `electron-builder.config.cjs` packages the NSIS installer.
+`scripts/stage-windows.mjs` assembles the Windows Host runtime and `scripts/stage-linux.py` the Linux runtime that WSL and SSH targets share. `electron-builder.config.cjs` packages the NSIS installer.
