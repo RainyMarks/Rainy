@@ -15,6 +15,8 @@ import css from './SearchView.module.css'
 
 /** Wait after typing before searching. */
 const DEBOUNCE_MS = 300
+/** Characters of a line kept in front of a match. */
+const LEAD_CHARS = 14
 
 /** A request to show the pane: `at` changes each time; `text` fills the search box and `replace` opens the replace box. */
 export interface SearchFocus {
@@ -255,7 +257,8 @@ function MatchPreview({ match, options, replacement }: { match: TextSearchMatch;
     <span className={css.preview}>
       <span className={css.line}>{match.line}</span>
       <span className={css.text}>
-        {before.length > 30 ? `…${before.slice(-30)}` : before}
+        {/* A narrow pane still shows the match: only a little of the line before it, from a word start. */}
+        {before.length > LEAD_CHARS ? `…${before.slice(-LEAD_CHARS).replace(/^\S*\s(?=\S)/u, '')}` : before}
         <mark className={clsx(css.hit, replaced !== undefined && css.removed)}>{found}</mark>
         {replaced !== undefined && <ins className={css.added}>{replaced}</ins>}
         {after}

@@ -148,7 +148,7 @@ function RepositoryView({ workspaceId, repository, model, titled, t }: {
         <IconAction label={t('gitRefresh')} onClick={() => { void refreshGit() }}><IconRefreshOutlineRegular size={14} /></IconAction>
       </div>
       <div className={css.commitBox}>
-        <textarea className={css.message} rows={3} value={message} aria-label={t('gitMessageLabel')} placeholder={t('gitMessagePlaceholder')} data-git-message
+        <textarea className={css.message} rows={Math.min(8, Math.max(3, message.split('\n').length + 1))} value={message} aria-label={t('gitMessageLabel')} placeholder={t('gitMessagePlaceholder')} data-git-message
           spellCheck={false} onChange={(event) => { setMessage(event.target.value) }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && event.ctrlKey && !isComposingKey(event.nativeEvent)) { event.preventDefault(); commit() }
