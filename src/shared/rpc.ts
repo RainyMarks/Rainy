@@ -162,7 +162,11 @@ export interface UsageSummary {
 /** A transcript entry as persisted and as shown by the renderer. */
 export type TranscriptEntry =
   | { id: string; kind: 'user'; ts: number; text: string; images?: ImageContent[] | undefined }
-  | { id: string; kind: 'assistant'; ts: number; message: AssistantMessage; durationMs?: number | undefined }
+  | {
+    id: string; kind: 'assistant'; ts: number; message: AssistantMessage; durationMs?: number | undefined
+    /** How long each thinking block took to stream, by content index; absent in chats written before 2.4. */
+    thinkingMs?: Record<number, number> | undefined
+  }
   | {
     id: string; kind: 'toolResult'; ts: number; toolCallId: string; toolName: string
     content: (TextContent | ImageContent)[]; isError: boolean; details?: unknown; durationMs?: number | undefined
@@ -295,7 +299,21 @@ export interface SessionSnapshot {
   permission: PermissionMode
   /** Tool calls waiting for the user's approval. */
   approvals: PendingApproval[]
+  /** Set while the run waits to retry a request that failed for a passing reason. */
+  retry?: RetryWait | undefined
   error?: string | undefined
+}
+
+/** A run waiting before it automatically retries a request the provider refused or dropped for a passing reason (overload, rate limit, network). */
+export interface RetryWait {
+  /** 1 for the first retry. */
+  attempt: number
+  /** Automatic retries allowed before the run gives up. */
+  max: number
+  /** When the retry starts (epoch ms). */
+  at: number
+  /** The provider's error text. */
+  reason: string
 }
 
 /** Text around the editor cursor for a ghost-text suggestion. */
@@ -440,6 +458,11 @@ export interface HostMethods {
   'inline.cancel': [{ requestId: string }, void]
   'chat.setPermission': [{ sessionId: SessionId; mode: PermissionMode }, PermissionMode]
   'chat.approve': [{ sessionId: SessionId; toolCallId: string; decision: ApprovalDecision; reason?: string | undefined }, void]
+  /**
+   * Request the model's answer again after a failed or stopped request, from the chat as it is; while an automatic
+   * retry is waiting, retry now.
+   */
+  'chat.retry': [{ sessionId: SessionId }, void]
   /** Undo write and edit calls of the chat, newest first; files changed since are left alone. */
   'chat.revert': [{ sessionId: SessionId; toolCallIds: string[] }, RevertResult]
   /** Files the chat's agent changed that are not yet kept or undone. */
@@ -490,7 +513,7 @@ export interface HostEvents {
   /** Run status, queue or model changed. */
   'session.state': {
     sessionId: SessionId; status: SessionRunStatus; queue: QueuedMessage[]; model: ModelSelection | null; context: ContextUsage | null
-    permission: PermissionMode; approvals: PendingApproval[]; error?: string | undefined
+    permission: PermissionMode; approvals: PendingApproval[]; retry?: RetryWait | undefined; error?: string | undefined
   }
   /** A chat was created or its summary changed. */
   'sessions.changed': SessionSummary

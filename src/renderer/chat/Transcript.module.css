@@ -178,10 +178,52 @@
 }
 .error svg { flex: none; margin-top: 3px; }
 
+.errorBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
 .errorText {
   color: var(--dsw-alias-label-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.retryButton { margin-top: 6px; }
+
+/* Counters that change while they are read keep their width. */
+.numeric { font-variant-numeric: tabular-nums; }
+
+.retryWait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+}
+.retryWait > svg { flex: none; color: var(--dsw-alias-state-warn-primary); }
+
+.retrySpin { animation: retry-spin 1.5s linear infinite; }
+@keyframes retry-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .retrySpin { animation: none; } }
+
+.retryBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.retryReason {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stopped {
@@ -319,4 +361,13 @@
   font-size: 12px;
   box-shadow: var(--dsw-elevation-soft);
   cursor: pointer;
+}
+/* Output keeps arriving below while the user reads further up. */
+.toBottom[data-live]::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-link);
+  animation: pulse 1.2s infinite ease-in-out;
 }

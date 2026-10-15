@@ -54,9 +54,13 @@ export function loadChat(sessionId: string, all = false): Promise<void> {
 }
 
 host.on('session.entry', ({ sessionId, entry }) => {
-  update(sessionId, view => view.entries.some(item => item.id === entry.id) ? view : { ...view, entries: [...view.entries, entry] })
+  update(sessionId, view => view.entries.some(item => item.id === entry.id) ? view
+    : { ...view, entries: [...view.entries, entry], ...(entry.kind === 'assistant' ? { streaming: null } : {}) })
 })
 host.on('session.stream', ({ sessionId, message }) => {
+  // A finished reply leaves the stream when its entry arrives (above), so the transcript never drops it in between
+  // and a reader scrolled into it is not moved.
+  if (message === null) return
   update(sessionId, view => ({ ...view, streaming: message }))
 })
 host.on('session.tool', ({ sessionId, toolCallId, toolName, phase, args, partial }) => {
@@ -82,9 +86,9 @@ function announce(approvals: readonly PendingApproval[], title: string): void {
   }
 }
 
-host.on('session.state', ({ sessionId, status, queue, model, context, error, permission, approvals }) => {
+host.on('session.state', ({ sessionId, status, queue, model, context, error, permission, approvals, retry }) => {
   update(sessionId, view => ({
-    ...view, queue, model, context, error, permission, approvals,
+    ...view, queue, model, context, error, permission, approvals, retry,
     summary: { ...view.summary, status, awaitingApproval: approvals.length > 0 || undefined },
     ...(status === 'idle' || status === 'error' ? { tools: {}, streaming: null } : {}),
   }))

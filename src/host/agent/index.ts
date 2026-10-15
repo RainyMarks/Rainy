@@ -283,6 +283,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('chat.unqueue', async ({ sessionId, id }) => (await session(sessionId)).unqueue(id))
   rpc.register('chat.setModel', async ({ sessionId, ...selection }) => (await session(sessionId)).setModel(selection))
   rpc.register('chat.compact', async ({ sessionId }) => ({ message: await (await session(sessionId)).compactNow() }))
+  rpc.register('chat.retry', async ({ sessionId }) => { await (await session(sessionId)).retry() })
   rpc.register('chat.setPermission', async ({ sessionId, mode }) => (await session(sessionId)).setPermission(permissionSchema.parse(mode)))
   rpc.register('chat.approve', async (params) => {
     const { sessionId, toolCallId, decision, reason } = approveSchema.parse(params)

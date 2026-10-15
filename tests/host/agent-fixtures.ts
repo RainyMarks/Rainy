@@ -16,9 +16,12 @@ import { Settings } from '../../src/host/settings.ts'
 
 /** One scripted assistant reply. */
 export type ScriptedReply =
-  | { text: string }
+  /** Optional reasoning streams first (as `reasoning_content`), then `pauseMs` passes before the text. */
+  | { text: string; thinking?: string | undefined; pauseMs?: number | undefined }
   | { toolCalls: { name: string; arguments: Record<string, unknown> }[] }
   | { status: number; body: string }
+  /** Starts streaming this text, then drops the connection. */
+  | { drop: string }
 
 /** A local `/v1/chat/completions` server that answers requests with scripted replies in order. */
 export class FakeOpenAI {
@@ -48,15 +51,26 @@ export class FakeOpenAI {
         response.writeHead(200, { 'content-type': 'text/event-stream' })
         const send = (data: unknown): void => { response.write(`data: ${JSON.stringify(data)}\n\n`) }
         const base = { id: 'chatcmpl-1', object: 'chat.completion.chunk', created: 1, model: 'fake-model' }
-        if ('text' in reply) {
-          for (const part of reply.text.match(/.{1,8}/gs) ?? ['']) send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: part } }] })
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } })
-        } else {
-          reply.toolCalls.forEach((call, index) => {
-            send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index, id: `call_${index}_${this.requests.length}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } }] })
-          })
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } })
+        if ('drop' in reply) {
+          send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: reply.drop } }] })
+          setTimeout(() => { response.destroy() }, 20)
+          return
         }
+        if ('text' in reply) {
+          for (const part of reply.thinking?.match(/.{1,8}/gs) ?? []) send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: part } }] })
+          const finish = (): void => {
+            for (const part of reply.text.match(/.{1,8}/gs) ?? ['']) send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: part } }] })
+            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } })
+            response.end('data: [DONE]\n\n')
+          }
+          if (reply.pauseMs === undefined) finish()
+          else setTimeout(finish, reply.pauseMs)
+          return
+        }
+        reply.toolCalls.forEach((call, index) => {
+          send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index, id: `call_${index}_${this.requests.length}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } }] })
+        })
+        send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } })
         response.end('data: [DONE]\n\n')
       })
     })

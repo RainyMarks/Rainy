@@ -10,8 +10,8 @@ import {
 import { EstimateCalibration, resolveBudget, type Budget } from '../../shared/budget.ts'
 import { lineChangeCounts } from '../../shared/line-diff.ts'
 import type {
-  ApprovalDecision, ChatChange, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RevertResult, SessionRunStatus,
-  SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
+  ApprovalDecision, ChatChange, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RetryWait, RevertResult,
+  SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
 } from '../../shared/rpc.ts'
 import { resolvePowerShell } from '../process.ts'
 import { RpcError } from '../rpc.ts'
@@ -23,6 +23,7 @@ import { loadBaseline, loadedFrom, renderAdditional, renderBaseline } from './in
 import type { ResolvedModel } from './models.ts'
 import { canonicalPath, decide, denialText, READ_ONLY_REASON } from './permissions.ts'
 import { buildSystemPrompt } from './prompt.ts'
+import { AUTO_RETRIES, isPassingFailure, retryDelay } from './retry.ts'
 import { discoverSkills, skillsSection } from './skills.ts'
 import type { ChatStore, StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
@@ -92,7 +93,14 @@ export class ChatSession {
   private streamTimer: NodeJS.Timeout | undefined
   private readonly toolUpdates = new Map<string, number>()
   private messageStarted = 0
-  private run: { started: number; requests: number; usage: UsageSummary; aborted: boolean; overflowRetried: boolean } | undefined
+  /** Start times of thinking blocks still streaming, and durations of finished ones, by content index of the current reply. */
+  private readonly thinkingStarted = new Map<number, number>()
+  private thinkingMs: Record<number, number> = {}
+  /** `from` is the index of the run's first entry; `retries` counts automatic retries of failed requests. */
+  private run: { started: number; from: number; requests: number; usage: UsageSummary; aborted: boolean; overflowRetried: boolean; retries: number } | undefined
+  /** The automatic retry the run waits for, and the way to end the wait (`true` retries now, `false` gives up). */
+  private retryWait: RetryWait | undefined
+  private retryWake: ((go: boolean) => void) | undefined
   private touched: string[] = []
   /** Tool calls waiting for the user, with the callback that ends each wait. */
   private readonly approvals = new Map<string, { approval: PendingApproval; settle: (answer: ApprovalAnswer) => void }>()
@@ -150,6 +158,7 @@ export class ChatSession {
       runningTools: [...this.runningTools.keys()],
       permission: this.permission(),
       approvals: this.pendingApprovals(),
+      ...(this.retryWait === undefined ? {} : { retry: this.retryWait }),
       ...(this.error === undefined ? {} : { error: this.error }),
     }
   }
@@ -213,7 +222,22 @@ export class ChatSession {
     this.pending.clear()
     if (this.run !== undefined) this.run.aborted = true
     this.agent?.abort()
+    this.retryWake?.(false)
     this.publishState()
+  }
+
+  /**
+   * Ask for the model's answer again after a request failed or was stopped, from the chat as it stands. While an
+   * automatic retry is waiting, retry now instead.
+   */
+  async retry(): Promise<void> {
+    if (this.retryWake !== undefined) { this.retryWake(true); return }
+    if (this.running) throw new RpcError('busy', localized({ zh: '请等待当前任务结束后再重试。', en: 'Wait for the current task to finish before retrying.' }))
+    const history = buildContext(this.entries)
+    if (history.length === 0 || history.at(-1)!.message.role === 'assistant') {
+      throw new RpcError('invalid', localized({ zh: '没有需要重试的请求。', en: 'There is no request to retry.' }))
+    }
+    await this.startRun([])
   }
 
   /**
@@ -425,7 +449,7 @@ export class ChatSession {
     const resolved = this.resolved()
     if (resolved === undefined) throw new RpcError('no-model', localized({ zh: '请先在 设置 → 模型 中配置模型。', en: 'Configure a model in Settings → Models first.' }))
     if (this.chat.title === '') {
-      const first = this.meta.get(prompts[0]!)
+      const first = prompts[0] === undefined ? undefined : this.meta.get(prompts[0])
       this.chat = await this.services.store.setDefaultTitle(this.chat.id, fallbackTitle(first?.kind === 'user' ? first.text : ''))
     }
     const injections = await this.firstRequestContext(resolved)
@@ -435,7 +459,10 @@ export class ChatSession {
     const declarations = tools.map(tool => toToolDeclaration(tool))
     const initial = createInitialSystemMessage(system, declarations)
     const history = buildContext(this.entries).map(item => item.message)
-    this.run = { started: Date.now(), requests: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, aborted: false, overflowRetried: false }
+    this.run = {
+      started: Date.now(), from: this.entries.length, requests: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, aborted: false,
+      overflowRetried: false, retries: 0,
+    }
     this.error = undefined
     this.setStatus('running')
     this.services.memory.interrupt()
@@ -494,7 +521,8 @@ export class ChatSession {
     this.agent = agent
     agent.subscribe(event => this.onEvent(event))
     const all = [...prompts, ...injections]
-    this.runPromise = agent.prompt(all)
+    // Without new messages (a retry) the agent answers the history it was given.
+    this.runPromise = (all.length === 0 ? agent.continue() : agent.prompt(all))
       .catch((error: unknown) => {
         this.error = error instanceof Error ? error.message : String(error)
         this.services.log(`[chat ${this.chat.id}] run failed: ${this.error}`)
@@ -512,14 +540,21 @@ export class ChatSession {
       const entry = await this.compact(resolved, 'overflow', undefined).catch(() => undefined)
       if (entry !== undefined && this.agent !== undefined) {
         await this.append({ id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', text: localized({ zh: '上下文超出模型窗口，已自动压缩并重试。', en: 'The context exceeded the model window, so the chat was compacted and the request retried.' }), code: 'overflow-retry' })
-        const history = buildContext(this.entries).map(item => item.message)
-        const tools = this.tools()
-        const initial = createInitialSystemMessage(await this.systemPrompt(tools), tools.map(tool => toToolDeclaration(tool)))
-        this.agent.state.tools = tools
-        this.agent.state.messages = [...(initial === undefined ? [] : [initial]), ...history]
-        if (history.at(-1)?.role !== 'assistant') {
-          try { await this.agent.continue() } catch (error) { this.error = error instanceof Error ? error.message : String(error) }
-          return this.finishRun(resolved)
+        if (await this.resume()) return this.finishRun(resolved)
+      }
+    }
+    if (run !== undefined && !run.aborted && run.retries < AUTO_RETRIES && last !== undefined && this.entries.lastIndexOf(last) >= run.from
+      && this.agent !== undefined && isPassingFailure(last.message)) {
+      const reason = last.message.errorMessage ?? ''
+      const wait = retryDelay(run.retries + 1, reason)
+      if (wait !== undefined) {
+        run.retries++
+        if (await this.waitToRetry({ attempt: run.retries, max: AUTO_RETRIES, at: Date.now() + wait, reason }) && !run.aborted) {
+          await this.append({
+            id: randomUUID(), kind: 'notice', ts: Date.now(), level: 'info', code: 'auto-retry',
+            text: localized({ zh: `请求失败，已自动重试（第 ${run.retries} 次）。`, en: `The request failed, so it was retried automatically (attempt ${run.retries}).` }),
+          })
+          if (await this.resume()) return this.finishRun(resolved)
         }
       }
     }
@@ -552,16 +587,59 @@ export class ChatSession {
     }
   }
 
+  /**
+   * Ask the model again in the run's agent, from the transcript as it stands.
+   * @returns Whether a request was made: not when the history already ends with a reply.
+   */
+  private async resume(): Promise<boolean> {
+    const agent = this.agent
+    if (agent === undefined) return false
+    const history = buildContext(this.entries).map(item => item.message)
+    if (history.at(-1)?.role === 'assistant') return false
+    const tools = this.tools()
+    const initial = createInitialSystemMessage(await this.systemPrompt(tools), tools.map(tool => toToolDeclaration(tool)))
+    agent.state.tools = tools
+    agent.state.messages = [...(initial === undefined ? [] : [initial]), ...history]
+    try { await agent.continue() } catch (error) { this.error = error instanceof Error ? error.message : String(error) }
+    return true
+  }
+
+  /**
+   * Wait for an automatic retry while the renderer shows a countdown.
+   * @param wait The retry.
+   * @returns `true` to retry (time is up, or {@link retry} asked for it now), `false` when the run was stopped.
+   */
+  private waitToRetry(wait: RetryWait): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const done = (go: boolean): void => {
+        clearTimeout(timer)
+        this.retryWake = undefined
+        this.retryWait = undefined
+        this.publishState()
+        resolve(go)
+      }
+      const timer = setTimeout(() => { done(true) }, Math.max(0, wait.at - Date.now()))
+      this.retryWake = done
+      this.retryWait = wait
+      this.publishState()
+    })
+  }
+
   private async onEvent(event: AgentEvent): Promise<void> {
     switch (event.type) {
       case 'message_start':
         if (event.message.role === 'assistant') {
           this.messageStarted = Date.now()
+          this.thinkingStarted.clear()
+          this.thinkingMs = {}
           this.services.modelBusy()
         }
         return
       case 'message_update':
         if (event.message.role === 'assistant') {
+          const update = event.assistantMessageEvent
+          if (update.type === 'thinking_start') this.thinkingStarted.set(update.contentIndex, Date.now())
+          else if (update.type === 'thinking_end') this.endThinking(update.contentIndex)
           this.streaming = event.message as AssistantMessage
           if (this.streamTimer === undefined) {
             this.streamTimer = setTimeout(() => {
@@ -625,7 +703,14 @@ export class ChatSession {
         this.context = { ...this.context, tokens: actual + message.usage.output, kind: 'exact' }
         this.publishState()
       }
-      await this.append({ id: randomUUID(), kind: 'assistant', ts: message.timestamp, message, durationMs: Date.now() - this.messageStarted })
+      // A reply that failed or was stopped while thinking never announces the end of that block.
+      for (const index of [...this.thinkingStarted.keys()]) this.endThinking(index)
+      const thinkingMs = this.thinkingMs
+      this.thinkingMs = {}
+      await this.append({
+        id: randomUUID(), kind: 'assistant', ts: message.timestamp, message, durationMs: Date.now() - this.messageStarted,
+        ...(Object.keys(thinkingMs).length === 0 ? {} : { thinkingMs }),
+      })
       return
     }
     if (message.role === 'toolResult') {
@@ -641,6 +726,13 @@ export class ChatSession {
       })
       if ((message.toolName === 'write' || message.toolName === 'edit') && !message.isError) this.services.rpc.emit('session.changes', { sessionId: this.chat.id })
     }
+  }
+
+  private endThinking(index: number): void {
+    const started = this.thinkingStarted.get(index)
+    if (started === undefined) return
+    this.thinkingStarted.delete(index)
+    this.thinkingMs[index] = Date.now() - started
   }
 
   // ── context and tools ──
@@ -888,6 +980,7 @@ export class ChatSession {
     this.services.rpc.emit('session.state', {
       sessionId: this.chat.id, status: this.status, queue: this.queue, model: this.selection(), context: this.context,
       permission: this.permission(), approvals: this.pendingApprovals(),
+      ...(this.retryWait === undefined ? {} : { retry: this.retryWait }),
       ...(this.error === undefined ? {} : { error: this.error }),
     })
   }
