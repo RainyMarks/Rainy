@@ -1,6 +1,6 @@
 /**
  * Outbound HTTP for model services and MCP servers: direct, or through the proxy the user or the
- * system chose. Commands and terminals are not affected; CTF targets often sit on networks a proxy cannot reach.
+ * system chose. Commands and terminals are not affected; the hosts they reach often sit on networks a proxy cannot reach.
  */
 import { isIP } from 'node:net'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'

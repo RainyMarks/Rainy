@@ -150,7 +150,7 @@ const ALLOWED_TAGS = new Set(['A', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DIV', 'EM',
 
 /**
  * Strip markup a language server's documentation must not carry. Hover text comes from project source comments,
- * which are untrusted in CTF challenge code, and the page has privileged desktop bridges.
+ * which are untrusted in a cloned repository, and the page has privileged desktop bridges.
  * @param html Rendered documentation.
  * @returns HTML with only formatting elements, `class` on code spans and `http(s)` links.
  */
