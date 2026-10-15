@@ -1,10 +1,10 @@
-/** Hex view of a file of any size: virtual rows over range reads, selection, offsets, inspector, copy formats and a binwalk-style scan. */
+/** Hex view of a file of any size: virtual rows over range reads, selection, offsets, inspector and copy formats. */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
 import { ByteSource, FileChangedError } from './byte-source.ts'
 import { asciiByte, formatBytes, formatOffset, hexByte, HEX_ROW_BYTES, inspectBytes, parseOffset, type CopyFormat } from './hex-format.ts'
 import { useViewerT } from './messages.ts'
-import { detectSignature, EMBEDDED_OVERLAP, pngEnd, scanChunk, type FileSignature } from './signature.ts'
+import { detectSignature, type FileSignature } from './signature.ts'
 import { TEXT_ENCODINGS } from './viewer-choice.ts'
 import css from './Viewers.module.css'
 
@@ -12,7 +12,6 @@ const ROW_HEIGHT = 20
 /** Browsers cap element heights near 33 million pixels; taller files scroll through a scaled spacer. */
 const MAX_SPACER = 8_000_000
 const MAX_COPY = 1024 * 1024
-const MAX_SCAN_RESULTS = 500
 const COLUMNS = Array.from({ length: HEX_ROW_BYTES }, (_unused, index) => index)
 
 interface Selection { readonly anchor: number; readonly focus: number }
@@ -42,9 +41,6 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
   const [inspected, setInspected] = useState<Uint8Array | undefined>()
   const [littleEndian, setLittleEndian] = useState(true)
   const [signature, setSignature] = useState<FileSignature | null | undefined>()
-  const [trailing, setTrailing] = useState<{ format: string; offset: number } | undefined>()
-  const [scan, setScan] = useState<{ percent: number; results: readonly { offset: number; label: string }[]; done: boolean } | undefined>()
-  const scanning = useRef<AbortController | undefined>(undefined)
   const [error, setError] = useState('')
 
   const fail = (failure: unknown): void => {
@@ -53,20 +49,12 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
   }
 
   useEffect(() => {
-    setSelection(undefined); setSignature(undefined); setTrailing(undefined); setError('')
-    scanning.current?.abort()
-    setScan(undefined)
+    setSelection(undefined); setSignature(undefined); setError('')
     let cancelled = false
-    void source.read(0, 4096).then(async (head) => {
-      if (cancelled) return
-      const detected = detectSignature(head) ?? null
-      setSignature(detected)
-      if (detected?.label === 'PNG image') {
-        const end = await pngEnd((offset, length) => source.read(offset, length), size)
-        if (!cancelled && end !== undefined && end < size) setTrailing({ format: 'PNG', offset: end })
-      }
+    void source.read(0, 4096).then((head) => {
+      if (!cancelled) setSignature(detectSignature(head) ?? null)
     }).catch((failure: unknown) => { if (!cancelled) fail(failure) })
-    return () => { cancelled = true; scanning.current?.abort() }
+    return () => { cancelled = true }
   }, [source])
 
   useEffect(() => {
@@ -166,37 +154,6 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
     scroller.current?.focus()
   }
 
-  const runScan = async (): Promise<void> => {
-    scanning.current?.abort()
-    const controller = new AbortController()
-    scanning.current = controller
-    const results: { offset: number; label: string }[] = []
-    setScan({ percent: 0, results, done: false })
-    try {
-      const response = await fetch(url, { signal: controller.signal, cache: 'no-store' })
-      if (!response.ok || response.body === null) throw new Error(`HTTP ${response.status}`)
-      const reader = response.body.getReader()
-      let carried = new Uint8Array(0)
-      let received = 0
-      for (;;) {
-        const { value, done } = await reader.read()
-        const block = new Uint8Array(carried.length + (value?.length ?? 0))
-        block.set(carried)
-        if (value !== undefined) block.set(value, carried.length)
-        const base = received - carried.length
-        received += value?.length ?? 0
-        for (const match of scanChunk(block, base, done)) if (results.length < MAX_SCAN_RESULTS) results.push(match)
-        carried = done ? new Uint8Array(0) : block.slice(Math.max(0, block.length - EMBEDDED_OVERLAP))
-        if (done) break
-        setScan({ percent: size === 0 ? 100 : Math.floor(received / size * 100), results: [...results], done: false })
-      }
-      setScan({ percent: 100, results: [...results], done: true })
-    } catch (failure) {
-      if (!controller.signal.aborted) fail(failure)
-      setScan(previous => previous === undefined ? undefined : { ...previous, done: true })
-    }
-  }
-
   const rowsView: JSX.Element[] = []
   for (let row = firstRow; row < lastRow; row++) {
     const rowStart = row * HEX_ROW_BYTES
@@ -246,19 +203,12 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
           <option value="base64">{t('hexCopyBase64')}</option>
         </select>
         <span className={css.grow} />
-        {scan !== undefined && !scan.done
-          ? <button type="button" className={css.toolButton} onClick={() => { scanning.current?.abort() }}>{t('hexScanStop')}</button>
-          : <button type="button" className={css.toolButton} title={t('hexScanTitle')} disabled={size === 0} onClick={() => { void runScan() }}>{t('hexScan')}</button>}
         {onOpenText !== undefined && <select aria-label={t('hexOpenText')} title={t('hexOpenTextTitle')} value=""
           onChange={(event) => { if (event.target.value !== '') onOpenText(event.target.value) }}>
           <option value="">{t('hexOpenText')}</option>
           {TEXT_ENCODINGS.map(encoding => <option key={encoding} value={encoding}>{encoding.toUpperCase()}</option>)}
         </select>}
       </div>
-      {trailing !== undefined && <div className={css.notice}>
-        <span>{t('hexTrailing', { format: trailing.format, bytes: size - trailing.offset, offset: trailing.offset.toString(16).toUpperCase() })}</span>
-        <button type="button" className={css.toolButton} onClick={() => { select(trailing.offset, size - 1) }}>{t('hexJump')}</button>
-      </div>}
       {error !== '' && <div className={`${css.notice} ${css.error}`} role="alert">{t('loadFailed', { error })}</div>}
       <div className={css.hex}>
         <div ref={scroller} className={css.hexScroll} tabIndex={0} role="grid" aria-readonly="true"
@@ -283,18 +233,6 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
               <button type="button" className={css.toolButton} aria-pressed={littleEndian} onClick={() => { setLittleEndian(true) }}>{t('hexLittle')}</button>
               <button type="button" className={css.toolButton} aria-pressed={!littleEndian} onClick={() => { setLittleEndian(false) }}>{t('hexBig')}</button>
             </p>
-          </>}
-          {scan !== undefined && <>
-            <h3>{t('hexScan')}</h3>
-            <p>{scan.done ? (scan.results.length === 0 ? t('hexScanNone') : t('hexScanFound', { count: scan.results.length })) : t('hexScanning', { percent: scan.percent })}</p>
-            {scan.results.length >= MAX_SCAN_RESULTS && <p>{t('hexScanLimit', { count: MAX_SCAN_RESULTS })}</p>}
-            <ul className={css.scanList}>{scan.results.map(match => (
-              <li key={`${match.offset}:${match.label}`}>
-                <button type="button" onClick={() => { select(match.offset); scroller.current?.focus() }}>
-                  <code>0x{match.offset.toString(16).toUpperCase()}</code>{match.label}
-                </button>
-              </li>
-            ))}</ul>
           </>}
         </aside>
       </div>

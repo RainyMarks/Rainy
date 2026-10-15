@@ -1,4 +1,4 @@
-/** File types from their leading bytes, in the spirit of `file(1)`, plus a scan for files embedded in other files. */
+/** File types from their leading bytes, in the spirit of `file(1)`. */
 
 /** A recognized format. */
 export interface FileSignature {
@@ -138,83 +138,5 @@ export function detectSignature(head: Uint8Array): FileSignature | undefined {
   if (starts(head, 0, 0xef, 0xbb, 0xbf)) return { label: 'UTF-8 text with BOM', family: 'text' }
   if (starts(head, 0, 0xff, 0xfe)) return { label: 'UTF-16 little-endian text', family: 'text' }
   if (starts(head, 0, 0xfe, 0xff)) return { label: 'UTF-16 big-endian text', family: 'text' }
-  return undefined
-}
-
-/** A magic number searched for anywhere in a file, as binwalk does. */
-export interface EmbeddedSignature {
-  readonly label: string
-  readonly magic: readonly number[]
-  /** Extra check on the bytes starting at the match, to keep false positives down. */
-  readonly confirm?: (bytes: Uint8Array, offset: number) => boolean
-}
-
-/** Formats commonly hidden inside other files in CTF challenges. */
-export const EMBEDDED_SIGNATURES: readonly EmbeddedSignature[] = [
-  { label: 'PNG image', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
-  { label: 'JPEG image', magic: [0xff, 0xd8, 0xff], confirm: (bytes, offset) => [0xe0, 0xe1, 0xe2, 0xdb, 0xee, 0xc0, 0xc4, 0xfe].includes(bytes[offset + 3] ?? 0) },
-  { label: 'GIF image', magic: [0x47, 0x49, 0x46, 0x38], confirm: (bytes, offset) => (bytes[offset + 4] === 0x37 || bytes[offset + 4] === 0x39) && bytes[offset + 5] === 0x61 },
-  { label: 'Zip local file', magic: [0x50, 0x4b, 0x03, 0x04] },
-  { label: 'Zip end of central directory', magic: [0x50, 0x4b, 0x05, 0x06] },
-  { label: 'RAR archive', magic: [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07] },
-  { label: '7-Zip archive', magic: [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c] },
-  { label: 'gzip data', magic: [0x1f, 0x8b, 0x08] },
-  { label: 'bzip2 data', magic: [0x42, 0x5a, 0x68], confirm: (bytes, offset) => (bytes[offset + 3] ?? 0) >= 0x31 && (bytes[offset + 3] ?? 0) <= 0x39 && bytes[offset + 4] === 0x31 && bytes[offset + 5] === 0x41 },
-  { label: 'XZ data', magic: [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00] },
-  { label: 'PDF document', magic: [0x25, 0x50, 0x44, 0x46, 0x2d] },
-  { label: 'ELF binary', magic: [0x7f, 0x45, 0x4c, 0x46], confirm: (bytes, offset) => (bytes[offset + 4] === 1 || bytes[offset + 4] === 2) && (bytes[offset + 5] === 1 || bytes[offset + 5] === 2) },
-  { label: 'WAVE audio', magic: [0x52, 0x49, 0x46, 0x46], confirm: (bytes, offset) => ascii(bytes, offset + 8, 'WAVE') || ascii(bytes, offset + 8, 'WEBP') || ascii(bytes, offset + 8, 'AVI ') },
-  { label: 'SQLite database', magic: [...'SQLite format 3'].map(char => char.charCodeAt(0)) },
-  { label: 'Java class or Mach-O fat binary', magic: [0xca, 0xfe, 0xba, 0xbe] },
-  { label: 'PEM block', magic: [...'-----BEGIN '].map(char => char.charCodeAt(0)) },
-]
-
-/** Bytes at the end of a chunk left for the next one, so a header across the boundary is still matched with its context. */
-export const EMBEDDED_OVERLAP = 32
-
-/** Signatures by their first byte, so a scan does one table lookup per byte. */
-const BY_FIRST_BYTE: readonly (readonly EmbeddedSignature[])[] = Array.from({ length: 256 }, (_unused, byte) =>
-  EMBEDDED_SIGNATURES.filter(signature => signature.magic[0] === byte))
-
-/**
- * Find embedded signatures in one chunk of a sequential scan. Unless the chunk is the last, its final
- * `EMBEDDED_OVERLAP` bytes are not scanned: the caller passes them again at the start of the next chunk.
- * @param bytes Chunk bytes.
- * @param base File offset of `bytes[0]`.
- * @param last Whether the chunk ends the file.
- * @returns Matches in file order.
- */
-export function scanChunk(bytes: Uint8Array, base: number, last: boolean): { offset: number; label: string }[] {
-  const found: { offset: number; label: string }[] = []
-  const limit = last ? bytes.length : bytes.length - EMBEDDED_OVERLAP
-  for (let index = 0; index < limit; index++) {
-    const candidates = BY_FIRST_BYTE[bytes[index]!]!
-    if (candidates.length === 0) continue
-    for (const signature of candidates) {
-      if (index + signature.magic.length > bytes.length) continue
-      if (!starts(bytes, index, ...signature.magic)) continue
-      if (signature.confirm !== undefined && !signature.confirm(bytes, index)) continue
-      found.push({ offset: base + index, label: signature.label })
-    }
-  }
-  return found
-}
-
-/**
- * End of a PNG's IEND chunk, found by walking chunk headers so data appended after the image can be shown.
- * @param read Reads `length` bytes at `offset`.
- * @param size File size.
- * @returns Offset just past IEND, or `undefined` for a malformed stream.
- */
-export async function pngEnd(read: (offset: number, length: number) => Promise<Uint8Array>, size: number): Promise<number | undefined> {
-  let offset = 8
-  for (let chunks = 0; chunks < 100_000 && offset + 12 <= size; chunks++) {
-    const header = await read(offset, 8)
-    const length = u32be(header, 0)
-    const end = offset + 12 + length
-    if (end > size) return undefined
-    if (ascii(header, 4, 'IEND')) return end
-    offset = end
-  }
   return undefined
 }

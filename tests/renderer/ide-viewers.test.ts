@@ -1,8 +1,8 @@
-/** File viewer helpers: format detection, embedded-file scan, hex text forms, viewer choice and byte paging. */
+/** File viewer helpers: format detection, hex text forms, viewer choice and byte paging. */
 import { describe, expect, it } from 'vitest'
 import { ByteSource, CHUNK_BYTES, FileChangedError } from '../../src/renderer/ide/viewers/byte-source.ts'
 import { formatBytes, formatOffset, inspectBytes, parseOffset } from '../../src/renderer/ide/viewers/hex-format.ts'
-import { detectSignature, EMBEDDED_OVERLAP, pngEnd, scanChunk } from '../../src/renderer/ide/viewers/signature.ts'
+import { detectSignature } from '../../src/renderer/ide/viewers/signature.ts'
 import { chooseViewer, defaultView, switchableViews } from '../../src/renderer/ide/viewers/viewer-choice.ts'
 import { ideIsMedia, ideMediaType, idePreviewKind, ideRawUrl } from '../../src/shared/ide-preview.ts'
 
@@ -73,44 +73,6 @@ describe('detectSignature', () => {
     expect(detectSignature(peHeader(0x14c, 0x10b, true, true))?.label).toBe('PE32 DLL, Intel 80386, .NET assembly')
     expect(detectSignature(bytes('MZ', 0, 0))?.label).toBe('MS-DOS executable')
     expect(detectSignature(bytes(0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52))?.label).toBe('Java class file')
-  })
-})
-
-describe('embedded file scan', () => {
-  it('finds headers anywhere, including one split across two chunks', () => {
-    const file = new Uint8Array(200)
-    file.set(bytes(0x89, 'PNG', 0x0d, 0x0a, 0x1a, 0x0a), 10)
-    file.set(bytes('PK', 3, 4), 96)
-    file.set(bytes(0x7f, 'ELF', 2, 1), 150)
-    const found: { offset: number; label: string }[] = []
-    let carried = new Uint8Array(0)
-    let received = 0
-    for (const size of [98, 60, 42]) {
-      const value = file.subarray(received, received + size)
-      const block = new Uint8Array(carried.length + value.length)
-      block.set(carried); block.set(value, carried.length)
-      const base = received - carried.length
-      received += value.length
-      const last = received === file.length
-      found.push(...scanChunk(block, base, last))
-      carried = last ? new Uint8Array(0) : block.slice(Math.max(0, block.length - EMBEDDED_OVERLAP))
-    }
-    expect(found).toEqual([{ offset: 10, label: 'PNG image' }, { offset: 96, label: 'Zip local file' }, { offset: 150, label: 'ELF binary' }])
-  })
-
-  it('walks PNG chunks to the end of IEND, so appended data can be reported', async () => {
-    const chunk = (type: string, length: number): Uint8Array => {
-      const out = new Uint8Array(12 + length)
-      new DataView(out.buffer).setUint32(0, length)
-      out.set([...type].map(char => char.charCodeAt(0)), 4)
-      return out
-    }
-    const parts = [bytes(0x89, 'PNG', 0x0d, 0x0a, 0x1a, 0x0a), chunk('IHDR', 13), chunk('IDAT', 100), chunk('IEND', 0), bytes('flag{appended}')]
-    const file = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0))
-    let offset = 0
-    for (const part of parts) { file.set(part, offset); offset += part.length }
-    const end = await pngEnd(async (start, length) => file.subarray(start, start + length), file.length)
-    expect(end).toBe(file.length - 'flag{appended}'.length)
   })
 })
 

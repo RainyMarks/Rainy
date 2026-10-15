@@ -71,9 +71,4 @@
 .inspector td { padding: 2px 0; vertical-align: top; }
 .inspector td:first-child { color: var(--dsw-alias-label-secondary); padding-right: 8px; white-space: nowrap; }
 .inspector td:last-child { font-family: var(--ds-font-family-code, monospace); overflow-wrap: anywhere; user-select: text; }
-.scanList { list-style: none; margin: 6px 0 0; padding: 0; }
-.scanList li { margin: 0; }
-.scanList button { width: 100%; text-align: left; border: 0; background: transparent; color: inherit; font: inherit; padding: 2px 4px; border-radius: var(--dsw-radius-xs); cursor: pointer; }
-.scanList button:hover { background: var(--dsw-alias-button-ghost-active-fill); }
-.scanList code { color: var(--dsw-alias-label-secondary); margin-right: 6px; }
 @media (max-width: 720px) { .inspector { display: none; } }
