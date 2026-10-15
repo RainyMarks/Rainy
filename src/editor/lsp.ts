@@ -136,8 +136,10 @@ function socketTransport(socket: WebSocket, answer: (method: string, params: unk
   })
   return {
     send(message) {
-      if (socket.readyState !== WebSocket.OPEN) throw new Error('Language service connection closed.')
-      socket.send(message)
+      if (socket.readyState === WebSocket.OPEN) { socket.send(message); return }
+      // A notice queued as the connection closes (a file closing with it) has nowhere to go and nobody to fail to;
+      // a request fails at once.
+      if ((JSON.parse(message) as { id?: unknown }).id !== undefined) throw new Error('Language service connection closed.')
     },
     subscribe(handler) { handlers.add(handler) },
     unsubscribe(handler) { handlers.delete(handler) },

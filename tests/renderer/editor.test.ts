@@ -154,3 +154,41 @@ it('reopens a language connection the Host closed to restart its server, and rep
     vi.unstubAllGlobals()
   }
 })
+
+it('drops the notice of a file closing with its language connection instead of failing', async () => {
+  const sockets: FakeSocket[] = []
+  class FakeSocket extends EventTarget {
+    static readonly OPEN = 1
+    readyState = 0
+    readonly sent: string[] = []
+    constructor(readonly url: string | URL) { super(); sockets.push(this) }
+    send(message: string): void { this.sent.push(message) }
+    close(): void { this.readyState = 3 }
+  }
+  vi.stubGlobal('WebSocket', FakeSocket)
+  const rejections: unknown[] = []
+  const rejected = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', rejected)
+  try {
+    const container = document.createElement('div')
+    document.body.append(container)
+    editor = await assets.create(container, callbacks(), labels)
+    await editor.setWorkspace({ id: 'w', path: '/project', title: 'project', roots: [{ rootId: 'primary', path: '/project', title: 'project' }] })
+    editor.updateDocuments([{ ...document1, uri: 'file:///project/main.py' }])
+    const socket = sockets[0]!
+    socket.readyState = 1
+    socket.dispatchEvent(new Event('open'))
+    const initialize = JSON.parse(socket.sent[0]!) as { id: number; method: string }
+    expect(initialize.method).toBe('initialize')
+    socket.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify({ jsonrpc: '2.0', id: initialize.id, result: { capabilities: { textDocumentSync: 1 } } }) }))
+    await vi.waitFor(() => { expect(socket.sent.some(message => message.includes('"textDocument/didOpen"'))).toBe(true) })
+    // Another project: the editor closes the connection while the file's close notice is still on its way.
+    await editor.setWorkspace({ id: 'w2', path: '/other', title: 'other', roots: [{ rootId: 'primary', path: '/other', title: 'other' }] })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(socket.readyState).toBe(3)
+    expect(rejections).toEqual([])
+  } finally {
+    process.off('unhandledRejection', rejected)
+    vi.unstubAllGlobals()
+  }
+})
