@@ -6,8 +6,15 @@ import { brandString } from '../../src/shared/brand.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import type { TranscriptEntry } from '../../src/shared/rpc.ts'
 import { SHARED_CACHE_WINDOW_MS } from '../../src/host/agent/compaction.ts'
+import { fallbackTitle } from '../../src/host/agent/session.ts'
 import { Settings } from '../../src/host/settings.ts'
 import { FakeAnthropic, FakeOpenAI, harness, idle, tempHost, type Harness, type ScriptedReply } from './agent-fixtures.ts'
+
+it('names a chat after the first words of its first message, marking a cut', () => {
+  expect(fallbackTitle('say hello please')).toBe('say hello please')
+  expect(fallbackTitle('Move the XOR into a helper module')).toBe('Move the XOR into a…')
+  expect(fallbackTitle('one two three four five')).toBe('one two three four five')
+})
 
 describe('agent', () => {
   const cleanups: (() => Promise<void>)[] = []

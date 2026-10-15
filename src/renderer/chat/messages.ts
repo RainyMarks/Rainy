@@ -195,7 +195,7 @@ export const { useT: useChatT, t: chatT } = defineMessages({
   heroTitle: 'Rainy',
   heroCredit: 'Develop by RainyMarks',
   heroNoProject: 'Open a folder to chat about a project.',
-  placeholder: 'Describe a task, @ to reference files, / for commands',
+  placeholder: 'Describe a task, @ files, / commands',
   placeholderBusy: 'Enter queues, Ctrl+Enter steers now',
   placeholderBusySteer: 'Enter steers now, Ctrl+Enter queues',
   send: 'Send',

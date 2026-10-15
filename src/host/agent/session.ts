@@ -52,9 +52,12 @@ type ApprovalAnswer = { allow: true } | { allow: false; text: string; stop: bool
  * @returns The title, or `新对话` when nothing is left.
  */
 export function fallbackTitle(text: string): string {
-  const words = text.replace(REFERENCE_PATTERN, '@$1').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().split(/\s+/).filter(Boolean).slice(0, 5).join(' ')
+  const all = text.replace(REFERENCE_PATTERN, '@$1').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const words = all.slice(0, 5).join(' ')
   const bytes = Buffer.from(words, 'utf8')
-  if (bytes.length <= 40) return words || localized({ zh: '新对话', en: 'New chat' })
+  if (words === '') return localized({ zh: '新对话', en: 'New chat' })
+  // A title cut short says so.
+  if (bytes.length <= 40) return all.length > 5 ? `${words}…` : words
   let end = 40
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--
   return `${bytes.subarray(0, end).toString('utf8')}…`

@@ -8,6 +8,7 @@ import type { IdeWorkspace } from '../../shared/ide-files-protocol.ts'
 import { mapView, nodeForPath, parentOf, type MapNode, type MapView } from '../../shared/map-graph.ts'
 import type { MapFileKind, ProjectMap } from '../../shared/map-protocol.ts'
 import type { ChatChange } from '../../shared/rpc.ts'
+import { useLocale } from '../i18n.ts'
 import { keyFromAbsolute } from '../ide/ide-paths.ts'
 import { Button, IconAction, IconRefreshOutlineRegular, IconSparkleRegular, SegmentedControl, toast } from '../ui/index.ts'
 import type { AiActivity } from './activity.ts'
@@ -438,6 +439,7 @@ function ActivityFeed({ workspace, activity, changes, now, onOpenFile, t }: {
  */
 export function ProjectMapView({ workspace, visible, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
   const t = useMapT()
+  const locale = useLocale()
   const state = useProjectMap(workspace?.workspaceId ?? null, visible)
   const [mode, setMode] = useState<'architecture' | 'files'>('architecture')
   const [scope, setScope] = useState('')
@@ -538,7 +540,7 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
         )}
         {explanation !== undefined
           ? <p className={css.summary} data-map-summary><span>{explanation.summary}</span>
-            <span className={css.muted}> · {t('mapExplainedBy', { model: explanation.model, time: new Date(explanation.generatedAt).toLocaleString() })}</span></p>
+            <span className={css.muted}> · {t('mapExplainedBy', { model: explanation.model, time: new Date(explanation.generatedAt).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US') })}</span></p>
           : <p className={clsx(css.summary, css.muted)}>{t('mapExplainHint')}</p>}
       </header>
       <div className={css.body}>
