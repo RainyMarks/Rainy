@@ -5,7 +5,7 @@ import { toolPackStat } from './toolpack-files.ts'
 
 /** Names below the resource directory; installer updates overwrite files but never delete these. */
 export const RETIRED_RESOURCES = ['strata-runtime', 'php', 'linux-runtime.tar.gz', 'native-tools-metadata.json',
-  'native-tools-download.json', 'native-tools-catalog.json', 'native-tools-channel.signed.json', 'native-tools-public-keys.json', 'icesky'] as const
+  'native-tools-download.json', 'native-tools-catalog.json', 'native-tools-channel.signed.json', 'native-tools-public-keys.json'] as const
 
 /**
  * Delete retired resources left by an earlier version; missing entries are skipped.

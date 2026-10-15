@@ -1,5 +1,5 @@
 /**
- * Outbound HTTP for model services, MCP servers and the IceSky relay: direct, or through the proxy the user or the
+ * Outbound HTTP for model services and MCP servers: direct, or through the proxy the user or the
  * system chose. Commands and terminals are not affected; CTF targets often sit on networks a proxy cannot reach.
  */
 import { isIP } from 'node:net'
@@ -184,7 +184,7 @@ export class Network {
   }
 
   /**
-   * `fetch` for model services, MCP servers and the IceSky relay.
+   * `fetch` for model services and MCP servers.
    * @param input Request URL or object.
    * @param init Request options.
    * @returns The response.

@@ -67,7 +67,7 @@ export interface ModelsStatus {
   globalPrompt: { text: string; maxChars: number }
 }
 
-/** How requests to model services, MCP servers and the IceSky relay reach the network. */
+/** How requests to model services and MCP servers reach the network. */
 export interface ProxySettings {
   /** `system`: the system proxy (Windows settings, or HTTPS_PROXY inside WSL); `off`: direct; `manual`: `url`. */
   mode: 'system' | 'off' | 'manual'

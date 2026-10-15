@@ -77,13 +77,11 @@ try:
   response = http.open(ready['url'], timeout=20)
   assert response.status == 200
   origin = urllib.parse.urlsplit(ready['url'])
-  ice = http.open(origin.scheme+'://'+origin.netloc+'/rainy/icesky/index.html?embed=rainy', timeout=20)
-  assert ice.status == 200
-  html = ice.read().decode('utf8')
-  assert 'AI 安全工具箱' in html
+  pdf = http.open(origin.scheme+'://'+origin.netloc+'/rainy/pdfjs/pdf.min.js', timeout=20)
+  assert pdf.status == 200
   interfaces = sorted(name for _, name in socket.if_nameindex())
   assert interfaces == ['lo'], interfaces
-  print(json.dumps({'status':'passed','user':subprocess.check_output(['id','-un'],text=True).strip(),'interfaces':interfaces, 'hostReady':True,'mainHTTP':response.status,'iceSkyHTTP':ice.status,'node':subprocess.check_output([node,'--version'],text=True).strip()}))
+  print(json.dumps({'status':'passed','user':subprocess.check_output(['id','-un'],text=True).strip(),'interfaces':interfaces, 'hostReady':True,'mainHTTP':response.status,'pdfjsHTTP':pdf.status,'node':subprocess.check_output([node,'--version'],text=True).strip()}))
 finally:
   selector.close()
   if process.poll() is None:

@@ -19,7 +19,7 @@
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
-    "test:node": "node --test tests/scripts/*.test.mjs tests/icesky/*.test.mjs",
+    "test:node": "node --test tests/scripts/*.test.mjs",
     "package": "node scripts/prepare-shell.mjs && electron-builder --config electron-builder.config.cjs --win nsis"
   },
   "dependencies": {

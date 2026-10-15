@@ -36,8 +36,6 @@ async function main(): Promise<void> {
   if (release) await node('scripts/release-signing-key.mjs')
   const releaseKeys: unknown = release ? JSON.parse(await readFile(resolve(root, 'runtime/release-public-keys.json'), 'utf8')) : null
 
-  await node('scripts/prepare-icesky-vendor.mjs', '--verify')
-  await node('scripts/icesky-manifest.mjs')
   // Release inputs are restored by bootstrap-release-inputs.mjs; a development checkout may not have them.
   for (const [directory, script] of [['resources/ide', 'scripts/verify-ide-resources.mjs'], ['resources/strata-runtime', 'scripts/verify-strata-runtime.mjs']] as const) {
     if (release || existsSync(resolve(root, directory))) await node(script)

@@ -12,7 +12,7 @@ import { createAgent } from './agent/index.ts'
 import { ControlInput, sendControl } from './control.ts'
 import { credentialSeal, type CredentialSeal } from './credentials.ts'
 import { readHostEnvironment } from './env.ts'
-import { installIceSky } from './icesky/index.ts'
+import { installPdfJs } from './pdfjs.ts'
 import { createIde } from './ide/index.ts'
 import { Network, type SystemProxyResolver } from './network.ts'
 import { Projects, roots } from './projects.ts'
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   const runtime = await createRuntime({ env, projects, registry, activity, log })
   const ide = await createIde({ env, config, projects, runtime, server, activity, log, hint: (workspaceId, kind) => { rpc.emit('ide.hint', { workspaceId, kind }) } })
   const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, network, log })
-  await installIceSky({ env, server, log, fetch: network.fetch })
+  installPdfJs(server, env.resources)
 
   rpc.register('app.info', () => ({
     name: 'Rainy' as const, version: env.version, environment: env.platform === 'win32' ? 'Windows' as const : 'WSL' as const,

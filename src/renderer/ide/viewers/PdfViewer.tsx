@@ -1,4 +1,4 @@
-/** PDF viewer on the pdf.js build that ships with IceSky: pages render on demand, and their text can be extracted. */
+/** PDF viewer on the bundled pdf.js 2.16 build (`resources/pdfjs`): pages render on demand, and their text can be extracted. */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
@@ -17,14 +17,14 @@ interface PdfJs {
   getDocument(options: Record<string, unknown>): { promise: Promise<PdfDocument>; destroy(): Promise<void> }
 }
 
-const PDFJS_ROOT = '/rainy/icesky/js/vendor/pdfjs/'
+const PDFJS_ROOT = '/rainy/pdfjs/'
 /** pdf.js measures pages in points; 100% shows a page at its printed size on a 96 dpi screen. */
 const PDF_TO_CSS = 96 / 72
 /** Automatic zoom fits the page width but stops here, as in pdf.js. */
 const MAX_AUTO_ZOOM = 1.25
 let loading: Promise<PdfJs> | undefined
 
-/** @returns pdf.js, loaded once from the IceSky resources the Host serves. */
+/** @returns pdf.js, loaded once from the resources the Host serves. */
 function loadPdfJs(): Promise<PdfJs> {
   loading ??= new Promise<PdfJs>((resolve, reject) => {
     const global = globalThis as { pdfjsLib?: PdfJs }

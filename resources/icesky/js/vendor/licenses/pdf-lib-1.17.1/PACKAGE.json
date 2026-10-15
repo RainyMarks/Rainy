@@ -1,7 +1,0 @@
-{
-  "name": "pdf-lib",
-  "version": "1.17.1",
-  "license": "MIT",
-  "repository": "git+https://github.com/Hopding/pdf-lib.git",
-  "integrity": "sha512-V/mpyJAoTsN4cnP31vc0wfNA1+p20evqqnap0KLoRUN0Yk/p3wN52DOEsL4oBFcLdb76hlpKPtzJIgo67j/XLw=="
-}
