@@ -14,15 +14,6 @@ const CALL_TIMEOUT_MS = 60_000
 /** Wait for a server to start and list its tools. */
 const CONNECT_TIMEOUT_MS = 60_000
 
-/** The official IDA MCP server, launched through `uvx` from the desktop. */
-export function idaServer(uvx: string): McpServerConfig {
-  return {
-    name: 'ida', enabled: true, transport: 'stdio', command: uvx,
-    args: ['--offline', '--from', 'ida-mcp==20260924.0.3', 'ida-mcp', 'stdio', '--agent=rainy-agent'],
-    tools: ['open_database', 'execute_python', 'reference', 'list_databases', 'save_database', 'close_database'],
-  }
-}
-
 /**
  * Model-facing name of an MCP tool.
  * @param server Server name.

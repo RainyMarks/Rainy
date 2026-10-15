@@ -47,7 +47,6 @@ export interface HostOptions {
   node: string
   environment?: Readonly<Record<string, string>>
   configureDeepSeek?: boolean
-  idaMcpCommand?: string
   onDiagnostic?: (text: string) => void
   onExit?: (code: number | null) => void
   /** Answers the Host's question which proxy the system uses for an `http(s)` URL: `http(s)://host:port` or `null`. */
@@ -73,8 +72,7 @@ export function parseReady(value: unknown): HostReady {
 
 function environment(options: HostOptions): Record<string, string> {
   return {
-    ...(options.configureDeepSeek ? { RAINY_CONFIGURE_DEEPSEEK: '1' } : {}),
-    ...(options.idaMcpCommand ? { RAINY_IDA_MCP_COMMAND: options.idaMcpCommand } : {}), ...options.environment }
+    ...(options.configureDeepSeek ? { RAINY_CONFIGURE_DEEPSEEK: '1' } : {}), ...options.environment }
 }
 
 /** Preserve the startup owner's failure when cancellation interrupts an owned operation. */

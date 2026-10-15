@@ -27,7 +27,6 @@ function extensions(change: Partial<ExtensionsStatus> = {}): ExtensionsStatus {
     servers: [files],
     status: [{ name: 'files', state: 'ready', tools: [
       { name: 'read_file', description: 'Read a file', enabled: true }, { name: 'write_file', description: 'Write a file', enabled: false }] }],
-    idaAvailable: false,
     ...change,
   }
 }
@@ -174,21 +173,6 @@ it('keeps a server switched off while its form was open switched off when the fo
   await waitFor(() => { expect(calls('extensions.saveServer')).toHaveLength(2) })
   expect(calls('extensions.saveServer')[1]).toEqual({ previousName: 'files', server: { ...files, enabled: false, args: ['-y', '@mcp/files', '--verbose'] } })
   await waitFor(() => { expect(button('启用 files').getAttribute('aria-checked')).toBe('false') })
-})
-
-it('adds the IDA server when the desktop found its launcher', async () => {
-  status = extensions({ idaAvailable: true })
-  handle('extensions.addIda', () => {
-    status = { ...status, servers: [...status.servers, { name: 'ida', enabled: true, transport: 'stdio', command: 'uvx', tools: [] }] }
-    return status
-  })
-  await render(<ExtensionsSection workspace={workspace} />)
-  await waitFor(() => { expect(findButton(zh.mcpAddIda)).toBeDefined() })
-  await click(button(zh.mcpAddIda))
-  await waitFor(() => { expect(row('ida')).not.toBeNull() })
-  expect(calls('extensions.addIda')).toHaveLength(1)
-  expect(toast).toHaveBeenCalledWith(zh.mcpIdaAdded, { tone: 'success' })
-  expect(findButton(zh.mcpAddIda)).toBeUndefined()
 })
 
 it('follows extensions.changed while keeping the skills read for this project, and stops listening on unmount', async () => {

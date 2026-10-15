@@ -147,8 +147,6 @@ export interface ExtensionsStatus {
   skills: SkillSummary[]
   servers: McpServerConfig[]
   status: McpServerStatus[]
-  /** Path of the IDA MCP launcher (`uvx`) when the desktop found one. */
-  idaAvailable: boolean
 }
 
 // ───────────────────────────── Chats ─────────────────────────────
@@ -236,7 +234,7 @@ export type ApprovalDecision = 'allow' | 'always' | 'deny'
 export interface PermissionRules {
   /** Command prefixes such as `python3` or `git status`; they match simple commands only. */
   commands: string[]
-  /** MCP tool names such as `mcp__ida__decompile`. */
+  /** MCP tool names such as `mcp__files__read_file`. */
   tools: string[]
 }
 
@@ -503,7 +501,6 @@ export interface HostMethods {
   'extensions.status': [{ cwd?: string | undefined }, ExtensionsStatus]
   'extensions.saveServer': [{ server: McpServerConfig; previousName?: string | undefined }, ExtensionsStatus]
   'extensions.removeServer': [{ name: string }, ExtensionsStatus]
-  'extensions.addIda': [void, ExtensionsStatus]
 
   'memory.status': [{ workspaceId: WorkspaceId }, ProjectMemoryStatus]
   'memory.setEnabled': [{ workspaceId: WorkspaceId; enabled?: boolean | undefined; generationEnabled?: boolean | undefined }, ProjectMemoryStatus]

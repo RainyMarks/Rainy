@@ -23,7 +23,7 @@ import { estimateMessages } from './compaction.ts'
 import { completeChats, completeFiles } from './complete.ts'
 import { loadBaseline, renderBaseline } from './instructions.ts'
 import { InlineAssist } from './inline.ts'
-import { idaServer, McpManager } from './mcp.ts'
+import { McpManager } from './mcp.ts'
 import { ProjectMemory } from './memory/index.ts'
 import { DEEPSEEK_FLASH, Models } from './models.ts'
 import { buildSystemPrompt } from './prompt.ts'
@@ -180,7 +180,6 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
       skills: await discoverSkills(cwd),
       servers: settings.get().mcpServers,
       status: mcp.status(),
-      idaAvailable: env.idaMcpCommand !== undefined,
     }
   }
   async function saveServers(change: (servers: McpServerConfig[]) => McpServerConfig[]): Promise<ExtensionsStatus> {
@@ -447,10 +446,6 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     return index < 0 ? [...servers, server] : servers.map((item, position) => position === index ? server : item)
   }))
   rpc.register('extensions.removeServer', ({ name }) => saveServers(servers => servers.filter(item => item.name !== name)))
-  rpc.register('extensions.addIda', () => {
-    if (env.idaMcpCommand === undefined) throw new RpcError('unavailable', localized({ zh: '未找到 uvx，无法启动 IDA MCP。', en: 'uvx was not found, so IDA MCP cannot start.' }))
-    return saveServers(servers => [...servers.filter(item => item.name !== 'ida'), idaServer(env.idaMcpCommand!)])
-  })
 
   // ── project memory ──
   rpc.register('memory.status', ({ workspaceId }) => memory.status(workspaceId))

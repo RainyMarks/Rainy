@@ -126,8 +126,6 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
       <div className={css.row}>
         <h3 className={css.subheading}>{t('mcpTitle')}</h3>
         <div className={css.actions}>
-          {status?.idaAvailable === true && !servers.some(server => server.name === 'ida') && <Button size="sm" variant="outline" disabled={busy}
-            onClick={() => { run(async () => { merge(await host.call('extensions.addIda')) }, t('mcpIdaAdded')) }}>{t('mcpAddIda')}</Button>}
           <Button size="sm" variant="outline" disabled={busy || status === undefined} onClick={() => { open(emptyServerForm()) }}>{t('mcpAdd')}</Button>
         </div>
       </div>
