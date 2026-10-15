@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { ApprovalDecision, PendingApproval } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
-import { Button, toast } from '../ui/index.ts'
+import { Button, isComposingKey, toast } from '../ui/index.ts'
 import { useChatT } from './messages.ts'
 import css from './ToolCard.module.css'
 
@@ -55,7 +55,7 @@ export function ApprovalBar({ sessionId, approval }: { sessionId: string; approv
       </div>
       <input className={css.approvalReason} value={reason} placeholder={t('approvalReason')} aria-label={t('approvalReason')} disabled={busy}
         onChange={(event) => { setReason(event.target.value) }}
-        onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && reason.trim() !== '') { event.preventDefault(); answer('deny') } }} />
+        onKeyDown={(event) => { if (event.key === 'Enter' && !isComposingKey(event.nativeEvent) && reason.trim() !== '') { event.preventDefault(); answer('deny') } }} />
     </div>
   )
 }

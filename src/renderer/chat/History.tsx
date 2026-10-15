@@ -5,7 +5,7 @@ import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import type { SessionSearchHit, SessionSummary } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
 import {
-  Button, IconEllipsisOutlineRegular, IconNewChatOutlineRegular, IconPinFillRegular, IconSearchOutlineRegular, Input, Menu, Modal, StateDot,
+  Button, IconEllipsisOutlineRegular, IconNewChatOutlineRegular, IconPinFillRegular, IconSearchOutlineRegular, Input, isComposingKey, Menu, Modal, StateDot,
   toast, type MenuEntry,
 } from '../ui/index.ts'
 import { useSummaries } from './chat-store.ts'
@@ -108,6 +108,7 @@ function Row({ chat, current, workspaceId, onSelect, onDelete }: {
       {renaming ? (
         <input className={css.rename} value={draft} autoFocus aria-label={t('rename')} onChange={(event) => { setDraft(event.target.value) }}
           onBlur={commit} onKeyDown={(event) => {
+            if (isComposingKey(event.nativeEvent)) return
             if (event.key === 'Enter') { event.preventDefault(); commit() }
             if (event.key === 'Escape') { event.preventDefault(); setRenaming(false) }
           }} />

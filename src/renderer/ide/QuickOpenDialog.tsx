@@ -1,6 +1,6 @@
 /** Workspace filename search; a later query supersedes an earlier one. */
 import { useEffect, useRef, useState } from 'react'
-import { IconCloseOutlineRegular, IconLoadingOutlineRegular, IconSearchOutlineRegular, Modal } from '../ui/index.ts'
+import { IconCloseOutlineRegular, IconLoadingOutlineRegular, IconSearchOutlineRegular, isComposingKey, Modal } from '../ui/index.ts'
 import type { IdeModel, IdeState } from './ide-model.ts'
 import { fileLabel } from './ide-paths.ts'
 import { useIdeT } from './messages.ts'
@@ -72,7 +72,7 @@ function OpenQuickOpenDialog({ model, state }: Props) {
           if (event.target.value === query) return
           setQuery(event.target.value); setResult(undefined); setOpenError(''); setSelected(0)
         }} onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return
+          if (isComposingKey(event.nativeEvent)) return
           if (event.key === 'ArrowDown') { event.preventDefault(); setSelected(Math.max(0, Math.min(paths.length - 1, selected + 1))) }
           else if (event.key === 'ArrowUp') { event.preventDefault(); setSelected(Math.max(0, selected - 1)) }
           else if (event.key === 'Enter') {

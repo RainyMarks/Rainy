@@ -5,6 +5,7 @@ import type { Accent, ColorScheme } from '../../shared/appearance.ts'
 import type { UiPreferences } from '../../shared/rpc.ts'
 import { setPrefs, usePrefs } from '../prefs.ts'
 import { Button } from '../ui/Button.tsx'
+import { isComposingKey } from '../ui/keyboard-composition.ts'
 import { toast } from '../ui/toasts.tsx'
 import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from '../ui/icons/index.tsx'
 import { CODE_FONT_CANDIDATES, FONT_NAMES_ZH, UI_FONT_CANDIDATES, fontInstalled, installedFonts } from './fonts.ts'
@@ -170,7 +171,7 @@ function FontSetting({ field, candidates, labels }: {
       <div className={css.customFontEntry}>
         <input className={css.input} value={draft} aria-label={t(labels.custom)} placeholder={t('fontCustomPlaceholder')}
           spellCheck={false} onChange={(event) => { setDraft(event.target.value); setError('') }}
-          onKeyDown={(event) => { if (event.key === 'Enter') apply() }} />
+          onKeyDown={(event) => { if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) apply() }} />
         <Button variant="outline" size="sm" onClick={apply}>{t('fontCustomApply')}</Button>
       </div>
       {error !== '' ? <p className={css.errorText}>{error}</p>

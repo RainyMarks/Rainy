@@ -74,6 +74,11 @@ it('renames, pins and deletes through the row menu', async () => {
   await click(all<HTMLButtonElement>('[role=menuitem]').find(item => item.textContent === '重命名')!)
   const field = control<HTMLInputElement>('重命名')
   await type(field, '新名字')
+  // Enter and Escape that pick or drop an input-method candidate leave the field open.
+  field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true }))
+  field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }))
+  await flush()
+  expect(calls('sessions.rename')).toEqual([])
   field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
   await flush()
   expect(calls('sessions.rename')).toEqual([{ sessionId: '本项目', title: '新名字' }])

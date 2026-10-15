@@ -1,6 +1,6 @@
 /** Generic confirm, text-input and unsaved-changes dialog. */
 import { useEffect, useState } from 'react'
-import { Button, Modal } from '../ui/index.ts'
+import { Button, isComposingKey, Modal } from '../ui/index.ts'
 import { useIdeT } from '../ide/messages.ts'
 import css from './App.module.css'
 
@@ -52,7 +52,7 @@ export function PromptDialog({ prompt, close }: { prompt: PendingPrompt | undefi
           {prompt.label ?? t('idePath')}
           <input className={css.input} data-modal-autofocus value={value}
             onChange={(event) => { setValue(event.target.value) }}
-            onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) close(value) }} />
+            onKeyDown={(event) => { if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) close(value) }} />
         </label>
       )}
     </Modal>

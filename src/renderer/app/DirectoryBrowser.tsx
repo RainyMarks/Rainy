@@ -7,7 +7,7 @@ import clsx from 'clsx'
 import type { IdeDirectoryListing } from '../../shared/ide-files-protocol.ts'
 import {
   Button, IconCheckOutlineRegular, IconChevronRightOutlineRegular, IconEditOutlineRegular, IconFolderCloseRegular,
-  IconFolderOpenRegular, IconPlusOutlineRegular, Menu, Modal,
+  IconFolderOpenRegular, IconPlusOutlineRegular, isComposingKey, Menu, Modal,
 } from '../ui/index.ts'
 import { callIde } from '../ide/ide-api.ts'
 import { useAppT } from './messages.ts'
@@ -311,7 +311,7 @@ export function DirectoryBrowser({ open, busy, onOpen, onClose, listDirectory = 
             <input className={css.pathInput} value={pathDraft} aria-label={t('browserEditPath')} data-modal-autofocus autoFocus disabled={inert}
               onChange={(event) => { setPathDraft(event.target.value) }}
               onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing) return
+                if (isComposingKey(event.nativeEvent)) return
                 if (event.key === 'Enter' && pathDraft.trim() !== '') { event.preventDefault(); navigate(pathDraft) }
                 else if (event.key === 'Escape') { event.preventDefault(); setPathDraft(null) }
               }} />
@@ -360,7 +360,7 @@ export function DirectoryBrowser({ open, busy, onOpen, onClose, listDirectory = 
             placeholder={t('browserUntitledFolder')} data-modal-autofocus disabled={creating}
             onChange={(event) => { setFolderDraft(event.target.value) }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); confirmCreate() }
+              if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) { event.preventDefault(); confirmCreate() }
             }} />
           {createError !== null && <div className={css.error} role="alert">{createError}</div>}
           <div className={css.createActions}>

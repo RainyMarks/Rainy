@@ -1,6 +1,17 @@
 /** Composition lifetime for local keyboard handlers, including a late closing keydown. */
 
 /**
+ * Whether a key press belongs to an input method composition (Chinese, Japanese or Korean input), where Enter picks a
+ * candidate and Escape drops it instead of submitting or cancelling.
+ * @param event Native keyboard event (`event.nativeEvent` in React).
+ * @returns Whether the press is the input method's.
+ */
+export function isComposingKey(event: Pick<KeyboardEvent, 'isComposing' | 'keyCode'>): boolean {
+  // oxlint-disable-next-line typescript/no-deprecated -- IME 229 covers engines that report the closing key without isComposing.
+  return event.isComposing || event.keyCode === 229
+}
+
+/**
  * Observe composition until its closing key is released or consumed.
  * @param document - document whose input events belong to the caller.
  * @returns an event guard and a disposer for all listeners.

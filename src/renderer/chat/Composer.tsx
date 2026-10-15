@@ -9,7 +9,7 @@ import { getPrefs } from '../prefs.ts'
 import { host } from '../rpc.ts'
 import {
   IconCloseOutlineRegular, IconCompactOutlineRegular, IconFolderOpenOutlineRegular, IconNewChatOutlineRegular, IconPaperclipOutlineRegular,
-  IconPaperPlaneOutlineRegular, IconQueueOutlineRegular, IconSparkleRegular, IconStopFillRegular, FileTypeIcon, toast, Tooltip,
+  IconPaperPlaneOutlineRegular, IconQueueOutlineRegular, IconSparkleRegular, IconStopFillRegular, FileTypeIcon, isComposingKey, toast, Tooltip,
 } from '../ui/index.ts'
 import { useChatT } from './messages.ts'
 import { ContextMeter, ModelPicker } from './ModelPicker.tsx'
@@ -244,7 +244,7 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return
+    if (isComposingKey(event.nativeEvent)) return
     if (suggestions.length > 0 && trigger !== undefined) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()

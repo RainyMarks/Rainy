@@ -1,6 +1,6 @@
 /** Hex view of a file of any size: virtual rows over range reads, selection, offsets, inspector, copy formats and a binwalk-style scan. */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
-import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
+import { fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
 import { ByteSource, FileChangedError } from './byte-source.ts'
 import { asciiByte, formatBytes, formatOffset, hexByte, HEX_ROW_BYTES, inspectBytes, parseOffset, type CopyFormat } from './hex-format.ts'
 import { useViewerT } from './messages.ts'
@@ -235,7 +235,7 @@ export function HexViewer({ url, size, onChanged, onOpenText }: {
         <span>· {fileSizeText(size)}</span>
         <span className={css.separator} />
         <input ref={gotoInput} aria-label={t('hexGoto')} placeholder={t('hexGotoPlaceholder')}
-          onKeyDown={(event) => { if (event.key === 'Enter') goto(event.currentTarget.value) }} />
+          onKeyDown={(event) => { if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) goto(event.currentTarget.value) }} />
         <select aria-label={t('hexCopy')} value="" disabled={selection === undefined}
           onChange={(event) => { if (event.target.value !== '') void copy(event.target.value as CopyFormat) }}>
           <option value="">{t('hexCopy')}</option>

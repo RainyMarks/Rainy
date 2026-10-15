@@ -285,6 +285,9 @@ class AiEditSession {
     this.card.append(this.input, this.actions, this.status, this.preview)
     this.dom.append(this.card)
     this.input.addEventListener('keydown', (event) => {
+      // Enter and Escape inside an input method composition pick or drop a candidate; 229 covers engines without isComposing.
+      // oxlint-disable-next-line typescript/no-deprecated -- see above.
+      if (event.isComposing || event.keyCode === 229) { event.stopPropagation(); return }
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); this.accept() }
       else if (event.key === 'Enter') { event.preventDefault(); void this.generate() }
       else if (event.key === 'Escape') { event.preventDefault(); this.dismiss() }

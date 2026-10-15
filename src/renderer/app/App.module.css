@@ -102,7 +102,7 @@
 /* Window-wide status bar. */
 .statusBar { grid-column: 1 / -1; grid-row: 2; display: flex; align-items: center; min-width: 0; padding: 0 6px; overflow: hidden;
   border-top: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-specific-sidebar-fill); color: var(--dsw-alias-label-secondary);
-  font-size: 11px; white-space: nowrap; }
+  font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .statusItem { display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 7px; }
 .statusButton { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .statusButton:hover { background: var(--dsw-alias-control-fill-hover); color: var(--dsw-alias-label-primary); }
