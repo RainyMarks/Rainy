@@ -182,7 +182,7 @@ export function SearchView({ model, state, focus }: Props): JSX.Element {
       </div>
       {options.pattern !== '' && <div className={css.summary} role="status">
         <span className={css.summaryText}>
-          {searching ? t('searchSearching') : current?.phase === 'error' ? '' : files.length === 0 ? t('searchNone') : t('searchSummary', { files: files.length, matches })}
+          {searching ? t('searchSearching') : current?.phase === 'error' ? '' : files.length === 0 ? t('searchNone') : t('searchSummary', { files: files.length, matches, resultWord: t(matches === 1 ? 'searchResultWord' : 'searchResultsWord'), fileWord: t(files.length === 1 ? 'searchFileWord' : 'searchFilesWord') })}
         </span>
         <span className={css.summaryActions}>
           <IconAction label={t('searchRefresh')} onClick={again}><IconRefreshOutlineRegular size={14} /></IconAction>

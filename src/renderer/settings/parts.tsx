@@ -17,7 +17,8 @@ export type SettingsWorkspace = { workspaceId: WorkspaceId; path: string; title:
  * @returns Its message text.
  */
 export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  // Electron prefixes errors thrown by the desktop process; the reason after it is already written for the user.
+  return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/u, '')
 }
 
 /** One operation at a time per section; success shows as a toast, a failure stays beside the control that started it. */
