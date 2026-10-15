@@ -30,7 +30,7 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 | **See the whole project** | The project map draws a project's parts and the imports between them, or every file as a block sized by its lines. It names the stack, explains each part with AI on request, and highlights the files the agent is reading or changing. |
 | **66 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, Hashcat, sqlmap, Volatility 3 and more, sorted into Misc, Web and Reverse. Each tool downloads on its own, remains installed offline, and updates only when it changes. |
 | **See inside any file** | Images open with zoom, pixel colors and one-click color channels and bit planes. Binaries open in a hex view with a data inspector and a binwalk-style scan for embedded files. Markdown, PDF, audio and video preview in place. |
-| **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
+| **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. Search and replace across the project, a command palette, and Git with AI-written commit messages. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
 | **Windows or WSL2** | Start in native Windows; move a project to a WSL2 environment whenever a challenge needs Linux tools. |
 | **Your model, your keys** | Keys stay on your machine, encrypted with Windows data protection. Model requests follow the system proxy or one you set. There is no telemetry; crash reports stay local. |
 | **Light** | A 188 MB installer. Tools, the Strata engine, PHP and the WSL runtime download only when you need them. |
@@ -45,6 +45,12 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 **Map any project.** See a project's parts and how they depend on each other, the stack it uses, and what each part does, in a sentence the AI writes on request.
 
 ![The project map of Rainy's own source, with the AI explanation](assets/map.png)
+
+**Search, replace and commit.** Search every file of the project, preview a replacement before it happens, then stage and commit in the Git pane with a message the AI writes.
+
+![Replacing a word across the project, with each match and its replacement shown](assets/search.png)
+
+![The Git pane with a staged file and an AI-written commit message](assets/git.png)
 
 **Edit with AI in place.** Select code, press Ctrl+K and describe the change. The new lines appear in green, anything they replace in red, until you accept or reject them.
 
@@ -63,6 +69,20 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 ![CTF tools catalog](assets/ctf-tools.png)
 
 <a id="whats-new"></a>
+## What's new in 2.5
+
+- **Search and replace across the project** (Ctrl+Shift+F, Ctrl+Shift+H):
+  - Results appear as you type, grouped by file, with match case, whole word and regular expressions, and files to include or exclude.
+  - A click opens the file with the match selected.
+  - Replace shows each match crossed out with its replacement before anything changes; replace all, or one file at a time. Files with unsaved edits are changed in the editor, so nothing you typed is lost.
+- **Source control** (Ctrl+Shift+G):
+  - Staged changes and changes, with the branch and how far it is ahead or behind. Stage, unstage or discard one file or all of them; a click shows the diff.
+  - **AI** writes the commit message from the staged changes, in the style of your recent commits. When nothing is staged, one click stages everything and commits.
+  - Works with an installed Git, or with the Git in the Windows basic environment. The status bar shows the branch, and the tab how many files changed.
+- **Command palette** (Ctrl+Shift+P or F1): run nearly fifty commands by name, with their shortcuts; recently used ones come first. Typing > in quick open switches to it.
+- The side pane switches between files, search and source control with the tabs at its top.
+- Faster on Windows: a finished background program no longer waits about 1.5 s while Rainy stops it a second time, so the project map opens sooner.
+
 ## What's new in 2.4
 
 - **Project map**: open it from the top bar to see any project at a glance.
@@ -178,10 +198,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.4.0 -ComponentSource release/offline-2.4.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.5.0 -ComponentSource release/offline-2.5.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `2.4.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `2.5.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 

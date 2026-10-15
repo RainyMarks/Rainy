@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（188 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.4 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（188 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.5 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -30,7 +30,7 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 | **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
 | **66 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、Hashcat、sqlmap、Volatility 3 等，按 Misc、Web、Reverse 分类。每款单独下载，下载后可离线保留，有变化时才更新。 |
 | **看清任何文件** | 图片支持缩放、查看像素颜色，一键切换颜色通道和位平面；二进制文件用十六进制查看，带数据检查器和类似 binwalk 的内嵌文件扫描；Markdown、PDF、音视频直接预览。 |
-| **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
+| **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。全项目搜索替换、命令面板，以及能让 AI 写提交说明的 Git 面板。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
 | **Windows 或 WSL2** | 默认使用 Windows 原生环境；题目需要 Linux 工具时，随时把项目切换到 WSL2。 |
 | **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
 | **轻量** | 安装包 188 MB。工具、Strata 引擎、PHP 和 WSL 运行环境都是用到时才下载。 |
@@ -45,6 +45,12 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 **看清任何项目。** 看项目由哪些部分组成、彼此怎么依赖、用了什么技术栈；还可以让 AI 用一句话说明每个部分是做什么的。
 
 ![Rainy 自身源码的项目地图和 AI 讲解](assets/zh/map.png)
+
+**搜索、替换、提交。** 在整个项目里搜索，替换前先预览每一处改动，再到 Git 面板暂存并提交，提交说明可以让 AI 来写。
+
+![在整个项目里替换一个词，每处匹配都显示替换前后的样子](assets/zh/search.png)
+
+![Git 面板：一个已暂存的文件和 AI 写好的提交说明](assets/zh/git.png)
 
 **就地用 AI 改代码。** 选中代码，按 Ctrl+K，写下要怎样改。新代码标为绿色，被替换的内容标为红色，由你决定接受还是拒绝。
 
@@ -63,6 +69,20 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 ![CTF 工具目录](assets/zh/ctf-tools.png)
 
 <a id="whats-new"></a>
+## 2.5 新变化
+
+- **全项目搜索替换**（Ctrl+Shift+F，替换用 Ctrl+Shift+H）：
+  - 边输入边出结果，按文件分组；可以区分大小写、全字匹配、使用正则表达式，也可以指定包含或排除的文件。
+  - 点击结果会打开文件并选中匹配的文字。
+  - 替换前会先显示每一处“旧文字划掉、新文字补上”的预览；可以全部替换，也可以只替换某个文件。有未保存修改的文件直接在编辑器里替换，不会丢掉你刚打的内容。
+- **源代码管理**（Ctrl+Shift+G）：
+  - 分“暂存的更改”和“更改”两组列出改动，并显示当前分支、领先或落后远端几个提交。可以逐个或一次性暂存、取消暂存、撤销；点击文件查看差异。
+  - **AI 写提交说明**：根据暂存的改动，按你最近提交的风格写好说明。什么都没暂存时，一键“暂存全部并提交”。
+  - 装了 Git 就能用；没装的话，“Windows 基础环境”里自带的 Git 也可以。状态栏显示当前分支，标签上显示改动的文件数。
+- **命令面板**（Ctrl+Shift+P 或 F1）：输入名字就能运行近 50 个命令，并显示对应的快捷键，最近用过的排在前面。在快速打开里输入 > 也会切换到命令面板。
+- 侧边栏顶部新增三个按钮，在文件、搜索和源代码管理之间切换。
+- Windows 上更快：后台程序运行结束后，不再因为重复结束进程多等约 1.5 秒，项目地图因此打开得更快。
+
 ## 2.4 新变化
 
 - **项目地图**：在顶栏打开，一眼看清任何项目。
@@ -177,10 +197,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.4.0 -ComponentSource release/offline-2.4.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.5.0 -ComponentSource release/offline-2.5.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.4.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.5.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 

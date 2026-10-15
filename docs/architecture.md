@@ -33,6 +33,8 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
 | `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route, change hints |
 | `map/` | Project maps: the file list, line counts, imports, stack and the AI explanation |
+| `search/` | Text search across a project's roots with ripgrep, and replacement on disk (`search.text`, `search.replace`) |
+| `git/` | The Git pane: status, staging, discarding, committing and the AI commit message (`git.*`) |
 | `runtime/` | Interpreter discovery and selection, project registry shared with main |
 | `icesky/` | The AI security toolkit iframe (bundled under `resources/icesky`): static files, model relay, drafts |
 
@@ -56,6 +58,12 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 - `map/scan.ts` lists a project's files with ripgrep (`.gitignore` respected, hidden files included; at most 20,000 files, of which 8,000 and 96 MB are read, within 15 s), counts lines and marks vendored, generated and minified files (by folder name, `.gitattributes` `linguist-vendored` and `linguist-generated`, or very long lines) so they do not count as code.
 - `map/imports.ts` follows imports in JavaScript and TypeScript (with `tsconfig` paths), Python, C and C++, Go, Rust, Java and Kotlin, PHP, Ruby, Lua, shell, PowerShell, HTML and CSS. `map/stack.ts` names languages, frameworks and tools from manifests and imports.
 - `map.get` keeps a scan for 20 seconds and runs one scan per project at a time. `shared/map-graph.ts` turns the files into at most 16 boxes per view: a directory holding over 35% of the code is split, and the boxes are linked by their imports. `map.explain` asks the chat model for a summary and a sentence per part, and stores it under `maps/`.
+
+### Search and Git
+
+- `search.text` runs ripgrep with `--json` in every root (`.gitignore` respected, hidden files included, `.git`, `node_modules`, `.venv` and `__pycache__` left out, files over 8 MB skipped) and returns at most 5000 matches with UTF-16 columns; regular expressions use `--engine auto`, so look-arounds fall back to PCRE2. A newer search of a project ends the older one. `shared/text-search.ts` holds the replacement both sides apply line by line, so a pattern never spans lines, as in the search: `search.replace` rewrites UTF-8 files on disk (keeping a BOM and line endings) and the page changes files with unsaved edits in their buffers.
+- `git/` runs the `git` command with the runtime overlay, so the MinGit of the Windows basic component serves when Git is not installed (the editor's compare with HEAD does the same). The status comes from `git status --porcelain=v2 -z --branch --untracked-files=all -- .` with paths made relative to the root. Discarding deletes untracked files with `git clean` and restores tracked ones from the index. `git.message` sends the staged diff (or every change when nothing is staged, cut to 24,000 characters) and the last twelve commit subjects to the chat model.
+- On Windows a process tree is not stopped again once its root has exited, because the process id is gone or names another program.
 
 ### Data under the Host home
 
@@ -91,11 +99,13 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 
 | Folder | Content |
 |---|---|
-| `app/` | Window layout: top bar, file pane, editor area, AI pane, bottom panel, status bar |
+| `app/` | Window layout: top bar, side pane with files, search and Git tabs, editor area, AI pane, bottom panel, status bar; the command palette (`CommandPalette.tsx`, commands ranked in `commands.ts`) |
 | `chat/` | Transcript, markdown, tool cards, composer, model picker, context meter, history list |
 | `ide/` | Editor tabs, editor mount, file viewers, quick open, run configurations, terminal, problems, debug |
 | `map/` | Project map: the architecture graph (layered layout in `layout.ts`), file blocks (squarified treemap in `treemap.ts`), details, and the agent's activity from `session.tool` and streamed tool calls (`activity.ts`) |
 | `review/` | The changed-files list above the composer, the review bar and the review actions |
+| `search/` | The search pane |
+| `git/` | The Git pane and the shared status store behind its tab badge and the status-bar branch (polled every 3 s while the pane shows, 15 s otherwise, and after file hints) |
 | `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost. The signed catalog supplies localized descriptions for future tools through the existing main-window bridge |
 | `settings/` | General, Appearance, Models, Skills & MCP, Runtime, Memory and Security sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
