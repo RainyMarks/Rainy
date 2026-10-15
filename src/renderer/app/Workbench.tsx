@@ -1,5 +1,5 @@
 /** The window: top bar, file pane, editor area with the CTF workbench, AI pane, bottom panel and status bar. */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent, ReactNode } from 'react'
 import type { IdeFileEntry, IdeRootId } from '../../shared/ide-files-protocol.ts'
 import type { IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
@@ -13,7 +13,6 @@ import {
 import { setPrefs, usePrefs } from '../prefs.ts'
 import { useAiActivity } from '../map/activity.ts'
 import { useMapT } from '../map/messages.ts'
-import { ProjectMapView } from '../map/ProjectMap.tsx'
 import { aiMarks, markedDirectories } from '../map/marks.ts'
 import { useChanges } from '../review/changes-store.ts'
 import { finishReview, openReview, undoReview } from '../review/review-actions.ts'
@@ -47,6 +46,9 @@ import { PromptDialog, type PendingPrompt, type PromptRequest } from './PromptDi
 import { modalOpen, QUICK_OPEN_KEYS, useGlobalShortcuts } from './shortcuts.ts'
 import type { Workbench } from './workbench.ts'
 import css from './App.module.css'
+
+/** The project map loads the first time it is opened. */
+const ProjectMapView = lazy(async () => ({ default: (await import('../map/ProjectMap.tsx')).ProjectMapView }))
 
 type MenuId = 'file' | 'edit' | 'view' | 'explorer' | 'editor' | 'app' | 'workspace' | 'run'
 type Side = 'left' | 'right' | 'bottom'
@@ -707,8 +709,10 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
               />
             </div>
             <div className={css.centerBody} hidden={state.center !== 'map'}>
-              {mapOpen && <ProjectMapView workspace={state.workspace} visible={state.center === 'map'} changes={changes} activity={aiActivity}
-                openFile={(path) => { run(model.openFile(path)) }} ask={askAi} />}
+              {mapOpen && <Suspense fallback={<div className={css.notice} role="status">{tm('mapLoading')}</div>}>
+                <ProjectMapView workspace={state.workspace} visible={state.center === 'map'} changes={changes} activity={aiActivity}
+                  openFile={(path) => { run(model.openFile(path)) }} ask={askAi} />
+              </Suspense>}
             </div>
             <div className={css.centerBody} hidden={state.center !== 'tools'}>
               {toolsVisited && <CtfWorkbench owner={workbench.ctf} sessionId={sessionId} active={state.center === 'tools'} dark={dark} />}

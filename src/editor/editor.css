@@ -218,7 +218,6 @@
 .cm-editor .cm-deletedChunk .cm-chunkButtons {
   display: flex;
   gap: 4px;
-  top: 1px;
   z-index: 2;
 }
 

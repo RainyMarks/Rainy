@@ -264,6 +264,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       })),
       readOnlySlot.reconfigure(this.readOnly(open)),
     ] })
+    if (review) this.reportReview(open, open.view.state)
   }
 
   setAppearance(appearance: EditorAppearance): void {

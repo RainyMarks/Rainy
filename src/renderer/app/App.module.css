@@ -46,7 +46,7 @@
 .spacer { flex: 1; }
 
 /* Top bar: application menus, a centred command centre, and grouped window actions. Right padding clears the Windows caption buttons. */
-.topbar { position: relative; flex: none; height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+.topbar { position: relative; flex: none; height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center; column-gap: 12px; padding: 0 146px 0 10px; z-index: 25; background: var(--dsw-specific-sidebar-fill);
   border-bottom: 1px solid var(--dsw-alias-border-l1); -webkit-app-region: drag; }
 .topbar button { -webkit-app-region: no-drag; }

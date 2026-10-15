@@ -12,7 +12,7 @@ import { keyFromAbsolute } from '../ide/ide-paths.ts'
 import { Button, IconAction, IconRefreshOutlineRegular, IconSparkleRegular, SegmentedControl, toast } from '../ui/index.ts'
 import type { AiActivity } from './activity.ts'
 import { fileColor } from './colors.ts'
-import { layoutGraph, NODE_HEIGHT, NODE_WIDTH } from './layout.ts'
+import { GAP_X, layoutGraph, NODE_HEIGHT, NODE_WIDTH } from './layout.ts'
 import { explainMap, loadMap, useProjectMap } from './map-store.ts'
 import { aiMarks, type AiMark } from './marks.ts'
 import { useMapT, type MapMessageKey } from './messages.ts'
@@ -147,10 +147,12 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
   const [frame, setFrame] = useState<HTMLDivElement | null>(null)
   const size = useSize(frame)
   const ids = useMemo(() => nodes.map(node => node.id), [nodes])
-  const layout = useMemo(() => layoutGraph(ids, view.edges), [ids, view.edges])
+  const margin = 40
+  // As many boxes per row as fit the pane at full size, so a narrow pane wraps rather than shrinking the text.
+  const columns = size.width === 0 ? 6 : Math.min(8, Math.max(2, Math.floor((size.width - 2 * margin + GAP_X) / (NODE_WIDTH + GAP_X))))
+  const layout = useMemo(() => layoutGraph(ids, view.edges, columns), [ids, view.edges, columns])
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
   const drag = useRef<{ x: number; y: number; originX: number; originY: number; moved: boolean } | undefined>(undefined)
-  const margin = 40
   const fitView = (): void => {
     if (size.width === 0 || size.height === 0) return
     const k = Math.min(1.15, (size.width - 2 * margin) / layout.width, (size.height - 2 * margin) / (layout.height + 24))
@@ -403,7 +405,8 @@ function ActivityFeed({ workspace, activity, changes, now, onOpenFile, t }: {
   t: Translate
 }): JSX.Element {
   const inProject = (item: AiActivity): boolean => item.path === undefined ? false : keyFromAbsolute(workspace, item.path) !== undefined
-  const rows = [...activity.active.filter(inProject).map(item => ({ item, live: true })), ...activity.recent.filter(inProject).map(item => ({ item, live: false }))].slice(0, 40)
+  const running = activity.active.filter(item => item.endedAt === undefined && inProject(item))
+  const rows = [...running.map(item => ({ item, live: true })), ...activity.recent.filter(inProject).map(item => ({ item, live: false }))].slice(0, 40)
   return (
     <div className={css.details} data-map-activity>
       <h3 className={css.detailsTitle}>{t('mapActivity')}</h3>

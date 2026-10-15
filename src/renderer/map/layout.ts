@@ -6,9 +6,9 @@
 /** Box size and spacing, in SVG units. */
 export const NODE_WIDTH = 196
 export const NODE_HEIGHT = 66
-const GAP_X = 36
+export const GAP_X = 36
 const GAP_Y = 76
-/** Boxes per row before a layer wraps. */
+/** Boxes per row before a layer wraps, when the caller gives no width. */
 const ROW_LIMIT = 6
 /** Space between the layered graph and the row of parts without imports. */
 const ISOLATED_GAP = 56
@@ -46,9 +46,10 @@ export interface GraphLayout {
  * Lay out boxes and imports.
  * @param ids Box ids in their preferred order.
  * @param edges Imports between boxes.
+ * @param columns Boxes per row before a layer wraps.
  * @returns Positions and edge paths.
  */
-export function layoutGraph(ids: readonly string[], edges: readonly { readonly from: string; readonly to: string; readonly weight: number }[]): GraphLayout {
+export function layoutGraph(ids: readonly string[], edges: readonly { readonly from: string; readonly to: string; readonly weight: number }[], columns = ROW_LIMIT): GraphLayout {
   const known = new Set(ids)
   const links = edges.filter(edge => edge.from !== edge.to && known.has(edge.from) && known.has(edge.to))
   const outgoing = new Map<string, string[]>(ids.map(id => [id, []]))
@@ -109,11 +110,12 @@ export function layoutGraph(ids: readonly string[], edges: readonly { readonly f
     }
   }
 
-  // Long rows wrap, so a wide layer becomes several rows of at most ROW_LIMIT boxes.
+  // Long rows wrap, so a wide layer becomes several rows of at most `columns` boxes.
   const lines: { ids: string[]; isolated: boolean }[] = []
-  for (const row of rows) for (let start = 0; start < row.length; start += ROW_LIMIT) lines.push({ ids: row.slice(start, start + ROW_LIMIT), isolated: false })
+  const limit = Math.max(1, Math.floor(columns))
+  for (const row of rows) for (let start = 0; start < row.length; start += limit) lines.push({ ids: row.slice(start, start + limit), isolated: false })
   const isolatedStart = lines.length
-  for (let start = 0; start < isolated.length; start += ROW_LIMIT) lines.push({ ids: isolated.slice(start, start + ROW_LIMIT), isolated: true })
+  for (let start = 0; start < isolated.length; start += limit) lines.push({ ids: isolated.slice(start, start + limit), isolated: true })
   const rowWidth = (count: number): number => count * NODE_WIDTH + Math.max(0, count - 1) * GAP_X
   const width = Math.max(NODE_WIDTH, ...lines.map(line => rowWidth(line.ids.length)))
   const nodes = new Map<string, PlacedNode>()

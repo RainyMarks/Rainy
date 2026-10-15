@@ -36,9 +36,13 @@ interface TreeNode {
   children?: TreeNode[] | undefined
 }
 
-/** @returns How much space a file takes: its lines, or a size-based share for binary and generated files. */
+/** Space of a binary file, as many lines: enough to see and click, never enough to crowd out the code. */
+const ASSET_WEIGHT = 12
+
+/** @returns How much space a file takes: its lines; a fixed share for binary files; a size-based one for unread text. */
 export function blockWeight(file: MapFile): number {
-  if (file.kind === 'asset' || file.lines === 0) return Math.min(400, Math.max(1, Math.round(file.bytes / 64)))
+  if (file.kind === 'asset') return ASSET_WEIGHT
+  if (file.lines === 0) return Math.min(200, Math.max(1, Math.round(file.bytes / 64)))
   return fileWeight(file)
 }
 

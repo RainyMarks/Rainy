@@ -16,9 +16,15 @@ export interface AiActivity {
   readonly endedAt?: number | undefined
 }
 
+/** A write or edit stays shown as in progress this long after it finished, so the change can be seen. */
+export const LINGER_MS = 5000
+
 /** Snapshot of the activity store. */
 export interface AiActivityState {
-  /** Calls running now, oldest first. */
+  /**
+   * Calls running now, oldest first: a call counts from the moment the model starts writing it (a file write takes
+   * the model seconds to write and a moment to run), and a write or edit stays for {@link LINGER_MS} after it ends.
+   */
   readonly active: readonly AiActivity[]
   /** Finished calls, newest first. */
   readonly recent: readonly AiActivity[]
@@ -28,6 +34,7 @@ export interface AiActivityState {
 const RECENT_LIMIT = 80
 
 const running = new Map<string, AiActivity>()
+const lingering = new Map<string, AiActivity>()
 let recent: AiActivity[] = []
 let snapshot: AiActivityState = { active: [], recent: [] }
 const listeners = new Set<() => void>()
@@ -35,7 +42,7 @@ const workingDirectories = new Map<string, string>()
 let listing: Promise<void> | undefined
 
 function publish(): void {
-  snapshot = { active: [...running.values()], recent }
+  snapshot = { active: [...running.values(), ...[...lingering.values()].filter(item => !running.has(item.toolCallId))], recent }
   for (const listener of listeners) listener()
 }
 
@@ -92,6 +99,17 @@ function learnDirectories(): Promise<void> {
 }
 
 host.on('sessions.changed', (summary) => { workingDirectories.set(summary.id, summary.cwd) })
+// The model names the file at the start of a call it is still writing.
+host.on('session.stream', ({ sessionId, message }) => {
+  let changed = false
+  for (const block of message?.content ?? []) {
+    if (block.type !== 'toolCall' || running.has(block.id) || (block.name !== 'write' && block.name !== 'edit' && block.name !== 'read')) continue
+    if (text((block.arguments as Record<string, unknown> | undefined)?.file_path) === undefined) continue
+    running.set(block.id, describe(sessionId, block.id, block.name, block.arguments, workingDirectories.get(sessionId)))
+    changed = true
+  }
+  if (changed) publish()
+})
 host.on('session.tool', ({ sessionId, toolCallId, toolName, phase, args }) => {
   if (phase === 'start') {
     const cwd = workingDirectories.get(sessionId)
@@ -110,7 +128,12 @@ host.on('session.tool', ({ sessionId, toolCallId, toolName, phase, args }) => {
     const finished = running.get(toolCallId)
     if (finished === undefined) return
     running.delete(toolCallId)
-    recent = [{ ...finished, endedAt: Date.now() }, ...recent].slice(0, RECENT_LIMIT)
+    const ended = { ...finished, endedAt: Date.now() }
+    recent = [ended, ...recent].slice(0, RECENT_LIMIT)
+    if (ended.action === 'write' || ended.action === 'edit') {
+      lingering.set(toolCallId, ended)
+      setTimeout(() => { if (lingering.delete(toolCallId)) publish() }, LINGER_MS)
+    }
     publish()
   }
 })
@@ -124,4 +147,9 @@ host.on('session.state', ({ sessionId, status }) => {
 /** @returns The agents' running and recent tool calls; re-renders on change. */
 export function useAiActivity(): AiActivityState {
   return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener) } }, () => snapshot)
+}
+
+/** @returns The agents' running and recent tool calls now, without subscribing. */
+export function getAiActivity(): AiActivityState {
+  return snapshot
 }
