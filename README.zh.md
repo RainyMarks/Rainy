@@ -14,19 +14,20 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（188 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.3 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（188 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [2.4 新变化](#whats-new) · [快速开始](#run) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
 ![Rainy：编辑器、终端和一道已解出的 XOR 题](assets/zh/workbench.png)
 
-Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器，以及 66 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你，改过的文件都能一键撤销。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
+Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器，以及 66 款 CTF 工具放进同一个桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你；它改过的每个文件都可以在编辑器里逐处审查，保留或撤销。项目地图让你一眼看清任何代码库的结构，以及 AI 正在处理哪些文件。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。默认在 Windows 原生环境运行，题目需要 Linux 时可把项目切到 WSL2。个人使用免费。Developed by RainyMarks.
 
 ## 为什么选 Rainy
 
 | | |
 |---|---|
-| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的每个文件都能一键撤销。Skills 放在 `.rainy/skills`，MCP 服务（含 IDA 预设）在设置中添加。 |
+| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的文件都会列出来，可在编辑器里逐处保留或撤销。Skills 放在 `.rainy/skills`，MCP 服务（含 IDA 预设）在设置中添加。 |
+| **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
 | **66 款 CTF 工具，一键下载** | Wireshark、CyberChef、IDA、x64dbg、ImHex、JADX、Hashcat、sqlmap、Volatility 3 等，按 Misc、Web、Reverse 分类。每款单独下载，下载后可离线保留，有变化时才更新。 |
 | **看清任何文件** | 图片支持缩放、查看像素颜色，一键切换颜色通道和位平面；二进制文件用十六进制查看，带数据检查器和类似 binwalk 的内嵌文件扫描；Markdown、PDF、音视频直接预览。 |
 | **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
@@ -36,6 +37,14 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 
 <a id="tour"></a>
 ## 看一眼
+
+**审查 AI 的修改。** AI 改过的文件列在输入框上方。打开一个，就能在编辑器里看到每处改动，逐处保留或撤销；没处理的会在你发出下一条消息时自动保留。
+
+![在编辑器里审查 AI 的修改，每处改动旁都有保留和撤销](assets/zh/review.png)
+
+**看清任何项目。** 看项目由哪些部分组成、彼此怎么依赖、用了什么技术栈；还可以让 AI 用一句话说明每个部分是做什么的。
+
+![Rainy 自身源码的项目地图和 AI 讲解](assets/zh/map.png)
 
 **就地用 AI 改代码。** 选中代码，按 Ctrl+K，写下要怎样改。新代码标为绿色，被替换的内容标为红色，由你决定接受还是拒绝。
 
@@ -54,6 +63,24 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 ![CTF 工具目录](assets/zh/ctf-tools.png)
 
 <a id="whats-new"></a>
+## 2.4 新变化
+
+- **项目地图**：在顶栏打开，一眼看清任何项目。
+  - 架构：项目的各个部分画成方框，引用别人的在上、被引用的在下，地基在最底层。双击某个部分可以进去看。
+  - 文件：每个文件画成一块，大小按行数，颜色按语言。
+  - 根据清单文件和 import 认出技术栈（语言、框架和工具）。点 **AI 讲解**，AI 会用几句话说明整个项目和每个部分（请求一次模型），结果会保存下来。
+  - AI 干活时，它正在读或改的文件会在地图和文件树里亮起来。
+- **审查 AI 的修改**：
+  - 一个对话里 AI 改过的文件列在输入框上方，并显示增删的行数。
+  - 点 **审查** 会在编辑器里标出每处改动，可以逐处保留或撤销，也可以全部保留、全部撤销。
+  - 发出下一条消息时自动保留，不用逐个点"保留"。可在 **设置 → 安全** 里关闭，关闭后改动会一直列着，直到你逐个保留或撤销。
+- **随处问 AI**：每个问题旁边有 **用 AI 修复**；终端里有按钮，可把输出（或选中的部分）发给 AI。
+- **对话更稳**：
+  - 模型请求因临时原因失败（过载、限流、连接中断）时会自动重试，显示倒计时，也可以点 **立即重试**。
+  - 思考过程会显示用了多久。
+  - AI 回复时向上滚动，阅读位置不会被拉走。
+  - 使用中文等输入法时，所有输入框里的 Enter 和 Esc 都只用来选词或取消候选，不会误发送或误关闭。
+
 ## 2.3 新变化
 
 - **编辑器里的 AI**：
@@ -150,10 +177,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.3.0 -ComponentSource release/offline-2.3.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.4.0 -ComponentSource release/offline-2.4.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.3.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`2.4.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 

@@ -20,13 +20,14 @@ English | [中文](README.zh.md)
 
 ![Rainy: editor, terminal and a solved XOR challenge](assets/workbench.png)
 
-Rainy puts an AI coding agent, a real editor and debugger with AI suggestions and Ctrl+K edits, and a 66-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you can undo any file change it made. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
+Rainy puts an AI coding agent, a real editor and debugger with AI suggestions and Ctrl+K edits, and a 66-tool CTF kit in one desktop app. The agent reads and edits your project and runs commands, asking first by default, and you review every file it changed: keep or undo each change. A project map shows how any codebase fits together and which files the agent is working on. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Run everything in native Windows or switch the project to WSL2 when a challenge needs Linux. Free for personal use. Developed by RainyMarks.
 
 ## Why Rainy
 
 | | |
 |---|---|
-| **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file change it makes can be undone in one click. Add skills in `.rainy/skills` and MCP servers (including an IDA preset) in Settings. |
+| **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file it changes is listed for review in the editor, where you keep or undo each change. Add skills in `.rainy/skills` and MCP servers (including an IDA preset) in Settings. |
+| **See the whole project** | The project map draws a project's parts and the imports between them, or every file as a block sized by its lines. It names the stack, explains each part with AI on request, and highlights the files the agent is reading or changing. |
 | **66 CTF tools, one click each** | Wireshark, CyberChef, IDA, x64dbg, ImHex, JADX, Hashcat, sqlmap, Volatility 3 and more, sorted into Misc, Web and Reverse. Each tool downloads on its own, remains installed offline, and updates only when it changes. |
 | **See inside any file** | Images open with zoom, pixel colors and one-click color channels and bit planes. Binaries open in a hex view with a data inspector and a binwalk-style scan for embedded files. Markdown, PDF, audio and video preview in place. |
 | **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
@@ -36,6 +37,14 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 
 <a id="tour"></a>
 ## A quick look
+
+**Review what the AI changed.** The files the agent changed are listed above the message box. Open one to see each change in the editor and keep or undo it; whatever is left is kept when you send your next message.
+
+![Reviewing the agent's changes in the editor, with Keep and Undo on each change](assets/review.png)
+
+**Map any project.** See a project's parts and how they depend on each other, the stack it uses, and what each part does, in a sentence the AI writes on request.
+
+![The project map of Rainy's own source, with the AI explanation](assets/map.png)
 
 **Edit with AI in place.** Select code, press Ctrl+K and describe the change. The new lines appear in green, anything they replace in red, until you accept or reject them.
 
@@ -54,6 +63,24 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 ![CTF tools catalog](assets/ctf-tools.png)
 
 <a id="whats-new"></a>
+## What's new in 2.4
+
+- **Project map**: open it from the top bar to see any project at a glance.
+  - Architecture: the project's parts as boxes, each above the parts it imports, so the foundations sit at the bottom. Double-click a part to look inside it.
+  - Files: every file as a block sized by its lines and colored by its language.
+  - The stack (languages, frameworks and tools) is named from manifests and imports. **Explain with AI** describes the project and each part in a sentence with one model request, and the answer is kept.
+  - While the agent works, the files it is reading or changing light up on the map and in the file tree.
+- **Review the AI's changes**:
+  - The files the agent changed in a chat are listed above the message box, with the lines added and removed.
+  - **Review** marks each change in the editor; keep or undo each one, or all of them at once.
+  - Changes are kept automatically when you send your next message, so you never have to click Keep. Turn this off in **Settings → Security** to keep the list until you keep or undo each change.
+- **Ask the AI from anywhere**: **Fix with AI** next to each problem, and a terminal button that sends the output (or the selection) to the AI.
+- **A steadier chat**:
+  - A request that fails for a passing reason (overload, rate limit, a dropped connection) is retried automatically, with a countdown and **Retry now**.
+  - Thinking shows how long it took.
+  - Scrolling up while a reply streams keeps your place.
+  - With Chinese and other input methods, Enter and Esc pick or drop a candidate in every text field instead of sending or closing.
+
 ## What's new in 2.3
 
 - **AI in the editor**:
@@ -151,10 +178,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.3.0 -ComponentSource release/offline-2.3.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ReuseNativeToolsRelease release/offline-2.4.0 -ComponentSource release/offline-2.4.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `2.3.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `2.4.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 

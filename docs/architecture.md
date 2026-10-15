@@ -32,6 +32,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 | `network.ts` | The proxy for model requests: follow the system (default), none, or a manual HTTP proxy. Model streaming, model discovery, the IceSky relay and MCP servers over HTTP fetch through it with undici's `ProxyAgent`, which forwards plain-HTTP requests and tunnels HTTPS; loopback, private, `.local` and single-label hosts stay direct. Following the system, the Windows Host asks main per origin (answers kept 30 seconds) and the WSL Host reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Commands and terminals are not proxied |
 | `agent/` | Models, tools, system prompt, sessions, compaction, project memory, skills, MCP |
 | `ide/` | File tree, editor state, run/debug, terminals, language servers, formatting, the `/rainy/ide/raw` byte route, change hints |
+| `map/` | Project maps: the file list, line counts, imports, stack and the AI explanation |
 | `runtime/` | Interpreter discovery and selection, project registry shared with main |
 | `icesky/` | The AI security toolkit iframe (bundled under `resources/icesky`): static files, model relay, drafts |
 
@@ -41,6 +42,7 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 - `agent/session.ts` wraps one pi-agent-core `Agent` per open chat. Before each run it sets the transcript to a fresh system message (prompt and tool declarations) followed by the compacted conversation from the log. Tools run sequentially. It records how long each thinking block streamed (`thinkingMs` on the assistant entry, by content index).
 - `agent/retry.ts` decides which failed requests a run retries by itself: overload, rate limits, dropped connections and timeouts, not authentication, quota or malformed requests (pi-ai's provider retries have already given up by then). A run retries at most three times, after 5, 10 and 20 s with ±15% jitter or the delay the provider asks for (up to 2 minutes), and publishes the wait as `retry` in `session.state` so the page can count down. `chat.retry` ends that wait early, or, when the chat is idle and its last model-visible entry is a failed or stopped reply, starts a run that answers the history as it stands without a new user message. Each failed reply stays in the transcript; an `auto-retry` notice marks the retries.
 - `agent/tools/` implements `read`, `grep` and `glob` (ripgrep), `write`, `edit` and `bash` (WSL) or `pwsh` (Windows). Write and edit require a prior read of an existing file, and keep the replaced content under `snapshots/<sessionId>/` (files up to 16 MiB) so the user can undo the change; an undo is refused when the file changed since, and a `context` entry with `reverted` tells the model. Large results are cut to a head and tail window, and the full text is saved under the Host temp directory.
+- The agent's changes are reviewed per chat. `chat.changes` lists the files the chat's write and edit calls changed that are neither kept nor undone, counting lines against the text before the first change (Myers' diff in `shared/line-diff.ts`; binary files and files over 4 MB are not compared) and leaving out a file changed back. `chat.changeBase` returns a file's text before the first change and now, `chat.keep` records reviewed calls as a `review` line in the chat file, and `session.changes` tells the page to refresh. With `prefs.autoKeepChanges` (on by default) a user message that starts a run first keeps every pending change; a retry or a steering message does not.
 - `agent/permissions.ts` decides every tool call through pi-agent-core's `beforeToolCall` by the chat's mode. `read-only` refuses changes, commands and MCP tools not marked `readOnlyHint`; `ask` (the default) runs reads and writes inside the project roots but waits for the user on commands, other MCP tools and writes outside the project (links resolved first); `auto` runs everything. A waiting call appears in `SessionSnapshot.approvals` and is answered with `chat.approve`. "Always allow" stores a command prefix or MCP tool per project in `settings.json`; prefixes match only commands without chaining, redirection, substitution, wrappers like `sudo` or inline code like `python -c`. A refusal without a reason ends the run after the current step; a new message refuses the waiting call and is steered to the model.
 - `agent/prompt.ts` assembles the system prompt: persona, @-reference note, tool notes, MCP server instructions, extra project roots, skill descriptors, the user's global prompt and the working-directory line.
 - `agent/instructions.ts` injects `AGENTS.md`/`CLAUDE.md` files as a user message before the first request of a session.
@@ -48,6 +50,12 @@ Renderer (src/renderer), loaded by the main window from the Host origin
 - `agent/memory/` keeps per-project notes, generates them while the app is idle and recalls them once at the start of a session. Generation costs model requests, so it is off for projects without a memory record; records written before 2.1 keep their setting.
 - `agent/inline.ts` serves the editor's AI. `inline.complete` asks for a suggestion at the cursor (`prefs.completionModel`, or the chat model, with reasoning off, 192 output tokens and a 15 s limit); a new request ends the previous one, and nothing is sent while `prefs.inlineCompletion` is off. `inline.edit` streams a rewrite of the marked selection with the chat model, reports the text so far as `inline.progress` events, and stops on `inline.cancel`. Replies are cleaned to what fits: code fences, a repeated line start and, in the middle of a line, anything past one line or already after the cursor are dropped.
 - `agent/skills.ts` lists `SKILL.md` files from `<cwd>/.rainy/skills` and `~/.rainy-agent/skills`. `agent/mcp.ts` connects the MCP servers configured in Settings.
+
+### Project map
+
+- `map/scan.ts` lists a project's files with ripgrep (`.gitignore` respected, hidden files included; at most 20,000 files, of which 8,000 and 96 MB are read, within 15 s), counts lines and marks vendored, generated and minified files (by folder name, `.gitattributes` `linguist-vendored` and `linguist-generated`, or very long lines) so they do not count as code.
+- `map/imports.ts` follows imports in JavaScript and TypeScript (with `tsconfig` paths), Python, C and C++, Go, Rust, Java and Kotlin, PHP, Ruby, Lua, shell, PowerShell, HTML and CSS. `map/stack.ts` names languages, frameworks and tools from manifests and imports.
+- `map.get` keeps a scan for 20 seconds and runs one scan per project at a time. `shared/map-graph.ts` turns the files into at most 16 boxes per view: a directory holding over 35% of the code is split, and the boxes are linked by their imports. `map.explain` asks the chat model for a summary and a sentence per part, and stores it under `maps/`.
 
 ### Data under the Host home
 
@@ -60,6 +68,7 @@ The Host home is `RAINY_HOME`: `%APPDATA%\RainyAgent\native-home` for the Window
 | `.credentials.json` | Version 1 key file, empty once its keys are sealed, so an older version starts without keys instead of failing; keys found there are sealed at the next start. Development runs without the carrier keep keys here as plain text |
 | `chats/<sessionId>.jsonl` | One chat: a header line, then transcript entries in order |
 | `chats/index.json` | Chat summaries for the history list; rebuilt from the files when missing |
+| `maps/<workspaceId>.json` | The AI explanation of a project map |
 | `snapshots/<sessionId>/` | Content replaced by the agent's write and edit calls, for undo; removed with the chat and after 30 days |
 | `projects.json` | Projects (workspaces) and their roots |
 | `ide/<workspaceId>.json` | Editor tabs, dirty buffers, layout and run configurations |
@@ -70,7 +79,7 @@ Chats from RainyAgent 1.x use an older session format and are not imported. Mode
 
 ### Transcript entries
 
-A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`. Each later line is either `{"type":"entry","entry":…}` with one `TranscriptEntry` from `src/shared/rpc.ts` (`user`, `assistant`, `toolResult`, `context`, `compaction`, `notice` or `turn`) or `{"type":"meta",…}` with a title, model, archive or pin change. The model context is rebuilt from the entries: a `compaction` entry replaces the entries it covers with its summary, and `notice` and `turn` entries never reach the model. The renderer shows every entry.
+A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`. Each later line is either `{"type":"entry","entry":…}` with one `TranscriptEntry` from `src/shared/rpc.ts` (`user`, `assistant`, `toolResult`, `context`, `compaction`, `notice` or `turn`) `{"type":"meta",…}` with a title, model, archive or pin change, or `{"type":"review","kept":[…]}` with the tool calls whose changes the user kept (readers before 2.4 skip it). The model context is rebuilt from the entries: a `compaction` entry replaces the entries it covers with its summary, and `notice` and `turn` entries never reach the model. The renderer shows every entry.
 
 ## Renderer
 
@@ -85,6 +94,8 @@ A chat file is JSON Lines. The first line is `{"type":"header","version":1,…}`
 | `app/` | Window layout: top bar, file pane, editor area, AI pane, bottom panel, status bar |
 | `chat/` | Transcript, markdown, tool cards, composer, model picker, context meter, history list |
 | `ide/` | Editor tabs, editor mount, file viewers, quick open, run configurations, terminal, problems, debug |
+| `map/` | Project map: the architecture graph (layered layout in `layout.ts`), file blocks (squarified treemap in `treemap.ts`), details, and the agent's activity from `session.tool` and streamed tool calls (`activity.ts`) |
+| `review/` | The changed-files list above the composer, the review bar and the review actions |
 | `ctf/` | Native tool catalog and the IceSky iframe, unloaded after ten minutes out of sight when a save confirms nothing on it would be lost. The signed catalog supplies localized descriptions for future tools through the existing main-window bridge |
 | `settings/` | General, Appearance, Models, Skills & MCP, Runtime, Memory and Security sections |
 | `ui/` | Buttons, menus, dialogs, toasts, icons |
@@ -98,7 +109,7 @@ Each folder keeps its Chinese and English strings in a `messages.ts` built with 
 - Each open document has its own `EditorView`, so undo history, scroll position and the language-server session survive tab switches. The IDE model owns buffer text and saves; the editor reports edits and never writes files.
 - `lsp.ts` opens one `@codemirror/lsp-client` connection per project root and server language over the Host's `/rainy/ide/lsp` WebSocket (pyright, typescript-language-server, clangd). It answers the server-to-client requests the client library does not, routes diagnostics to the Problems panel and sanitizes documentation HTML before display.
 - Rename edits every file the server names; files without a view are opened as unsaved buffers through `prepareEdit`.
-- A comparison (`showDiff`) is `@codemirror/merge`'s unified view on the document's own view.
+- A comparison (`showDiff`) is `@codemirror/merge`'s unified view on the document's own view. Reviewing the agent's changes adds Keep and Undo to each changed chunk and reports the chunks left to the IDE, which saves what was undone and keeps the rest.
 - `ai.ts` adds the AI features. A suggestion is requested 450 ms after typing when the rest of the line is only closing brackets or punctuation, shows as a widget after the cursor, keeps its remainder while typing matches it, and is accepted with Tab or word by word with Ctrl+Right. Ctrl+K (the context menu in Markdown and SVG, where Ctrl+K starts the preview chord) opens a prompt above the selected lines. The rewrite replaces the lines as it streams; while it is reviewed, a line diff against the original marks only the changed lines, with the lines they replaced shown above them, until Ctrl+Enter keeps it or Esc restores the original. Decorations come from a state field because block widgets cannot come from a view plugin.
 - Language support loads per file type on first use (`languages.ts`).
 
