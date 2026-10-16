@@ -10,14 +10,14 @@
   min-width: 0;
   overflow: auto;
   position: relative;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-1);
-  font: var(--dsw-font-markdown-code-block);
+  color: var(--rainy-alias-label-primary);
+  background: var(--rainy-alias-bg-layer-1);
+  font: var(--rainy-font-markdown-code-block);
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
 }
 
-:global(body[data-ds-dark-theme]) .root {
+:global(body[data-rainy-dark]) .root {
   --json-tree-property: #5db0d7;
   --json-tree-string: #f28b82;
   --json-tree-number: #99c8ff;
@@ -126,7 +126,7 @@
 .stringRaw {
   margin: 4px 0 0 12px;
   overflow: auto;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   font: inherit;
   overflow-wrap: normal;
   white-space: pre;
@@ -173,7 +173,7 @@
   margin: 0;
   padding: 0;
   border: 0;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
   background: transparent;
   font: inherit;
   text-indent: 0;
@@ -183,11 +183,11 @@
 }
 
 .stringToggle:hover {
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .stringToggle:focus-visible {
-  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline: 1px solid var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary));
   outline-offset: 1px;
 }
 
@@ -211,7 +211,7 @@
 }
 
 .otherValue {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
 }
 
 .punctuation {
@@ -227,7 +227,7 @@
 }
 
 .previewEllipsis {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 .copySlot {
@@ -271,27 +271,27 @@
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: var(--dsw-radius-xs);
-  color: var(--dsw-alias-label-secondary);
+  border-radius: var(--rainy-radius-xs);
+  color: var(--rainy-alias-label-secondary);
   background: transparent;
   cursor: pointer;
 }
 
 .actionButton:hover {
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .actionButton[aria-pressed='true'] {
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--rainy-alias-state-business-primary);
 }
 
 .actionButton:focus-visible {
-  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline: 1px solid var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary));
   outline-offset: -1px;
 }
 
 .actionButton[data-state='failed'] {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--rainy-alias-state-error-primary);
 }
 
 .expander {
@@ -327,7 +327,7 @@
 }
 
 .expander:hover {
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .expander:focus-visible {

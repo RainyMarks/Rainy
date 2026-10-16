@@ -1,43 +1,43 @@
 /* Base variables referenced by the token sheets and component CSS but defined
  * upstream (deepsuite theme/global.css) — supplied here so the composite
- * --dsw-font-* variables resolve and motion rides the upstream curve. Code
+ * --rainy-font-* variables resolve and motion rides the upstream curve. Code
  * font stack deliberately omits a bare `monospace` tail (Windows CJK falls
  * back to SimSun otherwise). The fonts chosen in Settings → Appearance come
  * first: `prefs.ts` sets --rainy-ui-font and --rainy-code-font to quoted names
  * each followed by a comma, and leaves them unset for the defaults. */
 :root {
   /* Windows 11's Segoe UI Variable for Latin and Microsoft YaHei UI for Chinese; Segoe UI covers Windows 10. */
-  --dsw-font-family: var(--rainy-ui-font,) 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+  --rainy-font-family: var(--rainy-ui-font,) 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
     'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --dsw-font-family-display: var(--rainy-ui-font,) 'Segoe UI Variable Display', var(--dsw-font-family);
-  --dsw-font-family-brand: 'Montserrat', var(--dsw-font-family);
-  --ds-font-family-code: var(--rainy-code-font,) 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
+  --rainy-font-family-display: var(--rainy-ui-font,) 'Segoe UI Variable Display', var(--rainy-font-family);
+  --rainy-font-family-brand: 'Montserrat', var(--rainy-font-family);
+  --rainy-font-family-code: var(--rainy-code-font,) 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
-  --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --ds-transition-duration: 0.2s;
-  --ds-transition-duration-fast: 0.1s;
-  --ds-transition-duration-slow: 0.3s;
-  --dsw-radius-xs: 3px;
-  --dsw-radius-sm: 4px;
-  --dsw-radius-md: 6px;
-  --dsw-radius-lg: 8px;
-  --dsw-radius-xl: 8px;
-  --dsw-radius-panel: 10px;
+  --rainy-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --rainy-transition-duration: 0.2s;
+  --rainy-transition-duration-fast: 0.1s;
+  --rainy-transition-duration-slow: 0.3s;
+  --rainy-radius-xs: 3px;
+  --rainy-radius-sm: 4px;
+  --rainy-radius-md: 6px;
+  --rainy-radius-lg: 8px;
+  --rainy-radius-xl: 8px;
+  --rainy-radius-panel: 10px;
 }
 
 body {
-  --dsw-alias-settings-card-fill: var(--dsw-alias-bg-layer-2);
-  --dsw-alias-settings-card-stroke: var(--dsw-alias-border-l4);
+  --rainy-alias-settings-card-fill: var(--rainy-alias-bg-layer-2);
+  --rainy-alias-settings-card-stroke: var(--rainy-alias-border-l4);
 }
 
-[data-dsh-automatic-focus]:focus,
-[data-dsh-automatic-focus]:focus:focus-visible {
+[data-rainy-automatic-focus]:focus,
+[data-rainy-automatic-focus]:focus:focus-visible {
   outline: none;
 }
 
 /* Components own offsets; dense tables and toolbars may keep a 1px ring. */
 :root {
-  --dsw-focus-ring-width: 2px;
+  --rainy-focus-ring-width: 2px;
 }
 
 /* The fallback names the colour and the standard width, never the style: a control that
@@ -45,43 +45,43 @@ body {
  * unnamed ring stayed at `auto 1px` while every declared ring used the standard geometry.
  * Declared rings also read this color, including rings on descendants and pseudo-elements. */
 :focus-visible {
-  outline-color: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
-  outline-width: var(--dsw-focus-ring-width);
+  outline-color: var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary));
+  outline-width: var(--rainy-focus-ring-width);
 }
 
 /* ui-primitives/input-modality publishes the attribute. Editable controls keep
  * their focus feedback on click; other controls reveal rings on keyboard
  * navigation. Only ring paint is suppressed, not elevation or selected borders. */
 html[data-input-modality='pointer'] body :focus-visible:not(:read-write) {
-  --dsw-focus-ring-color: transparent;
+  --rainy-focus-ring-color: transparent;
   outline-color: transparent;
 }
 
-/* Scrollbar skin: the sole consumer of the four --dsw-alias-scrollbar-*
+/* Scrollbar skin: the sole consumer of the four --rainy-alias-scrollbar-*
  * tokens. Without it every scrolling region renders the UA scrollbar, which
  * ignores the theme — a light native bar over the dark palette.
  *
  * The rules sit on `body`, not `html`: design-platform.css declares the
- * --dsw-alias-* tokens on `body` (and the dark overrides on
- * `body[data-ds-dark-theme]`), and custom properties only inherit downward,
+ * --rainy-alias-* tokens on `body` (and the dark overrides on
+ * `body[data-rainy-dark]`), and custom properties only inherit downward,
  * so an `html` rule resolves them to the guaranteed-invalid value and
  * `scrollbar-color` falls back to `auto`.
  *
- * Surfaces pick their elevation by rebinding --dsh-scrollbar-thumb{,-hover}:
+ * Surfaces pick their elevation by rebinding --rainy-scrollbar-thumb{,-hover}:
  * the l1 pair here is the base-surface default, and an elevated surface
  * (menu, popover, dialog) rebinds to the l2 pair on its own container. A
  * scroll container may also rebind the three geometry variables below. */
 
 body {
-  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l1);
-  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l1);
-  --dsh-scrollbar-thumb-border: 0px;
-  --dsh-scrollbar-track-margin: 0px;
+  --rainy-scrollbar-thumb: var(--rainy-alias-scrollbar-bg-l1);
+  --rainy-scrollbar-thumb-hover: var(--rainy-alias-scrollbar-hover-l1);
+  --rainy-scrollbar-thumb-border: 0px;
+  --rainy-scrollbar-track-margin: 0px;
   /* The WebKit bar's layout width, mirrored by the ::-webkit-scrollbar rule
      below. A surface that must align itself beside a space-consuming bar
      (ConversationRoot's overlay composer seat) reads this instead of
      hardcoding the number. */
-  --dsh-scrollbar-width: 5px;
+  --rainy-scrollbar-width: 5px;
 }
 
 /* The two paths are mutually exclusive, and the gate is load-bearing rather
@@ -104,7 +104,7 @@ body {
 @supports not selector(::-webkit-scrollbar) {
   /* Declared on every element rather than inherited from `body`. Inheriting
      would pass down the COLOUR already substituted at `body`, so a descendant
-     rebinding --dsh-scrollbar-thumb could not change it; re-declaring makes
+     rebinding --rainy-scrollbar-thumb could not change it; re-declaring makes
      each element substitute the variable as it sees it, which is what gives
      an elevated surface a working rebind. `scrollbar-width` is not an
      inherited property at all, so it needs the per-element declaration
@@ -115,7 +115,7 @@ body {
   body,
   body * {
     scrollbar-width: thin;
-    scrollbar-color: var(--dsh-scrollbar-thumb) transparent;
+    scrollbar-color: var(--rainy-scrollbar-thumb) transparent;
   }
 }
 
@@ -124,27 +124,27 @@ body {
    selector matching already does. Not inherited either, hence the unscoped
    selectors. */
 ::-webkit-scrollbar {
-  width: var(--dsh-scrollbar-width);
-  height: var(--dsh-scrollbar-width);
+  width: var(--rainy-scrollbar-width);
+  height: var(--rainy-scrollbar-width);
 }
 
 /* Track stays transparent so the thumb reads against whatever surface scrolls
    under it; only the thumb carries a token colour. */
 ::-webkit-scrollbar-track {
-  margin-block: var(--dsh-scrollbar-track-margin);
+  margin-block: var(--rainy-scrollbar-track-margin);
   background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  border: var(--dsh-scrollbar-thumb-border) solid transparent;
+  border: var(--rainy-scrollbar-thumb-border) solid transparent;
   border-radius: 999px;
   corner-shape: round;
-  background: var(--dsh-scrollbar-thumb);
+  background: var(--rainy-scrollbar-thumb);
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--dsh-scrollbar-thumb-hover);
+  background-color: var(--rainy-scrollbar-thumb-hover);
 }
 
 /* Both scrollbars meeting in a corner: no separate token, so the corner

@@ -7,15 +7,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: max(24px, var(--dsh-frame-top-clearance, 24px)) 48px 32px;
+  padding: max(24px, var(--rainy-frame-top-clearance, 24px)) 48px 32px;
 }
 
 .mask {
   position: absolute;
   inset: 0;
-  background: var(--dsw-alias-bg-mask-1);
-  backdrop-filter: var(--dsw-mask-blur);
-  animation: settingsEnter var(--ds-transition-duration) var(--ds-ease-in-out);
+  background: var(--rainy-alias-bg-mask-1);
+  backdrop-filter: var(--rainy-mask-blur);
+  animation: settingsEnter var(--rainy-transition-duration) var(--rainy-ease-in-out);
 }
 
 .panel {
@@ -27,13 +27,13 @@
   height: 720px;
   max-height: 100%;
   overflow: hidden;
-  border-radius: var(--dsw-radius-panel);
-  background: var(--dsw-alias-bg-base);
-  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
-  box-shadow: var(--dsw-elevation-prominent);
-  animation: settingsEnter var(--ds-transition-duration) var(--ds-ease-in-out);
-  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
-  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  border-radius: var(--rainy-radius-panel);
+  background: var(--rainy-alias-bg-base);
+  --rainy-elevation-stroke-color: var(--rainy-alias-border-l2);
+  box-shadow: var(--rainy-elevation-prominent);
+  animation: settingsEnter var(--rainy-transition-duration) var(--rainy-ease-in-out);
+  --rainy-scrollbar-thumb: var(--rainy-alias-scrollbar-bg-l2);
+  --rainy-scrollbar-thumb-hover: var(--rainy-alias-scrollbar-hover-l2);
 }
 
 .panel:focus {
@@ -51,15 +51,15 @@
   flex-direction: column;
   width: 224px;
   padding: 20px 10px 10px;
-  background: var(--dsw-specific-sidebar-fill);
-  font-family: var(--dsw-font-family);
+  background: var(--rainy-specific-sidebar-fill);
+  font-family: var(--rainy-font-family);
 }
 
 .navTitle {
   padding: 0 10px 8px;
   font-size: 12px;
   line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 .navList {
@@ -77,29 +77,29 @@
   height: 34px;
   padding: 0 10px;
   border: none;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--rainy-radius-md);
   background: transparent;
   cursor: pointer;
-  font-size: var(--dsh-content-font-size);
+  font-size: var(--rainy-content-font-size);
   line-height: 22px;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
   text-align: left;
   text-decoration: none;
 }
 
 .navCell:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
+  background: var(--rainy-alias-interactive-bg-hover);
+  color: var(--rainy-alias-label-primary);
 }
 
 .navCell.active {
-  background: var(--dsw-specific-sidebar-nav-item-active);
-  color: var(--dsw-alias-label-primary);
+  background: var(--rainy-specific-sidebar-nav-item-active);
+  color: var(--rainy-alias-label-primary);
   font-weight: 600;
 }
 
 .navCell:focus-visible {
-  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline: 2px solid var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary));
   outline-offset: -2px;
 }
 
@@ -126,7 +126,7 @@
   gap: 10px;
   margin-top: 8px;
   padding: 12px 10px 4px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
+  border-top: 1px solid var(--rainy-alias-border-l1);
 }
 
 .identityText {
@@ -139,13 +139,13 @@
   font-size: 13px;
   line-height: 18px;
   font-weight: 600;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .identityVersion {
   font-size: 12px;
   line-height: 17px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -169,15 +169,15 @@
   height: 30px;
   padding: 0;
   border: none;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--rainy-radius-md);
   background: transparent;
   cursor: pointer;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
 }
 
 .close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
+  background: var(--rainy-alias-interactive-bg-hover);
+  color: var(--rainy-alias-label-primary);
 }
 
 .options {

@@ -5,8 +5,8 @@
   overflow: visible;
 }
 
-.fillStart { stop-color: var(--dsw-static-accent-450); }
-.fillEnd { stop-color: color-mix(in oklab, var(--dsw-static-accent-500) 80%, var(--dsw-static-accent-700-delete)); }
+.fillStart { stop-color: var(--rainy-static-accent-450); }
+.fillEnd { stop-color: color-mix(in oklab, var(--rainy-static-accent-500) 80%, var(--rainy-static-accent-700-delete)); }
 
 .bar {
   fill: #fff;

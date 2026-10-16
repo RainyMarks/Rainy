@@ -1,10 +1,10 @@
 .card {
   position: relative;
   margin: 16px 0;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-markdown-code-block);
-  border-radius: var(--dsw-radius-lg);
-  font: var(--dsw-font-markdown-code-block);
+  color: var(--rainy-alias-label-primary);
+  background: var(--rainy-alias-markdown-code-block);
+  border-radius: var(--rainy-radius-lg);
+  font: var(--rainy-font-markdown-code-block);
 }
 
 .header {
@@ -13,11 +13,11 @@
   justify-content: space-between;
   gap: 12px;
   padding: 10px 18px 8px 22px;
-  background: var(--dsl-code-block-background, var(--dsw-alias-markdown-code-block));
+  background: var(--dsl-code-block-background, var(--rainy-alias-markdown-code-block));
   border-top-left-radius: inherit;
   border-top-right-radius: inherit;
-  color: var(--dsw-alias-label-secondary);
-  font: var(--dsw-font-xxs-12);
+  color: var(--rainy-alias-label-secondary);
+  font: var(--rainy-font-xxs-12);
 }
 
 .heading {
@@ -28,13 +28,13 @@
 }
 
 .language {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   flex: none;
-  font-family: var(--ds-font-family-code);
+  font-family: var(--rainy-font-family-code);
 }
 
 .title {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -49,7 +49,7 @@
 
 .status {
   margin-right: 8px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   white-space: nowrap;
 }
 
@@ -61,23 +61,23 @@
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: var(--dsw-radius-sm);
-  color: var(--dsw-alias-label-secondary);
+  border-radius: var(--rainy-radius-sm);
+  color: var(--rainy-alias-label-secondary);
   background: transparent;
   cursor: pointer;
 }
 
 .action:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--rainy-alias-interactive-bg-hover);
 }
 
 .action:focus-visible {
-  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline: 1px solid var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary));
   outline-offset: 2px;
 }
 
 .body {
   padding: 6px 22px 20px;
-  font: var(--dsw-font-markdown-code-block);
+  font: var(--rainy-font-markdown-code-block);
   overflow-x: auto;
 }

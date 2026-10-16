@@ -1,6 +1,6 @@
 /* highlight.js token palette, shared by markdown code fences and tool cards. */
 :root {
-  --hl-foreground: var(--dsw-alias-label-primary);
+  --hl-foreground: var(--rainy-alias-label-primary);
   --hl-constant: #1c7ed6;
   --hl-string: #2f9e44;
   --hl-comment: #868e96;
@@ -11,7 +11,7 @@
   --hl-link: #1971c2;
 }
 
-body[data-ds-dark-theme] {
+body[data-rainy-dark] {
   --hl-constant: #4dabf7;
   --hl-string: #69db7c;
   --hl-comment: #adb5bd;
@@ -30,6 +30,6 @@ body[data-ds-dark-theme] {
 .hljs-params, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-property { color: var(--hl-parameter); }
 .hljs-punctuation, .hljs-operator { color: var(--hl-punctuation); }
 .hljs-link { color: var(--hl-link); text-decoration: underline; }
-.hljs-deletion { color: var(--dsw-alias-state-error-primary); }
+.hljs-deletion { color: var(--rainy-alias-state-error-primary); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }

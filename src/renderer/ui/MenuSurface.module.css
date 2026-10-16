@@ -1,10 +1,10 @@
 .surface,
 .backing {
-  border-radius: var(--dsw-radius-lg);
+  border-radius: var(--rainy-radius-lg);
 }
 
 .compact {
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--rainy-radius-md);
 }
 
 :where(.surface) {
@@ -12,7 +12,7 @@
 }
 
 .surface {
-  anchor-name: var(--dsh-menu-anchor);
+  anchor-name: var(--rainy-menu-anchor);
   isolation: isolate;
 }
 
@@ -23,8 +23,8 @@
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background: var(--dsw-menu-surface-fill);
-  backdrop-filter: var(--dsw-menu-backdrop-filter);
+  background: var(--rainy-menu-surface-fill);
+  backdrop-filter: var(--rainy-menu-backdrop-filter);
   pointer-events: none;
 }
 
@@ -38,12 +38,12 @@
 :global(html[data-platform='darwin']) .backing {
   display: block;
   position: fixed;
-  position-anchor: var(--dsh-menu-anchor);
+  position-anchor: var(--rainy-menu-anchor);
   top: anchor(top);
   left: anchor(left);
   width: anchor-size(width, 0px);
   height: anchor-size(height, 0px);
   z-index: -1;
-  background: var(--dsw-alias-bg-base);
+  background: var(--rainy-alias-bg-base);
   pointer-events: none;
 }

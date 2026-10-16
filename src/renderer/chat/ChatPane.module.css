@@ -3,7 +3,7 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--dsw-alias-bg-base);
+  background: var(--rainy-alias-bg-base);
 }
 
 .header {
@@ -13,7 +13,7 @@
   flex: none;
   height: 40px;
   padding: 0 6px 0 14px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  border-bottom: 1px solid var(--rainy-alias-border-l1);
 }
 
 .title {
@@ -22,7 +22,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   font-size: 13px;
   font-weight: 600;
 }
@@ -30,8 +30,8 @@
 .banner {
   flex: none;
   padding: 6px 14px;
-  background: var(--dsw-alias-state-warn-tertiary);
-  color: var(--dsw-alias-state-warn-label);
+  background: var(--rainy-alias-state-warn-tertiary);
+  color: var(--rainy-alias-state-warn-label);
   font-size: 12px;
 }
 
@@ -57,23 +57,23 @@
 
 .heroMark {
   margin-bottom: 6px;
-  filter: drop-shadow(0 5px 14px color-mix(in srgb, var(--dsw-static-accent-500) 35%, transparent));
+  filter: drop-shadow(0 5px 14px color-mix(in srgb, var(--rainy-static-accent-500) 35%, transparent));
 }
 
 .heroTitle {
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
 
 .heroCredit {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-size: 12px;
 }
 
 .heroHint {
   margin-top: 8px;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
   font-size: 13px;
 }

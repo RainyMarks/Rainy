@@ -17,7 +17,7 @@ export interface TextShimmerProps {
  */
 export const TextShimmer = memo(function TextShimmer({ children, active, className }: TextShimmerProps) {
   const style = useMemo(() => ({
-    '--dsh-text-shimmer-spread': `${children.length * 8}px`,
+    '--rainy-text-shimmer-spread': `${children.length * 8}px`,
   } as CSSProperties), [children.length])
   return <span className={clsx(css.root, className)} style={style} data-text-shimmer={active || undefined}>{children}</span>
 })

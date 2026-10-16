@@ -1,11 +1,11 @@
 /* Page-wide defaults. */
 :root {
-  --dsh-content-font-size: 14px;
-  --dsh-code-font-size: 13px;
+  --rainy-content-font-size: 14px;
+  --rainy-code-font-size: 13px;
   color-scheme: light;
 }
 
-html:has(body[data-ds-dark-theme]) {
+html:has(body[data-rainy-dark]) {
   color-scheme: dark;
 }
 
@@ -15,10 +15,10 @@ html, body, #root {
 }
 
 body {
-  font-family: var(--dsw-font-family);
-  font-size: var(--dsh-content-font-size);
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-base);
+  font-family: var(--rainy-font-family);
+  font-size: var(--rainy-content-font-size);
+  color: var(--rainy-alias-label-primary);
+  background: var(--rainy-alias-bg-base);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -33,6 +33,6 @@ button, input, textarea, select {
 }
 
 code, pre, kbd, samp {
-  font-family: var(--ds-font-family-code);
-  font-size: var(--dsh-code-font-size);
+  font-family: var(--rainy-font-family-code);
+  font-size: var(--rainy-code-font-size);
 }

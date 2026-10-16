@@ -3,8 +3,8 @@
   flex: none;
   align-items: center;
   gap: 3px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: var(--dsw-ui-font-size-caption);
+  color: var(--rainy-alias-label-tertiary);
+  font-size: var(--rainy-ui-font-size-caption);
   line-height: 16px;
   white-space: nowrap;
 }
@@ -17,17 +17,17 @@
   font: inherit;
 }
 
-.tooltip { color: inherit; font-size: var(--dsw-ui-font-size-caption); line-height: 14px; gap: 2px; }
+.tooltip { color: inherit; font-size: var(--rainy-ui-font-size-caption); line-height: 14px; gap: 2px; }
 .tooltip .key {
   min-width: 16px;
   height: 16px;
   padding: 0 2px;
-  border-radius: var(--dsw-radius-xs);
+  border-radius: var(--rainy-radius-xs);
   border: 0;
-  background: var(--dsw-alias-tooltip-key-bg);
+  background: var(--rainy-alias-tooltip-key-bg);
 }
 
 .separator { font: inherit; }
 
-.joined { box-sizing: border-box; height: 16px; padding: 0 4px; border-radius: var(--dsw-radius-xs); background: var(--dsw-alias-tooltip-key-bg); }
+.joined { box-sizing: border-box; height: 16px; padding: 0 4px; border-radius: var(--rainy-radius-xs); background: var(--rainy-alias-tooltip-key-bg); }
 .joined .key { min-width: 0; height: auto; padding: 0; border: 0; background: transparent; }

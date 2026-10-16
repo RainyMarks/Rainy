@@ -28,8 +28,8 @@ export const MenuSurface = forwardRef<HTMLDivElement, MenuSurfaceProps>(function
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- The portal ref is attached before layout effects run.
     document.body.appendChild(backingRef.current!)
   }, [])
-  const anchorStyle: CSSProperties & { '--dsh-menu-anchor': string } = {
-    '--dsh-menu-anchor': `--dsh-menu-${id.replaceAll(':', '')}`,
+  const anchorStyle: CSSProperties & { '--rainy-menu-anchor': string } = {
+    '--rainy-menu-anchor': `--rainy-menu-${id.replaceAll(':', '')}`,
   }
   return <>
     <div {...props} ref={ref} data-menu-material="translucent"

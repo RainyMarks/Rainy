@@ -42,7 +42,7 @@ Before pushing, run `typecheck`, the vitest files for what you changed, `test:no
 - Persisted files have versions: the chat format (`CHAT_FORMAT_VERSION`), `settings.json`, project memory (`memory.v1.json`), IDE state. Change a format only with a reader for the previous version.
 - Anything the model sees must be reconstructable from the chat file. New model-visible input needs a transcript entry kind or a `context` entry.
 - Page text is localized: each folder's `messages.ts` defines Chinese and English with `defineMessages`. No hard-coded copy in components. Errors, dialogs and menus written by the Host or main use `localized({ zh, en })` from `src/shared/locale.ts`, called when the message is shown, so they follow the language chosen in Settings.
-- Colors, radii and shadows come from the tokens in `src/renderer/theme/` (`--dsw-*`). Dark mode is `body[data-ds-dark-theme]`; do not hard-code colors.
+- Colors, radii and shadows come from the tokens in `src/renderer/theme/` (`--rainy-*`). Dark mode is `body[data-rainy-dark]`; do not hard-code colors.
 - Text from projects, tools, language servers and remote servers is untrusted: cloned repositories and SSH hosts can contain anything. Never render it as HTML without sanitizing; the page has privileged bridges.
 - Tool calls pass `agent/permissions.ts` before they run: read-only, ask (the default) or full auto per chat. Keep tools inside their documented behavior: `read` before `write`/`edit`, output limits, spill files, and an undo snapshot for every change.
 - Pin exact dependency versions that are at least two weeks old. CodeMirror core packages are pinned once in `pnpm-workspace.yaml` overrides so only one copy loads.

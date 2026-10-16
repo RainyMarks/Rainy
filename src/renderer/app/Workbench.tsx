@@ -95,7 +95,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     // `prefs.ts` has applied the color scheme and code font named in the dependencies by the time this runs.
     const style = getComputedStyle(document.body)
     const value = (name: string): string => style.getPropertyValue(name).trim()
-    const [fontFamily, background, foreground] = [value('--ds-font-family-code'), value('--dsw-alias-bg-base'), value('--dsw-alias-label-primary')]
+    const [fontFamily, background, foreground] = [value('--rainy-font-family-code'), value('--rainy-alias-bg-base'), value('--rainy-alias-label-primary')]
     return { dark, fontSize: prefs.codeFontSize, ...fontFamily === '' ? {} : { fontFamily },
       ...background === '' || foreground === '' ? {} : { background, foreground } }
   }, [dark, prefs.codeFontSize, prefs.codeFont, prefs.colorScheme])

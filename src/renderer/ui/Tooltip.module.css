@@ -10,16 +10,16 @@
   width: max-content;
   max-width: 50vw;
   padding: 3px 7px;
-  border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-tooltip-bg);
-  color: var(--dsw-static-neutral-bluish-00);
-  font-size: var(--dsw-ui-font-size-small);
+  border-radius: var(--rainy-radius-sm);
+  background: var(--rainy-alias-tooltip-bg);
+  color: var(--rainy-static-neutral-bluish-00);
+  font-size: var(--rainy-ui-font-size-small);
   line-height: 20px;
   white-space: pre-line;
   /* Unbreakable tokens (URLs, paths) must not push past max-width. */
   overflow-wrap: break-word;
   pointer-events: none;
-  animation: tooltip-in 150ms var(--ds-ease-in-out);
+  animation: tooltip-in 150ms var(--rainy-ease-in-out);
 }
 
 .bubble[data-portal] { z-index: 1100; }

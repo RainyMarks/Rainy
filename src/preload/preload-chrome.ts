@@ -9,14 +9,14 @@ interface ControlsOverlay extends EventTarget {
 }
 
 /**
- * The user's theme and language as the page applied them. The page sets `data-ds-theme-source` only once the Host's
+ * The user's theme and language as the page applied them. The page sets `data-rainy-theme-source` only once the Host's
  * preferences arrived; before that `lang` is the page default and is not reported, so it cannot replace the language
  * the desktop remembered.
  * @param root The page's root element.
  * @returns Both choices, or `undefined` for each one the page does not know yet.
  */
 export function pageAppearance(root: HTMLElement): { theme: 'light' | 'dark' | 'system' | undefined; locale: 'zh' | 'en' | undefined } {
-  const theme = root.getAttribute('data-ds-theme-source')
+  const theme = root.getAttribute('data-rainy-theme-source')
   if (theme !== 'light' && theme !== 'dark' && theme !== 'system') return { theme: undefined, locale: undefined }
   return { theme, locale: root.lang.toLowerCase().startsWith('zh') ? 'zh' : 'en' }
 }
@@ -60,7 +60,7 @@ export function installWindowChrome(): void {
     let disposed = false
     let palette = ''
     const probe = document.createElement('span')
-    probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)'
+    probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;background:var(--rainy-alias-bg-base);color:var(--rainy-alias-label-primary)'
     document.body.append(probe)
     const canvas = document.createElement('canvas')
     canvas.width = canvas.height = 1
@@ -110,8 +110,8 @@ export function installWindowChrome(): void {
       schedule()
     }
     const changes = new MutationObserver(collect)
-    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-ds-dark-theme', 'data-color-scheme', 'data-rightbar-collapsed', 'data-sidebar-right-panel'] })
-    changes.observe(root, { attributes: true, attributeFilter: ['data-ds-theme-source', 'lang'] })
+    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-rainy-dark', 'data-color-scheme'] })
+    changes.observe(root, { attributes: true, attributeFilter: ['data-rainy-theme-source', 'lang'] })
     changes.observe(document.head, { childList: true, subtree: true, characterData: true })
     resize.observe(document.body)
     overlay?.addEventListener('geometrychange', schedule)

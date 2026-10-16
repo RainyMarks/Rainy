@@ -17,21 +17,21 @@ it('reports neither the default language nor a theme before the Host answered, t
   const root = document.documentElement
   const { setPrefs } = await import('../../src/renderer/prefs.ts')
   expect(root.lang).toBe('zh-CN')
-  expect(root.hasAttribute('data-ds-theme-source')).toBe(false)
+  expect(root.hasAttribute('data-rainy-theme-source')).toBe(false)
   expect(pageAppearance(root)).toEqual({ theme: undefined, locale: undefined })
   answer.resolve(saved)
-  await vi.waitFor(() => { expect(root.getAttribute('data-ds-theme-source')).toBe('light') })
+  await vi.waitFor(() => { expect(root.getAttribute('data-rainy-theme-source')).toBe('light') })
   expect(pageAppearance(root)).toEqual({ theme: 'light', locale: 'en' })
   await setPrefs({ theme: 'dark', locale: 'zh' })
   expect(pageAppearance(root)).toEqual({ theme: 'dark', locale: 'zh' })
-  expect(document.body.hasAttribute('data-ds-dark-theme')).toBe(true)
+  expect(document.body.hasAttribute('data-rainy-dark')).toBe(true)
 })
 
 it('ignores an unknown theme source', () => {
   const root = document.createElement('html')
   root.lang = 'en'
-  root.setAttribute('data-ds-theme-source', 'sepia')
+  root.setAttribute('data-rainy-theme-source', 'sepia')
   expect(pageAppearance(root)).toEqual({ theme: undefined, locale: undefined })
-  root.setAttribute('data-ds-theme-source', 'system')
+  root.setAttribute('data-rainy-theme-source', 'system')
   expect(pageAppearance(root)).toEqual({ theme: 'system', locale: 'en' })
 })

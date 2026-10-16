@@ -10,7 +10,7 @@ const MAX_STEP = 0.05
 /** Clicks on these draw no ripple: they belong to the control under the pointer. */
 const INTERACTIVE = 'a, button, input, textarea, select, label, [role="button"], [role="menu"], [contenteditable]'
 /** Attributes `prefs.ts` sets on <body> for the color mode, scheme and accent. */
-const THEME_ATTRIBUTES = ['data-ds-dark-theme', 'data-color-scheme', 'data-accent']
+const THEME_ATTRIBUTES = ['data-rainy-dark', 'data-color-scheme', 'data-accent']
 
 /**
  * A canvas filling its positioned parent, behind the parent's other children.

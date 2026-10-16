@@ -845,7 +845,7 @@ async function start(): Promise<void> {
       || (value.menu !== 'edit' && value.menu !== 'help') || (value.locale !== 'zh' && value.locale !== 'en')) return
     reportLocale(value.locale)
     const template = nativeMenuTemplate(value.menu, value.locale, () => {
-      void dialog.showMessageBox(window, { title: 'Rainy', message: `Rainy ${app.getVersion()}`, detail: 'Develop by RainyMarks' })
+      void dialog.showMessageBox(window, { title: 'Rainy', message: `Rainy ${app.getVersion()}`, detail: 'Developed by RainyMarks' })
     }, () => { void updates?.check(true) })
     Menu.buildFromTemplate(template).popup({ window })
   })

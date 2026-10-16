@@ -31,7 +31,7 @@
 
 .groupTitle {
   margin: 4px 8px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-size: 11.5px;
   font-weight: 500;
 }
@@ -46,11 +46,11 @@
   position: relative;
   display: flex;
   align-items: center;
-  border-radius: var(--dsw-radius-xs);
+  border-radius: var(--rainy-radius-xs);
 }
-.row:hover, .row:focus-within { background: var(--dsw-alias-interactive-bg-hover); }
-.current { background: var(--dsw-alias-button-ghost-active-fill); }
-.row[data-archived] .title { color: var(--dsw-alias-label-tertiary); }
+.row:hover, .row:focus-within { background: var(--rainy-alias-interactive-bg-hover); }
+.current { background: var(--rainy-alias-button-ghost-active-fill); }
+.row[data-archived] .title { color: var(--rainy-alias-label-tertiary); }
 
 .open {
   display: flex;
@@ -62,7 +62,7 @@
   padding: 4px 4px 4px 8px;
   border: none;
   background: none;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   font-size: 13px;
   text-align: left;
   cursor: pointer;
@@ -87,7 +87,7 @@
   display: inline-flex;
   gap: 6px;
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-size: 11.5px;
 }
 .row:hover .meta, .row:focus-within .meta { display: none; }
@@ -101,12 +101,12 @@
 
 .pin {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 .snippet {
   overflow: hidden;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-size: 12px;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -122,13 +122,13 @@
   margin-right: 2px;
   padding: 0;
   border: none;
-  border-radius: var(--dsw-radius-xs);
+  border-radius: var(--rainy-radius-xs);
   background: none;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
   cursor: pointer;
 }
 .row:hover .more, .row:focus-within .more, .more[aria-expanded='true'] { display: inline-flex; }
-.more:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.more:hover { background: var(--rainy-alias-interactive-bg-hover); }
 
 .rename {
   flex: 1;
@@ -136,10 +136,10 @@
   height: 30px;
   margin: 1px 4px;
   padding: 0 6px;
-  border: 1px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-xs);
-  background: var(--dsw-alias-bg-base);
-  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--rainy-alias-border-l4);
+  border-radius: var(--rainy-radius-xs);
+  background: var(--rainy-alias-bg-base);
+  color: var(--rainy-alias-label-primary);
   font: inherit;
   font-size: 13px;
   outline: none;
@@ -147,7 +147,7 @@
 
 .empty {
   padding: 24px 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-size: 13px;
   text-align: center;
 }
@@ -156,13 +156,13 @@
   flex: none;
   padding: 8px 14px;
   border: none;
-  border-top: 1px solid var(--dsw-alias-border-l1);
+  border-top: 1px solid var(--rainy-alias-border-l1);
   background: none;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
-.footer:hover { color: var(--dsw-alias-label-primary); }
+.footer:hover { color: var(--rainy-alias-label-primary); }
 
-.waiting { color: var(--dsw-alias-state-warn-primary); }
+.waiting { color: var(--rainy-alias-state-warn-primary); }

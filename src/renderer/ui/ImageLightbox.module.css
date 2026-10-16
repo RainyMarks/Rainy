@@ -11,8 +11,8 @@
 .mask {
   position: absolute;
   inset: 0;
-  background: var(--dsw-alias-bg-mask-1);
-  backdrop-filter: var(--dsw-mask-blur);
+  background: var(--rainy-alias-bg-mask-1);
+  backdrop-filter: var(--rainy-mask-blur);
 }
 
 .image {
@@ -20,10 +20,10 @@
   max-width: min(100%, 1600px);
   max-height: calc(100vh - 80px);
   object-fit: contain;
-  border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-specific-input-major);
+  border-radius: var(--rainy-radius-lg);
+  background: var(--rainy-specific-input-major);
   border: 0;
-  box-shadow: var(--dsw-elevation-prominent);
+  box-shadow: var(--rainy-elevation-prominent);
 }
 
 .close {
@@ -35,11 +35,11 @@
   place-items: center;
   width: 36px;
   height: 36px;
-  border: 0.5px solid var(--dsw-alias-border-l2-darkmode-thin);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-specific-input-major);
-  color: var(--dsw-alias-label-primary);
+  border: 0.5px solid var(--rainy-alias-border-l2-darkmode-thin);
+  border-radius: var(--rainy-radius-md);
+  background: var(--rainy-specific-input-major);
+  color: var(--rainy-alias-label-primary);
   cursor: pointer;
 }
 
-.close:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 3px; }
+.close:focus-visible { outline: var(--rainy-focus-ring-width) solid var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary)); outline-offset: 3px; }

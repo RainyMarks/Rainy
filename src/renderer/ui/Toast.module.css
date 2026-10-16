@@ -1,4 +1,4 @@
-/* The fade delay comes from the component as `--dsh-toast-hold`, so one value
+/* The fade delay comes from the component as `--rainy-toast-hold`, so one value
    drives both the unmount timer and this animation; the fallback matches the
    component's own default. The fade DURATION still has to agree with FADE_MS
    in Toast.tsx, which no owner varies. */
@@ -22,30 +22,30 @@
   width: max-content;
   max-width: min(640px, calc(100vw - 48px));
   padding: 12px 16px;
-  border-radius: var(--dsw-radius-lg);
+  border-radius: var(--rainy-radius-lg);
   /* The design platform's toast surface is dark in BOTH themes (bluish-800
      light / bluish-750 dark), so the label and the action text below stay
      fixed instead of flipping with the theme. */
-  background: var(--dsw-alias-toast-bg);
-  color: var(--dsw-alias-toast-label);
+  background: var(--rainy-alias-toast-bg);
+  color: var(--rainy-alias-toast-label);
   font-size: 14px;
   line-height: 22px;
-  box-shadow: var(--dsw-shadow-lv3);
+  box-shadow: var(--rainy-shadow-lv3);
   transform: translateX(-50%);
   animation:
-    dsh-toast-in 160ms ease-out,
-    dsh-toast-fade 1000ms ease var(--dsh-toast-hold, 3000ms) forwards;
+    rainy-toast-in 160ms ease-out,
+    rainy-toast-fade 1000ms ease var(--rainy-toast-hold, 3000ms) forwards;
 }
 
 .icon {
   display: grid;
   place-items: center;
   flex: none;
-  color: var(--dsw-alias-state-warn-label);
+  color: var(--rainy-alias-state-warn-label);
 }
 
 .icon.success {
-  color: var(--dsw-alias-state-success-primary);
+  color: var(--rainy-alias-state-success-primary);
 }
 
 .text {
@@ -59,7 +59,7 @@
   background: none;
   /* accent-400, brightened at the designer's request, reads as the action
      against the always-dark toast surface without an underline. */
-  color: var(--dsw-static-accent-400);
+  color: var(--rainy-static-accent-400);
   font: inherit;
   cursor: pointer;
   /* Breathing room where the action text meets the surrounding copy. */
@@ -73,7 +73,7 @@
   opacity: 0.8;
 }
 
-@keyframes dsh-toast-in {
+@keyframes rainy-toast-in {
   from {
     opacity: 0;
     transform: translate(-50%, -6px);
@@ -85,7 +85,7 @@
   }
 }
 
-@keyframes dsh-toast-fade {
+@keyframes rainy-toast-fade {
   to {
     opacity: 0;
     visibility: hidden;
@@ -96,6 +96,6 @@
    not movement) still ends the banner before the timed unmount. */
 @media (prefers-reduced-motion: reduce) {
   .toast {
-    animation: dsh-toast-fade 1000ms ease var(--dsh-toast-hold, 3000ms) forwards;
+    animation: rainy-toast-fade 1000ms ease var(--rainy-toast-hold, 3000ms) forwards;
   }
 }

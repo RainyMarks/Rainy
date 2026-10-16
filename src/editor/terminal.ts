@@ -16,7 +16,7 @@ const terminalThemes = {
     brightMagenta: '#d670d6', brightCyan: '#29b8db', brightWhite: '#e5e5e5' },
 }
 
-/** Code font until the page supplies its own; the same families as `--ds-font-family-code`. */
+/** Code font until the page supplies its own; the same families as `--rainy-font-family-code`. */
 const DEFAULT_FONT_FAMILY = "'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier, monospace"
 
 /**

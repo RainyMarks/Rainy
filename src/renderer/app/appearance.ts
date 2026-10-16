@@ -2,12 +2,12 @@
 import { useEffect, useState } from 'react'
 import { isDark } from '../prefs.ts'
 
-/** @returns Whether the page uses the dark palette; follows `body[data-ds-dark-theme]`, including system changes. */
+/** @returns Whether the page uses the dark palette; follows `body[data-rainy-dark]`, including system changes. */
 export function useDarkTheme(): boolean {
   const [dark, setDark] = useState(isDark)
   useEffect(() => {
     const observer = new MutationObserver(() => { setDark(isDark()) })
-    observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] })
+    observer.observe(document.body, { attributes: true, attributeFilter: ['data-rainy-dark'] })
     setDark(isDark())
     return () => { observer.disconnect() }
   }, [])

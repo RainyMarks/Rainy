@@ -1,7 +1,7 @@
 .markdown {
-  font-size: var(--dsh-content-font-size, 14px);
+  font-size: var(--rainy-content-font-size, 14px);
   line-height: 1.7;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   overflow-wrap: anywhere;
 }
 
@@ -27,27 +27,27 @@
 .markdown li > p { margin: 0; }
 
 .markdown a {
-  color: var(--dsw-alias-link);
+  color: var(--rainy-alias-link);
   text-decoration: none;
 }
 .markdown a:hover { text-decoration: underline; }
 
 .markdown blockquote {
   padding: 2px 12px;
-  border-left: 3px solid var(--dsw-alias-border-l3);
-  color: var(--dsw-alias-label-secondary);
+  border-left: 3px solid var(--rainy-alias-border-l3);
+  color: var(--rainy-alias-label-secondary);
 }
 
 .markdown :not(pre) > code {
   padding: 1px 5px;
-  border-radius: var(--dsw-radius-xs);
-  background: var(--dsw-alias-markdown-inline-code);
+  border-radius: var(--rainy-radius-xs);
+  background: var(--rainy-alias-markdown-inline-code);
   font-size: 0.9em;
 }
 
 .markdown hr {
   border: none;
-  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top: 1px solid var(--rainy-alias-border-l2);
   margin: 16px 0;
 }
 
@@ -62,12 +62,12 @@
 }
 .markdown th, .markdown td {
   padding: 6px 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 1px solid var(--rainy-alias-border-l2);
   text-align: left;
   vertical-align: top;
 }
 .markdown th {
-  background: var(--dsw-alias-markdown-code-block-banner);
+  background: var(--rainy-alias-markdown-code-block-banner);
   font-weight: 600;
 }
 
@@ -79,10 +79,10 @@
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  font-family: var(--ds-font-family-code);
-  font-size: var(--dsh-code-font-size, 13px);
+  font-family: var(--rainy-font-family-code);
+  font-size: var(--rainy-code-font-size, 13px);
   line-height: 1.6;
-  background: var(--dsw-alias-markdown-code-block);
+  background: var(--rainy-alias-markdown-code-block);
 }
 
 [data-code-wrap='true'] .pre {
@@ -95,15 +95,15 @@
 .action {
   padding: 2px 6px;
   border: none;
-  border-radius: var(--dsw-radius-xs);
+  border-radius: var(--rainy-radius-xs);
   background: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   font-size: 12px;
   cursor: pointer;
 }
 .action:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
+  background: var(--rainy-alias-interactive-bg-hover);
+  color: var(--rainy-alias-label-primary);
 }
 
 .image {
@@ -119,9 +119,9 @@
   gap: 4px 8px;
   max-width: 100%;
   padding: 4px 8px;
-  border: 1px dashed var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-xs);
-  color: var(--dsw-alias-label-secondary);
+  border: 1px dashed var(--rainy-alias-border-l2);
+  border-radius: var(--rainy-radius-xs);
+  color: var(--rainy-alias-label-secondary);
   font-size: 0.9em;
 }
 

@@ -6,11 +6,11 @@
   justify-content: center;
   gap: 4px;
   border: none;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--rainy-radius-md);
   cursor: pointer;
-  font-size: var(--dsw-ui-font-size);
+  font-size: var(--rainy-ui-font-size);
   line-height: 22px;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   background: transparent;
   padding: 0 14px;
 }
@@ -27,45 +27,45 @@
 /* Compact controls retain their dimensions across filled and outlined variants. */
 .sm {
   height: 28px;
-  font-size: var(--dsw-ui-font-size-caption);
+  font-size: var(--rainy-ui-font-size-caption);
   line-height: 18px;
   padding: 0 10px;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--rainy-radius-sm);
 }
 
 .primary {
-  background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-label-primary-foreground);
+  background: var(--rainy-alias-button-primary-fill);
+  color: var(--rainy-alias-label-primary-foreground);
 }
 
 .primary:hover:not(:disabled) {
-  background: var(--dsw-alias-button-primary-hover);
+  background: var(--rainy-alias-button-primary-hover);
 }
 
 .ghost:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--rainy-alias-interactive-bg-hover);
 }
 
 .ghost:active:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-active);
+  background: var(--rainy-alias-interactive-bg-active);
 }
 
 /* Secondary actions sit on a solid neutral fill without a stroke. */
 .outline {
   border: 0;
-  background: var(--dsw-alias-control-fill);
+  background: var(--rainy-alias-control-fill);
 }
 
 .outline:hover:not(:disabled) {
-  background: var(--dsw-alias-control-fill-hover);
+  background: var(--rainy-alias-control-fill-hover);
 }
 
 .toolbar {
-  background: var(--dsw-alias-button-tool-bar-fill);
+  background: var(--rainy-alias-button-tool-bar-fill);
 }
 
 .toolbar:hover:not(:disabled) {
-  background: var(--dsw-alias-button-tool-bar-hover);
+  background: var(--rainy-alias-button-tool-bar-hover);
 }
 
 .icon {

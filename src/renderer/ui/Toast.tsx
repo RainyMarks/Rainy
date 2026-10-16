@@ -78,7 +78,7 @@ export function Toast({ text, icon, tone, anchor, holdMs = HOLD_MS, actions, onD
       role="alert"
       style={{
         ...left === null ? {} : { left },
-        '--dsh-toast-hold': `${String(holdMs)}ms`,
+        '--rainy-toast-hold': `${String(holdMs)}ms`,
       } as CSSProperties}
     >
       {tone === 'success'

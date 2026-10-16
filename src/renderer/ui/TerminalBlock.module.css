@@ -1,10 +1,10 @@
 .block {
-  --dsl-terminal-radius: var(--dsw-radius-lg);
+  --dsl-terminal-radius: var(--rainy-radius-lg);
   --dsl-terminal-line-height: 22px;
   /* Rebindable by consumers (CodeBlock's --dsl-code-block-content-font
      pattern): a surface wanting the smaller code size rebinds this together
      with --dsl-terminal-line-height on its own container. */
-  --dsl-terminal-font: var(--dsw-font-markdown-code-block);
+  --dsl-terminal-font: var(--rainy-font-markdown-code-block);
   /* The card's own left inset, holding the run-state dot in a column of its own
      so it never competes with the commands for horizontal space. */
   --dsl-terminal-gutter: 30px;
@@ -17,8 +17,8 @@
      container that clips it. Owning the reservation here keeps the invariant
      with the component that depends on it. */
   padding-left: var(--dsl-terminal-gutter);
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-markdown-code-block);
+  color: var(--rainy-alias-label-primary);
+  background: var(--rainy-alias-markdown-code-block);
   border-radius: var(--dsl-terminal-radius);
   /* Clip the banner to the card's own radius: when a consumer adds a border,
      the banner's equal corner radius no longer nests inside it and leaves a
@@ -51,7 +51,7 @@
 .header::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   background-clip: padding-box;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--rainy-radius-sm);
 }
 
 .header::-webkit-scrollbar-track {
@@ -62,7 +62,7 @@
    divider the IN/OUT card draws between its sections. A banner-only card (a
    running command that has printed nothing yet) draws none. */
 .block[data-body] .header {
-  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  border-bottom: 0.5px solid var(--rainy-alias-border-l2);
 }
 
 /* One row per command line. The prompt column is the only element allowed to
@@ -107,7 +107,7 @@
 
 .cwd {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 /* Default `pre`, not `nowrap`: the prompt row renders the command verbatim,
@@ -117,7 +117,7 @@
    overflow-wrap is inert while white-space stays `pre`. */
 .command {
   min-width: 0;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: var(--dsl-terminal-command-whitespace, pre);
@@ -133,7 +133,7 @@
   position: sticky;
   top: 0;
   height: var(--dsl-terminal-line-height);
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--rainy-alias-state-error-primary);
 }
 
 .copyButton {
@@ -142,13 +142,13 @@
   top: 0;
   /* Card surface, not transparent: the control is sticky over the banner's
      own scroll, so scrolled command text must not bleed through it. */
-  background-color: var(--dsw-alias-markdown-code-block);
+  background-color: var(--rainy-alias-markdown-code-block);
   border: none;
   padding: 0;
   margin: 0;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
   cursor: pointer;
-  font: var(--dsw-font-xs-13);
+  font: var(--rainy-font-xs-13);
   line-height: var(--dsl-terminal-line-height);
 }
 
@@ -170,7 +170,7 @@
 .output::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   background-clip: padding-box;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--rainy-radius-sm);
 }
 
 /* Track end-margins keep the thumb's travel out of the card's rounded
@@ -195,18 +195,18 @@
   padding: 0;
   border: none;
   background-color: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
   cursor: pointer;
   font: inherit;
   text-align: left;
 }
 
 .expand:hover {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
 }
 
 .empty {
   padding: 12px 14px 12px 0;
   font: var(--dsl-terminal-font);
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }

@@ -15,20 +15,20 @@
 }
 
 .dot[data-state='done'] {
-  color: var(--dsw-alias-state-success-primary);
+  color: var(--rainy-alias-state-success-primary);
 }
 
 .dot[data-state='warning'] {
-  color: var(--dsw-alias-state-warn-primary);
+  color: var(--rainy-alias-state-warn-primary);
 }
 
 .dot[data-state='error'] {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--rainy-alias-state-error-primary);
 }
 
 /* Idle is the absence of activity and uses the theme's neutral state step. */
 .dot[data-state='idle'] {
-  color: var(--dsw-alias-state-idle-primary);
+  color: var(--rainy-alias-state-idle-primary);
 }
 
 /* Ongoing is the sole non-dot state: a quiet full ring sits behind a centered
@@ -36,12 +36,12 @@
  * share one 1.5s period so pinning their start times aligns them together. */
 .spinner {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 .spinnerMotion {
   transform-origin: center;
-  animation: dsh-state-dot-spin 1.5s linear infinite;
+  animation: rainy-state-dot-spin 1.5s linear infinite;
 }
 
 .spinnerTrack,
@@ -58,14 +58,14 @@
 
 .spinnerArc {
   stroke-dasharray: 12 150;
-  animation: dsh-state-dot-dash 1.5s ease-in-out infinite;
+  animation: rainy-state-dot-dash 1.5s ease-in-out infinite;
 }
 
-@keyframes dsh-state-dot-spin {
+@keyframes rainy-state-dot-spin {
   to { transform: rotate(360deg); }
 }
 
-@keyframes dsh-state-dot-dash {
+@keyframes rainy-state-dot-dash {
   0% {
     stroke-dasharray: 12 150;
     stroke-dashoffset: 0;
@@ -94,7 +94,7 @@
   }
 }
 
-.step { display: inline-flex; flex: none; align-items: center; justify-content: center; box-sizing: border-box; border-radius: 50%; corner-shape: round; border: 1.5px solid var(--dsw-alias-label-tertiary); color: var(--dsw-alias-label-primary-foreground); }
-.step[data-state='done'] { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); }
-.step[data-state='error'] { border-color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-state-error-primary); }
-.step[data-state='warning'] { border-color: var(--dsw-alias-state-warn-primary); }
+.step { display: inline-flex; flex: none; align-items: center; justify-content: center; box-sizing: border-box; border-radius: 50%; corner-shape: round; border: 1.5px solid var(--rainy-alias-label-tertiary); color: var(--rainy-alias-label-primary-foreground); }
+.step[data-state='done'] { border-color: var(--rainy-alias-state-success-primary); background: var(--rainy-alias-state-success-primary); }
+.step[data-state='error'] { border-color: var(--rainy-alias-state-error-primary); background: var(--rainy-alias-state-error-primary); }
+.step[data-state='warning'] { border-color: var(--rainy-alias-state-warn-primary); }

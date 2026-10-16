@@ -1580,7 +1580,7 @@ export const IconChevronsUpDownOutlineMedium = (props: IconProps) => (
 const IconArchiveOffOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedIconProps) => {
   // The mask carves whitespace along the slash out of the box strokes, so the
   // id must stay unique per rendered instance.
-  const maskId = `dsh-archive-off-${useId().replaceAll(':', '')}`
+  const maskId = `rainy-archive-off-${useId().replaceAll(':', '')}`
   return (
     <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none"
       stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" strokeWidth={strokeWidth}>

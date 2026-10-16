@@ -4,13 +4,13 @@
   gap: 6px;
   height: 32px;
   padding: 0 8px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-1);
+  border: 0.5px solid var(--rainy-alias-border-l4);
+  border-radius: var(--rainy-radius-md);
+  background: var(--rainy-alias-bg-layer-1);
 }
 
 .wrap:focus-within {
-  border-color: var(--dsw-alias-state-business-primary);
+  border-color: var(--rainy-alias-state-business-primary);
 }
 
 .icon {
@@ -19,7 +19,7 @@
   height: 16px;
   align-items: center;
   justify-content: center;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 .input {
@@ -28,11 +28,11 @@
   border: none;
   outline: none;
   background: transparent;
-  font-size: var(--dsw-ui-font-size);
+  font-size: var(--rainy-ui-font-size);
   line-height: 22px;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .input::placeholder {
-  color: var(--dsw-alias-label-dimmed);
+  color: var(--rainy-alias-label-dimmed);
 }

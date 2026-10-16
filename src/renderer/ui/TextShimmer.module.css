@@ -1,9 +1,9 @@
 .root[data-text-shimmer] {
   background-image: linear-gradient(
     90deg,
-    currentColor calc(50% - var(--dsh-text-shimmer-spread)),
+    currentColor calc(50% - var(--rainy-text-shimmer-spread)),
     color-mix(in oklab, currentColor 50%, transparent),
-    currentColor calc(50% + var(--dsh-text-shimmer-spread))
+    currentColor calc(50% + var(--rainy-text-shimmer-spread))
   );
   background-position: 100% center;
   background-repeat: no-repeat;
@@ -11,10 +11,10 @@
   background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: dsh-text-shimmer 1.5s cubic-bezier(0.33, 0, 0.67, 1) infinite;
+  animation: rainy-text-shimmer 1.5s cubic-bezier(0.33, 0, 0.67, 1) infinite;
 }
 
-@keyframes dsh-text-shimmer {
+@keyframes rainy-text-shimmer {
   66.6667%, 100% { background-position: 0% center; }
 }
 

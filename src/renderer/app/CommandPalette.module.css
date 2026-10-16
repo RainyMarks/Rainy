@@ -1,7 +1,7 @@
 /* Command rows of the palette, on the quick-open dialog's frame. */
-.prompt { flex: none; color: var(--dsw-alias-label-tertiary); font: 600 13px var(--ds-font-family-code, monospace); }
+.prompt { flex: none; color: var(--rainy-alias-label-tertiary); font: 600 13px var(--rainy-font-family-code, monospace); }
 .command { display: flex; align-items: center; gap: 12px; }
 .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.category { color: var(--dsw-alias-label-secondary); }
+.category { color: var(--rainy-alias-label-secondary); }
 .keys { flex: none; }
 .disabled { opacity: 0.45; cursor: default; }

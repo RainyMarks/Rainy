@@ -1,6 +1,6 @@
 /**
  * Overlay clearance from the window's top strip. On macOS desktop the frame
- * publishes `--dsh-frame-top-clearance` on the root element — the constant
+ * publishes `--rainy-frame-top-clearance` on the root element — the constant
  * step below the traffic-light strip, where clicks drag the window instead of
  * the overlay. JS-clamped overlays keep at least that much air above them.
  * Elsewhere the property is absent and the caller's own margin applies.
@@ -13,7 +13,7 @@
  */
 export function overlayTopMargin(min: number): number {
   const clearance = Number.parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue('--dsh-frame-top-clearance'),
+    getComputedStyle(document.documentElement).getPropertyValue('--rainy-frame-top-clearance'),
   )
   return Number.isNaN(clearance) ? min : Math.max(min, clearance)
 }

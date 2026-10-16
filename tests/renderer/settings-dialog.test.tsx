@@ -100,7 +100,7 @@ it('stores language, appearance, chat preferences and usage display through the 
   expect(stored.theme).toBe('dark')
   expect(button(en.appearanceDark).getAttribute('aria-pressed')).toBe('true')
   expect(button(en.appearanceSystem).getAttribute('aria-pressed')).toBe('false')
-  expect(document.body.hasAttribute('data-ds-dark-theme')).toBe(true)
+  expect(document.body.hasAttribute('data-rainy-dark')).toBe(true)
 
   await click(button(en.navGeneral))
   await click(button(en.busyEnterSteer))
@@ -127,7 +127,7 @@ it('steps font sizes within 12 to 17 px and resets the appearance to the default
   await click(button(zh.fontSizeIncrease))
   expect(value('uiFontSize')).toBe('17')
   expect(button(zh.fontSizeIncrease).disabled).toBe(true)
-  expect(document.documentElement.style.getPropertyValue('--dsh-content-font-size')).toBe('17px')
+  expect(document.documentElement.style.getPropertyValue('--rainy-content-font-size')).toBe('17px')
   await click(button(zh.codeFontSizeIncrease))
   expect(value('codeFontSize')).toBe('13')
   await click(button(zh.appearanceReset))

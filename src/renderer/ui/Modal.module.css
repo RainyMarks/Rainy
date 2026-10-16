@@ -11,22 +11,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: max(24px, var(--dsh-frame-top-clearance, 24px)) 24px;
+  padding: max(24px, var(--rainy-frame-top-clearance, 24px)) 24px;
 }
 
 /* The mask dims the page; dark theme raises its opacity. */
 .mask {
   position: absolute;
   inset: 0;
-  backdrop-filter: var(--dsw-mask-blur);
+  backdrop-filter: var(--rainy-mask-blur);
 }
 
 .mask::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: var(--dsw-alias-bg-mask-1);
-  animation: modalEnter var(--ds-transition-duration) var(--ds-ease-in-out);
+  background: var(--rainy-alias-bg-mask-1);
+  animation: modalEnter var(--rainy-transition-duration) var(--rainy-ease-in-out);
 }
 
 /* Dialogs use the prominent elevation on the secondary layer. */
@@ -40,10 +40,10 @@
   padding: 0 0 24px;
   overflow: hidden;
   border: 0;
-  border-radius: var(--dsw-radius-panel);
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-elevation-prominent);
-  animation: modalEnter var(--ds-transition-duration) var(--ds-ease-in-out);
+  border-radius: var(--rainy-radius-panel);
+  background: var(--rainy-alias-bg-layer-2);
+  box-shadow: var(--rainy-elevation-prominent);
+  animation: modalEnter var(--rainy-transition-duration) var(--rainy-ease-in-out);
 }
 
 @keyframes modalEnter {
@@ -80,7 +80,7 @@
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .close {
@@ -91,14 +91,14 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--rainy-radius-sm);
   background: transparent;
   cursor: pointer;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--rainy-alias-label-secondary);
 }
 
 .close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--rainy-alias-interactive-bg-hover);
 }
 
 /* Description and body share the 332px content column (24px side pads). */
@@ -108,7 +108,7 @@
   font-size: 14px;
   line-height: 22px;
   font-weight: 400;
-  color: var(--dsw-alias-label-primary);
+  color: var(--rainy-alias-label-primary);
 }
 
 .body {

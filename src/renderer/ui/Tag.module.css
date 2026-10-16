@@ -4,7 +4,7 @@
 .tag {
   display: inline-flex;
   align-items: center;
-  border-radius: var(--dsw-radius-xs);
+  border-radius: var(--rainy-radius-xs);
   padding: 1px 8px;
   font-size: 11px;
   line-height: 17px;
@@ -13,22 +13,22 @@
 }
 
 .tag[data-tone='outline'] {
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  color: var(--dsw-alias-label-tertiary);
+  border: 0.5px solid var(--rainy-alias-border-l4);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 .tag[data-tone='solid'] {
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-layer-3);
+  background: var(--rainy-alias-label-primary);
+  color: var(--rainy-alias-bg-layer-3);
 }
 
 .tag[data-tone='neutral'] {
-  background: var(--dsw-alias-bg-module-platform);
-  color: var(--dsw-alias-label-secondary);
+  background: var(--rainy-alias-bg-module-platform);
+  color: var(--rainy-alias-label-secondary);
 }
 
 .tag[data-tone='quiet'] {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 /* Status tones tint their own color for the fill, so a palette change moves
@@ -36,21 +36,21 @@
  * except `warning`, which keeps the 12% the plugin inventory's conditional
  * tag shipped with — matching it is what makes this a pure consolidation. */
 .tag[data-tone='success'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
-  color: var(--dsw-alias-state-success-primary);
+  background: color-mix(in srgb, var(--rainy-alias-state-success-primary) 10%, transparent);
+  color: var(--rainy-alias-state-success-primary);
 }
 
 .tag[data-tone='info'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
-  color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 10%, transparent);
+  color: var(--rainy-alias-state-business-primary);
 }
 
 .tag[data-tone='warning'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent);
-  color: var(--dsw-alias-state-warn-primary);
+  background: color-mix(in srgb, var(--rainy-alias-state-warn-primary) 12%, transparent);
+  color: var(--rainy-alias-state-warn-primary);
 }
 
 .tag[data-tone='danger'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
-  color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--rainy-alias-state-error-primary) 10%, transparent);
+  color: var(--rainy-alias-state-error-primary);
 }

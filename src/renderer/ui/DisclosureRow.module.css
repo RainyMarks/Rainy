@@ -1,7 +1,7 @@
 /* Shared disclosure header: [16px leading] gap 6 [title 13/24] at the default
    size. The Settings font-size preference moves the row through the
    body-published axis: title size follows the secondary tier
-   (--dsh-content-font-size-secondary: one step under the body — setting −1 at
+   (--rainy-content-font-size-secondary: one step under the body — setting −1 at
    ≤14, setting −2 above), and the row height, leading box, and glyph edge
    shift by the body px delta so the icon keeps its optical share of the
    line. */
@@ -18,7 +18,7 @@
   overflow: hidden;
   display: flex;
   align-items: center;
-  height: calc(24px + var(--dsh-content-font-delta, 0px));
+  height: calc(24px + var(--rainy-content-font-delta, 0px));
   min-width: 0;
 }
 
@@ -29,8 +29,8 @@
 .leading {
   position: relative;
   flex: none;
-  width: calc(16px + var(--dsh-content-font-delta, 0px));
-  height: calc(16px + var(--dsh-content-font-delta, 0px));
+  width: calc(16px + var(--rainy-content-font-delta, 0px));
+  height: calc(16px + var(--rainy-content-font-delta, 0px));
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -38,7 +38,7 @@
   padding: 0;
   border: none;
   background: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--rainy-alias-label-tertiary);
 }
 
 /* Flow-row glyphs render at 14px inside the 16px box; the CSS edge overrides
@@ -46,8 +46,8 @@
    without a per-callsite size prop. StateDot (its svg carries data-state)
    stays at its fixed figma size — it is a status mark, not text furniture. */
 .leading svg:not([data-state]) {
-  width: calc(14px + var(--dsh-content-font-delta, 0px));
-  height: calc(14px + var(--dsh-content-font-delta, 0px));
+  width: calc(14px + var(--rainy-content-font-delta, 0px));
+  height: calc(14px + var(--rainy-content-font-delta, 0px));
 }
 
 button.leading {
@@ -78,7 +78,7 @@ button.leading {
 
 .title {
   flex: none;
-  font-size: var(--dsh-content-font-size-secondary, 13px);
-  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
-  color: var(--dsw-alias-label-secondary);
+  font-size: var(--rainy-content-font-size-secondary, 13px);
+  line-height: calc(24px + var(--rainy-content-font-delta, 0px));
+  color: var(--rainy-alias-label-secondary);
 }
