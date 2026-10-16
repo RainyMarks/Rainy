@@ -61,20 +61,18 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
-## 3.0 新变化
+## 3.1 新变化
 
-Rainy 从此专注做一款轻量的 AI 编程工作台，不再是 CTF 工具箱。
+Rainy 终于有了“雨”的样子。
 
-- **SSH 远程开发**：
-  - 新的执行环境类型：装有 python3 的 x86_64 Linux 服务器。`~/.ssh/config` 里的主机会自动列在 **设置 → 运行环境 → SSH 远程开发** 中；其他主机填 `user@host`，端口不是 22 时再填端口。保存前 Rainy 会先连接一次，确认能登录。命令面板里也有 **连接到 SSH 主机…**。
-  - 第一次连接会在服务器的 `~/.rainy-agent` 中安装本版本的 Linux 运行环境。服务器能联网时自己分段下载，每段都校验、断了可以接着下；服务器下载不了（没有外网或太慢）时，由你的电脑下载后通过 SSH 连接传过去。每个压缩包都和签名发行包里记录的校验值比对。不会往系统目录里装任何东西。
-  - 后端只监听服务器的本机回环地址，再由 ssh 把这个端口转发到你电脑上的同一端口。
-  - 第一次连接一台服务器时，会显示它的主机指纹，由你确认是否信任。密码、密钥口令和一次性验证码都在 Rainy 自己的窗口里输入，只保存在内存中，Rainy 关闭就清除。
-  - 连接断开时，Rainy 会提示重新连接；对话记录保存在服务器上。
-- **移除**：CTF 工具目录（66 款可下载工具）、AI 安全工具箱（IceSky）、IDA MCP 预设、图片的颜色通道与位平面视图、十六进制视图的内嵌文件扫描。图片、十六进制、Markdown、PDF 和音视频预览都保留。旧版本下载的工具仍留在安装目录的 `tools` 文件夹里，Rainy 不再管理它们，可以直接删除这个文件夹。
-- 状态栏会显示当前执行环境，例如 `SSH · dev` 或 `WSL · Ubuntu`。
+![空白编辑区和新对话里的细雨，点击背景处荡开的涟漪](assets/zh/rain.png)
 
-更早的版本：2.5 加入了全项目搜索替换、命令面板和 Git 面板；2.4 加入了项目地图和 AI 修改审查；2.3 加入了编辑器内 AI 补全和 Ctrl+K 改代码。每个版本的详细变化见[发布说明](https://github.com/RainyMarks/Rainy/releases)。
+- **空白页面会下雨**：欢迎页、没有打开文件的编辑区和新对话里，飘着强调色的斜向细雨，雨滴落下的地方泛起小小的水圈。点击背景会荡开一圈涟漪，经过的雨线被推开、被照亮。雨的颜色跟随配色和强调色；窗口隐藏时暂停，Windows 开启“减少动态效果”时保持静止，也可以在 **设置 → 外观 → 动效** 中关闭。
+- **会动的标志**：Rainy 标志使用你的强调色。鼠标指向时三道雨线落下；当前对话运行时，顶栏的标志一直下雨，停止时落完这一轮再停。
+- **推理改成雨云**：推理一行的图标从 DeepSeek Harness 留下的原子图标换成了雨云，模型思考时云下的雨滴依次落下。
+- 应用图标换成由浅到深的蓝色渐变；界面代码里剩下的 DeepSeek Harness 命名全部换掉。
+
+更早的版本：3.0 加入了 SSH 远程开发并移除了 CTF 工具箱；2.5 加入了全项目搜索替换、命令面板和 Git 面板；2.4 加入了项目地图和 AI 修改审查；2.3 加入了编辑器内 AI 补全和 Ctrl+K 改代码。每个版本的详细变化见[发布说明](https://github.com/RainyMarks/Rainy/releases)。
 
 <a id="run"></a>
 ## 下载与开始使用
@@ -134,10 +132,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.0.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.1.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.0.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.1.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 

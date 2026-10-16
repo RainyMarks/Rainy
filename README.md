@@ -61,20 +61,18 @@ Rainy puts an AI coding agent, a real editor and debugger with AI suggestions an
 ![Ctrl+K adding an empty-key check to a function, with the new lines in green](assets/ai-edit.png)
 
 <a id="whats-new"></a>
-## What's new in 3.0
+## What's new in 3.1
 
-Rainy now focuses on being a lightweight AI coding workbench rather than a CTF toolkit.
+Rainy now looks like its name.
 
-- **SSH remote development**:
-  - A new kind of execution environment: an x86_64 Linux server with python3. Hosts from `~/.ssh/config` are listed automatically in **Settings → Runtime → SSH remote development**; add others as `user@host` with an optional port. Rainy connects once to check the login before saving the host. The command palette has **Connect to an SSH host…**.
-  - The first connection installs this version's Linux runtime in `~/.rainy-agent` on the server. The server downloads it itself in verified, resumable pieces; when it cannot (no internet, or too slow), your PC downloads it and sends it over the connection. Every archive is checked against the checksum in the signed release. Nothing is installed system-wide.
-  - The backend listens only on the server's loopback address; ssh forwards that port to the same port on your PC.
-  - A new server's host key is shown with its fingerprint before you trust it. Passwords, key passphrases and one-time codes are asked in Rainy's own window and kept in memory only until Rainy closes.
-  - If the connection drops, Rainy offers to reconnect; chat history stays on the server.
-- **Removed**: the CTF tool catalog (66 downloadable tools), the AI security toolkit (IceSky), the IDA MCP preset, the image color channel and bit plane views, and the hex view's embedded-file scan. Image, hex, Markdown, PDF and media preview stay. Tools that earlier versions downloaded remain in the `tools` folder of the installation and are no longer managed; you can delete that folder.
-- The status bar names the execution environment, for example `SSH · dev` or `WSL · Ubuntu`.
+![Rain on an empty editor and a new chat, with a ripple where the background was clicked](assets/rain.png)
 
-Earlier releases: 2.5 added project-wide search and replace, the command palette and the Git panel; 2.4 the project map and review of the agent's changes; 2.3 inline AI completion and Ctrl+K edits. See the [release notes](https://github.com/RainyMarks/Rainy/releases) for every version.
+- **Rain on empty views**: the welcome view, an editor with no file open and a new chat show light, slanted rain in your accent color, with small rings where drops land. Click the background and a ripple spreads, pushing and lighting the rain it passes. It follows the color scheme and accent, pauses while the window is hidden, stays still when Windows asks for reduced motion, and can be turned off in **Settings → Appearance → Motion**.
+- **A living mark**: the Rainy mark takes your accent color. Point at it and its three bars fall like rain; in the top bar they keep falling while the current chat works, and finish their fall when it stops.
+- **Reasoning as a rain cloud**: the reasoning row shows a rain cloud instead of the atom icon inherited from DeepSeek Harness, and its drops fall while the model thinks.
+- A refreshed application icon with a light-to-deep blue tile, and the last DeepSeek Harness names removed from the interface code.
+
+Earlier releases: 3.0 added SSH remote development and dropped the CTF toolkit; 2.5 added project-wide search and replace, the command palette and the Git panel; 2.4 the project map and review of the agent's changes; 2.3 inline AI completion and Ctrl+K edits. See the [release notes](https://github.com/RainyMarks/Rainy/releases) for every version.
 
 <a id="run"></a>
 ## Download and start
@@ -134,10 +132,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.0.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.1.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.0.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.1.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 
