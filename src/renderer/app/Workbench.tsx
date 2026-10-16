@@ -7,7 +7,7 @@ import {
   Button, FileTypeIcon, fileSizeText, IconAction, IconBugOutline, IconCheckOutlineRegular, IconChevronDownOutlineRegular,
   IconChevronLeftOutlineRegular, IconCloseOutlineRegular, IconEllipsisOutlineRegular, IconFolderCloseRegular,
   IconPanelBottomOutline, IconPanelLeftOutlineRegular, IconPanelRightOutline, IconPlayOutlineRegular, IconPlusOutlineRegular,
-  IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, Menu,
+  IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, Menu, RainyMark,
   IconBranchOutlineRegular, IconFilesOutline, IconSourceControlOutline, ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
 } from '../ui/index.ts'
 import { GitView } from '../git/GitView.tsx'
@@ -23,6 +23,7 @@ import { useChanges } from '../review/changes-store.ts'
 import { finishReview, openReview, undoReview } from '../review/review-actions.ts'
 import { ReviewBar } from '../review/ReviewBar.tsx'
 import { ChatPane } from '../chat/ChatPane.tsx'
+import { useChatBusy } from '../chat/chat-store.ts'
 import { History } from '../chat/History.tsx'
 import { SettingsDialog, type SettingsSection } from '../settings/SettingsDialog.tsx'
 import type { EditorAppearance, EditorInstance } from '../ide/editor-types.ts'
@@ -87,6 +88,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const executionState = useStore(execution.state)
   const directoryPending = useStore(directory.pending)
   const sessionId = useStore(workbench.session)
+  const agentBusy = useChatBusy(sessionId)
   const prefs = usePrefs()
   const dark = useDarkTheme()
   const appearance = useMemo<EditorAppearance>(() => {
@@ -552,7 +554,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     <div className={css.app} data-app-frame>
       <header className={css.topbar} data-window-drag data-rainy-topbar aria-label={ta('appMenu')}>
         <div className={css.topStart}>
-          <img src="/rainy/icon.png" alt="" className={css.topMark} />
+          <RainyMark size={18} raining={agentBusy} className={css.topMark} />
           {width < 900 ? <Menu open={menu === 'app'} onClose={() => { setMenu(undefined) }} portal compact
             anchor={<IconAction label={ta('appMenu')} expanded={menu === 'app'} onClick={() => { toggle('app') }}>
               <IconEllipsisOutlineRegular size={16} />

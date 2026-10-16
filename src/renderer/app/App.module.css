@@ -89,9 +89,9 @@
 @media (max-width: 860px) { .commandLabel { display: none; } .commandCenter { width: auto; } }
 
 /* Empty editor area: welcome without a project, quick actions without an open file. */
-.welcome { height: 100%; display: grid; place-items: center; box-sizing: border-box; padding: 32px 24px; overflow: auto; }
-.welcomeBody { width: min(440px, 100%); display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
-.welcomeMark { width: 52px; height: 52px; margin-bottom: 6px; border-radius: 8px; }
+.welcome { position: relative; height: 100%; display: grid; place-items: center; box-sizing: border-box; padding: 32px 24px; overflow: auto; }
+.welcomeBody { position: relative; width: min(440px, 100%); display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.welcomeMark { margin-bottom: 6px; filter: drop-shadow(0 6px 16px color-mix(in srgb, var(--dsw-static-accent-500) 35%, transparent)); }
 .welcomeTitle { margin: 0; color: var(--dsw-alias-label-primary); font-size: 20px; line-height: 28px; font-weight: 600; }
 .welcomeText { margin: 0; max-width: 380px; color: var(--dsw-alias-label-secondary); }
 .welcomeActions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; }

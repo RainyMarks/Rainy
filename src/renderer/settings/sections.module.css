@@ -118,7 +118,7 @@
   --preview-side: var(--dsw-static-gray-40);
   --preview-line: var(--dsw-static-gray-200);
   --preview-bubble: var(--dsw-static-gray-75);
-  --preview-accent: var(--dsw-static-deepseek-500);
+  --preview-accent: var(--dsw-static-accent-500);
   --preview-stroke: rgba(0, 0, 0, 0.1);
   display: flex; height: 58px; overflow: hidden; border-radius: var(--dsw-radius-md); background: var(--preview-base);
   box-shadow: inset 0 0 0 1px var(--preview-stroke); transition: box-shadow 120ms ease;
@@ -128,7 +128,7 @@
   --preview-side: var(--dsw-static-gray-900);
   --preview-line: var(--dsw-static-gray-750);
   --preview-bubble: var(--dsw-static-gray-825);
-  --preview-accent: var(--dsw-static-deepseek-400);
+  --preview-accent: var(--dsw-static-accent-400);
   --preview-stroke: rgba(255, 255, 255, 0.1);
 }
 .swatch:hover .preview { box-shadow: inset 0 0 0 1px var(--preview-stroke), 0 0 0 1px var(--dsw-alias-border-l4); }
@@ -142,8 +142,8 @@
 
 /* Accent colors: "Auto" shows the scheme's accent beside its label; the others are dots of their own color. */
 .accents { display: inline-flex; flex: none; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 9px; }
-.accentDot, .accentAuto { --accent-color: var(--dsw-static-deepseek-500); flex: none; padding: 0; border: 0; cursor: pointer; }
-:global(body[data-ds-dark-theme]) :is(.accentDot, .accentAuto) { --accent-color: var(--dsw-static-deepseek-400); }
+.accentDot, .accentAuto { --accent-color: var(--dsw-static-accent-500); flex: none; padding: 0; border: 0; cursor: pointer; }
+:global(body[data-ds-dark-theme]) :is(.accentDot, .accentAuto) { --accent-color: var(--dsw-static-accent-400); }
 .accentDot { width: 22px; height: 22px; border-radius: 50%; background: var(--accent-color); transition: box-shadow 120ms ease; }
 .accentDot[aria-pressed='true'] { box-shadow: 0 0 0 2px var(--dsw-alias-bg-base), 0 0 0 4px var(--accent-color); }
 .accentAuto { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px 0 9px; border-radius: 13px; background: var(--dsw-alias-control-fill); color: var(--dsw-alias-label-secondary); font: inherit; font-size: calc(var(--dsh-content-font-size) - 1px); }

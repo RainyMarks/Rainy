@@ -1,7 +1,8 @@
 /** Editor area without a project (welcome) and without an open file. */
 import type { IdeWorkspace } from '../../shared/ide-files-protocol.ts'
-import { Button, IconFolderCloseRegular, ShortcutKeys } from '../ui/index.ts'
+import { Button, IconFolderCloseRegular, RainyMark, ShortcutKeys } from '../ui/index.ts'
 import { useIdeT } from '../ide/messages.ts'
+import { RainField } from './RainField.tsx'
 import css from './App.module.css'
 
 /**
@@ -26,8 +27,9 @@ export function Welcome({ workspaces, loading, nativeDirectory, pending, open, b
 }) {
   const t = useIdeT()
   return <div className={css.welcome}>
+    <RainField />
     <div className={css.welcomeBody}>
-      <img src="/rainy/icon.png" alt="" className={css.welcomeMark} />
+      <RainyMark size={56} entrance className={css.welcomeMark} />
       <h2 className={css.welcomeTitle}>{t('ideWelcomeTitle')}</h2>
       <p className={css.welcomeText}>{t('ideWelcomeDescription')}</p>
       <div className={css.welcomeActions}>
@@ -65,6 +67,7 @@ export function NoFile({ shortcut, search, create, agent }: {
 }) {
   const t = useIdeT()
   return <div className={css.welcome}>
+    <RainField />
     <div className={css.welcomeBody}>
       <h2 className={css.welcomeTitle}>{t('ideNoFileTitle')}</h2>
       <p className={css.welcomeText}>{t('ideNoFile')}</p>

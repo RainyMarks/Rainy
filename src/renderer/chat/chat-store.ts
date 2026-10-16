@@ -124,16 +124,29 @@ export function useChat(sessionId: string | null): ChatView | undefined {
   useEffect(() => {
     if (sessionId !== null && !chats.has(sessionId)) open(sessionId)
   }, [sessionId])
-  return useSyncExternalStore(
-    (listener) => {
-      if (sessionId === null) return () => undefined
-      let set = listeners.get(sessionId)
-      if (set === undefined) { set = new Set(); listeners.set(sessionId, set) }
-      set.add(listener)
-      return () => { set.delete(listener) }
-    },
-    () => sessionId === null ? undefined : chats.get(sessionId),
-  )
+  return useSyncExternalStore(subscriber(sessionId), () => sessionId === null ? undefined : chats.get(sessionId))
+}
+
+/**
+ * Follow whether a chat is working, without loading it.
+ * @param sessionId Chat id, or `null`.
+ * @returns Whether the chat runs or compacts; `false` until something else loads it.
+ */
+export function useChatBusy(sessionId: string | null): boolean {
+  return useSyncExternalStore(subscriber(sessionId), () => {
+    const status = sessionId === null ? undefined : chats.get(sessionId)?.summary.status
+    return status === 'running' || status === 'compacting'
+  })
+}
+
+function subscriber(sessionId: string | null): (listener: () => void) => () => void {
+  return (listener) => {
+    if (sessionId === null) return () => undefined
+    let set = listeners.get(sessionId)
+    if (set === undefined) { set = new Set(); listeners.set(sessionId, set) }
+    set.add(listener)
+    return () => { set.delete(listener) }
+  }
 }
 
 /** Chat history list, kept current from `sessions.changed` and `sessions.removed`. */

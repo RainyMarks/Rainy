@@ -6,7 +6,7 @@
 }
 
 .code {
-  --dsh-file-type-default-color: var(--dsw-static-deepseek-500);
+  --dsh-file-type-default-color: var(--dsw-static-accent-500);
 }
 
 .excel {
@@ -18,7 +18,7 @@
 }
 
 .html {
-  --dsh-file-type-default-color: var(--dsw-static-deepseek-500);
+  --dsh-file-type-default-color: var(--dsw-static-accent-500);
 }
 
 .image {
@@ -26,7 +26,7 @@
 }
 
 .markdown {
-  --dsh-file-type-default-color: var(--dsw-static-deepseek-500);
+  --dsh-file-type-default-color: var(--dsw-static-accent-500);
 }
 
 .other {
@@ -46,5 +46,5 @@
 }
 
 .word {
-  --dsh-file-type-default-color: var(--dsw-static-deepseek-450);
+  --dsh-file-type-default-color: var(--dsw-static-accent-450);
 }

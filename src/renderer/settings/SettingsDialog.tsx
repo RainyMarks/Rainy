@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { IconCloseOutlineRegular } from '../ui/icons/index.tsx'
+import { RainyMark } from '../ui/RainyMark.tsx'
 import { useModalLayer } from '../ui/useModalLayer.ts'
 import { AppearanceSection } from './AppearanceSection.tsx'
 import { ExtensionsSection } from './ExtensionsSection.tsx'
@@ -91,7 +92,7 @@ export function SettingsDialog({ open, section, workspace, onClose }: SettingsDi
             <span className={css.navLabel}>{t('navFeedback')}</span>
           </a>
           <div className={css.identity}>
-            <img src="/rainy/icon.png" alt="" className={css.identityMark} />
+            <RainyMark size={28} />
             <div className={css.identityText}>
               <div className={css.identityName}>Rainy</div>
               {version !== undefined && <div className={css.identityVersion}>{t('appVersion', { version })}</div>}

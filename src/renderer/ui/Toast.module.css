@@ -57,9 +57,9 @@
   padding: 0;
   border: 0;
   background: none;
-  /* deepseek-400, brightened at the designer's request, reads as the action
+  /* accent-400, brightened at the designer's request, reads as the action
      against the always-dark toast surface without an underline. */
-  color: var(--dsw-static-deepseek-400);
+  color: var(--dsw-static-accent-400);
   font: inherit;
   cursor: pointer;
   /* Breathing room where the action text meets the surrounding copy. */

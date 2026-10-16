@@ -1,10 +1,11 @@
-/** Appearance section: color mode, color scheme, accent color, interface and code fonts, and font sizes. */
+/** Appearance section: color mode, color scheme, accent color, rain effects, interface and code fonts, and font sizes. */
 import { useMemo, useState } from 'react'
 import { ACCENTS, COLOR_SCHEMES, SCHEME_ACCENTS, effectiveAccent, fontFamilies, normalizeFont } from '../../shared/appearance.ts'
 import type { Accent, ColorScheme } from '../../shared/appearance.ts'
 import type { UiPreferences } from '../../shared/rpc.ts'
 import { setPrefs, usePrefs } from '../prefs.ts'
 import { Button } from '../ui/Button.tsx'
+import { Switch } from '../ui/Switch.tsx'
 import { isComposingKey } from '../ui/keyboard-composition.ts'
 import { toast } from '../ui/toasts.tsx'
 import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from '../ui/icons/index.tsx'
@@ -18,7 +19,7 @@ import css from './sections.module.css'
 export const FONT_SIZE_RANGE = { min: 12, max: 17 } as const
 /** What "Reset appearance" restores; it matches the Host defaults. */
 export const DEFAULT_APPEARANCE = {
-  theme: 'system', colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', uiFontSize: 14, codeFontSize: 13,
+  theme: 'system', colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', uiFontSize: 14, codeFontSize: 13, rainEffects: true,
 } as const satisfies Partial<UiPreferences>
 
 const schemeLabels: Readonly<Record<ColorScheme, SettingsMessage>> = {
@@ -82,6 +83,12 @@ export function AppearanceSection(): JSX.Element {
             data-accent={accent === 'auto' ? SCHEME_ACCENTS[prefs.colorScheme] : accent}
             onClick={() => { if (accent !== prefs.accent) change({ accent }) }}>{accent === 'auto' ? t('accentAuto') : null}</button>)}
         </div>
+      </SettingRow>
+    </div>
+    <h3 className={css.groupTitle}>{t('groupMotion')}</h3>
+    <div className={css.group}>
+      <SettingRow title={t('rainEffectsTitle')} description={t('rainEffectsDescription')}>
+        <Switch label={t('rainEffectsTitle')} checked={prefs.rainEffects} onChange={(rainEffects) => { change({ rainEffects }) }} />
       </SettingRow>
     </div>
     <h3 className={css.groupTitle}>{t('groupFonts')}</h3>

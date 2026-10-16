@@ -7,7 +7,8 @@ import { on } from '../app/bus.ts'
 import { getPrefs } from '../prefs.ts'
 import { ChangesBar } from '../review/ChangesBar.tsx'
 import { host, useConnectionState } from '../rpc.ts'
-import { IconAction, IconClockOutlineRegular, IconCloseOutlineRegular, IconNewChatOutlineRegular, toast } from '../ui/index.ts'
+import { RainField } from '../app/RainField.tsx'
+import { IconAction, IconClockOutlineRegular, IconCloseOutlineRegular, IconNewChatOutlineRegular, RainyMark, toast } from '../ui/index.ts'
 import { loadChat, useChat } from './chat-store.ts'
 import { Composer } from './Composer.tsx'
 import { useChatT } from './messages.ts'
@@ -36,6 +37,7 @@ function Hero({ hasProject }: { hasProject: boolean }): JSX.Element {
   const t = useChatT()
   return (
     <div className={css.hero}>
+      <RainyMark size={40} entrance className={css.heroMark} />
       <div className={css.heroTitle}>{t('heroTitle')}</div>
       <div className={css.heroCredit}>{t('heroCredit')}</div>
       {!hasProject && <div className={css.heroHint}>{t('heroNoProject')}</div>}
@@ -123,7 +125,7 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
       </header>
       {connection === 'closed' && <div className={css.banner} role="status">{t('disconnected')}</div>}
       {sessionId === null || view === undefined
-        ? <div className={css.empty}>{sessionId === null && <Hero hasProject={workspace !== null} />}</div>
+        ? <div className={css.empty}>{sessionId === null && <><RainField /><Hero hasProject={workspace !== null} /></>}</div>
         : <Transcript view={view} onFork={onSessionChange} empty={<Hero hasProject={workspace !== null} />} />}
       {sessionId !== null && <ChangesBar sessionId={sessionId} busy={busy} />}
       <Composer sessionId={sessionId} workspaceId={view?.summary.workspaceId ?? workspace?.workspaceId ?? null} busy={busy || creating}

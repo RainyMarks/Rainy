@@ -111,6 +111,8 @@ export interface UiPreferences {
   completionModel: string
   /** The agent's changes are kept when the next message starts a run, without clicking Keep on each file. */
   autoKeepChanges: boolean
+  /** Empty views show falling rain, and a click on them makes a ripple. */
+  rainEffects: boolean
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */

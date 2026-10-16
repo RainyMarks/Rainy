@@ -448,11 +448,17 @@ export const IconEditOutlineMedium = (props: IconProps) => (
   <IconEditOutlineArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 )
 
+/**
+ * Reasoning: a rain cloud. The drops carry `data-rain-drop` (0 to 2, left to right) so a caller can animate them while
+ * the model thinks; they lean like the bars of the Rainy mark.
+ */
 const IconThinkOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedIconProps) => (
-  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" strokeWidth={strokeWidth}>
-    <path d="M10.7554 5.24466C13.9891 8.4783 15.3769 12.3333 13.8552 13.8551C12.3335 15.3768 8.4785 13.989 5.24478 10.7553C2.01111 7.52165 0.623307 3.66664 2.14504 2.14491C3.66676 0.623189 7.52178 2.01099 10.7554 5.24466Z" stroke="currentColor" />
-    <path d="M10.7554 10.7553C7.52178 13.989 3.66676 15.3768 2.14504 13.8551C0.623307 12.3333 2.01111 8.4783 5.24478 5.24466C8.4785 2.01099 12.3335 0.623189 13.8552 2.14491C15.3769 3.66664 13.9891 7.52165 10.7554 10.7553Z" stroke="currentColor" />
-    <path d="M8.9587 8.00025C8.9587 8.52835 8.5306 8.95655 8.0024 8.95655C7.47429 8.95655 7.04614 8.52835 7.04614 8.00025C7.04614 7.47209 7.47429 7.04395 8.0024 7.04395C8.5306 7.04395 8.9587 7.47209 8.9587 8.00025Z" fill="currentColor" />
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" strokeWidth={strokeWidth}
+    strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 9.5A2.5 2.5 0 1 1 5.71 4.6 3.25 3.25 0 0 1 11.92 5.04 2.25 2.25 0 0 1 11.5 9.5Z" stroke="currentColor" />
+    <path data-rain-drop="0" d="M5.6 11.25 4.95 13.1" stroke="currentColor" />
+    <path data-rain-drop="1" d="M8.75 11.25 7.87 13.75" stroke="currentColor" />
+    <path data-rain-drop="2" d="M11.9 11.25 11.16 13.35" stroke="currentColor" />
   </svg>
 )
 

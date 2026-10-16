@@ -21,7 +21,7 @@ vi.mock('../../src/renderer/settings/fonts.ts', async (original) => {
 
 const zh = settingsMessages.zh
 const en = settingsMessages.en
-const defaults: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true }
+const defaults: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true }
 let stored: UiPreferences
 
 beforeEach(async () => {
@@ -132,6 +132,17 @@ it('steps font sizes within 12 to 17 px and resets the appearance to the default
   expect(value('codeFontSize')).toBe('13')
   await click(button(zh.appearanceReset))
   expect(stored).toMatchObject({ uiFontSize: 14, codeFontSize: 13 })
+  expect(button(zh.appearanceReset).disabled).toBe(true)
+})
+
+it('turns the rain effects off and back on with the appearance reset', async () => {
+  await render(dialog({ section: 'appearance' }))
+  expect(button(zh.rainEffectsTitle).getAttribute('aria-checked')).toBe('true')
+  await click(button(zh.rainEffectsTitle))
+  expect(stored.rainEffects).toBe(false)
+  expect(button(zh.rainEffectsTitle).getAttribute('aria-checked')).toBe('false')
+  await click(button(zh.appearanceReset))
+  expect(stored.rainEffects).toBe(true)
   expect(button(zh.appearanceReset).disabled).toBe(true)
 })
 

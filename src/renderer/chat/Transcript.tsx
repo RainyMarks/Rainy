@@ -173,7 +173,7 @@ function Thinking({ text, redacted, liveKey, durationMs }: {
   const title = running ? (elapsed >= 1000 ? t('thinkingRunningFor', { duration: formatDuration(elapsed) }) : t('thinkingRunning'))
     : durationMs !== undefined && durationMs >= 1000 ? t('thinkingDoneFor', { duration: formatDuration(durationMs) }) : t('thinkingDone')
   return (
-    <DisclosureRow icon={<IconThinkOutlineRegular size={14} />} title={title} titleClassName={css.numeric}
+    <DisclosureRow icon={<IconThinkOutlineRegular size={14} className={running ? css.drizzle : undefined} />} title={title} titleClassName={css.numeric}
       open={open} expandable={!redacted && text !== ''} onToggle={toggle} running={running} expandOnRowClick>
       <div className={css.thinking}>{redacted ? t('thinkingRedacted') : text}</div>
     </DisclosureRow>

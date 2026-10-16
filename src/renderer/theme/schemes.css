@@ -36,18 +36,18 @@ body, [data-color-scheme='graphite'] {
 
 /* Blue, the default accent. */
 body, [data-accent='blue'] {
-  --dsw-static-deepseek-50: rgb(237, 243, 254);
-  --dsw-static-deepseek-100: rgb(228, 237, 253);
-  --dsw-static-deepseek-200: rgb(211, 226, 255);
-  --dsw-static-deepseek-300: rgb(183, 200, 254);
+  --dsw-static-accent-50: rgb(237, 243, 254);
+  --dsw-static-accent-100: rgb(228, 237, 253);
+  --dsw-static-accent-200: rgb(211, 226, 255);
+  --dsw-static-accent-300: rgb(183, 200, 254);
   /* Brightened from the platform rgb(103, 158, 254) at the designer's request: legibility on the dark toast surface. */
-  --dsw-static-deepseek-400: rgb(122, 170, 255);
-  --dsw-static-deepseek-450: rgb(86, 134, 254);
-  --dsw-static-deepseek-500: rgb(65, 118, 230);
-  --dsw-static-deepseek-600: rgb(72, 104, 178);
-  --dsw-static-deepseek-700-delete: rgb(47, 76, 143);
-  --dsw-static-deepseek-800: rgb(52, 65, 91);
-  --dsw-static-deepseek-900: rgb(40, 49, 66);
+  --dsw-static-accent-400: rgb(122, 170, 255);
+  --dsw-static-accent-450: rgb(86, 134, 254);
+  --dsw-static-accent-500: rgb(65, 118, 230);
+  --dsw-static-accent-600: rgb(72, 104, 178);
+  --dsw-static-accent-700-delete: rgb(47, 76, 143);
+  --dsw-static-accent-800: rgb(52, 65, 91);
+  --dsw-static-accent-900: rgb(40, 49, 66);
 }
 
 [data-color-scheme='slate'] {
@@ -208,71 +208,71 @@ body, [data-accent='blue'] {
 }
 
 [data-accent='violet'] {
-  --dsw-static-deepseek-50: rgb(243, 241, 253);
-  --dsw-static-deepseek-100: rgb(237, 234, 252);
-  --dsw-static-deepseek-200: rgb(226, 221, 252);
-  --dsw-static-deepseek-300: rgb(203, 193, 249);
-  --dsw-static-deepseek-400: rgb(174, 153, 247);
-  --dsw-static-deepseek-450: rgb(149, 114, 243);
-  --dsw-static-deepseek-500: rgb(132, 98, 220);
-  --dsw-static-deepseek-600: rgb(111, 92, 171);
-  --dsw-static-deepseek-700-delete: rgb(84, 65, 137);
-  --dsw-static-deepseek-800: rgb(66, 60, 89);
-  --dsw-static-deepseek-900: rgb(49, 46, 64);
+  --dsw-static-accent-50: rgb(243, 241, 253);
+  --dsw-static-accent-100: rgb(237, 234, 252);
+  --dsw-static-accent-200: rgb(226, 221, 252);
+  --dsw-static-accent-300: rgb(203, 193, 249);
+  --dsw-static-accent-400: rgb(174, 153, 247);
+  --dsw-static-accent-450: rgb(149, 114, 243);
+  --dsw-static-accent-500: rgb(132, 98, 220);
+  --dsw-static-accent-600: rgb(111, 92, 171);
+  --dsw-static-accent-700-delete: rgb(84, 65, 137);
+  --dsw-static-accent-800: rgb(66, 60, 89);
+  --dsw-static-accent-900: rgb(49, 46, 64);
 }
 
 [data-accent='green'] {
-  --dsw-static-deepseek-50: rgb(235, 246, 237);
-  --dsw-static-deepseek-100: rgb(226, 241, 229);
-  --dsw-static-deepseek-200: rgb(205, 234, 212);
-  --dsw-static-deepseek-300: rgb(164, 217, 177);
-  --dsw-static-deepseek-400: rgb(97, 195, 128);
-  --dsw-static-deepseek-450: rgb(0, 170, 87);
-  --dsw-static-deepseek-500: rgb(0, 150, 76);
-  --dsw-static-deepseek-600: rgb(35, 127, 70);
-  --dsw-static-deepseek-700-delete: rgb(0, 97, 46);
-  --dsw-static-deepseek-800: rgb(45, 73, 53);
-  --dsw-static-deepseek-900: rgb(36, 54, 41);
+  --dsw-static-accent-50: rgb(235, 246, 237);
+  --dsw-static-accent-100: rgb(226, 241, 229);
+  --dsw-static-accent-200: rgb(205, 234, 212);
+  --dsw-static-accent-300: rgb(164, 217, 177);
+  --dsw-static-accent-400: rgb(97, 195, 128);
+  --dsw-static-accent-450: rgb(0, 170, 87);
+  --dsw-static-accent-500: rgb(0, 150, 76);
+  --dsw-static-accent-600: rgb(35, 127, 70);
+  --dsw-static-accent-700-delete: rgb(0, 97, 46);
+  --dsw-static-accent-800: rgb(45, 73, 53);
+  --dsw-static-accent-900: rgb(36, 54, 41);
 }
 
 [data-accent='orange'] {
-  --dsw-static-deepseek-50: rgb(252, 240, 234);
-  --dsw-static-deepseek-100: rgb(251, 232, 223);
-  --dsw-static-deepseek-200: rgb(251, 218, 201);
-  --dsw-static-deepseek-300: rgb(245, 187, 158);
-  --dsw-static-deepseek-400: rgb(238, 143, 91);
-  --dsw-static-deepseek-450: rgb(224, 100, 0);
-  --dsw-static-deepseek-500: rgb(198, 88, 0);
-  --dsw-static-deepseek-600: rgb(163, 82, 34);
-  --dsw-static-deepseek-700-delete: rgb(129, 55, 2);
-  --dsw-static-deepseek-800: rgb(86, 57, 42);
-  --dsw-static-deepseek-900: rgb(63, 44, 34);
+  --dsw-static-accent-50: rgb(252, 240, 234);
+  --dsw-static-accent-100: rgb(251, 232, 223);
+  --dsw-static-accent-200: rgb(251, 218, 201);
+  --dsw-static-accent-300: rgb(245, 187, 158);
+  --dsw-static-accent-400: rgb(238, 143, 91);
+  --dsw-static-accent-450: rgb(224, 100, 0);
+  --dsw-static-accent-500: rgb(198, 88, 0);
+  --dsw-static-accent-600: rgb(163, 82, 34);
+  --dsw-static-accent-700-delete: rgb(129, 55, 2);
+  --dsw-static-accent-800: rgb(86, 57, 42);
+  --dsw-static-accent-900: rgb(63, 44, 34);
 }
 
 [data-accent='pink'] {
-  --dsw-static-deepseek-50: rgb(252, 239, 243);
-  --dsw-static-deepseek-100: rgb(250, 230, 237);
-  --dsw-static-deepseek-200: rgb(250, 214, 227);
-  --dsw-static-deepseek-300: rgb(244, 181, 205);
-  --dsw-static-deepseek-400: rgb(235, 133, 176);
-  --dsw-static-deepseek-450: rgb(223, 83, 150);
-  --dsw-static-deepseek-500: rgb(201, 67, 132);
-  --dsw-static-deepseek-600: rgb(160, 74, 112);
-  --dsw-static-deepseek-700-delete: rgb(126, 48, 84);
-  --dsw-static-deepseek-800: rgb(86, 54, 67);
-  --dsw-static-deepseek-900: rgb(63, 42, 50);
+  --dsw-static-accent-50: rgb(252, 239, 243);
+  --dsw-static-accent-100: rgb(250, 230, 237);
+  --dsw-static-accent-200: rgb(250, 214, 227);
+  --dsw-static-accent-300: rgb(244, 181, 205);
+  --dsw-static-accent-400: rgb(235, 133, 176);
+  --dsw-static-accent-450: rgb(223, 83, 150);
+  --dsw-static-accent-500: rgb(201, 67, 132);
+  --dsw-static-accent-600: rgb(160, 74, 112);
+  --dsw-static-accent-700-delete: rgb(126, 48, 84);
+  --dsw-static-accent-800: rgb(86, 54, 67);
+  --dsw-static-accent-900: rgb(63, 42, 50);
 }
 
 [data-accent='teal'] {
-  --dsw-static-deepseek-50: rgb(231, 246, 246);
-  --dsw-static-deepseek-100: rgb(219, 242, 242);
-  --dsw-static-deepseek-200: rgb(193, 235, 235);
-  --dsw-static-deepseek-300: rgb(139, 218, 219);
-  --dsw-static-deepseek-400: rgb(0, 195, 197);
-  --dsw-static-deepseek-450: rgb(0, 163, 164);
-  --dsw-static-deepseek-500: rgb(0, 143, 145);
-  --dsw-static-deepseek-600: rgb(0, 123, 125);
-  --dsw-static-deepseek-700-delete: rgb(0, 92, 93);
-  --dsw-static-deepseek-800: rgb(29, 73, 73);
-  --dsw-static-deepseek-900: rgb(27, 54, 54);
+  --dsw-static-accent-50: rgb(231, 246, 246);
+  --dsw-static-accent-100: rgb(219, 242, 242);
+  --dsw-static-accent-200: rgb(193, 235, 235);
+  --dsw-static-accent-300: rgb(139, 218, 219);
+  --dsw-static-accent-400: rgb(0, 195, 197);
+  --dsw-static-accent-450: rgb(0, 163, 164);
+  --dsw-static-accent-500: rgb(0, 143, 145);
+  --dsw-static-accent-600: rgb(0, 123, 125);
+  --dsw-static-accent-700-delete: rgb(0, 92, 93);
+  --dsw-static-accent-800: rgb(29, 73, 73);
+  --dsw-static-accent-900: rgb(27, 54, 54);
 }

@@ -98,6 +98,24 @@
   min-width: 0;
 }
 
+/* While reasoning streams, the drops under the cloud icon fall in turn along their slant. */
+.drizzle [data-rain-drop] {
+  animation: rainy-drizzle 1.2s cubic-bezier(0.45, 0, 0.75, 1) infinite both;
+}
+
+.drizzle [data-rain-drop='1'] { animation-delay: 0.4s; }
+.drizzle [data-rain-drop='2'] { animation-delay: 0.8s; }
+
+@keyframes rainy-drizzle {
+  0% { transform: translate(0.35px, -1px); opacity: 0; }
+  30% { transform: none; opacity: 1; }
+  100% { transform: translate(-0.53px, 1.5px); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drizzle [data-rain-drop] { animation: none; }
+}
+
 .thinking {
   padding: 4px 0 4px 22px;
   color: var(--dsw-alias-label-tertiary);

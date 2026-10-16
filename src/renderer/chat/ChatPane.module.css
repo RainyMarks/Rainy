@@ -36,20 +36,28 @@
 }
 
 .empty {
+  position: relative;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .hero {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   padding: 24px;
   text-align: center;
+}
+
+.heroMark {
+  margin-bottom: 6px;
+  filter: drop-shadow(0 5px 14px color-mix(in srgb, var(--dsw-static-accent-500) 35%, transparent));
 }
 
 .heroTitle {

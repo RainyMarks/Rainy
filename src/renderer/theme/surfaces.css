@@ -46,7 +46,6 @@ body[data-ds-dark-theme] {
 }
 
 /* ---------- 字体 ---------- */
-/* 由 @deepseek-figma-plugin/custom-variable-name 插件导出 */
 /* Interface text and conversation prose share the persisted base size.
  * Code has an independent size; secondary text follows one compact tier. */
 body {
