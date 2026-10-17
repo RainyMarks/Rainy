@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.2 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.3 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -26,7 +26,7 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 
 | | |
 |---|---|
-| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的文件都会列出来，可在编辑器里逐处保留或撤销。Skills 放在 `.rainy/skills`，MCP 服务在设置中添加。 |
+| **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，用 DeepSeek 联网搜索、读取网页，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的文件都会列出来，可在编辑器里逐处保留或撤销。Skills 放在 `.rainy/skills`，MCP 服务在设置中添加。 |
 | **SSH 远程开发** | 从 `~/.ssh/config` 里选一台主机，或填写 `user@host`，Rainy 就把后端放到服务器上运行：AI、终端、运行调试和语言服务都直接处理服务器上的文件，界面留在这台电脑上。使用 Windows 自带的 OpenSSH 客户端，你的密钥、ssh-agent 和 ProxyJump 配置照常可用。 |
 | **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
 | **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。全项目搜索替换、命令面板，以及能让 AI 写提交说明的 Git 面板。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
@@ -61,6 +61,14 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
+## 3.3 新变化
+
+AI 可以联网了：查最新的文档、论文、版本号和报错信息，再把需要的网页读完整。
+
+- **搜索网页**：使用 DeepSeek 自研的搜索引擎，返回标题、链接、日期和摘要；支持 `site:`、`"精确短语"`、`lang:zh`、`after:2025` 等语法。对话里的结果卡片可以直接点开链接。
+- **读取网页**：把一个网页读成 Markdown 全文交给 AI。第一次读某个网站时会先问你，可以记住这个网站，以后不再询问；完全自动模式下不询问。
+- **只用 DeepSeek**：使用你已添加的 DeepSeek 模型的 API 密钥，费用记在你的 DeepSeek 账户上（搜索、读取各每千次 5 元，失败或没有结果不收费）。没有 DeepSeek 密钥时这两个工具不会出现。可以在 **设置 → 模型 → 联网搜索** 中关闭。
+
 ## 3.2 新变化
 
 Rainy 的方向从 CTF 转向办公、科研和编程开发。打开一个装满论文、报告和表格的文件夹，点开就能看，不再是一屏十六进制。
@@ -145,10 +153,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.2.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.3.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.2.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.3.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
