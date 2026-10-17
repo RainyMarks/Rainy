@@ -2,7 +2,12 @@
 import { defineMessages } from '../../i18n.ts'
 
 const zh = {
-  viewSource: '源码', viewPreview: '预览', viewSplit: '分栏', viewHex: '十六进制',
+  viewRich: '所见即所得', viewRichTitle: '在排好版的文档上直接编辑', viewSource: '源码', viewPreview: '预览', viewSplit: '分栏', viewHex: '十六进制',
+  richFailed: '无法打开所见即所得编辑：{error}', richPlaceholder: '输入文字，或输入 / 选择标题、列表、表格、公式…', richNoUpload: '暂不支持上传图片：请把图片放进项目文件夹，再填写相对路径',
+  richImageLink: '粘贴图片链接或相对路径', richConfirm: '确定', richLinkPlaceholder: '粘贴链接…', richLanguageSearch: '搜索语言',
+  richNoLanguage: '没有这种语言', richCopy: '复制', richPreview: '预览', richEdit: '编辑', richGroupText: '文字', richText: '正文', richHeading: '{level} 级标题',
+  richQuote: '引用', richDivider: '分隔线', richGroupList: '列表', richBullet: '无序列表', richOrdered: '有序列表', richTask: '任务列表', richGroupAdvanced: '插入',
+  richImage: '图片', richCode: '代码块', richTable: '表格', richMath: '公式',
   viewSourceTitle: '显示源码', viewPreviewTitle: '打开预览（Ctrl+Shift+V）', viewSplitTitle: '在侧边预览（Ctrl+K V）',
   viewHexTitle: '以十六进制查看',
   copyFailed: '无法写入剪贴板',
@@ -33,6 +38,7 @@ const zh = {
   officeConverting: '正在用电脑上的 Office 打开…第一次可能需要几秒', officeConvertedBy: '由 {app} 转换',
   officeMissing: '预览幻灯片和旧版 Word 文档需要电脑上装有 Microsoft Office 或 WPS Office。',
   officeUnavailable: '只有 Rainy 桌面版能借助 Office 预览这种文件。', officeFailed: 'Office 无法转换此文件：{error}',
+  officeEncrypted: '这个文件设置了打开密码，Rainy 无法预览。可以用默认程序打开，输入密码后查看。',
   officeRetry: '重试', slidesOutline: '下面是幻灯片中的文字：', slidesSlide: '第 {number} 页', slidesNoText: '（没有文字）',
   slidesOutlineFailed: '也无法读取幻灯片中的文字：{error}',
   lockTitle: 'Office 临时锁定文件', lockOwner: '“{owner}”正在 Office 中打开“{name}”。',
@@ -44,7 +50,12 @@ const zh = {
 }
 
 const en: typeof zh = {
-  viewSource: 'Source', viewPreview: 'Preview', viewSplit: 'Split', viewHex: 'Hex',
+  viewRich: 'Rich', viewRichTitle: 'Edit directly on the formatted document', viewSource: 'Source', viewPreview: 'Preview', viewSplit: 'Split', viewHex: 'Hex',
+  richFailed: 'The rich editor cannot open: {error}', richPlaceholder: 'Type, or press / for headings, lists, tables, math…', richNoUpload: 'Uploading images is not supported yet: put the image in the project folder and enter its relative path',
+  richImageLink: 'Paste an image link or relative path', richConfirm: 'Confirm', richLinkPlaceholder: 'Paste a link…', richLanguageSearch: 'Search languages',
+  richNoLanguage: 'No such language', richCopy: 'Copy', richPreview: 'Preview', richEdit: 'Edit', richGroupText: 'Text', richText: 'Paragraph', richHeading: 'Heading {level}',
+  richQuote: 'Quote', richDivider: 'Divider', richGroupList: 'Lists', richBullet: 'Bullet list', richOrdered: 'Numbered list', richTask: 'Task list', richGroupAdvanced: 'Insert',
+  richImage: 'Image', richCode: 'Code block', richTable: 'Table', richMath: 'Math',
   viewSourceTitle: 'Show source', viewPreviewTitle: 'Open preview (Ctrl+Shift+V)', viewSplitTitle: 'Open preview to the side (Ctrl+K V)',
   viewHexTitle: 'View as hex',
   copyFailed: 'Could not write to the clipboard',
@@ -75,6 +86,7 @@ const en: typeof zh = {
   officeConverting: 'Opening with Office on this computer… the first time can take a few seconds', officeConvertedBy: 'Converted by {app}',
   officeMissing: 'Slides and legacy Word documents preview with Microsoft Office or WPS Office installed on this computer.',
   officeUnavailable: 'Only the Rainy desktop app can preview this file with Office.', officeFailed: 'Office cannot convert this file: {error}',
+  officeEncrypted: 'This file is protected with a password, so Rainy cannot preview it. Open it in its default app and enter the password there.',
   officeRetry: 'Retry', slidesOutline: 'The text on the slides:', slidesSlide: 'Slide {number}', slidesNoText: '(no text)',
   slidesOutlineFailed: 'The text on the slides cannot be read either: {error}',
   lockTitle: 'Office lock file', lockOwner: '{owner} has “{name}” open in Office.',

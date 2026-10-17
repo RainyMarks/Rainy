@@ -1,6 +1,7 @@
 /** Office documents and small Windows files: Word (.docx) rendered in the page, spreadsheets as tables, slides and legacy
  *  Word documents as PDF made by the Office installed on the computer, `~$` lock files and `.lnk` shortcuts. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { encryptedOpenXml } from '../../../shared/office-protocol.ts'
 import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
 import { officeLockOwner, shortcutFacts } from './file-facts.ts'
 import { useViewerT } from './messages.ts'
@@ -51,6 +52,15 @@ function OpenInApp({ location }: { location: DocumentLocation }): JSX.Element | 
     void open(path).then((result) => { if (result.error !== undefined) toast(t('openInAppFailed', { error: result.error }), { tone: 'error' }) },
       (error: unknown) => { toast(t('openInAppFailed', { error: message(error) }), { tone: 'error' }) })
   }}>{t('openInApp')}</button>
+}
+
+/** What a password-protected file gets instead of a preview. */
+function Encrypted({ location }: { location: DocumentLocation }): JSX.Element {
+  const t = useViewerT()
+  return <div className={css.stage}><div className={css.factPage}>
+    <p>{t('officeEncrypted')}</p>
+    <div className={css.factActions}><OpenInApp location={location} /></div>
+  </div></div>
 }
 
 /** Zoom buttons shared by the Word preview. */
@@ -134,8 +144,10 @@ function WordPreview({ bytes, onFailed, tools }: { bytes: Uint8Array; onFailed: 
 }
 
 /** Slides and legacy documents as a PDF made by the installed Office. */
-function useOfficePdf(bytes: Uint8Array | undefined, extension: string, attempt: number): { pdf?: Uint8Array; application?: string; error?: string; missing?: boolean; unavailable?: boolean } {
-  const [state, setState] = useState<{ pdf?: Uint8Array; application?: string; error?: string; missing?: boolean; unavailable?: boolean }>({})
+interface OfficePdfState { pdf?: Uint8Array; application?: string; error?: string; missing?: boolean; encrypted?: boolean; unavailable?: boolean }
+
+function useOfficePdf(bytes: Uint8Array | undefined, extension: string, attempt: number): OfficePdfState {
+  const [state, setState] = useState<OfficePdfState>({})
   useEffect(() => {
     let cancelled = false
     setState({})
@@ -144,7 +156,7 @@ function useOfficePdf(bytes: Uint8Array | undefined, extension: string, attempt:
     if (bridge === undefined) { setState({ unavailable: true }); return }
     void bridge.toPdf(bytes, extension).then((result) => {
       if (cancelled) return
-      setState('pdf' in result ? { pdf: result.pdf, application: result.application } : { error: result.error, missing: result.missing })
+      setState('pdf' in result ? { pdf: result.pdf, application: result.application } : { error: result.error, missing: result.missing, encrypted: result.encrypted === true })
     }, (error: unknown) => { if (!cancelled) setState({ error: message(error) }) })
     return () => { cancelled = true }
   }, [bytes, extension, attempt])
@@ -196,6 +208,7 @@ function OfficePdf({ bytes, location, attempt, onRetry, fallback, tools }: {
 }): JSX.Element {
   const t = useViewerT()
   const result = useOfficePdf(bytes, location.extension, attempt)
+  if (result.encrypted === true) return <>{tools !== undefined && <div className={css.toolbar}>{tools}</div>}<Encrypted location={location} /></>
   if (result.pdf !== undefined) {
     return <PdfViewer data={result.pdf} bytes={bytes.length} note={t('officeConvertedBy', { app: result.application ?? 'Office' })}
       tools={<>{tools}<OpenInApp location={location} /></>} />
@@ -241,6 +254,7 @@ export function WordViewer({ url, size, location }: { url: string; size: number;
   let body: JSX.Element
   if (file.error !== undefined) body = <div className={`${css.message} ${css.error}`}>{t('loadFailed', { error: file.error })}</div>
   else if (file.bytes === undefined) body = <div className={css.message}>{t('loading')}</div>
+  else if (encryptedOpenXml(file.bytes, location.extension)) body = <Encrypted location={location} />
   else if (office) body = <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }} tools={modes} />
   else if (failure !== '') {
     body = <div className={css.stage}><div className={css.factPage}>
@@ -274,6 +288,7 @@ export function OfficeViewer({ url, size, location }: { url: string; size: numbe
   return <div className={css.viewer} data-viewer="office">
     {file.error !== undefined ? <div className={`${css.message} ${css.error}`}>{t('loadFailed', { error: file.error })}</div>
       : file.bytes === undefined ? <div className={css.message}>{t('loading')}</div>
+        : encryptedOpenXml(file.bytes, location.extension) ? <Encrypted location={location} />
         : <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }}
           fallback={slides ? <SlidesOutline bytes={file.bytes} /> : undefined} />}
   </div>
@@ -324,6 +339,9 @@ async function readSheets(bytes: Uint8Array, locale: 'zh' | 'en'): Promise<Sheet
   })
 }
 
+/** Marks a spreadsheet that needs a password, in place of an error text. */
+const PROTECTED = '\0protected'
+
 function columnName(index: number): string {
   let name = ''
   for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) name = String.fromCharCode(65 + ((value - 1) % 26)) + name
@@ -347,12 +365,14 @@ export function SheetViewer({ url, size, location }: { url: string; size: number
     let cancelled = false
     setSheets(undefined); setError(''); setActive(0)
     if (file.bytes === undefined) return
-    void readSheets(file.bytes, document.documentElement.lang.startsWith('zh') ? 'zh' : 'en').then((value) => { if (!cancelled) setSheets(value) }, (failure: unknown) => { if (!cancelled) setError(message(failure)) })
+    if (encryptedOpenXml(file.bytes, location.extension)) { setError(PROTECTED); return }
+    void readSheets(file.bytes, document.documentElement.lang.startsWith('zh') ? 'zh' : 'en').then((value) => { if (!cancelled) setSheets(value) }, (failure: unknown) => { if (!cancelled) setError(/password/iu.test(message(failure)) ? PROTECTED : message(failure)) })
     return () => { cancelled = true }
-  }, [file.bytes])
+  }, [file.bytes, location.extension])
   const sheet = sheets?.[active]
   const columns = useMemo(() => Math.min(MAX_SHEET_COLUMNS, Math.max(sheet?.totalColumns ?? 0, ...(sheet?.rows ?? []).map(row => row.length))), [sheet])
-  const failure = file.error ?? (error === '' ? undefined : error)
+  const failure = file.error ?? (error === '' || error === PROTECTED ? undefined : error)
+  if (error === PROTECTED) return <div className={css.viewer} data-viewer="sheet"><Encrypted location={location} /></div>
   return <div className={css.viewer} data-viewer="sheet">
     <div className={css.toolbar}><span className={css.grow} /><OpenInApp location={location} /></div>
     <div className={css.stage}>

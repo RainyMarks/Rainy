@@ -905,7 +905,8 @@ async function start(): Promise<void> {
       const result = await officeConverter.toPdf(value.bytes, value.extension.toLowerCase())
       return { pdf: new Uint8Array(result.pdf), application: result.application }
     } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error), missing: error instanceof OfficeConversionError && error.missing }
+      return { error: error instanceof Error ? error.message : String(error), missing: error instanceof OfficeConversionError && error.missing,
+        encrypted: error instanceof OfficeConversionError && error.encrypted }
     }
   })
   handleIpc('rainy:open-file', async (event, value) => {

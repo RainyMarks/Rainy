@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { encryptedOpenXml } from '../shared/office-protocol.ts'
 import { windowsPowerShellPath } from './powershell.ts'
 
 /** Which Office application opens the file. */
@@ -17,9 +18,10 @@ const KINDS: Readonly<Record<string, OfficeKind>> = {
 /** Largest file handed to Office, in bytes. */
 export const OFFICE_MAX_BYTES = 200 * 1024 * 1024
 
-/** Neither Microsoft Office nor WPS Office could convert the file. `missing` means neither is installed. */
+/** Neither Microsoft Office nor WPS Office could convert the file. `missing` means neither is installed; `encrypted` that the
+ *  file needs a password to open. */
 export class OfficeConversionError extends Error {
-  constructor(message: string, readonly missing: boolean) {
+  constructor(message: string, readonly missing: boolean, readonly encrypted = false) {
     super(message)
     this.name = 'OfficeConversionError'
   }
@@ -35,7 +37,8 @@ export function officeKind(extension: string): OfficeKind | undefined {
 
 // PowerPoint and WPS keep one process per user, so an instance that was already running belongs to the user and is
 // left open; Word.Application always starts its own instance. The password argument makes Word fail on a protected
-// document instead of asking for the password in a hidden window.
+// document (error 5408) instead of asking for the password in a hidden window. SaveAs2 can wait forever on a hidden
+// prompt in current Word builds, so the fallback is the older SaveAs.
 const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -46,6 +49,7 @@ $candidates = if ($slides) { @(@('PowerPoint.Application', 'POWERPNT', 'Microsof
   else { @(@('Word.Application', 'WINWORD', 'Microsoft Word'), @('KWps.Application', 'wps', 'WPS Office')) }
 $failures = @()
 $found = $false
+$encrypted = $false
 foreach ($candidate in $candidates) {
   $progId = $candidate[0]
   if (-not (Test-Path -LiteralPath "Registry::HKEY_CLASSES_ROOT\$progId\CLSID")) { continue }
@@ -62,19 +66,22 @@ foreach ($candidate in $candidates) {
       try { $app.Visible = $false } catch {}
       try { $app.DisplayAlerts = 0 } catch {}
       $file = $app.Documents.Open($in, $false, $true, $false, 'rainy-no-password')
-      try { $file.ExportAsFixedFormat($out, 17) } catch { $file.SaveAs2($out, 17) }
+      try { $file.ExportAsFixedFormat($out, 17) } catch { $file.SaveAs([ref]$out, [ref]17) }
     }
     if (Test-Path -LiteralPath $out) { Write-Output ('OK ' + $candidate[2]); exit 0 }
     $failures += $candidate[2] + ': no PDF was written'
   } catch {
+    if ($_.Exception.HResult -eq -2146822880) { $encrypted = $true }
     $failures += $candidate[2] + ': ' + $_.Exception.Message
   } finally {
     if ($null -ne $file) { try { if ($slides) { $file.Close() } else { $file.Close(0) } } catch {} }
     if ($null -ne $app -and ($progId -eq 'Word.Application' -or -not $wasRunning)) { try { $app.Quit() } catch {} }
     foreach ($object in @($file, $app)) { if ($null -ne $object) { try { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($object) } catch {} } }
   }
+  if ($encrypted) { break }
 }
 if (-not $found) { Write-Output 'MISSING'; exit 3 }
+if ($encrypted) { Write-Output 'PASSWORD'; exit 5 }
 Write-Output ('FAILED ' + ($failures -join ' | '))
 exit 4
 `
@@ -101,6 +108,8 @@ export async function convertOfficeToPdf(bytes: Uint8Array, extension: string, t
   const kind = officeKind(extension)
   if (kind === undefined) throw new OfficeConversionError(`.${extension} files are not converted`, false)
   if (bytes.length > OFFICE_MAX_BYTES) throw new OfficeConversionError('The file is too large to convert', false)
+  // Office would ask for the password in a window nobody sees, or in the user's own PowerPoint.
+  if (encryptedOpenXml(bytes, extension)) throw new OfficeConversionError('The file is protected with a password', false, true)
   const folder = await mkdtemp(join(tmpdir(), 'rainy-office-'))
   try {
     const input = join(folder, `document.${extension}`)
@@ -108,6 +117,7 @@ export async function convertOfficeToPdf(bytes: Uint8Array, extension: string, t
     await writeFile(input, bytes)
     const result = await run({ ...process.env, RAINY_OFFICE_IN: input, RAINY_OFFICE_OUT: output, RAINY_OFFICE_KIND: kind }, timeoutMs)
     if (result === 'MISSING') throw new OfficeConversionError('Microsoft Office or WPS Office is not installed', true)
+    if (result === 'PASSWORD') throw new OfficeConversionError('The file is protected with a password', false, true)
     if (result === 'TIMEOUT') throw new OfficeConversionError('Office did not finish converting in time', false)
     if (!result.startsWith('OK ')) throw new OfficeConversionError(result.replace(/^FAILED /u, ''), false)
     return { pdf: await readFile(output), application: result.slice(3) }
