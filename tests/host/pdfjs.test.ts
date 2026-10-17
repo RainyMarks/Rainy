@@ -1,4 +1,4 @@
-/** pdf.js for the PDF viewer: only its two browser files are served. */
+/** pdf.js for the PDF viewer: its two browser files, character maps and standard fonts are served, nothing else. */
 import { join, resolve } from 'node:path'
 import { expect, it } from 'vitest'
 import type { HostServer } from '../../src/host/server.ts'
@@ -21,6 +21,13 @@ it('serves the pdf.js files from the resources and nothing else under its route'
   expect(script.headers?.['Content-Type']).toBe('text/javascript; charset=utf-8')
   expect(script.body!.length).toBeGreaterThan(100_000)
   expect((await call('GET', '/rainy/pdfjs/pdf.worker.min.js')).status).toBe(200)
+  const cmap = await call('GET', '/rainy/pdfjs/cmaps/UniGB-UCS2-H.bcmap')
+  expect([cmap.status, cmap.headers?.['Content-Type']]).toEqual([200, 'application/octet-stream'])
+  expect((await call('GET', '/rainy/pdfjs/standard_fonts/FoxitSans.pfb')).status).toBe(200)
+  expect((await call('GET', '/rainy/pdfjs/standard_fonts/LiberationSans-Regular.ttf')).status).toBe(200)
+  for (const path of ['cmaps/Missing-H.bcmap', 'cmaps/LICENSE', 'cmaps/..%2F..%2Fpackage.json', 'cmaps%2F..%2F..%2Fpackage.json', 'standard_fonts/LICENSE_FOXIT', 'cmaps/sub/x.bcmap', 'standard_fonts/x.js']) {
+    expect((await call('GET', `/rainy/pdfjs/${path}`)).status, path).toBe(404)
+  }
   expect((await call('GET', '/rainy/pdfjs/LICENSE')).status).toBe(404)
   expect((await call('GET', '/rainy/pdfjs/../package.json')).status).toBe(404)
   expect((await call('POST', '/rainy/pdfjs/pdf.min.js')).status).toBe(404)
