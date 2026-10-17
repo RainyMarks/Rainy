@@ -4,7 +4,7 @@
 
 # Rainy
 
-**轻量的 Windows AI 编程工作台：能改代码、跑命令的 AI 智能体，内置 AI 的编辑器，还能通过 SSH 在任意 Linux 服务器上用同一套工作台。**
+**轻量的 Windows AI 工作台，面向办公、科研和编程开发：能改文件、跑命令的 AI 智能体，直接预览 Word、Excel、PPT 和 PDF，内置 AI 的编辑器，还能通过 SSH 在任意 Linux 服务器上用同一套工作台。**
 
 [![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
@@ -14,13 +14,13 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.0 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.2 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
 ![Rainy 通过 SSH 连接 Linux 服务器，AI 在服务器上运行了脚本](assets/zh/workbench.png)
 
-Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器、项目地图、搜索、Git 和终端放进一个小巧的桌面应用。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你；它改过的每个文件都可以在编辑器里逐处审查，保留或撤销。可以在 Windows 原生环境、WSL2 或通过 SSH 连接的远程 Linux 服务器上工作：连接服务器时，AI、终端和调试器都在代码所在的服务器上运行，窗口仍留在你的电脑上。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。个人使用免费。Developed by RainyMarks.
+Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改代码的编辑器与调试器、项目地图、搜索、Git 和终端放进一个小巧的桌面应用，写论文、整理资料和写代码都在同一个窗口里。AI 助手会读写项目文件、执行命令，默认在运行命令前先问你；它改过的每个文件都可以在编辑器里逐处审查，保留或撤销。可以在 Windows 原生环境、WSL2 或通过 SSH 连接的远程 Linux 服务器上工作：连接服务器时，AI、终端和调试器都在代码所在的服务器上运行，窗口仍留在你的电脑上。模型自己选：DeepSeek、Claude、任意 OpenAI 或 Anthropic 兼容接口、本地服务，或在 NVIDIA 显卡上用 Strata 本地推理。个人使用免费。Developed by RainyMarks.
 
 ## 为什么选 Rainy
 
@@ -30,7 +30,7 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 | **SSH 远程开发** | 从 `~/.ssh/config` 里选一台主机，或填写 `user@host`，Rainy 就把后端放到服务器上运行：AI、终端、运行调试和语言服务都直接处理服务器上的文件，界面留在这台电脑上。使用 Windows 自带的 OpenSSH 客户端，你的密钥、ssh-agent 和 ProxyJump 配置照常可用。 |
 | **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
 | **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。全项目搜索替换、命令面板，以及能让 AI 写提交说明的 Git 面板。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
-| **预览任何文件** | 图片可缩放、查看像素颜色；Markdown、PDF、音视频直接预览；二进制文件用十六进制查看，带数据检查器；GBK、UTF-16 文本正确显示。 |
+| **预览任何文件** | Word 文档直接显示成分页的纸面；Excel 和 WPS 表格显示成可切换工作表的表格；PPT 和旧版 .doc 交给电脑上的 Office 转换，看到的和 PowerPoint、Word 里一模一样。图片可缩放、查看像素颜色；Markdown、PDF、音视频直接预览；其他二进制文件用十六进制查看；GBK、UTF-16 文本正确显示。 |
 | **Windows、WSL2 或 SSH** | 默认使用 Windows 原生环境；项目需要时，随时切换到 WSL2 或一台 Linux 服务器。 |
 | **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
 | **轻量** | 安装包 174 MB。Strata 引擎、PHP 和 Linux 运行环境都是用到时才下载。 |
@@ -61,6 +61,18 @@ Rainy 把 AI 编程智能体、带 AI 补全和 Ctrl+K 改代码的编辑器与�
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
+## 3.2 新变化
+
+Rainy 的方向从 CTF 转向办公、科研和编程开发。打开一个装满论文、报告和表格的文件夹，点开就能看，不再是一屏十六进制。
+
+![PPT 由电脑上的 PowerPoint 转换后直接显示在 Rainy 里](assets/zh/office.png)
+
+- **Word**：.docx 由 Rainy 自己显示成分页的纸面，标题、表格、图片、页眉页脚都在，不需要装 Office；想看和 Word 完全一致的版式，点 **用 Office 版式显示**。
+- **PPT 和旧版 Word**：.pptx、.ppt、.doc 交给电脑上装的 Microsoft Office（或 WPS）转成 PDF 显示，图表、表格、字体都和原文件一样，可以提取全部文字。没有 Office 时也会列出每页幻灯片的文字。
+- **Excel**：.xlsx、.xls、.ods 显示成表格，行号列标固定，合并单元格、多个工作表都支持，日期按中文习惯显示。
+- **用默认程序打开**：文档上方一键交给 Word、PowerPoint、Excel 或 WPS 继续编辑（只对文档开放，不会运行程序）。
+- **小文件说人话**：`~$` 开头的文件说明是 Office 的临时锁定文件、谁正在打开哪个文档；`.lnk` 快捷方式显示它指向哪里。
+
 ## 3.1 新变化
 
 Rainy 终于有了“雨”的样子。
@@ -133,10 +145,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.1.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.2.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.1.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.2.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
