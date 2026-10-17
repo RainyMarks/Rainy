@@ -1,6 +1,6 @@
 /** Resource authenticity uses real build signatures and filesystem mutation evidence. */
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it } from 'vitest'
@@ -95,6 +95,8 @@ it('detects changed resources in the background check and verifies fully on the 
   await ensureReleaseIntegrity(options)
   const launched = await ensureReleaseIntegrity(options)
   await writeFile(join(release.directory, 'host.js'), 'tampered host bytes!')
+  // Same size on purpose; a later time stands in for the write, since some file systems keep the old time for a moment.
+  await utimes(join(release.directory, 'host.js'), new Date(), new Date(Date.now() + 60_000))
   clock = 100
   await expect(launched.recheck()).rejects.toBeInstanceOf(ReleaseIntegrityError)
   await expect(readFile(release.stampPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
