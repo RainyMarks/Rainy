@@ -1,7 +1,7 @@
 {
   "name": "rainy-agent",
   "productName": "Rainy",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "private": true,
   "type": "module",
   "description": "Rainy: a lightweight AI coding workbench for Windows, WSL and remote Linux over SSH",
@@ -65,6 +65,8 @@
     "@codemirror/search": "6.7.2",
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.13",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@fontsource-variable/hanken-grotesk": "5.3.0",
     "@lezer/highlight": "1.2.4",
     "@types/js-yaml": "4.0.9",
     "@types/node": "^22.0.0",

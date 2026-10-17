@@ -6,12 +6,13 @@
  * first: `prefs.ts` sets --rainy-ui-font and --rainy-code-font to quoted names
  * each followed by a comma, and leaves them unset for the defaults. */
 :root {
-  /* Windows 11's Segoe UI Variable for Latin and Microsoft YaHei UI for Chinese; Segoe UI covers Windows 10. */
-  --rainy-font-family: var(--rainy-ui-font,) 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+  /* Bundled Hanken Grotesk and Geist Mono (`main.tsx`) for Latin; Microsoft YaHei UI for Chinese. The system faces
+   * after them cover what the bundled ones lack. */
+  --rainy-font-family: var(--rainy-ui-font,) 'Hanken Grotesk Variable', 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
     'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --rainy-font-family-display: var(--rainy-ui-font,) 'Segoe UI Variable Display', var(--rainy-font-family);
+  --rainy-font-family-display: var(--rainy-ui-font,) 'Hanken Grotesk Variable', 'Segoe UI Variable Display', var(--rainy-font-family);
   --rainy-font-family-brand: 'Montserrat', var(--rainy-font-family);
-  --rainy-font-family-code: var(--rainy-code-font,) 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
+  --rainy-font-family-code: var(--rainy-code-font,) 'Geist Mono Variable', 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --rainy-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --rainy-transition-duration: 0.2s;

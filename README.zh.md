@@ -70,6 +70,7 @@ Rainy 终于有了“雨”的样子。
 - **空白页面会下雨**：欢迎页、没有打开文件的编辑区和新对话里，飘着强调色的斜向细雨，雨滴落下的地方泛起小小的水圈。点击背景会荡开一圈涟漪，经过的雨线被推开、被照亮。雨的颜色跟随配色和强调色；窗口隐藏时暂停，Windows 开启“减少动态效果”时保持静止，也可以在 **设置 → 外观 → 动效** 中关闭。
 - **会动的标志**：Rainy 标志使用你的强调色。鼠标指向时三道雨线落下；当前对话运行时，顶栏的标志一直下雨，停止时落完这一轮再停。
 - **推理改成雨云**：推理一行的图标从 DeepSeek Harness 留下的原子图标换成了雨云，模型思考时云下的雨滴依次落下。
+- **新字体（3.1.1）**：英文和数字使用内置的 Hanken Grotesk，代码、编辑器和终端使用 Geist Mono，每台电脑看到的都一样；中文仍用微软雅黑。在 **设置 → 外观 → 字体** 里自己选的字体仍然优先。
 - 应用图标换成由浅到深的蓝色渐变；界面代码里剩下的 DeepSeek Harness 命名全部换掉。
 
 更早的版本：3.0 加入了 SSH 远程开发并移除了 CTF 工具箱；2.5 加入了全项目搜索替换、命令面板和 Git 面板；2.4 加入了项目地图和 AI 修改审查；2.3 加入了编辑器内 AI 补全和 Ctrl+K 改代码。每个版本的详细变化见[发布说明](https://github.com/RainyMarks/Rainy/releases)。
@@ -132,10 +133,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.1.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.1.1/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.1.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.1.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 

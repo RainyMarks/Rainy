@@ -17,7 +17,7 @@ const terminalThemes = {
 }
 
 /** Code font until the page supplies its own; the same families as `--rainy-font-family-code`. */
-const DEFAULT_FONT_FAMILY = "'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier, monospace"
+const DEFAULT_FONT_FAMILY = "'Geist Mono Variable', 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier, monospace"
 
 /**
  * Mount a terminal.
