@@ -12,6 +12,8 @@ import './RichMarkdown.css'
 /** Editor handle kept between renders; only the parts this view uses. */
 interface Rich {
   getMarkdown(): string
+  /** Hand the current text to the buffer now; the editor's own notice waits 200 ms and is dropped when it closes. */
+  flush(): void
   replace(text: string): void
   destroy(): Promise<unknown>
 }
@@ -119,20 +121,26 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
       // escapes, blank lines and table spacing the editor would write differently survive outside the edited lines.
       let source = held.current
       let loaded = ''
+      let started = false
+      const push = (written: string): void => {
+        if (quiet || !started) return
+        const markdown = preserveSource(source, loaded, conventionalTables(written))
+        if (markdown === held.current) return
+        held.current = markdown
+        latest.current.onChange(markdown)
+      }
       crepe.on((listen) => {
-        listen.markdownUpdated((_ctx, written) => {
-          if (quiet) return
-          const markdown = preserveSource(source, loaded, conventionalTables(written))
-          if (markdown === held.current) return
-          held.current = markdown
-          latest.current.onChange(markdown)
-        })
+        listen.markdownUpdated((_ctx, written) => { push(written) })
+        // Clicking Save in the toolbar, another tab or the chat moves focus out first.
+        listen.blur(() => { push(crepe.getMarkdown()) })
       })
       await crepe.create()
       if (cancelled) { await crepe.destroy(); return }
       loaded = conventionalTables(crepe.getMarkdown())
+      started = true
       created = {
         getMarkdown: () => crepe.getMarkdown(),
+        flush: () => { push(crepe.getMarkdown()) },
         replace: (next) => {
           quiet = true
           try { crepe.editor.action(replaceAll(next)) } finally { quiet = false }
@@ -148,6 +156,8 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
     return () => {
       cancelled = true
       editor.current = undefined
+      // Switching views or closing the tab within the editor's 200 ms wait would otherwise lose the last keystrokes.
+      created?.flush()
       void created?.destroy()
     }
   // The editor is built once per tab; later text arrives through the effect below.
@@ -164,7 +174,11 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
     {failure !== '' ? <div className={`${css.message} ${css.error}`}>{t('richFailed', { error: failure })}</div> : <>
       {!ready && <div className={css.message}>{t('loading')}</div>}
       <div className={css.stage} onKeyDown={(event) => {
-        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); latest.current.onSave() }
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
+          event.preventDefault()
+          editor.current?.flush()
+          latest.current.onSave()
+        }
       }}>
         <div ref={root} className="rainy-rich" hidden={!ready} />
       </div>
