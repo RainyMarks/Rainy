@@ -1,5 +1,26 @@
 # Rainy 验收记录
 
+## 3.1.1（2026-10-17）
+
+被测产物为 `Rainy-3.1.1-windows-x64-setup.exe`（174,549,973 字节，SHA-256 `a36007ec28fe3b17496a31fec96d96ade3ab7aadf6da2102a66f669e2071349d`），构建自提交 `33274c7e98`；之后的提交只修改本验收记录。Linux 运行环境分片为 280,703,109 字节（SHA-256 `1671988f89bd2928e5d6b4338146eb63e4a7844f864a9ad428b32d538d0ae161`），WSL 和 SSH 共用；PHP 分片与 3.1.0 相同。
+
+### 改动
+
+- 默认字体：界面的拉丁字母和数字改用内置的 Hanken Grotesk，代码、编辑器和终端改用内置的 Geist Mono（均为 SIL OFL 1.1，来自 `@fontsource-variable` 5.3.0，按 unicode-range 分片打包进界面）。中文仍由微软雅黑 UI 显示；“设置 → 外观 → 字体”中自选的字体仍然优先。启动画面、SSH 输入窗口和安装引导页仍使用系统字体。
+- 第三方声明增加两款字体的许可证。
+
+### 检查
+
+- **测试**：两套 TypeScript 类型检查通过。本机 Vitest 在机器负载较高时 `app-viewers.test.tsx` 有 1–2 项等待超时，撤掉本次改动后同样失败，单独运行 3 次均通过；Ubuntu 24.04 与 Windows 2022 CI 全部通过（[运行记录](https://github.com/RainyMarks/Rainy/actions/runs/39011180254)）。
+- **字体**：源代码版本中两款字体均为 loaded，页面正文、CodeMirror 编辑区和 xterm 终端的 font-family 首项分别为 Hanken Grotesk Variable 和 Geist Mono Variable，控制台错误为零。打包程序的启动截图里英文文字已是新字体，中文为微软雅黑。构建生成的 `THIRD_PARTY_NOTICES.txt` 包含两个字体包的许可证。
+- **安装包内容**：7-Zip 解开后 8,743 个文件与 `release/win-unpacked` 逐一一致。
+- **试运行**：用临时用户数据启动，约 5.5 秒显示工作台，版本为 3.1.1，页面错误为零，关闭窗口后进程全部退出。
+- **WSL 运行环境**：在临时 HOME 中安装约 6.1 秒，Linux Host 约 0.2 秒就绪，启动页返回 HTTP 200。
+
+### 验收范围
+
+没有逐页检查所有设置页和对话内容在新字体下的排版（行高、截断）；Windows 10 和高缩放比例下的显示没有单独检查。没有测试从 3.1.0 自动更新到 3.1.1。
+
 ## 3.1.0（2026-10-16）
 
 被测产物为 `Rainy-3.1.0-windows-x64-setup.exe`（174,410,305 字节，SHA-256 `56b97122ba12cd2feaf314c54bd859259118516519e80aedb575e97f5a85481c`），构建自提交 `c273c21f44`；之后的提交只修改本验收记录。Linux 运行环境分片为 280,557,733 字节（SHA-256 `53ddeead1990aff9626275e09ff692dda03f2ba55214c7817c2a36d007beb9f8`），WSL 和 SSH 共用；PHP 分片与 3.0.0 相同。
