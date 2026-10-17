@@ -1,5 +1,5 @@
 /** PDF viewer on the bundled pdf.js 2.16 build (`resources/pdfjs`): pages render on demand, and their text can be extracted. */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
 import css from './Viewers.module.css'
@@ -97,10 +97,19 @@ function PdfPageView({ document: pdf, number, size, scale, root }: {
 
 /**
  * @param props.url Byte route URL of the PDF.
- * @param props.bytes File size.
+ * @param props.data The PDF itself, for a copy made from another format; it takes the place of `url`.
+ * @param props.bytes File size shown in the status bar.
+ * @param props.tools Extra toolbar items, after the text button.
+ * @param props.note Status bar text before the size.
  * @returns The viewer.
  */
-export function PdfViewer({ url, bytes }: { url: string; bytes: number }): JSX.Element {
+export function PdfViewer({ url, data, bytes, tools, note }: {
+  url?: string | undefined
+  data?: Uint8Array | undefined
+  bytes: number
+  tools?: ReactNode
+  note?: string | undefined
+}): JSX.Element {
   const t = useViewerT()
   const stage = useRef<HTMLDivElement>(null)
   const [pdf, setPdf] = useState<PdfDocument | undefined>()
@@ -117,7 +126,8 @@ export function PdfViewer({ url, bytes }: { url: string; bytes: number }): JSX.E
     setPdf(undefined); setError(''); setPage(1)
     void loadPdfJs().then(async (library) => {
       // isEvalSupported stays off: pdf.js before 4.2.67 can run script from a crafted font otherwise (CVE-2024-4367).
-      const task = library.getDocument({ url, isEvalSupported: false, enableXfa: false, cMapUrl: `${PDFJS_ROOT}cmaps/`, cMapPacked: true,
+      // pdf.js hands `data` to its worker, which detaches the buffer, so it gets a copy.
+      const task = library.getDocument({ ...data === undefined ? { url } : { data: data.slice() }, isEvalSupported: false, enableXfa: false, cMapUrl: `${PDFJS_ROOT}cmaps/`, cMapPacked: true,
         standardFontDataUrl: `${PDFJS_ROOT}standard_fonts/` })
       const document = await task.promise
       if (cancelled) { void document.destroy(); return }
@@ -128,7 +138,7 @@ export function PdfViewer({ url, bytes }: { url: string; bytes: number }): JSX.E
       setPdf(document)
     }).catch((failure: unknown) => { if (!cancelled) setError(failure instanceof Error ? failure.message : String(failure)) })
     return () => { cancelled = true; void opened?.destroy() }
-  }, [url])
+  }, [url, data])
 
   useEffect(() => {
     const element = stage.current
@@ -176,6 +186,7 @@ export function PdfViewer({ url, bytes }: { url: string; bytes: number }): JSX.E
         {pdf !== undefined && <span>{t('pdfPage', { page, pages: pdf.numPages })}</span>}
         <span className={css.grow} />
         <button type="button" className={css.toolButton} title={t('pdfTextTitle')} disabled={pdf === undefined || extracting} onClick={() => { void extract() }}>{t('pdfText')}</button>
+        {tools}
       </div>
       <div ref={stage} className={css.stage} onScroll={onScroll}>
         {error !== '' ? <div className={`${css.message} ${css.error}`}>{t('pdfFailed', { error })}</div>
@@ -184,7 +195,7 @@ export function PdfViewer({ url, bytes }: { url: string; bytes: number }): JSX.E
               <PdfPageView key={number} document={pdf} number={number} size={size} scale={scale} root={stage.current} />
             ))}</div>}
       </div>
-      <div className={css.status}><span>{fileSizeText(bytes)}</span></div>
+      <div className={css.status}>{note !== undefined && <span>{note}</span>}<span>{fileSizeText(bytes)}</span></div>
     </div>
   )
 }

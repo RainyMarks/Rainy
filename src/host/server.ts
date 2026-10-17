@@ -187,7 +187,7 @@ export class HostServer {
     const port = this.boundPort
     return [
       "default-src 'self'", `script-src 'self' 'nonce-${nonce}'`, "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob:",
-      "media-src 'self' blob:", "font-src 'self' data:", `connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}`,
+      "media-src 'self' blob:", "font-src 'self' data: blob:", `connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}`,
       "worker-src 'self' blob:", "frame-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
     ].join('; ')
   }

@@ -1,4 +1,4 @@
-/* File viewers inside the editor area: shared frame, image, media, PDF, Markdown preview, hex view and decoded text. */
+/* File viewers inside the editor area: shared frame, image, media, PDF, office documents, Markdown preview, hex view and decoded text. */
 .viewer { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--rainy-alias-bg-base); color: var(--rainy-alias-label-primary); }
 .rightPane { position: absolute; top: 0; right: 0; bottom: 0; left: 50%; border-left: 1px solid var(--rainy-alias-border-l1); }
 .decoded { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 10px; border-bottom: 1px solid var(--rainy-alias-border-l1); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; color: var(--rainy-alias-label-secondary); }
@@ -72,3 +72,35 @@
 .inspector td:first-child { color: var(--rainy-alias-label-secondary); padding-right: 8px; white-space: nowrap; }
 .inspector td:last-child { font-family: var(--rainy-font-family-code, monospace); overflow-wrap: anywhere; user-select: text; }
 @media (max-width: 720px) { .inspector { display: none; } }
+
+/* Word pages on the same backdrop as PDF pages. */
+.paperStage { background: var(--rainy-alias-bg-layer-1); }
+
+/* Spreadsheets: row and column headings stay in view while the cells scroll. */
+.sheet { border-collapse: separate; border-spacing: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.sheet th, .sheet td { border-right: 1px solid var(--rainy-alias-border-l1); border-bottom: 1px solid var(--rainy-alias-border-l1); padding: 3px 8px; white-space: pre; max-width: 420px; overflow: hidden; text-overflow: ellipsis; text-align: left; vertical-align: top; }
+.sheet td[data-number] { text-align: right; }
+.sheet thead th { position: sticky; top: 0; z-index: 2; }
+.sheet th { background: var(--rainy-alias-bg-layer-1); color: var(--rainy-alias-label-secondary); font-weight: 500; text-align: center; }
+.sheet tbody th { position: sticky; left: 0; z-index: 1; min-width: 36px; }
+.sheet thead th:first-child { left: 0; z-index: 3; }
+.sheetTabs { flex: none; display: flex; gap: 2px; padding: 0 6px; border-top: 1px solid var(--rainy-alias-border-l1); overflow-x: auto; }
+.sheetTab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--rainy-alias-label-secondary); font: inherit; font-size: 12px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.sheetTab:hover { color: var(--rainy-alias-label-primary); }
+.sheetTab[aria-selected='true'] { color: var(--rainy-alias-label-primary); border-bottom-color: var(--rainy-alias-state-business-primary); }
+
+/* Explanations for files that are not shown as their content: lock files, shortcuts, documents Office cannot open. */
+.factPage { max-width: 720px; margin: 0 auto; padding: 28px 24px; font-size: 13px; line-height: 1.6; }
+.factPage h3 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+.factPage p { margin: 0 0 10px; }
+.factActions { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; }
+.factActions .toolButton { border: 1px solid var(--rainy-alias-border-l2); padding: 4px 12px; }
+.facts { border-collapse: collapse; margin-bottom: 12px; }
+.facts td { padding: 4px 0; vertical-align: top; }
+.facts td:first-child { padding-right: 16px; color: var(--rainy-alias-label-secondary); white-space: nowrap; }
+.facts td:last-child { font-family: var(--rainy-font-family-code, monospace); font-size: 12px; overflow-wrap: anywhere; user-select: text; }
+.muted { color: var(--rainy-alias-label-secondary); }
+.outline { border-top: 1px solid var(--rainy-alias-border-l1); padding-top: 14px; }
+.outlineSlide { padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--rainy-alias-border-l1); border-radius: var(--rainy-radius-md); background: var(--rainy-alias-bg-layer-1); }
+.outlineSlide h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--rainy-alias-label-secondary); }
+.outlineSlide p { margin: 0 0 4px; user-select: text; }

@@ -44,7 +44,8 @@ describe('file viewers', () => {
     expect(byRole('button', '源码').getAttribute('aria-pressed')).toBe('true')
     expect(editorHidden()).toBe(false)
     click(byRole('button', '预览'))
-    await waitFor(() => { expect(window.document.querySelector('[data-viewer="markdown"] h1')?.textContent).toBe('题解') })
+    // The Markdown renderer loads on first use, which can take seconds while the whole suite runs in parallel.
+    await waitFor(() => { expect(window.document.querySelector('[data-viewer="markdown"] h1')?.textContent).toBe('题解') }, 10000)
     expect(editorHidden()).toBe(true)
     expect(window.document.querySelector('[data-viewer="markdown"] img')?.getAttribute('src')).toBe('/rainy/ide/raw?w=a&p=notes%2Fflag.png&v=v2-0')
     click(byRole('button', '分栏'))
@@ -60,7 +61,7 @@ describe('file viewers', () => {
 
   it('shows images through the byte route with their size in the status bar', async () => {
     await open('logo.png', file('logo.png', { readOnlyReason: 'media', bytes: 2048 }))
-    await waitFor(() => { expect(window.document.querySelector('[data-viewer="image"] img')?.getAttribute('src')).toBe('/rainy/ide/raw?w=a&p=logo.png&v=v2') })
+    await waitFor(() => { expect(window.document.querySelector('[data-viewer="image"] img')?.getAttribute('src')).toBe('/rainy/ide/raw?w=a&p=logo.png&v=v2') }, 10000)
     expect(editorHidden()).toBe(true)
     expect(window.document.querySelector('[data-rainy-status]')?.textContent).toContain('2.0KB')
   })

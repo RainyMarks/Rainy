@@ -16,5 +16,7 @@ declare global {
     __RAINY_WORKBENCH__?: import('./app/desktop-bridge.ts').DesktopWorkbenchBridge
     /** Execution-target path of a dropped desktop file (`''` when it has none); absent outside the desktop app. */
     __RAINY_HOST_PATHS__?: { pathFor(file: File): string }
+    /** Office conversion and "open in default app"; absent outside the desktop app. */
+    __RAINY_OFFICE__?: import('../shared/office-protocol.ts').OfficeBridge
   }
 }

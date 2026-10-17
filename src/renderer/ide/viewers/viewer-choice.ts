@@ -6,7 +6,8 @@ import { idePreviewKind, type IdeTabView } from '../../../shared/ide-preview.ts'
 export const TEXT_ENCODINGS = ['utf-16le', 'utf-16be', 'gb18030', 'big5', 'shift_jis', 'euc-kr', 'windows-1252', 'utf-8'] as const
 
 /** Viewers other than the text editor. */
-export type ViewerKind = 'image' | 'svg' | 'markdown' | 'audio' | 'video' | 'pdf' | 'hex' | 'large'
+export type ViewerKind = 'image' | 'svg' | 'markdown' | 'audio' | 'video' | 'pdf' | 'word' | 'sheet' | 'office' | 'shortcut' | 'office-lock'
+  | 'hex' | 'large'
 
 /** What one tab shows: the text editor, a viewer, or both side by side. */
 export interface ViewerChoice {
@@ -28,7 +29,7 @@ export function chooseViewer(path: string, reason: IdeFileDocument['readOnlyReas
   if (view === 'hex') return { editor: false, viewer: 'hex', split: false }
   const kind = idePreviewKind(path)
   if (reason === 'media') {
-    return kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'pdf' ? { editor: false, viewer: kind, split: false } : { editor: false, viewer: 'hex', split: false }
+    return kind === undefined || kind === 'svg' || kind === 'markdown' ? { editor: false, viewer: 'hex', split: false } : { editor: false, viewer: kind, split: false }
   }
   if (reason === 'binary') return decoded ? { editor: true, split: false } : { editor: false, viewer: 'hex', split: false }
   if (reason === 'unsupported-encoding') return { editor: true, split: false }

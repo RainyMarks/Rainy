@@ -28,6 +28,7 @@ import { prepareDesktopEnvironment } from './native-environment-window.ts'
 import { OptionalModules } from './optional-modules.ts'
 import { pruneWindowsHost, removeRetiredResources } from './retired-resources.ts'
 import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
+import { OfficeConversionError, OfficeConverter, officeKind } from './office-convert.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
 import { listExecutionTargets, readDesktopPreferences, removeSshHost, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget, saveSshHost,
   sshDestinationOf, sshTarget, sshTargets, WINDOWS_TARGET } from './execution-targets.ts'
@@ -132,6 +133,9 @@ function freeLoopbackPort(): Promise<number> {
     })
   })
 }
+
+/** Documents besides the Office formats that "Open in default app" accepts. */
+const OPENABLE_DOCUMENTS = new Set(['pdf', 'xlsx', 'xlsm', 'xltx', 'xltm', 'xlsb', 'xls', 'xlt', 'ods', 'csv'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object'
@@ -890,6 +894,29 @@ async function start(): Promise<void> {
   handleIpc('rainy:ide-directory', (event) => {
     if (!trustedSender(event)) throw new Error('Directory selection is available only in the Rainy window')
     return selectDirectory()
+  })
+  const officeConverter = new OfficeConverter()
+  handleIpc('rainy:office-pdf', async (event, value) => {
+    if (!trustedSender(event) || !isRecord(value) || !(value.bytes instanceof Uint8Array) || typeof value.extension !== 'string') {
+      throw new Error('Invalid document conversion request.')
+    }
+    // Failures are returned rather than thrown, so the page shows the reason without Electron's IPC prefix.
+    try {
+      const result = await officeConverter.toPdf(value.bytes, value.extension.toLowerCase())
+      return { pdf: new Uint8Array(result.pdf), application: result.application }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error), missing: error instanceof OfficeConversionError && error.missing }
+    }
+  })
+  handleIpc('rainy:open-file', async (event, value) => {
+    if (!trustedSender(event) || !isRecord(value) || typeof value.path !== 'string' || value.path === '') throw new Error('Invalid open request.')
+    const extension = value.path.slice(value.path.lastIndexOf('.') + 1).toLowerCase()
+    // Only documents: a shortcut, script or program would run instead of being shown.
+    if (officeKind(extension) === undefined && !OPENABLE_DOCUMENTS.has(extension)) return { error: localized({ zh: '只能用系统程序打开文档。', en: 'Only documents can be opened in another app.' }) }
+    if (target.kind === 'ssh') return { error: localized({ zh: '文件在 SSH 服务器上，无法用本机程序打开。', en: 'The file is on the SSH server; apps on this computer cannot open it.' }) }
+    const path = target.kind === 'wsl' ? await wslPath(distro, '-w', value.path) : value.path
+    const failure = await shell.openPath(path)
+    return failure === '' ? {} : { error: failure }
   })
   handleIpc('rainy:ide-prepare-development', async (event) => {
     if (!trustedSender(event)) throw new Error('Development setup is available only in the Rainy window')

@@ -6,6 +6,7 @@ import type { IdeNativeDirectory } from '../main/ide-native.ts'
 import type { IdeEnvironmentAction, IdeEnvironmentSnapshot } from '../main/ide-environment.ts'
 import type { StrataNativeHost, StrataModelPicker, StrataSettings } from '../shared/strata-protocol.ts'
 import type { OptionalModuleId, OptionalModulesBridge, OptionalModulesState } from '../shared/modules-protocol.ts'
+import type { OfficePdfResult } from '../shared/office-protocol.ts'
 
 /** Payload sent by the main process on each progress channel. */
 interface ProgressChannels {
@@ -60,6 +61,10 @@ if (process.isMainFrame && location.protocol === 'http:' && location.hostname ==
   contextBridge.exposeInMainWorld('__RAINY_IDE_NATIVE__', {
     ...remote ? {} : { selectDirectory: (): Promise<IdeNativeDirectory | null> => ipcRenderer.invoke('rainy:ide-directory') },
     prepareDevelopmentTools: (): Promise<void> => ipcRenderer.invoke('rainy:ide-prepare-development'),
+  })
+  contextBridge.exposeInMainWorld('__RAINY_OFFICE__', {
+    toPdf: (bytes: Uint8Array, extension: string): Promise<OfficePdfResult> => ipcRenderer.invoke('rainy:office-pdf', { bytes, extension }),
+    ...remote ? {} : { open: (path: string): Promise<{ error?: string }> => ipcRenderer.invoke('rainy:open-file', { path }) },
   })
   contextBridge.exposeInMainWorld('__RAINY_DIAGNOSTICS__', {
     export: (): Promise<string | null> => ipcRenderer.invoke('rainy:export-diagnostics'),

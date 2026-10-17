@@ -1,13 +1,14 @@
-/** The viewer half of an editor tab: images, SVG, Markdown, PDF, audio, video, hex and oversized text. */
+/** The viewer half of an editor tab: images, SVG, Markdown, PDF, office documents, audio, video, shortcuts, hex and oversized text. */
 import { useEffect, useState } from 'react'
 import type { IdeWorkspace } from '../../../shared/ide-files-protocol.ts'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
 import type { IdeBuffer, IdeModel } from '../ide-model.ts'
-import { fileReference } from '../ide-paths.ts'
+import { fileKey, fileReference } from '../ide-paths.ts'
 import { HexViewer } from './HexViewer.tsx'
 import { ImageViewer } from './ImageViewer.tsx'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
 import { MediaViewer } from './MediaViewer.tsx'
+import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer, type DocumentLocation } from './OfficeViewers.tsx'
 import { useViewerT } from './messages.ts'
 import { PdfViewer } from './PdfViewer.tsx'
 import type { ScrollSync } from './scroll-sync.ts'
@@ -31,6 +32,27 @@ function SvgPreview({ url, text, dirty, name, bytes }: {
   }, [text, dirty])
   useEffect(() => () => { if (live !== undefined) URL.revokeObjectURL(live) }, [live])
   return <ImageViewer url={live ?? url} name={name} bytes={dirty ? new Blob([text]).size : bytes} />
+}
+
+/** Host path of a project file, in the spelling of the root it lives in. */
+function hostPath(workspace: IdeWorkspace, rootId: string | undefined, path: string): string {
+  const root = workspace.roots?.find(value => value.rootId === rootId) ?? workspace.roots?.find(value => value.primary)
+  const base = root?.path ?? workspace.path
+  const separator = base.includes('\\') ? '\\' : '/'
+  return `${base.replace(/[\\/]+$/u, '')}${separator}${path.split('/').join(separator)}`
+}
+
+/** The document an Office `~$` owner file belongs to, from the listing of its folder: Office keeps the name when it is
+ *  short and replaces its first two characters with `~$` otherwise. */
+function lockedDocument(model: IdeModel, path: string): { path: string; name: string } | undefined {
+  const reference = fileReference(path)
+  const slash = reference.path.lastIndexOf('/')
+  const folder = fileKey(slash < 0 ? '' : reference.path.slice(0, slash), reference.rootId)
+  const lock = reference.path.slice(slash + 1)
+  const rest = lock.slice(2)
+  const entries = model.state.getSnapshot().directories[folder]?.entries ?? []
+  return entries.find(entry => entry.kind === 'file' && entry.name === rest)
+    ?? entries.find(entry => entry.kind === 'file' && entry.name !== lock && entry.name.length === lock.length && entry.name.endsWith(rest) && !entry.name.startsWith('~$'))
 }
 
 function LargeText({ buffer, onHex }: { buffer: IdeBuffer; onHex: () => void }): JSX.Element {
@@ -71,6 +93,10 @@ export function FileViewer({ workspace, path, buffer, choice, model, sync, onScr
   const name = reference.path.split('/').at(-1) ?? reference.path
   const bytes = buffer.document.bytes
   const hex = (): void => { model.setView(path, 'hex') }
+  const location: DocumentLocation = {
+    name, extension: name.slice(name.lastIndexOf('.') + 1).toLowerCase(),
+    hostPath: window.__RAINY_AGENT__?.environment === 'SSH' ? undefined : hostPath(workspace, reference.rootId, reference.path),
+  }
   let content: JSX.Element
   switch (choice.viewer) {
     case undefined: return null
@@ -79,6 +105,16 @@ export function FileViewer({ workspace, path, buffer, choice, model, sync, onScr
     case 'audio':
     case 'video': content = <MediaViewer key={url} url={url} kind={choice.viewer} bytes={bytes} onHex={hex} />; break
     case 'pdf': content = <PdfViewer key={url} url={url} bytes={bytes} />; break
+    case 'word': content = <WordViewer key={url} url={url} size={bytes} location={location} />; break
+    case 'sheet': content = <SheetViewer key={url} url={url} size={bytes} location={location} />; break
+    case 'office': content = <OfficeViewer key={url} url={url} size={bytes} location={location} />; break
+    case 'shortcut': content = <ShortcutViewer key={url} url={url} size={bytes} />; break
+    case 'office-lock': {
+      const document = lockedDocument(model, path)
+      content = <OfficeLockViewer key={url} url={url} size={bytes} document={document?.name ?? name.slice(2)}
+        onOpenDocument={document === undefined ? undefined : () => { void model.openFile(document.path).catch((error: unknown) => { model.fail(error) }) }} />
+      break
+    }
     case 'large': content = <LargeText buffer={buffer} onHex={hex} />; break
     case 'hex':
       content = <HexViewer key={url} url={url} size={bytes}
