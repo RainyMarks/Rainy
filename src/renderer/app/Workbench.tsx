@@ -159,7 +159,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const views = activePath === null || active === undefined ? [] : switchableViews(activePath, active.document.readOnlyReason)
   const currentView = tab?.view ?? (activePath === null ? 'source' : defaultView(activePath))
   /** Store a view, leaving the tab without an explicit choice when it picks its type's default. */
-  const showView = (view: 'source' | 'preview' | 'split' | 'hex'): boolean => {
+  const showView = (view: 'source' | 'preview' | 'split' | 'hex' | 'rich'): boolean => {
     if (activePath === null || !editing) return false
     model.setView(activePath, view === defaultView(activePath) ? undefined : view)
     return true
@@ -731,9 +731,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                 {views.length > 0 && <div className={css.viewSwitch} role="group" aria-label={tv('viewPreview')}>
                   {views.map(view => (
                     <button key={view} type="button" className={css.viewButton} aria-pressed={currentView === view}
-                      title={tv(view === 'source' ? 'viewSourceTitle' : view === 'preview' ? 'viewPreviewTitle' : 'viewSplitTitle')}
+                      title={tv(view === 'rich' ? 'viewRichTitle' : view === 'source' ? 'viewSourceTitle' : view === 'preview' ? 'viewPreviewTitle' : 'viewSplitTitle')}
                       onClick={() => { showView(view) }}>
-                      {tv(view === 'source' ? 'viewSource' : view === 'preview' ? 'viewPreview' : 'viewSplit')}
+                      {tv(view === 'rich' ? 'viewRich' : view === 'source' ? 'viewSource' : view === 'preview' ? 'viewPreview' : 'viewSplit')}
                     </button>
                   ))}
                 </div>}

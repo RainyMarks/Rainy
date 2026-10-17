@@ -68,6 +68,8 @@
     "@fontsource-variable/geist-mono": "5.3.0",
     "@fontsource-variable/hanken-grotesk": "5.3.0",
     "@lezer/highlight": "1.2.4",
+    "@milkdown/crepe": "7.22.3",
+    "@milkdown/kit": "7.22.3",
     "@types/js-yaml": "4.0.9",
     "@types/node": "^22.0.0",
     "@types/react": "18.3.31",

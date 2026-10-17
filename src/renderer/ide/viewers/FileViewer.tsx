@@ -11,6 +11,7 @@ import { MediaViewer } from './MediaViewer.tsx'
 import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer, type DocumentLocation } from './OfficeViewers.tsx'
 import { useViewerT } from './messages.ts'
 import { PdfViewer } from './PdfViewer.tsx'
+import { RichMarkdown } from './RichMarkdown.tsx'
 import type { ScrollSync } from './scroll-sync.ts'
 import type { ViewerChoice } from './viewer-choice.ts'
 import css from './Viewers.module.css'
@@ -122,6 +123,11 @@ export function FileViewer({ workspace, path, buffer, choice, model, sync, onScr
         onOpenText={(encoding) => {
           void model.decodeAs(path, encoding).then(() => { model.setView(path, undefined) }, (error: unknown) => { model.fail(error) })
         }} />
+      break
+    case 'markdown-rich':
+      content = <RichMarkdown key={path} text={buffer.text} version={buffer.document.version}
+        base={{ workspaceId: workspace.workspaceId, rootId: reference.rootId, directory: reference.path.split('/').slice(0, -1).join('/') }}
+        onChange={(text) => { model.change(path, text) }} onSave={() => { void model.save(path) }} />
       break
     case 'markdown':
       content = <MarkdownPreview key={path} text={buffer.text} version={buffer.document.version}

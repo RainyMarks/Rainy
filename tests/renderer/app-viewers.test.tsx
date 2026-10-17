@@ -39,10 +39,14 @@ async function open(path: string, document: IdeFileDocument) {
 const editorHidden = (): boolean => window.document.querySelector<HTMLElement>('[data-rainy-editor]')?.hidden !== false
 
 describe('file viewers', () => {
-  it('switches a Markdown tab between source, preview and split, also with Ctrl+Shift+V', async () => {
+  it('opens a Markdown tab for rich editing and switches it to source, preview and split, also with Ctrl+Shift+V', async () => {
     const h = await open('notes/README.md', file('notes/README.md', { content: '# 题解\n\n![flag](flag.png)\n', bytes: 24 }))
-    expect(byRole('button', '源码').getAttribute('aria-pressed')).toBe('true')
-    expect(editorHidden()).toBe(false)
+    expect(byRole('button', '所见即所得').getAttribute('aria-pressed')).toBe('true')
+    expect(editorHidden()).toBe(true)
+    await waitFor(() => { expect(window.document.querySelector('[data-viewer="markdown-rich"]')).not.toBeNull() }, 10000)
+    click(byRole('button', '源码'))
+    await waitFor(() => { expect(editorHidden()).toBe(false) })
+    expect(h.workbench.model.state.getSnapshot().data.tabs.find(tab => tab.path === 'notes/README.md')?.view).toBe('source')
     click(byRole('button', '预览'))
     // The Markdown renderer loads on first use, which can take seconds while the whole suite runs in parallel.
     await waitFor(() => { expect(window.document.querySelector('[data-viewer="markdown"] h1')?.textContent).toBe('题解') }, 10000)
@@ -56,6 +60,10 @@ describe('file viewers', () => {
     await waitFor(() => { expect(editorHidden()).toBe(true) })
     keyDown(window, { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true })
     await waitFor(() => { expect(window.document.querySelector('[data-viewer="markdown"]')).toBeNull() })
+    expect(editorHidden()).toBe(false)
+    expect(h.workbench.model.state.getSnapshot().data.tabs.find(tab => tab.path === 'notes/README.md')?.view).toBe('source')
+    click(byRole('button', '所见即所得'))
+    await waitFor(() => { expect(window.document.querySelector('[data-viewer="markdown-rich"]')).not.toBeNull() })
     expect(h.workbench.model.state.getSnapshot().data.tabs.find(tab => tab.path === 'notes/README.md')?.view).toBeUndefined()
   })
 

@@ -190,7 +190,8 @@ export function IdeEditor({ model, state, appearance, sendSelection, breakpoint,
       editor?.showDiff(path, comparison.original, buffer?.source !== 'snippet', comparison.kind === 'ai')
     else
       editor?.show(path, tab?.cursor === undefined ? undefined : { ...tab.cursor, top: tab.scroll?.top ?? 0, left: tab.scroll?.left ?? 0 })
-  }, [workspaceReady, path, tab?.kind, comparison, textReady])
+  // A tab that opened in a viewer (Markdown's rich view) shows its text once the editor becomes visible.
+  }, [workspaceReady, path, tab?.kind, comparison, textReady, editorVisible])
   useEffect(() => {
     // Text that is not UTF-8 is decoded when its tab shows text: automatically for a failed UTF-8 read, and again after a
     // reload when the user picked an encoding for the file.

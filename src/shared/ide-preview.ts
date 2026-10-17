@@ -5,8 +5,8 @@
  *  writes next to an open document. */
 export type IdePreviewKind = 'image' | 'svg' | 'markdown' | 'audio' | 'video' | 'pdf' | 'word' | 'sheet' | 'office' | 'shortcut' | 'office-lock'
 
-/** How one editor tab shows its file; absent means the default for the file type. */
-export type IdeTabView = 'source' | 'preview' | 'split' | 'hex'
+/** How one editor tab shows its file; absent means the default for the file type. `rich` edits Markdown on its rendered form. */
+export type IdeTabView = 'source' | 'preview' | 'split' | 'hex' | 'rich'
 
 const IMAGE: Readonly<Record<string, string>> = {
   png: 'image/png', apng: 'image/apng', jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',

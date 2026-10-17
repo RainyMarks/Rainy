@@ -6,7 +6,7 @@ import { idePreviewKind, type IdeTabView } from '../../../shared/ide-preview.ts'
 export const TEXT_ENCODINGS = ['utf-16le', 'utf-16be', 'gb18030', 'big5', 'shift_jis', 'euc-kr', 'windows-1252', 'utf-8'] as const
 
 /** Viewers other than the text editor. */
-export type ViewerKind = 'image' | 'svg' | 'markdown' | 'audio' | 'video' | 'pdf' | 'word' | 'sheet' | 'office' | 'shortcut' | 'office-lock'
+export type ViewerKind = 'image' | 'svg' | 'markdown' | 'markdown-rich' | 'audio' | 'video' | 'pdf' | 'word' | 'sheet' | 'office' | 'shortcut' | 'office-lock'
   | 'hex' | 'large'
 
 /** What one tab shows: the text editor, a viewer, or both side by side. */
@@ -37,7 +37,8 @@ export function chooseViewer(path: string, reason: IdeFileDocument['readOnlyReas
   if (kind === 'markdown') {
     if (view === 'preview') return { editor: false, viewer: 'markdown', split: false }
     if (view === 'split') return { editor: true, viewer: 'markdown', split: true }
-    return { editor: true, split: false }
+    if (view === 'source') return { editor: true, split: false }
+    return { editor: false, viewer: 'markdown-rich', split: false }
   }
   if (kind === 'svg') {
     if (view === 'source') return { editor: true, split: false }
@@ -51,18 +52,20 @@ export function chooseViewer(path: string, reason: IdeFileDocument['readOnlyReas
  * Views a tab can switch between, besides hex which every file offers.
  * @param path File key or path.
  * @param reason The Host's read result.
- * @returns Source, preview and split for Markdown and SVG text; nothing otherwise.
+ * @returns WYSIWYG, source, preview and split for Markdown; source, preview and split for SVG text; nothing otherwise.
  */
 export function switchableViews(path: string, reason: IdeFileDocument['readOnlyReason']): readonly IdeTabView[] {
+  if (reason !== null) return []
   const kind = idePreviewKind(path)
-  return reason === null && (kind === 'markdown' || kind === 'svg') ? ['source', 'preview', 'split'] : []
+  return kind === 'markdown' ? ['rich', 'source', 'preview', 'split'] : kind === 'svg' ? ['source', 'preview', 'split'] : []
 }
 
 /**
  * The view a tab shows when it has no explicit choice, so the toolbar can mark it.
  * @param path File key or path.
- * @returns `preview` for SVG, `source` for everything else.
+ * @returns `rich` for Markdown, `preview` for SVG, `source` for everything else.
  */
 export function defaultView(path: string): IdeTabView {
-  return idePreviewKind(path) === 'svg' ? 'preview' : 'source'
+  const kind = idePreviewKind(path)
+  return kind === 'markdown' ? 'rich' : kind === 'svg' ? 'preview' : 'source'
 }

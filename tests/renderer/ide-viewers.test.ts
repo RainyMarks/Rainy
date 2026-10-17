@@ -119,15 +119,18 @@ describe('viewer choice', () => {
     expect(chooseViewer('solve.py', null, 'hex', false).viewer).toBe('hex')
   })
 
-  it('opens Markdown as source and SVG as a picture, each with preview and split views', () => {
-    expect(chooseViewer('README.md', null, undefined, false)).toEqual({ editor: true, split: false })
+  it('opens Markdown for rich editing and SVG as a picture, each with source, preview and split views', () => {
+    expect(chooseViewer('README.md', null, undefined, false)).toEqual({ editor: false, viewer: 'markdown-rich', split: false })
+    expect(chooseViewer('README.md', null, 'rich', false)).toEqual({ editor: false, viewer: 'markdown-rich', split: false })
+    expect(chooseViewer('README.md', null, 'source', false)).toEqual({ editor: true, split: false })
+    expect(chooseViewer('huge.md', 'too-large', undefined, false).viewer).toBe('large')
     expect(chooseViewer('README.md', null, 'preview', false)).toEqual({ editor: false, viewer: 'markdown', split: false })
     expect(chooseViewer('README.md', null, 'split', false)).toEqual({ editor: true, viewer: 'markdown', split: true })
     expect(chooseViewer('icon.svg', null, undefined, false)).toEqual({ editor: false, viewer: 'svg', split: false })
     expect(chooseViewer('icon.svg', null, 'source', false)).toEqual({ editor: true, split: false })
-    expect([defaultView('icon.svg'), defaultView('README.md'), defaultView('a.py')]).toEqual(['preview', 'source', 'source'])
-    expect([switchableViews('README.md', null), switchableViews('a.py', null), switchableViews('README.md', 'too-large')])
-      .toEqual([['source', 'preview', 'split'], [], []])
+    expect([defaultView('icon.svg'), defaultView('README.md'), defaultView('a.py')]).toEqual(['preview', 'rich', 'source'])
+    expect([switchableViews('README.md', null), switchableViews('icon.svg', null), switchableViews('a.py', null), switchableViews('README.md', 'too-large')])
+      .toEqual([['rich', 'source', 'preview', 'split'], ['source', 'preview', 'split'], [], []])
   })
 
   it('maps extensions to media types and builds byte route URLs', () => {

@@ -1,0 +1,39 @@
+/* Milkdown Crepe in Rainy's colors and fonts. Crepe's own structure comes from its common stylesheet; every color here is
+ * a Rainy token, so the editor follows the color mode, scheme and accent. Global because Crepe's classes are global. */
+.rainy-rich .milkdown {
+  --crepe-color-background: var(--rainy-alias-bg-base);
+  --crepe-color-on-background: var(--rainy-alias-label-primary);
+  --crepe-color-surface: var(--rainy-alias-bg-layer-1);
+  --crepe-color-surface-low: var(--rainy-alias-bg-layer-1);
+  --crepe-color-on-surface: var(--rainy-alias-label-primary);
+  --crepe-color-on-surface-variant: var(--rainy-alias-label-secondary);
+  --crepe-color-outline: var(--rainy-alias-border-l2);
+  --crepe-color-primary: var(--rainy-alias-state-business-primary);
+  --crepe-color-secondary: var(--rainy-alias-button-ghost-active-fill);
+  --crepe-color-on-secondary: var(--rainy-alias-label-primary);
+  --crepe-color-inverse: var(--rainy-alias-label-primary);
+  --crepe-color-on-inverse: var(--rainy-alias-bg-base);
+  --crepe-color-inline-code: var(--rainy-alias-state-error-primary);
+  --crepe-color-error: var(--rainy-alias-state-error-primary);
+  --crepe-color-hover: var(--rainy-alias-interactive-bg-hover);
+  --crepe-color-selected: var(--rainy-alias-interactive-bg-active);
+  --crepe-color-inline-area: var(--rainy-alias-bg-layer-2);
+  --crepe-color-diff-added: var(--rainy-alias-file-diff-added-marker);
+  --crepe-color-diff-removed: var(--rainy-alias-file-diff-deleted-marker);
+  --crepe-color-diff-added-bg: var(--rainy-alias-file-diff-added-bg);
+  --crepe-color-diff-removed-bg: var(--rainy-alias-file-diff-deleted-bg);
+  --crepe-color-diff-added-text: var(--rainy-alias-label-primary);
+  --crepe-color-diff-removed-text: var(--rainy-alias-label-primary);
+  --crepe-base-font-size: calc(var(--rainy-content-font-size, 14px) + 1px);
+  --crepe-font-title: var(--rainy-font-family);
+  --crepe-font-default: var(--rainy-font-family);
+  --crepe-font-code: var(--rainy-font-family-code);
+  --crepe-shadow-1: 0 1px 3px rgb(0 0 0 / 18%);
+  --crepe-shadow-2: 0 4px 14px rgb(0 0 0 / 22%);
+  background: var(--rainy-alias-bg-base);
+  color: var(--rainy-alias-label-primary);
+  max-width: 920px;
+  margin: 0 auto;
+}
+.rainy-rich .milkdown .ProseMirror { padding: 28px 64px 40vh; outline: none; }
+.rainy-rich .milkdown .ProseMirror ::selection { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 30%, transparent); }
