@@ -1,7 +1,7 @@
 {
   "name": "rainy-agent",
   "productName": "Rainy",
-  "version": "3.3.1",
+  "version": "3.4.0",
   "private": true,
   "type": "module",
   "description": "Rainy: a lightweight AI coding workbench for Windows, WSL and remote Linux over SSH",

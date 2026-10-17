@@ -30,7 +30,7 @@ Rainy puts an AI agent, previews of Word, Excel, PowerPoint and PDF, a real edit
 | **Remote development over SSH** | Pick a host from `~/.ssh/config` or add `user@host`, and Rainy runs its backend on the server: the agent, terminals, run and debug, and language services work on the server's files, while the interface stays here. It uses the OpenSSH client built into Windows, so your keys, agent and ProxyJump settings just work. |
 | **See the whole project** | The project map draws a project's parts and the imports between them, or every file as a block sized by its lines. It names the stack, explains each part with AI on request, and highlights the files the agent is reading or changing. |
 | **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. Search and replace across the project, a command palette, and Git with AI-written commit messages. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
-| **Preview any file** | Word documents as paginated paper; Excel and OpenDocument spreadsheets as tables with a tab per sheet; PowerPoint and legacy .doc files converted by the Office on your PC, so they look exactly as in PowerPoint and Word. Images with zoom and pixel colors, Markdown, PDF, audio and video in place; other binaries in a hex view; GBK and UTF-16 text decoded correctly. |
+| **Preview any file** | Word documents as paginated paper; Excel and OpenDocument spreadsheets as tables with a tab per sheet; PowerPoint and legacy .doc files converted by the Office on your PC, so they look exactly as in PowerPoint and Word. Markdown opens formatted and is edited right there; PDF (including Chinese papers that do not embed their fonts), images, audio and video in place; images with zoom and pixel colors; other binaries in a hex view; GBK and UTF-16 text decoded correctly. |
 | **Windows, WSL2 or SSH** | Start in native Windows; move a project to WSL2 or to a Linux server whenever it needs one. |
 | **Your model, your keys** | Keys stay on your machine, encrypted with Windows data protection. Model requests follow the system proxy or one you set. There is no telemetry; crash reports stay local. |
 | **Light** | A 174 MB installer. The Strata engine, PHP and the Linux runtime download only when you need them. |
@@ -61,6 +61,14 @@ Rainy puts an AI agent, previews of Word, Excel, PowerPoint and PDF, a real edit
 ![Ctrl+K adding an empty-key check to a function, with the new lines in green](assets/ai-edit.png)
 
 <a id="whats-new"></a>
+## What's new in 3.4
+
+Notes and documents are easier to work on.
+
+- **WYSIWYG Markdown**: a .md file opens formatted, and you type on it as in Typora; headings, lists, task lists, tables, code blocks and LaTeX math take shape as you write, and `/` inserts any of them. Source, Preview and Split are one click away. Saving changes only the lines you edited, so escapes, blank lines and table spelling elsewhere in the file stay as they were.
+- **Chinese PDFs no longer come out blank**: PDFs that do not embed their Chinese fonts, as many papers and official documents do not, used to show only their English text; now the Chinese shows too.
+- **Password-protected Office files** say that they need their password and offer Open in default app, instead of hanging on a password prompt nobody can see.
+
 ## What's new in 3.3
 
 The AI can go online: look up current documentation, papers, version numbers and error messages, then read the pages it needs in full.
@@ -153,10 +161,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.3.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.4.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.3.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.4.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 

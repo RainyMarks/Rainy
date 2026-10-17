@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.3 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.4 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -30,7 +30,7 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 | **SSH 远程开发** | 从 `~/.ssh/config` 里选一台主机，或填写 `user@host`，Rainy 就把后端放到服务器上运行：AI、终端、运行调试和语言服务都直接处理服务器上的文件，界面留在这台电脑上。使用 Windows 自带的 OpenSSH 客户端，你的密钥、ssh-agent 和 ProxyJump 配置照常可用。 |
 | **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
 | **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。全项目搜索替换、命令面板，以及能让 AI 写提交说明的 Git 面板。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
-| **预览任何文件** | Word 文档直接显示成分页的纸面；Excel 和 WPS 表格显示成可切换工作表的表格；PPT 和旧版 .doc 交给电脑上的 Office 转换，看到的和 PowerPoint、Word 里一模一样。图片可缩放、查看像素颜色；Markdown、PDF、音视频直接预览；其他二进制文件用十六进制查看；GBK、UTF-16 文本正确显示。 |
+| **预览任何文件** | Word 文档直接显示成分页的纸面；Excel 和 WPS 表格显示成可切换工作表的表格；PPT 和旧版 .doc 交给电脑上的 Office 转换，看到的和 PowerPoint、Word 里一模一样。Markdown 打开就是排好版的样子，直接在上面编辑；PDF（包括没有嵌入字体的中文论文）、图片、音视频直接预览；图片可缩放、查看像素颜色；其他二进制文件用十六进制查看；GBK、UTF-16 文本正确显示。 |
 | **Windows、WSL2 或 SSH** | 默认使用 Windows 原生环境；项目需要时，随时切换到 WSL2 或一台 Linux 服务器。 |
 | **模型和密钥都在你手里** | 密钥只保存在你的电脑上，并用 Windows 数据保护加密。模型请求可跟随系统代理或使用你设置的代理。不收集使用数据，崩溃记录只保存在本机。 |
 | **轻量** | 安装包 174 MB。Strata 引擎、PHP 和 Linux 运行环境都是用到时才下载。 |
@@ -61,6 +61,14 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
+## 3.4 新变化
+
+写笔记、改文档更顺手了。
+
+- **Markdown 所见即所得**：打开 .md 文件就是排好版的样子，像 Typora 一样直接在上面打字修改；标题、列表、任务清单、表格、代码块和 LaTeX 公式即时变样，输入 `/` 可以插入各种内容。顶部可以随时切到“源码”“预览”“分栏”。保存时只改你动过的那几行，其余内容（转义字符、空行、表格写法）原样保留，不会因为编辑一句话就改动整个文件。
+- **中文 PDF 不再空白**：没有嵌入字体的中文 PDF（很多论文和公文都是这样）以前只显示英文，中文是空白，现在能正常显示。
+- **加密的 Office 文件**：设置了打开密码的 Word、Excel、PPT 会直接说明“设置了打开密码”，并提供“用默认程序打开”，不会再卡住或弹出看不见的密码框。
+
 ## 3.3 新变化
 
 AI 可以联网了：查最新的文档、论文、版本号和报错信息，再把需要的网页读完整。
@@ -153,10 +161,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.3.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.4.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.3.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.4.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
