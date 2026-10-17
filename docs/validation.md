@@ -1,5 +1,29 @@
 # Rainy 验收记录
 
+## 3.3.1（2026-10-17）
+
+被测产物为 `Rainy-3.3.1-windows-x64-setup.exe`（174,758,946 字节，SHA-256 `f8c10619f23d1cbb1ccdab79eb0707dda0df4b62910b391422b83843154e1624`），构建自提交 `d3e4fa4fe1`；之后的提交只修改本验收记录。Linux 运行环境分片为 280,966,813 字节（SHA-256 `311c3ad97b653f507ed002f08e05150227b375b7cf3e1b2f76deda247f9c7ad5`），WSL 和 SSH 共用；PHP 分片与 3.3.0 相同。
+
+### 改动
+
+- `web_fetch` 遇到 DeepSeek 返回 5xx 时，提示改为“页面可能无法访问，或 DeepSeek 暂时出错”，不再建议重试：实测中不存在的域名得到的是 HTTP 500，而不是文档所写的 404。
+
+### 检查
+
+- **真实接口（经用户同意，使用其设置中的 DeepSeek 密钥）**：密钥按桌面程序的方式在内存中解开（Chromium os_crypt 主密钥经 DPAPI → `credential-key.bin` → 密封的 `DEEPSEEK_API_KEY`），没有打印或写入磁盘。用 Rainy 自己的工具代码调用：
+  - 搜索原始响应 HTTP 200，结果字段为 title、site_name、site_icon、authority、rerank_score、date、url、summary、snippet、content，与文档一致。
+  - `web_search` 查询 `DeepSeek V4.1 Flash 1017 发布 site:deepseek.com OR site:api-docs.deepseek.com` 用时 343 ms，返回 5 条，第一条为 V4.1 Flash 1017 的发布公告（2026-10-16），`site:` 语法生效。
+  - `web_fetch` 读取 `https://api-docs.deepseek.com/zh-cn/guides/search` 用时 117 ms，标题“网页搜索与抓取”，6,402 个字符；正文为 Markdown，部分字符带反斜杠转义（如 `\/`、`\#`）。
+  - 不存在的域名返回 HTTP 500，重试一次后显示新的提示。
+- **测试**：本机 Vitest 100 个文件 745 项通过（10 项按平台跳过），新增 500 提示测试；类型检查通过。Ubuntu 24.04 与 Windows 2022 CI 通过（[运行记录](https://github.com/RainyMarks/Rainy/actions/runs/39024203350)）。
+- **安装包内容**：7-Zip 解开后 8,746 个文件与 `release/win-unpacked` 逐一一致。
+- **试运行**：用临时用户数据启动，版本为 3.3.1，页面错误为零，关闭窗口后进程全部退出。
+- **WSL 运行环境**：在临时 HOME 中安装约 5.6 秒，Linux Host 约 0.2 秒就绪，启动页返回 HTTP 200。
+
+### 验收范围
+
+真实接口只测了一次搜索和两次读取，没有在打包程序的真实对话里让 DeepSeek 模型自己决定何时搜索；联网请求没有在 WSL 与 SSH 执行环境下验证。3.3.0 的真实窗口流程（批准、记住网站、设置卡片）本版本没有改动，没有重跑。没有测试从 3.3.0 自动更新到 3.3.1。
+
 ## 3.3.0（2026-10-17）
 
 被测产物为 `Rainy-3.3.0-windows-x64-setup.exe`（174,759,013 字节，SHA-256 `8256c93b13c91d3484821dc129694791e7136055af0bccafc1f3b05539370516`），构建自提交 `8244b57708`；之后的提交只修改本验收记录。Linux 运行环境分片为 280,966,977 字节（SHA-256 `64a9e7a4981f3e28f8cedf09a87855b5fc6b8bc6ea3e3b214723d913fbe575fa`），WSL 和 SSH 共用；PHP 分片与 3.2.0 相同。
