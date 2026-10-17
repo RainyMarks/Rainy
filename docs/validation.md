@@ -1,5 +1,35 @@
 # Rainy 验收记录
 
+## 3.2.0（2026-10-17）
+
+被测产物为 `Rainy-3.2.0-windows-x64-setup.exe`（174,755,500 字节，SHA-256 `91d903f9a88105b1b0e483db17dbbc0354376dec0565785225c2163eb6ab1b59`），构建自提交 `ef3a534541`；之后的提交只修改一项测试和本验收记录。Linux 运行环境分片为 280,966,718 字节（SHA-256 `51312b75216779a357a68a7494d134530e50aebc844632047c5f6db876a3f652`），WSL 和 SSH 共用；PHP 分片与 3.1.1 相同。
+
+### 改动
+
+- 定位从 CTF 转向办公、科研和编程开发；README 与桌面说明随之更新。
+- 文档预览：`idePreviewKind` 新增 `word`（docx/docm/dotx/dotm）、`sheet`（xlsx/xlsm/xltx/xltm/xlsb/xls/xlt/ods）、`office`（pptx/ppt/pps/potx/odp/dps/doc/dot/wps/odt 等）、`shortcut`（.lnk）和 `office-lock`（`~$` 开头的 Office 文件）；这些文件由 Host 只按字节提供，不再显示十六进制。
+  - Word：docx-preview 0.4.1 在 shadow root 中排版（不渲染 altChunk、批注和修订），只保留 http(s) 与页内锚点链接；可切换“用 Office 版式显示”。
+  - 幻灯片和旧版 Word：页面经 Host 读出字节，通过 `__RAINY_OFFICE__.toPdf` 交给桌面进程，在私有临时目录中用 PowerShell 调用 Microsoft Office（PowerPoint/Word），找不到时尝试 WPS（KWPP/KWps），导出 PDF 后用现有 PDF 查看器显示，结果按内容哈希缓存 6 份。PowerPoint 和 WPS 只在转换前未运行时才退出，Word 总是使用独立实例。没有 Office 时列出每页幻灯片的文字。
+  - 表格：SheetJS 0.20.3（官方 CDN 包，npm 上的 0.18.5 有已知漏洞）读取，最多显示 2000 行、200 列，支持合并单元格和多个工作表，内置短日期格式按界面语言显示。
+  - “用默认程序打开”（`rainy:open-file`）只接受 Office 文档、PDF、表格和 CSV，WSL 路径经 `wslpath -w` 转换，SSH 上的文件不提供。
+  - `~$` 锁定文件显示打开者和对应文档（按 Office 的命名规则在同一文件夹中查找）；`.lnk` 按 [MS-SHLLINK] 解析目标、参数、起始位置和备注。
+- 页面 CSP 的 `font-src` 允许 `blob:`，以便显示 Word 文档内嵌的字体。
+- 测试：两项 Markdown/图片查看器测试在全量并行运行时首次懒加载可能超过 2 秒，等待改为 10 秒；发行完整性复查测试改为显式设置修改时间，不再依赖文件系统的时间精度。
+
+### 检查
+
+- **测试**：本机 Vitest 98 个文件 733 项通过（10 项按平台跳过），连续两次全量运行均通过，两套 TypeScript 类型检查通过。新增锁定文件、快捷方式解析、文件类型选择和转换缓存的测试。Ubuntu 24.04 与 Windows 2022 CI 通过（[运行记录](https://github.com/RainyMarks/Rainy/actions/runs/39015185681)）。
+- **Office 转换**：本机 Microsoft Office 下，测试用的 4 页 pptx（含中文、图片、柱状图和表格）转换约 3–7 秒，输出与 PowerPoint 一致；由 Office 另存的 .ppt 约 4.7 秒、.doc 约 2.6 秒。转换后没有遗留 POWERPNT/WINWORD 进程。
+- **打包程序完整流程**：打包程序在临时用户数据下打开一个包含 pptx、ppt、doc、docx、xlsx、xls、`~$` 锁定文件和 .lnk 的文件夹（中文；源代码版本另跑一次中英文），依次打开：幻灯片和旧版文档显示为 PDF 并注明“由 Microsoft PowerPoint 转换”；docx 的快速预览分 2 页、表格 9 个单元格完整，“用 Office 版式显示”约 4 秒；表格显示合并单元格、两个工作表和 `2026/8/31` 样式的日期；锁定文件显示打开者并可跳到对应文档；快捷方式显示目标路径。对 .lnk 和 .exe 调用“用默认程序打开”、对 .exe 调用转换均被拒绝。页面与控制台错误为零。
+- **浏览器（无桌面桥接）**：开发版在应用内浏览器中打开同一组文件，pptx 显示“只有 Rainy 桌面版能借助 Office 预览”并列出 4 页文字，其余格式与桌面版一致，控制台错误为零。
+- **安装包内容**：7-Zip 解开后 8,746 个文件与 `release/win-unpacked` 逐一一致。
+- **试运行**：用临时用户数据启动，版本为 3.2.0，页面错误为零，关闭窗口后进程全部退出。
+- **WSL 运行环境**：在临时 HOME 中安装约 5.3 秒，Linux Host 约 0.2 秒就绪，启动页返回 HTTP 200。
+
+### 验收范围
+
+本机 WPS 的 COM 接口无法创建对象（64 位与 32 位 PowerShell 均失败），WPS 转换路径没有验证；没有 Office 的电脑只在浏览器中验证了文字列表回退。没有用带密码、超大（上百页）或复杂版式的真实文档测试，docx-preview 的版式保真度因文档而异。“用默认程序打开”只验证了拒绝非文档类型，没有实际打开 Word 窗口；WSL 与 SSH 项目中的文档转换没有在真实窗口中验证。没有测试从 3.1.1 自动更新到 3.2.0。
+
 ## 3.1.1（2026-10-17）
 
 被测产物为 `Rainy-3.1.1-windows-x64-setup.exe`（174,549,973 字节，SHA-256 `a36007ec28fe3b17496a31fec96d96ade3ab7aadf6da2102a66f669e2071349d`），构建自提交 `33274c7e98`；之后的提交只修改本验收记录。Linux 运行环境分片为 280,703,109 字节（SHA-256 `1671988f89bd2928e5d6b4338146eb63e4a7844f864a9ad428b32d538d0ae161`），WSL 和 SSH 共用；PHP 分片与 3.1.0 相同。
