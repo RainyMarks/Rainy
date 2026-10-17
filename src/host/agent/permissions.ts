@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { PendingApproval, PermissionMode, PermissionRules } from '../../shared/rpc.ts'
 
 /** Tools that only read; they run in every mode. */
-const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob'])
+const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob', 'web_search'])
 const CHANGE_TOOLS: ReadonlySet<string> = new Set(['write', 'edit'])
 const SHELL_TOOLS: ReadonlySet<string> = new Set(['bash', 'pwsh'])
 
@@ -139,6 +139,14 @@ export type PermissionDecision =
 
 const ALLOW: PermissionDecision = { kind: 'allow' }
 
+/** @param url URL from the model. @returns Its lower-case host, or `undefined` when the tool will refuse it anyway. */
+function webHost(url: string | undefined): string | undefined {
+  try {
+    const parsed = new URL(url?.trim() ?? '')
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.hostname.toLowerCase() : undefined
+  } catch { return undefined }
+}
+
 function stringArg(args: unknown, name: string): string | undefined {
   const value = args !== null && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined
   return typeof value === 'string' ? value : undefined
@@ -152,6 +160,14 @@ function stringArg(args: unknown, name: string): string | undefined {
 export async function decide(input: PermissionInput): Promise<PermissionDecision> {
   const { mode, toolName } = input
   if (READ_TOOLS.has(toolName) || mode === 'auto') return ALLOW
+  // A fetched URL reaches a third party and could carry project data out, so each new site asks first, in every mode.
+  if (toolName === 'web_fetch') {
+    const host = webHost(stringArg(input.args, 'url'))
+    if (host === undefined) return ALLOW
+    const rule = `web_fetch:${host}`
+    return input.rules.tools.includes(rule) ? ALLOW
+      : { kind: 'ask', approval: { reason: 'web', path: stringArg(input.args, 'url'), ...(input.canRemember ? { rule } : {}) } }
+  }
   const readOnlyTool = input.readOnlyTools.has(toolName)
   if (mode === 'read-only') return readOnlyTool ? ALLOW : { kind: 'deny', reason: READ_ONLY_REASON }
   if (CHANGE_TOOLS.has(toolName)) {

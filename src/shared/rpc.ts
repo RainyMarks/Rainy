@@ -113,6 +113,8 @@ export interface UiPreferences {
   autoKeepChanges: boolean
   /** Empty views show falling rain, and a click on them makes a ripple. */
   rainEffects: boolean
+  /** Chats get web_search and web_fetch when a DeepSeek model has an API key. */
+  webSearch: boolean
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */
@@ -221,11 +223,11 @@ export type PermissionMode = 'read-only' | 'ask' | 'auto'
 export interface PendingApproval {
   toolCallId: string
   toolName: string
-  /** Why it waits: a command, a write outside the project, or an MCP tool. */
-  reason: 'command' | 'outside-write' | 'mcp'
-  /** The command prefix or MCP tool "always allow" would remember; absent when the call can only be allowed once. */
+  /** Why it waits: a command, a write outside the project, an MCP tool, or a web page from a site not yet allowed. */
+  reason: 'command' | 'outside-write' | 'mcp' | 'web'
+  /** The command prefix, MCP tool or `web_fetch:<host>` "always allow" would remember; absent when the call can only be allowed once. */
   rule?: string | undefined
-  /** Absolute target of a write outside the project. */
+  /** Absolute target of a write outside the project, or the URL of a web page. */
   path?: string | undefined
 }
 
@@ -236,7 +238,7 @@ export type ApprovalDecision = 'allow' | 'always' | 'deny'
 export interface PermissionRules {
   /** Command prefixes such as `python3` or `git status`; they match simple commands only. */
   commands: string[]
-  /** MCP tool names such as `mcp__files__read_file`. */
+  /** MCP tool names such as `mcp__files__read_file`, and `web_fetch:<host>` for sites web_fetch may read. */
   tools: string[]
 }
 

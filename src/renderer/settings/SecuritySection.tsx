@@ -67,8 +67,8 @@ export function SecuritySection({ workspace }: { workspace: SettingsWorkspace })
             {rules.map(({ kind, rule }) => (
               <li key={`${kind}:${rule}`} className={css.item}>
                 <span className={css.itemText}>
-                  <span className={css.itemTitle}><code>{kind === 'tool' ? rule.replace(/^mcp__/u, '').replace('__', ': ') : rule}</code></span>
-                  <span className={css.muted}>{t(kind === 'command' ? 'securityRuleCommand' : 'securityRuleTool')}</span>
+                  <span className={css.itemTitle}><code>{kind === 'tool' ? rule.replace(/^web_fetch:/u, '').replace(/^mcp__/u, '').replace('__', ': ') : rule}</code></span>
+                  <span className={css.muted}>{t(kind === 'command' ? 'securityRuleCommand' : rule.startsWith('web_fetch:') ? 'securityRuleWeb' : 'securityRuleTool')}</span>
                 </span>
                 <Button variant="ghost" size="sm" disabled={busy} onClick={() => {
                   run(async () => { setStatus(await host.call('security.removeRule', { workspaceId, kind, rule })) })

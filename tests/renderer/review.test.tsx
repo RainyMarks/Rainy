@@ -70,7 +70,7 @@ it('says the changes are kept with the next message while Settings keeps them au
   await emit('prefs.changed', { ...getPrefs(), autoKeepChanges: false })
   expect(hasText(hint)).toBe(false)
   expect(all('[data-change]')).toHaveLength(2)
-  await emit('prefs.changed', { ...getPrefs(), autoKeepChanges: true, rainEffects: true })
+  await emit('prefs.changed', { ...getPrefs(), autoKeepChanges: true, rainEffects: true, webSearch: true })
 })
 
 it('undoes every file after confirmation, refreshes on Host notice, and waits for the chat to finish before undoing', async () => {

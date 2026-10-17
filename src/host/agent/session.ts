@@ -29,6 +29,7 @@ import { discoverSkills, skillsSection } from './skills.ts'
 import type { ChatStore, StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
 import { coreTools } from './tools/index.ts'
+import { deepSeekKey } from './tools/web.ts'
 import type { AgentServices } from './services.ts'
 import { localized } from '../../shared/locale.ts'
 
@@ -282,7 +283,7 @@ export class ChatSession {
     if (decision === 'always') {
       const rule = pending.approval.rule
       if (rule === undefined || this.chat.workspaceId === null) throw new RpcError('invalid', localized({ zh: '这个操作只能单次允许。', en: 'This action can only be allowed once.' }))
-      await this.services.settings.setPermissionRule(this.chat.workspaceId, pending.approval.reason === 'mcp' ? 'tool' : 'command', rule, true)
+      await this.services.settings.setPermissionRule(this.chat.workspaceId, pending.approval.reason === 'mcp' || pending.approval.reason === 'web' ? 'tool' : 'command', rule, true)
     }
     const said = reason?.trim() ?? ''
     this.settle(toolCallId, decision === 'deny' ? { allow: false, text: denialText(said), stop: said === '', by: 'user' } : { allow: true })
@@ -844,7 +845,10 @@ export class ChatSession {
       },
       ripgrep: this.services.ripgrep,
     }
-    return [...coreTools(context, env.platform), ...this.services.mcp.tools()].sort((left, right) => left.name.localeCompare(right.name))
+    const settings = this.services.settings
+    const web = settings.prefs().webSearch && deepSeekKey(settings) !== undefined
+      ? { apiKey: () => deepSeekKey(settings), fetch: this.services.fetch ?? globalThis.fetch.bind(globalThis) } : undefined
+    return [...coreTools(context, env.platform, web), ...this.services.mcp.tools()].sort((left, right) => left.name.localeCompare(right.name))
   }
 
   private async systemPrompt(tools: readonly AgentTool[]): Promise<string> {

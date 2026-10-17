@@ -27,6 +27,8 @@ export interface AgentServices {
   snapshots: ChangeSnapshots
   /** ripgrep for the grep and glob tools, when this installation has one. */
   ripgrep: string | undefined
+  /** Request function for DeepSeek's web tools, honoring the proxy settings; the global `fetch` when absent. */
+  fetch?: typeof globalThis.fetch | undefined
   log(message: string): void
   /** A chat model request started streaming. */
   modelBusy(): void

@@ -15,6 +15,7 @@ import { Tag } from '../ui/Tag.tsx'
 import { toast } from '../ui/toasts.tsx'
 import { EditorAiSettings } from './EditorAiSettings.tsx'
 import { GlobalPromptSettings } from './GlobalPromptSettings.tsx'
+import { WebSearchSettings } from './WebSearchSettings.tsx'
 import { ProxySettings } from './ProxySettings.tsx'
 import { t as lookup, useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
@@ -291,6 +292,7 @@ export function ModelsSection({ workspace }: { workspace: SettingsWorkspace }): 
       }} />}
     </article>
     <EditorAiSettings status={status} />
+    <WebSearchSettings status={status} />
     <GlobalPromptSettings saved={status?.globalPrompt} action={action} accept={accept} />
     <ProxySettings action={action} />
     <BudgetCard workspace={workspace} status={status} />

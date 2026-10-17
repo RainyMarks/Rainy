@@ -57,6 +57,11 @@ function useLabels() {
   }, [t])
 }
 
+/** @param url A result's address. @returns Its host, for results without a site name. */
+function hostOf(url: string): string {
+  try { return new URL(url).hostname } catch { return '' }
+}
+
 /** One-line summary of a tool call. */
 export function toolTitle(call: ToolCall): string {
   const args = record(call.arguments)
@@ -73,6 +78,8 @@ export function toolTitle(call: ToolCall): string {
     case 'edit': return `Edit ${str(args.file_path) ?? ''}`
     case 'grep': return `Grep ${str(args.pattern) ?? ''}${str(args.path) === undefined ? '' : ` in ${str(args.path)}`}`
     case 'glob': return `Glob ${str(args.pattern) ?? ''}${str(args.path) === undefined ? '' : ` in ${str(args.path)}`}`
+    case 'web_search': return `Web search ${str(args.query) ?? ''}`
+    case 'web_fetch': return `Web fetch ${str(args.url) ?? ''}`
     default: return call.name.startsWith('mcp__') ? call.name.slice(5).replace('__', ': ') : call.name
   }
 }
@@ -134,6 +141,24 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
     body = files !== undefined
       ? <SearchBlock kind="matches" files={files} truncated={truncated} total={files.reduce((sum, file) => sum + file.matches.length, 0)} labels={labels.search} />
       : <SearchBlock kind="paths" paths={paths} truncated={truncated} total={paths.length} labels={labels.search} />
+  } else if (call.name === 'web_search' && !failed && Array.isArray(details.results)) {
+    const results = details.results as { title: string; url: string; site?: string; date?: string; snippet: string }[]
+    suffix = <span className={css.totals}>{t('webResults', { count: results.length })}</span>
+    body = results.length === 0 ? <p className={css.notice}>{t('searchNone')}</p> : (
+      <ol className={css.webResults}>
+        {results.map(item => <li key={item.url}>
+          <a href={item.url} target="_blank" rel="noopener noreferrer" title={t('webOpen')}>{item.title}</a>
+          <span className={css.webMeta}>{[item.site ?? hostOf(item.url), item.date].filter(Boolean).join(' · ')}</span>
+          {item.snippet !== '' && <span className={css.webSnippet}>{item.snippet}</span>}
+        </li>)}
+      </ol>
+    )
+  } else if (call.name === 'web_fetch' && !failed && typeof details.url === 'string') {
+    suffix = <span className={css.totals}>{t('webFetched', { count: typeof details.characters === 'number' ? details.characters.toLocaleString() : 0 })}</span>
+    body = <div className={css.generic}>
+      <a className={css.webLink} href={details.url} target="_blank" rel="noopener noreferrer" title={t('webOpen')}>{str(details.title) || details.url}</a>
+      <pre className={css.output}>{resultText(result)}</pre>
+    </div>
   } else if ((call.name === 'write' || call.name === 'edit') && !failed && typeof details.after === 'string') {
     const path = str(details.path) ?? str(args.file_path) ?? ''
     const diffs = [{ path, oldText: str(details.before) ?? null, newText: details.after }]

@@ -135,6 +135,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   const snapshots = new ChangeSnapshots(join(env.home, 'snapshots'))
   const services: AgentServices = {
     env, settings, models, store, mcp, memory, projects, runtime: deps.runtime, activity: deps.activity, rpc, log, snapshots, ripgrep: await findRipgrep(env.appRoot),
+    fetch: deps.network?.fetch,
     modelBusy: () => { activeRequests = Math.max(1, activeRequests); lastModelActivity = Date.now() },
     modelIdle: () => { activeRequests = [...sessions.values()].filter(session => session.running).length; lastModelActivity = Date.now() },
   }

@@ -37,17 +37,20 @@ export function ApprovalBar({ sessionId, approval }: { sessionId: string; approv
   }
 
   const text = approval.reason === 'command' ? t('approvalCommand')
-    : approval.reason === 'outside-write' ? t('approvalOutsideWrite', { path: approval.path ?? '' }) : t('approvalMcp')
+    : approval.reason === 'outside-write' ? t('approvalOutsideWrite', { path: approval.path ?? '' })
+      : approval.reason === 'web' ? t('approvalWeb', { url: approval.path ?? '' }) : t('approvalMcp')
   const rule = approval.rule
+  const shownRule = rule === undefined ? '' : approval.reason === 'mcp' ? rule.replace(/^mcp__/u, '').replace('__', ': ') : rule.replace(/^web_fetch:/u, '')
+  const ruleTitle = approval.reason === 'mcp' ? t('approvalAlwaysTool') : approval.reason === 'web' ? t('approvalAlwaysSite', { host: shownRule })
+    : t('approvalAlwaysCommand', { rule: shownRule })
   return (
     <div className={css.approval} role="group" aria-label={t('approvalWaiting')} onKeyDown={onKeyDown} data-approval={approval.reason}>
       <div className={css.approvalText}>{text}</div>
       <div className={css.approvalActions}>
         <Button ref={allow} variant="primary" size="sm" disabled={busy} onClick={() => { answer('allow') }}>{t('approvalAllow')}</Button>
         {rule !== undefined && (
-          <Button variant="outline" size="sm" disabled={busy} title={approval.reason === 'mcp' ? t('approvalAlwaysTool') : t('approvalAlwaysCommand', { rule })}
-            onClick={() => { answer('always') }}>
-            {t('approvalAlways', { rule: approval.reason === 'mcp' ? rule.replace(/^mcp__/u, '').replace('__', ': ') : rule })}
+          <Button variant="outline" size="sm" disabled={busy} title={ruleTitle} onClick={() => { answer('always') }}>
+            {t('approvalAlways', { rule: shownRule })}
           </Button>
         )}
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => { answer('deny') }}>{t('approvalDeny')}</Button>
