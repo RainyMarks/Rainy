@@ -85,6 +85,9 @@ describe('web_fetch', () => {
     expect(() => fetchableUrl('example.com')).toThrow('absolute http(s) URL')
     await expect(webFetchTool(deepSeek([{ status: 404, body: {} }]).web, await context()).execute('1', { url: 'https://example.com' }, undefined))
       .rejects.toThrow('no readable page content')
+    // A host that does not exist comes back as 500, after one retry.
+    await expect(webFetchTool(deepSeek([{ status: 500, body: {} }, { status: 500, body: {} }]).web, await context()).execute('1', { url: 'https://missing.example' }, undefined))
+      .rejects.toThrow('it may be unreachable')
   })
 })
 

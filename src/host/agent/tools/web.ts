@@ -62,7 +62,10 @@ function failure(status: number, body: string, what: 'search' | 'fetch'): Error 
     404: 'no readable page content was found at this URL (unavailable, blocked by the site, or not a web page)',
     429: `the DeepSeek ${what} rate limit was exceeded; wait a moment before retrying`,
   }
-  return new Error(`web ${what} failed (HTTP ${status}): ${reason[status] ?? (status >= 500 ? 'DeepSeek had a temporary error; retry later' : 'invalid request')}`
+  // DeepSeek answers 500 rather than 404 for a page on a host that does not exist, so a fetch does not suggest retrying.
+  const server = what === 'fetch' ? 'DeepSeek could not fetch this page; it may be unreachable, or DeepSeek had a temporary error'
+    : 'DeepSeek had a temporary error; retry later'
+  return new Error(`web ${what} failed (HTTP ${status}): ${reason[status] ?? (status >= 500 ? server : 'invalid request')}`
     + (message !== '' ? ` — ${message}` : ''))
 }
 
