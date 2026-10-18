@@ -17,6 +17,22 @@ export function clampSidebar(value: number): number {
   return Math.min(360, Math.max(180, value))
 }
 
+/** AI pane width projects stored before it followed the window; a pane never resized still holds it. */
+const LEGACY_AGENT_WIDTH = 400
+
+/**
+ * The AI pane width a project uses: the width the user dragged it to, or, while it was never resized (stored as 0, or as
+ * the old fixed 400), 28% of the window, between 340 and 600px, so a large screen gets a wider chat and a small one a
+ * narrower one.
+ * @param stored Stored width.
+ * @param viewportWidth Viewport width.
+ * @returns Width before {@link clampAgent}.
+ */
+export function preferredAgentWidth(stored: number, viewportWidth: number): number {
+  if (stored > 0 && stored !== LEGACY_AGENT_WIDTH) return stored
+  return Math.round(Math.min(600, Math.max(340, viewportWidth * 0.28)))
+}
+
 /**
  * @param value Requested width.
  * @param viewportWidth Viewport width.

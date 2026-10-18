@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
-import { initialPlacement, readWindowState, restoredBounds, writeWindowState } from '../../src/main/window-state.ts'
+import { fitBounds, initialPlacement, minimumFor, readWindowState, restoredBounds, writeWindowState } from '../../src/main/window-state.ts'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -44,6 +44,21 @@ describe('main window geometry', () => {
     expect(initialPlacement(state, displays, { width: 1380, height: 920 }, minimum)).toEqual({ bounds: state.bounds, maximized: true })
     expect(initialPlacement(state, { workAreas: [primary], primary }, { width: 1380, height: 920 }, minimum))
       .toEqual({ bounds: { x: 270, y: 60, width: 1380, height: 920 }, maximized: false })
+  })
+
+  it('lowers the minimum size on a display too small for it and fits windows into its work area', () => {
+    // 1920×1080 at 175% scaling leaves about 1097×590 device-independent pixels.
+    const scaled = { x: 0, y: 0, width: 1097, height: 590 }
+    expect(minimumFor(scaled)).toEqual({ width: 950, height: 590 })
+    expect(minimumFor({ x: 0, y: 0, width: 800, height: 560 })).toEqual({ width: 800, height: 560 })
+    expect(minimumFor(primary)).toEqual({ width: 950, height: 650 })
+    // A window sized for 200% that grew past the screen when scaling went to 225%.
+    expect(fitBounds({ x: 40, y: 30, width: 1380, height: 920 }, { x: 0, y: 0, width: 1137, height: 690 }))
+      .toEqual({ x: 0, y: 0, width: 1137, height: 690 })
+    expect(fitBounds({ x: 100, y: 100, width: 1000, height: 700 }, primary)).toEqual({ x: 100, y: 100, width: 1000, height: 700 })
+    expect(fitBounds({ x: 1500, y: 900, width: 1000, height: 700 }, primary)).toEqual({ x: 920, y: 340, width: 1000, height: 700 })
+    expect(initialPlacement(undefined, { workAreas: [scaled], primary: scaled }, { width: 1380, height: 920 }, minimum))
+      .toEqual({ bounds: { x: 55, y: 0, width: 987, height: 590 }, maximized: true })
   })
 
   it('round-trips the record and ignores damaged files', async () => {

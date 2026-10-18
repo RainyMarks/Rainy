@@ -43,7 +43,7 @@ import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splas
 import { systemProxyFor } from './system-proxy.ts'
 import { credentialKey } from './credential-key.ts'
 import { exportDiagnostics, newestFiles } from './diagnostics.ts'
-import { initialPlacement, readWindowState, writeWindowState } from './window-state.ts'
+import { fitBounds, initialPlacement, MINIMUM_WINDOW, minimumFor, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
 import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { IDE_RAW_ROUTE } from '../shared/ide-preview.ts'
@@ -203,8 +203,9 @@ async function start(): Promise<void> {
   const windowStatePath = join(userData, 'window-state.json')
   const placement = initialPlacement(await readWindowState(windowStatePath),
     { workAreas: screen.getAllDisplays().map(display => display.workArea), primary: screen.getPrimaryDisplay().workArea },
-    { width: 1380, height: 920 }, { width: 950, height: 650 })
-  const window = new BrowserWindow({ title: 'Rainy', ...placement.bounds, minWidth: 950, minHeight: 650, icon, show: false,
+    { width: 1380, height: 920 }, MINIMUM_WINDOW)
+  const opening = minimumFor(screen.getDisplayMatching(placement.bounds).workArea)
+  const window = new BrowserWindow({ title: 'Rainy', ...placement.bounds, minWidth: opening.width, minHeight: opening.height, icon, show: false,
     titleBarStyle: 'hidden',
     titleBarOverlay: { height: CAPTION_HEIGHT, color: '#00000000', symbolColor: dark ? '#eeeeee' : '#171717' },
     backgroundColor: dark ? WINDOW_BACKGROUND.dark : WINDOW_BACKGROUND.light,
@@ -217,6 +218,28 @@ async function start(): Promise<void> {
     if (!window.isMinimized()) geometry = { version: 1, bounds: window.getNormalBounds(), maximized: window.isMaximized() }
   }
   window.on('resize', trackGeometry).on('move', trackGeometry).on('maximize', trackGeometry).on('unmaximize', trackGeometry)
+  // A changed display scaling or resolution, a display removed, or a move to another display: the minimum size follows the
+  // display the window is on, and a window that no longer fits is moved and shrunk into its work area.
+  const fitDisplay = () => {
+    if (window.isDestroyed()) return
+    const area = screen.getDisplayMatching(window.getBounds()).workArea
+    const minimum = minimumFor(area)
+    const [minWidth, minHeight] = window.getMinimumSize()
+    if (minWidth !== minimum.width || minHeight !== minimum.height) window.setMinimumSize(minimum.width, minimum.height)
+    if (window.isMaximized() || window.isFullScreen() || window.isMinimized()) return
+    const bounds = window.getBounds()
+    const fitted = fitBounds(bounds, area)
+    if (fitted.x !== bounds.x || fitted.y !== bounds.y || fitted.width !== bounds.width || fitted.height !== bounds.height) window.setBounds(fitted)
+  }
+  let fitTimer: NodeJS.Timeout | undefined
+  // Windows reports a scaling change as several events in a row; fitting once they settle avoids fighting its own resize.
+  const scheduleFit = () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitDisplay, 250) }
+  screen.on('display-metrics-changed', scheduleFit).on('display-added', scheduleFit).on('display-removed', scheduleFit)
+  window.on('moved', scheduleFit)
+  window.on('closed', () => {
+    clearTimeout(fitTimer)
+    screen.off('display-metrics-changed', scheduleFit).off('display-added', scheduleFit).off('display-removed', scheduleFit)
+  })
   window.on('closed', () => {
     if (geometry === undefined) return
     try { writeWindowState(windowStatePath, geometry) }

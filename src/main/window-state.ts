@@ -46,6 +46,39 @@ export interface WindowSize {
   height: number
 }
 
+/** Smallest window the layout is designed for; a display whose work area is smaller lowers it to fit (see {@link minimumFor}). */
+export const MINIMUM_WINDOW: Readonly<WindowSize> = { width: 950, height: 650 }
+
+/**
+ * The smallest window size on one display: the designed minimum, or the whole work area when that is smaller, as on a
+ * 1366×768 screen at 125% scaling or a 1920×1080 screen at 175%.
+ * @param area - work area of the display.
+ * @param minimum - designed minimum.
+ * @returns minimum size that fits the display.
+ */
+export function minimumFor(area: WindowRectangle, minimum: WindowSize = MINIMUM_WINDOW): WindowSize {
+  return { width: Math.min(minimum.width, area.width), height: Math.min(minimum.height, area.height) }
+}
+
+/**
+ * Move and shrink bounds so they lie inside one work area, keeping at least the minimum size that fits it.
+ * @param bounds - window bounds.
+ * @param area - work area to fit.
+ * @param minimum - designed minimum size.
+ * @returns the fitted bounds; equal to `bounds` when they already fit.
+ */
+export function fitBounds(bounds: WindowRectangle, area: WindowRectangle, minimum: WindowSize = MINIMUM_WINDOW): WindowRectangle {
+  const floor = minimumFor(area, minimum)
+  const width = Math.max(floor.width, Math.min(bounds.width, area.width))
+  const height = Math.max(floor.height, Math.min(bounds.height, area.height))
+  return {
+    x: Math.min(Math.max(bounds.x, area.x), area.x + area.width - width),
+    y: Math.min(Math.max(bounds.y, area.y), area.y + area.height - height),
+    width,
+    height,
+  }
+}
+
 /**
  * Place saved bounds on a connected display, shrinking them to its work area when the display became smaller.
  * @param state - saved geometry.
@@ -62,14 +95,7 @@ export function restoredBounds(state: WindowState, workAreas: readonly WindowRec
       && bounds.y >= work.y - VISIBLE_GRIP.height / 2 && bounds.y <= work.y + work.height - VISIBLE_GRIP.height
   })
   if (area === undefined) return undefined
-  const width = Math.max(minimum.width, Math.min(bounds.width, area.width))
-  const height = Math.max(minimum.height, Math.min(bounds.height, area.height))
-  return {
-    x: Math.min(Math.max(bounds.x, area.x), area.x + area.width - width),
-    y: Math.min(Math.max(bounds.y, area.y), area.y + area.height - height),
-    width,
-    height,
-  }
+  return fitBounds(bounds, area, minimum)
 }
 
 /**
@@ -90,9 +116,10 @@ export function initialPlacement(
   const restored = state === undefined ? undefined : restoredBounds(state, displays.workAreas, minimum)
   if (state !== undefined && restored !== undefined) return { bounds: restored, maximized: state.maximized }
   const area = displays.primary
+  const floor = minimumFor(area, minimum)
   const fits = preferred.width <= area.width && preferred.height <= area.height
-  const width = fits ? preferred.width : Math.max(minimum.width, Math.round(area.width * 0.9))
-  const height = fits ? preferred.height : Math.max(minimum.height, Math.round(area.height * 0.9))
+  const width = fits ? preferred.width : Math.max(floor.width, Math.round(area.width * 0.9))
+  const height = fits ? preferred.height : Math.max(floor.height, Math.round(area.height * 0.9))
   const x = area.x + Math.max(0, Math.round((area.width - width) / 2))
   const y = area.y + Math.max(0, Math.round((area.height - height) / 2))
   return { bounds: { x, y, width, height }, maximized: !fits }

@@ -61,7 +61,8 @@ export const ideStateConfigSchema = z.object({
   maxTabs: z.number().int().positive().default(64),
   maxBuffers: z.number().int().positive().default(32),
   maxExpandedPaths: z.number().int().positive().default(10000),
-  initialLayout: layoutSchema.default({ sidebarWidth: 240, agentWidth: 400, bottomHeight: 220,
+  // agentWidth 0: the AI pane follows the window width until the user resizes it.
+  initialLayout: layoutSchema.default({ sidebarWidth: 240, agentWidth: 0, bottomHeight: 220,
     sidebarVisible: true, agentVisible: false, bottomVisible: false, bottomTab: 'terminal' }),
 }).strict()
 

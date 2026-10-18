@@ -80,7 +80,7 @@ describe('durable project editor state', () => {
     const { root, store, open, workspaceId, otherId, data, file } = await fixture()
     const draft = data('尚未保存 😀\r\nprint(1)\r\n')
     expect(await store.get(workspaceId)).toMatchObject({ version: 1, revision: 0,
-      data: { lastSessionId: null, buffers: [], layout: { agentWidth: 400, bottomHeight: 220 } } })
+      data: { lastSessionId: null, buffers: [], layout: { agentWidth: 0, bottomHeight: 220 } } })
     await store.replace(workspaceId, 0, draft)
     expect((await store.get(otherId)).revision).toBe(0)
     expect(JSON.parse(await readFile(file(workspaceId), 'utf8'))).toEqual({ version: 1, revision: 1, data: draft })

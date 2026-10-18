@@ -55,17 +55,19 @@
 .dialogContent { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .spacer { flex: 1; }
 
-/* Top bar: application menus, a centred command centre, and grouped window actions. Right padding clears the Windows caption buttons. */
-.topbar { position: relative; flex: none; height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
-  align-items: center; column-gap: 12px; padding: 0 146px 0 10px; z-index: 25; background: var(--rainy-specific-sidebar-fill);
+/* Top bar: application menus, a centred command centre, and grouped window actions. The desktop window adds the width of the
+   Windows caption buttons to the right padding itself (preload-chrome.ts), so the padding here is only the row's own margin.
+   The menus and actions keep their width; in a narrow window (or at high display scaling) the command centre gives way instead. */
+.topbar { position: relative; flex: none; height: 40px; display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
+  align-items: center; column-gap: 12px; padding: 0 10px; z-index: 25; background: var(--rainy-specific-sidebar-fill);
   border-bottom: 1px solid var(--rainy-alias-border-l1); -webkit-app-region: drag; }
 .topbar button { -webkit-app-region: no-drag; }
-.topStart, .topEnd { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.topStart, .topEnd { display: flex; align-items: center; gap: 2px; min-width: 0; white-space: nowrap; }
 .topEnd { justify-content: flex-end; }
 .topMark { width: 18px; height: 18px; flex: none; margin: 0 8px 0 2px; border-radius: 3px; }
 .topStart .button { height: 28px; padding: 0 9px; color: var(--rainy-alias-label-tertiary); }
 .topStart .button:hover, .topStart .button[aria-expanded='true'] { color: var(--rainy-alias-label-primary); }
-.commandCenter { display: flex; align-items: stretch; width: clamp(240px, 36vw, 520px); height: 28px; box-sizing: border-box; overflow: hidden;
+.commandCenter { display: flex; align-items: stretch; width: clamp(240px, 36vw, 520px); min-width: 0; max-width: 100%; height: 28px; container-type: inline-size; box-sizing: border-box; overflow: hidden;
   border: 1px solid var(--rainy-alias-border-l1); border-radius: var(--rainy-radius-md, 8px); background: var(--rainy-alias-bg-base);
   -webkit-app-region: no-drag; transition: border-color .15s ease; }
 .commandCenter:hover, .commandCenter:focus-within { border-color: var(--rainy-alias-border-l2); }
@@ -86,7 +88,10 @@
 .toolGroup + .toolGroup::before { content: ''; position: absolute; left: 0; top: 50%; height: 16px; margin-top: -8px; border-left: 1px solid var(--rainy-alias-border-l1); }
 .menuCheck { display: inline-block; width: 14px; }
 @media (max-width: 1100px) { .commandCenter .shortcut { display: none; } }
-@media (max-width: 860px) { .commandLabel { display: none; } .commandCenter { width: auto; } }
+/* The width is set rather than auto: as a size container the command centre has no intrinsic width of its own. */
+@media (max-width: 860px) { .commandLabel { display: none; } .commandCenter { width: clamp(84px, 24vw, 220px); } }
+/* A command centre squeezed by the menus and actions shows the project's folder icon instead of a name cut to a letter or two. */
+@container (max-width: 230px) { .commandWorkspace span { display: none; } .commandWorkspace { flex: none; } }
 
 /* Empty editor area: welcome without a project, quick actions without an open file. */
 .welcome { position: relative; height: 100%; display: grid; place-items: center; box-sizing: border-box; padding: 32px 24px; overflow: auto; }

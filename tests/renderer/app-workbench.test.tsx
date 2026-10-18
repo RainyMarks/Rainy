@@ -207,17 +207,18 @@ describe('window layout', () => {
     expect(shell?.style.gridTemplateColumns).toBe('180px minmax(0, 1fr) 960px')
   })
 
+    // An AI pane the user never resized takes 28% of the window, at least 340 px.
   it('collapses files at 950 px and can explicitly reveal history without replacing chat', async () => {
     const h = await mountWindow(950)
     click(byRole('button', '显示或隐藏 AI 助手'))
     const left = h.view.container.querySelector<HTMLElement>('aside[aria-label="工作区"]')
     const shell = h.view.container.querySelector<HTMLElement>('[data-rainy-ide]')
     expect(left?.hidden).toBe(true)
-    expect(shell?.style.gridTemplateColumns).toBe('0px minmax(0, 1fr) 400px')
+    expect(shell?.style.gridTemplateColumns).toBe('0px minmax(0, 1fr) 340px')
     click(byRole('button', 'chat:history'))
     expect(left?.hidden).toBe(false)
     expect(left?.style.position).toBe('absolute')
-    expect(shell?.style.gridTemplateColumns).toBe('0px minmax(0, 1fr) 400px')
+    expect(shell?.style.gridTemplateColumns).toBe('0px minmax(0, 1fr) 340px')
     expect(byRole('textbox', 'history:search')).toBeTruthy()
     expect(chatState.mounts).toBe(1)
   })

@@ -44,7 +44,7 @@ import { emit, on } from './bus.ts'
 import { useDarkTheme } from './appearance.ts'
 import { DirectoryBrowser, type CreateDirectory, type ListDirectory } from './DirectoryBrowser.tsx'
 import { NoFile, Welcome } from './EmptyStates.tsx'
-import { clampAgent, clampBottom, clampSidebar, isNarrow, RESIZE_STEP } from './layout.ts'
+import { clampAgent, clampBottom, clampSidebar, isNarrow, preferredAgentWidth, RESIZE_STEP } from './layout.ts'
 import { useAppT } from './messages.ts'
 import { PromptDialog, type PendingPrompt, type PromptRequest } from './PromptDialog.tsx'
 import { CommandPalette } from './CommandPalette.tsx'
@@ -149,7 +149,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const leftWidth = leftVisible && !narrow ? leftPanelWidth : 0
   const agentSize = (value: number): number => clampAgent(value, width, leftWidth)
   const bottomSize = (value: number): number => clampBottom(value, height)
-  const rightWidth = layout.agentVisible ? agentSize(layout.agentWidth) : 0
+  const rightWidth = layout.agentVisible ? agentSize(preferredAgentWidth(layout.agentWidth, width)) : 0
   const bottomHeight = bottomSize(layout.bottomHeight)
   const activePath = state.data.activePath
   const active = activePath === null ? undefined : state.buffers[activePath]

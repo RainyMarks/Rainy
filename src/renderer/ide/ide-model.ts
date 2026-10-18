@@ -85,7 +85,7 @@ const initialData = (): IdeWorkspaceStateData => ({
   buffers: [],
   layout: {
     sidebarWidth: 240,
-    agentWidth: 400,
+    agentWidth: 0,
     bottomHeight: 240,
     sidebarVisible: true,
     agentVisible: false,

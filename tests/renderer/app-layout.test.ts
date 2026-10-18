@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /** Pane size limits, narrow-window overlays and the window shortcut table. */
 import { describe, expect, it } from 'vitest'
-import { clampAgent, clampBottom, clampSidebar, isNarrow } from '../../src/renderer/app/layout.ts'
+import { clampAgent, clampBottom, clampSidebar, isNarrow, preferredAgentWidth } from '../../src/renderer/app/layout.ts'
 import { shortcutCommand } from '../../src/renderer/app/shortcuts.ts'
 
 describe('pane limits', () => {
@@ -13,6 +13,14 @@ describe('pane limits', () => {
     expect(clampAgent(100, 1440, 240)).toBe(300)
     expect(clampAgent(2000, 1440, 240)).toBe(900)
     expect(clampAgent(400, 1440, 240)).toBe(400)
+  })
+
+  it('sizes an AI pane the user never resized to the window, and keeps a resized one', () => {
+    // 1280×800 at 150%, 2560×1600 at 225%, 1920×1080 at 100%, 3840×2160 at 150%.
+    expect([853, 1138, 1920, 2560].map(width => preferredAgentWidth(0, width))).toEqual([340, 340, 538, 600])
+    // Projects from before 3.5 stored the old fixed 400 for an untouched pane.
+    expect(preferredAgentWidth(400, 1920)).toBe(538)
+    expect(preferredAgentWidth(452, 1920)).toBe(452)
   })
 
   it('keeps the bottom panel between 120 px and the window height minus 230 px', () => {
