@@ -66,6 +66,7 @@ Rainy puts an AI agent, previews of Word, Excel, PowerPoint and PDF, a real edit
 Answers you can use, not only read.
 
 - **Interactive answers**: when seeing or trying something helps more than prose — understanding a mechanism, comparing options, or a quick tool — the AI builds a small interface right in the chat: a loan calculator with sliders and a chart, a 3D model you can rotate, an algorithm stepping through its work. It appears while the AI writes it, and its buttons can send the values you picked back to the AI for a follow-up. It runs in an isolated sandbox with no network access and no access to your files; the chart (Chart.js, d3) and 3D (Three.js) libraries ship with Rainy and work offline. Turn it off in **Settings → General → Interactive answers**.
+- **Enlarge** (3.5.1): open an interactive answer in a large dialog from its corner; in a narrow chat, diagrams keep legible labels and scroll sideways.
 - **Every screen and scaling**: at high display scaling (such as 225%) or on small screens the menus no longer run under the search box; the window fits the screen's work area when it opens, when it moves to another display and when the scaling changes; the chat pane follows the window width until you resize it.
 
 ## What's new in 3.4
@@ -168,10 +169,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.5.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.5.1/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.5.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.5.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 
