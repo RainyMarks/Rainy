@@ -23,6 +23,32 @@ export function scrubbedEnv(base: NodeJS.ProcessEnv = process.env): Record<strin
   return result
 }
 
+/** @returns The code page Windows console programs write under the user's locale when they do not write UTF-8. */
+function consoleCodePage(): string | undefined {
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase()
+  if (/^zh-(?:tw|hk|mo|hant)/u.test(locale)) return 'big5'
+  if (locale.startsWith('zh')) return 'gbk'
+  if (locale.startsWith('ja')) return 'shift_jis'
+  if (locale.startsWith('ko')) return 'euc-kr'
+  return undefined
+}
+
+/**
+ * Text of a program's output. On Windows, output that is not UTF-8, such as messages of programs that ignore the UTF-8
+ * console setting on a Chinese system, is read in the locale's legacy code page.
+ * @param bytes Output bytes.
+ * @returns The text.
+ */
+export function consoleText(bytes: Uint8Array): string {
+  if (process.platform === 'win32') {
+    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch (_notUtf8) {
+      const page = consoleCodePage()
+      if (page !== undefined) return new TextDecoder(page).decode(bytes)
+    }
+  }
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8')
+}
+
 /** Raised when a program name cannot be found on PATH. */
 export class ExecutableNotFoundError extends Error {
   /** @param command The program that was looked up. */
@@ -172,9 +198,11 @@ export async function killTree(pid: number, graceMs: number, exited: Promise<unk
   if (process.platform === 'win32') {
     // Console programs ignore the polite request, so the forced stop follows after the grace period either way.
     await windowsKillTree(pid, false)
+    let gone = false
     const timer = new Promise<void>(resolve => setTimeout(resolve, graceMs).unref())
-    await Promise.race([exited, timer])
-    await windowsKillTree(pid, true)
+    await Promise.race([exited.then(() => { gone = true }), timer])
+    // Once the root has exited its id no longer leads the tree and may already name another program.
+    if (!gone) await windowsKillTree(pid, true)
     return
   }
   posixKillGroup(pid, 'SIGTERM')

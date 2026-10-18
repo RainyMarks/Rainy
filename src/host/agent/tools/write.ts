@@ -5,6 +5,7 @@ import { Type, type Static } from '@earendil-works/pi-ai'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { MAX_SNAPSHOT_BYTES } from '../snapshots.ts'
 import { resolvePath, textResult, versionOf, type ToolContext } from './common.ts'
+import { decodeFile, encodeFile, encodingLabel, roundTrips, type DecodedFile } from './text-encoding.ts'
 
 /** Text kept per side of a change for the UI diff card. */
 const DIFF_TEXT_LIMIT = 256 * 1024
@@ -25,12 +26,31 @@ export interface ChangeDetails {
  * @param toolCallId The write or edit call.
  * @param path Absolute path.
  * @param before Previous content, `null` for a new file, `undefined` when it is too large to keep.
- * @param after Written text.
+ * @param after Written bytes.
  * @returns Whether the change can be undone.
  */
-async function keepForUndo(context: ToolContext, toolCallId: string, path: string, before: Uint8Array | null | undefined, after: string): Promise<boolean> {
+async function keepForUndo(context: ToolContext, toolCallId: string, path: string, before: Uint8Array | null | undefined, after: Uint8Array): Promise<boolean> {
   if (before === undefined || context.recordChange === undefined) return false
-  return context.recordChange(toolCallId, path, before, Buffer.from(after, 'utf8')).catch(() => false)
+  return context.recordChange(toolCallId, path, before, after).catch(() => false)
+}
+
+/**
+ * A file's text for an edit, in an encoding it can be written back in without touching the rest of the file.
+ * @param bytes File content.
+ * @param display Path shown in errors.
+ * @returns The decoded file.
+ * @throws Error for binary files and text that would not convert back to the same bytes.
+ */
+function editableText(bytes: Uint8Array, display: string): DecodedFile {
+  const decoded = decodeFile(bytes)
+  if (decoded === undefined) {
+    throw new Error(`cannot modify "${display}": it is binary or its text encoding is not UTF-8, UTF-16 with a byte-order mark or GB18030`)
+  }
+  if (!roundTrips(bytes, decoded)) {
+    throw new Error(`cannot modify "${display}": its ${decoded.damaged ? 'UTF-8 text has invalid bytes' : `${encodingLabel(decoded.encoding)} text does not convert back to the same bytes`}, `
+      + 'so an edit could damage it; change it with a command that keeps its bytes')
+  }
+  return decoded
 }
 
 function diffSides(before: string | undefined, after: string): Pick<ChangeDetails, 'before' | 'after'> {
@@ -52,7 +72,7 @@ export function writeTool(context: ToolContext): AgentTool<typeof writeParameter
   return {
     name: 'write',
     label: 'Write',
-    description: 'Create or replace a file. Inspect existing files before overwriting.',
+    description: 'Create or replace a file. Inspect existing files before overwriting. A replaced file keeps its text encoding when it can.',
     parameters: writeParameters,
     executionMode: 'sequential',
     async execute(id, params: Static<typeof writeParameters>) {
@@ -61,15 +81,23 @@ export function writeTool(context: ToolContext): AgentTool<typeof writeParameter
       context.observations.assertCurrent(absolute, current, display, 'write')
       // `null`: the file is new; `undefined`: too large to keep for undo.
       const original = current === undefined ? null : current.size > MAX_SNAPSHOT_BYTES ? undefined : await readFile(absolute)
-      const before = original === null || original === undefined || original.length > DIFF_TEXT_LIMIT ? undefined : original.toString('utf8')
+      const decoded = original ? decodeFile(original) : undefined
+      const before = original && original.length <= DIFF_TEXT_LIMIT ? decoded?.text ?? original.toString('utf8') : undefined
+      // A replaced file keeps its encoding and byte-order mark when its text converts back unchanged.
+      const kept = original && decoded !== undefined && roundTrips(original, decoded) ? decoded : undefined
+      const stored = kept === undefined ? undefined : encodeFile(kept, kept.bom && params.content.startsWith('\ufeff') ? params.content.slice(1) : params.content)
+      const bytes = stored ?? Buffer.from(params.content, 'utf8')
       await mkdir(dirname(absolute), { recursive: true })
-      await writeFile(absolute, params.content, 'utf8')
+      await writeFile(absolute, bytes)
       const written = await versionOf(absolute)
       if (written !== undefined) context.observations.record(absolute, written)
       context.onFileTouched?.(absolute)
-      const undoable = await keepForUndo(context, id, absolute, original, params.content)
+      const undoable = await keepForUndo(context, id, absolute, original, bytes)
       const operation = current === undefined ? 'create' : 'update'
-      return textResult(`<path>${display}</path>\n<type>file</type>\n<content>\n${operation === 'create' ? 'Created' : 'Updated'} file\n</content>`,
+      const encoding = kept === undefined || kept.encoding === 'utf-8' ? ''
+        : stored === undefined ? ` as UTF-8: ${encodingLabel(kept.encoding)}, its previous encoding, cannot store some of the new characters`
+          : ` in its ${encodingLabel(kept.encoding)} encoding`
+      return textResult(`<path>${display}</path>\n<type>file</type>\n<content>\n${operation === 'create' ? 'Created' : 'Updated'} file${encoding}\n</content>`,
         { path: display, operation, ...diffSides(before, params.content), ...(undoable ? { undoable } : {}) })
     },
   }
@@ -118,7 +146,7 @@ export function editTool(context: ToolContext): AgentTool<typeof editParameters,
   return {
     name: 'edit',
     label: 'Edit',
-    description: 'Apply an exact text replacement to a previously read file.',
+    description: 'Apply an exact text replacement to a previously read file. The file keeps its text encoding.',
     parameters: editParameters,
     executionMode: 'sequential',
     async execute(id, params: Static<typeof editParameters>) {
@@ -127,16 +155,18 @@ export function editTool(context: ToolContext): AgentTool<typeof editParameters,
       if (current === undefined) throw new Error(`cannot modify "${display}": not found`)
       context.observations.assertCurrent(absolute, current, display, 'modify')
       const bytes = await readFile(absolute)
-      const raw = bytes.toString('utf8')
-      const bom = raw.startsWith('﻿') ? '﻿' : ''
-      const body = raw.slice(bom.length)
+      const decoded = editableText(bytes, display)
+      const body = decoded.text
       const sample = body.slice(0, 4096)
       const crlf = sample.split('\r\n').length - 1
       const lf = sample.split('\n').length - 1 - crlf
       const normalized = body.replaceAll('\r\n', '\n')
       const edited = applyEdit(normalized, params.old_string, params.new_string, params.replace_all ?? false, display)
-      const output = bom + (crlf > lf ? edited.split('\n').join('\r\n') : edited)
-      await writeFile(absolute, output, 'utf8')
+      const output = encodeFile(decoded, crlf > lf ? edited.split('\n').join('\r\n') : edited)
+      if (output === undefined) {
+        throw new Error(`cannot modify "${display}": it is stored as ${encodingLabel(decoded.encoding)}, which cannot store some characters of new_string`)
+      }
+      await writeFile(absolute, output)
       const written = await versionOf(absolute)
       if (written !== undefined) context.observations.record(absolute, written)
       context.onFileTouched?.(absolute)

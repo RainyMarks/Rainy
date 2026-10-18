@@ -28,7 +28,7 @@ const INTERPRETERS: ReadonlySet<string> = new Set([
   'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd', 'python', 'python3', 'py', 'node', 'deno', 'bun', 'perl', 'ruby',
   'php', 'lua', 'osascript', 'java', 'jshell',
 ])
-const INLINE_FLAG = /^(?:-c|-e|-p|-r|-E|--eval|--print|--command|-com\w*|-enc\w*|-ec|\/c|\/k|-Command|-EncodedCommand)$/iu
+const INLINE_FLAG = /^(?:-[a-z]*[cepr][a-z]*(?:[=:'"].*)?|--(?:eval|print|command|encodedcommand)(?:=.*)?|\/[ck])$/iu
 
 /** Model-facing reason for calls refused in read-only mode. */
 export const READ_ONLY_REASON = 'This chat is in read-only mode: files cannot be changed, commands cannot run and tools that change state are '

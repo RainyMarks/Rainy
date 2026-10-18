@@ -654,9 +654,12 @@ async function start(): Promise<void> {
           .then((answer) => { if (answer.response === 0) { app.relaunch(); quitAfterSave(true) } })
         return
       }
-      void dialog.showMessageBox(window, { type: 'error', message: localized({ zh: '执行后端已停止', en: 'The execution backend stopped.' }),
-        detail: localized({ zh: `${code === null ? '进程已被终止' : `退出代码：${code}`}。会话历史已保留。`,
-          en: `${code === null ? 'The process was terminated' : `Exit code: ${code}`}. Your chat history is kept.` }) })
+      void dialog.showMessageBox(window, { type: 'error', noLink: true, defaultId: 0, cancelId: 1,
+        message: localized({ zh: '执行后端已停止', en: 'The execution backend stopped.' }),
+        detail: localized({ zh: `${code === null ? '进程已被终止' : `退出代码：${code}`}。会话历史已保留，重新启动 Rainy 即可继续。`,
+          en: `${code === null ? 'The process was terminated' : `Exit code: ${code}`}. Your chat history is kept; restart Rainy to continue.` }),
+        buttons: [localized({ zh: '重新启动', en: 'Restart' }), localized({ zh: '稍后', en: 'Later' })] })
+        .then((answer) => { if (answer.response === 0) { app.relaunch(); quitAfterSave(true) } })
     },
   }
   /** Start the Host over SSH, choosing another port when the chosen one was taken here or on the server. */

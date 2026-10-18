@@ -1,6 +1,6 @@
 /** What a file held before the agent's write or edit changed it, kept so the user can undo the change. */
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -127,6 +127,8 @@ export class ChangeSnapshots {
         const info = await stat(path).catch(() => undefined)
         if (info !== undefined && info.mtimeMs < cutoff) await rm(path, { force: true })
       }
+      // A chat whose snapshots all expired leaves no empty directory behind; one still in use is not empty.
+      await rmdir(directory).catch(() => undefined)
     }
   }
 }

@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { Type, type Static } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolUpdateCallback } from '@earendil-works/pi-agent-core'
-import { resolvePowerShell, scrubbedEnv, spawnProcess } from '../../process.ts'
+import { consoleText, resolvePowerShell, scrubbedEnv, spawnProcess } from '../../process.ts'
 import { limitOutput, textResult, type ToolContext } from './common.ts'
 
 /** Timeout when the model does not set one. */
@@ -70,8 +70,14 @@ class StreamCollector {
 
   text(): string {
     let buffer = Buffer.concat(this.chunks)
-    if (buffer.length > TAIL_BYTES) buffer = buffer.subarray(buffer.length - TAIL_BYTES)
-    const text = buffer.toString('utf8')
+    if (buffer.length > TAIL_BYTES) {
+      buffer = buffer.subarray(buffer.length - TAIL_BYTES)
+      // The cut may fall inside a UTF-8 character; its remaining bytes are dropped.
+      let start = 0
+      while (start < 3 && start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start++
+      buffer = buffer.subarray(start)
+    }
+    const text = consoleText(buffer)
     return this.filePath === undefined ? text : `${text}\n[output truncated; full output: ${this.filePath}]`
   }
 }

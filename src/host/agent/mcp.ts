@@ -7,10 +7,11 @@ import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { ImageContent, TextContent, TSchema } from '@earendil-works/pi-ai'
 import { localized } from '../../shared/locale.ts'
 import type { McpServerConfig, McpServerStatus } from '../../shared/rpc.ts'
-import { scrubbedEnv } from '../process.ts'
+import { consoleText, scrubbedEnv } from '../process.ts'
 
 /** Per-call timeout for MCP tools. */
 const CALL_TIMEOUT_MS = 60_000
+const CALL_TOTAL_TIMEOUT_MS = 30 * 60_000
 /** Wait for a server to start and list its tools. */
 const CONNECT_TIMEOUT_MS = 60_000
 
@@ -35,16 +36,6 @@ interface Connection {
   tools: { name: string; description: string; inputSchema: Record<string, unknown>; readOnly: boolean }[]
   instructions: string
   closing?: boolean | undefined
-}
-
-/**
- * @param chunk Output of a server command.
- * @returns Its text; on Windows, output that is not UTF-8 (cmd.exe errors on a Chinese system) is read in the console's GBK.
- */
-function consoleText(chunk: Buffer): string {
-  const text = chunk.toString('utf8')
-  if (process.platform !== 'win32' || !text.includes('\uFFFD')) return text
-  try { return new TextDecoder('gbk').decode(chunk) } catch (_unsupported) { return text }
 }
 
 /** Keeps one connection per enabled server. */
@@ -166,8 +157,10 @@ export class McpManager {
           parameters: tool.inputSchema as unknown as TSchema,
           executionMode: 'sequential',
           async execute(_id, params, signal) {
+            // A tool that reports progress keeps running past the timeout, up to the total limit.
             const result = await client.callTool({ name: tool.name, arguments: params as Record<string, unknown> }, undefined, {
-              timeout: CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }),
+              timeout: CALL_TIMEOUT_MS, onprogress: () => undefined, resetTimeoutOnProgress: true, maxTotalTimeout: CALL_TOTAL_TIMEOUT_MS,
+              ...(signal === undefined ? {} : { signal }),
             })
             const content: (TextContent | ImageContent)[] = []
             for (const block of Array.isArray(result.content) ? result.content : []) {

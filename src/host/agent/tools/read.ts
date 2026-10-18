@@ -1,9 +1,10 @@
 /** `read`: a line-numbered window of a text file. */
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { Type, type Static } from '@earendil-works/pi-ai'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { resolvePath, textResult, versionOf, type ToolContext } from './common.ts'
+import { decodeFile, encodingLabel } from './text-encoding.ts'
 
 /** Lines returned by one call. */
 export const READ_MAX_LINES = 2000
@@ -11,6 +12,8 @@ export const READ_MAX_LINES = 2000
 export const READ_MAX_LINE_LENGTH = 2000
 /** Bytes of selected output per call. */
 export const READ_MAX_BYTES = 50 * 1024
+/** Files up to this size are read whole, so their encoding is recognized; larger ones are streamed as UTF-8. */
+const DECODE_MAX_BYTES = 16 * 1024 * 1024
 
 const parameters = Type.Object({
   file_path: Type.String({ description: 'Path to read, resolved by the filesystem backend.' }),
@@ -28,13 +31,13 @@ export interface ReadDetails {
 
 /**
  * Read a window of lines from a stream of text chunks.
- * @param chunks UTF-8 text chunks.
+ * @param chunks Text chunks.
  * @param offset First line (1-based).
  * @param limit Maximum lines.
  * @param displayPath Path shown in errors.
  * @returns The selected lines, the file's line count, and whether the byte cap cut the window.
  */
-export async function readWindow(chunks: AsyncIterable<string>, offset: number, limit: number, displayPath: string): Promise<{ lines: ReadDetails['lines']; totalLines: number; truncatedByBytes: boolean }> {
+export async function readWindow(chunks: AsyncIterable<string> | Iterable<string>, offset: number, limit: number, displayPath: string): Promise<{ lines: ReadDetails['lines']; totalLines: number; truncatedByBytes: boolean }> {
   const lines: ReadDetails['lines'] = []
   let totalLines = 0
   let bytes = 0
@@ -73,15 +76,16 @@ export async function readWindow(chunks: AsyncIterable<string>, offset: number, 
  * @param displayPath Path shown to the model.
  * @param offset First requested line.
  * @param window Selected lines.
+ * @param encoding The file's text encoding when it is not UTF-8.
  * @returns `<path>…</path><type>file</type><content>…</content>`.
  */
-export function formatRead(displayPath: string, offset: number, window: { lines: ReadDetails['lines']; totalLines: number; truncatedByBytes: boolean }): string {
+export function formatRead(displayPath: string, offset: number, window: { lines: ReadDetails['lines']; totalLines: number; truncatedByBytes: boolean }, encoding?: string): string {
   const endLine = window.lines.at(-1)?.number ?? Math.max(0, offset - 1)
   const footer = window.truncatedByBytes ? `(Output capped. Showing lines ${offset}-${endLine}. Use offset=${endLine + 1} to continue.)`
     : endLine < window.totalLines ? `(Showing lines ${offset}-${endLine} of ${window.totalLines}. Use offset=${endLine + 1} to continue.)`
       : `(End of file - total ${window.totalLines} lines)`
   const body = window.lines.length > 0 ? `${window.lines.map(line => `${line.number}: ${line.text}`).join('\n')}\n\n${footer}` : footer
-  return `<path>${displayPath}</path>\n<type>file</type>\n<content>\n${body}\n</content>`
+  return `<path>${displayPath}</path>\n<type>file</type>\n${encoding === undefined ? '' : `<encoding>${encoding}</encoding>\n`}<content>\n${body}\n</content>`
 }
 
 function positiveInteger(value: number | undefined, name: string, fallback: number): number {
@@ -111,12 +115,21 @@ export function readTool(context: ToolContext): AgentTool<typeof parameters, Rea
         context.observations.record(absolute, 'absent')
         throw new Error(`cannot read "${display}": not found`)
       }
-      if (!(await stat(absolute)).isFile()) throw new Error(`cannot read "${display}": not a regular file`)
-      const stream = createReadStream(absolute, { encoding: 'utf8', signal })
-      const window = await readWindow(stream as AsyncIterable<string>, offset, limit, display)
+      const info = await stat(absolute)
+      if (!info.isFile()) throw new Error(`cannot read "${display}": not a regular file`)
+      let chunks: AsyncIterable<string> | string[]
+      let encoding: string | undefined
+      if (info.size <= DECODE_MAX_BYTES) {
+        const decoded = decodeFile(await readFile(absolute, { signal }))
+        if (decoded === undefined) throw new Error(`cannot read "${display}": it is a binary file (${info.size} bytes) or its text encoding is not supported`)
+        chunks = [decoded.text]
+        if (decoded.encoding !== 'utf-8') encoding = encodingLabel(decoded.encoding)
+        else if (decoded.damaged) encoding = 'UTF-8 with invalid bytes, shown as U+FFFD; edit will refuse this file'
+      } else chunks = createReadStream(absolute, { encoding: 'utf8', signal }) as AsyncIterable<string>
+      const window = await readWindow(chunks, offset, limit, display)
       context.observations.record(absolute, version)
       context.onFileTouched?.(absolute)
-      return textResult(formatRead(display, offset, window), { path: display, offset, lines: window.lines, totalLines: window.totalLines })
+      return textResult(formatRead(display, offset, window, encoding), { path: display, offset, lines: window.lines, totalLines: window.totalLines })
     },
   }
 }

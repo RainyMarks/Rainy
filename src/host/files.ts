@@ -2,6 +2,10 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+
+/** Codes Windows gives a rename onto a file another program holds open for a moment, such as a virus scanner. */
+const BUSY_CODES: ReadonlySet<string | undefined> = new Set(['EPERM', 'EACCES', 'EBUSY'])
 
 /**
  * Read and parse a JSON file.
@@ -30,14 +34,21 @@ export async function writeFileAtomic(path: string, content: string | Uint8Array
   try {
     await handle.writeFile(content)
     await handle.sync()
-  } finally {
-    await handle.close()
-  }
-  try {
-    await rename(temporary, path)
   } catch (error) {
+    await handle.close().catch(() => undefined)
     await rm(temporary, { force: true })
     throw error
+  }
+  await handle.close()
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await rename(temporary, path)
+      return
+    } catch (error) {
+      if (process.platform === 'win32' && attempt < 6 && BUSY_CODES.has((error as NodeJS.ErrnoException).code)) { await delay(50 * attempt); continue }
+      await rm(temporary, { force: true })
+      throw error
+    }
   }
 }
 

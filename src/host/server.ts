@@ -149,7 +149,10 @@ export class HostServer {
 
   private async serveRenderer(url: URL, response: ServerResponse): Promise<void> {
     const root = this.options.rendererRoot
-    const relative = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1))
+    let relative: string
+    try { relative = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1)) } catch (_malformed) {
+      response.writeHead(400); response.end(); return
+    }
     const path = normalize(join(root, relative))
     if (path !== root && !path.startsWith(root + sep)) { response.writeHead(404); response.end(); return }
     let file = path

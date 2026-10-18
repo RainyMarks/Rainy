@@ -42,6 +42,9 @@ describe('permission rules', () => {
   it('matches remembered prefixes word by word, never for compound or inline-code commands', () => {
     expect(commandAllowed('python3 solve.py --remote', ['python3'], false)).toBe(true)
     expect(commandAllowed('python3 -c "import os"', ['python3'], false)).toBe(false)
+    // Flag clusters and attached forms run inline code too.
+    for (const inline of ['bash -lc ls', 'node -pe 1', "python3 -Bc 'import os'", 'node --eval=1', 'perl -we 1']) expect(commandAllowed(inline, ['bash', 'node', 'python3', 'perl'], false)).toBe(false)
+    expect(commandAllowed('node --test', ['node'], false)).toBe(true)
     expect(commandAllowed('python3 solve.py; rm -rf ~', ['python3'], false)).toBe(false)
     expect(commandAllowed('git push', ['git status'], false)).toBe(false)
     expect(commandAllowed('/tmp/x/solve', ['./solve'], false)).toBe(false)

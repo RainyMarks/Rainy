@@ -6,7 +6,7 @@ import { brandString } from '../../src/shared/brand.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import type { TranscriptEntry } from '../../src/shared/rpc.ts'
 import { SHARED_CACHE_WINDOW_MS } from '../../src/host/agent/compaction.ts'
-import { fallbackTitle } from '../../src/host/agent/session.ts'
+import { fallbackTitle, referenceSnapshot } from '../../src/host/agent/session.ts'
 import { Settings } from '../../src/host/settings.ts'
 import { FakeAnthropic, FakeOpenAI, harness, idle, tempHost, type Harness, type ScriptedReply } from './agent-fixtures.ts'
 
@@ -14,6 +14,17 @@ it('names a chat after the first words of its first message, marking a cut', () 
   expect(fallbackTitle('say hello please')).toBe('say hello please')
   expect(fallbackTitle('Move the XOR into a helper module')).toBe('Move the XOR into a…')
   expect(fallbackTitle('one two three four five')).toBe('one two three four five')
+})
+
+it('keeps the task and the latest turns of a long referenced chat', () => {
+  const turns = Array.from({ length: 60 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', text: `turn ${index} ${'x'.repeat(index === 59 ? 9000 : 3000)}` }))
+  const snapshot = referenceSnapshot('s1', 'Long chat', turns) as { truncated?: boolean; turns: { text: string }[] }
+  expect(snapshot.truncated).toBe(true)
+  expect(JSON.stringify(snapshot).length).toBeLessThanOrEqual(64 * 1024)
+  expect(snapshot.turns[0]!.text.startsWith('turn 0 ')).toBe(true)
+  expect(snapshot.turns.at(-1)!.text.startsWith('turn 59 ')).toBe(true)
+  expect(snapshot.turns.length).toBeGreaterThan(10)
+  expect(referenceSnapshot('s2', 'Short', [{ role: 'user', text: 'hi' }])).toEqual({ sessionId: 's2', title: 'Short', turns: [{ role: 'user', text: 'hi' }] })
 })
 
 describe('agent', () => {
@@ -88,6 +99,31 @@ describe('agent', () => {
     expect(JSON.stringify(results[1]!.content)).toContain('1: alpha')
     expect(results[2]!.isError).toBe(false)
     expect(await readFile(join(h.project, 'notes.txt'), 'utf8')).toBe('beta\r\ngamma\r\n')
+  })
+
+  it('reads and edits a GBK file without touching its other Chinese text', async () => {
+    server = new FakeOpenAI([
+      { toolCalls: [{ name: 'read', arguments: { file_path: 'main.c' } }] },
+      { toolCalls: [{ name: 'edit', arguments: { file_path: 'main.c', old_string: 'int speed = 9600;', new_string: 'int speed = 115200; // 波特率' } }] },
+      { text: 'Edited.' },
+    ])
+    await server.start()
+    const h = await harness(server, cleanups)
+    const gbk = (text: string): Buffer => Buffer.from(new Uint8Array([...text].flatMap((char) => {
+      // GBK codes of the few Chinese characters this test uses.
+      const codes: Record<string, number[]> = { 串: [0xb4, 0xae], 口: [0xbf, 0xda], 配: [0xc5, 0xe4], 置: [0xd6, 0xc3], 波: [0xb2, 0xa8], 特: [0xcc, 0xd8], 率: [0xc2, 0xca] }
+      return codes[char] ?? [char.charCodeAt(0)]
+    })))
+    await writeFile(join(h.project, 'main.c'), gbk('/* 串口配置 */\r\nint speed = 9600;\r\n'))
+    const chat = await h.call('sessions.create', { workspaceId: h.workspaceId })
+    await h.call('chat.send', { sessionId: chat.id, text: 'raise the baud rate' })
+    await idle(h, chat.id)
+    const results = (await h.call('sessions.get', { sessionId: chat.id })).entries
+      .filter((entry): entry is Extract<TranscriptEntry, { kind: 'toolResult' }> => entry.kind === 'toolResult')
+    expect(JSON.stringify(results[0]!.content)).toContain('<encoding>GB18030 (GBK)</encoding>')
+    expect(JSON.stringify(results[0]!.content)).toContain('1: /* 串口配置 */')
+    expect(results[1]!.isError).toBe(false)
+    expect((await readFile(join(h.project, 'main.c'))).equals(gbk('/* 串口配置 */\r\nint speed = 115200; // 波特率\r\n'))).toBe(true)
   })
 
   it('injects workspace instructions once, before the first request', async () => {

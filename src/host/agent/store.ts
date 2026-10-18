@@ -1,7 +1,7 @@
 /** Chats on disk: `chats/<id>.jsonl` (header line, then entries and metadata lines) and `chats/index.json`. */
 import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { appendFile, mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
+import { appendFile, mkdir, open, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { z } from 'zod'
@@ -77,6 +77,8 @@ export class ChatStore {
   private readonly queues = new Map<SessionId, SerialQueue>()
   private readonly indexQueue = new SerialQueue()
   private indexTimer: NodeJS.Timeout | undefined
+  /** Chats whose file this process has checked to end with a complete line. */
+  private readonly lineEnded = new Set<SessionId>()
 
   /** @param dir `<home>/chats`. */
   constructor(private readonly dir: string) {}
@@ -146,6 +148,7 @@ export class ChatStore {
       ...(Object.keys(meta).length > 0 ? [JSON.stringify({ type: 'meta', ...meta })] : []),
     ]
     await writeFileAtomic(this.path(chat.id), `${lines.join('\n')}\n`)
+    this.lineEnded.add(chat.id)
     this.chats.set(chat.id, chat)
     this.scheduleIndex()
     return chat
@@ -170,7 +173,7 @@ export class ChatStore {
   async append(id: SessionId, entries: readonly TranscriptEntry[]): Promise<void> {
     if (entries.length === 0) return
     const chat = this.require(id)
-    await this.queue(id).run(() => appendFile(this.path(id), entries.map(entry => `${JSON.stringify({ type: 'entry', entry })}\n`).join(''), { mode: 0o600 }))
+    await this.queue(id).run(() => this.appendLines(id, entries.map(entry => `${JSON.stringify({ type: 'entry', entry })}\n`).join('')))
     chat.updatedAt = Date.now()
     this.scheduleIndex()
   }
@@ -183,7 +186,7 @@ export class ChatStore {
   async keep(id: SessionId, toolCallIds: readonly string[]): Promise<void> {
     if (toolCallIds.length === 0) return
     this.require(id)
-    await this.queue(id).run(() => appendFile(this.path(id), `${JSON.stringify({ type: 'review', kept: toolCallIds })}\n`, { mode: 0o600 }))
+    await this.queue(id).run(() => this.appendLines(id, `${JSON.stringify({ type: 'review', kept: toolCallIds })}\n`))
   }
 
   /**
@@ -195,7 +198,7 @@ export class ChatStore {
   async setMeta(id: SessionId, patch: ChatMetaPatch): Promise<StoredChat> {
     const chat = this.require(id)
     await this.queue(id).run(async () => {
-      await appendFile(this.path(id), `${JSON.stringify({ type: 'meta', ...patch })}\n`, { mode: 0o600 })
+      await this.appendLines(id, `${JSON.stringify({ type: 'meta', ...patch })}\n`)
       Object.assign(chat, patch)
     })
     this.scheduleIndex()
@@ -214,7 +217,7 @@ export class ChatStore {
     // Checked inside the chat's queue, after any rename submitted before it was written.
     const written = await this.queue(id).run(async () => {
       if (chat.title !== '') return false
-      await appendFile(this.path(id), `${JSON.stringify({ type: 'meta', title })}\n`, { mode: 0o600 })
+      await this.appendLines(id, `${JSON.stringify({ type: 'meta', title })}\n`)
       chat.title = title
       return true
     })
@@ -230,6 +233,7 @@ export class ChatStore {
     await this.queue(id).run(() => rm(this.path(id), { force: true }))
     this.chats.delete(id)
     this.queues.delete(id)
+    this.lineEnded.delete(id)
     this.scheduleIndex()
   }
 
@@ -263,7 +267,8 @@ export class ChatStore {
     try {
       for await (const line of lines) {
         if (!line.includes('"type":"entry"')) continue
-        const parsed: unknown = JSON.parse(line)
+        let parsed: unknown
+        try { parsed = JSON.parse(line) } catch (_damaged) { continue }
         const entry = (parsed as { entry?: TranscriptEntry }).entry
         const text = entry === undefined ? '' : entryText(entry)
         const index = text.toLowerCase().indexOf(needle)
@@ -294,12 +299,13 @@ export class ChatStore {
     }
     const entries: TranscriptEntry[] = []
     const kept: string[] = []
+    let damaged = 0
     for (let index = 1; index < lines.length; index++) {
       const line = lines[index]!
       if (line === '') continue
       let record: unknown
-      // A crash can leave a partial last line; everything before it is intact.
-      try { record = JSON.parse(line) } catch (_error) { if (index === lines.length - 1 || lines[index + 1] === '') continue; throw new Error(`Corrupt line ${index + 1} in chat ${id}`) }
+      // A crash can leave a partial line, and records appended later start on the next line; every other line is intact.
+      try { record = JSON.parse(line) } catch (_error) { damaged++; continue }
       if (record === null || typeof record !== 'object') continue
       const type = (record as { type?: unknown }).type
       if (type === 'meta') {
@@ -315,7 +321,22 @@ export class ChatStore {
         if (Array.isArray(ids)) for (const value of ids) if (typeof value === 'string') kept.push(value)
       }
     }
+    if (damaged > 0) console.error(`[chats] chat ${id}: skipped ${damaged} damaged line${damaged === 1 ? '' : 's'}`)
     return { chat, entries, kept }
+  }
+
+  /**
+   * Append whole lines to a chat file, starting on a new line when a crash left the last one partial.
+   * @param id Chat id.
+   * @param text Lines, each ending in a newline.
+   */
+  private async appendLines(id: SessionId, text: string): Promise<void> {
+    const path = this.path(id)
+    if (!this.lineEnded.has(id)) {
+      if (!(await endsWithNewline(path))) text = `\n${text}`
+      this.lineEnded.add(id)
+    }
+    await appendFile(path, text, { mode: 0o600 })
   }
 
   private require(id: SessionId): StoredChat {
@@ -344,6 +365,27 @@ export class ChatStore {
 
   private writeIndex(): Promise<void> {
     return this.indexQueue.run(() => writeJson(join(this.dir, 'index.json'), { version: 1, chats: [...this.chats.values()] }))
+  }
+}
+
+/**
+ * @param path A file.
+ * @returns Whether it is empty, missing or ends with a newline.
+ */
+async function endsWithNewline(path: string): Promise<boolean> {
+  let handle
+  try { handle = await open(path, 'r') } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+    throw error
+  }
+  try {
+    const { size } = await handle.stat()
+    if (size === 0) return true
+    const last = Buffer.alloc(1)
+    await handle.read(last, 0, 1, size - 1)
+    return last[0] === 0x0a
+  } finally {
+    await handle.close()
   }
 }
 

@@ -26,7 +26,7 @@ import { canonicalPath, decide, denialText, READ_ONLY_REASON } from './permissio
 import { buildSystemPrompt } from './prompt.ts'
 import { AUTO_RETRIES, isPassingFailure, retryDelay } from './retry.ts'
 import { discoverSkills, skillsSection } from './skills.ts'
-import type { ChatStore, StoredChat } from './store.ts'
+import type { StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
 import { coreTools } from './tools/index.ts'
 import { deepSeekKey } from './tools/web.ts'
@@ -41,6 +41,9 @@ const STREAM_THROTTLE_MS = 50
 const TOOL_UPDATE_THROTTLE_MS = 200
 /** Chats referenced with `@[…](rainy-session:<id>)` in one message. */
 const MAX_REFERENCES = 3
+/** Characters of one referenced chat the model sees, and of each of its turns. */
+const REFERENCE_CHARS = 64 * 1024
+const REFERENCE_TURN_CHARS = 4000
 const REFERENCE_PATTERN = /@\[([^\]\n]{1,200})\]\(rainy-session:([A-Za-z0-9-]{1,64})\)/g
 /** Model-facing result of a call still waiting when the user sent a new message. */
 const SUPERSEDED = 'The user did not answer the approval request for this tool call and sent a new message instead. Read it before continuing.'
@@ -508,8 +511,8 @@ export class ChatSession {
       prepareRequest: async (request, signal) => {
         const messages = request.context.messages.filter((message): message is Message => message.role !== 'system')
         const budget = resolveBudget(request.model.contextWindow, request.model.maxTokens)
-        const estimate = Math.ceil(estimateMessages(system, declarations, messages) * this.counterRatio())
         this.lastEstimate = estimateMessages(system, declarations, messages)
+        const estimate = Math.ceil(this.lastEstimate * this.counterRatio())
         if (estimate >= compactionThreshold(budget) && this.run !== undefined) {
           const latest = this.resolved() ?? resolved
           const entry = await this.compact(latest, 'auto', signal, request.context.messages).catch((error: unknown) => {
@@ -523,7 +526,7 @@ export class ChatSession {
             return { context: { ...request.context, messages: [...(initial === undefined ? [] : [initial]), ...rebuilt] } }
           }
         }
-        this.updateContextUsage(budget, messages.length, system, declarations, messages)
+        this.updateContextUsage(budget, this.lastEstimate, system, declarations)
         this.lastRequest = { at: Date.now(), key: requestKey(request.model, request.thinkingLevel) }
         return undefined
       },
@@ -801,9 +804,7 @@ export class ChatSession {
             }
             return []
           })
-          let json = JSON.stringify({ sessionId: id, title: file.chat.title, turns })
-          if (json.length > 64 * 1024) json = JSON.stringify({ sessionId: id, title: file.chat.title, truncated: true, turns: turns.slice(-40) }).slice(0, 64 * 1024)
-          snapshots.push(JSON.parse(json.endsWith('}') ? json : JSON.stringify({ sessionId: id, title: file.chat.title, truncated: true })))
+          snapshots.push(referenceSnapshot(id, file.chat.title, turns))
         } catch (error) {
           this.services.log(`[chat] reference ${id} unavailable: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -916,10 +917,17 @@ export class ChatSession {
     return this.calibration.factor()
   }
 
-  private updateContextUsage(budget: Budget, _count: number, system: string, tools: readonly Tool[], messages: readonly Message[]): void {
+  /**
+   * Publish the estimated size of the next request.
+   * @param budget Model budget.
+   * @param estimate Uncalibrated estimate of the whole request.
+   * @param system System prompt.
+   * @param tools Tool declarations.
+   */
+  private updateContextUsage(budget: Budget, estimate: number, system: string, tools: readonly Tool[]): void {
     const systemTokens = estimateMessages(system, [], [])
     const toolTokens = estimateMessages('', tools, []) - estimateMessages('', [], [])
-    const total = Math.ceil(estimateMessages(system, tools, messages) * this.counterRatio())
+    const total = Math.ceil(estimate * this.counterRatio())
     this.context = {
       tokens: total, contextWindow: budget.contextWindow, inputLimit: budget.inputLimit, outputTokens: budget.outputTokens,
       compactAt: compactionThreshold(budget), kind: 'estimated',
@@ -998,6 +1006,36 @@ export class ChatSession {
       ...(this.error === undefined ? {} : { error: this.error }),
     })
   }
+}
+
+/**
+ * What the model sees of a referenced chat, within {@link REFERENCE_CHARS}: each turn cut to {@link REFERENCE_TURN_CHARS},
+ * then the first turn, which usually states the task, and as many of the latest turns as fit.
+ * @param sessionId Referenced chat.
+ * @param title Its title.
+ * @param turns Its user messages and replies in order.
+ * @returns The snapshot; `truncated` when anything was cut or left out.
+ */
+export function referenceSnapshot(sessionId: string, title: string, turns: readonly { role: string; text: string }[]): unknown {
+  let truncated = false
+  const cut = turns.map((turn) => {
+    if (turn.text.length <= REFERENCE_TURN_CHARS) return turn
+    truncated = true
+    return { ...turn, text: `${turn.text.slice(0, REFERENCE_TURN_CHARS)}…` }
+  })
+  const size = (turn: { role: string; text: string }): number => JSON.stringify(turn).length + 1
+  let used = JSON.stringify({ sessionId, title, truncated: true, turns: [] }).length
+  const latest: typeof cut = []
+  const first = cut[0]
+  if (first !== undefined) used += size(first)
+  for (let index = cut.length - 1; index > 0; index--) {
+    const turn = cut[index]!
+    if (used + size(turn) > REFERENCE_CHARS) { truncated = true; break }
+    used += size(turn)
+    latest.unshift(turn)
+  }
+  const kept = first === undefined ? [] : [first, ...latest]
+  return truncated ? { sessionId, title, truncated: true, turns: kept } : { sessionId, title, turns: kept }
 }
 
 /** Text of a changed file for comparison: without a byte-order mark and with LF line ends; `undefined` for binary or huge files. */
