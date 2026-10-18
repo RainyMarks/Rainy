@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -181,6 +182,7 @@ if args.skip_pack:
     raise SystemExit(0)
 # Two layers, split by the installer's own rules: the base (Node.js, packages, IDE resources, ripgrep), downloaded and
 # identified by its content, and the application layer (Host, interface, small resources) that ships with the desktop.
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('install_runtime', Path(__file__).with_name('install-runtime.py'))
 layers = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(layers)

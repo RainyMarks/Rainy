@@ -21,7 +21,7 @@ function workspace(t) {
 
 const python = (home, args, input) => JSON.parse(execFileSync('python3', [script, ...args], { env: { ...process.env, HOME: home }, input, encoding: 'utf8' }))
 /** The installer's own content identity of a directory. */
-const contentOf = directory => execFileSync('python3', ['-c', `import importlib.util,sys
+const contentOf = directory => execFileSync('python3', ['-B', '-c', `import importlib.util,sys
 spec = importlib.util.spec_from_file_location('r', sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print(m.content_digest(sys.argv[2]))`, script, directory], { encoding: 'utf8' }).trim()
 
