@@ -7,6 +7,13 @@
   overflow: hidden;
 }
 
+.enlarged { min-width: 0; }
+.enlarged .caption { display: none; }
+.enlarged .stage { padding: 0; }
+
+.enlargedDialog { width: min(1100px, 94vw); max-width: 94vw; }
+.enlargedContent { max-height: min(88vh, 1400px); overflow: auto; }
+
 .caption {
   display: flex;
   align-items: center;

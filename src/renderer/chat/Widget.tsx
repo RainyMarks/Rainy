@@ -8,7 +8,7 @@ import {
   type WidgetHostMessage, type WidgetTheme,
 } from '../../shared/widget-protocol.ts'
 import { host } from '../rpc.ts'
-import { IconAction, IconCopyOutlineRegular, IconRefreshOutlineRegular, toast, writeClipboard } from '../ui/index.ts'
+import { IconAction, IconCopyOutlineRegular, IconFullscreenOutlineRegular, IconRefreshOutlineRegular, Modal, toast, writeClipboard } from '../ui/index.ts'
 import { useChatT } from './messages.ts'
 import css from './Widget.module.css'
 
@@ -47,15 +47,18 @@ export function currentTheme(): WidgetTheme {
  * @param props.call The `show_widget` call, possibly still streaming.
  * @param props.complete The call's arguments are final.
  * @param props.cut The reply stopped before the call was finished.
+ * @param props.enlarged The widget is the copy shown in the enlarged dialog.
  * @returns The widget.
  */
-export function Widget({ sessionId, call, complete, cut = false }: {
+export function Widget({ sessionId, call, complete, cut = false, enlarged = false }: {
   sessionId: string
   call: ToolCall
   complete: boolean
   cut?: boolean | undefined
+  enlarged?: boolean | undefined
 }): JSX.Element {
   const t = useChatT()
+  const [enlarging, setEnlarging] = useState(false)
   const args = useMemo(() => widgetArgs(call.arguments), [call.arguments])
   const frame = useRef<HTMLIFrameElement>(null)
   const [run, setRun] = useState(0)
@@ -172,12 +175,14 @@ export function Widget({ sessionId, call, complete, cut = false }: {
 
   const frameHeight = height ?? args.height
   return (
-    <figure className={css.widget} data-widget={call.id} data-state={complete ? 'done' : 'streaming'}>
+    <figure className={enlarged ? css.enlarged : css.widget} data-widget={enlarged ? undefined : call.id} data-widget-enlarged={enlarged || undefined}
+      data-state={complete ? 'done' : 'streaming'}>
       <figcaption className={css.caption}>
         <span className={css.title}>{args.title || t('widgetUntitled')}</span>
         {complete && <>
           <IconAction label={t('widgetRerun')} onClick={() => { setRun(value => value + 1) }}><IconRefreshOutlineRegular size={14} /></IconAction>
           <IconAction label={t('widgetCopy')} onClick={copy}><IconCopyOutlineRegular size={14} /></IconAction>
+          {!enlarged && <IconAction label={t('widgetEnlarge')} onClick={() => { setEnlarging(true) }}><IconFullscreenOutlineRegular size={14} /></IconAction>}
         </>}
       </figcaption>
       <div className={css.stage} style={{ height: frameHeight }}>
@@ -192,6 +197,11 @@ export function Widget({ sessionId, call, complete, cut = false }: {
           <button type="button" className={css.fix} onClick={() => { fix(message) }}>{t('widgetFix')}</button>
         </p>
       ))}
+      {/* A second run of the same answer at a comfortable width; the copy in the chat keeps its own state. */}
+      <Modal open={enlarging} onClose={() => { setEnlarging(false) }} title={args.title || t('widgetUntitled')} closeLabel={t('close')}
+        className={css.enlargedDialog} contentClassName={css.enlargedContent}>
+        <Widget sessionId={sessionId} call={call} complete={complete} cut={cut} enlarged />
+      </Modal>
     </figure>
   )
 }

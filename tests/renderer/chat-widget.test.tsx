@@ -150,3 +150,17 @@ it('previews a widget while it streams and finishes it once the call is written'
   await waitFor(() => { expect(sent.at(-1)).toMatchObject({ type: 'final', html: '<p>第一段</p><p>第二段</p>', script: 'go()' }) })
   expect(document.querySelectorAll('[data-widget="c1"] iframe')).toHaveLength(1)
 })
+
+it('enlarges a finished widget into a dialog that runs its own copy', async () => {
+  handle('sessions.get', () => snapshot('w-7', turn(widget)))
+  await open('w-7')
+  document.querySelector<HTMLButtonElement>('[data-widget="c1"] button[aria-label="放大查看"]')!.click()
+  await waitFor(() => { expect(document.querySelector('[role="dialog"] [data-widget-enlarged] iframe')).not.toBeNull() })
+  const element = document.querySelector<HTMLIFrameElement>('[role="dialog"] iframe')!
+  const target = element.contentWindow!
+  const sent: Record<string, unknown>[] = []
+  target.postMessage = ((data: Record<string, unknown>) => { sent.push(data) }) as typeof target.postMessage
+  window.dispatchEvent(new MessageEvent('message', { data: { tag: 'rainy-widget', type: 'ready' }, source: target as unknown as Window }))
+  await waitFor(() => { expect(sent.map(message => message.type)).toEqual(['theme', 'final']) })
+  expect(document.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('贷款计算器')
+})

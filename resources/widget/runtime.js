@@ -42,6 +42,8 @@
   }
 
   window.addEventListener('error', function (event) {
+    // Chromium reports a resize observer that changed layout in its own callback as an error; nothing failed.
+    if (/^ResizeObserver loop/.test(event.message || '')) return
     var where = event.lineno ? ' (line ' + event.lineno + ')' : ''
     report((event.message || 'Script error') + where)
   })
@@ -148,6 +150,8 @@
     chain.then(function () {
       if (code.trim() !== '') runInline(code)
       measure()
+      // Diagrams a script fills in after its first frame.
+      setTimeout(measure, 400)
       document.dispatchEvent(new Event('rainyready'))
     })
   }
@@ -170,8 +174,42 @@
     }
   })
 
+  /* A diagram drawn for a wider column shrinks its labels with its viewBox. When its smallest label would show below
+   * 11 px, the diagram keeps the width that shows it at 11 px inside a horizontally scrolling box instead, so its text
+   * stays legible in a narrow chat. */
+  var MIN_TEXT_PX = 11
+  function keepSvgReadable() {
+    var svgs = document.querySelectorAll('svg[viewBox]')
+    for (var index = 0; index < svgs.length; index++) {
+      var svg = svgs[index]
+      if (svg.ownerSVGElement || svg.getAttribute('data-rainy-readable') !== null) continue
+      var texts = svg.querySelectorAll('text')
+      if (texts.length === 0) continue
+      var box = svg.viewBox.baseVal
+      if (!box || !box.width) continue
+      var smallest = Infinity
+      for (var item = 0; item < texts.length; item++) {
+        var size = parseFloat(getComputedStyle(texts[item]).fontSize)
+        if (size > 0 && size < smallest) smallest = size
+      }
+      if (smallest === Infinity) continue
+      var minimum = Math.round(box.width * Math.min(1, MIN_TEXT_PX / smallest))
+      var parent = svg.parentElement
+      if (!parent || parent.clientWidth >= minimum) continue
+      svg.setAttribute('data-rainy-readable', '')
+      svg.style.minWidth = minimum + 'px'
+      var scroller = document.createElement('div')
+      scroller.style.cssText = 'overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch'
+      parent.insertBefore(scroller, svg)
+      scroller.appendChild(svg)
+      // Diagrams are usually centred in their viewBox; start with the middle in view rather than the left margin.
+      scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2
+    }
+  }
+
   var last = 0
   function measure() {
+    if (finished) keepSvgReadable()
     var height = Math.ceil(document.documentElement.getBoundingClientRect().height)
     if (height === last) return
     last = height

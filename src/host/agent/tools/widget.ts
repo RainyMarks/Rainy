@@ -16,7 +16,9 @@ const parameters = Type.Object({
 const DESCRIPTION = `Show the user an interactive answer: a small web page rendered inline in the chat while you write it. \
 Use it when seeing or manipulating something explains better than prose — a chart of data, a diagram of a mechanism, a calculator, \
 a comparison with adjustable weights, a simulation with sliders, a step-through of an algorithm, a 3D model. \
-Answer in plain text instead for facts, writing, code changes and short explanations; do not call it just to decorate an answer.
+Answer in plain text instead for facts, writing, code changes and short explanations; do not call it just to decorate an answer. \
+A widget needs no project files or commands: write it directly, without inspecting the workspace or running code to check \
+numbers, unless the request is about the project's own files or data.
 
 Write the arguments in this exact order: title, height, css, html, script. The user watches it stream: \
 styles first, then markup (shown as it arrives), then the script, which runs once everything is complete.
@@ -46,6 +48,10 @@ Quality:
 live prices, weather or statistics; ask, or use clearly labeled examples.
 - The frame width is the chat column (often 360–700 px): let layouts wrap, give SVG a viewBox with width 100%, size canvases \
 to their container, and never use vh units or fixed heights for the page. Support keyboard use and labeled inputs.
+- SVG text shrinks with its viewBox: keep the viewBox width near the real width (about 360–640) so labels stay at least \
+11 px; a wide diagram can be laid out vertically instead.
+- Keep it compact, ideally under about 700 px tall: the essential controls and one main view; put long explanations in a \
+<details> element or leave them to your reply.
 - Write all visible text in the user's language. Use textContent, not innerHTML, for text built from input.
 - After the call, add at most a sentence or two of text; do not repeat what the widget shows. A changed request gets a new \
 widget; earlier widgets cannot be modified.`
