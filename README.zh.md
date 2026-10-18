@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.5 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.6 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -61,6 +61,13 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
+## 3.6 新变化
+
+更新不再需要重新配环境，软件也更轻了。
+
+- **更新后不用重新下载 WSL 运行环境**：以前每次更新，第一次以 WSL 或 SSH 启动都要重新下载约 280 MB 的 Linux 运行环境。现在它分成两层：很少变化的底座（Node.js、依赖和开发工具）和随安装包附带、只有几 MB 的应用层。只要底座没变，更新后直接换上新的应用层，不下载、不重装。从 3.5 升级到 3.6 这一次也会复用你已经装好的环境。
+- **移除交互式回答**：3.5 加入的交互式回答更适合纯聊天，和 Rainy 以干活为主的智能体不太搭，已经移除，附带的图表和三维库也一起去掉了。
+
 ## 3.5 新变化
 
 - **适配各种屏幕和缩放**：在高缩放（比如 225%）或小屏幕上，顶部菜单不再和搜索框叠在一起；窗口打开时、换显示器时或改了系统缩放后，会自动缩放到屏幕可用范围内，小屏幕也不会出界；对话面板宽度跟着窗口大小走，大屏幕上更宽，拖动过之后就按你拖的宽度。
@@ -165,10 +172,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.5.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.6.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.5.1` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.6.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 

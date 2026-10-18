@@ -61,6 +61,13 @@ Rainy puts an AI agent, previews of Word, Excel, PowerPoint and PDF, a real edit
 ![Ctrl+K adding an empty-key check to a function, with the new lines in green](assets/ai-edit.png)
 
 <a id="whats-new"></a>
+## What's new in 3.6
+
+Updates no longer set up the environment again, and Rainy is lighter.
+
+- **No Linux runtime download after an update**: every update used to download the Linux runtime (about 280 MB) again on the first WSL or SSH start. It now comes in two layers: a base that rarely changes (Node.js, dependencies, IDE tools) and an application layer of a few MB that ships with the installer. While the base is unchanged, an update swaps in the new application layer without downloading or reinstalling anything; the update from 3.5 to 3.6 reuses the environment you already have, too.
+- **Interactive answers removed**: they suit plain conversation better than Rainy's agent work, so they are gone, with the chart and 3D libraries they shipped.
+
 ## What's new in 3.5
 
 - **Every screen and scaling**: at high display scaling (such as 225%) or on small screens the menus no longer run under the search box; the window fits the screen's work area when it opens, when it moves to another display and when the scaling changes; the chat pane follows the window width until you resize it.
@@ -165,10 +172,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.5.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.6.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.5.1` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.6.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
 

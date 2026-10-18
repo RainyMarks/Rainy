@@ -1,8 +1,8 @@
-Rainy 3.5.1 Windows x64 完整离线发行包
+Rainy 3.6.0 Windows x64 完整离线发行包
 
 安装与升级
-1. 运行 Rainy-3.5.1-windows-x64-setup.exe 安装核心，内含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境不在安装包内，需要时从 GitHub 下载；模型权重另备。新安装默认使用 Windows 原生运行，无需先安装 WSL。
-2. 完整离线交付请保留整个 offline-3.5.1 目录，包括 environment/、environment-components/、清单及 SHA256SUMS.txt。无需手动解压任何运行环境归档。安装后直接使用，无需设备码或激活码。
+1. 运行 Rainy-3.6.0-windows-x64-setup.exe 安装核心，内含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境不在安装包内，需要时从 GitHub 下载；模型权重另备。新安装默认使用 Windows 原生运行，无需先安装 WSL。
+2. 完整离线交付请保留整个 offline-3.6.0 目录，包括 environment/、environment-components/、清单及 SHA256SUMS.txt。无需手动解压任何运行环境归档。安装后直接使用，无需设备码或激活码。
 3. Rainy 3.0 不再包含 CTF 工具目录。旧版本下载的工具留在原安装位置（安装目录的 tools 文件夹或 %APPDATA%\RainyAgent\native-tools），应用不再更新或启动它们；不再需要时可自行删除。
 4. 安装版启动时静默检查 GitHub 稳定版并后台下载核心更新；“帮助 → 检查更新”可查看状态或重试。下载完成后选择稍后或重启安装，只有确认、草稿保存与 Host 清理完成后才安装；普通退出不会安装。自动更新保留已有环境，不重新下载离线环境组件；更新后首次以 WSL 或 SSH 启动时会安装新版本的 Linux 运行环境。
 5. 启动约 60 秒后，应用删除旧安装程序留在 resources 目录中的 strata-runtime、php、linux-runtime.tar.gz 及旧版工具目录文件（native-tools-*.json）。
@@ -34,7 +34,7 @@ windows-cpp：原生 Clang C/C++ 编译器、CMake、Ninja、clangd、clang-form
 
 可选 WSL
 需要 Linux 时，在运行环境页准备或选择 WSL。创建环境时选择 environment/ 文件夹，向导验证 WSL 安装介质及 Ubuntu 镜像；需要管理员确认或重启时按提示操作。应用不会自动重启 Windows。
-安装或更新后首次以 WSL 启动时，应用联网下载本版本的 Linux 运行环境（约 280 MB），启动页显示进度；发行版中已解包本版本运行环境时不下载。下载失败时可选择重试、改用 Windows 原生运行（记录为执行目标，与在设置中切换相同）或退出。
+Linux 运行环境分两层：底座（Node.js、依赖包、开发工具资源和 ripgrep，约 280 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（Host、界面和小资源，几 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。下载失败时可选择重试、改用 Windows 原生运行（记录为执行目标，与在设置中切换相同）或退出。
 WSL 的“准备 Ubuntu 开发工具”在明确安装后使用随包的 C/C++、GDB、CMake、Ninja、clangd 和 PHP 软件包，禁用软件下载。支持基线为 Ubuntu 26.04 amd64，其他发行版保留原有软件包并显示兼容性说明。
 
 SSH 远程开发
