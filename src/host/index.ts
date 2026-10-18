@@ -13,7 +13,6 @@ import { ControlInput, sendControl } from './control.ts'
 import { credentialSeal, type CredentialSeal } from './credentials.ts'
 import { hostEnvironmentKind, readHostEnvironment } from './env.ts'
 import { installPdfJs } from './pdfjs.ts'
-import { installWidget } from './widget.ts'
 import { createIde } from './ide/index.ts'
 import { Network, type SystemProxyResolver } from './network.ts'
 import { Projects, roots } from './projects.ts'
@@ -78,7 +77,6 @@ async function main(): Promise<void> {
   const ide = await createIde({ env, config, projects, runtime, server, activity, log, hint: (workspaceId, kind) => { rpc.emit('ide.hint', { workspaceId, kind }) } })
   const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, network, log })
   installPdfJs(server, env.resources)
-  installWidget(server, env.resources)
 
   rpc.register('app.info', () => ({
     name: 'Rainy' as const, version: env.version, environment: hostEnvironmentKind(env),

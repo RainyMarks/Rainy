@@ -19,8 +19,8 @@ async function settings(file?: unknown): Promise<Settings> {
 }
 
 it('starts with the graphite scheme, the automatic accent and the default fonts', async () => {
-  expect((await settings()).prefs()).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, widgets: true })
-  expect(DEFAULT_PREFS).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, widgets: true })
+  expect((await settings()).prefs()).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true })
+  expect(DEFAULT_PREFS).toMatchObject({ colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true })
 })
 
 it('stores a color scheme, an accent and font lists, and rejects values outside the choices', async () => {

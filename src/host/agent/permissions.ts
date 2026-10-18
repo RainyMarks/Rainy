@@ -4,8 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { PendingApproval, PermissionMode, PermissionRules } from '../../shared/rpc.ts'
 
 /** Tools that only read; they run in every mode. */
-// show_widget only returns its arguments to the chat, which runs them in a sandboxed frame without network access.
-const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob', 'web_search', 'show_widget'])
+const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob', 'web_search'])
 const CHANGE_TOOLS: ReadonlySet<string> = new Set(['write', 'edit'])
 const SHELL_TOOLS: ReadonlySet<string> = new Set(['bash', 'pwsh'])
 

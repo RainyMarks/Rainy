@@ -848,7 +848,7 @@ export class ChatSession {
     const settings = this.services.settings
     const web = settings.prefs().webSearch && deepSeekKey(settings) !== undefined
       ? { apiKey: () => deepSeekKey(settings), fetch: this.services.fetch ?? globalThis.fetch.bind(globalThis) } : undefined
-    return [...coreTools(context, env.platform, web, settings.prefs().widgets), ...this.services.mcp.tools()].sort((left, right) => left.name.localeCompare(right.name))
+    return [...coreTools(context, env.platform, web), ...this.services.mcp.tools()].sort((left, right) => left.name.localeCompare(right.name))
   }
 
   private async systemPrompt(tools: readonly AgentTool[]): Promise<string> {

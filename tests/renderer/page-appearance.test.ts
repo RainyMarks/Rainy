@@ -8,7 +8,7 @@ import { deferred, handle } from './settings-harness.tsx'
 vi.mock('electron', () => ({ ipcRenderer: { send: vi.fn() } }))
 vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harness.tsx')).rpcModule)
 
-const saved: UiPreferences = { locale: 'en', theme: 'light', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, widgets: true }
+const saved: UiPreferences = { locale: 'en', theme: 'light', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true }
 
 it('reports neither the default language nor a theme before the Host answered, then the stored choices', async () => {
   const answer = deferred<UiPreferences>()
