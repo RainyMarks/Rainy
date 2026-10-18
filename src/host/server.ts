@@ -11,7 +11,7 @@ export type RouteHandler = (request: IncomingMessage, response: ServerResponse, 
 /** Handles one authenticated WebSocket connection. */
 export type SocketHandler = (socket: WebSocket, request: IncomingMessage, url: URL) => void
 
-interface Route { path: string; exact: boolean; handler: RouteHandler }
+interface Route { path: string; exact: boolean; handler: RouteHandler; open: boolean }
 
 const COOKIE = 'rainy_auth'
 
@@ -65,7 +65,18 @@ export class HostServer {
    * @param exact Match only `path` itself.
    */
   route(path: string, handler: RouteHandler, exact = !path.endsWith('/')): void {
-    this.routes.push({ path, exact, handler })
+    this.routes.push({ path, exact, handler, open: false })
+    this.routes.sort((left, right) => right.path.length - left.path.length)
+  }
+
+  /**
+   * Add a route answered without the session cookie, for files that hold nothing private and are requested by
+   * sandboxed frames, whose opaque origin never sends the cookie. The Host header is still checked.
+   * @param path Path prefix ending in `/`.
+   * @param handler Called for every request under the prefix.
+   */
+  openRoute(path: string, handler: RouteHandler): void {
+    this.routes.push({ path, exact: false, handler, open: true })
     this.routes.sort((left, right) => right.path.length - left.path.length)
   }
 
@@ -136,8 +147,9 @@ export class HostServer {
         response.end()
         return
       }
-      if (!this.authenticated(request)) { response.writeHead(403); response.end(); return }
       const route = this.routes.find(item => item.exact ? url.pathname === item.path : url.pathname.startsWith(item.path))
+      if (route?.open === true && this.authorityOk(request)) { await route.handler(request, response, url); return }
+      if (!this.authenticated(request)) { response.writeHead(403); response.end(); return }
       if (route !== undefined) { await route.handler(request, response, url); return }
       if (request.method !== 'GET' && request.method !== 'HEAD') { response.writeHead(405); response.end(); return }
       await this.serveRenderer(url, response)

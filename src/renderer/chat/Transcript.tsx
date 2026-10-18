@@ -1,8 +1,9 @@
 /** The messages of one chat, grouped into turns with folded work steps. */
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import type { AssistantMessage, ImageContent, ToolCall } from '@earendil-works/pi-ai'
 import type { PendingApproval, RetryWait, TranscriptEntry, UiPreferences } from '../../shared/rpc.ts'
+import { WIDGET_TOOL } from '../../shared/widget-protocol.ts'
 import { host } from '../rpc.ts'
 import { usePrefs } from '../prefs.ts'
 import {
@@ -17,6 +18,7 @@ import { useChatT } from './messages.ts'
 import { revertChanges } from './revert.ts'
 import { useScrollPin } from './scroll-pin.ts'
 import { ToolCard } from './ToolCard.tsx'
+import { Widget } from './Widget.tsx'
 import css from './Transcript.module.css'
 
 type Entry<K extends TranscriptEntry['kind']> = Extract<TranscriptEntry, { kind: K }>
@@ -31,6 +33,23 @@ function assistantText(message: AssistantMessage): string {
 
 function hasToolCalls(message: AssistantMessage): boolean {
   return message.content.some(block => block.type === 'toolCall')
+}
+
+/** Key prefix of interactive answers, which stay shown when a turn's steps fold. */
+const WIDGET_KEY = 'widget:'
+
+function isWidgetNode(node: ReactNode): boolean {
+  return isValidElement(node) && typeof node.key === 'string' && node.key.startsWith(WIDGET_KEY)
+}
+
+/**
+ * Whether a tool call in a streaming reply is fully written: a later block has started, or the provider dropped its
+ * scratch buffer of partial JSON, which it does when the call ends.
+ */
+function callWritten(message: AssistantMessage, index: number): boolean {
+  if (index < message.content.length - 1) return true
+  const block = message.content[index] as unknown as Record<string, unknown>
+  return block.partialJson === undefined && block.partialArgs === undefined
 }
 
 /**
@@ -359,6 +378,11 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, approv
         }
       } else if (block.type === 'text') {
         if (withText && block.text.trim() !== '') nodes.push(<Markdown key={key} className={css.text} text={block.text} />)
+      } else if (block.name === WIDGET_TOOL && results.get(block.id)?.isError !== true) {
+        // Keyed by the call, so the frame survives the streaming reply becoming a saved entry and the steps folding.
+        const ended = message.stopReason === 'error' || message.stopReason === 'aborted'
+        nodes.push(<Widget key={`${WIDGET_KEY}${block.id}`} sessionId={sessionId} call={block}
+          complete={!streaming || ended || callWritten(message, index)} cut={ended && results.get(block.id) === undefined} />)
       } else {
         const call: ToolCall = block
         nodes.push(<ToolCard key={key} sessionId={sessionId} call={call} result={results.get(call.id)} running={tools[call.id]}
@@ -399,6 +423,7 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, approv
       default: return []
     }
   })
+  const widgetNodes = stepNodes.filter(isWidgetNode)
   // Changes of this turn that can still be undone, for the footer action.
   const undoable = items.flatMap(item => item.kind === 'toolResult' && !item.isError && !reverted.has(item.toolCallId)
     && item.details !== null && typeof item.details === 'object' && (item.details as { undoable?: unknown }).undoable === true ? [item.toolCallId] : [])
@@ -422,7 +447,7 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, approv
           <IconChevronDownOutlineRegular size={12} className={clsx(css.chevron, open && css.chevronOpen)} />
         </button>
       )}
-      {open && stepNodes.length > 0 && <div className={css.steps}>{stepNodes}</div>}
+      {(open ? stepNodes : widgetNodes).length > 0 && <div className={css.steps}>{open ? stepNodes : widgetNodes}</div>}
       {answer !== undefined && renderAssistant(answer, true, foldable ? open : true)}
       {!live && (footer !== undefined || lastText !== undefined) && (
         <div className={css.turnFooter}>

@@ -115,6 +115,8 @@ export interface UiPreferences {
   rainEffects: boolean
   /** Chats get web_search and web_fetch when a DeepSeek model has an API key. */
   webSearch: boolean
+  /** Chats get show_widget, which answers with an interactive page in a sandboxed frame. */
+  widgets: boolean
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */

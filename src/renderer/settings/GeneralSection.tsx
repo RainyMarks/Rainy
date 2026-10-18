@@ -73,6 +73,9 @@ export function GeneralSection(): JSX.Element {
       <SettingRow title={t('usageTitle')} description={t('usageDescription')}>
         <Switch label={t('usageTitle')} checked={prefs.showUsage} onChange={(showUsage) => { change({ showUsage }) }} />
       </SettingRow>
+      <SettingRow title={t('widgetsTitle')} description={t('widgetsDescription')}>
+        <Switch label={t('widgetsTitle')} checked={prefs.widgets} onChange={(widgets) => { change({ widgets }) }} />
+      </SettingRow>
     </div>
     {(diagnostics !== undefined || version !== undefined) && <>
       <h3 className={css.groupTitle}>{t('groupAbout')}</h3>

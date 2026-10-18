@@ -62,7 +62,7 @@ function validHeaders(headers: Record<string, string> | undefined): boolean {
 export const DEFAULT_PREFS: Readonly<UiPreferences> = {
   locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true,
   colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true,
-  rainEffects: true, webSearch: true,
+  rainEffects: true, webSearch: true, widgets: true,
 }
 const fontSetting = z.string().max(FONT_SETTING_MAX).refine(value => fontFamilies(value) !== undefined, 'Invalid font family list')
 const prefsSchema = z.object({
@@ -81,6 +81,7 @@ const prefsSchema = z.object({
   autoKeepChanges: z.boolean(),
   rainEffects: z.boolean(),
   webSearch: z.boolean(),
+  widgets: z.boolean(),
   completionModel: z.union([z.literal(''), z.string().regex(/^[a-z][a-z0-9-]{0,47}$/)]),
 })
 /** Stored preferences. A value this version does not accept, such as a color scheme a newer version added, is dropped

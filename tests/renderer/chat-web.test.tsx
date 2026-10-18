@@ -14,7 +14,7 @@ vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./setting
 
 const workspaceId = 'w1' as WorkspaceId
 const workspace = { workspaceId, path: '/project', title: 'project' }
-const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true }
+const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, widgets: true }
 const deepseek = { provider: 'rainy-deepseek', model: 'deepseek-flash', baseURL: 'https://api.deepseek.com', contextWindow: 1000000, local: false }
 const models: ModelsStatus = {
   models: [deepseek], credentials: ['rainy-deepseek'], selected: { provider: 'rainy-deepseek', model: 'deepseek-flash' },
