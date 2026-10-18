@@ -71,7 +71,7 @@ Host 在服务器上只监听 127.0.0.1，ssh 把同一端口号转发到这台�
 
 ## 工作台
 
-AI 窗格中是与智能体的对话。智能体在每个对话所选的权限模式下读写项目文件、运行命令（权限模式见“模型体验”）。被智能体修改的文件列在输入框上方；打开后可在编辑器中逐处查看改动，选择保留或撤销；开启“自动保留”后，发送下一条消息时会保留尚未处理的改动。编辑器提供 AI 行内补全和 Ctrl+K 改写选中代码。侧边栏包含文件树、跨文件搜索替换和 Git 面板，Git 面板可以用对话模型生成提交说明。项目地图展示项目的各个部分及其引用关系，命令面板可按名称执行命令。项目记忆、Skills（`.rainy/skills`）和 MCP 服务在设置中配置。设置里有 DeepSeek 模型的 API 密钥时，对话还有 `web_search`（DeepSeek Search 接口，`POST /v1/tools/search`）和 `web_fetch`（Fetch 接口，`POST /v1/tools/fetch`）两个工具，请求经 Host 发出并遵循网络代理设置；搜索不需要批准，读取网页在询问和只读模式下按网站询问一次，可在项目中记住为 `web_fetch:<网站>` 规则（设置 → 安全中可移除）。在 **设置 → 模型 → 联网搜索** 中可以关闭。
+AI 窗格中是与智能体的对话。智能体在每个对话所选的权限模式下读写项目文件、运行命令（权限模式见“模型体验”）。被智能体修改的文件列在输入框上方；打开后可在编辑器中逐处查看改动，选择保留或撤销；开启“自动保留”后，发送下一条消息时会保留尚未处理的改动。编辑器提供 AI 行内补全和 Ctrl+K 改写选中代码。侧边栏包含文件树、跨文件搜索替换和 Git 面板，Git 面板可以用对话模型生成提交说明。项目地图展示项目的各个部分及其引用关系，命令面板可按名称执行命令。项目记忆、Skills（`.rainy/skills`）和 MCP 服务在设置中配置。设置里有 DeepSeek 模型的 API 密钥时，对话还有 `web_search`（DeepSeek Search 接口，`POST /v1/tools/search`）和 `web_fetch`（Fetch 接口，`POST /v1/tools/fetch`）两个工具，请求经 Host 发出并遵循网络代理设置；搜索不需要批准，读取网页在询问和只读模式下按网站询问一次，可在项目中记住为 `web_fetch:<网站>` 规则（设置 → 安全中可移除）。在 **设置 → 模型 → 联网搜索** 中可以关闭。对话还有 `show_widget` 工具（交互式回答，**设置 → 通用设置 → 交互式回答** 可关闭）：模型按 title、height、css、html、script 的顺序写参数，界面从参数流式渲染在 `/rainy/widget/frame` 的沙箱框架里。框架的 CSP 为 `sandbox allow-scripts`（不透明源，无 Cookie、存储和父页面访问），`connect-src` 为空，图片只允许 data:/blob:，脚本、样式和字体只来自 `/rainy/widget/`（随附 Chart.js、d3、Three.js 及 OrbitControls、Idiomorph）；页面的 `frame-src` 阻止框架跳转到其他地址。界面可通过 `rainy.sendPrompt(text)` 在用户点击后代为发送一条消息，通过 `rainy.openLink(url)` 打开 http(s) 链接。该工具不需要批准。
 
 ## 代码工作区
 

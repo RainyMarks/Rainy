@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.4 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.5 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -61,6 +61,13 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
+## 3.5 新变化
+
+回答不只是文字了，还能直接上手操作。
+
+- **交互式回答**：想看清一个机制、比较几个方案或者临时要个小工具时，AI 会直接在对话里做出能操作的小界面，比如带滑块和图表的房贷计算器、可以拖动旋转的三维模型、一步步演示的算法动画。界面边写边显示；里面的按钮可以把你选好的参数发给 AI 接着分析。它在隔离的沙箱里运行，不能联网，也读不到你的文件。图表（Chart.js、d3）和三维（Three.js）库都随软件附带，离线也能用。不需要时可在 **设置 → 通用设置 → 交互式回答** 关闭。
+- **适配各种屏幕和缩放**：在高缩放（比如 225%）或小屏幕上，顶部菜单不再和搜索框叠在一起；窗口打开时、换显示器时或改了系统缩放后，会自动缩放到屏幕可用范围内，小屏幕也不会出界；对话面板宽度跟着窗口大小走，大屏幕上更宽，拖动过之后就按你拖的宽度。
+
 ## 3.4 新变化
 
 写笔记、改文档更顺手了。
@@ -161,10 +168,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.4.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.5.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.4.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.5.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
