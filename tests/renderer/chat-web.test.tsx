@@ -56,7 +56,7 @@ it('shows search results as links with their site, date and snippet', async () =
       details: { query: 'DeepSeek V4.1', results: [{ title: 'DeepSeek V4.1 发布', url: 'https://example.com/v41', site: 'Example', date: '2026-10-17', snippet: '新版本上线' }] } },
   ] as TranscriptEntry[]))
   await render(<ChatPane workspace={workspace} sessionId="web-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
-  await waitFor(() => { expect(hasText('Web search DeepSeek V4.1')).toBe(true) })
+  await waitFor(() => { expect(hasText('网页搜索 DeepSeek V4.1')).toBe(true) })
   expect(hasText('1 条结果')).toBe(true)
   await click(document.querySelector<HTMLButtonElement>('[data-tool="web_search"] button[aria-expanded]')!)
   const link = document.querySelector<HTMLAnchorElement>('[data-tool="web_search"] a')!

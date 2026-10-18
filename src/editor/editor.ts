@@ -169,6 +169,9 @@ function minimalChange(before: string, after: string): { from: number; to: numbe
   return { from: start, to: before.length - end, insert: after.slice(start, after.length - end) }
 }
 
+/** Wait before a language server that failed is started again. */
+const SERVER_RETRY_MS = 30_000
+
 const severities: Record<number, EditorProblem['severity']> = { 1: 'error', 2: 'warning', 3: 'info', 4: 'hint' }
 
 interface WorkspaceEdit {
@@ -195,6 +198,8 @@ interface OpenDocument {
 class WorkspaceEditor implements EditorInstance, LanguageHost {
   private readonly documents = new Map<string, OpenDocument>()
   private readonly connections = new Map<string, LanguageConnection>()
+  /** When a language server that failed may start again, by root and language; until then documents stay without one. */
+  private readonly serverRetryAt = new Map<string, number>()
   private readonly diagnosticsByUri = new Map<string, { uri: string; diagnostics: readonly LspDiagnostic[] }>()
   private readonly breakpoints = new Map<string, readonly number[]>()
   private stopped: { path: string; line: number } | undefined
@@ -225,6 +230,7 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     if (previous !== undefined && previous.id === workspace.id && previous.pythonPath === workspace.pythonPath
       && previous.compileCommandsDirectory === workspace.compileCommandsDirectory && JSON.stringify(previous.roots) === JSON.stringify(workspace.roots)) return
     this.closeConnections()
+    this.serverRetryAt.clear()
     this.workspace = workspace
     for (const open of this.documents.values()) this.attachLanguageServer(open)
   }
@@ -429,11 +435,13 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       const previous = existing.document
       existing.document = document
       const current = existing.view.state.doc.toString()
+      // The document joins its lines with LF; a change computed against CRLF text would land at the wrong offsets.
+      const text = document.text.includes('\r') ? document.text.replace(/\r\n?/gu, '\n') : document.text
       const effects: StateEffect<unknown>[] = []
       if (previous.readOnly !== document.readOnly) effects.push(readOnlySlot.reconfigure(this.readOnly(existing)))
-      if (current !== document.text || effects.length > 0) {
+      if (current !== text || effects.length > 0) {
         existing.view.dispatch({
-          ...(current === document.text ? {} : { changes: minimalChange(current, document.text) }),
+          ...(current === text ? {} : { changes: minimalChange(current, text) }),
           effects, annotations: external.of(true),
         })
       }
@@ -625,6 +633,8 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
     const identity = `${root.rootId}:${language}`
     let connection = this.connections.get(identity)
     if (connection === undefined) {
+      // Every document update attaches again; a server that keeps failing must not start once per keystroke.
+      if ((this.serverRetryAt.get(identity) ?? 0) > Date.now()) return
       const created = new LanguageConnection(
         { workspaceId: workspace.id, rootId: root.rootId, root: root.path, title: root.title, language, pythonPath: workspace.pythonPath },
         this,
@@ -635,14 +645,19 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
           for (const item of served) { item.connection = undefined; item.view.dispatch({ effects: lspSlot.reconfigure([]) }) }
           // The Host replaced the server for a changed interpreter environment; reopen the documents with a new one.
           if (restart && !this.disposed) for (const item of served) this.attachLanguageServer(item)
-          else this.callbacks.languageState(identity, 'error', message)
+          else {
+            this.serverRetryAt.set(identity, Date.now() + SERVER_RETRY_MS)
+            this.callbacks.languageState(identity, 'error', message)
+          }
         },
       )
       connection = created
       this.connections.set(identity, created)
       this.callbacks.languageState(identity, 'starting')
       created.ready.then(() => {
-        if (this.connections.get(identity) === created) this.callbacks.languageState(identity, 'ready')
+        if (this.connections.get(identity) !== created) return
+        this.serverRetryAt.delete(identity)
+        this.callbacks.languageState(identity, 'ready')
       }, () => undefined)
     }
     if (open.connection === connection) return

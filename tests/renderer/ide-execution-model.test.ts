@@ -98,6 +98,8 @@ describe('workspace execution observations', () => {
     owner.setWorkspace(workspaceA)
     await stateWhen(owner, state => state.outputs[terminalA] === 'efghij')
     expect(owner.state.getSnapshot().truncated).toBe(true)
+    // The terminal view writes only what follows the characters it already showed.
+    expect(owner.state.getSnapshot().dropped[terminalA]).toBe(4)
     await owner.refresh()
     expect(owner.state.getSnapshot().outputs[terminalA]).toBe('efghij')
   })

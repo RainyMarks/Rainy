@@ -23,6 +23,10 @@ const INITIAL_ENTRIES = 400
 const chats = new Map<string, ChatView>()
 const listeners = new Map<string, Set<() => void>>()
 const loading = new Map<string, Promise<void>>()
+/** The latest load of each chat; an older one that finishes later is dropped. */
+const loads = new Map<string, number>()
+/** Chats whose every entry was loaded; a reload after a reconnect loads them whole again. */
+const loadedWhole = new Set<string>()
 
 function publish(sessionId: string, view: ChatView): void {
   chats.set(sessionId, view)
@@ -43,12 +47,17 @@ function update(sessionId: string, change: (view: ChatView) => ChatView): void {
 export function loadChat(sessionId: string, all = false): Promise<void> {
   const existing = loading.get(sessionId)
   if (existing !== undefined && !all) return existing
-  const task = host.call('sessions.get', { sessionId, ...(all ? {} : { limit: INITIAL_ENTRIES }) }).then((snapshot) => {
+  const whole = all || loadedWhole.has(sessionId)
+  const load = (loads.get(sessionId) ?? 0) + 1
+  loads.set(sessionId, load)
+  const task: Promise<void> = host.call('sessions.get', { sessionId, ...(whole ? {} : { limit: INITIAL_ENTRIES }) }).then((snapshot) => {
+    if (loads.get(sessionId) !== load) return
+    if (whole) loadedWhole.add(sessionId)
     publish(sessionId, {
       ...snapshot, tools: Object.fromEntries(snapshot.runningTools.map(id => [id, { toolName: '' }])),
-      truncated: !all && snapshot.entries.length >= INITIAL_ENTRIES, loading: false,
+      truncated: !whole && snapshot.entries.length >= INITIAL_ENTRIES, loading: false,
     })
-  }).finally(() => { loading.delete(sessionId) })
+  }).finally(() => { if (loading.get(sessionId) === task) loading.delete(sessionId) })
   loading.set(sessionId, task)
   return task
 }

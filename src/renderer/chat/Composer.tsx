@@ -95,8 +95,6 @@ export interface ComposerProps {
   /** What the agent may do without asking in this chat, or in the next one. */
   permission: PermissionMode
   onPermission(mode: PermissionMode): void
-  /** Text the pane asks the composer to show (for example after a failed send); consumed once per change of `seed.id`. */
-  seed?: { id: number; text: string } | undefined
   onSend(text: string, images: ImageContent[], mode: 'queue' | 'steer'): Promise<boolean>
   onStop(): void
   onCompact(): void
@@ -104,7 +102,7 @@ export interface ComposerProps {
 }
 
 /** Composer for one chat or for the next new chat. */
-export function Composer({ sessionId, workspaceId, busy, model, context, queue, permission, onPermission, seed, onSend, onStop, onCompact, onNewChat }: ComposerProps): JSX.Element {
+export function Composer({ sessionId, workspaceId, busy, model, context, queue, permission, onPermission, onSend, onStop, onCompact, onNewChat }: ComposerProps): JSX.Element {
   const t = useChatT()
   const draftKey = sessionId ?? ''
   const [text, setText] = useState(() => drafts.get(draftKey) ?? '')
@@ -124,11 +122,6 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
     setTrigger(undefined)
     input.current?.focus()
   }, [draftKey])
-  useEffect(() => {
-    if (seed === undefined) return
-    setText(seed.text)
-    input.current?.focus()
-  }, [seed?.id])
   useEffect(() => {
     if (text === '') drafts.delete(draftKey)
     else drafts.set(draftKey, text)

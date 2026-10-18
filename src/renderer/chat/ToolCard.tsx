@@ -1,5 +1,5 @@
 /** One tool call with its result: terminal, read, search, diff, or generic input/output cards, plus approval and undo. */
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import type { ToolCall } from '@earendil-works/pi-ai'
 import type { PendingApproval, TranscriptEntry } from '../../shared/rpc.ts'
@@ -57,13 +57,24 @@ function useLabels() {
   }, [t])
 }
 
+/** A link to a web page from a search result; an address that is not http(s) is shown as text. */
+function WebLink({ url, title, className, children }: { url: string; title: string; className?: string | undefined; children: ReactNode }): JSX.Element {
+  if (!/^https?:\/\//iu.test(url)) return <span className={className}>{children}</span>
+  return <a className={className} href={url} target="_blank" rel="noopener noreferrer" title={title}>{children}</a>
+}
+
 /** @param url A result's address. @returns Its host, for results without a site name. */
 function hostOf(url: string): string {
   try { return new URL(url).hostname } catch { return '' }
 }
 
-/** One-line summary of a tool call. */
-export function toolTitle(call: ToolCall): string {
+/**
+ * One-line summary of a tool call.
+ * @param call The call.
+ * @param t Chat messages in the interface language.
+ * @returns The summary.
+ */
+export function toolTitle(call: ToolCall, t: ReturnType<typeof useChatT>): string {
   const args = record(call.arguments)
   switch (call.name) {
     case 'bash':
@@ -72,14 +83,20 @@ export function toolTitle(call: ToolCall): string {
       const path = str(args.file_path) ?? ''
       const offset = typeof args.offset === 'number' ? args.offset : undefined
       const limit = typeof args.limit === 'number' ? args.limit : undefined
-      return `Read ${path}${limit !== undefined ? ` (${offset ?? 1} - ${(offset ?? 1) + limit - 1})` : offset !== undefined ? ` (from line ${offset})` : ''}`
+      return limit !== undefined ? t('toolReadLines', { path, from: offset ?? 1, to: (offset ?? 1) + limit - 1 })
+        : offset !== undefined ? t('toolReadFrom', { path, from: offset }) : t('toolRead', { path })
     }
-    case 'write': return `Write ${str(args.file_path) ?? ''}`
-    case 'edit': return `Edit ${str(args.file_path) ?? ''}`
-    case 'grep': return `Grep ${str(args.pattern) ?? ''}${str(args.path) === undefined ? '' : ` in ${str(args.path)}`}`
-    case 'glob': return `Glob ${str(args.pattern) ?? ''}${str(args.path) === undefined ? '' : ` in ${str(args.path)}`}`
-    case 'web_search': return `Web search ${str(args.query) ?? ''}`
-    case 'web_fetch': return `Web fetch ${str(args.url) ?? ''}`
+    case 'write': return t('toolWrite', { path: str(args.file_path) ?? '' })
+    case 'edit': return t('toolEdit', { path: str(args.file_path) ?? '' })
+    case 'grep':
+    case 'glob': {
+      const pattern = str(args.pattern) ?? ''
+      const path = str(args.path)
+      if (call.name === 'grep') return path === undefined ? t('toolGrep', { pattern }) : t('toolGrepIn', { pattern, path })
+      return path === undefined ? t('toolGlob', { pattern }) : t('toolGlobIn', { pattern, path })
+    }
+    case 'web_search': return t('toolWebSearch', { query: str(args.query) ?? '' })
+    case 'web_fetch': return t('toolWebFetch', { url: str(args.url) ?? '' })
     default: return call.name.startsWith('mcp__') ? call.name.slice(5).replace('__', ': ') : call.name
   }
 }
@@ -109,6 +126,9 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
   const t = useChatT()
   const labels = useLabels()
   const [open, setOpen] = useState(defaultOpen)
+  // The card appears with the reply, before its call starts running; a call that starts then opens to show its output.
+  useEffect(() => { if (defaultOpen) setOpen(true) }, [defaultOpen])
+  const title = toolTitle(call, t)
   const [undoing, setUndoing] = useState(false)
   const args = record(call.arguments)
   const details = record(result?.details)
@@ -147,7 +167,7 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
     body = results.length === 0 ? <p className={css.notice}>{t('searchNone')}</p> : (
       <ol className={css.webResults}>
         {results.map(item => <li key={item.url}>
-          <a href={item.url} target="_blank" rel="noopener noreferrer" title={t('webOpen')}>{item.title}</a>
+          <WebLink url={item.url} title={t('webOpen')}>{item.title}</WebLink>
           <span className={css.webMeta}>{[item.site ?? hostOf(item.url), item.date].filter(Boolean).join(' · ')}</span>
           {item.snippet !== '' && <span className={css.webSnippet}>{item.snippet}</span>}
         </li>)}
@@ -156,7 +176,7 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
   } else if (call.name === 'web_fetch' && !failed && typeof details.url === 'string') {
     suffix = <span className={css.totals}>{t('webFetched', { count: typeof details.characters === 'number' ? details.characters.toLocaleString() : 0 })}</span>
     body = <div className={css.generic}>
-      <a className={css.webLink} href={details.url} target="_blank" rel="noopener noreferrer" title={t('webOpen')}>{str(details.title) || details.url}</a>
+      <WebLink className={css.webLink} url={details.url} title={t('webOpen')}>{str(details.title) || details.url}</WebLink>
       <pre className={css.output}>{resultText(result)}</pre>
     </div>
   } else if ((call.name === 'write' || call.name === 'edit') && !failed && typeof details.after === 'string') {
@@ -189,7 +209,7 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
     <div className={css.card} data-tool={call.name} data-state={state}>
       <button type="button" className={css.header} aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
         <StateDot state={state} size={8} />
-        <span className={css.title} title={toolTitle(call)}>{toolTitle(call)}</span>
+        <span className={css.title} title={title}>{title}</span>
         {approval !== undefined && <span className={css.badge} data-tone="warning">{t('approvalWaiting')}</span>}
         {refused !== undefined && <span className={css.badge}>{t('toolDenied')}</span>}
         {reverted && <span className={css.badge}>{t('undone')}</span>}

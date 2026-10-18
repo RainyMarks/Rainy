@@ -1,5 +1,5 @@
 /** The window: top bar, side pane, editor area with the project map, AI pane, bottom panel and status bar. */
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent, ReactNode } from 'react'
 import type { IdeFileEntry, IdeRootId } from '../../shared/ide-files-protocol.ts'
 import type { IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
@@ -88,6 +88,8 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
   const executionState = useStore(execution.state)
   const directoryPending = useStore(directory.pending)
   const sessionId = useStore(workbench.session)
+  // Stable, so the chat transcript's memoized turns do not render again with every layout change.
+  const showSession = useCallback((next: string | null) => { workbench.showSession(next) }, [workbench])
   const agentBusy = useChatBusy(sessionId)
   const prefs = usePrefs()
   const dark = useDarkTheme()
@@ -818,7 +820,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         <aside className={`${css.pane} ${css.agent}`} hidden={!layout.agentVisible} aria-label={t('ideAgent')}>
           <div className={css.retained} data-rainy-agent>
             <ChatPane workspace={state.workspace} sessionId={sessionId}
-              onSessionChange={(next) => { workbench.showSession(next) }}
+              onSessionChange={showSession}
               onClose={() => { model.layout({ agentVisible: false }) }}
               onShowHistory={showHistory} />
           </div>

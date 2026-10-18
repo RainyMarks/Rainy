@@ -153,8 +153,9 @@ export function History({ currentSessionId, workspaceId, onSelect, onNewChat }: 
 
   useEffect(() => {
     const trimmed = query.trim()
-    if (trimmed === '') { setHits(undefined); return }
+    // Every change of the query retires the searches before it, clearing the box included.
     const seq = ++searchSeq.current
+    if (trimmed === '') { setHits(undefined); return }
     const timer = window.setTimeout(() => {
       host.call('sessions.search', { query: trimmed, limit: 30 }).then((result) => {
         if (seq === searchSeq.current) setHits(result)

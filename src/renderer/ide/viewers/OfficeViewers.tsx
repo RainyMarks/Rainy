@@ -119,7 +119,11 @@ function WordPreview({ bytes, onFailed, tools }: { bytes: Uint8Array; onFailed: 
       setPageWidth(page?.offsetWidth ?? 0)
       setRendered(true)
     }).catch((error: unknown) => { if (!cancelled) onFailed(message(error)) })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      // docx-preview gives every image and font an object URL and never frees them.
+      for (const url of new Set(root.innerHTML.match(/blob:[^"')\s]+/gu) ?? [])) URL.revokeObjectURL(url)
+    }
   }, [bytes, onFailed])
 
   useLayoutEffect(() => {

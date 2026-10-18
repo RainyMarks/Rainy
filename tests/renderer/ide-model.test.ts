@@ -451,3 +451,22 @@ describe('change checks', () => {
     })
   })
 })
+
+describe('Windows line ends', () => {
+  it('holds a CRLF file with the editor\'s LF line ends, so an undone edit and a save leave it clean', async () => {
+    const { model, request } = await fixture()
+    const crlf = (content: string, fileVersion = version): IdeFileDocument => ({ ...document(content, fileVersion), path: 'win.txt', eol: 'crlf' })
+    request.mockResolvedValueOnce(crlf('one\r\ntwo\r\n'))
+    await model.openFile('win.txt')
+    expect(model.state.getSnapshot().buffers['win.txt']).toMatchObject({ text: 'one\ntwo\n', dirty: false })
+    model.change('win.txt', 'one\ntwo\nthree\n')
+    expect(model.state.getSnapshot().buffers['win.txt']?.dirty).toBe(true)
+    model.change('win.txt', 'one\ntwo\n')
+    expect(model.state.getSnapshot().buffers['win.txt']?.dirty).toBe(false)
+    model.change('win.txt', 'one\ntwo\nthree\n')
+    request.mockResolvedValueOnce(crlf('one\r\ntwo\r\nthree\r\n', 'v2' as IdeFileVersion))
+    expect(await model.save()).toBe(true)
+    expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'files.save', path: 'win.txt', content: 'one\ntwo\nthree\n' }))
+    expect(model.state.getSnapshot().buffers['win.txt']).toMatchObject({ text: 'one\ntwo\nthree\n', dirty: false })
+  })
+})

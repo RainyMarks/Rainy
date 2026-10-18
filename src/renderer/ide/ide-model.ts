@@ -95,6 +95,18 @@ const initialData = (): IdeWorkspaceStateData => ({
   execution: { profiles: [], activeProfile: null, breakpoints: [], watches: [] },
 })
 
+/** A request's outcome, kept until it is needed so a failure nobody waits for is not reported as unhandled. */
+type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
+function settled<T>(promise: Promise<T>): Promise<Settled<T>> {
+  return promise.then(value => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }))
+}
+
+function unwrap<T>(outcome: Settled<T>): T {
+  if (outcome.ok) return outcome.value
+  throw outcome.error
+}
+
 /** @returns Whether two tab lists hold the same paths in the same order; cursor and scroll changes do not count. */
 function samePaths(next: readonly IdeEditorTab[], previous: readonly IdeEditorTab[]): boolean {
   return next === previous || (next.length === previous.length && next.every((tab, index) => tab.path === previous[index]?.path))
@@ -320,14 +332,12 @@ export class IdeModel {
       const saved = await this.api.request({ op: 'state.read', workspaceId: workspace.workspaceId })
       const buffers: Record<string, IdeBuffer> = {}
       const tabs: IdeEditorTab[] = []
-      for (const tab of saved.data.tabs) {
+      // Every read is sent at once, which matters over SSH; the results are taken in tab order.
+      const reads = saved.data.tabs.map(tab => settled(this.api.request({ op: 'files.read', workspaceId: workspace.workspaceId, path: tab.path })))
+      for (const [index, tab] of saved.data.tabs.entries()) {
         const recovery = saved.data.buffers.find(buffer => buffer.path === tab.path)
         try {
-          const document = await this.api.request({
-            op: 'files.read',
-            workspaceId: workspace.workspaceId,
-            path: tab.path,
-          })
+          const document = unwrap(await reads[index]!)
           const dirty = recovery !== undefined && recovery.content !== document.content
           const buffer: IdeBuffer = {
             document,
@@ -364,17 +374,19 @@ export class IdeModel {
       }
       const directories: Record<string, IdeDirectory> = {}
       const expandedPaths: string[] = []
-      for (const root of workspaceRoots(workspace)) {
-        const key = fileKey('', root.rootId)
-        try { directories[key] = await this.api.request({ op: 'files.list', workspaceId: workspace.workspaceId, path: key }) }
+      const rootList = workspaceRoots(workspace).map(root => ({ root, key: fileKey('', root.rootId) }))
+      const listed = [...rootList.map(item => item.key), ...saved.data.expandedPaths]
+        .map(path => settled(this.api.request({ op: 'files.list', workspaceId: workspace.workspaceId, path })))
+      for (const [index, { root, key }] of rootList.entries()) {
+        try { directories[key] = unwrap(await listed[index]!) }
         catch (error) {
           if (root.primary || !(error instanceof IdeRequestError)
             || !['workspace-not-found', 'workspace-unavailable', 'not-found'].includes(error.code)) throw error
         }
       }
-      for (const path of saved.data.expandedPaths) {
+      for (const [index, path] of saved.data.expandedPaths.entries()) {
         try {
-          directories[path] = await this.api.request({ op: 'files.list', workspaceId: workspace.workspaceId, path })
+          directories[path] = unwrap(await listed[rootList.length + index]!)
           expandedPaths.push(path)
         } catch (error) {
           if (!(error instanceof IdeRequestError) || !['not-found', 'not-directory', 'workspace-not-found', 'workspace-unavailable'].includes(error.code)) throw error
@@ -1075,10 +1087,13 @@ export class IdeModel {
   }
   /** Publish a selection that may be explicitly sent to chat. @param selection Current source selection. */
   selection(selection: EditorSelection | undefined): void {
+    // The editor reports every caret move; an unchanged selection must not render the window again.
+    if (JSON.stringify(selection) === JSON.stringify(this.state.getSnapshot().selection)) return
     this.patch({ selection })
   }
   /** Publish diagnostics from language clients. @param problems Current markers. */
   problems(problems: readonly EditorProblem[]): void {
+    if (JSON.stringify(problems) === JSON.stringify(this.state.getSnapshot().problems)) return
     this.patch({ problems })
   }
   /** Publish one language-client status. @param language Language. @param phase Connection phase. @param message Failure detail. */
@@ -1142,6 +1157,7 @@ export class IdeModel {
   private patch(patch: Partial<IdeState>): void {
     if (this.disposed) return
     const before = this.state.getSnapshot()
+    if ((Object.keys(patch) as (keyof IdeState)[]).every(key => Object.is(patch[key], before[key]))) return
     this.state.set({ ...before, ...patch })
     // The Host watches the folders of the files it was last asked about, so a newly opened file is checked at once.
     if (patch.data !== undefined && !samePaths(patch.data.tabs, before.data.tabs) && !this.pollSoon) {

@@ -16,6 +16,8 @@ export interface IdeExecutionState {
   readonly workspaceId: WorkspaceId | null
   readonly status: IdeExecutionStatus
   readonly outputs: Readonly<Partial<Record<IdeOperationId, string>>>
+  /** Characters cut from the start of each output to keep within the output budget. */
+  readonly dropped: Readonly<Partial<Record<IdeOperationId, number>>>
   readonly selected: IdeOperationId | null
   readonly debugId: IdeDebugId | null
   readonly threads: readonly IdeDebugThread[]
@@ -57,7 +59,7 @@ interface RetainedWorkspace {
 }
 
 function emptyState(workspaceId: WorkspaceId | null): IdeExecutionState {
-  return { workspaceId, status: { runs: [], terminals: [], debugSessions: [] }, outputs: {}, selected: null, debugId: null,
+  return { workspaceId, status: { runs: [], terminals: [], debugSessions: [] }, outputs: {}, dropped: {}, selected: null, debugId: null,
     threads: [], frames: [], scopes: [], variables: {}, watches: {}, threadId: null, frameId: null,
     busy: false, truncated: false, error: '' }
 }
@@ -440,6 +442,7 @@ export class IdeExecutionModel {
   private applyPoll(record: RetainedWorkspace, response: IdeExecutionPoll, acceptStatus: boolean): void {
     const previous = record.snapshot
     const outputs = { ...previous.outputs }
+    const dropped = { ...previous.dropped }
     let changedOutput = false
     let truncated = previous.truncated || response.truncated
     const seen = new Set<number>()
@@ -460,6 +463,7 @@ export class IdeExecutionModel {
         const text = outputs[id] ?? ''
         const removed = Math.min(excess, text.length)
         outputs[id] = text.slice(removed)
+        dropped[id] = (dropped[id] ?? 0) + removed
         excess -= removed
       }
       truncated = true
@@ -469,7 +473,7 @@ export class IdeExecutionModel {
     const selected = previous.selected !== null && ids.includes(previous.selected) ? previous.selected : ids.at(-1) ?? null
     const debugId = status.debugSessions.some(debug => debug.id === previous.debugId)
       ? previous.debugId : status.debugSessions.at(-1)?.id ?? null
-    this.patch(record, { status, selected, debugId, truncated, error: '', ...changedOutput ? { outputs } : {} })
+    this.patch(record, { status, selected, debugId, truncated, error: '', ...changedOutput ? { outputs, dropped } : {} })
     if (acceptStatus) this.updateDebug(record)
   }
 

@@ -7,7 +7,7 @@ import { ExtensionsSection } from '../../src/renderer/settings/ExtensionsSection
 import { emptyServerForm, parseServerForm, serverFormOf } from '../../src/renderer/settings/mcp-form.ts'
 import { settingsMessages } from '../../src/renderer/settings/messages.ts'
 import {
-  all, button, cleanup, click, control, emit, fakeHost, findButton, handle, hasText, listenerCount, render, toast, type, waitFor,
+  all, button, cleanup, click, control, emit, fakeHost, handle, hasText, listenerCount, render, toast, type, waitFor,
 } from './settings-harness.tsx'
 
 vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harness.tsx')).rpcModule)

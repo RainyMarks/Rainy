@@ -48,13 +48,14 @@ function TerminalPanel({ execution, snapshot, model, visible, appearance, attach
 }) {
   const container = useRef<HTMLDivElement>(null)
   const terminal = useRef<EditorTerminal | undefined>(undefined)
-  const written = useRef('')
+  /** Characters of the selected output written to the terminal, counted from the start of the operation's output. */
+  const written = useRef(0)
   const [ready, setReady] = useState(0)
   useEffect(() => {
     const element = container.current
     if (element === null || snapshot.selected === null) return
     let disposed = false
-    written.current = ''
+    written.current = 0
     void loadEditorAssets()
       .then((assets) => {
         if (disposed) return
@@ -75,16 +76,19 @@ function TerminalPanel({ execution, snapshot, model, visible, appearance, attach
     }
   }, [execution, model, snapshot.selected])
   const output = snapshot.selected === null ? '' : (snapshot.outputs[snapshot.selected] ?? '')
+  const dropped = snapshot.selected === null ? 0 : (snapshot.dropped[snapshot.selected] ?? 0)
   useEffect(() => {
     const view = terminal.current
     if (view === undefined) return
-    if (output.startsWith(written.current)) view.write(output.slice(written.current.length))
+    // Output past the budget is cut from the start; only text the terminal has not shown yet is written.
+    const from = written.current - dropped
+    if (from >= 0 && from <= output.length) view.write(output.slice(from))
     else {
       view.reset()
       view.write(output)
     }
-    written.current = output
-  }, [ready, output])
+    written.current = dropped + output.length
+  }, [ready, output, dropped])
   useEffect(() => { terminal.current?.setAppearance(appearance) }, [ready, appearance])
   useEffect(() => { if (visible) terminal.current?.fit() }, [visible, ready])
   return <div ref={container} className={css.terminal} data-rainy-terminal />

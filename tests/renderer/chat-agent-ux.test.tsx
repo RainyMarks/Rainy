@@ -62,7 +62,7 @@ it('keeps a failed reply visible in a folded turn and retries it on request', as
   await waitFor(() => { expect(hasText('请求失败')).toBe(true) })
   expect(document.body.textContent).toContain('503 Service Unavailable')
   // The read step stays folded; only the failure is shown.
-  expect(hasText('Read main.py')).toBe(false)
+  expect(hasText('读取 main.py')).toBe(false)
   await click(button('重试'))
   expect(calls('chat.retry')).toEqual([{ sessionId: 'failed-1' }])
 })

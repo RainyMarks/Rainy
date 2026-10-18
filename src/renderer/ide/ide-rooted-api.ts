@@ -1,14 +1,34 @@
-/** Translate renderer file keys at the typed IDE protocol, retaining primary-root compatibility. */
-import type { IdeWorkspaceStateData, IdeWorkspaceState } from '../../shared/ide-files-protocol.ts'
+/** Translate renderer file keys at the typed IDE protocol, retaining primary-root compatibility, and give the page file
+ *  text with the line ends the editor holds. */
+import type { IdeFileDiff, IdeFileDocument, IdeWorkspaceStateData, IdeWorkspaceState } from '../../shared/ide-files-protocol.ts'
 import type { IdeFilesApi, IdeApiRequest, IdeApiResults } from './ide-api.ts'
 import { IdeRequestError } from './ide-api.ts'
 import { fileKey, fileReference } from './ide-paths.ts'
+
+/**
+ * File text as the editor holds it. CodeMirror splits lines at CRLF, CR and LF and joins them with LF, so text compared
+ * with the editor's must too; the Host writes a CRLF file back with CRLF.
+ * @param text File text.
+ * @returns The text with LF line ends.
+ */
+export function editorText(text: string): string {
+  return text.includes('\r') ? text.replace(/\r\n?/gu, '\n') : text
+}
+
+function editorDocument(document: IdeFileDocument): IdeFileDocument {
+  return document.content === null ? document : { ...document, content: editorText(document.content) }
+}
+
+function editorDiff(diff: IdeFileDiff): IdeFileDiff {
+  return { ...diff, base: diff.base === null ? null : editorText(diff.base), current: diff.current === null ? null : editorText(diff.current) }
+}
 
 function decodeState(state: IdeWorkspaceState): IdeWorkspaceState {
   const data = state.data
   return { ...state, data: { ...data,
     tabs: data.tabs.map(entry => ({ ...entry, rootId: undefined, path: fileKey(entry.path, entry.rootId) })),
-    buffers: data.buffers.map(entry => ({ ...entry, rootId: undefined, path: fileKey(entry.path, entry.rootId) })),
+    // Drafts saved before the line ends were normalized compare equal to the file again.
+    buffers: data.buffers.map(entry => ({ ...entry, content: editorText(entry.content), rootId: undefined, path: fileKey(entry.path, entry.rootId) })),
     activePath: data.activePath === null ? null : fileKey(data.activePath, data.activeRootId), activeRootId: undefined,
     expandedPaths: [...data.expandedPaths, ...data.expandedRoots?.map(entry => fileKey(entry.path, entry.rootId)) ?? []],
     expandedRoots: undefined,
@@ -77,6 +97,10 @@ export function createRootedIdeApi(api: IdeFilesApi): IdeFilesApi {
       // The formatter reads only the file name, and its request carries no root identity.
       if (body.op === 'format') return wire({ ...body, path: reference.path }, signal)
       const result = await wire({ ...body, ...location }, signal)
+      if (body.op === 'files.read' || body.op === 'files.save' || body.op === 'files.create') {
+        return { ...editorDocument(result as IdeFileDocument), path: fileKey(result.path, reference.rootId) }
+      }
+      if (body.op === 'files.diff') return { ...editorDiff(result as IdeFileDiff), path: fileKey(result.path, reference.rootId) }
       return { ...result, path: fileKey(result.path, reference.rootId) }
     }
     return wire(body, signal)

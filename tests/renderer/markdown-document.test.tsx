@@ -34,6 +34,16 @@ describe('MarkdownDocument', () => {
     expect(all('a[target="_blank"]', view.container).map(link => link.getAttribute('href'))).toEqual(['https://example.com/badge.svg'])
   })
 
+  it('opens file:line, drive and file: links in the editor and drops script links', async () => {
+    const open = vi.fn()
+    const view = await render(<MarkdownDocument options={{ openLocal: open }} text={'[a](main.ts:12) [b](C:/work/x.ts) [c](file:///C:/work/y.ts#L3) [d](javascript:alert(1))'} />)
+    const links = all('a', view.container)
+    expect(links.map(link => link.getAttribute('target'))).toEqual([null, null, null])
+    for (const link of links) await click(link)
+    expect(open.mock.calls.map(call => call[0])).toEqual([{ path: 'main.ts', line: 12 }, { path: 'C:/work/x.ts' }, { path: 'C:/work/y.ts', line: 3 }])
+    expect(view.container.textContent).toContain('d')
+  })
+
   it('in a reply without a project, a relative image becomes a link that opens the file', async () => {
     const open = vi.fn()
     const view = await render(<MarkdownDocument options={{ openLocal: open }} text="![shot](out/shot.png)" />)

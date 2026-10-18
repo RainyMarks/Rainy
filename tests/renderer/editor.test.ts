@@ -150,9 +150,30 @@ it('reopens a language connection the Host closed to restart its server, and rep
     sockets[1]!.dispatchEvent(closed(1011, 'Language server stopped'))
     expect(sockets).toHaveLength(2)
     expect(events.languageState).toHaveBeenLastCalledWith('primary:python', 'error', 'Language server stopped')
+    // Edits after the failure do not start a server each time.
+    for (const text of ['a = 2\n', 'a = 3\n', 'a = 4\n']) editor.updateDocuments([{ ...document1, uri: 'file:///project/main.py', text }])
+    expect(sockets).toHaveLength(2)
   } finally {
     vi.unstubAllGlobals()
   }
+})
+
+it('keeps a CRLF document, its cursor and its history when the IDE pushes the same text again', async () => {
+  const container = document.createElement('div')
+  document.body.append(container)
+  const events = callbacks()
+  editor = await assets.create(container, events, labels)
+  await editor.setWorkspace({ id: 'w', path: '/project', title: 'project', roots: [] })
+  const crlf: EditorDocument = { ...document1, path: 'win.txt', uri: 'untitled:win.txt', language: 'plaintext', text: 'one\r\ntwo\r\nthree\r\n' }
+  editor.updateDocuments([crlf])
+  editor.show('win.txt')
+  const view = shownView(container)
+  view.dispatch({ selection: { anchor: 6 } })
+  const before = view.state
+  editor.updateDocuments([{ ...crlf }])
+  expect(view.state).toBe(before)
+  expect(view.state.doc.toString()).toBe('one\ntwo\nthree\n')
+  expect(events.change).not.toHaveBeenCalled()
 })
 
 it('drops the notice of a file closing with its language connection instead of failing', async () => {

@@ -1,6 +1,6 @@
 /** Markdown of assistant replies and file previews: GFM, math, highlighted code blocks, local links and guarded images. */
 import { Children, isValidElement, memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import clsx from 'clsx'
@@ -64,13 +64,25 @@ export function CodeBlock({ code, language, actions = true }: { code: string; la
  */
 export function localTarget(href: string): { path: string; line?: number | undefined } | undefined {
   if (/^(https?|mailto):/i.test(href)) return undefined
-  let path = href.replace(/^file:\/\//i, '')
+  // `file:///C:/x` names the Windows path `C:/x`.
+  let path = href.replace(/^file:\/\//i, '').replace(/^\/([A-Za-z]:[\\/])/u, '$1')
   let line: number | undefined
   const anchor = /#L(\d+)(?:-L?\d+)?$/.exec(path) ?? /:(\d+)(?::\d+)?$/.exec(path)
   if (anchor !== null) { line = Number(anchor[1]); path = path.slice(0, anchor.index) }
   try { path = decodeURIComponent(path) } catch (_error) { /* A malformed escape keeps the literal path. */ }
   if (path === '' || path.startsWith('#')) return undefined
   return { path, ...(line === undefined ? {} : { line }) }
+}
+
+/**
+ * Keep the local targets the page opens itself, which the default filter reads as unknown protocols: Windows drive paths,
+ * `file:` URLs and `name:line` references. Everything else goes through the default filter, which blanks scripts.
+ * @param url Link or image target as written.
+ * @returns The target to render.
+ */
+export function markdownUrl(url: string): string {
+  if (/^[A-Za-z]:[\\/]/u.test(url) || /^file:\/\//iu.test(url) || /^[^:/?#\s]+:\d+(?::\d+)?$/u.test(url)) return url
+  return defaultUrlTransform(url)
 }
 
 /**
@@ -200,10 +212,12 @@ function markdownComponents(options: MarkdownOptions): Components {
       return <pre>{children}</pre>
     },
     a({ href, children }) {
-      if (href?.startsWith('#') === true) {
+      // A target the filter blanked would open the workbench address in the browser.
+      if (href === undefined || href === '') return <span>{children}</span>
+      if (href.startsWith('#')) {
         return <a href={href} onClick={(event) => { event.preventDefault(); scrollToAnchor(event.currentTarget, href.slice(1)) }}>{children}</a>
       }
-      const target = href === undefined ? undefined : localTarget(href)
+      const target = localTarget(href)
       if (target !== undefined) {
         return <a href={href} onClick={(event) => { event.preventDefault(); open({ ...target, path: resolve(target.path) }) }}>{children}</a>
       }
@@ -237,7 +251,7 @@ export const MarkdownDocument = memo(function MarkdownDocument({ text, className
   const rehypePlugins = useMemo(() => [...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true)], [katex, options.sourceLines])
   return (
     <div className={clsx(css.markdown, className)} data-markdown-root>
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={components}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={components} urlTransform={markdownUrl}>{text}</ReactMarkdown>
     </div>
   )
 })
