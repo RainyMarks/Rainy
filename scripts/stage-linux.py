@@ -1,12 +1,14 @@
 """Assemble the WSL Host runtime archive with real files and relative package links.
 
-Reads the graph written by `runtime-graph.mjs` (Linux target) and writes `linux-runtime.tar.gz` and
-`linux-runtime.json` ({sha256, bytes, node, version}) into --output. The archive holds `node/`, `app/`
+Reads the graph written by `runtime-graph.mjs` (Linux target) and writes into --output the base `linux-runtime.tar.gz`,
+the application layer `linux-app.tar.gz` (split by install-runtime.py's rules) and `linux-runtime.json`
+({sha256, bytes} of the base, its `content` identity, `app: {sha256, bytes}`, node, version). The archive holds `node/`, `app/`
 (package.json, dist/host.js, dist/renderer, resources, bin/rg), `packages/<id>/` with relative `node_modules`
 links and `runtime.json`.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -177,13 +179,29 @@ if args.skip_pack:
     (output / 'staging-path.txt').write_text(str(staging) + '\n')
     print(json.dumps({'staging': str(staging), 'packed': False}), flush=True)
     raise SystemExit(0)
+# Two layers, split by the installer's own rules: the base (Node.js, packages, IDE resources, ripgrep), downloaded and
+# identified by its content, and the application layer (Host, interface, small resources) that ships with the desktop.
+spec = importlib.util.spec_from_file_location('install_runtime', Path(__file__).with_name('install-runtime.py'))
+layers = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(layers)
+for stale in staging.rglob('*.map'):
+    if not stale.is_symlink():
+        stale.unlink()
+
+
+def pack(path, keep):
+    with tarfile.open(path, 'w:gz', compresslevel=3) as package:
+        for entry in sorted(staging.iterdir()):
+            package.add(entry, arcname=entry.name, recursive=True, filter=lambda member: member if keep(member.name) else None)
+    return {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size}
+
+
 archive = output / 'linux-runtime.tar.gz'
-def production_member(member):
-    return None if member.name.endswith('.map') else member
-with tarfile.open(archive, 'w:gz', compresslevel=3) as package:
-    for entry in staging.iterdir():
-        package.add(entry, arcname=entry.name, recursive=True, filter=production_member)
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(output / 'linux-runtime.json').write_text(json.dumps({'sha256': digest, 'bytes': archive.stat().st_size, 'node': version, 'version': graph['appVersion']}, indent=2) + '\n')
+base = pack(archive, layers.in_base)
+application = pack(output / 'linux-app.tar.gz', layers.in_app_layer)
+content = layers.content_digest(staging)
+(output / 'linux-runtime.json').write_text(json.dumps({**base, 'content': content, 'app': application, 'node': version,
+                                                       'version': graph['appVersion']}, indent=2) + '\n')
 (output / 'staging-path.txt').write_text(str(staging) + '\n')
-print(json.dumps({'archiveBytes': archive.stat().st_size, 'sha256': digest, 'staging': str(staging)}), flush=True)
+print(json.dumps({'archiveBytes': base['bytes'], 'sha256': base['sha256'], 'content': content, 'appBytes': application['bytes'],
+                  'staging': str(staging)}), flush=True)

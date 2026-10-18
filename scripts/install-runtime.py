@@ -1,12 +1,21 @@
-"""Verify and unpack the downloaded Host into Rainy's private directory on a WSL distribution or an SSH server.
+"""Verify and unpack the Host into Rainy's private directory on a WSL distribution or an SSH server.
 
-`install-runtime.py ARCHIVE METADATA` installs this version's runtime.
-`install-runtime.py --prune METADATA` removes the runtimes earlier versions left.
-`install-runtime.py --fetch METADATA PIECES` installs it on an SSH server, downloading the archive there when needed.
-`install-runtime.py --receive METADATA` installs it from the archive sent on standard input.
+The runtime comes in two layers. The base (`linux-runtime.tar.gz`: Node.js, the dependency packages, the IDE resources
+and ripgrep) is downloaded and changes only when those change; it is identified by the digest of its content. The
+application layer (`linux-app.tar.gz`: the Host, the interface and the small resources) ships with every desktop
+version. A version installs as `<application digest>/`, which holds the application layer and links to `base-<id>/`, so
+an update whose base did not change unpacks a few megabytes and downloads nothing.
 
-METADATA is a path to `linux-runtime.json`, or its JSON text (the SSH modes, which pass every argument inline).
-PIECES is a JSON list of `{url, bytes, sha256}` whose concatenation is the archive.
+`install-runtime.py BASE APP METADATA` installs this version; BASE may be missing when the base is already installed.
+`install-runtime.py --prune METADATA` removes what earlier versions left.
+`install-runtime.py --fetch METADATA PIECES` installs on an SSH server, the application layer arriving on standard input and
+the base downloaded there when needed.
+`install-runtime.py --receive METADATA` installs on an SSH server from the application layer followed by the base archive on
+standard input.
+
+METADATA is a path to `linux-runtime.json`, or its JSON text (the SSH modes, which pass every argument inline):
+{sha256, bytes} of the base archive, `content` (the base's identity), `app: {sha256, bytes}`, and the Node and Rainy versions.
+PIECES is a JSON list of `{url, bytes, sha256}` whose concatenation is the base archive.
 """
 import fcntl
 import hashlib
@@ -26,13 +35,68 @@ CHUNK = 1024 * 1024
 # A server that downloads slower than this after a minute leaves the transfer to the desktop's upload.
 SLOW_BYTES_PER_SECOND = 256 * 1024
 SLOW_AFTER_SECONDS = 60
+# Parts of `app/` that belong to the base: dependency links, the ripgrep link and the IDE resources.
+BASE_IN_APP = ('app/node_modules', 'app/bin', 'app/resources/ide')
+
+
+def in_app_layer(relative):
+    """Whether a path of the runtime (relative, with `/`) belongs to the application layer rather than the base."""
+    if relative == 'runtime.json':
+        return True
+    if relative != 'app' and not relative.startswith('app/'):
+        return False
+    return not any(relative == kept or relative.startswith(kept + '/') for kept in BASE_IN_APP)
+
+
+def in_base(relative):
+    """Whether a path belongs to the base, or is a directory on the way to a base part under `app/`."""
+    return not in_app_layer(relative) or any(kept == relative or kept.startswith(relative + '/') for kept in BASE_IN_APP)
 
 
 def read_metadata(value):
     metadata = json.loads(value if value.lstrip().startswith('{') else Path(value).read_text())
-    if not DIGEST.fullmatch(metadata.get('sha256', '')):
-        raise RuntimeError('Invalid Rainy runtime digest')
+    for digest in (metadata.get('sha256', ''), metadata.get('content', ''), metadata.get('app', {}).get('sha256', '')):
+        if not DIGEST.fullmatch(digest):
+            raise RuntimeError('Invalid Rainy runtime digest')
     return metadata
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as file:
+        for block in iter(lambda: file.read(CHUNK), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def content_digest(root):
+    """Identity of the base under `root`: every directory, file (content and executable bit) and link, in a fixed order.
+    Times and owners are left out, so the same files give the same identity whichever build or archive they came from."""
+    digest = hashlib.sha256()
+    root = Path(root)
+    for directory, directories, files in os.walk(root):
+        directories.sort()
+        here = Path(directory)
+        relative_dir = here.relative_to(root).as_posix()
+        entries = []
+        for name in sorted(directories + files):
+            path = here / name
+            relative = name if relative_dir == '.' else f'{relative_dir}/{name}'
+            if not in_base(relative) or relative == '.complete':
+                continue
+            if path.is_symlink():
+                entries.append(f'L {relative} {os.readlink(path)}')
+            elif path.is_dir():
+                entries.append(f'D {relative}')
+            else:
+                executable = 'x' if path.stat().st_mode & 0o111 else '-'
+                entries.append(f'F {relative} {executable} {file_digest(path)}')
+        # Linked directories are recorded as links and not entered; application-layer directories are not entered.
+        directories[:] = [name for name in directories if not (here / name).is_symlink()
+                          and in_base(name if relative_dir == '.' else f'{relative_dir}/{name}')]
+        for entry in entries:
+            digest.update(entry.encode() + b'\n')
+    return digest.hexdigest()
 
 
 def running_runtimes(owned):
@@ -58,21 +122,36 @@ def running_runtimes(owned):
     return names
 
 
-def prune(owned, current):
-    """Move every complete earlier runtime and abandoned staging directory aside under the lock, then delete them.
-    A runtime a live process uses stays; a busy lock means another start is installing, so nothing is pruned now."""
+def base_of(runtime):
+    """The base a layered runtime links to, or None for a runtime from before the layers."""
+    node = runtime / 'node'
+    if not node.is_symlink():
+        return None
+    return Path(os.readlink(node)).parts[1] if len(Path(os.readlink(node)).parts) > 1 else None
+
+
+def prune(owned, metadata):
+    """Move every complete earlier runtime, unused base and abandoned staging directory aside under the lock, then delete
+    them. A runtime a live process uses stays with its base; a busy lock means another start is installing, so nothing
+    is pruned now."""
     removed = []
+    current = metadata['app']['sha256']
     with (owned / '.install.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return removed
         busy = running_runtimes(owned)
+        keep = {current, 'base-' + metadata['content']} | busy
+        for name in list(busy):
+            base = base_of(owned / name) if DIGEST.fullmatch(name) else None
+            if base:
+                keep.add(base)
         for entry in owned.iterdir():
             name = entry.name
-            if entry.is_symlink() or not entry.is_dir() or name in busy or name == current:
+            if entry.is_symlink() or not entry.is_dir() or name in keep:
                 continue
-            earlier = DIGEST.fullmatch(name) and (entry / '.complete').is_file()
+            earlier = (DIGEST.fullmatch(name) or (name.startswith('base-') and DIGEST.fullmatch(name[5:]))) and (entry / '.complete').is_file()
             if earlier or name.startswith('.install-') or name.startswith('.download-'):
                 entry.rename(Path(tempfile.mkdtemp(prefix='.trash-', dir=owned)) / name)
                 removed.append(name)
@@ -81,14 +160,6 @@ def prune(owned, current):
         if trash.is_dir() and not trash.is_symlink():
             shutil.rmtree(trash, ignore_errors=True)
     return removed
-
-
-def file_digest(path):
-    digest = hashlib.sha256()
-    with path.open('rb') as file:
-        for block in iter(lambda: file.read(CHUNK), b''):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def extract(archive, destination):
@@ -114,24 +185,73 @@ def installed(target):
     return {'node': str(target / 'node/bin/node'), 'host': str(target / 'app/dist/host.js')}
 
 
-def install(owned, archive, metadata):
-    digest = metadata['sha256']
-    target = owned / digest
+def matches(archive, expected):
+    return archive is not None and archive.is_file() and archive.stat().st_size == expected['bytes'] and file_digest(archive) == expected['sha256']
+
+
+def seed(owned, base, identity):
+    """Reuse the base of a runtime an earlier version unpacked when its content is the same, by hard links, so the
+    first update to layered runtimes downloads nothing either. Returns whether the base is now installed."""
+    candidates = [entry for entry in owned.iterdir() if DIGEST.fullmatch(entry.name) and not entry.is_symlink()
+                  and (entry / '.complete').is_file() and (entry / 'node').is_dir() and not (entry / 'node').is_symlink()]
+    for candidate in sorted(candidates, key=lambda entry: entry.stat().st_mtime, reverse=True):
+        if content_digest(candidate) != identity:
+            continue
+        staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
+        os.rmdir(staging)
+
+        def ignore(directory, names):
+            relative_dir = Path(directory).relative_to(candidate).as_posix()
+            return {name for name in names if not in_base(name if relative_dir == '.' else f'{relative_dir}/{name}')
+                    or (relative_dir == '.' and name == '.complete')}
+        shutil.copytree(candidate, staging, symlinks=True, copy_function=os.link, ignore=ignore)
+        (staging / '.complete').write_text(identity + '\n')
+        staging.rename(base)
+        return True
+    return False
+
+
+def install(owned, base_archive, app_archive, metadata):
+    app = metadata['app']
+    identity = metadata['content']
+    target = owned / app['sha256']
+    base = owned / ('base-' + identity)
     with (owned / '.install.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if not (target / '.complete').is_file():
-            if target.exists():
-                raise RuntimeError('Incomplete runtime directory; preserved for diagnosis')
-            # The carrier downloads the archive only when this version's runtime is not installed yet;
-            # an archive left by an earlier version is replaced the same way.
-            if archive is None or not archive.is_file() or archive.stat().st_size != metadata['bytes'] or file_digest(archive) != digest:
+        if (target / '.complete').is_file():
+            return installed(target)
+        if target.exists():
+            raise RuntimeError('Incomplete runtime directory; preserved for diagnosis')
+        if not matches(app_archive, app):
+            raise RuntimeError('The Rainy application files do not match this version')
+        if not (base / '.complete').is_file():
+            if base.exists():
+                base.rename(Path(tempfile.mkdtemp(prefix='.trash-', dir=owned)) / base.name)
+            if matches(base_archive, metadata):
+                staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
+                extract(base_archive, staging)
+                if not (staging / 'node/bin/node').is_file():
+                    raise RuntimeError('Rainy runtime is missing its executable')
+                (staging / '.complete').write_text(identity + '\n')
+                staging.rename(base)
+            elif not seed(owned, base, identity):
+                # The carrier downloads the base only when no installed one has this content.
                 return {'needsArchive': True}
-            staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
-            extract(archive, staging)
-            if not (staging / 'node/bin/node').is_file() or not (staging / 'app/dist/host.js').is_file():
-                raise RuntimeError('Rainy runtime is missing its executable')
-            (staging / '.complete').write_text(digest + '\n')
-            staging.rename(target)
+        staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
+        extract(app_archive, staging)
+        if not (staging / 'app/dist/host.js').is_file():
+            raise RuntimeError('Rainy runtime is missing its Host')
+        # The application layer links to the base: its top-level entries, and the base parts that live under app/.
+        for entry in base.iterdir():
+            if entry.name not in ('app', '.complete'):
+                (staging / entry.name).symlink_to(f'../{base.name}/{entry.name}')
+        for kept in BASE_IN_APP:
+            if (base / kept).exists() or (base / kept).is_symlink():
+                link = staging / kept
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to('../' * len(kept.split('/')) + f'{base.name}/{kept}')
+        (staging / '.complete').write_text(app['sha256'] + '\n')
+        staging.rename(target)
     return installed(target)
 
 
@@ -141,7 +261,7 @@ def progress(done, total):
 
 
 def fetch(owned, metadata, pieces):
-    """Download the archive piece by piece; verified pieces are kept, so a dropped connection resumes from there."""
+    """Download the base piece by piece; verified pieces are kept, so a dropped connection resumes from there."""
     from urllib.request import Request, urlopen
     folder = owned / f'.download-{metadata["sha256"]}'
     folder.mkdir(mode=0o700, exist_ok=True)
@@ -179,38 +299,58 @@ def fetch(owned, metadata, pieces):
     return folder, archive
 
 
-def receive(owned, metadata):
-    folder = Path(tempfile.mkdtemp(prefix='.download-', dir=owned))
-    archive = folder / 'linux-runtime.tar.gz'
-    with archive.open('wb') as output:
-        shutil.copyfileobj(sys.stdin.buffer, output, CHUNK)
-    return folder, archive
+def read_exactly(stream, count, path):
+    with path.open('wb') as output:
+        left = count
+        while left > 0:
+            block = stream.read(min(CHUNK, left))
+            if not block:
+                break
+            output.write(block)
+            left -= len(block)
 
 
 def remote(owned, mode, metadata, pieces):
-    """Install on an SSH server: an installed runtime is used as it is; otherwise the archive is fetched or received."""
+    """Install on an SSH server. Standard input starts with the application layer; with --receive the base follows."""
     if platform.system() != 'Linux' or platform.machine() not in ('x86_64', 'amd64'):
+        sys.stdin.buffer.read()
         return {'unsupported': f'{platform.system()} {platform.machine()}'}
-    target = owned / metadata['sha256']
-    if (target / '.complete').is_file():
-        return installed(target)
-    if mode == '--fetch' and not pieces:
-        return {'needsArchive': True}
+    folder = Path(tempfile.mkdtemp(prefix='.download-', dir=owned))
     try:
-        folder, archive = fetch(owned, metadata, pieces) if mode == '--fetch' else receive(owned, metadata)
-    except Exception as error:  # Any network failure leaves the upload from the desktop.
-        return {'needsArchive': True, 'error': f'{type(error).__name__}: {error}'}
-    try:
-        return install(owned, archive, metadata)
+        app_archive = folder / 'linux-app.tar.gz'
+        read_exactly(sys.stdin.buffer, metadata['app']['bytes'], app_archive)
+        base_archive = None
+        if mode == '--receive':
+            base_archive = folder / 'linux-runtime.tar.gz'
+            with base_archive.open('wb') as output:
+                shutil.copyfileobj(sys.stdin.buffer, output, CHUNK)
+        else:
+            sys.stdin.buffer.read()
+        if not matches(app_archive, metadata['app']):
+            return {'needsArchive': True, 'error': 'the application layer did not arrive intact'}
+        result = install(owned, base_archive, app_archive, metadata)
+        if mode == '--receive' or 'needsArchive' not in result:
+            return result
+        if not pieces:
+            return result
+        try:
+            download, base_archive = fetch(owned, metadata, pieces)
+        except Exception as error:  # Any network failure leaves the upload from the desktop.
+            return {'needsArchive': True, 'error': f'{type(error).__name__}: {error}'}
+        try:
+            return install(owned, base_archive, app_archive, metadata)
+        finally:
+            shutil.rmtree(download, ignore_errors=True)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
 
-owned = Path.home() / '.rainy-agent/runtime'
-owned.mkdir(mode=0o700, parents=True, exist_ok=True)
-if sys.argv[1] == '--prune':
-    print(json.dumps({'removed': prune(owned, read_metadata(sys.argv[2])['sha256'])}))
-elif sys.argv[1] in ('--fetch', '--receive'):
-    print(json.dumps(remote(owned, sys.argv[1], read_metadata(sys.argv[2]), json.loads(sys.argv[3]) if len(sys.argv) > 3 else [])))
-else:
-    print(json.dumps(install(owned, Path(sys.argv[1]).resolve(), read_metadata(sys.argv[2]))))
+if __name__ == '__main__':
+    owned = Path.home() / '.rainy-agent/runtime'
+    owned.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if sys.argv[1] == '--prune':
+        print(json.dumps({'removed': prune(owned, read_metadata(sys.argv[2]))}))
+    elif sys.argv[1] in ('--fetch', '--receive'):
+        print(json.dumps(remote(owned, sys.argv[1], read_metadata(sys.argv[2]), json.loads(sys.argv[3]) if len(sys.argv) > 3 else [])))
+    else:
+        print(json.dumps(install(owned, Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(), read_metadata(sys.argv[3]))))

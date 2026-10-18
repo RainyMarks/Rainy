@@ -16,6 +16,8 @@ module.exports = {
     { from: 'runtime/optional-modules.json', to: 'optional-modules.json' },
     { from: 'build/icon.ico', to: 'icon.ico' },
     { from: 'runtime/linux-runtime.json', to: 'linux-runtime.json' },
+    // The Linux Host's application layer: a version update with an unchanged base downloads nothing.
+    { from: 'runtime/linux-app.tar.gz', to: 'linux-app.tar.gz' },
     { from: 'scripts/install-runtime.py', to: 'install-runtime.py' },
     { from: 'runtime/release-public-keys.json', to: 'release-public-keys.json' },
     { from: 'runtime/environment-component-catalog.json', to: 'environment-component-catalog.json' },

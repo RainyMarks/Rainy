@@ -3,7 +3,7 @@ import { app, BrowserWindow, crashReporter, dialog, Menu, screen, shell, ipcMain
 import { currentLocale, followLocale, localized, type Locale } from '../shared/locale.ts'
 import { mkdirSync, appendFileSync, createReadStream, existsSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { Transform, type Readable } from 'node:stream'
+import { Readable, Transform } from 'node:stream'
 import { arch, freemem, release, totalmem, version } from 'node:os'
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
@@ -284,6 +284,8 @@ async function start(): Promise<void> {
   mkdirSync(carrierState, { recursive: true })
   const runtimeFiles = {
     metadata: join(resourceRoot, 'linux-runtime.json'),
+    // This version's Host, interface and small resources; the base under them is downloaded only when it changed.
+    app: join(resourceRoot, 'linux-app.tar.gz'),
     installer: app.isPackaged ? join(resourceRoot, 'install-runtime.py') : resolve(__dirname, '../scripts/install-runtime.py'),
   }
   // A development checkout stages the runtime archive itself.
@@ -301,8 +303,8 @@ async function start(): Promise<void> {
       } catch (error) {
         const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Rainy',
           message: localized({ zh: 'Linux 运行环境下载失败', en: 'The Linux runtime could not be downloaded.' }),
-          detail: localized({ zh: `${errorText(error)}\n更新后第一次使用 WSL 或 SSH 远程开发时需要联网下载一次，已下载的部分会保留。`,
-            en: `${errorText(error)}\nAfter an update, WSL and SSH remote development need a one-time download the first time you use them. What was already downloaded is kept.` }),
+          detail: localized({ zh: `${errorText(error)}\nWSL 和 SSH 远程开发用的 Linux 运行环境底座有变化，需要联网下载一次，已下载的部分会保留。`,
+            en: `${errorText(error)}\nThe base of the Linux runtime that WSL and SSH remote development use has changed and needs a one-time download. What was already downloaded is kept.` }),
           buttons: [localized({ zh: '重试', en: 'Retry' }), localized({ zh: '改用 Windows 原生运行', en: 'Run on Windows instead' }), localized({ zh: '退出', en: 'Quit' })],
           defaultId: 0, cancelId: 2 })
         if (answer.response === 1) return false
@@ -318,9 +320,9 @@ async function start(): Promise<void> {
   const prepareWsl = async (distribution: string) => {
     const startingWsl = (): string => localized({ zh: `正在启动 WSL · ${distribution}…`, en: `Starting WSL · ${distribution}…` })
     progress.step(startingWsl())
-    const [archive, metadata, installer, state] = await wslPaths(distribution,
-      [await linuxRuntimeArchive(), runtimeFiles.metadata, runtimeFiles.installer, carrierState])
-    const install = async (): Promise<unknown> => JSON.parse((await run('wsl.exe', ['-d', distribution, '--exec', 'python3', installer, archive, metadata],
+    const [archive, application, metadata, installer, state] = await wslPaths(distribution,
+      [await linuxRuntimeArchive(), runtimeFiles.app, runtimeFiles.metadata, runtimeFiles.installer, carrierState])
+    const install = async (): Promise<unknown> => JSON.parse((await run('wsl.exe', ['-d', distribution, '--exec', 'python3', installer, archive, application, metadata],
       { windowsHide: true, timeout: 180000 })).stdout)
     let installed = await install()
     if (installed !== null && typeof installed === 'object' && 'needsArchive' in installed) {
@@ -403,16 +405,20 @@ async function start(): Promise<void> {
     const name = sshName(sshDestinationOf(selected))
     progress.step(localized({ zh: `正在连接 ${selected.label}…`, en: `Connecting to ${selected.label}…` }))
     const pieces = process.env.RAINY_SSH_NO_FETCH === '1' ? [] : await modules.pieces('linux-runtime')
-    let result = await sshInstaller(selected, ['--fetch', JSON.stringify(pieces)])
+    // Standard input carries this version's application layer, which ships with the desktop.
+    let result = await sshInstaller(selected, ['--fetch', JSON.stringify(pieces)], createReadStream(runtimeFiles.app))
     if (isRecord(result) && 'needsArchive' in result) {
       if ('error' in result) appendFileSync(logPath, `${selected.label} could not download the Linux runtime itself: ${String(result.error)}\n`)
       const developmentArchive = !app.isPackaged && existsSync(join(resourceRoot, 'linux-runtime.tar.gz'))
       if (!developmentArchive && !await downloadLinuxRuntime()) return undefined
       const archive = await linuxRuntimeArchive()
-      const size = (await stat(archive)).size
+      const size = (await stat(runtimeFiles.app)).size + (await stat(archive)).size
       let sent = 0
-      // Counting in the pipeline, not with a 'data' listener, which would start reading before ssh is ready.
-      const input = createReadStream(archive).pipe(new Transform({ transform(chunk: Buffer, _encoding, done) {
+      // The application layer first, then the base; counting in the pipeline, not with a 'data' listener, which would
+      // start reading before ssh is ready.
+      const input = Readable.from((async function* () {
+        for (const path of [runtimeFiles.app, archive]) yield* createReadStream(path)
+      })()).pipe(new Transform({ transform(chunk: Buffer, _encoding, done) {
         sent += chunk.length
         progress.step(localized({ zh: `正在上传 Linux 运行环境到 ${name} ${megabytes(sent)} / ${megabytes(size)} MB`,
           en: `Uploading the Linux runtime to ${name} ${megabytes(sent)} / ${megabytes(size)} MB` }), sent / size)

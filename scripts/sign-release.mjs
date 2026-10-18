@@ -59,7 +59,7 @@ export async function signReleaseResources(resourceRoot, options = {}) {
     files.push({ path: relative(root, path).replaceAll('\\', '/'), sha256, bytes: info.size })
   }
   for (const name of ['windows-host', 'release-public-keys.json', 'environment-component-catalog.json', 'install-environment-component.py',
-    'linux-runtime.json', 'install-runtime.py', 'optional-modules.json', 'icon.ico']) {
+    'linux-runtime.json', 'linux-app.tar.gz', 'install-runtime.py', 'optional-modules.json', 'icon.ico']) {
     await inventory(join(root, name))
   }
   const updaterPath = join(root, 'app-update.yml')
