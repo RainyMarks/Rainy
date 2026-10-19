@@ -14,7 +14,7 @@
 
 [English](README.md) | 中文
 
-[**下载 Windows 版（174 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.6 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
+[**下载 Windows 版（177 MB）**](https://github.com/RainyMarks/Rainy/releases/latest) · [3.8 新变化](#whats-new) · [快速开始](#run) · [SSH 远程开发](#ssh) · [连接模型](#connect-a-model) · [从源码构建](#run-from-source)
 
 </div>
 
@@ -62,6 +62,15 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 ![Ctrl+K 给函数加上空密钥检查，新增的行标为绿色](assets/zh/ai-edit.png)
 
 <a id="whats-new"></a>
+## 3.8 新变化
+
+更轻：下载更小，空闲和对话时更省电。
+
+- **WSL / SSH 运行环境底座从约 277 MB 缩到约 53 MB**：改用 xz 压缩，并去掉用不到的文件（Node.js 头文件、重复的 Ruff、调试器的源码和其他平台的二进制）。Ubuntu 26.04 的离线开发工具包（约 165 MB）改成在“准备开发工具”时才下载，装好后自动删掉下载的文件。这次更新会下载一次新的底座。
+- **空闲更省电**：空白页的雨滴动画每秒最多画约 60 帧（窗口在后台时 24 帧），画布分辨率也降了，在高刷新率屏幕上空闲 CPU 占用降到原来的三分之一左右；运行中的转圈图标交给显卡转，不再每帧重绘。
+- **长回复更流畅**：AI 输出时只重新渲染正在增长的那一轮对话，Markdown 只重新解析最后一段；Host 只把新增的文字发给界面，每 2 秒再发一次完整内容兜底，SSH 远程时流量少得多。
+- **启动更快**：设置页、代码高亮按需加载，首屏脚本从 1010 KB 降到 790 KB；数学公式只保留 WOFF2 字体。
+
 ## 3.6 新变化
 
 更新不再需要重新配环境，软件也更轻了。

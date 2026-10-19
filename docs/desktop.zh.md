@@ -16,11 +16,11 @@ Rainy 3.0 不再包含 CTF 工具目录。旧版本下载的工具留在原安�
 
 ## 可选组件
 
-核心安装包不含 Strata 引擎、Windows PHP 和 Linux 运行环境归档（`linux-runtime.tar.gz`）。签名的载体资源 `optional-modules.json` 固定每个组件的归档，应用在需要时从 GitHub 发行分片下载到 `%APPDATA%\RainyAgent\modules\<id>`。每个分片和组装后的归档都校验 SHA-256，中断的下载通过 HTTP Range 续传，取消后保留已下载的分片供下次使用。
+核心安装包不含 Strata 引擎、Windows PHP、Linux 运行环境底座（`linux-runtime.tar.xz`）和 Ubuntu 离线开发软件包。签名的载体资源 `optional-modules.json` 固定每个组件的归档，应用在需要时从 GitHub 发行分片下载到 `%APPDATA%\RainyAgent\modules\<id>`。每个分片和组装后的归档都校验 SHA-256，中断的下载通过 HTTP Range 续传，取消后保留已下载的分片供下次使用。
 
 “设置 → 运行环境 → 可选组件”可下载和删除 Strata 引擎（约 560 MB）及 PHP。Strata 引擎就是已作为 1.0.0 构建输入 `build-inputs/strata-runtime.tar.gz` 发布的归档；[Strata 本地推理](#strata-local-inference)说明其内容和用法。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。
 
-WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Node.js、依赖包、开发工具资源和 ripgrep，约 280 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（Host、界面和小资源，几 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的 Node.js、依赖和开发工具资源是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
+WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Node.js、依赖包、开发工具资源和 ripgrep，下载约 53 MB，解开后约 240 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（Host、界面和小资源，几 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的 Node.js、依赖和开发工具资源是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
 
 启动约 60 秒后，安装版会删除旧安装程序留在 `resources` 目录中的资源：`strata-runtime`、`php`、`linux-runtime.tar.gz`、`native-tools-metadata.json`、`native-tools-download.json`、`native-tools-catalog.json`、`native-tools-channel.signed.json` 和 `native-tools-public-keys.json`。
 
@@ -87,7 +87,7 @@ CodeMirror 6 编辑器提供多文件标签、按文件类型加载的语法高�
 
 运行环境检测检查项目虚拟环境、Conda 注册记录、常见 Python 目录、PATH 和已导入组件，不向这些已有环境安装软件包。所选解释器通过每个进程的环境配置项目工具、终端、运行及语言服务。可执行文件就绪和库能力分别显示：能运行 Python 不代表具备 PyTorch 或 CUDA。另一执行平台的解释器会被拒绝。“设置 → 运行环境 → 可选组件”为 Windows 原生目标下载 PHP 8.5 及 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展。下载前，在 Windows 原生目标运行 PHP 文件会提示下载位置；也可在运行配置中选择已安装的 `php.exe`。已安装的环境组件或项目选定的 PHP 优先。WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。
 
-离线组件提供隔离的 Python 3.12、Node 24、Windows PHP、原生 C/C++ 工具，以及独立 CPU 或 CUDA 科学计算环境。科学组件包含 NumPy、SciPy、pandas、scikit-learn、图像处理、Jupyter 和常用深度学习库，并配套 PyTorch 2.11、torchvision 0.26 与 torchaudio 2.11。导入先核对发行目录、归档及逐文件清单，再选择按摘要存放的代际。已有用户环境和全局 PATH 保持不变。CUDA 需要兼容的 NVIDIA 驱动。Ubuntu 26.04 amd64 开发工具向导使用经过校验的 C/C++、GDB、CMake、clangd 和 PHP 软件包，安装时禁用下载。
+离线组件提供隔离的 Python 3.12、Node 24、Windows PHP、原生 C/C++ 工具，以及独立 CPU 或 CUDA 科学计算环境。科学组件包含 NumPy、SciPy、pandas、scikit-learn、图像处理、Jupyter 和常用深度学习库，并配套 PyTorch 2.11、torchvision 0.26 与 torchaudio 2.11。导入先核对发行目录、归档及逐文件清单，再选择按摘要存放的代际。已有用户环境和全局 PATH 保持不变。CUDA 需要兼容的 NVIDIA 驱动。Ubuntu 26.04 amd64 开发工具向导在点击安装时下载经过校验的 C/C++、GDB、CMake、clangd 和 PHP 软件包（约 165 MB，即发行资源中的 `linux-dev-packages` 组件），安装后删除下载的文件；安装时禁用下载。
 
 桌面应用允许已认证 Host 同源的页面复制文本。历史对话中的工具调用按工具类型显示为终端、读取、差异或通用卡片。
 

@@ -14,7 +14,7 @@
 
 English | [中文](README.zh.md)
 
-[**Download for Windows (174 MB)**](https://github.com/RainyMarks/Rainy/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [SSH remote development](#ssh) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
+[**Download for Windows (177 MB)**](https://github.com/RainyMarks/Rainy/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [SSH remote development](#ssh) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
 
 </div>
 
@@ -62,6 +62,15 @@ Rainy puts an AI agent, previews of Word, Excel, PowerPoint and PDF, a real edit
 ![Ctrl+K adding an empty-key check to a function, with the new lines in green](assets/ai-edit.png)
 
 <a id="whats-new"></a>
+## What's new in 3.8
+
+Lighter: smaller downloads, less CPU while idle and while a reply streams.
+
+- **The WSL / SSH runtime base shrinks from about 277 MB to about 53 MB**: it is packed with xz and leaves out what the Host never reads (Node.js headers, a second copy of Ruff, the debugger's sources and other platforms' binaries). The offline Ubuntu 26.04 development packages (about 165 MB) are downloaded only when you prepare the development tools, and the download is deleted once they are installed. This update downloads the new base once.
+- **Less work while idle**: the rain behind empty views draws at most about 60 frames a second (24 while the window is in the background) at a lower canvas resolution, about a third of the idle CPU it used on high-refresh displays; the running spinner turns on the GPU instead of being repainted every frame.
+- **Smoother long replies**: while a reply streams, only the turn that grows renders again and only its last Markdown block is parsed again; the Host sends the page only the new text, with the whole reply every 2 seconds, so far less goes over an SSH tunnel.
+- **Faster start**: Settings and code highlighting load on first use, cutting the startup script from 1010 KB to 790 KB; math ships WOFF2 fonts only.
+
 ## What's new in 3.6
 
 Updates no longer set up the environment again, and Rainy is lighter.
