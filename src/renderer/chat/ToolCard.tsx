@@ -1,5 +1,5 @@
 /** One tool call with its result: terminal, read, search, diff, or generic input/output cards, plus approval and undo. */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import type { ToolCall } from '@earendil-works/pi-ai'
 import type { PendingApproval, TranscriptEntry } from '../../shared/rpc.ts'
@@ -124,7 +124,7 @@ export function toolTitle(call: ToolCall, t: ReturnType<typeof useChatT>): strin
  * @param props.canUndo The chat is idle, so a change can be undone.
  * @returns The card.
  */
-export function ToolCard({ sessionId, call, result, running, defaultOpen, approval, reverted = false, canUndo = false }: {
+export const ToolCard = memo(function ToolCard({ sessionId, call, result, running, defaultOpen, approval, reverted = false, canUndo = false }: {
   sessionId: string
   call: ToolCall
   result: ToolResult | undefined
@@ -148,6 +148,12 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
   const failed = result?.isError === true
   const refused = details.refused === 'user' || details.refused === 'mode' ? details.refused : undefined
   const state = approval !== undefined ? 'warning' : isRunning ? 'ongoing' : result === undefined ? 'idle' : failed ? 'error' : 'done'
+  // A change's diff is computed once per card, not on every render of the transcript around it.
+  const changedPath = str(details.path) ?? str(args.file_path) ?? ''
+  const before = str(details.before)
+  const after = str(details.after)
+  const diffs = useMemo(() => after === undefined ? undefined : [{ path: changedPath, oldText: before ?? null, newText: after }], [changedPath, before, after])
+  const totals = useMemo(() => diffs === undefined ? undefined : diffTotals(diffs), [diffs])
   let body: ReactNode
   let suffix: ReactNode = null
 
@@ -203,10 +209,7 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
       <WebLink className={css.webLink} url={details.url} title={t('webOpen')}>{str(details.title) || details.url}</WebLink>
       <pre className={css.output}>{resultText(result)}</pre>
     </div>
-  } else if ((call.name === 'write' || call.name === 'edit') && !failed && typeof details.after === 'string') {
-    const path = str(details.path) ?? str(args.file_path) ?? ''
-    const diffs = [{ path, oldText: str(details.before) ?? null, newText: details.after }]
-    const totals = diffTotals(diffs)
+  } else if ((call.name === 'write' || call.name === 'edit') && !failed && diffs !== undefined && totals !== undefined) {
     suffix = <span className={css.totals}><span className={css.added}>+{totals.added}</span> <span className={css.removed}>-{totals.removed}</span></span>
     body = <DiffBlock diffs={diffs} labels={labels.diff} />
   } else {
@@ -252,4 +255,4 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
         ? <pre className={clsx(css.output, css.error)}>{resultText(result)}</pre> : body}</div>}
     </div>
   )
-}
+})

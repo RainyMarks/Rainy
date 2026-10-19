@@ -1,5 +1,5 @@
 /** Message input: `@` references, `/` commands, images, queue/steer while busy, and the model controls. */
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
@@ -101,8 +101,8 @@ export interface ComposerProps {
   onNewChat(): void
 }
 
-/** Composer for one chat or for the next new chat. */
-export function Composer({ sessionId, workspaceId, busy, model, context, queue, permission, onPermission, onSend, onStop, onCompact, onNewChat }: ComposerProps): JSX.Element {
+/** Composer for one chat or for the next new chat; memoized because the pane renders again on every streamed update. */
+export const Composer = memo(function Composer({ sessionId, workspaceId, busy, model, context, queue, permission, onPermission, onSend, onStop, onCompact, onNewChat }: ComposerProps): JSX.Element {
   const t = useChatT()
   const draftKey = sessionId ?? ''
   const [text, setText] = useState(() => drafts.get(draftKey) ?? '')
@@ -388,4 +388,4 @@ export function Composer({ sessionId, workspaceId, busy, model, context, queue, 
       </div>
     </div>
   )
-}
+})

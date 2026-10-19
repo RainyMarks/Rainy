@@ -48,11 +48,25 @@ export interface IdeEnvironmentCommand {
 /** Testable command owner; completion includes the child close event. */
 export type IdeEnvironmentCommandRunner = (command: IdeEnvironmentCommand) => Promise<string>
 
+/** The offline packages, which the carrier downloads when the user installs them; the base keeps only their manifest. */
+export interface IdeEnvironmentPackages {
+  /**
+   * Download and verify the packages unless they are already present.
+   * @param progress - downloaded and total bytes.
+   * @returns the POSIX directory, as the distribution sees it, holding `manifest.json` and the `.deb` files.
+   */
+  readonly fetch: (progress: (completed: number, total: number) => void) => Promise<string>
+  /** Delete the downloaded packages once they are installed. */
+  readonly release: () => Promise<void>
+}
+
 /** Fixed selected distribution and trusted runtime resources, never supplied by the setup page. */
 export interface WindowsIdeEnvironmentOptions {
   readonly distro: string
   readonly resourceRoot: string
   readonly config: IdeEnvironmentConfig
+  /** Where the packages come from; without it they are expected next to their manifest in `resourceRoot`. */
+  readonly packages?: IdeEnvironmentPackages
   readonly execute?: IdeEnvironmentCommandRunner
 }
 
@@ -135,9 +149,19 @@ export function createWindowsIdeEnvironmentPlatform(options: WindowsIdeEnvironme
       throw new IdeEnvironmentError('development-media-missing', localized({ zh: '离线开发组件缺失或不匹配，请重新安装完整的 Rainy 安装包。',
         en: 'The offline development components are missing or do not match. Reinstall Rainy from the full installer.' }))
     }
+    let reported = Number.NEGATIVE_INFINITY
+    const directory = options.packages === undefined ? posix.join(options.resourceRoot, 'system-packages')
+      : await options.packages.fetch((completed, total) => {
+        const megabytes = (bytes: number): string => (bytes / 1_048_576).toFixed(0)
+        // One line per 8 MiB keeps the retained progress log readable.
+        if (completed !== total && completed - reported < 8 * 1_048_576) return
+        reported = completed
+        onProgress(localized({ zh: `正在下载 Ubuntu 开发组件 ${megabytes(completed)} / ${megabytes(total)} MB`,
+          en: `Downloading the Ubuntu development packages ${megabytes(completed)} / ${megabytes(total)} MB` }))
+      })
     const output = await execute({
-      args: ['-d', options.distro, '-u', 'root', '--exec', 'python3', posix.join(options.resourceRoot, 'install-system-packages.py'),
-        posix.join(options.resourceRoot, 'system-packages')], timeoutMs: 0, onProgress,
+      args: ['-d', options.distro, '-u', 'root', '--exec', 'python3', posix.join(options.resourceRoot, 'install-system-packages.py'), directory],
+      timeoutMs: 0, onProgress,
     })
     const last = output.split(/\r?\n/u).findLast(line => line.trim() !== '')
     try {
@@ -147,5 +171,7 @@ export function createWindowsIdeEnvironmentPlatform(options: WindowsIdeEnvironme
       throw new IdeEnvironmentError('development-install-unconfirmed', localized({ zh: '未收到离线安装完成确认。请查看安装详情并重新检查环境。',
         en: 'The offline installation did not confirm that it finished. Review the installation details and check the environment again.' }))
     }
+    // The packages now live in the distribution; a failed removal only leaves the download for the next start's cleanup.
+    await options.packages?.release().catch((error: unknown) => { console.error('The downloaded development packages were not removed', error) })
   } }
 }

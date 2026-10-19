@@ -25,7 +25,7 @@ import { ReviewBar } from '../review/ReviewBar.tsx'
 import { ChatPane } from '../chat/ChatPane.tsx'
 import { useChatBusy } from '../chat/chat-store.ts'
 import { History } from '../chat/History.tsx'
-import { SettingsDialog, type SettingsSection } from '../settings/SettingsDialog.tsx'
+import type { SettingsSection } from '../settings/SettingsDialog.tsx'
 import type { EditorAppearance, EditorInstance } from '../ide/editor-types.ts'
 import { sourceLanguage } from '../ide/ide-model.ts'
 import { IdeEditor } from '../ide/IdeEditor.tsx'
@@ -55,6 +55,8 @@ import css from './App.module.css'
 
 /** The project map loads the first time it is opened. */
 const ProjectMapView = lazy(async () => ({ default: (await import('../map/ProjectMap.tsx')).ProjectMapView }))
+/** Settings (with its schemas) stays out of the startup bundle; the Host serves the chunk the first time it opens. */
+const SettingsDialog = lazy(async () => ({ default: (await import('../settings/SettingsDialog.tsx')).SettingsDialog }))
 
 type MenuId = 'file' | 'edit' | 'view' | 'explorer' | 'editor' | 'app' | 'workspace' | 'run'
 type Side = 'left' | 'right' | 'bottom'
@@ -861,7 +863,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
       <DirectoryBrowser open={directoryOpen} busy={directoryBusy} onOpen={adoptDirectory} onClose={() => { setDirectoryOpen(false) }}
         listDirectory={listDirectory} createDirectory={createDirectory} />
       <RunConfigurationDialog open={runConfiguration} close={() => { setRunConfiguration(false) }} state={state} model={model} />
-      <SettingsDialog open={settings.open} section={settings.section} workspace={state.workspace} onClose={() => { setSettings({ open: false }) }} />
+      {settings.open && <Suspense fallback={null}>
+        <SettingsDialog open section={settings.section} workspace={state.workspace} onClose={() => { setSettings({ open: false }) }} />
+      </Suspense>}
     </div>
   )
 }

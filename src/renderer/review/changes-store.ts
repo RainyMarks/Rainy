@@ -22,7 +22,11 @@ function publish(sessionId: string, list: readonly ChatChange[]): void {
  * @returns Completion; rejects when the Host cannot list them.
  */
 export async function refreshChanges(sessionId: string): Promise<void> {
-  publish(sessionId, await host.call('chat.changes', { sessionId }))
+  const list = await host.call('chat.changes', { sessionId })
+  // An unchanged list keeps its identity, so the bars that show it do not render again.
+  const before = lists.get(sessionId)
+  if (before !== undefined && JSON.stringify(before) === JSON.stringify(list)) return
+  publish(sessionId, list)
 }
 
 function schedule(sessionId: string): void {

@@ -151,6 +151,38 @@ describe('development WSL command targets', () => {
     expect(calls[2]?.timeoutMs).toBe(0)
   })
 
+  it('downloads the packages when the user installs them, installs from the download and then deletes it', async () => {
+    const calls: IdeEnvironmentCommand[] = []
+    const execute = vi.fn(async (command: IdeEnvironmentCommand) => {
+      calls.push(command)
+      return command.args.includes('root') ? '{"installedPackages":92,"offline":true}\n' : JSON.stringify(observation())
+    })
+    const order: string[] = []
+    const packages = {
+      fetch: vi.fn(async (progress: (completed: number, total: number) => void) => {
+        order.push('fetch')
+        for (const completed of [0, 4 << 20, 9 << 20, 150 << 20]) progress(completed, 150 << 20)
+        return '/mnt/c/Users/me/AppData/Roaming/RainyAgent/modules/linux-dev-packages'
+      }),
+      release: vi.fn(async () => { order.push('release') }),
+    }
+    const platform = createWindowsIdeEnvironmentPlatform({ distro: 'Chosen Distro', resourceRoot: '/runtime/app/resources/ide',
+      config: resolveIdeEnvironmentConfig(), packages, execute })
+    const progress = vi.fn()
+    await platform.install(progress)
+    expect(calls.at(-1)?.args).toEqual(['-d', 'Chosen Distro', '-u', 'root', '--exec', 'python3',
+      '/runtime/app/resources/ide/install-system-packages.py', '/mnt/c/Users/me/AppData/Roaming/RainyAgent/modules/linux-dev-packages'])
+    expect(order).toEqual(['fetch', 'release'])
+    // Progress lines come every 8 MiB and at the end, not for every chunk.
+    expect(progress.mock.calls.map(([line]) => String(line))).toEqual([
+      expect.stringContaining('0 / 150 MB'), expect.stringContaining('9 / 150 MB'), expect.stringContaining('150 / 150 MB')])
+
+    // A failed installation keeps the download for the next attempt.
+    execute.mockImplementation(async (command: IdeEnvironmentCommand) => command.args.includes('root') ? 'apt failed' : JSON.stringify(observation()))
+    await expect(platform.install(() => {})).rejects.toMatchObject({ code: 'development-install-unconfirmed' })
+    expect(packages.release).toHaveBeenCalledTimes(1)
+  })
+
   it('rechecks compatibility before direct install and rejects missing completion evidence', async () => {
     let observed = { ...observation(), os: 'debian' }
     const execute = vi.fn(async (command: IdeEnvironmentCommand) => command.args.includes('root') ? 'exited without confirmation' : JSON.stringify(observed))

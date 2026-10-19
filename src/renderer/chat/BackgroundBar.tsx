@@ -1,5 +1,5 @@
 /** Commands the agent left running in the background, above the composer, with a way to stop each one and to clear a finished one. */
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { BackgroundCommand } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
 import { Button, StateDot, toast } from '../ui/index.ts'
@@ -11,7 +11,7 @@ import css from './BackgroundBar.module.css'
  * @param props.commands The chat's background commands; the bar is hidden while there are none.
  * @returns The bar.
  */
-export function BackgroundBar({ sessionId, commands }: { sessionId: string; commands: readonly BackgroundCommand[] }): JSX.Element | null {
+export const BackgroundBar = memo(function BackgroundBar({ sessionId, commands }: { sessionId: string; commands: readonly BackgroundCommand[] }): JSX.Element | null {
   const t = useChatT()
   const [busy, setBusy] = useState<string | undefined>()
   if (commands.length === 0) return null
@@ -51,4 +51,4 @@ export function BackgroundBar({ sessionId, commands }: { sessionId: string; comm
       ))}
     </section>
   )
-}
+})

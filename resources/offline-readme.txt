@@ -1,8 +1,8 @@
-Rainy 3.7.1 Windows x64 完整离线发行包
+Rainy 3.8.0 Windows x64 完整离线发行包
 
 安装与升级
-1. 运行 Rainy-3.7.1-windows-x64-setup.exe 安装核心，内含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境不在安装包内，需要时从 GitHub 下载；模型权重另备。新安装默认使用 Windows 原生运行，无需先安装 WSL。
-2. 完整离线交付请保留整个 offline-3.7.1 目录，包括 environment/、environment-components/、清单及 SHA256SUMS.txt。无需手动解压任何运行环境归档。安装后直接使用，无需设备码或激活码。
+1. 运行 Rainy-3.8.0-windows-x64-setup.exe 安装核心，内含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境不在安装包内，需要时从 GitHub 下载；模型权重另备。新安装默认使用 Windows 原生运行，无需先安装 WSL。
+2. 完整离线交付请保留整个 offline-3.8.0 目录，包括 environment/、environment-components/、清单及 SHA256SUMS.txt。无需手动解压任何运行环境归档。安装后直接使用，无需设备码或激活码。
 3. Rainy 3.0 不再包含 CTF 工具目录。旧版本下载的工具留在原安装位置（安装目录的 tools 文件夹或 %APPDATA%\RainyAgent\native-tools），应用不再更新或启动它们；不再需要时可自行删除。
 4. 安装版启动时静默检查 GitHub 稳定版并后台下载核心更新；“帮助 → 检查更新”可查看状态或重试。下载完成后选择稍后或重启安装，只有确认、草稿保存与 Host 清理完成后才安装；普通退出不会安装。自动更新保留已有环境，不重新下载离线环境组件；更新后首次以 WSL 或 SSH 启动时会安装新版本的 Linux 运行环境。
 5. 启动约 60 秒后，应用删除旧安装程序留在 resources 目录中的 strata-runtime、php、linux-runtime.tar.gz 及旧版工具目录文件（native-tools-*.json）。

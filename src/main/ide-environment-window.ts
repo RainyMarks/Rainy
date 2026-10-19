@@ -4,7 +4,7 @@ import { localized } from '../shared/locale.ts'
 import { setupPageURL } from './setup-page.ts'
 import { createIdeEnvironmentSetup, parseIdeEnvironmentAction, resolveIdeEnvironmentConfig } from './ide-environment.ts'
 import type { IdeEnvironmentConfig, IdeEnvironmentPlatform, IdeEnvironmentSetup, IdeEnvironmentSnapshot } from './ide-environment.ts'
-import { createWindowsIdeEnvironmentPlatform } from './ide-environment-platform.ts'
+import { createWindowsIdeEnvironmentPlatform, type IdeEnvironmentPackages } from './ide-environment-platform.ts'
 
 /** Fixed carrier inputs for a selected distribution; no target comes from the setup page. */
 export interface IdeEnvironmentWindowOptions {
@@ -15,6 +15,8 @@ export interface IdeEnvironmentWindowOptions {
   readonly pagePath: string
   readonly icon?: string
   readonly config?: IdeEnvironmentConfig
+  /** Download of the offline packages; see {@link IdeEnvironmentPackages}. */
+  readonly packages?: IdeEnvironmentPackages
   readonly platform?: IdeEnvironmentPlatform
 }
 
@@ -69,7 +71,7 @@ export function createIdeEnvironmentWindow(options: IdeEnvironmentWindowOptions)
     }
     const controller = createIdeEnvironmentSetup({ distro: options.distro, config, onProgress: update,
       platform: options.platform ?? createWindowsIdeEnvironmentPlatform({
-        distro: options.distro, resourceRoot: options.resourceRoot, config,
+        distro: options.distro, resourceRoot: options.resourceRoot, config, ...options.packages === undefined ? {} : { packages: options.packages },
       }) })
     setup = controller
     const trusted = (event: Electron.IpcMainInvokeEvent): void => {

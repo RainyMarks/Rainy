@@ -48,7 +48,7 @@ try {
   const wsl = async (...args) => (await run('wsl.exe', ['--distribution', ownedName, ...args], { windowsHide: true, encoding: 'utf8', timeout: 240000, maxBuffer: 4 * 1024 * 1024 })).stdout.trim()
   const map = async value => wsl('--exec', 'wslpath', '-u', value)
   const installScript = await map(resolve('scripts/install-runtime.py'))
-  const archive = await map(resolve('runtime/linux-runtime.tar.gz'))
+  const archive = await map(resolve('runtime/linux-runtime.tar.xz'))
   const metadata = await map(resolve('runtime/linux-runtime.json'))
   const installed = JSON.parse(await wsl('--exec', 'python3', installScript, archive, metadata))
   report.installedRuntime = installed

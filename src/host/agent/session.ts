@@ -9,6 +9,7 @@ import {
 } from '@earendil-works/pi-ai'
 import { EstimateCalibration, resolveBudget, type Budget } from '../../shared/budget.ts'
 import { lineChangeCounts } from '../../shared/line-diff.ts'
+import { compactStreaming, streamBaseline, streamPatch, type StreamBaseline } from '../../shared/stream-patch.ts'
 import type {
   ApprovalDecision, BackgroundCommand, ChatChange, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RetryWait,
   RevertResult, SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
@@ -42,6 +43,8 @@ type MessageMeta =
   | { kind: 'context'; entryId: string; label: Extract<TranscriptEntry, { kind: 'context' }>['label']; text: string }
 
 const STREAM_THROTTLE_MS = 50
+/** The streaming reply goes whole to the page this often; the updates between carry only what was added. */
+const STREAM_WHOLE_MS = 2000
 const TOOL_UPDATE_THROTTLE_MS = 200
 /** Chats referenced with `@[…](rainy-session:<id>)` in one message. */
 const MAX_REFERENCES = 3
@@ -94,6 +97,8 @@ export class ChatSession {
   private readonly pending = new Map<string, { message: UserMessage; meta: MessageMeta }>()
   private readonly meta = new WeakMap<object, MessageMeta>()
   private streaming: AssistantMessage | null = null
+  /** What the page last received of the streaming reply, and when it last received it whole. */
+  private streamSent: { baseline: StreamBaseline; wholeAt: number } | undefined
   private readonly runningTools = new Map<string, number>()
   private readonly observations = new Observations()
   /** Commands of this chat that keep running after their tool call. */
@@ -168,7 +173,7 @@ export class ChatSession {
       model: this.selection(),
       queue: this.queue,
       context: this.context,
-      streaming: this.streaming,
+      streaming: this.streaming === null ? null : compactStreaming(this.streaming),
       runningTools: [...this.runningTools.keys()],
       permission: this.permission(),
       approvals: this.pendingApprovals(),
@@ -603,6 +608,7 @@ export class ChatSession {
     }
     this.agent = undefined
     this.streaming = null
+    this.streamSent = undefined
     this.runningTools.clear()
     this.stopAfterStep = false
     this.refused.clear()
@@ -672,6 +678,7 @@ export class ChatSession {
     switch (event.type) {
       case 'message_start':
         if (event.message.role === 'assistant') {
+          this.streamSent = undefined
           this.messageStarted = Date.now()
           this.thinkingStarted.clear()
           this.thinkingMs = {}
@@ -687,7 +694,7 @@ export class ChatSession {
           if (this.streamTimer === undefined) {
             this.streamTimer = setTimeout(() => {
               this.streamTimer = undefined
-              this.services.rpc.emit('session.stream', { sessionId: this.chat.id, message: this.streaming })
+              this.emitStream()
             }, STREAM_THROTTLE_MS)
           }
         }
@@ -721,6 +728,41 @@ export class ChatSession {
     }
   }
 
+  /**
+   * The snapshot the page loads a chat from. The page then holds the streaming reply as it is now, so the next update is
+   * computed from that.
+   * @param limit See {@link snapshot}.
+   * @returns The snapshot.
+   */
+  pageSnapshot(limit?: number): SessionSnapshot {
+    const snapshot = this.snapshot(limit)
+    if (snapshot.streaming !== null && this.streamSent !== undefined) {
+      this.streamSent = { baseline: streamBaseline(snapshot.streaming), wholeAt: this.streamSent.wholeAt }
+    }
+    return snapshot
+  }
+
+  /**
+   * Send the streaming reply to the page: whole at first and every {@link STREAM_WHOLE_MS}, otherwise only what was
+   * added, so a long reply is not sent again on every update (an SSH Host sends it over the tunnel).
+   */
+  private emitStream(): void {
+    if (this.streaming === null) return
+    const message = compactStreaming(this.streaming)
+    const now = Date.now()
+    const sent = this.streamSent
+    if (sent !== undefined && now - sent.wholeAt < STREAM_WHOLE_MS) {
+      const { patch, baseline } = streamPatch(sent.baseline, message)
+      if (patch !== undefined) {
+        this.streamSent = { baseline, wholeAt: sent.wholeAt }
+        if (patch.append !== undefined || patch.blocks !== undefined) this.services.rpc.emit('session.stream', { sessionId: this.chat.id, patch })
+        return
+      }
+    }
+    this.streamSent = { baseline: streamBaseline(message), wholeAt: now }
+    this.services.rpc.emit('session.stream', { sessionId: this.chat.id, message })
+  }
+
   private async onMessageEnd(message: AgentMessage): Promise<void> {
     if (message.role === 'user') {
       const meta = this.meta.get(message)
@@ -735,6 +777,7 @@ export class ChatSession {
       clearTimeout(this.streamTimer)
       this.streamTimer = undefined
       this.streaming = null
+      this.streamSent = undefined
       this.services.rpc.emit('session.stream', { sessionId: this.chat.id, message: null })
       if (this.run !== undefined) {
         this.run.requests++

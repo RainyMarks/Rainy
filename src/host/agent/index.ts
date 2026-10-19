@@ -249,7 +249,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     rpc.emit('sessions.changed', created)
     return created
   })
-  rpc.register('sessions.get', async ({ sessionId, limit }) => (await session(sessionId)).snapshot(limit))
+  rpc.register('sessions.get', async ({ sessionId, limit }) => (await session(sessionId)).pageSnapshot(limit))
   rpc.register('sessions.rename', async ({ sessionId, title }) => {
     const trimmed = title.trim()
     if (trimmed === '' || Buffer.byteLength(trimmed, 'utf8') > 80) throw new RpcError('invalid', localized({ zh: '标题需为 1–80 字节。', en: 'A title must be 1 to 80 bytes long.' }))

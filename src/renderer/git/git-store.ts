@@ -40,7 +40,12 @@ export function refreshGit(): Promise<void> {
   if (workspaceId === null) return Promise.resolve()
   if (inFlight?.workspaceId === workspaceId) return inFlight.done
   const done = host.call('git.status', { workspaceId })
-    .then((status) => { if (current.workspaceId === workspaceId) publish({ workspaceId, status }) })
+    .then((status) => {
+      if (current.workspaceId !== workspaceId) return
+      // A poll that finds nothing new leaves the state as it is, so the window does not render again for it.
+      if (current.error === undefined && current.status !== undefined && JSON.stringify(current.status) === JSON.stringify(status)) return
+      publish({ workspaceId, status })
+    })
     .catch((error: unknown) => {
       if (current.workspaceId === workspaceId) publish({ ...current, error: error instanceof Error ? error.message : String(error) })
     })

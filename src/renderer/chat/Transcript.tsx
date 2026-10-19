@@ -12,7 +12,7 @@ import {
   Tooltip, writeClipboard,
 } from '../ui/index.ts'
 import { groupTurns, loadChat, type ChatView } from './chat-store.ts'
-import { Markdown } from './Markdown.tsx'
+import { Markdown, StreamingMarkdown } from './Markdown.tsx'
 import { useChatT } from './messages.ts'
 import { revertChanges } from './revert.ts'
 import { useScrollPin } from './scroll-pin.ts'
@@ -24,6 +24,50 @@ type ChatT = ReturnType<typeof useChatT>
 
 /** Id of the synthetic entry that carries the streaming reply. */
 const STREAMING_ID = '__streaming__'
+/** Tools of the turns that are not running. */
+const NO_TOOLS: ChatView['tools'] = {}
+
+type Group = ReturnType<typeof groupTurns>[number]
+
+function sameItems(a: readonly TranscriptEntry[], b: readonly TranscriptEntry[]): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index])
+}
+
+function sameMap<K, V>(a: ReadonlyMap<K, V>, b: ReadonlyMap<K, V>): boolean {
+  if (a.size !== b.size) return false
+  for (const [key, value] of a) if (b.get(key) !== value) return false
+  return true
+}
+
+/**
+ * Turns grouped from the entries, where a turn whose entries did not change keeps its identity (and its tool results),
+ * so only the turn that grows renders again while a reply streams or a tool finishes.
+ * @param entries Chat entries.
+ * @returns Groups with the results of their own tool calls.
+ */
+function useStableTurns(entries: readonly TranscriptEntry[]): { group: Group; results: ReadonlyMap<string, Entry<'toolResult'>> }[] {
+  const previous = useRef<{ group: Group; results: ReadonlyMap<string, Entry<'toolResult'>> }[]>([])
+  return useMemo(() => {
+    const all = new Map<string, Entry<'toolResult'>>()
+    for (const entry of entries) if (entry.kind === 'toolResult') all.set(entry.toolCallId, entry)
+    const next = groupTurns(entries).map((group, index) => {
+      const before = previous.current[index]
+      const stable = before !== undefined && before.group.user === group.user && sameItems(before.group.items, group.items) ? before.group : group
+      // A turn's calls are answered within it, but a result is looked up by id, so it is found wherever it is.
+      const results = new Map<string, Entry<'toolResult'>>()
+      for (const item of stable.items) {
+        if (item.kind !== 'assistant') continue
+        for (const block of item.message.content) {
+          const result = block.type === 'toolCall' ? all.get(block.id) : undefined
+          if (result !== undefined) results.set(result.toolCallId, result)
+        }
+      }
+      return { group: stable, results: before !== undefined && sameMap(before.results, results) ? before.results : results }
+    })
+    previous.current = next
+    return next
+  }, [entries])
+}
 
 function assistantText(message: AssistantMessage): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')
@@ -358,7 +402,9 @@ const Turn = memo(function Turn({ sessionId, user, items, results, tools, approv
             liveKey={thinkingLive ? `${sessionId}:${message.timestamp}:${index}` : undefined} durationMs={entry.thinkingMs?.[index]} />)
         }
       } else if (block.type === 'text') {
-        if (withText && block.text.trim() !== '') nodes.push(<Markdown key={key} className={css.text} text={block.text} />)
+        if (withText && block.text.trim() !== '') {
+          nodes.push(streaming ? <StreamingMarkdown key={key} className={css.text} text={block.text} /> : <Markdown key={key} className={css.text} text={block.text} />)
+        }
       } else {
         const call: ToolCall = block
         nodes.push(<ToolCard key={key} sessionId={sessionId} call={call} result={results.get(call.id)} running={tools[call.id]}
@@ -461,19 +507,23 @@ export function Transcript({ view, onFork, empty }: { view: ChatView; onFork(ses
   const pin = useScrollPin(sessionId)
   const running = view.summary.status === 'running' || view.summary.status === 'compacting'
 
-  const entries = useMemo(() => {
-    if (view.streaming === null || !running) return view.entries
+  const turns = useStableTurns(view.entries)
+  // The streaming reply joins the last turn only, so the finished turns above it do not render again on every update.
+  const groups = useMemo(() => {
+    if (view.streaming === null || !running) return turns
     const streaming: Entry<'assistant'> = { id: STREAMING_ID, kind: 'assistant', ts: Date.now(), message: view.streaming }
-    return [...view.entries, streaming]
-  }, [view.entries, view.streaming, running])
-  const groups = useMemo(() => groupTurns(entries), [entries])
-  const results = useMemo(() => {
-    const map = new Map<string, Entry<'toolResult'>>()
-    for (const entry of view.entries) if (entry.kind === 'toolResult') map.set(entry.toolCallId, entry)
-    return map
-  }, [view.entries])
-  const reverted = useMemo(() => new Set(view.entries.flatMap(entry => entry.kind === 'context' ? entry.reverted ?? [] : [])), [view.entries])
-  const approvals = useMemo(() => new Map(view.approvals.map(approval => [approval.toolCallId, approval])), [view.approvals])
+    const last = turns.at(-1)
+    if (last === undefined) return [{ group: { user: undefined, items: [streaming] }, results: new Map<string, Entry<'toolResult'>>() }]
+    return [...turns.slice(0, -1), { ...last, group: { user: last.group.user, items: [...last.group.items, streaming] } }]
+  }, [turns, view.streaming, running])
+  const revertedKey = view.entries.flatMap(entry => entry.kind === 'context' ? entry.reverted ?? [] : []).join('\n')
+  const reverted = useMemo(() => new Set(revertedKey === '' ? [] : revertedKey.split('\n')), [revertedKey])
+  // Every state event brings a new approvals array; the map changes only with its content.
+  const approvalsKey = JSON.stringify(view.approvals)
+  const approvals = useMemo(() => new Map((JSON.parse(approvalsKey) as PendingApproval[]).map(approval => [approval.toolCallId, approval])), [approvalsKey])
+  const forkRef = useRef(onFork)
+  forkRef.current = onFork
+  const fork = useCallback((id: string) => { forkRef.current(id) }, [])
   // The chat can be asked again when its last model-visible entry is a failed reply.
   const retryId = useMemo(() => {
     if (running) return undefined
@@ -508,10 +558,11 @@ export function Transcript({ view, onFork, empty }: { view: ChatView; onFork(ses
             <button type="button" className={css.loadOlder} disabled={loadingOlder} onClick={loadOlder}>{t('loadOlder')}</button>
           )}
           {groups.length === 0 && empty}
-          {groups.map((group, index) => (
+          {groups.map(({ group, results }, index) => (
             <Turn key={group.user?.id ?? `lead-${index}`} sessionId={sessionId} user={group.user} items={group.items} results={results}
-              tools={view.tools} approvals={approvals} reverted={reverted} live={running && index === groups.length - 1} idle={!running}
-              retryId={index === groups.length - 1 ? retryId : undefined} prefs={prefs} onFork={onFork} />
+              tools={index === groups.length - 1 ? view.tools : NO_TOOLS} approvals={approvals} reverted={reverted}
+              live={running && index === groups.length - 1} idle={!running}
+              retryId={index === groups.length - 1 ? retryId : undefined} prefs={prefs} onFork={fork} />
           ))}
           {view.retry !== undefined && <RetryCountdown sessionId={sessionId} wait={view.retry} />}
           {running && view.retry === undefined && view.streaming === null && Object.keys(view.tools).length === 0 && (

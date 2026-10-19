@@ -1,8 +1,8 @@
 /** AI assistant pane: transcript, composer and model picker for the current chat. */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ImageContent } from '@earendil-works/pi-ai'
 import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
-import type { PermissionMode } from '../../shared/rpc.ts'
+import type { BackgroundCommand, PermissionMode, QueuedMessage } from '../../shared/rpc.ts'
 import { on } from '../app/bus.ts'
 import { getPrefs } from '../prefs.ts'
 import { ChangesBar } from '../review/ChangesBar.tsx'
@@ -29,6 +29,9 @@ export interface ChatPaneProps {
   /** Switch the left pane to the chat history. */
   onShowHistory(): void
 }
+
+const NO_COMMANDS: readonly BackgroundCommand[] = []
+const NO_QUEUE: readonly QueuedMessage[] = []
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -114,6 +117,16 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
     host.call('chat.compact', { sessionId }).then((result) => { if (result.message !== '') toast(result.message) }, (error: unknown) => { toast(message(error), { tone: 'error' }) })
   }
   const newChat = (): void => { onSessionChange(null) }
+  // The pane renders on every streamed update; the composer and bars below it get callbacks that keep their identity.
+  const latest = useRef({ send, stop, compact, newChat, changePermission })
+  latest.current = { send, stop, compact, newChat, changePermission }
+  const actions = useMemo(() => ({
+    send: (text: string, images: ImageContent[], mode: 'queue' | 'steer') => latest.current.send(text, images, mode),
+    stop: () => { latest.current.stop() },
+    compact: () => { latest.current.compact() },
+    newChat: () => { latest.current.newChat() },
+    permission: (mode: PermissionMode) => { latest.current.changePermission(mode) },
+  }), [])
 
   const title = view?.summary.title !== undefined && view.summary.title !== '' ? view.summary.title : sessionId === null ? t('newChat') : t('untitled')
   return (
@@ -128,11 +141,11 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
       {sessionId === null || view === undefined
         ? <div className={css.empty}>{sessionId === null && <><RainField /><Hero hasProject={workspace !== null} /></>}</div>
         : <Transcript view={view} onFork={onSessionChange} empty={<Hero hasProject={workspace !== null} />} />}
-      {sessionId !== null && <BackgroundBar sessionId={sessionId} commands={view?.background ?? []} />}
+      {sessionId !== null && <BackgroundBar sessionId={sessionId} commands={view?.background ?? NO_COMMANDS} />}
       {sessionId !== null && <ChangesBar sessionId={sessionId} busy={busy} />}
       <Composer sessionId={sessionId} workspaceId={view?.summary.workspaceId ?? workspace?.workspaceId ?? null} busy={busy || creating}
-        model={view?.model ?? null} context={view?.context ?? null} queue={view?.queue ?? []} permission={permission} onPermission={changePermission}
-        onSend={(text, images, mode) => send(text, images, mode)} onStop={stop} onCompact={compact} onNewChat={newChat} />
+        model={view?.model ?? null} context={view?.context ?? null} queue={view?.queue ?? NO_QUEUE} permission={permission} onPermission={actions.permission}
+        onSend={actions.send} onStop={actions.stop} onCompact={actions.compact} onNewChat={actions.newChat} />
     </div>
   )
 }

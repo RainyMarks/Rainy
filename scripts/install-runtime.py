@@ -1,6 +1,6 @@
 """Verify and unpack the Host into Rainy's private directory on a WSL distribution or an SSH server.
 
-The runtime comes in two layers. The base (`linux-runtime.tar.gz`: Node.js, the dependency packages, the IDE resources
+The runtime comes in two layers. The base (`linux-runtime.tar.xz`: Node.js, the dependency packages, the IDE resources
 and ripgrep) is downloaded and changes only when those change; it is identified by the digest of its content. The
 application layer (`linux-app.tar.gz`: the Host, the interface and the small resources) ships with every desktop
 version. A version installs as `<application digest>/`, which holds the application layer and links to `base-<id>/`, so
@@ -25,6 +25,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -162,9 +163,39 @@ def prune(owned, metadata):
     return removed
 
 
+XZ_MAGIC = b'\xfd7zXZ\x00'
+
+
+def has_lzma():
+    try:
+        import lzma  # noqa: F401 -- Pythons built without liblzma lack the module.
+        return True
+    except ImportError:
+        return False
+
+
 def extract(archive, destination):
+    """Unpack a gzip or xz archive (the base is xz, the application layer gzip). A Python without `lzma` hands an xz
+    archive to the system's `xz`, which every distribution's package manager depends on."""
+    with open(archive, 'rb') as stream:
+        xz = stream.read(len(XZ_MAGIC)) == XZ_MAGIC
+    if not xz or has_lzma():
+        unpack(archive, destination)
+        return
+    plain = Path(tempfile.mkdtemp(prefix='.install-unxz-', dir=os.path.dirname(destination))) / 'base.tar'
+    try:
+        with plain.open('wb') as output:
+            result = subprocess.run(['xz', '--decompress', '--stdout', str(archive)], stdout=output, stderr=subprocess.PIPE)
+        if result.returncode:
+            raise RuntimeError('This Python has no lzma module and xz failed: ' + result.stderr.decode(errors='replace').strip())
+        unpack(plain, destination)
+    finally:
+        shutil.rmtree(plain.parent, ignore_errors=True)
+
+
+def unpack(archive, destination):
     """Unpack with the `data` filter; Pythons before it (3.8 on older servers) get the same checks by hand."""
-    with tarfile.open(archive, 'r:gz') as package:
+    with tarfile.open(archive, 'r:*') as package:
         if hasattr(tarfile, 'data_filter'):
             package.extractall(destination, filter='data')
             return
@@ -291,7 +322,7 @@ def fetch(owned, metadata, pieces):
             partial.rename(path)
         done += piece['bytes']
         progress(done, total)
-    archive = folder / 'linux-runtime.tar.gz'
+    archive = folder / 'linux-runtime.base'
     with archive.open('wb') as output:
         for index in range(len(pieces)):
             with (folder / f'{index:03d}').open('rb') as source:
@@ -321,7 +352,7 @@ def remote(owned, mode, metadata, pieces):
         read_exactly(sys.stdin.buffer, metadata['app']['bytes'], app_archive)
         base_archive = None
         if mode == '--receive':
-            base_archive = folder / 'linux-runtime.tar.gz'
+            base_archive = folder / 'linux-runtime.base'
             with base_archive.open('wb') as output:
                 shutil.copyfileobj(sys.stdin.buffer, output, CHUNK)
         else:

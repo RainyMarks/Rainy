@@ -145,15 +145,15 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
           en: 'The development tools are ready. Return to the workspace to run and debug code.' }) })
       }
       if (!supported) return publish({ status: 'unsupported', code: 'unsupported-distribution', message: localized({
-        zh: `所选环境为 ${observed.os} ${observed.osVersion}（${observed.architecture}）。随包离线安装仅支持 Ubuntu 26.04 amd64；请在所选环境中手动准备缺失工具。`,
-        en: `The selected environment is ${observed.os} ${observed.osVersion} (${observed.architecture}). The bundled offline installation supports only `
+        zh: `所选环境为 ${observed.os} ${observed.osVersion}（${observed.architecture}）。Rainy 提供的开发组件仅支持 Ubuntu 26.04 amd64；请在所选环境中手动准备缺失工具。`,
+        en: `The selected environment is ${observed.os} ${observed.osVersion} (${observed.architecture}). The development packages Rainy provides support only `
           + 'Ubuntu 26.04 amd64. Install the missing tools in this environment yourself.' }) })
       if (!observed.mediaPresent || !observed.mediaMatches) return publish({ status: 'missing-media', code: 'development-media-missing',
         message: localized({ zh: '离线开发工具文件缺失或不匹配，请重新安装完整的 Rainy 安装包后重试。',
           en: 'The offline development tool files are missing or do not match. Reinstall Rainy from the full installer, then try again.' }) })
       return publish({ status: 'needs-install', message: missing.length > 0
-        ? localized({ zh: `缺少 ${missing.map(tool => tool.name).join('、')}。点击“安装开发工具”后，将在当前环境中安装随包提供的开发组件。`,
-          en: `Missing: ${missing.map(tool => tool.name).join(', ')}. Click "Install development tools" to install the bundled development components in this environment.` })
+        ? localized({ zh: `缺少 ${missing.map(tool => tool.name).join('、')}。点击“安装开发工具”后，将下载 Ubuntu 开发组件并安装到当前环境。`,
+          en: `Missing: ${missing.map(tool => tool.name).join(', ')}. Click "Install development tools" to download the Ubuntu development packages and install them in this environment.` })
         : localized({ zh: '开发组件尚未完成配置。点击“安装开发工具”可继续离线准备。',
           en: 'The development components are not fully set up. Click "Install development tools" to continue the offline setup.' }) })
     } catch (error) { return fail(error) }
@@ -174,8 +174,8 @@ export function createIdeEnvironmentSetup(options: IdeEnvironmentSetupOptions): 
     try {
       const before = await inspectInternal()
       if (before.status !== 'needs-install') return before
-      publish({ status: 'installing', busy: true, code: undefined, log: [], message: localized({ zh: '正在校验并离线安装开发工具，请等待完成后再关闭此窗口。',
-        en: 'Verifying and installing the development tools offline. Wait until this finishes before closing the window.' }) })
+      publish({ status: 'installing', busy: true, code: undefined, log: [], message: localized({ zh: '正在下载、校验并安装开发工具，请等待完成后再关闭此窗口。',
+        en: 'Downloading, verifying and installing the development tools. Wait until this finishes before closing the window.' }) })
       await options.platform.install((message) => {
         const lines = message.replaceAll('\r', '').split('\n').filter(line => line.trim() !== '')
           .map(line => line.slice(-options.config.maxProgressLineCharacters))

@@ -363,6 +363,10 @@
   40% { opacity: 1; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .pendingDot { animation: none; opacity: 0.6; }
+}
+
 .toBottom {
   position: absolute;
   bottom: 12px;
@@ -388,4 +392,7 @@
   border-radius: 50%;
   background: var(--rainy-alias-link);
   animation: pulse 1.2s infinite ease-in-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .toBottom[data-live]::before { animation: none; }
 }

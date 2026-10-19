@@ -28,8 +28,12 @@ export interface IdeToolPaths {
 export async function getIdeToolPaths(resources: string): Promise<IdeToolPaths> {
   const require = createRequire(import.meta.url)
   const resourceRoot = join(resources, 'ide')
-  let ripgrep: string | undefined
-  try { ripgrep = (await import('@vscode/ripgrep')).rgPath } catch (_missingPlatformPackage) { ripgrep = undefined }
+  // Packaged Hosts keep ripgrep only in <app>/bin; a development checkout has the npm package's copy.
+  const bundled = join(dirname(resources), 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg')
+  let ripgrep: string | undefined = await stat(bundled).then(info => info.isFile() ? bundled : undefined, () => undefined)
+  if (ripgrep === undefined) {
+    try { ripgrep = (await import('@vscode/ripgrep')).rgPath } catch (_missingPlatformPackage) { ripgrep = undefined }
+  }
   return {
     resourceRoot,
     node: process.execPath,

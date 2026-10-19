@@ -160,6 +160,21 @@ if node_pty:
         raise RuntimeError('node-pty Linux binary missing from the locked package')
     for executable in pty_dir.rglob('spawn-helper'):
         executable.chmod(executable.stat().st_mode | 0o111)
+
+# What the Linux Host never reads stays out of the download: Node.js's C headers (node-gyp fetches its own), the unpacked
+# Ruff archive that bin/ruff was copied from, and debugpy's sources, debug symbols and Windows/macOS binaries.
+ide = directories[graph['root']] / 'resources/ide'
+shutil.rmtree(staging / 'node/include', ignore_errors=True)
+shutil.rmtree(ide / 'ruff-x86_64-unknown-linux-gnu', ignore_errors=True)
+for path in list((ide / 'python').rglob('*')) if (ide / 'python').is_dir() else []:
+    if path.is_file() and path.suffix in {'.c', '.cpp', '.h', '.hpp', '.pyx', '.pxd', '.pdb', '.dll', '.exe', '.pyd', '.dylib'}:
+        path.unlink()
+# The offline Ubuntu packages are the optional module `linux-dev-packages` (prepare-optional-modules.mjs), which the
+# desktop downloads when the user installs them; the base keeps their manifest, which the environment check reads.
+system_packages = ide / 'system-packages'
+for entry in list(system_packages.iterdir()) if system_packages.is_dir() else []:
+    if entry.name != 'manifest.json':
+        entry.unlink()
 manifest = {'schemaVersion': 1, 'node': version, 'version': graph['appVersion'], 'packages': [{'name': p['name'], 'version': p['version']} for p in packages.values()]}
 (staging / 'runtime.json').write_text(json.dumps(manifest, indent=2) + '\n')
 rg_download = next((dependency for dependency in graph.get('platformDownloads', []) if dependency['name'] == '@vscode/ripgrep-linux-x64'), None)
@@ -191,19 +206,30 @@ for stale in staging.rglob('*.map'):
         stale.unlink()
 
 
-def pack(path, keep):
-    with tarfile.open(path, 'w:gz', compresslevel=3) as package:
+def pack(path, keep, mode, **options):
+    unpacked = 0
+    with tarfile.open(path, mode, **options) as package:
+        def member_filter(member):
+            nonlocal unpacked
+            if not keep(member.name):
+                return None
+            unpacked += member.size if member.isfile() else 0
+            return member
         for entry in sorted(staging.iterdir()):
-            package.add(entry, arcname=entry.name, recursive=True, filter=lambda member: member if keep(member.name) else None)
-    return {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size}
+            package.add(entry, arcname=entry.name, recursive=True, filter=member_filter)
+    return {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size}, unpacked
 
 
-archive = output / 'linux-runtime.tar.gz'
-base = pack(archive, layers.in_base)
-application = pack(output / 'linux-app.tar.gz', layers.in_app_layer)
+for stale in (output / 'linux-runtime.tar.gz',):
+    stale.unlink(missing_ok=True)
+# The base is downloaded, so it gets xz (about a third smaller than gzip); the application layer ships in the installer,
+# which compresses it again, and unpacks at every update, so it stays gzip.
+archive = output / 'linux-runtime.tar.xz'
+base, unpacked = pack(archive, layers.in_base, 'w:xz', preset=6)
+application, _ = pack(output / 'linux-app.tar.gz', layers.in_app_layer, 'w:gz', compresslevel=6)
 content = layers.content_digest(staging)
-(output / 'linux-runtime.json').write_text(json.dumps({**base, 'content': content, 'app': application, 'node': version,
-                                                       'version': graph['appVersion']}, indent=2) + '\n')
+(output / 'linux-runtime.json').write_text(json.dumps({**base, 'unpackedBytes': unpacked, 'content': content, 'app': application,
+                                                       'node': version, 'version': graph['appVersion']}, indent=2) + '\n')
 (output / 'staging-path.txt').write_text(str(staging) + '\n')
 print(json.dumps({'archiveBytes': base['bytes'], 'sha256': base['sha256'], 'content': content, 'appBytes': application['bytes'],
                   'staging': str(staging)}), flush=True)

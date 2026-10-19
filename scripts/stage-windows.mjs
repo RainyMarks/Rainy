@@ -164,9 +164,9 @@ async function pruneNodePty(directory) {
 }
 for (const target of copied) if (target.endsWith(`${sep}node-pty`)) await pruneNodePty(target)
 
-// The Host puts <app>/bin on PATH for its shell tool.
+// The Host puts <app>/bin on PATH for its shell tool and runs ripgrep from there, so the package keeps no second copy.
 await mkdir(join(staging, 'app/bin'), { recursive: true })
-await cp(join(staging, 'node_modules/@vscode/ripgrep-win32-x64/bin/rg.exe'), join(staging, 'app/bin/rg.exe'))
+await rename(join(staging, 'node_modules/@vscode/ripgrep-win32-x64/bin/rg.exe'), join(staging, 'app/bin/rg.exe'))
 
 // Windows resources are installed from their matching component; Linux ELF helpers cannot enter this tree.
 safeOwned(staging)
@@ -177,6 +177,16 @@ try {
   await cp(join(app, 'runtime/component-stage/windows-basic/python/Scripts/ruff.exe'), join(staging, 'app/resources/ide/bin/ruff.exe'))
 } catch (error) { if (error.code !== 'ENOENT') throw error }
 await cp(join(app, 'runtime/component-stage/windows-basic/python/Lib/site-packages/debugpy'), join(staging, 'app/resources/ide/python/debugpy'), { recursive: true, dereference: true })
+// debugpy's C and Cython sources, debug symbols and Linux/macOS libraries are never loaded by the Windows debugger.
+async function pruneDebugpy(folder) {
+  safeOwned(folder)
+  for (const entry of await readdir(folder, { withFileTypes: true })) {
+    const path = join(folder, entry.name)
+    if (entry.isDirectory()) await pruneDebugpy(path)
+    else if (/\.(?:c|cpp|h|hpp|pyx|pxd|pdb|so|dylib)$/u.test(entry.name)) await rm(path)
+  }
+}
+await pruneDebugpy(join(staging, 'app/resources/ide/python'))
 const files = []
 async function inventory(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

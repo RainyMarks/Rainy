@@ -11,14 +11,17 @@ import { assertToolPackPath, checkToolPackCancellation, toolPackStat, writeToolP
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/)
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
-const moduleIds = ['strata', 'php', 'linux-runtime'] as const
-/** Every module, including the Linux runtime that the carrier fetches by itself for a WSL execution target. */
+const moduleIds = ['strata', 'php', 'linux-runtime', 'linux-dev-packages'] as const
+/** Every module, including the Linux runtime that the carrier fetches by itself for a WSL execution target and the offline
+ * Ubuntu development packages it fetches when the user installs them. */
 export type CarrierModuleId = typeof moduleIds[number]
+/** Modules the carrier manages by itself; Settings neither lists them nor receives their progress. */
+const internal = (id: CarrierModuleId): boolean => id === 'linux-runtime' || id === 'linux-dev-packages'
 const descriptorSchema = z.object({ version: z.literal(1), modules: z.array(z.object({
   id: z.enum(moduleIds),
   // A directory module is unpacked; a file module stays an archive that another installer consumes.
   kind: z.enum(['directory', 'file']),
-  file: z.string().regex(/^[a-z0-9][a-z0-9.-]*\.tar\.gz$/),
+  file: z.string().regex(/^[a-z0-9][a-z0-9.-]*\.tar\.(?:gz|xz)$/),
   bytes: bytes.refine(value => value > 0), sha256: hash, unpackedBytes: bytes,
   baseUrl: z.string().regex(/^https:\/\/github\.com\/RainyMarks\/(?:RainyAgent|Rainy)\/releases\/download\/v\d+\.\d+\.\d+-resources\/$/),
   pieces: z.array(z.object({ file: z.string().regex(/^rainy-[a-f0-9]{20}\.\d{3}$/), bytes, sha256: hash }).strict()).min(1),
@@ -100,7 +103,7 @@ export class OptionalModules {
 
   /** User-facing modules and their sizes. @returns status of Strata and PHP. */
   async status(): Promise<OptionalModuleStatus[]> {
-    const modules = (await this.list()).filter((module): module is Descriptor & { id: OptionalModuleId } => module.id !== 'linux-runtime')
+    const modules = (await this.list()).filter((module): module is Descriptor & { id: OptionalModuleId } => !internal(module.id))
     return Promise.all(modules.map(async module => ({ id: module.id, installed: await this.installed(module.id),
       downloadBytes: module.bytes, unpackedBytes: module.unpackedBytes })))
   }
@@ -129,7 +132,7 @@ export class OptionalModules {
   private async run(id: CarrierModuleId, signal: AbortSignal, observe?: (completed: number, total: number) => void): Promise<void> {
     const module = await this.descriptor(id)
     const report = (phase: OptionalModulesState['phase'], completedBytes: number): void => {
-      if (id !== 'linux-runtime') this.publish({ phase, module: id, completedBytes, totalBytes: module.bytes, error: '' })
+      if (!internal(id)) this.publish({ phase, module: id as OptionalModuleId, completedBytes, totalBytes: module.bytes, error: '' })
       observe?.(completedBytes, module.bytes)
     }
     try {
@@ -162,11 +165,11 @@ export class OptionalModules {
       report('complete', module.bytes)
     } catch (error) {
       const cancelled = signal.aborted
-      if (id !== 'linux-runtime') {
-        this.publish({ ...this.state, module: id, phase: cancelled ? 'cancelled' : 'error',
+      if (!internal(id)) {
+        this.publish({ ...this.state, module: id as OptionalModuleId, phase: cancelled ? 'cancelled' : 'error',
           error: cancelled ? '' : error instanceof Error ? error.message : localized({ zh: '组件下载失败，请重试', en: 'The component download failed. Try again.' }) })
       }
-      if (!cancelled || id === 'linux-runtime') throw error
+      if (!cancelled || internal(id)) throw error
     }
   }
 
@@ -181,7 +184,7 @@ export class OptionalModules {
     const retired = join(this.options.root, `.retired-${id}-${randomUUID()}`)
     if (await toolPackStat(target)) await rename(target, retired)
     await rm(retired, { recursive: true, force: true })
-    if (id !== 'linux-runtime') this.publish({ phase: 'idle', module: id, completedBytes: 0, totalBytes: 0, error: '' })
+    if (!internal(id)) this.publish({ phase: 'idle', module: id as OptionalModuleId, completedBytes: 0, totalBytes: 0, error: '' })
   }
 
   /** Remove leftovers of interrupted installations and module archives this carrier no longer pins. */

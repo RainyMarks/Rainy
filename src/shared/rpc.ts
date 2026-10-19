@@ -7,6 +7,7 @@
  * - event    `{ event, data }` from the Host, broadcast to every connected renderer
  */
 import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai'
+import type { StreamPatch } from './stream-patch.ts'
 import type { Accent, ColorScheme } from './appearance.ts'
 import type { IdeExecutionRequest, IdeExecutionResponseMap } from './ide-execution-protocol.ts'
 import type { IdeFilesFailure, IdeFilesRequest, IdeFilesResults, IdeRootId, IdeStateRequest, WorkspaceId } from './ide-files-protocol.ts'
@@ -549,8 +550,12 @@ export type MethodResult<M extends HostMethod> = HostMethods[M][1]
 export interface HostEvents {
   /** A transcript entry was appended to a chat. */
   'session.entry': { sessionId: SessionId; entry: TranscriptEntry }
-  /** Streaming progress of the current request; `message` is the partial assistant message. */
-  'session.stream': { sessionId: SessionId; message: AssistantMessage | null }
+  /**
+   * Streaming progress of the current request: `message` is the whole partial assistant message (`null` once it ended),
+   * `patch` what was added since the previous event (`shared/stream-patch.ts`). The whole message comes first and again
+   * every few seconds, so a page that missed an update or loaded the chat mid-reply catches up.
+   */
+  'session.stream': { sessionId: SessionId; message: AssistantMessage | null } | { sessionId: SessionId; patch: StreamPatch }
   /** The chat's list of changed files may have changed: a write or edit finished, or changes were kept or undone. */
   'session.changes': { sessionId: SessionId }
   /** Partial output of a running tool. */

@@ -8,7 +8,7 @@ import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { emit } from '../app/bus.ts'
 import { CodeToolbar, highlightLines, Tooltip, useHighlightRevision, writeClipboard } from '../ui/index.ts'
 import cardCss from '../ui/CodeCard.module.css'
-import { useMathPlugin } from './math.ts'
+import { mayContainMath, useMathPlugin } from './math.ts'
 import { useChatT } from './messages.ts'
 import css from './Markdown.module.css'
 
@@ -259,4 +259,72 @@ export const MarkdownDocument = memo(function MarkdownDocument({ text, className
 /** Rendered assistant markdown; memoized because transcripts re-render while streaming. */
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string | undefined }): ReactElement {
   return <MarkdownDocument text={text} className={className} options={CHAT_OPTIONS} />
+})
+
+/** Link reference and footnote definitions apply to the whole document, so text holding one is not split. */
+const DEFINITION = /^ {0,3}\[[^\]\n]+\]:/mu
+const FENCE = /^ {0,3}(`{3,}|~{3,})/u
+/** A line after a blank one that may continue the block before it: indented content, list items. */
+const CONTINUATION = /^(?:[ \t]|[*+-](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$))/u
+
+/**
+ * Split Markdown into top-level blocks that render the same alone as together: at blank lines outside code fences and
+ * math blocks, before a line that cannot continue the block above it.
+ * @param text Markdown source.
+ * @returns The blocks; joined, they give back the text.
+ */
+export function markdownBlocks(text: string): string[] {
+  if (DEFINITION.test(text)) return [text]
+  const lines = text.split('\n')
+  const blocks: string[] = []
+  let start = 0
+  let fence: string | undefined
+  let math = false
+  let blank = false
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!
+    if (fence !== undefined) {
+      const close = FENCE.exec(line)
+      if (close !== null && close[1]![0] === fence[0] && close[1]!.length >= fence.length && line.trim() === close[1]) fence = undefined
+      continue
+    }
+    if (math) {
+      if (line.trim() === '$$') math = false
+      continue
+    }
+    if (line.trim() === '') { blank = true; continue }
+    if (blank && index > start && !CONTINUATION.test(line)) {
+      blocks.push(lines.slice(start, index).join('\n'))
+      start = index
+    }
+    blank = false
+    const open = FENCE.exec(line)
+    if (open !== null) fence = open[1]!
+    else if (line.trim() === '$$') math = true
+  }
+  blocks.push(lines.slice(start).join('\n'))
+  return blocks
+}
+
+const CHAT_COMPONENTS = markdownComponents(CHAT_OPTIONS)
+const STREAMING_REHYPE = [rehypeAnchors(false)]
+
+/** One block of a streaming reply; a finished block keeps its rendering while the reply grows below it. */
+const MarkdownBlock = memo(function MarkdownBlock({ text, katex }: { text: string; katex: ReturnType<typeof useMathPlugin> }): ReactElement {
+  const rehypePlugins = useMemo(() => katex === undefined || !mayContainMath(text) ? STREAMING_REHYPE : [katex, ...STREAMING_REHYPE], [katex, text])
+  return <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={CHAT_COMPONENTS} urlTransform={markdownUrl}>{text}</ReactMarkdown>
+})
+
+/**
+ * A reply while it streams: only its last block is parsed again on each update, instead of the whole text. The finished
+ * reply is rendered whole by {@link Markdown}.
+ */
+export const StreamingMarkdown = memo(function StreamingMarkdown({ text, className }: { text: string; className?: string | undefined }): ReactElement {
+  const katex = useMathPlugin(text)
+  const blocks = useMemo(() => markdownBlocks(text), [text])
+  return (
+    <div className={clsx(css.markdown, className)} data-markdown-root>
+      {blocks.map((block, index) => <MarkdownBlock key={index} text={block} katex={katex} />)}
+    </div>
+  )
 })

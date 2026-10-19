@@ -97,13 +97,15 @@ function useSize(element: HTMLElement | null): { width: number; height: number }
   return size
 }
 
-/** @returns The current time, updated every few seconds while mounted. */
-function useNow(intervalMs: number): number {
+/** @returns The current time, updated every few seconds while the map is shown; a hidden map does not render for it. */
+function useNow(intervalMs: number, running: boolean): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
+    if (!running) return undefined
+    setNow(Date.now())
     const timer = setInterval(() => { setNow(Date.now()) }, intervalMs)
     return () => { clearInterval(timer) }
-  }, [intervalMs])
+  }, [intervalMs, running])
   return now
 }
 
@@ -447,7 +449,7 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
   const [trail, setTrail] = useState<readonly string[]>([])
   const [selected, setSelected] = useState<string | undefined>()
   const [all, setAll] = useState(false)
-  const now = useNow(15_000)
+  const now = useNow(15_000, visible)
   const map = state.map
   useEffect(() => { setScope(''); setTrail([]); setSelected(undefined) }, [workspace?.workspaceId])
   const view = useMemo(() => map === undefined ? undefined : mapView(map, scope), [map, scope])

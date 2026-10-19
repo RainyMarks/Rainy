@@ -1,10 +1,10 @@
 /**
- * Syntax highlighting for code cards, built on highlight.js. Each grammar loads on first use outside the main bundle;
- * until it arrives the code shows as plain text, then components using {@link useHighlightRevision} highlight it.
+ * Syntax highlighting for code cards, built on highlight.js. The highlighter and each grammar load on first use outside
+ * the main bundle; until they arrive the code shows as plain text, then components using {@link useHighlightRevision}
+ * highlight it.
  */
 import { useSyncExternalStore, type CSSProperties } from 'react'
-import hljs from 'highlight.js/lib/core'
-import type { LanguageFn } from 'highlight.js'
+import type { HLJSApi, LanguageFn } from 'highlight.js'
 
 type GrammarModule = { default: LanguageFn }
 const LOADERS: Readonly<Record<string, () => Promise<GrammarModule>>> = {
@@ -38,6 +38,9 @@ const EMBEDDED: Readonly<Record<string, readonly string[]>> = {
 const pending = new Map<string, Promise<void>>()
 let revision = 0
 const listeners = new Set<() => void>()
+/** The highlighter, once its first grammar was asked for. */
+let hljs: HLJSApi | undefined
+let core: Promise<HLJSApi> | undefined
 
 /**
  * Load a grammar once; components re-render through {@link useHighlightRevision} when it is registered.
@@ -46,11 +49,12 @@ const listeners = new Set<() => void>()
  */
 export function loadGrammar(name: string): Promise<void> {
   const loader = LOADERS[name]
-  if (loader === undefined || hljs.getLanguage(name) !== undefined) return Promise.resolve()
+  if (loader === undefined || hljs?.getLanguage(name) !== undefined) return Promise.resolve()
   let task = pending.get(name)
   if (task === undefined) {
-    task = loader().then((module) => {
-      hljs.registerLanguage(name, module.default)
+    core ??= import('highlight.js/lib/core').then(module => (hljs = module.default), (error: unknown) => { core = undefined; throw error })
+    task = Promise.all([core, loader()]).then(([highlighter, module]) => {
+      highlighter.registerLanguage(name, module.default)
       revision++
       for (const listener of listeners) listener()
     }, (error: unknown) => {
@@ -137,8 +141,8 @@ const ENTITIES: Readonly<Record<string, string>> = { '&amp;': '&', '&lt;': '<', 
 export function highlightLines(code: string, lang: string | undefined): HighlightSpan[][] | undefined {
   const grammar = grammarFor(lang)
   if (grammar === undefined) return undefined
-  if (hljs.getLanguage(grammar) === undefined) { void loadGrammar(grammar); return undefined }
-  const html = hljs.highlight(code, { language: grammar, ignoreIllegals: true }).value
+  if (hljs?.getLanguage(grammar) === undefined) { void loadGrammar(grammar); return undefined }
+  const html = hljs!.highlight(code, { language: grammar, ignoreIllegals: true }).value
   const lines: HighlightSpan[][] = [[]]
   const classes: string[] = []
   const push = (text: string): void => {

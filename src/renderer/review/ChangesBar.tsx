@@ -1,5 +1,5 @@
 /** The files the agent changed in the current chat, above the composer: review each in the editor, keep it, or undo it. */
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import clsx from 'clsx'
 import type { ChatChange } from '../../shared/rpc.ts'
 import { emit } from '../app/bus.ts'
@@ -23,7 +23,7 @@ function split(display: string): { name: string; directory: string } {
  * @param props.busy The chat is running, so changes cannot be undone yet.
  * @returns The bar.
  */
-export function ChangesBar({ sessionId, busy }: { sessionId: string; busy: boolean }): JSX.Element | null {
+export const ChangesBar = memo(function ChangesBar({ sessionId, busy }: { sessionId: string; busy: boolean }): JSX.Element | null {
   const t = useReviewT()
   const changes = useChanges(sessionId)
   const { autoKeepChanges } = usePrefs()
@@ -101,4 +101,4 @@ export function ChangesBar({ sessionId, busy }: { sessionId: string; busy: boole
         </>} />
     </section>
   )
-}
+})

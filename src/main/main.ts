@@ -290,8 +290,8 @@ async function start(): Promise<void> {
     installer: app.isPackaged ? join(resourceRoot, 'install-runtime.py') : resolve(__dirname, '../scripts/install-runtime.py'),
   }
   // A development checkout stages the runtime archive itself.
-  const linuxRuntimeArchive = async (): Promise<string> => !app.isPackaged && existsSync(join(resourceRoot, 'linux-runtime.tar.gz'))
-    ? join(resourceRoot, 'linux-runtime.tar.gz') : modules.path('linux-runtime')
+  const linuxRuntimeArchive = async (): Promise<string> => !app.isPackaged && existsSync(join(resourceRoot, 'linux-runtime.tar.xz'))
+    ? join(resourceRoot, 'linux-runtime.tar.xz') : modules.path('linux-runtime')
   /** Download this version's Linux runtime; failing that, the user retries, continues on Windows, or quits. */
   const downloadLinuxRuntime = async (): Promise<boolean> => {
     for (;;) {
@@ -410,7 +410,7 @@ async function start(): Promise<void> {
     let result = await sshInstaller(selected, ['--fetch', JSON.stringify(pieces)], createReadStream(runtimeFiles.app))
     if (isRecord(result) && 'needsArchive' in result) {
       if ('error' in result) appendFileSync(logPath, `${selected.label} could not download the Linux runtime itself: ${String(result.error)}\n`)
-      const developmentArchive = !app.isPackaged && existsSync(join(resourceRoot, 'linux-runtime.tar.gz'))
+      const developmentArchive = !app.isPackaged && existsSync(join(resourceRoot, 'linux-runtime.tar.xz'))
       if (!developmentArchive && !await downloadLinuxRuntime()) return undefined
       const archive = await linuxRuntimeArchive()
       const size = (await stat(runtimeFiles.app)).size + (await stat(archive)).size
@@ -709,6 +709,15 @@ async function start(): Promise<void> {
     && event.senderFrame === window.webContents.mainFrame && new URL(event.senderFrame.url).origin === origin
   const ideEnvironment = target.kind === 'wsl' ? createIdeEnvironmentWindow({ parent: window, distro,
     resourceRoot: posix.resolve(posix.dirname(installed.host), '../resources/ide'),
+    // The offline Ubuntu packages are downloaded only when the user installs them, and deleted once they are installed.
+    packages: {
+      fetch: async (progress) => {
+        await modules.install('linux-dev-packages', progress)
+        const [directory] = await wslPaths(distro, [await modules.path('linux-dev-packages')])
+        return directory!
+      },
+      release: () => modules.remove('linux-dev-packages'),
+    },
     preloadPath, pagePath: join(__dirname, 'setup/ide.html'), icon,
   }) : undefined
   closeIdeEnvironment = () => ideEnvironment?.close() ?? Promise.resolve()

@@ -100,9 +100,12 @@ function learnDirectories(): Promise<void> {
 
 host.on('sessions.changed', (summary) => { workingDirectories.set(summary.id, summary.cwd) })
 // The model names the file at the start of a call it is still writing.
-host.on('session.stream', ({ sessionId, message }) => {
+host.on('session.stream', (event) => {
+  const { sessionId } = event
   let changed = false
-  for (const block of message?.content ?? []) {
+  // A tool call appears whole: in the first message of a reply or in a patch that adds or changes it.
+  const blocks = 'patch' in event ? (event.patch.blocks ?? []).map(item => item.block) : event.message?.content ?? []
+  for (const block of blocks) {
     if (block.type !== 'toolCall' || running.has(block.id) || (block.name !== 'write' && block.name !== 'edit' && block.name !== 'read')) continue
     if (text((block.arguments as Record<string, unknown> | undefined)?.file_path) === undefined) continue
     running.set(block.id, describe(sessionId, block.id, block.name, block.arguments, workingDirectories.get(sessionId)))

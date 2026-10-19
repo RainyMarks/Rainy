@@ -1,7 +1,7 @@
 {
   "name": "rainy-agent",
   "productName": "Rainy",
-  "version": "3.7.1",
+  "version": "3.8.0",
   "private": true,
   "type": "module",
   "description": "Rainy: a lightweight AI coding workbench for Windows, WSL and remote Linux over SSH",
@@ -25,7 +25,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.0.0",
     "@earendil-works/pi-ai": "1.0.0",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@vscode/ripgrep": "1.18.0",
     "electron-updater": "6.8.9",
     "js-yaml": "4.3.2",

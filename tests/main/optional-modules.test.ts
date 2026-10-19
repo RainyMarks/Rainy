@@ -35,6 +35,7 @@ async function fixture() {
   roots.push(root)
   const php = await archive(root, 'php', { 'php.exe': 'php program', 'ext/php_curl.dll': 'curl extension' })
   const strata = await archive(root, 'strata', { 'engine/strata.exe': 'engine' })
+  const devPackages = await archive(root, 'dev', { 'manifest.json': '{}', 'gcc_15_amd64.deb': 'gcc package' })
   const runtime = Buffer.from('linux runtime archive')
   const served = new Map<string, Buffer>()
   const entry = (id: string, kind: string, file: string, bytes: Buffer, parts: Buffer[]) => {
@@ -49,7 +50,8 @@ async function fixture() {
   await writeFile(descriptorPath, JSON.stringify({ version: 1, modules: [
     entry('strata', 'directory', 'strata-runtime.tar.gz', strata, [strata]),
     entry('php', 'directory', 'php.tar.gz', php, [php.subarray(0, 20), php.subarray(20)]),
-    entry('linux-runtime', 'file', 'linux-runtime.tar.gz', runtime, [runtime]),
+    entry('linux-runtime', 'file', 'linux-runtime.tar.xz', runtime, [runtime]),
+    entry('linux-dev-packages', 'directory', 'linux-dev-packages.tar.gz', devPackages, [devPackages]),
   ] }))
   const transport = vi.fn<typeof fetch>(async (input) => {
     const value = served.get(href(input))
@@ -68,6 +70,18 @@ describe('optional components', () => {
     expect(status.map(module => [module.id, module.installed, module.unpackedBytes])).toEqual([['strata', false, 42], ['php', false, 42]])
     expect(status.every(module => module.downloadBytes > 0)).toBe(true)
     expect(h.transport).not.toHaveBeenCalled()
+  })
+
+  it('fetches the offline Ubuntu packages for the carrier without telling Settings, and removes them', async () => {
+    const h = await fixture()
+    const progress = vi.fn()
+    await h.modules.install('linux-dev-packages', progress)
+    expect(await readFile(join(await h.modules.path('linux-dev-packages'), 'gcc_15_amd64.deb'), 'utf8')).toBe('gcc package')
+    expect(progress).toHaveBeenLastCalledWith(expect.any(Number), expect.any(Number))
+    expect(h.publish).not.toHaveBeenCalled()
+    await h.modules.remove('linux-dev-packages')
+    expect(await h.modules.installed('linux-dev-packages')).toBe(false)
+    expect(h.publish).not.toHaveBeenCalled()
   })
 
   it('joins verified pieces, unpacks the component and needs no network afterwards', async () => {

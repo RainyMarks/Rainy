@@ -16,8 +16,8 @@ import { Settings } from '../../src/host/settings.ts'
 
 /** One scripted assistant reply. */
 export type ScriptedReply =
-  /** Optional reasoning streams first (as `reasoning_content`), then `pauseMs` passes before the text. */
-  | { text: string; thinking?: string | undefined; pauseMs?: number | undefined }
+  /** Optional reasoning streams first (as `reasoning_content`), then `pauseMs` passes before the text; `chunkMs` spaces its parts. */
+  | { text: string; thinking?: string | undefined; pauseMs?: number | undefined; chunkMs?: number | undefined }
   | { toolCalls: { name: string; arguments: Record<string, unknown> }[] }
   | { status: number; body: string }
   /** Starts streaming this text, then drops the connection. */
@@ -59,9 +59,22 @@ export class FakeOpenAI {
         if ('text' in reply) {
           for (const part of reply.thinking?.match(/.{1,8}/gs) ?? []) send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: part } }] })
           const finish = (): void => {
-            for (const part of reply.text.match(/.{1,8}/gs) ?? ['']) send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: part } }] })
-            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } })
-            response.end('data: [DONE]\n\n')
+            const parts = reply.text.match(/.{1,8}/gs) ?? ['']
+            const end = (): void => {
+              send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } })
+              response.end('data: [DONE]\n\n')
+            }
+            if (reply.chunkMs === undefined) {
+              for (const part of parts) send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: part } }] })
+              end()
+              return
+            }
+            const next = (index: number): void => {
+              if (index === parts.length) { end(); return }
+              send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: parts[index] } }] })
+              setTimeout(() => { next(index + 1) }, reply.chunkMs)
+            }
+            next(0)
           }
           if (reply.pauseMs === undefined) finish()
           else setTimeout(finish, reply.pauseMs)

@@ -2,6 +2,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { PendingApproval, SessionSnapshot, SessionSummary, TranscriptEntry } from '../../shared/rpc.ts'
+import { applyStreamPatch } from '../../shared/stream-patch.ts'
 import { host } from '../rpc.ts'
 import { toast } from '../ui/toasts.tsx'
 import { chatT } from './messages.ts'
@@ -66,9 +67,18 @@ host.on('session.entry', ({ sessionId, entry }) => {
   update(sessionId, view => view.entries.some(item => item.id === entry.id) ? view
     : { ...view, entries: [...view.entries, entry], ...(entry.kind === 'assistant' ? { streaming: null } : {}) })
 })
-host.on('session.stream', ({ sessionId, message }) => {
+host.on('session.stream', (event) => {
+  if ('patch' in event) {
+    // A patch that does not fit (the chat was loaded between two updates) waits for the next whole message.
+    update(event.sessionId, (view) => {
+      const streaming = applyStreamPatch(view.streaming, event.patch)
+      return streaming === undefined ? view : { ...view, streaming }
+    })
+    return
+  }
   // A finished reply leaves the stream when its entry arrives (above), so the transcript never drops it in between
   // and a reader scrolled into it is not moved.
+  const { sessionId, message } = event
   if (message === null) return
   update(sessionId, view => ({ ...view, streaming: message }))
 })

@@ -25,8 +25,8 @@ async function unpackedBytes(archive) {
 }
 
 /**
- * Write the signed-resource descriptor for Strata, PHP and the Linux runtime.
- * Strata keeps the archive already published as a build input; PHP and the Linux runtime receive pieces for this release.
+ * Write the signed-resource descriptor for Strata, PHP, the Linux runtime base and the offline Ubuntu development packages.
+ * Strata keeps the archive already published as a build input; the others receive pieces for this release.
  * @param {{appDirectory:string,releaseVersion:string,pieces:string,output:string,strataArchive:string}} options Locations and identity.
  * @returns {Promise<{modules:object[],uploads:string[]}>} Descriptor entries and the piece files to upload.
  */
@@ -44,10 +44,15 @@ export async function prepareOptionalModules(options) {
     const php = join(app, 'runtime/component-stage/windows-basic/php')
     const names = (await readdir(php)).filter(name => name !== 'dev').sort()
     await tar.c({ cwd: php, file: join(scratch, 'php.tar.gz'), gzip: true, portable: true, mtime: new Date(0) }, names)
-    const linuxRuntime = join(app, 'runtime/linux-runtime.tar.gz')
+    // The .deb files are compressed already; the archive only bundles them with their manifest.
+    const devPackages = join(app, 'resources/ide/system-packages')
+    await tar.c({ cwd: devPackages, file: join(scratch, 'linux-dev-packages.tar.gz'), gzip: { level: 1 }, portable: true, mtime: new Date(0) },
+      (await readdir(devPackages)).sort())
+    const linuxRuntime = join(app, 'runtime/linux-runtime.tar.xz')
     const linuxMetadata = JSON.parse(await readFile(join(app, 'runtime/linux-runtime.json'), 'utf8'))
     const linux = await digest(linuxRuntime)
     if (linux.bytes !== linuxMetadata.bytes || linux.sha256 !== linuxMetadata.sha256) throw new Error('linux-runtime.json does not describe the staged archive')
+    if (!Number.isSafeInteger(linuxMetadata.unpackedBytes)) throw new Error('linux-runtime.json does not record the unpacked size')
     const published = async (id, sourceRoot, file) => {
       const transport = await packReleaseAssets({ sourceRoot, outputDirectory: join(options.pieces, id),
         files: [{ path: file, category: 'offline' }], releaseVersion: options.releaseVersion, baseUrl })
@@ -60,8 +65,10 @@ export async function prepareOptionalModules(options) {
       { id: 'strata', kind: 'directory', file: 'strata-runtime.tar.gz', bytes: strata.bytes, sha256: strata.sha256,
         unpackedBytes: await unpackedBytes(options.strataArchive), baseUrl: strata.baseUrl ?? inputs.baseUrl, pieces: strata.pieces },
       { id: 'php', kind: 'directory', ...await published('php', scratch, 'php.tar.gz'), unpackedBytes: await unpackedBytes(join(scratch, 'php.tar.gz')) },
-      { id: 'linux-runtime', kind: 'file', ...await published('linux-runtime', join(app, 'runtime'), 'linux-runtime.tar.gz'),
-        unpackedBytes: await unpackedBytes(linuxRuntime) },
+      { id: 'linux-runtime', kind: 'file', ...await published('linux-runtime', join(app, 'runtime'), 'linux-runtime.tar.xz'),
+        unpackedBytes: linuxMetadata.unpackedBytes },
+      { id: 'linux-dev-packages', kind: 'directory', ...await published('linux-dev-packages', scratch, 'linux-dev-packages.tar.gz'),
+        unpackedBytes: await unpackedBytes(join(scratch, 'linux-dev-packages.tar.gz')) },
     ].map(({ id, kind, file, bytes, sha256, unpackedBytes: unpacked, baseUrl: location, pieces }) =>
       ({ id, kind, file, bytes, sha256, unpackedBytes: unpacked, baseUrl: location, pieces }))
     await writeFile(options.output, JSON.stringify({ version: 1, modules }, null, 2) + '\n')

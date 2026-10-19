@@ -41,17 +41,15 @@ export function StateDot({ state, size, className, appearance = 'dot' }: {
     return (
       <svg
         ref={syncSpinner}
-        className={clsx(css.spinner, className)}
+        className={clsx(css.spinner, css.spinnerMotion, className)}
         data-state="ongoing"
         width={edge}
         height={edge}
         viewBox="0 0 24 24"
         aria-hidden="true"
       >
-        <g className={css.spinnerMotion}>
-          <circle className={css.spinnerTrack} cx="12" cy="12" r="9.5" />
-          <circle className={css.spinnerArc} cx="12" cy="12" r="9.5" />
-        </g>
+        <circle className={css.spinnerTrack} cx="12" cy="12" r="9.5" />
+        <circle className={css.spinnerArc} cx="12" cy="12" r="9.5" />
       </svg>
     )
   }

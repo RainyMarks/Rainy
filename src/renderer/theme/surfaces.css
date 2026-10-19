@@ -25,12 +25,15 @@ body[data-rainy-dark] [data-menu-material] {
   --rainy-elevation-stroke-color: var(--rainy-alias-border-l3);
 }
 
-/* 派生 elevation 值逐元素声明而非从 body 继承：继承传下来的是在 body 上就
-   已替换完 var() 的值，组件重绑 --rainy-elevation-stroke-color 将无法进入
-   var(--rainy-elevation-*)；逐元素声明让每个元素按自己看到的描边色重新替换
-   （同 scrollbar.css 对 --rainy-scrollbar-thumb 的处理）。 */
+/* 派生 elevation 值不能只从 body 继承：继承传下来的是在 body 上就已替换完
+   var() 的值，组件重绑 --rainy-elevation-stroke-color 将无法进入
+   var(--rainy-elevation-*)。所以在 body 和每个重绑描边色的表面（菜单材质、
+   对话框）上重新声明，让它们和后代按自己看到的描边色替换。不再写 `body *`：
+   逐元素声明会让每次样式计算都对全部元素（转录、文件树、编辑器行）重算这四个
+   变量。新增重绑描边色的表面须带 data-menu-material 或 role="dialog"。 */
 body,
-body * {
+[data-menu-material],
+[role='dialog'] {
   --rainy-elevation-stroke: 0 0 0 0.5px var(--rainy-elevation-stroke-color);
   --rainy-elevation-panel:
     var(--rainy-elevation-stroke), 0 3px 8px 0 rgba(0, 0, 0, 0.03), 0 0 16px 0 rgba(0, 0, 0, 0.02);

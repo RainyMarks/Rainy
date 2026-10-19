@@ -45,11 +45,11 @@ function stage(home, name, host, node = 'node 22') {
   return root
 }
 
-/** Archives and metadata for one version, split by the installer's rules. */
-function release(home, root) {
-  const base = `${root}-base.tar.gz`
+/** Archives and metadata for one version, split by the installer's rules; the base is xz as stage-linux.py packs it. */
+function release(home, root, compression = 'xz') {
+  const base = `${root}-base.tar.${compression}`
   const app = `${root}-app.tar.gz`
-  execFileSync('tar', ['-czf', base, '-C', root, 'node', 'packages', 'app/node_modules', 'app/bin', 'app/resources/ide'])
+  execFileSync('tar', [compression === 'xz' ? '-cJf' : '-czf', base, '-C', root, 'node', 'packages', 'app/node_modules', 'app/bin', 'app/resources/ide'])
   execFileSync('tar', ['-czf', app, '-C', root, 'runtime.json', 'app/dist', 'app/package.json', 'app/resources/pdfjs'])
   const baseBytes = readFileSync(base)
   const appBytes = readFileSync(app)
@@ -83,6 +83,18 @@ test('installs the base once and only the application layer for a version whose 
   assert.notEqual(third.metadata.content, first.metadata.content)
   assert.deepEqual(python(home, [missing, third.app, third.metadataPath]), { needsArchive: true })
   assert.throws(() => python(home, [third.base, second.app, third.metadataPath]), /application files do not match/u)
+})
+
+test('unpacks a gzip base, and an xz base with a Python that has no lzma module', { skip: !linux }, (t) => {
+  const { home, owned } = workspace(t)
+  const gzip = release(home, stage(home, 'gz', 'host gz'), 'gz')
+  assert.equal(readFileSync(python(home, [gzip.base, gzip.app, gzip.metadataPath]).host, 'utf8'), 'host gz')
+  const xz = release(home, stage(home, 'xz', 'host xz', 'node 26'))
+  // A Python built without liblzma: the installer hands the archive to the system's xz.
+  const noLzma = `import runpy, sys\nsys.modules['lzma'] = None\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')`
+  const installed = JSON.parse(execFileSync('python3', ['-c', noLzma, script, xz.base, xz.app, xz.metadataPath], { env: { ...process.env, HOME: home }, encoding: 'utf8' }))
+  assert.equal(readFileSync(installed.node, 'utf8'), 'node 26')
+  assert.deepEqual(readdirSync(owned).filter(name => name.startsWith('.install-')), [])
 })
 
 test('reuses the base of a runtime unpacked before the layers, by hard links, when its content is the same', { skip: !linux }, (t) => {
