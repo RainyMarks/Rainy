@@ -95,6 +95,8 @@ export function toolTitle(call: ToolCall, t: ReturnType<typeof useChatT>): strin
       if (call.name === 'grep') return path === undefined ? t('toolGrep', { pattern }) : t('toolGrepIn', { pattern, path })
       return path === undefined ? t('toolGlob', { pattern }) : t('toolGlobIn', { pattern, path })
     }
+    case 'command_output': return t('toolCommandOutput', { id: str(args.id) ?? '' })
+    case 'stop_command': return t('toolStopCommand', { id: str(args.id) ?? '' })
     case 'web_search': return t('toolWebSearch', { query: str(args.query) ?? '' })
     case 'web_fetch': return t('toolWebFetch', { url: str(args.url) ?? '' })
     default: return call.name.startsWith('mcp__') ? call.name.slice(5).replace('__', ': ') : call.name
@@ -140,10 +142,10 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
   let body: ReactNode
   let suffix: ReactNode = null
 
-  if (call.name === 'bash' || call.name === 'pwsh') {
+  if (call.name === 'bash' || call.name === 'pwsh' || call.name === 'command_output' || call.name === 'stop_command') {
     const output = result === undefined ? running?.partial : resultText(result)
     body = (
-      <TerminalBlock command={str(args.command) ?? ''} cwd={str(details.cwd)} output={output}
+      <TerminalBlock command={str(details.command) ?? str(args.command) ?? ''} cwd={str(details.cwd)} output={output}
         exitCode={typeof details.exitCode === 'number' ? details.exitCode : result === undefined ? undefined : null}
         signal={str(details.signal)} running={isRunning} runStateDot={approval === undefined} labels={labels.terminal} />
     )

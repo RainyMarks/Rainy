@@ -1,9 +1,10 @@
 /** The built-in model tools of a chat. */
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Observations, type ToolContext } from './common.ts'
+import { BackgroundJobs } from './jobs.ts'
 import { readTool } from './read.ts'
 import { globTool, grepTool } from './search.ts'
-import { shellTool } from './shell.ts'
+import { commandOutputTool, shellTool, stopCommandTool } from './shell.ts'
 import { webFetchTool, webSearchTool, type WebAccess } from './web.ts'
 import { editTool, writeTool } from './write.ts'
 
@@ -17,6 +18,7 @@ import { editTool, writeTool } from './write.ts'
 export function coreTools(context: ToolContext, platform: 'win32' | 'linux', web?: WebAccess): AgentTool[] {
   return [
     readTool(context), grepTool(context), globTool(context), writeTool(context), editTool(context), shellTool(context, platform === 'win32' ? 'pwsh' : 'bash'),
+    ...context.jobs === undefined ? [] : [commandOutputTool(context), stopCommandTool(context)],
     ...web === undefined ? [] : [webSearchTool(web), webFetchTool(web, context)],
   ] as AgentTool[]
 }
@@ -27,8 +29,9 @@ export function coreTools(context: ToolContext, platform: 'win32' | 'linux', web
  * @returns Tools bound to an inert context.
  */
 export function inertCoreTools(platform: 'win32' | 'linux'): AgentTool[] {
+  // The jobs registry starts nothing by itself; it is here so an estimate declares the same tools a chat does.
   const context: ToolContext = {
-    cwd: '.', sessionId: '', spillDir: '.', toolTokens: () => 4000, observations: new Observations(),
+    cwd: '.', sessionId: '', spillDir: '.', toolTokens: () => 4000, observations: new Observations(), jobs: new BackgroundJobs(),
     runtimeEnvironment: () => { throw new Error('inert tool context') },
   }
   return coreTools(context, platform)

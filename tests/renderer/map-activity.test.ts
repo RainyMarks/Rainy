@@ -25,7 +25,7 @@ it('follows a write from the model writing it, through running it, to a moment a
   await emit('session.tool', { sessionId: 's1', toolCallId: 'c1', toolName: 'write', phase: 'end' })
   expect(getAiActivity().recent[0]).toMatchObject({ toolCallId: 'c1', endedAt: expect.any(Number) })
   // The write stays shown for a moment after it ran; a finished run clears what was still running.
-  await emit('session.state', { sessionId: 's1', status: 'idle', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
+  await emit('session.state', { sessionId: 's1', status: 'idle', queue: [], model: null, context: null, permission: 'ask', approvals: [], background: [] })
   expect(getAiActivity().active.map(item => item.toolCallId)).toEqual(['c1'])
   vi.advanceTimersByTime(LINGER_MS + 1)
   expect(getAiActivity().active).toEqual([])

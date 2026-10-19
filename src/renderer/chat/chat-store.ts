@@ -95,9 +95,9 @@ function announce(approvals: readonly PendingApproval[], title: string): void {
   }
 }
 
-host.on('session.state', ({ sessionId, status, queue, model, context, error, permission, approvals, retry }) => {
+host.on('session.state', ({ sessionId, status, queue, model, context, error, permission, approvals, background, retry }) => {
   update(sessionId, view => ({
-    ...view, queue, model, context, error, permission, approvals, retry,
+    ...view, queue, model, context, error, permission, approvals, background, retry,
     summary: { ...view.summary, status, awaitingApproval: approvals.length > 0 || undefined },
     ...(status === 'idle' || status === 'error' ? { tools: {}, streaming: null } : {}),
   }))

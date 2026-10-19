@@ -35,7 +35,7 @@ function summary(id: string, change: Partial<SessionSummary> = {}): SessionSumma
 function snapshot(id: string, entries: TranscriptEntry[], change: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
     summary: summary(id), entries, model: { provider: 'rainy-deepseek', model: 'deepseek-flash' }, queue: [], context: null, streaming: null,
-    runningTools: [], permission: 'ask', approvals: [], ...change,
+    runningTools: [], permission: 'ask', approvals: [], background: [], ...change,
   }
 }
 

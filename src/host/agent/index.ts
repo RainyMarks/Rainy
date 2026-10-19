@@ -297,6 +297,10 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   rpc.register('chat.setModel', async ({ sessionId, ...selection }) => (await session(sessionId)).setModel(selection))
   rpc.register('chat.compact', async ({ sessionId }) => ({ message: await (await session(sessionId)).compactNow() }))
   rpc.register('chat.retry', async ({ sessionId }) => { await (await session(sessionId)).retry() })
+  rpc.register('chat.stopCommand', async ({ sessionId, id }) => {
+    if (typeof id !== 'string' || id.trim() === '') throw new RpcError('invalid', localized({ zh: '命令编号无效。', en: 'The command id is invalid.' }))
+    return (await session(sessionId)).stopCommand(id)
+  })
   rpc.register('chat.setPermission', async ({ sessionId, mode }) => (await session(sessionId)).setPermission(permissionSchema.parse(mode)))
   rpc.register('chat.approve', async (params) => {
     const { sessionId, toolCallId, decision, reason } = approveSchema.parse(params)

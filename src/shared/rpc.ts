@@ -305,9 +305,28 @@ export interface SessionSnapshot {
   permission: PermissionMode
   /** Tool calls waiting for the user's approval. */
   approvals: PendingApproval[]
+  /** Commands the agent started in the background, running or finished but unread. */
+  background: BackgroundCommand[]
   /** Set while the run waits to retry a request that failed for a passing reason. */
   retry?: RetryWait | undefined
   error?: string | undefined
+}
+
+/** A command the agent started with `background`, which keeps running after its tool call returned. */
+export interface BackgroundCommand {
+  /** Id the model and the user refer to, such as `cmd-1`. */
+  id: string
+  command: string
+  /** What the model said the command does. */
+  description: string
+  cwd: string
+  /** Epoch ms. */
+  startedAt: number
+  state: 'running' | 'exited'
+  exitCode: number | null
+  signal: string | null
+  /** Bytes of output the model has not read yet. */
+  pending: number
 }
 
 /** A run waiting before it automatically retries a request the provider refused or dropped for a passing reason (overload, rate limit, network). */
@@ -469,6 +488,8 @@ export interface HostMethods {
    * retry is waiting, retry now.
    */
   'chat.retry': [{ sessionId: SessionId }, void]
+  /** Stop a command the agent started in the background. */
+  'chat.stopCommand': [{ sessionId: SessionId; id: string }, BackgroundCommand[]]
   /** Undo write and edit calls of the chat, newest first; files changed since are left alone. */
   'chat.revert': [{ sessionId: SessionId; toolCallIds: string[] }, RevertResult]
   /** Files the chat's agent changed that are not yet kept or undone. */
@@ -533,7 +554,8 @@ export interface HostEvents {
   /** Run status, queue or model changed. */
   'session.state': {
     sessionId: SessionId; status: SessionRunStatus; queue: QueuedMessage[]; model: ModelSelection | null; context: ContextUsage | null
-    permission: PermissionMode; approvals: PendingApproval[]; retry?: RetryWait | undefined; error?: string | undefined
+    permission: PermissionMode; approvals: PendingApproval[]; background: BackgroundCommand[]
+    retry?: RetryWait | undefined; error?: string | undefined
   }
   /** A chat was created or its summary changed. */
   'sessions.changed': SessionSummary

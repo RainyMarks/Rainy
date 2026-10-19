@@ -10,8 +10,8 @@ import {
 import { EstimateCalibration, resolveBudget, type Budget } from '../../shared/budget.ts'
 import { lineChangeCounts } from '../../shared/line-diff.ts'
 import type {
-  ApprovalDecision, ChatChange, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RetryWait, RevertResult,
-  SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
+  ApprovalDecision, BackgroundCommand, ChatChange, ContextUsage, ModelSelection, PendingApproval, PermissionMode, QueuedMessage, RetryWait,
+  RevertResult, SessionRunStatus, SessionSnapshot, SessionSummary, TranscriptEntry, UsageSummary,
 } from '../../shared/rpc.ts'
 import { resolvePowerShell } from '../process.ts'
 import { hostEnvironmentKind } from '../env.ts'
@@ -28,6 +28,7 @@ import { AUTO_RETRIES, isPassingFailure, retryDelay } from './retry.ts'
 import { discoverSkills, skillsSection } from './skills.ts'
 import type { StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
+import { BackgroundJobs } from './tools/jobs.ts'
 import { coreTools } from './tools/index.ts'
 import { deepSeekKey } from './tools/web.ts'
 import type { AgentServices } from './services.ts'
@@ -92,6 +93,8 @@ export class ChatSession {
   private streaming: AssistantMessage | null = null
   private readonly runningTools = new Map<string, number>()
   private readonly observations = new Observations()
+  /** Commands of this chat that keep running after their tool call. */
+  private readonly jobs = new BackgroundJobs(() => { this.publishState() })
   private readonly calibration = new EstimateCalibration()
   private lastEstimate = 0
   /** Start time, model and reasoning level of the chat's latest request, to judge whether its prompt cache is warm. */
@@ -166,6 +169,7 @@ export class ChatSession {
       runningTools: [...this.runningTools.keys()],
       permission: this.permission(),
       approvals: this.pendingApprovals(),
+      background: this.jobs.list(),
       ...(this.retryWait === undefined ? {} : { retry: this.retryWait }),
       ...(this.error === undefined ? {} : { error: this.error }),
     }
@@ -444,10 +448,21 @@ export class ChatSession {
     return localized({ zh: `已压缩 ${items} 条历史（约 ${entry.tokensBefore} tokens）。`, en: `Compacted ${items} history items (~${entry.tokensBefore} tokens).` })
   }
 
+  /**
+   * Stop one background command of this chat.
+   * @param id Command id.
+   * @returns The chat's background commands after the stop.
+   */
+  async stopCommand(id: string): Promise<BackgroundCommand[]> {
+    await this.jobs.stop(id)
+    return this.jobs.list()
+  }
+
   /** Stop any run and wait for it. */
   async close(): Promise<void> {
     this.abort()
     await this.runPromise
+    await this.jobs.close()
   }
 
   // ── run ──
@@ -845,6 +860,7 @@ export class ChatSession {
         }
       },
       ripgrep: this.services.ripgrep,
+      jobs: this.jobs,
     }
     const settings = this.services.settings
     const web = settings.prefs().webSearch && deepSeekKey(settings) !== undefined
@@ -1001,7 +1017,7 @@ export class ChatSession {
   private publishState(): void {
     this.services.rpc.emit('session.state', {
       sessionId: this.chat.id, status: this.status, queue: this.queue, model: this.selection(), context: this.context,
-      permission: this.permission(), approvals: this.pendingApprovals(),
+      permission: this.permission(), approvals: this.pendingApprovals(), background: this.jobs.list(),
       ...(this.retryWait === undefined ? {} : { retry: this.retryWait }),
       ...(this.error === undefined ? {} : { error: this.error }),
     })

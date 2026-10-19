@@ -24,7 +24,7 @@ function view(entries: TranscriptEntry[], tools: ChatView['tools'], streaming: A
   return {
     summary: { id: 's', workspaceId: null, cwd: '/p', title: 't', createdAt: 1, updatedAt: 1, archived: false, pinned: false, model: null, status: 'running' },
     entries, streaming, tools, truncated: false, loading: false, queue: [], model: null, context: null, runningTools: Object.keys(tools),
-    permission: 'ask', approvals: [],
+    permission: 'ask', approvals: [], background: [],
   } as ChatView
 }
 

@@ -32,7 +32,7 @@ function summary(id: string, change: Partial<SessionSummary> = {}): SessionSumma
 }
 
 function snapshot(id: string, entries: TranscriptEntry[], change: Partial<SessionSnapshot> = {}): SessionSnapshot {
-  return { summary: summary(id), entries, model: { provider: 'fake', model: 'fake-model' }, queue: [], context: null, streaming: null, runningTools: [], permission: 'ask', approvals: [], ...change }
+  return { summary: summary(id), entries, model: { provider: 'fake', model: 'fake-model' }, queue: [], context: null, streaming: null, runningTools: [], permission: 'ask', approvals: [], background: [], ...change }
 }
 
 const usage = { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 }
@@ -83,14 +83,14 @@ it('counts down to an automatic retry and retries now on request', async () => {
   await render(pane('wait-1'))
   await waitFor(() => { expect(hasText('请求失败')).toBe(true) })
   await emit('session.state', {
-    sessionId: 'wait-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [],
+    sessionId: 'wait-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [], background: [],
     retry: { attempt: 2, max: 3, at: Date.now() + 9_500, reason: '503 Service Unavailable' },
   })
   await waitFor(() => { expect(document.body.textContent).toContain('请求失败，10 秒后自动重试（第 2/3 次）') })
   expect(findButton('重试')).toBeUndefined()
   await click(button('立即重试'))
   expect(calls('chat.retry')).toEqual([{ sessionId: 'wait-1' }])
-  await emit('session.state', { sessionId: 'wait-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
+  await emit('session.state', { sessionId: 'wait-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [], background: [] })
   expect(findButton('立即重试')).toBeUndefined()
 })
 
@@ -103,7 +103,7 @@ it('shows how long the model thought, live and afterwards', async () => {
   await render(pane('think-1'))
   await waitFor(() => { expect(hasText('已思考 12s')).toBe(true) })
 
-  await emit('session.state', { sessionId: 'think-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [] })
+  await emit('session.state', { sessionId: 'think-1', status: 'running', queue: [], model: null, context: null, permission: 'ask', approvals: [], background: [] })
   await emit('session.stream', { sessionId: 'think-1', message: { ...assistant([{ type: 'thinking', thinking: '再想想' }], 'pending' as AssistantMessage['stopReason']), timestamp: 42 } })
   await waitFor(() => { expect(hasText('思考中…')).toBe(true) })
   await waitFor(() => { expect(hasText('思考中… 1s')).toBe(true) }, 3_000)

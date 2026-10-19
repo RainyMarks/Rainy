@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AgentToolResult } from '@earendil-works/pi-agent-core'
 import { estimateText } from '../../../shared/budget.ts'
 import type { ResolvedWorkspaceEnvironment } from '../../runtime/environments.ts'
+import type { BackgroundJobs } from './jobs.ts'
 
 /** What every tool of one chat needs. */
 export interface ToolContext {
@@ -31,6 +32,8 @@ export interface ToolContext {
   recordChange?: ((toolCallId: string, path: string, before: Uint8Array | null, after: Uint8Array) => Promise<boolean>) | undefined
   /** ripgrep executable for grep and glob. */
   ripgrep?: string | undefined
+  /** Commands of this chat that keep running after their call; absent where background commands are unavailable. */
+  jobs?: BackgroundJobs | undefined
 }
 
 /** A file's identity at one observation. */

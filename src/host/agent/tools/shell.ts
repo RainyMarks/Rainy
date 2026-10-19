@@ -7,6 +7,7 @@ import { Type, type Static } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolUpdateCallback } from '@earendil-works/pi-agent-core'
 import { consoleText, resolvePowerShell, scrubbedEnv, spawnProcess } from '../../process.ts'
 import { limitOutput, textResult, type ToolContext } from './common.ts'
+import type { BackgroundJob, BackgroundJobs } from './jobs.ts'
 
 /** Timeout when the model does not set one. */
 export const DEFAULT_TIMEOUT_MS = 60_000
@@ -18,6 +19,9 @@ const TAIL_BYTES = 64_000
 const SPILL_BYTES = 64 * 1024 * 1024
 const ENCODING_PREAMBLE = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
 
+/** Time a background command is watched before its tool call returns, so an immediate failure is reported at once. */
+const BACKGROUND_SETTLE_MS = 600
+
 /** Command facts for the UI's terminal card. */
 export interface ShellDetails {
   command: string
@@ -27,6 +31,8 @@ export interface ShellDetails {
   signal: string | null
   timedOut: boolean
   durationMs: number
+  /** Set when the command keeps running after the call: the background job's id. */
+  jobId?: string | undefined
 }
 
 const parameters = (shell: 'bash' | 'pwsh') => Type.Object({
@@ -38,6 +44,10 @@ const parameters = (shell: 'bash' | 'pwsh') => Type.Object({
   }),
   timeoutMs: Type.Optional(Type.Number({ description: 'Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.' })),
   workdir: Type.Optional(Type.String({ description: 'Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.' })),
+  background: Type.Optional(Type.Boolean({
+    description: 'Keep the command running after this call returns, for a development server, a watcher or another command that does not end by itself. '
+      + 'The call answers with a command id; read its new output with command_output and stop it with stop_command. The timeout does not apply.',
+  })),
 })
 
 /** Collects one output stream: a bounded tail in memory and the full text in a file once it grows large. */
@@ -133,6 +143,22 @@ export function shellTool(context: ToolContext, shell: 'bash' | 'pwsh'): AgentTo
         ? ['bash', '-c', params.command]
         : [resolvePowerShell({ configured: context.pwshPath, component: runtime.powershell }).path, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${ENCODING_PREAMBLE}${params.command}`]
       const started = Date.now()
+      if (params.background === true) {
+        const jobs = context.jobs
+        if (jobs === undefined) throw new Error('background commands are unavailable in this context; run the command without background')
+        const job = jobs.start({ argv, cwd, env, command: params.command, description: params.description })
+        // A command that fails at once (a missing program, a port in use) is reported now rather than at the next read.
+        await new Promise<void>(done => { setTimeout(done, BACKGROUND_SETTLE_MS) })
+        const { job: settled, text } = jobs.read(job.id)
+        const head = settled.state === 'exited'
+          ? `[${job.id} exited ${settled.signal !== null ? `on signal ${settled.signal}` : `with code ${settled.exitCode ?? 'unknown'}`} right after starting]`
+          : `[${job.id} is running in the background; read its new output with command_output, stop it with stop_command]`
+        const body = text.trim() === '' ? '(no output yet)' : text
+        return textResult(await limitOutput(context, shell, `${head}\n${body}`), {
+          command: params.command, description: params.description, cwd, exitCode: settled.exitCode, signal: settled.signal,
+          timedOut: false, durationMs: Date.now() - started, jobId: job.id,
+        })
+      }
       const spill = async (stream: string): Promise<string> => {
         await mkdir(context.spillDir, { recursive: true, mode: 0o700 })
         return join(context.spillDir, `${randomBytes(6).toString('hex')}-${shell}-${stream}.txt`)
@@ -166,6 +192,80 @@ export function shellTool(context: ToolContext, shell: 'bash' | 'pwsh'): AgentTo
         handle.terminate()
         await handle.waitForExit()
       }
+    },
+  }
+}
+
+const outputParameters = Type.Object({
+  id: Type.String({ description: 'Id of the background command, as the command that started it reported (for example "cmd-1").' }),
+})
+const stopParameters = Type.Object({
+  id: Type.String({ description: 'Id of the background command to stop.' }),
+})
+
+/** What the card shows for a background command's output or stop. */
+export interface JobDetails {
+  id: string
+  command: string
+  description: string
+  cwd: string
+  state: 'running' | 'exited'
+  exitCode: number | null
+  signal: string | null
+}
+
+function jobDetails(job: BackgroundJob): JobDetails {
+  return { id: job.id, command: job.command, description: job.description, cwd: job.cwd, state: job.state, exitCode: job.exitCode, signal: job.signal }
+}
+
+function jobsOf(context: ToolContext): BackgroundJobs {
+  const jobs = context.jobs
+  if (jobs === undefined) throw new Error('background commands are unavailable in this context')
+  return jobs
+}
+
+/**
+ * Read what a background command has written since the last read.
+ * @param context Chat tool context.
+ * @returns Tool definition.
+ */
+export function commandOutputTool(context: ToolContext): AgentTool<typeof outputParameters, JobDetails> {
+  return {
+    name: 'command_output',
+    label: 'Command output',
+    description: 'Read the new output of a command started in the background, and whether it is still running. '
+      + 'Output already read is not repeated. Wait between reads rather than polling in a loop.',
+    parameters: outputParameters,
+    executionMode: 'sequential',
+    async execute(_id, params: Static<typeof outputParameters>) {
+      const { job, text } = jobsOf(context).read(params.id)
+      const state = job.state === 'running'
+        ? `[${job.id} is still running]`
+        : `[${job.id} ${job.signal !== null ? `was stopped on signal ${job.signal}` : `exited with code ${job.exitCode ?? 'unknown'}`}]`
+      const body = text.trim() === '' ? '(no new output)' : text
+      return textResult(await limitOutput(context, 'command_output', `${body}\n${state}`), jobDetails(job))
+    },
+  }
+}
+
+/**
+ * Stop a background command.
+ * @param context Chat tool context.
+ * @returns Tool definition.
+ */
+export function stopCommandTool(context: ToolContext): AgentTool<typeof stopParameters, JobDetails> {
+  return {
+    name: 'stop_command',
+    label: 'Stop command',
+    description: 'Stop a command running in the background. Stop every background command you started once it is no longer needed.',
+    parameters: stopParameters,
+    executionMode: 'sequential',
+    async execute(_id, params: Static<typeof stopParameters>) {
+      const jobs = jobsOf(context)
+      const job = await jobs.stop(params.id)
+      const { text } = jobs.read(job.id)
+      const tail = text.trim() === '' ? '' : `\nIts last output:\n${text}`
+      return textResult(`[${job.id} stopped]${tail}`, jobDetails(job))
     },
   }
 }

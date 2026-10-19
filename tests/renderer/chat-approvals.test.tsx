@@ -34,7 +34,7 @@ function summary(id: string, change: Partial<SessionSummary> = {}): SessionSumma
 function snapshot(id: string, entries: TranscriptEntry[], change: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
     summary: summary(id), entries, model: { provider: 'fake', model: 'fake-model' }, queue: [], context: null, streaming: null, runningTools: [],
-    permission: 'ask', approvals: [], ...change,
+    permission: 'ask', approvals: [], background: [], ...change,
   }
 }
 

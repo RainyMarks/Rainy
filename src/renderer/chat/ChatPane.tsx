@@ -9,6 +9,7 @@ import { ChangesBar } from '../review/ChangesBar.tsx'
 import { host, useConnectionState } from '../rpc.ts'
 import { RainField } from '../app/RainField.tsx'
 import { IconAction, IconClockOutlineRegular, IconCloseOutlineRegular, IconNewChatOutlineRegular, RainyMark, toast } from '../ui/index.ts'
+import { BackgroundBar } from './BackgroundBar.tsx'
 import { loadChat, useChat } from './chat-store.ts'
 import { Composer } from './Composer.tsx'
 import { useChatT } from './messages.ts'
@@ -127,6 +128,7 @@ export function ChatPane({ workspace, sessionId, onSessionChange, onClose, onSho
       {sessionId === null || view === undefined
         ? <div className={css.empty}>{sessionId === null && <><RainField /><Hero hasProject={workspace !== null} /></>}</div>
         : <Transcript view={view} onFork={onSessionChange} empty={<Hero hasProject={workspace !== null} />} />}
+      {sessionId !== null && <BackgroundBar sessionId={sessionId} commands={view?.background ?? []} />}
       {sessionId !== null && <ChangesBar sessionId={sessionId} busy={busy} />}
       <Composer sessionId={sessionId} workspaceId={view?.summary.workspaceId ?? workspace?.workspaceId ?? null} busy={busy || creating}
         model={view?.model ?? null} context={view?.context ?? null} queue={view?.queue ?? []} permission={permission} onPermission={changePermission}
