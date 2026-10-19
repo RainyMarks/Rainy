@@ -97,6 +97,13 @@ export function toolTitle(call: ToolCall, t: ReturnType<typeof useChatT>): strin
       return path === undefined ? t('toolGlob', { pattern }) : t('toolGlobIn', { pattern, path })
     }
     case 'task': return t('toolTask', { description: str(args.description) ?? '' })
+    case 'browser_open': return t('toolBrowserOpen', { url: str(args.url) ?? '' })
+    case 'browser_read': return t('toolBrowserRead')
+    case 'browser_screenshot': return t('toolBrowserShot')
+    case 'browser_act': return t('toolBrowserAct', {
+      action: t(args.action === 'type' ? 'toolBrowserActType' : args.action === 'press' ? 'toolBrowserActPress' : 'toolBrowserActClick'),
+      target: str(args.target) ?? '',
+    })
     case 'command_output': return t('toolCommandOutput', { id: str(args.id) ?? '' })
     case 'stop_command': return t('toolStopCommand', { id: str(args.id) ?? '' })
     case 'web_search': return t('toolWebSearch', { query: str(args.query) ?? '' })

@@ -54,6 +54,8 @@ export interface HostOptions {
   resolveProxy?: (url: string) => Promise<string | null>
   /** The base64 key that encrypts the Host's API keys, or `null` when the system cannot protect it. */
   credentialKey?: () => Promise<string | null>
+  /** Carries out one preview-window command for the agent; absent where no window can be shown. */
+  preview?: (command: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
 /** Selected registered WSL distribution; arguments are never shell-interpolated. */
 export interface WslHostOptions extends HostOptions { distro: string }
@@ -195,6 +197,15 @@ abstract class ManagedHostTransport implements HostTransport {
           else if (data.type === 'system-proxy' && 'id' in data && typeof data.id === 'string' && 'url' in data && typeof data.url === 'string') {
             const id = data.id
             void this.systemProxy(data.url).then(url => { this.reply(child, { id, url }) }, () => { this.reply(child, { id, url: null }) })
+          }
+          else if (data.type === 'preview' && 'id' in data && typeof data.id === 'string') {
+            const id = data.id
+            const command = 'command' in data && data.command !== null && typeof data.command === 'object' ? data.command as Record<string, unknown> : {}
+            const answer = this.options.preview?.(command) ?? Promise.resolve({ error: 'The preview window is unavailable.' })
+            void answer.then(
+              (result) => { this.reply(child, { id, answer: result }) },
+              (error: unknown) => { this.reply(child, { id, answer: { error: error instanceof Error ? error.message : String(error) } }) },
+            )
           }
           else if (data.type === 'credential-key' && 'id' in data && typeof data.id === 'string') {
             const id = data.id

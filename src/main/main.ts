@@ -49,6 +49,7 @@ import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { IDE_RAW_ROUTE } from '../shared/ide-preview.ts'
 import { brandString } from '../shared/brand.ts'
 import { allowsClipboardWrite } from './clipboard-policy.ts'
+import { PreviewBrowser, type PreviewCommand } from './preview-browser.ts'
 
 const run = promisify(execFile)
 app.setName('Rainy')
@@ -615,6 +616,9 @@ async function start(): Promise<void> {
     RAINY_EXECUTION_TARGET_LABEL: target.label,
     // The Host asks this process for the key that encrypts its API keys.
     RAINY_CARRIER_CREDENTIALS: '1',
+    // The agent can open the project's own development server in a hidden window and look at it; an SSH server's
+    // localhost is not this machine's, so a remote Host is not offered it.
+    ...(target.kind === 'ssh' ? {} : { RAINY_CARRIER_PREVIEW: '1' }),
     // An SSH server keeps its project records and memory in its own home.
     ...(target.kind === 'ssh' ? {} : { RAINY_CARRIER_STATE_ROOT: prepared === undefined ? carrierState : prepared.carrierState }),
     ...(target.kind === 'windows' ? { RAINY_HOME: join(userData, 'native-home'),
@@ -635,8 +639,11 @@ async function start(): Promise<void> {
   let hostReady = false
   /** The last lines ssh wrote, to explain a connection that closed during startup. */
   const sshSaid: string[] = []
+  // The agent's preview window: created with its first command, closed with the Host.
+  const previewBrowser = new PreviewBrowser()
   const hostOptions: HostOptions = { entry: installed.host, node: installed.node, environment: hostEnvironment,
     resolveProxy: url => systemProxyFor(window.webContents.session, url),
+    preview: command => previewBrowser.handle(command as unknown as PreviewCommand) as Promise<Record<string, unknown>>,
     credentialKey: () => credentialKeyOnce ??= credentialKey(userData, safeStorage, (line) => { appendFileSync(logPath, `${line}\n`) }),
     configureDeepSeek: process.env.RAINY_CONFIGURE_DEEPSEEK === '1',
     onDiagnostic: (text) => {
@@ -644,6 +651,7 @@ async function start(): Promise<void> {
       if (target.kind === 'ssh') { sshSaid.push(text); if (sshSaid.length > 40) sshSaid.shift() }
     },
     onExit: (code) => {
+      previewBrowser.close()
       if (!hostReady || lifecycle.quitting || code === 0 || window.isDestroyed()) return
       if (target.kind === 'ssh') {
         void dialog.showMessageBox(window, { type: 'warning', title: 'Rainy', noLink: true, defaultId: 0, cancelId: 1,

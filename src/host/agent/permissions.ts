@@ -5,9 +5,13 @@ import type { PendingApproval, PermissionMode, PermissionRules } from '../../sha
 
 /**
  * Tools that only read; they run in every mode. `stop_command` only ends a command this chat already started, and a
- * `task` sub-agent is given read-only tools, so neither can change anything.
+ * `task` sub-agent is given read-only tools, so neither can change anything. The browser tools only reach the
+ * project's own server on this machine, in a window with no sign-ins of the user's.
  */
-const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob', 'web_search', 'command_output', 'stop_command', 'task'])
+const READ_TOOLS: ReadonlySet<string> = new Set([
+  'read', 'grep', 'glob', 'web_search', 'command_output', 'stop_command', 'task',
+  'browser_open', 'browser_read', 'browser_act', 'browser_screenshot',
+])
 const CHANGE_TOOLS: ReadonlySet<string> = new Set(['write', 'edit'])
 const SHELL_TOOLS: ReadonlySet<string> = new Set(['bash', 'pwsh'])
 

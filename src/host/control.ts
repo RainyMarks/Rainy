@@ -1,8 +1,8 @@
 /**
  * stdio channel to the Electron carrier.
  *
- * stdout lines `RAINY_CONTROL {json}`: `ready`, `fatal`, `activity`, `project`, and the Host's own request
- * `system-proxy {id, url}`.
+ * stdout lines `RAINY_CONTROL {json}`: `ready`, `fatal`, `activity`, `project`, and the Host's own requests
+ * `system-proxy {id, url}` and `preview {id, …}` (the agent's preview window).
  * stdin JSON lines: `stop`, `inspect-activity {id, mode?}`, `inspect-project {id, workspaceId?}`, and `reply {id, …}`
  * answering a Host request.
  * All other Host output goes to stderr.

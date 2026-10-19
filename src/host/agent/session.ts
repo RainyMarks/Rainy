@@ -29,6 +29,7 @@ import { discoverSkills, skillsSection } from './skills.ts'
 import type { StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
 import { BackgroundJobs } from './tools/jobs.ts'
+import { browserTools } from './tools/browser.ts'
 import { coreTools, subagentTools } from './tools/index.ts'
 import { runSubagent } from './subagent.ts'
 import type { SubagentRunner } from './tools/task.ts'
@@ -867,8 +868,13 @@ export class ChatSession {
     const settings = this.services.settings
     const web = settings.prefs().webSearch && deepSeekKey(settings) !== undefined
       ? { apiKey: () => deepSeekKey(settings), fetch: this.services.fetch ?? globalThis.fetch.bind(globalThis) } : undefined
-    return [...coreTools(context, env.platform, web, this.subagents(context, web)), ...this.services.mcp.tools()]
-      .sort((left, right) => left.name.localeCompare(right.name))
+    const preview = this.services.preview
+    const vision = this.resolved()?.model.input.includes('image') === true
+    return [
+      ...coreTools(context, env.platform, web, this.subagents(context, web)),
+      ...preview === undefined ? [] : browserTools(context, preview, vision),
+      ...this.services.mcp.tools(),
+    ].sort((left, right) => left.name.localeCompare(right.name))
   }
 
   /**

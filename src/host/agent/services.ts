@@ -10,6 +10,7 @@ import type { ProjectMemory } from './memory/index.ts'
 import type { Models } from './models.ts'
 import type { ChangeSnapshots } from './snapshots.ts'
 import type { ChatStore } from './store.ts'
+import type { PreviewAccess } from './tools/browser.ts'
 
 /** What a chat session uses from the rest of the Host. */
 export interface AgentServices {
@@ -29,6 +30,8 @@ export interface AgentServices {
   ripgrep: string | undefined
   /** Request function for DeepSeek's web tools, honoring the proxy settings; the global `fetch` when absent. */
   fetch?: typeof globalThis.fetch | undefined
+  /** Carries out the agent's preview-window commands; absent where the carrier cannot show one. */
+  preview?: PreviewAccess | undefined
   log(message: string): void
   /** A chat model request started streaming. */
   modelBusy(): void

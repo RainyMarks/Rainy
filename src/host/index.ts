@@ -8,6 +8,7 @@ import { followLocale, localized } from '../shared/locale.ts'
 import type { IdeRootId, WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { createProjectRegistry, ExecutionTargetId, ProjectId } from '../shared/project-registry.ts'
 import { Activity } from './activity.ts'
+import type { PreviewAccess, PreviewAnswer } from './agent/tools/browser.ts'
 import { createAgent } from './agent/index.ts'
 import { ControlInput, sendControl } from './control.ts'
 import { credentialSeal, type CredentialSeal } from './credentials.ts'
@@ -55,6 +56,15 @@ async function main(): Promise<void> {
       throw new Error('The carrier sent an invalid system proxy')
     }
     : undefined
+  // The carrier shows the agent's preview window; a page may take a while to load, so these requests wait longer.
+  const preview: PreviewAccess | undefined = process.env.RAINY_CARRIER_PREVIEW === '1'
+    ? async (command) => {
+      const reply = await control.ask({ type: 'preview', command }, 60_000)
+      const answer = reply.answer
+      if (answer === null || typeof answer !== 'object') throw new Error('The carrier sent an invalid preview answer')
+      return answer as PreviewAnswer
+    }
+    : undefined
   const network = new Network(env.platform, process.env, systemProxy)
   network.configure(settings.get().proxy)
   const config = resolveConfig(settings.get().workbench)
@@ -75,7 +85,7 @@ async function main(): Promise<void> {
 
   const runtime = await createRuntime({ env, projects, registry, activity, log })
   const ide = await createIde({ env, config, projects, runtime, server, activity, log, hint: (workspaceId, kind) => { rpc.emit('ide.hint', { workspaceId, kind }) } })
-  const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, network, log })
+  const agent = await createAgent({ env, settings, projects, registry, runtime, rpc, activity, network, log, preview })
   installPdfJs(server, env.resources)
 
   rpc.register('app.info', () => ({

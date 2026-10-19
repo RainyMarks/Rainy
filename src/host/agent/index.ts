@@ -32,6 +32,7 @@ import type { AgentServices } from './services.ts'
 import { discoverSkills, skillsSection } from './skills.ts'
 import { ChangeSnapshots } from './snapshots.ts'
 import { ChatStore } from './store.ts'
+import type { PreviewAccess } from './tools/browser.ts'
 import { inertCoreTools } from './tools/index.ts'
 
 /** Spill files and undo snapshots older than this are deleted at startup. */
@@ -80,6 +81,8 @@ export interface AgentDeps {
   activity: Activity
   /** Proxy settings and the request function for model services and MCP servers. */
   network?: Network | undefined
+  /** Carries out the agent's preview-window commands; absent where the carrier cannot show one. */
+  preview?: PreviewAccess | undefined
   log(message: string): void
 }
 
@@ -135,7 +138,7 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
   const snapshots = new ChangeSnapshots(join(env.home, 'snapshots'))
   const services: AgentServices = {
     env, settings, models, store, mcp, memory, projects, runtime: deps.runtime, activity: deps.activity, rpc, log, snapshots, ripgrep: await findRipgrep(env.appRoot),
-    fetch: deps.network?.fetch,
+    fetch: deps.network?.fetch, preview: deps.preview,
     modelBusy: () => { activeRequests = Math.max(1, activeRequests); lastModelActivity = Date.now() },
     modelIdle: () => { activeRequests = [...sessions.values()].filter(session => session.running).length; lastModelActivity = Date.now() },
   }
