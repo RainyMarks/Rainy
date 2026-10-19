@@ -55,6 +55,11 @@ export function isLoopbackUrl(url: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')
 }
 
+/** @returns The note added to the failed requests when the page tried to leave this machine. */
+export function blockedNavigation(): string {
+  return localized({ zh: '已拦截：预览不离开本机地址', en: 'blocked: the preview stays on this machine' })
+}
+
 /** Reads the page the way a text-only model can act on: its text and the elements it can click or type into. */
 const READ_SCRIPT = `(() => {
   const visible = (element) => {
@@ -180,11 +185,22 @@ export class PreviewBrowser {
       const preview = session.fromPartition(partition, { cache: false })
       this.window = new BrowserWindow({
         show: false, width: WIDTH, height: HEIGHT,
-        webPreferences: { session: preview, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, javascript: true },
+        // The window is never shown; without this Chromium would slow the page's timers down as a background tab.
+        webPreferences: { session: preview, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, javascript: true, backgroundThrottling: false },
       })
       this.window.on('closed', () => { this.window = undefined })
       const contents = this.window.webContents
       contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+      // Only the first address is checked by `handle`; the page itself may then try to leave (a script, a meta refresh,
+      // a server redirect or a link the model clicked). Any frame heading off this machine is stopped here.
+      const guard = (event: { preventDefault(): void }, url: string): void => {
+        if (isLoopbackUrl(url) || url === 'about:blank') return
+        event.preventDefault()
+        this.push(this.failed, `${url}: ${blockedNavigation()}`)
+      }
+      contents.on('will-navigate', guard)
+      contents.on('will-redirect', guard)
+      contents.on('will-frame-navigate', (details) => { guard(details, details.url) })
       contents.on('console-message', (_event, level, message, line, source) => {
         // Electron's own messages (its security warning) are about this window, not the page being checked.
         if (level < 2 || source.startsWith('node:electron')) return

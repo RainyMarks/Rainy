@@ -492,6 +492,8 @@ export interface HostMethods {
   'chat.retry': [{ sessionId: SessionId }, void]
   /** Stop a command the agent started in the background. */
   'chat.stopCommand': [{ sessionId: SessionId; id: string }, BackgroundCommand[]]
+  /** Drop a finished background command from the list without reading its output. */
+  'chat.dismissCommand': [{ sessionId: SessionId; id: string }, BackgroundCommand[]]
   /** Undo write and edit calls of the chat, newest first; files changed since are left alone. */
   'chat.revert': [{ sessionId: SessionId; toolCallIds: string[] }, RevertResult]
   /** Files the chat's agent changed that are not yet kept or undone. */

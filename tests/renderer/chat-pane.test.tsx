@@ -165,6 +165,22 @@ it('appends streamed entries and shows a failed request', async () => {
   expect(button('发送').disabled).toBe(true)
 })
 
+it('lists background commands above the composer, with stop for a running one and clear for a finished one', async () => {
+  handle('sessions.get', ({ sessionId }) => snapshot(sessionId, [], { background: [
+    { id: 'cmd-1', command: 'npm run dev', description: 'Start the dev server', cwd: '/project', startedAt: 1, state: 'running', exitCode: null, signal: null, pending: 0 },
+    { id: 'cmd-2', command: 'npm test', description: 'Run the tests', cwd: '/project', startedAt: 2, state: 'exited', exitCode: 1, signal: null, pending: 40 },
+  ] }))
+  handle('chat.stopCommand', () => [])
+  handle('chat.dismissCommand', () => [])
+  await render(<ChatPane workspace={workspace} sessionId="bg-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)
+  await waitFor(() => { expect(hasText('后台命令（2）')).toBe(true) })
+  expect(hasText('已结束（退出码 1）')).toBe(true)
+  await click(button('停止 cmd-1'))
+  await waitFor(() => { expect(calls('chat.stopCommand')).toEqual([{ sessionId: 'bg-1', id: 'cmd-1' }]) })
+  await click(button('清除 cmd-2'))
+  await waitFor(() => { expect(calls('chat.dismissCommand')).toEqual([{ sessionId: 'bg-1', id: 'cmd-2' }]) })
+})
+
 it('says when it is compacting the context', async () => {
   handle('sessions.get', ({ sessionId }) => snapshot(sessionId, turn))
   await render(<ChatPane workspace={workspace} sessionId="compact-1" onSessionChange={() => undefined} onClose={() => undefined} onShowHistory={() => undefined} />)

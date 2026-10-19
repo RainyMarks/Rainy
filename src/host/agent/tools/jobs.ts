@@ -104,6 +104,17 @@ export class BackgroundJobs {
     return { job: { ...entry.job }, text }
   }
 
+  /**
+   * Drop a finished job from the list without reading it; its unread output is lost.
+   * @param id Job id.
+   */
+  forget(id: string): void {
+    const entry = this.entry(id)
+    if (entry.job.state === 'running') throw new Error(`background command "${entry.job.id}" is still running; stop it first`)
+    this.entries.delete(entry.job.id)
+    this.onChange()
+  }
+
   /** @returns Every job, newest last. */
   list(): BackgroundJob[] {
     return [...this.entries.values()].map(entry => ({ ...entry.job }))

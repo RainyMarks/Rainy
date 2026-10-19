@@ -132,7 +132,7 @@ export class InlineAssist {
     try {
       // The suggestion streams, so its first line appears while the rest is still being written.
       const stream = this.models.streamFn(resolved.model, suggestionContext(prompt) as never, {
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(SUGGEST_TIMEOUT_MS)]), cacheRetention: 'none',
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(SUGGEST_TIMEOUT_MS)]), cacheRetention: 'none', maxTokens: SUGGEST_MAX_TOKENS,
       })
       let sent = 0
       for await (const event of stream) {

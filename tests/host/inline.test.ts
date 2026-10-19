@@ -86,6 +86,8 @@ describe('suggestions', () => {
     const request = { requestId: 'suggest-1', path: 'a.ts', prefix: 'function f(a, b) {\n  ', suffix: '\n}' }
     expect(await h.assist.complete(request)).toEqual({ text: 'return a * b' })
     expect(h.streamed).toEqual(['return a', 'return a * b'])
+    // A suggestion is short; the request says so, instead of letting the model write on until the timeout.
+    expect(h.streamFn.mock.calls[0]![2]).toMatchObject({ maxTokens: 192 })
     // Without a request id there is nobody to show progress to, so none is sent.
     h.streamed.length = 0
     await h.assist.complete({ path: 'a.ts', prefix: 'x', suffix: '' })

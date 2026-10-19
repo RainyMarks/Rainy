@@ -82,6 +82,18 @@ it('reports a background command that ended, and forgets it once its last output
   expect(tools.jobs.list()).toEqual([])
 }, 40_000)
 
+it('lets the user clear a finished command the model has not read, but not a running one', async () => {
+  const tools = await context()
+  const running = tools.jobs.start({ argv: argvFor(), cwd: tools.cwd, env: {}, command: 'wait', description: 'Wait' })
+  expect(() => { tools.jobs.forget(running.id) }).toThrow('still running')
+  await tools.jobs.stop(running.id)
+  // Stopped from the interface, the command stays listed with its unread output until it is read or cleared.
+  expect(tools.jobs.list()).toMatchObject([{ id: running.id, state: 'exited' }])
+  tools.jobs.forget(running.id)
+  expect(tools.jobs.list()).toEqual([])
+  expect(() => { tools.jobs.forget(running.id) }).toThrow('unknown background command')
+})
+
 it('refuses a ninth running command and names the tool that stops one', async () => {
   const tools = await context()
   const waiting = { argv: argvFor(), cwd: tools.cwd, env: {}, command: 'wait', description: 'Wait' }

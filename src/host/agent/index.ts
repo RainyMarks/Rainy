@@ -304,6 +304,10 @@ export async function createAgent(deps: AgentDeps): Promise<AgentService> {
     if (typeof id !== 'string' || id.trim() === '') throw new RpcError('invalid', localized({ zh: '命令编号无效。', en: 'The command id is invalid.' }))
     return (await session(sessionId)).stopCommand(id)
   })
+  rpc.register('chat.dismissCommand', async ({ sessionId, id }) => {
+    if (typeof id !== 'string' || id.trim() === '') throw new RpcError('invalid', localized({ zh: '命令编号无效。', en: 'The command id is invalid.' }))
+    return (await session(sessionId)).dismissCommand(id)
+  })
   rpc.register('chat.setPermission', async ({ sessionId, mode }) => (await session(sessionId)).setPermission(permissionSchema.parse(mode)))
   rpc.register('chat.approve', async (params) => {
     const { sessionId, toolCallId, decision, reason } = approveSchema.parse(params)

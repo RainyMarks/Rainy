@@ -31,6 +31,8 @@ export interface SubagentInput {
   /** Counts the sub-agent's model usage into the chat's run. */
   onUsage?: ((usage: UsageSummary) => void) | undefined
   signal?: AbortSignal | undefined
+  /** Time limit in place of the default, for tests. */
+  maxMs?: number | undefined
 }
 
 /**
@@ -63,11 +65,15 @@ function assistantText(message: AssistantMessage): string {
 export async function runSubagent(input: SubagentInput): Promise<{ text: string; steps: number; activity: string[]; stopped?: 'steps' | 'time' | undefined }> {
   const limit = new AbortController()
   let stopped: 'steps' | 'time' | undefined
-  const timer = setTimeout(() => { stopped = 'time'; limit.abort() }, MAX_SUBAGENT_MS)
+  const timer = setTimeout(() => { stopped = 'time'; limit.abort() }, input.maxMs ?? MAX_SUBAGENT_MS)
   const onParentAbort = (): void => { limit.abort() }
   input.signal?.addEventListener('abort', onParentAbort, { once: true })
   const declarations = input.tools.map(tool => toToolDeclaration(tool))
   const initial = createInitialSystemMessage(subagentPrompt(input.cwd, input.platform), declarations)
+  // The limit also ends a model request in flight, not only the next tool call.
+  const streamFn: Models['streamFn'] = (model, context, options) => input.streamFn(model, context, {
+    ...options, signal: options?.signal === undefined ? limit.signal : AbortSignal.any([options.signal, limit.signal]),
+  })
   const agent = new Agent({
     initialState: {
       model: input.resolved.model,
@@ -75,7 +81,7 @@ export async function runSubagent(input: SubagentInput): Promise<{ text: string;
       tools: input.tools,
       messages: initial === undefined ? [] : [initial],
     },
-    streamFn: input.streamFn,
+    streamFn,
     toolExecution: 'parallel',
     beforeToolCall: () => Promise.resolve(limit.signal.aborted ? { block: true, reason: 'The sub-agent was stopped.', terminate: true } : undefined),
   })

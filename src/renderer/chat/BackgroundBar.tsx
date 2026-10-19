@@ -1,4 +1,4 @@
-/** Commands the agent left running in the background, above the composer, with a way to stop each one. */
+/** Commands the agent left running in the background, above the composer, with a way to stop each one and to clear a finished one. */
 import { useState } from 'react'
 import type { BackgroundCommand } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
@@ -13,14 +13,21 @@ import css from './BackgroundBar.module.css'
  */
 export function BackgroundBar({ sessionId, commands }: { sessionId: string; commands: readonly BackgroundCommand[] }): JSX.Element | null {
   const t = useChatT()
-  const [stopping, setStopping] = useState<string | undefined>()
+  const [busy, setBusy] = useState<string | undefined>()
   if (commands.length === 0) return null
   const stop = (command: BackgroundCommand): void => {
-    setStopping(command.id)
+    setBusy(command.id)
     host.call('chat.stopCommand', { sessionId, id: command.id })
       .then(() => { toast(t('backgroundStopToast', { id: command.id }), { tone: 'success' }) })
       .catch((error: unknown) => { toast(error instanceof Error ? error.message : String(error), { tone: 'error' }) })
-      .finally(() => { setStopping(undefined) })
+      .finally(() => { setBusy(undefined) })
+  }
+  // A finished command stays listed until the model reads its last output; the user need not wait for that.
+  const dismiss = (command: BackgroundCommand): void => {
+    setBusy(command.id)
+    host.call('chat.dismissCommand', { sessionId, id: command.id })
+      .catch((error: unknown) => { toast(error instanceof Error ? error.message : String(error), { tone: 'error' }) })
+      .finally(() => { setBusy(undefined) })
   }
   return (
     <section className={css.bar} data-background aria-label={t('backgroundTitle', { count: commands.length })}>
@@ -35,10 +42,11 @@ export function BackgroundBar({ sessionId, commands }: { sessionId: string; comm
               ? command.pending > 0 ? `${t('backgroundRunning')} · ${t('backgroundUnread', { bytes: command.pending })}` : t('backgroundRunning')
               : command.signal !== null ? t('backgroundStopped') : t('backgroundExited', { code: command.exitCode ?? '?' })}
           </span>
-          {command.state === 'running' && (
-            <Button size="sm" variant="outline" disabled={stopping === command.id} aria-label={t('backgroundStop', { id: command.id })}
-              onClick={() => { stop(command) }}>{t('backgroundStop', { id: command.id })}</Button>
-          )}
+          {command.state === 'running'
+            ? <Button size="sm" variant="outline" disabled={busy === command.id} aria-label={t('backgroundStop', { id: command.id })}
+                onClick={() => { stop(command) }}>{t('backgroundStop', { id: command.id })}</Button>
+            : <Button size="sm" variant="outline" disabled={busy === command.id} aria-label={t('backgroundDismiss', { id: command.id })}
+                onClick={() => { dismiss(command) }}>{t('backgroundDismiss', { id: command.id })}</Button>}
         </div>
       ))}
     </section>

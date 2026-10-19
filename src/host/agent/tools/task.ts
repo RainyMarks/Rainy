@@ -64,7 +64,8 @@ export function taskTool(context: ToolContext, runner: SubagentRunner): AgentToo
     description: 'Hand a self-contained investigation to a sub-agent that reads files, searches the project and searches the web, '
       + 'then answers in one report. Use it when finding the answer would otherwise fill this conversation with searching: '
       + 'locating where something is implemented, comparing several candidates, or reading a large area of the project. '
-      + `Several sub-agents (at most ${MAX_PARALLEL_TASKS}) run at the same time when called in one step. `
+      + `Several sub-agents (at most ${MAX_PARALLEL_TASKS}) run at the same time when a step consists of task calls only; `
+      + 'any other tool in the same step makes them run one after another. '
       + 'A sub-agent cannot change files, run commands or ask the user, and it sees nothing of this conversation beyond the prompt you give it, '
       + 'so state the task in full and say exactly what to report.',
     parameters,

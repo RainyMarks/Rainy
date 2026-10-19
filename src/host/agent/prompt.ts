@@ -41,7 +41,8 @@ const TOOL_NOTES: Readonly<Record<string, string>> = {
   command_output: 'Run a server, watcher or other command that does not end by itself with background: true, read what it writes with command_output '
     + 'instead of waiting, and stop it with stop_command once the task no longer needs it. Background commands end when the chat closes.',
   task: 'Hand a self-contained investigation to a task sub-agent when finding the answer would otherwise fill this conversation with searching, '
-    + 'and call several in one step when they are independent. State the task in full: the sub-agent sees nothing of this conversation, '
+    + 'and call several in one step, with no other tool beside them, when they are independent: they then run at the same time. '
+    + 'State the task in full: the sub-agent sees nothing of this conversation, '
     + 'cannot change anything, and answers once.',
   browser_open: 'After changing a web application, check it yourself: start its development server with background: true, open it with browser_open, '
     + 'and read the page, its console errors and its failed requests. Act on it with browser_act and look again. '

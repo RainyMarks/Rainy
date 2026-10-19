@@ -461,6 +461,16 @@ export class ChatSession {
     return this.jobs.list()
   }
 
+  /**
+   * Drop a finished background command from the list, when the user clears it before the model read it.
+   * @param id Command id.
+   * @returns The chat's background commands after the removal.
+   */
+  dismissCommand(id: string): BackgroundCommand[] {
+    this.jobs.forget(id)
+    return this.jobs.list()
+  }
+
   /** Stop any run and wait for it. */
   async close(): Promise<void> {
     this.abort()
@@ -500,7 +510,9 @@ export class ChatSession {
     const agent = new Agent({
       initialState: { model: resolved.model, thinkingLevel: resolved.thinking ?? 'off', tools, messages: [...(initial === undefined ? [] : [initial]), ...history] },
       streamFn: this.services.models.streamFn,
-      toolExecution: 'sequential',
+      // Every tool but `task` declares itself sequential, and the library runs a step serially as soon as one of its
+      // calls is; so only a step made of `task` calls alone runs its sub-agents at the same time.
+      toolExecution: 'parallel',
       steeringMode: 'all',
       sessionId: this.chat.id,
       beforeToolCall: async ({ toolCall, args }, signal) => {
