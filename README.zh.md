@@ -27,6 +27,7 @@ Rainy 把 AI 智能体、Word/Excel/PPT/PDF 预览、带 AI 补全和 Ctrl+K 改
 | | |
 |---|---|
 | **可控的 AI 智能体** | AI 助手读写、搜索项目文件，执行命令，用 DeepSeek 联网搜索、读取网页，并跨对话记住项目。每个对话可选只读、询问（默认，运行命令前先问）或完全自动；AI 改过的文件都会列出来，可在编辑器里逐处保留或撤销；GBK 和 UTF-16 编码的文件改完仍保持原编码。Skills 放在 `.rainy/skills`，MCP 服务在设置中添加；在那里一键即可通过开源的 [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) 加上电脑操作，让 AI 读取窗口、替你点击、输入和打开应用；默认的询问模式下每次操作先问你。 |
+| **会自查的 AI** | 开发服务器、监听编译这类命令可以放到后台一直跑，AI 继续做别的事，需要时再读它的输出。改完网页应用，AI 能在本机预览窗口里打开自己的成果，读取页面内容、控制台报错和失败的请求，点击、输入后再看一眼，然后告诉你它看到了什么。费时的查找交给子 Agent：它自己读文件、搜项目，最后只回一份报告，不占用对话的上下文。 |
 | **SSH 远程开发** | 从 `~/.ssh/config` 里选一台主机，或填写 `user@host`，Rainy 就把后端放到服务器上运行：AI、终端、运行调试和语言服务都直接处理服务器上的文件，界面留在这台电脑上。使用 Windows 自带的 OpenSSH 客户端，你的密钥、ssh-agent 和 ProxyJump 配置照常可用。 |
 | **看清整个项目** | 项目地图画出项目的各个部分和它们之间的引用关系，或把每个文件画成按行数大小的方块；认出技术栈，按需让 AI 讲解每个部分，并高亮 AI 正在读或改的文件。 |
 | **真正的编辑器和调试器** | 边写边给出 AI 建议（按 Tab 接受），选中代码按 Ctrl+K 让 AI 改写，逐行审阅后再保留。全项目搜索替换、命令面板，以及能让 AI 写提交说明的 Git 面板。CodeMirror 6，支持补全、悬停提示、转到定义、重命名、诊断、差异对比和未保存内容恢复。可运行和调试 Python、JavaScript/TypeScript、C/C++，可运行 PHP。 |
@@ -172,10 +173,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.6.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.7.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.6.2` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.7.0` 换成 `package.json` 中的版本号。[验收记录](docs/validation.md)记录了每个版本完成的构建、安装和运行检查。
 
 日常开发时，`pnpm run dev` 会构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。
 
