@@ -32,15 +32,18 @@
 }
 
 /* Ongoing is the sole non-dot state: a quiet full ring sits behind an arc while the
- * whole glyph rotates. The rotation is on the <svg> element itself, which the
- * compositor turns without repainting; a transform on an element inside an SVG, or
- * an animated dash, would repaint the glyph on every frame. */
+ * whole glyph rotates. The rotation is on the <svg> element, which the compositor
+ * turns without repainting; a transform on an element inside an SVG, or an animated
+ * dash, would repaint the glyph on every frame. */
 .spinner {
+  display: inline-block;
   flex: none;
+  line-height: 0;
   color: var(--rainy-alias-label-tertiary);
 }
 
 .spinnerMotion {
+  display: block;
   transform-origin: center;
   animation: rainy-state-dot-spin 1.5s linear infinite;
 }

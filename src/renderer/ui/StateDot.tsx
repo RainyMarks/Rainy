@@ -39,18 +39,13 @@ export function StateDot({ state, size, className, appearance = 'dot' }: {
   const edge = size ?? (state === 'ongoing' ? 14 : 10)
   if (state === 'ongoing') {
     return (
-      <svg
-        ref={syncSpinner}
-        className={clsx(css.spinner, css.spinnerMotion, className)}
-        data-state="ongoing"
-        width={edge}
-        height={edge}
-        viewBox="0 0 24 24"
-        aria-hidden="true"
-      >
-        <circle className={css.spinnerTrack} cx="12" cy="12" r="9.5" />
-        <circle className={css.spinnerArc} cx="12" cy="12" r="9.5" />
-      </svg>
+      // The caller's class may position the outer box with a transform; the rotation is on the inner <svg>.
+      <span className={clsx(css.spinner, className)} data-state="ongoing" style={{ width: edge, height: edge }} aria-hidden="true">
+        <svg ref={syncSpinner} className={css.spinnerMotion} width={edge} height={edge} viewBox="0 0 24 24">
+          <circle className={css.spinnerTrack} cx="12" cy="12" r="9.5" />
+          <circle className={css.spinnerArc} cx="12" cy="12" r="9.5" />
+        </svg>
+      </span>
     )
   }
   return (
