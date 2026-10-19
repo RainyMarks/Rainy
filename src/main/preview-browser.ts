@@ -186,13 +186,18 @@ export class PreviewBrowser {
       const contents = this.window.webContents
       contents.setWindowOpenHandler(() => ({ action: 'deny' }))
       contents.on('console-message', (_event, level, message, line, source) => {
-        if (level < 2) return
+        // Electron's own messages (its security warning) are about this window, not the page being checked.
+        if (level < 2 || source.startsWith('node:electron')) return
         this.push(this.console, `${level === 3 ? 'error' : 'warn'}: ${message}${source === '' ? '' : ` (${source}:${line})`}`)
       })
       contents.on('did-fail-load', (_event, code, description, failedUrl, isMainFrame) => {
         if (isMainFrame) this.push(this.failed, `${failedUrl}: ${description} (${code})`)
       })
       contents.session.webRequest.onErrorOccurred(({ url: failedUrl, error }) => { this.push(this.failed, `${failedUrl}: ${error}`) })
+      // A request that answered 4xx or 5xx did not fail at the network level, but it is still a broken page.
+      contents.session.webRequest.onCompleted(({ url: requestUrl, statusCode }) => {
+        if (statusCode >= 400) this.push(this.failed, `${requestUrl}: HTTP ${statusCode}`)
+      })
       // A page that asks for a camera, notifications or anything else is refused rather than prompting the user.
       contents.session.setPermissionRequestHandler((_contents, _permission, callback) => { callback(false) })
     }

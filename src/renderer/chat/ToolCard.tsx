@@ -153,9 +153,12 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
 
   if (call.name === 'bash' || call.name === 'pwsh' || call.name === 'command_output' || call.name === 'stop_command') {
     const output = result === undefined ? running?.partial : resultText(result)
+    // A command left running in the background has no exit code yet, which is not a failure.
+    const backgroundRunning = details.jobId !== undefined && details.exitCode === null && details.state !== 'exited'
     body = (
       <TerminalBlock command={str(details.command) ?? str(args.command) ?? ''} cwd={str(details.cwd)} output={output}
-        exitCode={typeof details.exitCode === 'number' ? details.exitCode : result === undefined ? undefined : null}
+        exitCode={typeof details.exitCode === 'number' ? details.exitCode
+          : result === undefined || backgroundRunning ? undefined : null}
         signal={str(details.signal)} running={isRunning} runStateDot={approval === undefined} labels={labels.terminal} />
     )
   } else if (call.name === 'task') {
