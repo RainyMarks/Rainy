@@ -3,8 +3,11 @@ import { realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { PendingApproval, PermissionMode, PermissionRules } from '../../shared/rpc.ts'
 
-/** Tools that only read; they run in every mode. `stop_command` only ends a command this chat already started. */
-const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob', 'web_search', 'command_output', 'stop_command'])
+/**
+ * Tools that only read; they run in every mode. `stop_command` only ends a command this chat already started, and a
+ * `task` sub-agent is given read-only tools, so neither can change anything.
+ */
+const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'grep', 'glob', 'web_search', 'command_output', 'stop_command', 'task'])
 const CHANGE_TOOLS: ReadonlySet<string> = new Set(['write', 'edit'])
 const SHELL_TOOLS: ReadonlySet<string> = new Set(['bash', 'pwsh'])
 

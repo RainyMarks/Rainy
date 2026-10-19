@@ -29,8 +29,10 @@ import { discoverSkills, skillsSection } from './skills.ts'
 import type { StoredChat } from './store.ts'
 import { Observations, type ToolContext } from './tools/common.ts'
 import { BackgroundJobs } from './tools/jobs.ts'
-import { coreTools } from './tools/index.ts'
-import { deepSeekKey } from './tools/web.ts'
+import { coreTools, subagentTools } from './tools/index.ts'
+import { runSubagent } from './subagent.ts'
+import type { SubagentRunner } from './tools/task.ts'
+import { deepSeekKey, type WebAccess } from './tools/web.ts'
 import type { AgentServices } from './services.ts'
 import { localized } from '../../shared/locale.ts'
 
@@ -865,7 +867,31 @@ export class ChatSession {
     const settings = this.services.settings
     const web = settings.prefs().webSearch && deepSeekKey(settings) !== undefined
       ? { apiKey: () => deepSeekKey(settings), fetch: this.services.fetch ?? globalThis.fetch.bind(globalThis) } : undefined
-    return [...coreTools(context, env.platform, web), ...this.services.mcp.tools()].sort((left, right) => left.name.localeCompare(right.name))
+    return [...coreTools(context, env.platform, web, this.subagents(context, web)), ...this.services.mcp.tools()]
+      .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  /**
+   * Runs one `task` sub-agent: the chat's model and read-only tools, its own transcript, and the chat's limits.
+   * @param parent Tool context of the chat, whose working directory and spill directory the sub-agent shares.
+   * @param web The chat's web access, when it has any.
+   * @returns The runner the `task` tool calls.
+   */
+  private subagents(parent: ToolContext, web: WebAccess | undefined): SubagentRunner {
+    return {
+      run: async ({ prompt, description, onProgress, signal }) => {
+        const resolved = this.resolved()
+        if (resolved === undefined) throw new Error('no model is configured for this chat')
+        this.services.log(`[chat ${this.chat.id}] sub-agent: ${description}`)
+        // Its own observations: what a sub-agent read does not let the chat write that file without reading it itself.
+        const context: ToolContext = { ...parent, observations: new Observations(), jobs: undefined, recordChange: undefined, onFileTouched: undefined }
+        return runSubagent({
+          prompt, description, resolved, tools: subagentTools(context, web), cwd: this.chat.cwd, platform: this.services.env.platform,
+          streamFn: this.services.models.streamFn, onProgress, signal,
+          onUsage: (usage) => { if (this.run !== undefined) this.run.usage = addUsage(this.run.usage, usage) },
+        })
+      },
+    }
   }
 
   private async systemPrompt(tools: readonly AgentTool[]): Promise<string> {

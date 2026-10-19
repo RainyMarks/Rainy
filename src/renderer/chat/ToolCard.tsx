@@ -10,6 +10,7 @@ import {
 } from '../ui/index.ts'
 import { ApprovalBar } from './ApprovalBar.tsx'
 import type { RunningTool } from './chat-store.ts'
+import { Markdown } from './Markdown.tsx'
 import { useChatT } from './messages.ts'
 import { revertChanges } from './revert.ts'
 import css from './ToolCard.module.css'
@@ -95,6 +96,7 @@ export function toolTitle(call: ToolCall, t: ReturnType<typeof useChatT>): strin
       if (call.name === 'grep') return path === undefined ? t('toolGrep', { pattern }) : t('toolGrepIn', { pattern, path })
       return path === undefined ? t('toolGlob', { pattern }) : t('toolGlobIn', { pattern, path })
     }
+    case 'task': return t('toolTask', { description: str(args.description) ?? '' })
     case 'command_output': return t('toolCommandOutput', { id: str(args.id) ?? '' })
     case 'stop_command': return t('toolStopCommand', { id: str(args.id) ?? '' })
     case 'web_search': return t('toolWebSearch', { query: str(args.query) ?? '' })
@@ -149,6 +151,16 @@ export function ToolCard({ sessionId, call, result, running, defaultOpen, approv
         exitCode={typeof details.exitCode === 'number' ? details.exitCode : result === undefined ? undefined : null}
         signal={str(details.signal)} running={isRunning} runStateDot={approval === undefined} labels={labels.terminal} />
     )
+  } else if (call.name === 'task') {
+    const activity = Array.isArray(details.activity) ? details.activity as string[] : []
+    const steps = typeof details.steps === 'number' ? details.steps : 0
+    const stopped = details.stopped === 'steps' ? t('taskStoppedSteps') : details.stopped === 'time' ? t('taskStoppedTime') : undefined
+    const latest = activity.at(-1)
+    suffix = <span className={css.totals}>{isRunning && latest !== undefined ? t('taskActivity', { tool: latest }) : t('taskSteps', { steps })}</span>
+    body = <>
+      {stopped !== undefined && <p className={css.notice}>{stopped}</p>}
+      <Markdown text={result === undefined ? running?.partial ?? '' : resultText(result)} />
+    </>
   } else if (call.name === 'read' && !failed && Array.isArray(details.lines)) {
     const path = str(details.path) ?? str(args.file_path) ?? ''
     body = (
