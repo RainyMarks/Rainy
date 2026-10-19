@@ -14,6 +14,8 @@ const CALL_TIMEOUT_MS = 60_000
 const CALL_TOTAL_TIMEOUT_MS = 30 * 60_000
 /** Wait for a server to start and list its tools. */
 const CONNECT_TIMEOUT_MS = 60_000
+/** A local server started through uvx or npx can spend its first start downloading packages and an interpreter. */
+const STDIO_CONNECT_TIMEOUT_MS = 180_000
 
 /**
  * Model-facing name of an MCP tool.
@@ -200,8 +202,9 @@ export class McpManager {
           this.log(`[mcp:${config.name}] ${text.trimEnd()}`)
         })
       }
-      await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
-      const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS })
+      const timeout = config.transport === 'stdio' ? STDIO_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS
+      await client.connect(transport, { timeout })
+      const listed = await client.listTools(undefined, { timeout })
       if (connection.closing) { await client.close(); return }
       connection.client = client
       connection.tools = listed.tools.map(tool => ({

@@ -26,6 +26,40 @@ export function emptyServerForm(): McpServerForm {
   return { name: '', enabled: true, transport: 'stdio', command: '', args: '', env: '', url: '', headers: '', tools: [] }
 }
 
+/** Windows-MCP (github.com/CursorTouch/Windows-MCP, MIT) release the computer-use preset runs. */
+export const WINDOWS_MCP_VERSION = '0.8.7'
+/** Its dependencies resolve as published before this moment, so a new upload cannot change what runs. */
+const WINDOWS_MCP_DEPENDENCIES_BEFORE = '2026-10-04T00:00:00Z'
+/** Its tools that Rainy's own command, file and web tools cover with their own approvals, or that a chat has no use for. */
+const WINDOWS_MCP_EXCLUDED_TOOLS = ['PowerShell', 'FileSystem', 'Registry', 'Process', 'Scrape', 'Notification']
+
+/**
+ * @param server A configured server.
+ * @returns Whether it runs Windows-MCP.
+ */
+export function isWindowsMcp(server: McpServerConfig): boolean {
+  return server.transport === 'stdio' && [server.command ?? '', ...server.args ?? []].some(part => /^windows-mcp(?:[=<>@~!]|$)/iu.test(part))
+}
+
+/**
+ * The form of the computer-use preset: Windows-MCP through uv, which downloads the Python it needs.
+ * @param environment Where the Host runs; a WSL Host starts the Windows program through interop.
+ * @param takenNames Names of the configured servers.
+ * @returns A new, enabled stdio server form.
+ */
+export function windowsMcpForm(environment: 'Windows' | 'WSL', takenNames: readonly string[]): McpServerForm {
+  const uvx = ['uvx', '--python', '3.14', '--exclude-newer', WINDOWS_MCP_DEPENDENCIES_BEFORE, `windows-mcp==${WINDOWS_MCP_VERSION}`,
+    'serve', '--exclude-tools', WINDOWS_MCP_EXCLUDED_TOOLS.join(',')]
+  const [command, ...args] = environment === 'WSL' ? ['cmd.exe', '/c', ...uvx] : uvx
+  let name = 'windows'
+  for (let index = 2; takenNames.includes(name); index++) name = `windows-${index}`
+  return {
+    ...emptyServerForm(), name, command: command!, args: args.join('\n'),
+    // WSLENV carries the variable from the Linux Host to the Windows program.
+    env: environment === 'WSL' ? 'ANONYMIZED_TELEMETRY=false\nWSLENV=ANONYMIZED_TELEMETRY' : 'ANONYMIZED_TELEMETRY=false',
+  }
+}
+
 /**
  * @param server A saved server.
  * @returns Its editable form.

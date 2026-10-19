@@ -10,7 +10,7 @@ import { Tag } from '../ui/Tag.tsx'
 import type { TagTone } from '../ui/Tag.tsx'
 import { useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
-import { emptyServerForm, parseServerForm, serverFormOf } from './mcp-form.ts'
+import { emptyServerForm, isWindowsMcp, parseServerForm, serverFormOf, windowsMcpForm } from './mcp-form.ts'
 import type { McpServerForm } from './mcp-form.ts'
 import { Field, Loading, Notice, errorText, useAction } from './parts.tsx'
 import type { SettingsWorkspace } from './parts.tsx'
@@ -39,12 +39,15 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
   const cwd = workspace?.path
   const [status, setStatus] = useState<ExtensionsStatus | undefined>()
   const [error, setError] = useState('')
-  const [form, setForm] = useState<{ value: McpServerForm; previousName?: string | undefined } | undefined>()
+  const [form, setForm] = useState<{ value: McpServerForm; previousName?: string | undefined; desktop?: boolean } | undefined>()
   const [formError, setFormError] = useState<string | undefined>()
   const [removing, setRemoving] = useState<string | undefined>()
   const { busy, run } = useAction()
   const mounted = useRef(true)
   const transportId = useId()
+  // Windows-MCP drives the PC's own desktop, which a Host on an SSH server cannot reach.
+  const environment = window.__RAINY_AGENT__?.environment
+  const desktopHost = environment === 'Windows' || environment === 'WSL' ? environment : undefined
 
   // Server changes come back with the Host's skill list for whichever folder it last read, so keep the one read for this project.
   const merge = useCallback((value: ExtensionsStatus): void => {
@@ -63,8 +66,8 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
 
   const servers = status?.servers ?? []
   const live = (name: string): McpServerStatus | undefined => status?.status.find(entry => entry.name === name)
-  const open = (value: McpServerForm, previousName?: string): void => {
-    setForm({ value, previousName }); setFormError(undefined); setRemoving(undefined)
+  const open = (value: McpServerForm, previousName?: string, desktop = false): void => {
+    setForm({ value, previousName, desktop }); setFormError(undefined); setRemoving(undefined)
   }
   const edit = (change: Partial<McpServerForm>): void => {
     setForm(current => current === undefined ? current : { ...current, value: { ...current.value, ...change } })
@@ -126,6 +129,8 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
       <div className={css.row}>
         <h3 className={css.subheading}>{t('mcpTitle')}</h3>
         <div className={css.actions}>
+          {desktopHost !== undefined && status !== undefined && !servers.some(isWindowsMcp) && <Button size="sm" variant="outline" disabled={busy}
+            data-add-desktop onClick={() => { open(windowsMcpForm(desktopHost, servers.map(server => server.name)), undefined, true) }}>{t('mcpAddDesktop')}</Button>}
           <Button size="sm" variant="outline" disabled={busy || status === undefined} onClick={() => { open(emptyServerForm()) }}>{t('mcpAdd')}</Button>
         </div>
       </div>
@@ -149,13 +154,17 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
             <div className={css.actions}>
               <Switch checked={server.enabled} label={t('mcpEnable', { name: server.name })} disabled={busy}
                 onChange={(enabled) => { toggle(server, enabled) }} />
-              <Button size="sm" disabled={busy} onClick={() => { open(serverFormOf(server), server.name) }}>{t('mcpEdit')}</Button>
+              <Button size="sm" disabled={busy} onClick={() => { open(serverFormOf(server), server.name, isWindowsMcp(server)) }}>{t('mcpEdit')}</Button>
               <Button size="sm" disabled={busy} onClick={() => { remove(server) }}>{t(removing === server.name ? 'mcpRemoveConfirm' : 'mcpRemove')}</Button>
             </div>
           </li>
         })}</ul>)}
       {form !== undefined && <div className={css.subcard} data-server-form>
         <h4 className={css.subheading}>{form.previousName === undefined ? t('mcpFormAdd') : t('mcpFormEdit', { name: form.previousName })}</h4>
+        {form.desktop === true && <div data-desktop-note>
+          <p className={css.muted}>{t('mcpDesktopNote')}</p>
+          <Notice>{t('mcpDesktopSetup')}</Notice>
+        </div>}
         <div className={css.grid}>
           <Field label={t('mcpName')}><input className={css.input} aria-label={t('mcpName')} value={form.value.name} spellCheck={false}
             autoComplete="off" maxLength={32} onChange={(event) => { edit({ name: event.target.value }) }} /></Field>

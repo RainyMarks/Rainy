@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import type { ExtensionsStatus, McpServerConfig } from '../../src/shared/rpc.ts'
 import { ExtensionsSection } from '../../src/renderer/settings/ExtensionsSection.tsx'
-import { emptyServerForm, parseServerForm, serverFormOf } from '../../src/renderer/settings/mcp-form.ts'
+import { emptyServerForm, isWindowsMcp, parseServerForm, serverFormOf, windowsMcpForm } from '../../src/renderer/settings/mcp-form.ts'
 import { settingsMessages } from '../../src/renderer/settings/messages.ts'
 import {
   all, button, cleanup, click, control, emit, fakeHost, handle, hasText, listenerCount, render, toast, type, waitFor,
@@ -46,7 +46,7 @@ beforeEach(async () => {
   handle('extensions.removeServer', ({ name }) => { status = { ...status, skills: [], servers: status.servers.filter(entry => entry.name !== name) }; return status })
   await emit('prefs.changed', { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true })
 })
-afterEach(async () => { await cleanup() })
+afterEach(async () => { await cleanup(); delete window.__RAINY_AGENT__ })
 
 it('lists project and user skills for the current project with where to add more', async () => {
   await render(<ExtensionsSection workspace={workspace} />)
@@ -183,6 +183,61 @@ it('follows extensions.changed while keeping the skills read for this project, a
   expect(document.querySelector('[data-skill="project/pwn"]')).not.toBeNull()
   await view.unmount()
   expect(listenerCount('extensions.changed')).toBe(0)
+})
+
+const desktopArgs = ['--python', '3.14', '--exclude-newer', '2026-10-04T00:00:00Z', 'windows-mcp==0.8.7', 'serve', '--exclude-tools',
+  'PowerShell,FileSystem,Registry,Process,Scrape,Notification']
+
+it('adds computer use from a filled-in Windows-MCP form that starts it through interop on a WSL Host', async () => {
+  window.__RAINY_AGENT__ = { name: 'Rainy', version: '3.6.2', environment: 'WSL' }
+  await render(<ExtensionsSection workspace={workspace} />)
+  await waitFor(() => { expect(row('files')).not.toBeNull() })
+  await click(button(zh.mcpAddDesktop))
+  expect(hasText(zh.mcpFormAdd, form())).toBe(true)
+  expect(form().querySelector('[data-desktop-note]')?.textContent).toBe(`${zh.mcpDesktopNote}${zh.mcpDesktopSetup}`)
+  expect(control<HTMLInputElement>(zh.mcpName).value).toBe('windows')
+  expect(control<HTMLInputElement>(zh.mcpCommand).value).toBe('cmd.exe')
+  expect(control<HTMLTextAreaElement>(zh.mcpArgs).value).toBe(['/c', 'uvx', ...desktopArgs].join('\n'))
+  expect(control<HTMLTextAreaElement>(zh.mcpEnv).value).toBe('ANONYMIZED_TELEMETRY=false\nWSLENV=ANONYMIZED_TELEMETRY')
+  await click(button(zh.settingsSave, form()))
+  await waitFor(() => { expect(row('windows')).not.toBeNull() })
+  expect(calls('extensions.saveServer')).toEqual([{ server: { name: 'windows', enabled: true, transport: 'stdio', command: 'cmd.exe',
+    args: ['/c', 'uvx', ...desktopArgs], env: { ANONYMIZED_TELEMETRY: 'false', WSLENV: 'ANONYMIZED_TELEMETRY' }, tools: [] } }])
+  // Once added, the button goes away, and editing the server explains it again.
+  expect(all('[data-add-desktop]')).toEqual([])
+  await click(button(zh.mcpEdit, row('windows')))
+  expect(form().querySelector('[data-desktop-note]')).not.toBeNull()
+  await click(button(zh.mcpEdit, row('files')))
+  expect(form().querySelector('[data-desktop-note]')).toBeNull()
+})
+
+it('offers computer use only where the Host can reach this PC\'s desktop', async () => {
+  window.__RAINY_AGENT__ = { name: 'Rainy', version: '3.6.2', environment: 'SSH' }
+  await render(<ExtensionsSection workspace={workspace} />)
+  await waitFor(() => { expect(row('files')).not.toBeNull() })
+  expect(all('[data-add-desktop]')).toEqual([])
+  await cleanup()
+  window.__RAINY_AGENT__ = { name: 'Rainy', version: '3.6.2', environment: 'Windows' }
+  handle('extensions.status', () => status)
+  await render(<ExtensionsSection workspace={workspace} />)
+  await waitFor(() => { expect(all('[data-add-desktop]')).toHaveLength(1) })
+})
+
+describe('windowsMcpForm', () => {
+  it('runs the pinned release through uvx on Windows and picks a free name', () => {
+    const preset = windowsMcpForm('Windows', ['windows', 'windows-2'])
+    expect(preset).toMatchObject({ name: 'windows-3', transport: 'stdio', command: 'uvx', args: desktopArgs.join('\n'), env: 'ANONYMIZED_TELEMETRY=false' })
+    const parsed = parseServerForm(preset, ['windows', 'windows-2'])
+    expect(parsed.ok && isWindowsMcp(parsed.server)).toBe(true)
+  })
+  it('recognizes Windows-MCP servers configured by hand', () => {
+    const server = (command: string, args: string[]): McpServerConfig => ({ name: 'w', enabled: true, transport: 'stdio', command, args, tools: [] })
+    expect(isWindowsMcp(server('uvx', ['windows-mcp', 'serve']))).toBe(true)
+    expect(isWindowsMcp(server('C:\\Users\\u\\.local\\bin\\uvx.exe', ['windows-mcp@latest']))).toBe(true)
+    expect(isWindowsMcp(server('windows-mcp', ['serve']))).toBe(true)
+    expect(isWindowsMcp(server('npx', ['-y', 'windows-mcp-helper']))).toBe(false)
+    expect(isWindowsMcp(files)).toBe(false)
+  })
 })
 
 describe('parseServerForm', () => {
