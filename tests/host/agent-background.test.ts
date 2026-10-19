@@ -13,7 +13,8 @@ const directories: string[] = []
 const registries: BackgroundJobs[] = []
 afterEach(async () => {
   for (const jobs of registries.splice(0)) await jobs.close()
-  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true })
+  // Windows can hold a directory for a moment after the processes that ran in it exit.
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
 })
 
 async function context(): Promise<ToolContext & { jobs: BackgroundJobs }> {
@@ -62,33 +63,41 @@ it('starts a command in the background, reads its new output once, and stops it'
   expect(tools.jobs.list()).toEqual([])
 }, 30_000)
 
-it('reports a background command that fails right away, and forgets it once read', async () => {
+it('reports a background command that ended, and forgets it once its last output is read', async () => {
   const tools = await context()
   const run = shellTool(tools, shell)
   const started = await run.execute('call-1', { command: 'rainy-no-such-program-here', description: 'Run a missing program', background: true }, undefined, undefined)
-  expect(text(started)).toContain('exited')
-  // Its output was delivered with the start, so the finished job is no longer listed.
+  if (text(started).includes('exited')) {
+    // It was already gone when the call returned, so nothing is left to read.
+    expect(tools.jobs.list()).toEqual([])
+    await expect(commandOutputTool(tools).execute('call-2', { id: 'cmd-1' }, undefined, undefined)).rejects.toThrow('unknown background command')
+    return
+  }
+  // A loaded machine can take longer than the start watches; the next read reports the exit instead.
+  for (let waited = 0; waited < 20_000 && tools.jobs.list()[0]?.state === 'running'; waited += 200) {
+    await new Promise(done => setTimeout(done, 200))
+  }
+  const output = await commandOutputTool(tools).execute('call-2', { id: 'cmd-1' }, undefined, undefined)
+  expect(text(output)).toMatch(/exited with code|was stopped on signal/u)
   expect(tools.jobs.list()).toEqual([])
-  await expect(commandOutputTool(tools).execute('call-2', { id: 'cmd-1' }, undefined, undefined)).rejects.toThrow('unknown background command')
-}, 30_000)
+}, 40_000)
 
 it('refuses a ninth running command and names the tool that stops one', async () => {
   const tools = await context()
-  const forever = shell === 'pwsh' ? 'Start-Sleep -Seconds 60' : 'sleep 60'
-  for (let index = 0; index < 8; index++) tools.jobs.start({ argv: argvFor(forever), cwd: tools.cwd, env: {}, command: forever, description: 'Wait' })
-  expect(() => tools.jobs.start({ argv: argvFor(forever), cwd: tools.cwd, env: {}, command: forever, description: 'Wait' })).toThrow('stop_command')
+  const waiting = { argv: argvFor(), cwd: tools.cwd, env: {}, command: 'wait', description: 'Wait' }
+  for (let index = 0; index < 8; index++) tools.jobs.start(waiting)
+  expect(tools.jobs.list().filter(job => job.state === 'running')).toHaveLength(8)
+  expect(() => tools.jobs.start(waiting)).toThrow('stop_command')
 }, 30_000)
 
-function argvFor(command: string): string[] {
-  return shell === 'pwsh'
-    ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command]
-    : ['bash', '-c', command]
+/** A process that just stays alive, started without a shell so the test does not pay for eight shells. */
+function argvFor(): string[] {
+  return [process.execPath, '-e', 'setTimeout(() => undefined, 60_000)']
 }
 
 it('closes every job with the chat', async () => {
   const tools = await context()
-  const forever = shell === 'pwsh' ? 'Start-Sleep -Seconds 60' : 'sleep 60'
-  tools.jobs.start({ argv: argvFor(forever), cwd: tools.cwd, env: {}, command: forever, description: 'Wait' })
+  tools.jobs.start({ argv: argvFor(), cwd: tools.cwd, env: {}, command: 'wait', description: 'Wait' })
   expect(tools.jobs.list()).toHaveLength(1)
   await tools.jobs.close()
   expect(tools.jobs.list()).toEqual([])

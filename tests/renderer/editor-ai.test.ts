@@ -68,6 +68,30 @@ it('suggests after a pause, keeps the rest while the typing matches, and accepts
   expect(view.state.selection.main.head).toBe(10)
 })
 
+it('shows the suggestion while it streams and asks again right after one is accepted', async () => {
+  const suggest = vi.fn(async (_request: EditorSuggestRequest, _signal: AbortSignal, progress?: (text: string) => void) => {
+    progress?.(' + ')
+    await pause(250)
+    progress?.(' + 1')
+    return ' + 1'
+  })
+  const { view, container } = await open({ suggest })
+  editor!.setAssist({ suggestions: true })
+  view.dispatch({ selection: { anchor: 5 } })
+  type(view, 'x')
+  await pause(220)
+  expect(suggest).toHaveBeenCalledTimes(1)
+  // The first part is on screen while the rest is still being written.
+  expect(container.querySelector('.rainy-ghost-text')?.textContent).toBe(' + ')
+  await pause(250)
+  expect(container.querySelector('.rainy-ghost-text')?.textContent).toBe(' + 1')
+  // Accepting continues where the user just agreed to go, without waiting out the typing pause again.
+  expect(key(view, { key: 'Tab' })).toBe(true)
+  await pause(120)
+  expect(suggest).toHaveBeenCalledTimes(2)
+  expect(suggest.mock.calls[1]![0]).toMatchObject({ prefix: 'a = 1x + 1' })
+})
+
 it('asks nothing while suggestions are off or in the middle of code', async () => {
   const suggest = vi.fn(async () => 'zzz')
   const { view } = await open({ suggest })

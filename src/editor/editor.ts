@@ -478,9 +478,9 @@ class WorkspaceEditor implements EditorInstance, LanguageHost {
       suggestions: () => this.suggestions && this.callbacks.suggest !== undefined,
       editable: () => !open.document.readOnly && open.diff === undefined,
       ctrlK: () => !PREVIEW_DOCUMENT.test(open.document.path),
-      suggest: async (view, pos, signal) => this.callbacks.suggest === undefined ? '' : this.callbacks.suggest({
+      suggest: async (view, pos, signal, progress) => this.callbacks.suggest === undefined ? '' : this.callbacks.suggest({
         ...request(), prefix: view.state.sliceDoc(Math.max(0, pos - SUGGEST_BEFORE), pos), suffix: view.state.sliceDoc(pos, pos + SUGGEST_AFTER),
-      }, signal),
+      }, signal, progress),
       rewrite: async (view, from, to, instruction, progress, signal) => {
         if (this.callbacks.rewrite === undefined) throw new Error(this.labels.aiEditUnavailable)
         return this.callbacks.rewrite({

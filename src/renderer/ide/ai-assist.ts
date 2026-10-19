@@ -10,10 +10,18 @@ let nextRequest = 0
 /**
  * @param request Text around the cursor.
  * @param signal Aborts when the user keeps typing; the Host then drops the request too.
+ * @param progress Receives the suggestion as it streams, so ghost text appears before the model has finished.
  * @returns The suggestion, or '' for none.
  */
-export async function suggest(request: EditorSuggestRequest, signal: AbortSignal): Promise<string> {
-  const result = await host.call('inline.complete', request)
+export async function suggest(request: EditorSuggestRequest, signal: AbortSignal, progress?: (text: string) => void): Promise<string> {
+  const requestId = `suggest-${Date.now().toString(36)}-${(nextRequest++).toString(36)}`
+  const unsubscribe = host.on('inline.progress', (event) => { if (event.requestId === requestId && !signal.aborted) progress?.(event.text) })
+  let result
+  try {
+    result = await host.call('inline.complete', { ...request, requestId })
+  } finally {
+    unsubscribe()
+  }
   if (signal.aborted) return ''
   if (result.error !== undefined) {
     if (result.error !== reported) toast(result.error, { tone: 'error' })

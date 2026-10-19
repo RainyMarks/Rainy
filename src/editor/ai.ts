@@ -8,7 +8,9 @@ import { completionStatus } from '@codemirror/autocomplete'
 import type { EditorActionLabels } from '../renderer/ide/editor-types.ts'
 
 /** Pause in typing before a suggestion is requested. */
-const SUGGEST_DELAY_MS = 450
+const SUGGEST_DELAY_MS = 180
+/** Pause before the suggestion that follows an accepted one, which continues work the user has just approved. */
+const CHAINED_DELAY_MS = 30
 
 /** What the AI features need from the editor that owns the view. */
 export interface AiHost {
@@ -18,8 +20,8 @@ export interface AiHost {
   editable(view: EditorView): boolean
   /** Whether Ctrl+K opens the prompt; documents with a preview keep it for the Ctrl+K V chord. */
   ctrlK(view: EditorView): boolean
-  /** @returns A suggestion to insert at `pos`, or '' for none. */
-  suggest(view: EditorView, pos: number, signal: AbortSignal): Promise<string>
+  /** @returns A suggestion to insert at `pos`, or '' for none; `progress` receives it as it streams. */
+  suggest(view: EditorView, pos: number, signal: AbortSignal, progress?: (text: string) => void): Promise<string>
   /** @returns The replacement of `[from, to)`; `progress` receives the text so far. Rejects with a message to show. */
   rewrite(view: EditorView, from: number, to: number, instruction: string, progress: (text: string) => void, signal: AbortSignal): Promise<string>
   labels(): EditorActionLabels
@@ -99,9 +101,11 @@ function suggestionRequests(host: AiHost): Extension {
       if (!update.docChanged && !update.selectionSet) return
       this.cancel()
       if (!update.docChanged || !host.suggestions()) return
-      if (!update.transactions.some(transaction => transaction.isUserEvent('input') || transaction.isUserEvent('delete'))) return
+      // An accepted suggestion continues at once: the user has just approved this direction.
+      const accepted = update.transactions.some(transaction => transaction.isUserEvent('input.complete'))
+      if (!accepted && !update.transactions.some(transaction => transaction.isUserEvent('input') || transaction.isUserEvent('delete'))) return
       if (update.state.field(suggestionField) !== null) return
-      this.timer = window.setTimeout(() => { this.request() }, SUGGEST_DELAY_MS)
+      this.timer = window.setTimeout(() => { this.request() }, accepted ? CHAINED_DELAY_MS : SUGGEST_DELAY_MS)
     }
 
     request(): void {
@@ -116,10 +120,13 @@ function suggestionRequests(host: AiHost): Extension {
       const controller = new AbortController()
       this.controller = controller
       const doc = state.doc
-      void host.suggest(view, main.head, controller.signal).then((text) => {
-        if (controller.signal.aborted || text === '' || view.state.doc !== doc || view.state.selection.main.head !== main.head) return
+      // The cursor must still be where the suggestion was asked for, or it would be inserted in the wrong place.
+      const stillHere = (): boolean => !controller.signal.aborted && view.state.doc === doc && view.state.selection.main.head === main.head
+      const show = (text: string): void => {
+        if (text === '' || !stillHere()) return
         view.dispatch({ effects: setSuggestion.of({ from: main.head, text }) })
-      }, () => undefined)
+      }
+      void host.suggest(view, main.head, controller.signal, show).then(show, () => undefined)
     }
 
     cancel(): void {

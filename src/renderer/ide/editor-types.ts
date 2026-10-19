@@ -123,8 +123,11 @@ export interface EditorCallbacks {
   readonly format: () => void
   readonly sendSelection: () => void
   readonly breakpoint: (path: string, line: number) => void
-  /** Ghost-text suggestion at the cursor, or '' for none; the signal aborts when the user keeps typing. */
-  readonly suggest?: ((request: EditorSuggestRequest, signal: AbortSignal) => Promise<string>) | undefined
+  /**
+   * Ghost-text suggestion at the cursor, or '' for none; the signal aborts when the user keeps typing.
+   * `progress` receives the suggestion as it streams, so the editor can show it before the model has finished.
+   */
+  readonly suggest?: ((request: EditorSuggestRequest, signal: AbortSignal, progress?: (text: string) => void) => Promise<string>) | undefined
   /** Replacement for a selection; `progress` receives the text so far. Rejects with a message to show. */
   readonly rewrite?: ((request: EditorRewriteRequest, progress: (text: string) => void, signal: AbortSignal) => Promise<string>) | undefined
   /** First visible line while the user scrolls, with a fraction for the part of it scrolled past; drives preview sync. */

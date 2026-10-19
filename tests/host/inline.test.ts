@@ -62,35 +62,50 @@ describe('suggestions', () => {
   it('asks nothing while suggestions are off', async () => {
     const h = harness({ inlineCompletion: false })
     expect(await h.assist.complete({ path: 'a.py', prefix: 'x = ', suffix: '' })).toEqual({ text: '' })
-    expect(h.complete).not.toHaveBeenCalled()
+    expect(h.streamFn).not.toHaveBeenCalled()
   })
 
   it('uses the chosen model, or the chat model when none is chosen or it was removed', async () => {
     const h = harness({ inlineCompletion: true, completionModel: 'fast' })
+    h.setFinal('x + 1')
     expect(await h.assist.complete({ path: 'a.py', language: 'python', prefix: 'y = x', suffix: '' })).toEqual({ text: 'x + 1' })
-    const prompt = h.complete.mock.calls[0]![1]
+    const context = h.streamFn.mock.calls[0]![1] as { messages: { role: string; content: string }[] }
+    const prompt = context.messages.map(message => (typeof message.content === 'string' ? message.content : '')).join(' ')
     expect(prompt).toContain('File: a.py (python)')
     expect(prompt).toContain('y = x<|cursor|>')
-    expect(h.complete.mock.calls[0]![4]).toMatchObject({ thinking: 'off', maxTokens: 192 })
+    expect(prompt).toContain('code completion engine')
     expect(h.resolved).toEqual([{ provider: 'fast', model: 'f1' }])
     const fallback = harness({ inlineCompletion: true, completionModel: 'gone' })
     await fallback.assist.complete({ path: 'a', prefix: '', suffix: '' })
     expect(fallback.resolved).toEqual([undefined])
   })
 
+  it('shows the suggestion as it streams, for a request that asked to follow it', async () => {
+    const h = harness({ inlineCompletion: true })
+    h.setFinal('return a * b')
+    const request = { requestId: 'suggest-1', path: 'a.ts', prefix: 'function f(a, b) {\n  ', suffix: '\n}' }
+    expect(await h.assist.complete(request)).toEqual({ text: 'return a * b' })
+    expect(h.streamed).toEqual(['return a', 'return a * b'])
+    // Without a request id there is nobody to show progress to, so none is sent.
+    h.streamed.length = 0
+    await h.assist.complete({ path: 'a.ts', prefix: 'x', suffix: '' })
+    expect(h.streamed).toEqual([])
+  })
+
   it('ends the previous request and reports failures without throwing', async () => {
     const h = harness({ inlineCompletion: true })
-    let firstSignal: AbortSignal | undefined
-    h.complete.mockImplementationOnce(async (_r, _p, _t, _ms, options) => {
-      firstSignal = options.signal
-      await new Promise(resolve => setTimeout(resolve, 50))
-      return reply('', 'aborted')
-    })
     const first = h.assist.complete({ path: 'a', prefix: 'a', suffix: '' })
-    h.complete.mockResolvedValueOnce(reply('', 'error', 'quota exceeded'))
-    const second = await h.assist.complete({ path: 'a', prefix: 'ab', suffix: '' })
-    expect(firstSignal?.aborted).toBe(true)
+    const firstSignal = (h.streamFn.mock.calls[0]![2] as { signal: AbortSignal }).signal
+    const failing = harness({ inlineCompletion: true })
+    failing.streamFn.mockImplementationOnce(() => ({
+      async *[Symbol.asyncIterator]() { /* nothing streams before the failure */ },
+      result: async () => reply('', 'error', 'quota exceeded'),
+    }))
+    const second = await failing.assist.complete({ path: 'a', prefix: 'ab', suffix: '' })
+    const third = await h.assist.complete({ path: 'a', prefix: 'ab', suffix: '' })
+    expect(firstSignal.aborted).toBe(true)
     expect(await first).toEqual({ text: '' })
+    expect(third).toEqual({ text: 'return a * b' })
     expect(second).toEqual({ text: '', error: 'quota exceeded' })
     expect(await harness({ inlineCompletion: true }, []).assist.complete({ path: 'a', prefix: '', suffix: '' })).toMatchObject({ text: '' })
   })

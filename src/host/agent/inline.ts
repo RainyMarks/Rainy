@@ -36,6 +36,16 @@ const EDIT_SYSTEM = [
   'Keep the indentation and style of the surrounding code. When the region is empty, reply with the code to insert at that point.',
 ].join(' ')
 
+/**
+ * The request one suggestion sends: the fixed system prompt and the file around the cursor.
+ * @param prompt The file with the cursor marked.
+ * @returns A normalized context for the stream function.
+ */
+function suggestionContext(prompt: string): ReturnType<typeof normalizeContext> {
+  const system = createInitialSystemMessage(SUGGEST_SYSTEM, [])
+  return normalizeContext({ messages: [...(system === undefined ? [] : [system]), { role: 'user', content: prompt, timestamp: Date.now() }] })
+}
+
 /** @returns The text blocks of a reply, joined. */
 function textOf(message: AssistantMessage): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')
@@ -118,9 +128,20 @@ export class InlineAssist {
     const controller = new AbortController()
     this.suggestion = controller
     const prompt = `${header(request)}\n\n${request.prefix.slice(-SUGGEST_BEFORE)}${CURSOR}${request.suffix.slice(0, SUGGEST_AFTER)}`
+    const requestId = request.requestId
     try {
-      const reply = await this.models.complete(resolved, prompt, [], SUGGEST_TIMEOUT_MS,
-        { system: SUGGEST_SYSTEM, maxTokens: SUGGEST_MAX_TOKENS, signal: controller.signal, thinking: 'off' })
+      // The suggestion streams, so its first line appears while the rest is still being written.
+      const stream = this.models.streamFn(resolved.model, suggestionContext(prompt) as never, {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(SUGGEST_TIMEOUT_MS)]), cacheRetention: 'none',
+      })
+      let sent = 0
+      for await (const event of stream) {
+        if (requestId === undefined || !('partial' in event) || Date.now() - sent < PROGRESS_INTERVAL_MS) continue
+        sent = Date.now()
+        const partial = cleanSuggestion(textOf(event.partial), request)
+        if (partial !== '') this.progress(requestId, partial)
+      }
+      const reply = await stream.result()
       if (reply.stopReason === 'aborted' || controller.signal.aborted) return { text: '' }
       if (reply.stopReason === 'error') return { text: '', error: reply.errorMessage ?? localized({ zh: '补全请求失败。', en: 'The suggestion request failed.' }) }
       return { text: cleanSuggestion(textOf(reply), request) }

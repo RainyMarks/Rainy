@@ -343,6 +343,8 @@ export interface RetryWait {
 
 /** Text around the editor cursor for a ghost-text suggestion. */
 export interface InlineCompletionRequest {
+  /** Identifies the request, so its `inline.progress` events can be shown as the suggestion arrives. */
+  requestId?: string | undefined
   /** Workspace-relative path, shown to the model. */
   path: string
   language?: string | undefined
