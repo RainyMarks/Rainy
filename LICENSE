@@ -1,24 +1,43 @@
 Rainy distribution licensing
 
+Copyright (c) 2026 RainyMarks (https://github.com/RainyMarks)
+
 Rainy-specific code and documentation in this repository (including src/,
 scripts/, tests/, docs/, toolpacks/ and the README and CHANGELOG files) are
-licensed under the PolyForm Noncommercial License 1.0.0. Its terms are in
-LICENSE.Rainy and at https://polyformproject.org/licenses/noncommercial/1.0.0
+licensed under the PolyForm Strict License 1.0.0. Its terms are in
+LICENSE.Rainy and at https://polyformproject.org/licenses/strict/1.0.0
 
-Required Notice: Copyright (c) 2026 RainyMarks (https://github.com/RainyMarks)
-
-Those terms permit use, modification and distribution for noncommercial
-purposes only: personal study, research, hobby projects and similar personal
-uses without any anticipated commercial application, and use by charitable
+Those terms permit using the software for noncommercial purposes only:
+personal study, research, hobby projects and similar personal uses without
+any anticipated commercial application, and use by charitable
 organizations, educational institutions, public research organizations,
 public safety or health organizations, environmental protection
-organizations and government institutions. Any other use, including use
-within a business, work for paying clients, sale, paid hosting and commercial
-redistribution, requires a separate commercial license from RainyMarks.
+organizations and government institutions. For every purpose, they do not
+permit distributing the software or making changes or new works based on
+it. Any commercial use, including use within a business and work for paying
+clients, requires a separate commercial license from RainyMarks.
+
+Making changes or new works includes renaming, rebranding, restyling,
+translating or porting the software or any part of it, and rewriting its
+code or documentation, whether by hand or with automated tools such as AI
+models. These terms grant no right to remove or alter copyright notices, to
+present the software or any part of it as your own work, or to use the name
+Rainy or its icon or logo. Any other permission, for example to contribute a
+change, must come from RainyMarks in writing.
+
+GitHub's Terms of Service let GitHub users view this repository and fork it
+through GitHub's own features. That permission grants no right to change or
+distribute the software beyond these terms.
+
+Projects you open, edit or build with Rainy, and output it produces for you,
+are not covered by these terms.
 
 Rainy 3.8.0 and earlier releases, and the source of those versions, remain
 available under the Rainy Source Available License 1.0 they were published
-with.
+with. That license requires keeping its copyright notices, identifying
+modifications and not presenting a modified version as an official
+RainyMarks release, and states that changing the name, interface or
+branding does not remove those conditions.
 
 Material derived from DeepSeek Harness (the files under src/renderer/ui/, the
 design tokens under src/renderer/theme/ that say so, and other files marked as

@@ -17,7 +17,7 @@
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
-[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-f59e0b?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-f59e0b?style=flat-square)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?style=flat-square&logo=x)](https://x.com/RainyMarksqwq)
 
 [English](README.md) · **中文**
@@ -208,7 +208,13 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 <details>
 <summary><b>Rainy 收费吗？</b></summary>
 <br>
-非商业用途免费：个人学习、研究、业余项目，以及学校、科研机构、公益组织和政府机构，都可以免费使用、修改和分享。商业用途（包括在公司里用于工作、为付费客户做项目、销售和收费托管）需要向 RainyMarks 取得商业授权，详见<a href="#license">许可</a>。
+非商业用途免费：个人学习、研究、业余项目，以及学校、科研机构、公益组织和政府机构，都可以免费使用 RainyMarks 发布的版本。商业用途（包括在公司里用于工作和为付费客户做项目）需要向 RainyMarks 取得商业授权，详见<a href="#license">许可</a>。
+</details>
+
+<details>
+<summary><b>可以修改 Rainy，或者拿它的代码做自己的项目吗？</b></summary>
+<br>
+不可以。许可只允许使用，不允许修改、分发，也不允许基于它的代码做新作品。改名、换图标或界面、翻译，或者手工或用 AI 改写代码，都算修改；删除版权声明、把 Rainy 或其中任何部分说成是自己做的，同样不被允许。想提交改进，请先在 <a href="https://github.com/RainyMarks/Rainy/issues">GitHub Issues</a> 说明，得到 RainyMarks 的书面同意后再动手。
 </details>
 
 <details>
@@ -258,7 +264,7 @@ node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.j
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.8.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.8.0` 换成 `package.json` 中的版本号。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.8.0` 换成 `package.json` 中的版本号。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 
@@ -273,12 +279,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 <a id="license"></a>
 ## 许可
 
-Rainy 自有的代码和文档使用 [PolyForm Noncommercial License 1.0.0](LICENSE.Rainy)（PolyForm 非商业许可）。
+Rainy 自有的代码和文档使用 [PolyForm Strict License 1.0.0](LICENSE.Rainy)（PolyForm 严格许可）。
 
-- **免费**：个人学习、研究、业余项目等没有商业目的的个人用途，以及公益组织、学校、公共科研机构、公共安全与卫生机构、环保组织和政府机构，都可以免费使用、修改和分享。
-- **需要商业授权**：其他一切用途，包括在公司里用于工作、为付费客户开发、销售、收费托管和商业再分发。请通过 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) 或 X 上的 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 联系 RainyMarks。
+- **可以免费使用**：个人学习、研究、业余项目等没有商业目的的个人用途，以及公益组织、学校、公共科研机构、公共安全与卫生机构、环保组织和政府机构，可以免费下载、安装和使用 Rainy。
+- **不能修改和分发**：无论是否收费，都不能修改 Rainy、基于它的代码做新作品，或者把它（包括修改后的版本）发给别人。改名、换品牌、换图标或界面、翻译、移植，以及手工或用 AI 改写代码或文档，都算修改。也不能删除或改动版权声明、把 Rainy 或其中任何部分说成是自己的作品，或者使用 Rainy 的名称和图标。
+- **需要书面授权**：任何商业用途（包括在公司里用于工作和为付费客户开发），以及上面没有允许的其他事情（例如提交代码改进），都需要 RainyMarks 的书面同意。请通过 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) 或 X 上的 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 联系。
 
-来自 DeepSeek Harness 的界面代码仍按 [MIT 许可](LICENSE.upstream)授权，第三方组件适用各自的许可（见[第三方声明](THIRD_PARTY_NOTICES.md)）。3.8.0 及更早的版本仍按发布时的 Rainy Source Available License 1.0 授权。本项目属于源码可用项目，不是 OSI 认可的开源软件。适用范围见 [LICENSE](LICENSE)；以上中文说明只为方便理解，以英文条款为准。
+GitHub 的服务条款允许用户在 GitHub 上查看和 fork 本仓库，但这不包含修改或分发的权利。你用 Rainy 打开、编辑和构建的项目，以及它为你生成的内容，不受这份许可约束。
+
+来自 DeepSeek Harness 的界面代码仍按 [MIT 许可](LICENSE.upstream)授权，第三方组件适用各自的许可（见[第三方声明](THIRD_PARTY_NOTICES.md)）。3.8.0 及更早的版本仍按发布时的 Rainy Source Available License 1.0 授权；那份许可同样要求保留版权声明、注明修改，不得把修改版说成官方版本，并写明改名、换界面或换品牌不能免除这些义务。本项目属于源码可用项目，不是 OSI 认可的开源软件。适用范围见 [LICENSE](LICENSE)；以上中文说明只为方便理解，以英文条款为准。
 
 <br>
 

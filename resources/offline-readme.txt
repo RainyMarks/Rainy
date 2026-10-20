@@ -51,4 +51,4 @@ SHA256SUMS.txt 记录完整离线目录的交付文件摘要；核心同时校�
 Develop by RainyMarks
 
 使用许可
-Rainy 自有代码使用 PolyForm Noncommercial License 1.0.0：非商业用途（个人学习研究、学校、科研和公益机构等）免费；包括企业内部使用在内的商业用途须另行取得商业授权。完整条款见应用内 LICENSE 和 LICENSE.Rainy，第三方组件仍适用各自许可。
+Rainy 自有代码使用 PolyForm Strict License 1.0.0：非商业用途（个人学习研究、学校、科研和公益机构等）可免费使用；不得修改（包括改名、换品牌和用 AI 改写）或分发，不得删除版权声明或冒充作者；包括企业内部使用在内的商业用途须另行取得商业授权。完整条款见应用内 LICENSE 和 LICENSE.Rainy，第三方组件仍适用各自许可。

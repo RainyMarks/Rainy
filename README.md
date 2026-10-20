@@ -17,7 +17,7 @@ with an editor, Office previews and SSH remote development, in one 177 MB Window
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
-[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-f59e0b?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-f59e0b?style=flat-square)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?style=flat-square&logo=x)](https://x.com/RainyMarksqwq)
 
 **English** · [中文](README.zh.md)
@@ -208,7 +208,13 @@ The selected Windows, WSL or SSH environment must reach the model service. Throu
 <details>
 <summary><b>Is Rainy free?</b></summary>
 <br>
-Noncommercial use is free: personal study, research and hobby projects, and schools, research institutions, charities and government bodies may use, modify and share it at no cost. Commercial use, including use at work in a company, projects for paying clients, sale and paid hosting, needs a commercial license from RainyMarks; see the <a href="#license">license</a>.
+Noncommercial use is free: personal study, research and hobby projects, and schools, research institutions, charities and government bodies may use the releases RainyMarks publishes at no cost. Commercial use, including use at work in a company and projects for paying clients, needs a commercial license from RainyMarks; see the <a href="#license">license</a>.
+</details>
+
+<details>
+<summary><b>Can I modify Rainy or build my own project on its code?</b></summary>
+<br>
+No. The license permits use only: no changes, no distribution and no new works based on its code. Renaming, changing the icon or interface, translating, or rewriting the code by hand or with AI all count as changes; removing copyright notices or presenting Rainy or any part of it as your own work is not permitted either. To propose an improvement, describe it in <a href="https://github.com/RainyMarks/Rainy/issues">GitHub Issues</a> first and wait for written permission from RainyMarks.
 </details>
 
 <details>
@@ -258,7 +264,7 @@ node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.j
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.8.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.8.0` with the version in `package.json`.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.8.0` with the version in `package.json`. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL to open in a browser; `pnpm run start` runs Electron on the built files. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
@@ -273,12 +279,15 @@ For development, `pnpm run dev` builds the app and starts a Host without Electro
 <a id="license"></a>
 ## License
 
-Rainy's own code and documentation are licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.Rainy).
+Rainy's own code and documentation are licensed under the [PolyForm Strict License 1.0.0](LICENSE.Rainy).
 
-- **Free**: personal uses without a commercial purpose, such as study, research and hobby projects, and use by charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations and government institutions, including modifying and sharing.
-- **Commercial license required**: every other use, including use at work in a company, work for paying clients, sale, paid hosting and commercial redistribution. Contact RainyMarks through [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) or [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X.
+- **Free to use**: personal uses without a commercial purpose, such as study, research and hobby projects, and charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations and government institutions may download, install and use Rainy at no cost.
+- **No changes or distribution**: for any purpose, paid or not, you may not change Rainy, make new works based on its code, or give copies of it, changed or not, to others. Renaming, rebranding, changing the icon or interface, translating, porting, and rewriting its code or documentation by hand or with AI all count as changes. You also may not remove or alter copyright notices, present Rainy or any part of it as your own work, or use the Rainy name or icon.
+- **Written permission required**: any commercial use, including use at work in a company and work for paying clients, and anything else these terms do not allow, such as contributing a change. Contact RainyMarks through [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) or [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X.
 
-Interface code derived from DeepSeek Harness stays under its [MIT license](LICENSE.upstream), and third-party components keep their own licenses (see [third-party notices](THIRD_PARTY_NOTICES.md)). Rainy 3.8.0 and earlier releases remain under the Rainy Source Available License 1.0 they were published with. This is a source-available project, not OSI-approved open-source software. See [LICENSE](LICENSE) for the scope.
+GitHub's Terms of Service let users view and fork this repository on GitHub, but that grants no right to change or distribute it. Projects you open, edit or build with Rainy, and output it produces for you, are not covered by these terms.
+
+Interface code derived from DeepSeek Harness stays under its [MIT license](LICENSE.upstream), and third-party components keep their own licenses (see [third-party notices](THIRD_PARTY_NOTICES.md)). Rainy 3.8.0 and earlier releases remain under the Rainy Source Available License 1.0 they were published with; it too requires keeping copyright notices, identifying modifications and not presenting a modified version as an official release, and states that changing the name, interface or branding does not remove those conditions. This is a source-available project, not OSI-approved open-source software. See [LICENSE](LICENSE) for the scope.
 
 <br>
 
