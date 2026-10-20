@@ -1,179 +1,252 @@
 <div align="center">
 
-<img src="resources/icon.png" width="96" alt="Rainy">
+<img src="resources/icon.png" width="88" alt="Rainy logo">
 
 # Rainy
 
-**A lightweight AI workbench for Windows, for office work, research and coding. An agent that edits your files and runs commands, previews of Word, Excel, PowerPoint and PDF, an editor with AI built in, and the same workbench on any Linux server over SSH.**
+### The AI workbench that gets things done, for office work, research and code
 
-[![Release](https://img.shields.io/github/v/release/RainyMarks/Rainy?label=release&color=3b82f6)](https://github.com/RainyMarks/Rainy/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?color=10b981)](https://github.com/RainyMarks/Rainy/releases)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
-[![License](https://img.shields.io/badge/license-source%20available-f59e0b)](LICENSE)
-[![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?logo=x)](https://x.com/RainyMarksqwq)
+An agent that edits your files, runs commands and checks its own work,<br>
+with an editor, Office previews and SSH remote development, in one 177 MB Windows app.
 
-English | [中文](README.zh.md)
+<br>
 
-[**Download for Windows (177 MB)**](https://github.com/RainyMarks/Rainy/releases/latest) · [What's new](#whats-new) · [Quick start](#run) · [SSH remote development](#ssh) · [Connect a model](#connect-a-model) · [Build from source](#run-from-source)
+[![Download for Windows](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=Download%20for%20Windows&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
+&nbsp;
+[![Changelog](https://img.shields.io/badge/Changelog-3.8-0f172a?style=for-the-badge)](CHANGELOG.md)
+
+[![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
+[![License](https://img.shields.io/badge/license-source%20available-f59e0b?style=flat-square)](LICENSE)
+[![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?style=flat-square&logo=x)](https://x.com/RainyMarksqwq)
+
+**English** · [中文](README.zh.md)
+
+[Features](#features) · [Quick start](#run) · [Connect a model](#connect-a-model) · [Privacy](#privacy) · [Docs](#docs) · [FAQ](#faq)
 
 </div>
 
-![Rainy connected to a Linux server over SSH: the agent ran a script on the server](assets/workbench.png)
+<br>
 
-Rainy puts an AI agent, previews of Word, Excel, PowerPoint and PDF, a real editor and debugger with AI suggestions and Ctrl+K edits, a project map, search, Git and a terminal in one small desktop app, so papers, reports and code live in one window. The agent reads and edits your project and runs commands, asking first by default, and you review every file it changed: keep or undo each change. Work in native Windows, in WSL2, or on a remote Linux server over SSH, where the agent, terminals and debugger run next to your code while the window stays on your PC. Bring any model: DeepSeek, Claude, any OpenAI- or Anthropic-compatible API, a local server, or Strata local inference on an NVIDIA GPU. Free for personal use. Developed by RainyMarks.
+![Rainy connected to a Linux server over SSH: the agent ran a script on the server and reported the total](assets/workbench.png)
+
+<p align="center"><sub>Open a project on a server over SSH and let the agent run code there, while the window stays on your PC.</sub></p>
+
+<br>
 
 ## Why Rainy
 
-| | |
-|---|---|
-| **An agent you stay in control of** | The assistant reads, searches and edits project files, runs commands, searches the web and reads pages through DeepSeek, and remembers the project across chats. Each chat runs read-only, asks before commands (the default), or runs fully automatically. Every file it changes is listed for review in the editor, where you keep or undo each change; GBK and UTF-16 files keep their encoding. Add skills in `.rainy/skills` and MCP servers in Settings; one click there adds computer use through the open-source [Windows-MCP](https://github.com/CursorTouch/Windows-MCP), so the assistant can read windows and click, type and open apps for you, and in the default Ask mode each action asks first. |
-| **An agent that checks its own work** | A development server or watcher keeps running in the background while the assistant goes on working, and it reads that output when it needs to. It opens the application it just changed in a preview window on this machine, reads the page, its console errors and its failed requests, clicks and types in it, and reports what it saw. A long search goes to a sub-agent that reads and searches on its own and answers with one report, so the conversation keeps its room. |
-| **Remote development over SSH** | Pick a host from `~/.ssh/config` or add `user@host`, and Rainy runs its backend on the server: the agent, terminals, run and debug, and language services work on the server's files, while the interface stays here. It uses the OpenSSH client built into Windows, so your keys, agent and ProxyJump settings just work. |
-| **See the whole project** | The project map draws a project's parts and the imports between them, or every file as a block sized by its lines. It names the stack, explains each part with AI on request, and highlights the files the agent is reading or changing. |
-| **A real editor and debugger** | AI suggestions as you type (Tab accepts) and Ctrl+K to rewrite a selection, reviewed line by line before you keep it. Search and replace across the project, a command palette, and Git with AI-written commit messages. CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work. Run and debug Python, JavaScript/TypeScript and C/C++; run PHP. |
-| **Preview any file** | Word documents as paginated paper; Excel and OpenDocument spreadsheets as tables with a tab per sheet; PowerPoint and legacy .doc files converted by the Office on your PC, so they look exactly as in PowerPoint and Word. Markdown opens formatted and is edited right there; PDF (including Chinese papers that do not embed their fonts), images, audio and video in place; images with zoom and pixel colors; other binaries in a hex view; GBK and UTF-16 text decoded correctly. |
-| **Windows, WSL2 or SSH** | Start in native Windows; move a project to WSL2 or to a Linux server whenever it needs one. |
-| **Your model, your keys** | Keys stay on your machine, encrypted with Windows data protection. Model requests follow the system proxy or one you set. There is no telemetry; crash reports stay local. |
-| **Light** | A 174 MB installer. The Strata engine, PHP and the Linux runtime download only when you need them. |
+<table>
+<tr>
+<td width="33%" valign="top">
 
-<a id="tour"></a>
-## A quick look
+**Hands-on, and on a leash**
 
-**Review what the agent changed.** The files the agent changed are listed above the message box. Open one to see each change in the editor and keep or undo it; anything left is kept when you send your next message.
+The agent edits files, runs commands and searches the web. It asks before commands by default, and you keep or undo every change it made.
+
+</td>
+<td width="33%" valign="top">
+
+**A server that feels local**
+
+Connect to a Linux server and the agent, terminals and debugger run next to your code, in the same window on your PC.
+
+</td>
+<td width="33%" valign="top">
+
+**Opens everything you work with**
+
+Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so papers, reports and code share one window.
+
+</td>
+</tr>
+</table>
+
+<a id="features"></a>
+## Features
+
+### An AI agent: let it work, keep the final say
+
+- **Real work**: reads, searches and edits project files, runs commands, searches the web and reads pages through DeepSeek, and remembers the project across chats.
+- **Three permission modes**: each chat runs read-only, asks before commands (the default), or runs fully automatically; "Always allow" is remembered per project.
+- **Review every change**: the files it changed are listed above the message box; keep or undo each change in the editor. GBK and UTF-16 files keep their encoding.
+- **Checks its own work**: development servers keep running in the background; after changing a web app, the agent opens it in a local preview, reads the page, console errors and failed requests, and tells you what it saw.
+- **Delegates**: a long search goes to a sub-agent that answers with one report, so the conversation keeps its room.
+- **Extensible**: skills in `.rainy/skills`, MCP servers in Settings, and one click adds computer use through the open-source [Windows-MCP](https://github.com/CursorTouch/Windows-MCP).
 
 ![Reviewing the agent's changes in the editor, with Keep and Undo beside each change](assets/review.png)
 
-**Work on a server as if it were local.** Add a host once, switch to it, and open a folder on the server. The first connection installs Rainy's backend in `~/.rainy-agent` on the server; later connections reach the workbench in a few seconds.
+<a id="ssh"></a>
+### SSH remote development: the server's project, a local feel
+
+- Pick a host from `~/.ssh/config`, or enter `user@host`.
+- The agent, terminals, run and debug, and language services work on the server's files; the interface stays on your PC.
+- It uses the OpenSSH client built into Windows, so your keys, ssh-agent and ProxyJump just work.
+- The first connection installs a runtime of about 53 MB in `~/.rainy-agent` on the server; later connections reach the workbench in seconds.
 
 ![The SSH remote development card in Settings, listing hosts from ~/.ssh/config](assets/ssh.png)
 
-**See any project at a glance.** What a project is made of, how its parts depend on each other, which stack it uses, and a one-line AI explanation of each part.
+### Document previews: open a file, see the document
 
-![The project map of Rainy's own source with the AI explanation](assets/map.png)
+- **Word** as paginated paper; **Excel** and OpenDocument spreadsheets as tables with a tab per sheet; **PowerPoint** and legacy `.doc` converted by the Office on your PC, so they look as they do there.
+- **Markdown** opens formatted and is edited in place, like Typora; saving changes only the lines you edited.
+- **PDF** (including Chinese papers without embedded fonts), images, audio and video in place; other binaries in a hex view.
 
-**Search, replace, commit.** Search the whole project, preview every change before replacing, then stage and commit in the Git panel with an AI-written message.
+![A PowerPoint deck converted by PowerPoint on the PC and shown in Rainy](assets/office.png)
 
-![Replacing a word across the project, each match showing its before and after](assets/search.png)
+### Editor and debugger: a real editor with AI built in
 
-![The Git panel with a staged file and an AI-written commit message](assets/git.png)
-
-**Edit with AI in place.** Select code, press Ctrl+K and describe the change. New lines are marked green and replaced ones red; you accept or reject.
+- Suggestions as you type (Tab accepts); select code, press Ctrl+K and describe the change, then compare and keep it.
+- CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work.
+- Run and debug Python, JavaScript/TypeScript and C/C++; run PHP.
+- Project-wide search and replace with a preview of every change, a command palette, and Git with AI-written commit messages.
 
 ![Ctrl+K adding an empty-key check to a function, with the new lines in green](assets/ai-edit.png)
 
-<a id="whats-new"></a>
-## What's new in 3.8
+<table>
+<tr>
+<td width="50%"><img src="assets/search.png" alt="Replacing a word across the project, each match showing its before and after"></td>
+<td width="50%"><img src="assets/git.png" alt="The Git panel with a staged file and an AI-written commit message"></td>
+</tr>
+</table>
 
-Lighter: smaller downloads, less CPU while idle and while a reply streams.
+### Project map: understand an unfamiliar project fast
 
-- **The WSL / SSH runtime base shrinks from about 277 MB to about 53 MB**: it is packed with xz and leaves out what the Host never reads (Node.js headers, a second copy of Ruff, the debugger's sources and other platforms' binaries). The offline Ubuntu 26.04 development packages (about 165 MB) are downloaded only when you prepare the development tools, and the download is deleted once they are installed. This update downloads the new base once.
-- **Less work while idle**: the rain behind empty views draws at most about 60 frames a second (24 while the window is in the background) at a lower canvas resolution, about a third of the idle CPU it used on high-refresh displays; the running spinner turns on the GPU instead of being repainted every frame.
-- **Smoother long replies**: while a reply streams, only the turn that grows renders again and only its last Markdown block is parsed again; the Host sends the page only the new text, with the whole reply every 2 seconds, so far less goes over an SSH tunnel.
-- **Faster start**: Settings and code highlighting load on first use, cutting the startup script from 1010 KB to 790 KB; math ships WOFF2 fonts only.
+See what a project is made of, how its parts import each other and which stack it uses; get a one-line AI explanation of each part, with the files the agent is reading or changing highlighted live.
 
-## What's new in 3.6
+![The project map of Rainy's own source with the AI explanation](assets/map.png)
 
-Updates no longer set up the environment again, and Rainy is lighter.
+### And more
 
-- **No Linux runtime download after an update**: every update used to download the Linux runtime (about 280 MB) again on the first WSL or SSH start. It now comes in two layers: a base that rarely changes (Node.js, dependencies, IDE tools) and an application layer of a few MB that ships with the installer. While the base is unchanged, an update swaps in the new application layer without downloading or reinstalling anything; the update from 3.5 to 3.6 reuses the environment you already have, too.
-- **Interactive answers removed**: they suit plain conversation better than Rainy's agent work, so they are gone, with the chart and 3D libraries they shipped.
-
-## What's new in 3.5
-
-- **Every screen and scaling**: at high display scaling (such as 225%) or on small screens the menus no longer run under the search box; the window fits the screen's work area when it opens, when it moves to another display and when the scaling changes; the chat pane follows the window width until you resize it.
-
-## What's new in 3.4
-
-Notes and documents are easier to work on.
-
-- **WYSIWYG Markdown**: a .md file opens formatted, and you type on it as in Typora; headings, lists, task lists, tables, code blocks and LaTeX math take shape as you write, and `/` inserts any of them. Source, Preview and Split are one click away. Saving changes only the lines you edited, so escapes, blank lines and table spelling elsewhere in the file stay as they were.
-- **Chinese PDFs no longer come out blank**: PDFs that do not embed their Chinese fonts, as many papers and official documents do not, used to show only their English text; now the Chinese shows too.
-- **Password-protected Office files** say that they need their password and offer Open in default app, instead of hanging on a password prompt nobody can see.
-
-## What's new in 3.3
-
-The AI can go online: look up current documentation, papers, version numbers and error messages, then read the pages it needs in full.
-
-- **Search the web** with DeepSeek's own search engine: titles, links, dates and summaries, with `site:`, `"exact phrase"`, `lang:zh` and `after:2025` syntax. Links in the result card open in your browser.
-- **Read a web page** as Markdown. Reading a site for the first time asks you first, and you can remember the site; fully automatic chats do not ask.
-- **DeepSeek only**: it uses the API key of the DeepSeek model you added, and your DeepSeek account pays (5 yuan per 1,000 searches or page reads; failed and empty requests are free). Without a DeepSeek key the two tools do not appear. Turn it off in **Settings → Models → Web search**.
-
-## What's new in 3.2
-
-Rainy turns from CTF to office work, research and coding. Open a folder of papers, reports and spreadsheets and click a file to read it, instead of a screen of hex.
-
-![A PowerPoint deck converted by PowerPoint on this PC and shown in Rainy](assets/office.png)
-
-- **Word**: Rainy draws .docx files itself as paginated paper with headings, tables, pictures, headers and footers, no Office needed. For the exact Word layout, click **Office layout**.
-- **PowerPoint and legacy Word**: .pptx, .ppt and .doc files are turned into PDF by the Microsoft Office (or WPS) installed on your PC, so charts, tables and fonts match the original and the text can be extracted. Without Office, Rainy lists the text of each slide.
-- **Excel**: .xlsx, .xls and .ods files show as tables with fixed row and column headings, merged cells and a tab per sheet.
-- **Open in default app**: one click hands a document to Word, PowerPoint, Excel or WPS for editing (documents only; programs are never started).
-- **Small files explained**: a `~$` file says it is an Office lock file and who has which document open; a `.lnk` shortcut shows where it points.
-
-## What's new in 3.1
-
-Rainy now looks like its name.
-
-![Rain on an empty editor and a new chat, with a ripple where the background was clicked](assets/rain.png)
-
-- **Rain on empty views**: the welcome view, an editor with no file open and a new chat show light, slanted rain in your accent color, with small rings where drops land. Click the background and a ripple spreads, pushing and lighting the rain it passes. It follows the color scheme and accent, pauses while the window is hidden, stays still when Windows asks for reduced motion, and can be turned off in **Settings → Appearance → Motion**.
-- **A living mark**: the Rainy mark takes your accent color. Point at it and its three bars fall like rain; in the top bar they keep falling while the current chat works, and finish their fall when it stops.
-- **Reasoning as a rain cloud**: the reasoning row shows a rain cloud instead of the atom icon inherited from DeepSeek Harness, and its drops fall while the model thinks.
-- **New typefaces (3.1.1)**: Latin text uses the bundled Hanken Grotesk and code, the editor and the terminal use Geist Mono, so Rainy looks the same on every PC; Chinese stays in Microsoft YaHei. Your own choices in **Settings → Appearance → Fonts** still come first.
-- A refreshed application icon with a light-to-deep blue tile, and the last DeepSeek Harness names removed from the interface code.
-
-Earlier releases: 3.0 added SSH remote development and dropped the CTF toolkit; 2.5 added project-wide search and replace, the command palette and the Git panel; 2.4 the project map and review of the agent's changes; 2.3 inline AI completion and Ctrl+K edits. See the [release notes](https://github.com/RainyMarks/Rainy/releases) for every version.
+| Feature | What it does |
+|---|---|
+| **Three execution environments** | Native Windows by default; switch to WSL2 or an SSH server when a project needs Linux. |
+| **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
+| **Context management** | Shows how full the context is and compacts it automatically before it runs out; Claude's prompt cache lasts an hour. |
+| **Light** | A 177 MB installer; the Strata engine, PHP and the Linux runtime download only when needed. |
+| **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
+| **Details** | A light rain falls behind empty views and ripples where you click; turn it off in **Settings → Appearance**. |
 
 <a id="run"></a>
-## Download and start
+## Quick start
 
-1. Download [the latest Windows x64 installer](https://github.com/RainyMarks/Rainy/releases/latest) and install it. No activation code is required.
-2. Open Rainy from the desktop shortcut and choose **File → Open folder**.
+1. Download and install [the latest Windows x64 installer](https://github.com/RainyMarks/Rainy/releases/latest). No activation code is required.
+2. Open Rainy and choose **File → Open folder**.
 3. Connect a model in **Settings → Models** (see [Connect a model](#connect-a-model)), then open **AI assistant** on the right.
 
-| Optional download | Size | Where |
+To work on a Linux server, make sure `ssh` logs in from a terminal, pick the host under **Settings → Runtime → SSH remote development**, select **Switch to this host**, then open a project with **File → Browse folders on current host**. See the [desktop guide](docs/desktop.md#ssh-remote-development).
+
+Rainy downloads stable updates in the background and then offers **Later** or **Restart and install**.
+
+### System requirements
+
+| Item | Requirement |
+|---|---|
+| Operating system | Windows 10 / 11 x64 |
+| Disk space | About 570 MB installed |
+| WSL (optional) | WSL2; the bundled Ubuntu development tools wizard supports Ubuntu 26.04 |
+| SSH server (optional) | x86_64 Linux with `python3`; the runtime takes about 250 MB |
+| Local inference (optional) | NVIDIA GPU, CUDA 13, driver 580 or newer |
+
+### Components downloaded on demand
+
+| Component | Size | When |
 |---|---|---|
-| Strata engine | about 560 MB | **Settings → Runtime → Optional components** |
+| Linux runtime | about 53 MB | Automatically, the first time you use WSL or an SSH host |
+| Ubuntu development packages | about 165 MB | When you install the development tools; deleted once installed |
 | PHP | about 38 MB | **Settings → Runtime → Optional components** |
-| Linux runtime | about 280 MB | Downloaded automatically the first time you use WSL or an SSH host |
-
-Rainy checks for stable releases and downloads them in the background. A downloaded update offers **Later** or **Restart and install**; ordinary exit does not install it.
-
-<a id="ssh"></a>
-## SSH remote development
-
-1. Make sure you can log in with `ssh` from a terminal. The server needs x86_64 Linux and `python3`.
-2. Open **Settings → Runtime**. Hosts from `~/.ssh/config` are already listed under **SSH remote development**; to add another, enter `user@host` (and a port if it is not 22) and select **Connect and add**.
-3. Select **Switch to this host**. Rainy restarts on the server; the first time, it installs its backend there, which takes about as long as a 280 MB download.
-4. Choose **File → Browse folders on current host** to open a project on the server.
-
-Model settings belong to each execution environment, and model requests are made from the server, so the server must reach your model service. Strata on your PC cannot be reached from a server. See the [desktop guide](docs/desktop.md#ssh-remote-development) for details.
+| Strata engine | about 560 MB | **Settings → Runtime → Optional components** |
 
 <a id="connect-a-model"></a>
 ## Connect a model
 
-### Existing server or API
+Bring your own model; Rainy never switches to another one behind your back.
 
-1. Open **Settings → Models** and enter a provider ID, Base URL, protocol, and a key when required.
-2. Select **Discover models** or enter the model ID manually.
+| Kind | Notes |
+|---|---|
+| **DeepSeek** | DeepSeek V4.1 Flash preset; web search uses your DeepSeek key too |
+| **Claude** | Claude Opus 5.5 and Claude Haiku 5.5 presets, adaptive thinking, an hour of prompt cache |
+| **Compatible APIs** | Any OpenAI- or Anthropic-compatible Base URL, with model discovery; relays work too |
+| **Local servers** | Ollama and other OpenAI-compatible servers on your machine |
+| **Strata** | Local inference on an NVIDIA GPU; you supply the Qwen3.8 Flash Next weights |
+
+1. Open **Settings → Models** and select **Load** on a preset, or enter a provider ID, Base URL, protocol and key.
+2. Select **Discover models**, or enter the model ID.
 3. Set the service's actual context window and output limit, save, then run the streaming and tool-call check.
 
-The selected Windows, WSL or SSH environment must be able to reach the service. Keys are stored encrypted in that environment's private credential store, and Rainy never silently switches to another model.
+The selected Windows, WSL or SSH environment must reach the model service. Through a relay, keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`). See the [desktop guide](docs/desktop.md#strata-local-inference) for preparing Strata and its resource controls.
 
-The model list includes presets for **DeepSeek V4.1 Flash**, **Claude Opus 5.5** and **Claude Haiku 5.5**: select **Load**, enter your API key and save. Both Claude presets share one Anthropic key. The Haiku preset uses a 100K window so each request stays in Claude Haiku 5.5's lower price tier. A relay works the same way: keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), and Rainy applies that model's adaptive thinking and effort levels. Claude sessions keep the prompt cache for an hour, so continuing a conversation reads the earlier context from the cache.
+<a id="privacy"></a>
+## Privacy and security
 
-### Strata local model
+- **Keys stay on your PC**, encrypted with Windows data protection (DPAPI).
+- **No telemetry**: crash reports stay on your machine until you export them yourself.
+- **Requests go only where you say**: model requests go to the services you configured, through the system proxy or one you set; updates and on-demand components come from GitHub, each piece checked by SHA-256.
+- **A gate before every action**: each tool call passes a permission check; commands, MCP tools and writes outside the project ask you first by default.
+- **Outside content is untrusted**: web images in replies are not loaded automatically, and document previews do not run the scripts inside them.
+- **Verifiable releases**: on first start the installed files are checked one by one against a signed manifest.
 
-The Strata engine runs [Niko1221/Strata 0.1.39](https://github.com/Niko1221/Strata/releases/tag/v0.1.39) with Python 3.12.14 on Windows x64 with NVIDIA CUDA 13 (driver 580 or newer; GPU targets `sm75`, `sm86`, `sm89`, `sm120`). AMD and Linux inference are not provided. You supply a supported Qwen3.8 Flash Next main GGUF with all of its shards and the matching MTP weights; model weights are not bundled.
+<a id="whats-new"></a>
+## What's new in 3.8
 
-1. Open **Settings → Models → Strata local model**. Download the engine first if it is missing, then choose the main model and MTP files or import a Strata profile.
-2. Save the context window and local port, then select **Start local model**. Preparation runs locally and can be cancelled.
-3. When the model is ready, select **Connect and use by default**.
+**Lighter.** The WSL / SSH runtime shrinks from about 277 MB to about 53 MB; idle CPU with the rain on drops to about a third; long replies no longer drop frames; the startup script is about 22% smaller. [Read the full changelog →](CHANGELOG.md)
 
-If a WSL environment under NAT cannot reach the Windows loopback server, use the Windows execution environment for Strata. See the [desktop guide](docs/desktop.md#strata-local-inference) and the [Chinese setup guide](docs/desktop-setup.zh-CN.md) for resource controls and validation scope.
+<a id="docs"></a>
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [Desktop guide](docs/desktop.md) | Optional components, updates, SSH, Strata, models, project memory and known limits |
+| [Setup and build guide (Chinese)](docs/desktop-setup.zh-CN.md) | Offline installation, editing and debugging, permissions and undo, building from source |
+| [Changelog](CHANGELOG.md) | Highlights of each release |
+| [Validation](docs/validation.md) | The build, installation and runtime checks completed for each release (Chinese) |
+| [Architecture](docs/architecture.md) | Processes, the Host, the protocol and data formats, for developers |
+
+<a id="faq"></a>
+## FAQ
+
+<details>
+<summary><b>Is Rainy free?</b></summary>
+<br>
+Personal and internal business use are free, and so are modification and noncommercial redistribution. Sale, paid hosting and commercial redistribution need written permission; see the <a href="#license">license</a>.
+</details>
+
+<details>
+<summary><b>Is my code uploaded anywhere?</b></summary>
+<br>
+Rainy collects no usage data. What the agent needs goes only to the model services you configured; web search appears only when you have a DeepSeek key and have not turned it off.
+</details>
+
+<details>
+<summary><b>Do I need WSL?</b></summary>
+<br>
+No. Rainy runs natively on Windows by default; switch to WSL2 or an SSH server when a project needs Linux.
+</details>
+
+<details>
+<summary><b>Is there a macOS or Linux desktop app?</b></summary>
+<br>
+The desktop app runs on Windows 10 / 11 x64 only. Linux works as the server for SSH remote development.
+</details>
+
+<details>
+<summary><b>What if the agent gets something wrong?</b></summary>
+<br>
+Every file it changed is listed above the message box: undo single changes in the editor, or a whole turn at once. Rainy keeps the earlier content itself (files up to 16 MB), so undo does not depend on Git.
+</details>
+
+<details>
+<summary><b>Does it work offline?</b></summary>
+<br>
+Yes, with a model server on your machine (such as Ollama) or Strata on an NVIDIA GPU. The full offline release and its installation are described in the <a href="docs/desktop-setup.zh-CN.md">setup guide</a>.
+</details>
 
 <a id="run-from-source"></a>
 ## Build from source
+
+<details>
+<summary>Show the build steps</summary>
+<br>
 
 Building the Windows release requires Node.js `^22.19 || >=24`, pnpm `11.7.0`, and the Windows/WSL prerequisites in the [build guide](docs/desktop-setup.zh-CN.md#从源码构建). Pinned binaries such as `build-inputs/strata-runtime.tar.gz` are restored from release assets by the bootstrap command rather than stored in Git.
 
@@ -185,16 +258,25 @@ node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.j
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.8.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.8.0` with the version in `package.json`. [Validation](docs/validation.md) records the build, installation and runtime checks completed for each release.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.8.0` with the version in `package.json`.
 
-For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL you can open in a browser; `pnpm run start` runs Electron on the built files.
+For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL to open in a browser; `pnpm run start` runs Electron on the built files. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
-## Support the project
+</details>
 
-If Rainy is useful to you, a ⭐ on this repository helps others find it. Follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X for releases. Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/RainyMarks/Rainy/issues).
+## Feedback and support
 
-## License and attribution
+- **Bugs and ideas**: open an issue on [GitHub Issues](https://github.com/RainyMarks/Rainy/issues).
+- **Release news**: follow [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X.
+- **Like it?** A ⭐ on this repository helps others find it.
 
-Rainy integration code uses the [Rainy Source Available License 1.0](LICENSE.Rainy). Personal and internal business use, modification, and noncommercial redistribution are free; sale, paid hosting, and commercial redistribution require written permission. This is a source-available project, not an OSI-approved open-source distribution. See [license scope](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
+<a id="license"></a>
+## License
 
-Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+Rainy integration code uses the [Rainy Source Available License 1.0](LICENSE.Rainy): personal and internal business use, modification and noncommercial redistribution are free; sale, paid hosting and commercial redistribution require written permission. This is a source-available project, not an OSI-approved open-source distribution. See [license scope](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
+
+<br>
+
+<div align="center">
+<sub>Developed by <a href="https://github.com/RainyMarks">RainyMarks</a></sub>
+</div>
