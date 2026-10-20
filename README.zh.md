@@ -17,7 +17,7 @@
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
-[![License](https://img.shields.io/badge/license-source%20available-f59e0b?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-f59e0b?style=flat-square)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?style=flat-square&logo=x)](https://x.com/RainyMarksqwq)
 
 [English](README.md) · **中文**
@@ -208,7 +208,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 <details>
 <summary><b>Rainy 收费吗？</b></summary>
 <br>
-个人和企业内部使用都免费，修改和非商业再分发也免费。销售、收费托管和商业再分发需要书面许可，详见<a href="#license">许可</a>。
+非商业用途免费：个人学习、研究、业余项目，以及学校、科研机构、公益组织和政府机构，都可以免费使用、修改和分享。商业用途（包括在公司里用于工作、为付费客户做项目、销售和收费托管）需要向 RainyMarks 取得商业授权，详见<a href="#license">许可</a>。
 </details>
 
 <details>
@@ -273,7 +273,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 <a id="license"></a>
 ## 许可
 
-Rainy 集成代码使用 [Rainy Source Available License 1.0](LICENSE.Rainy)：个人和企业内部使用、修改及非商业再分发均免费；销售、收费托管和商业再分发需要书面许可。本项目属于源码可用项目，不是 OSI 认可的开源发行版。具体范围见[许可说明](LICENSE)和[第三方声明](THIRD_PARTY_NOTICES.md)。
+Rainy 自有的代码和文档使用 [PolyForm Noncommercial License 1.0.0](LICENSE.Rainy)（PolyForm 非商业许可）。
+
+- **免费**：个人学习、研究、业余项目等没有商业目的的个人用途，以及公益组织、学校、公共科研机构、公共安全与卫生机构、环保组织和政府机构，都可以免费使用、修改和分享。
+- **需要商业授权**：其他一切用途，包括在公司里用于工作、为付费客户开发、销售、收费托管和商业再分发。请通过 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) 或 X 上的 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 联系 RainyMarks。
+
+来自 DeepSeek Harness 的界面代码仍按 [MIT 许可](LICENSE.upstream)授权，第三方组件适用各自的许可（见[第三方声明](THIRD_PARTY_NOTICES.md)）。3.8.0 及更早的版本仍按发布时的 Rainy Source Available License 1.0 授权。本项目属于源码可用项目，不是 OSI 认可的开源软件。适用范围见 [LICENSE](LICENSE)；以上中文说明只为方便理解，以英文条款为准。
 
 <br>
 

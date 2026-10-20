@@ -1,97 +1,75 @@
-Rainy Source Available License 1.0
+Required Notice: Copyright (c) 2026 RainyMarks (https://github.com/RainyMarks)
 
-Copyright (c) 2026 RainyMarks and the Rainy contributors
+# PolyForm Noncommercial License 1.0.0
 
-1. Scope and existing rights
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-This license applies to Rainy-specific code and documentation in this
-repository, including src/, scripts/, tests/, docs/, toolpacks/ and the README
-files, except material identified as derived from DeepSeek Harness or as
-third-party material in its own headers or notices or in THIRD_PARTY_NOTICES.md.
-This material is the "Covered Software". A distribution containing the Covered
-Software, including a modified version, must comply with this license for that
-material.
+## Acceptance
 
-Material derived from DeepSeek Harness (the files under src/renderer/ui/, the
-design tokens under src/renderer/theme/ that say so, and other files marked as
-derived from it), other upstream components, and third-party material retain
-their stated licenses. This license does not restrict rights granted by those
-licenses, grant rights in third-party material, or revoke rights in copies
-previously received under another license. Copyright holders license only
-rights they control.
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
 
-2. Permitted use
+## Copyright License
 
-Subject to the conditions below, you may access, use, copy, study, build and
-modify the Covered Software without paying a license fee. This permission
-includes personal use, research, education, and an organization's internal
-business use, including use by a for-profit organization.
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose.  However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
 
-An organization may run the Covered Software on its own infrastructure or
-infrastructure operated on its behalf, and may make it available to its
-employees and contractors solely for that organization's internal work.
-Ordinary infrastructure charges do not by themselves make that internal
-deployment a prohibited paid hosted service.
+## Distribution License
 
-You may redistribute unmodified or modified copies without charge for
-noncommercial purposes, provided recipients receive this license, the
-copyright notices, and the applicable third-party notices. You must identify
-your modifications and must not represent a modified distribution as an
-official RainyMarks release.
+The licensor grants you an additional copyright license to distribute copies of the software.  Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
 
-3. Uses requiring separate permission
+## Notices
 
-Without separate written permission from the applicable copyright holders,
-you may not:
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
 
-(a) sell or rent copies of the Covered Software, charge a license fee for
-    access to it, or make access conditional on a payment or paid membership;
-(b) provide third parties with hosted access to the Covered Software or a
-    substantial part of its functionality in return for a fee, subscription
-    or other consideration; or
-(c) commercially redistribute the Covered Software, including bundling copies
-    or access with a paid product or service, or supplying copies as part of
-    a commercial offering even if the software is described as free.
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-The internal use expressly permitted in section 2 is not commercial
-redistribution or a paid hosted service under this section. Charging for
-independent consulting, training or support is permitted when the charge
-does not include copies of, or access to, the Covered Software and users can
-obtain it separately without paying you. Optional donations that do not
-condition access are permitted.
+## Changes and New Works License
 
-4. Output and other software
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
-This license does not restrict the commercial use of outputs produced using
-the Covered Software, or impose its terms on independent projects edited,
-analyzed or built with it. Rights in third-party inputs and generated
-material remain the responsibility of their respective rights holders.
+## Patent License
 
-5. Notices and trademarks
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
 
-Keep this license and all applicable copyright and attribution notices with
-copies and substantial portions of the Covered Software. No permission to
-use a trademark to imply endorsement or official status is granted. Merely
-changing the name, interface or branding does not remove these conditions.
+## Noncommercial Purposes
 
-6. Termination
+Any noncommercial purpose is a permitted purpose.
 
-Rights granted by this license end if you violate its conditions. For a first
-violation, they are reinstated when you fully cure the violation within
-30 days after receiving written notice. Reinstatement does not waive claims
-arising from the violation or alter rights granted by third-party licenses.
+## Personal Uses
 
-7. Disclaimer
+Personal use for research, experiment, and testing for the benefit of public knowledge, personal study, private entertainment, hobby projects, amateur pursuits, or religious observance, without any anticipated commercial application, is use for a permitted purpose.
 
-THE COVERED SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDERS ARE NOT LIABLE
-FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE COVERED SOFTWARE OR ITS USE.
+## Noncommercial Organizations
 
-8. Interpretation
+Use by any charitable organization, educational institution, public research organization, public safety or health organization, environmental protection organization, or government institution is use for a permitted purpose regardless of the source of funding or obligations resulting from the funding.
 
-This is a source-available license with commercial distribution and hosting
-restrictions. It is not an OSI-approved open-source license. The English
-text is the license; translations and summaries are explanatory only.
+## Fair Use
+
+You may have "fair use" rights for the software under the law. These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else.  These terms do not imply any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice.  Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the **software** is the software the licensor makes available under these terms.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization.  **Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.

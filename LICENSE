@@ -1,9 +1,31 @@
 Rainy distribution licensing
 
-Rainy-specific material is licensed under LICENSE.Rainy.
-Personal and internal business use are permitted without a license fee.
-Sale, paid hosting, and commercial redistribution require separate permission.
-Third-party components retain their own licenses and are excluded from that grant.
+Rainy-specific code and documentation in this repository (including src/,
+scripts/, tests/, docs/, toolpacks/ and the README and CHANGELOG files) are
+licensed under the PolyForm Noncommercial License 1.0.0. Its terms are in
+LICENSE.Rainy and at https://polyformproject.org/licenses/noncommercial/1.0.0
+
+Required Notice: Copyright (c) 2026 RainyMarks (https://github.com/RainyMarks)
+
+Those terms permit use, modification and distribution for noncommercial
+purposes only: personal study, research, hobby projects and similar personal
+uses without any anticipated commercial application, and use by charitable
+organizations, educational institutions, public research organizations,
+public safety or health organizations, environmental protection
+organizations and government institutions. Any other use, including use
+within a business, work for paying clients, sale, paid hosting and commercial
+redistribution, requires a separate commercial license from RainyMarks.
+
+Rainy 3.8.0 and earlier releases, and the source of those versions, remain
+available under the Rainy Source Available License 1.0 they were published
+with.
+
+Material derived from DeepSeek Harness (the files under src/renderer/ui/, the
+design tokens under src/renderer/theme/ that say so, and other files marked as
+derived from it) keeps its MIT license, reproduced below. Third-party
+components keep their own licenses (see THIRD_PARTY_NOTICES.md); these terms
+grant no rights in them.
+
 The following upstream notice is retained without changing its terms.
 
 MIT License

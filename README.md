@@ -17,7 +17,7 @@ with an editor, Office previews and SSH remote development, in one 177 MB Window
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
-[![License](https://img.shields.io/badge/license-source%20available-f59e0b?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-f59e0b?style=flat-square)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?style=flat-square&logo=x)](https://x.com/RainyMarksqwq)
 
 **English** · [中文](README.zh.md)
@@ -208,7 +208,7 @@ The selected Windows, WSL or SSH environment must reach the model service. Throu
 <details>
 <summary><b>Is Rainy free?</b></summary>
 <br>
-Personal and internal business use are free, and so are modification and noncommercial redistribution. Sale, paid hosting and commercial redistribution need written permission; see the <a href="#license">license</a>.
+Noncommercial use is free: personal study, research and hobby projects, and schools, research institutions, charities and government bodies may use, modify and share it at no cost. Commercial use, including use at work in a company, projects for paying clients, sale and paid hosting, needs a commercial license from RainyMarks; see the <a href="#license">license</a>.
 </details>
 
 <details>
@@ -273,7 +273,12 @@ For development, `pnpm run dev` builds the app and starts a Host without Electro
 <a id="license"></a>
 ## License
 
-Rainy integration code uses the [Rainy Source Available License 1.0](LICENSE.Rainy): personal and internal business use, modification and noncommercial redistribution are free; sale, paid hosting and commercial redistribution require written permission. This is a source-available project, not an OSI-approved open-source distribution. See [license scope](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Rainy's own code and documentation are licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.Rainy).
+
+- **Free**: personal uses without a commercial purpose, such as study, research and hobby projects, and use by charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations and government institutions, including modifying and sharing.
+- **Commercial license required**: every other use, including use at work in a company, work for paying clients, sale, paid hosting and commercial redistribution. Contact RainyMarks through [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) or [@RainyMarksqwq](https://x.com/RainyMarksqwq) on X.
+
+Interface code derived from DeepSeek Harness stays under its [MIT license](LICENSE.upstream), and third-party components keep their own licenses (see [third-party notices](THIRD_PARTY_NOTICES.md)). Rainy 3.8.0 and earlier releases remain under the Rainy Source Available License 1.0 they were published with. This is a source-available project, not OSI-approved open-source software. See [LICENSE](LICENSE) for the scope.
 
 <br>
 

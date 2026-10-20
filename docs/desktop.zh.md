@@ -128,7 +128,7 @@ Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL
 
 ## 使用许可与发行完整性
 
-[Rainy 源码可用许可](../LICENSE)允许个人和企业内部免费使用、修改及非商业再分发；销售、收费托管和商业再分发需要另行书面许可。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
+Rainy 自有代码使用 [PolyForm Noncommercial License 1.0.0](../LICENSE.Rainy)（适用范围见 [LICENSE](../LICENSE)）：非商业用途可免费使用、修改和分享；包括企业内部使用在内的任何商业用途，都需要另行向 RainyMarks 取得商业授权。3.8.0 及更早的版本仍按 Rainy Source Available License 1.0 授权。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
 
 生产载体使用构建时嵌入的发行公钥验证资源清单，并保留 Electron ASAR 完整性保护。构建密钥独立于用户数据：默认保存在被忽略的 build 目录，也可通过 RAINY_RELEASE_SIGNING_KEY 指定已有 Ed25519 私钥文件；私钥不进入发行包。Windows Authenticode 签名使用另行配置的证书。
 
