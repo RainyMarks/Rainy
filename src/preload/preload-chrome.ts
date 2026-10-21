@@ -102,8 +102,18 @@ export function installWindowChrome(): void {
       }
     }
     const schedule = () => { if (!frame && !disposed) frame = requestAnimationFrame(update) }
+    // The language goes out as soon as the page applies it: a window that starts hidden draws no frame, so `update` would
+    // not report it, and Explorer's menu and the desktop's dialogs would stay in the system language until it is shown.
+    let language: 'zh' | 'en' | undefined
+    const reportLanguage = () => {
+      const { locale } = pageAppearance(root)
+      if (locale === undefined || locale === language || disposed) return
+      language = locale
+      ipcRenderer.send('rainy:caption-colors', { locale })
+    }
     const resize = new ResizeObserver(schedule)
     const collect = () => {
+      reportLanguage()
       for (const row of document.querySelectorAll<HTMLElement>('[data-window-drag]')) {
         if (!rows.has(row)) { rows.add(row); resize.observe(row) }
       }

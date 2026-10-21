@@ -8,7 +8,7 @@ import { deferred, handle } from './settings-harness.tsx'
 vi.mock('electron', () => ({ ipcRenderer: { send: vi.fn() } }))
 vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harness.tsx')).rpcModule)
 
-const saved: UiPreferences = { locale: 'en', theme: 'light', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true }
+const saved: UiPreferences = { locale: 'en', theme: 'light', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, markdownFocus: false, markdownTypewriter: false, markdownImages: 'assets' }
 
 it('reports neither the default language nor a theme before the Host answered, then the stored choices', async () => {
   const answer = deferred<UiPreferences>()
@@ -34,4 +34,27 @@ it('ignores an unknown theme source', () => {
   expect(pageAppearance(root)).toEqual({ theme: undefined, locale: undefined })
   root.setAttribute('data-rainy-theme-source', 'system')
   expect(pageAppearance(root)).toEqual({ theme: 'system', locale: 'en' })
+})
+
+it('reports the language at once, even while a hidden window draws no frames', async () => {
+  const { ipcRenderer } = await import('electron')
+  const send = vi.mocked(ipcRenderer.send)
+  send.mockClear()
+  // A hidden window never runs animation frames, which measure the caption colors.
+  const frames = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+  const root = document.documentElement
+  root.setAttribute('data-rainy-theme-source', 'system')
+  root.lang = 'zh-CN'
+  const { installWindowChrome } = await import('../../src/preload/preload-chrome.ts')
+  installWindowChrome()
+  expect(send).toHaveBeenCalledWith('rainy:caption-colors', { locale: 'zh' })
+  root.lang = 'en'
+  await vi.waitFor(() => { expect(send).toHaveBeenLastCalledWith('rainy:caption-colors', { locale: 'en' }) })
+  // The same language is not sent again.
+  const count = send.mock.calls.length
+  document.body.append(document.createElement('div'))
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect(send.mock.calls.length).toBe(count)
+  window.dispatchEvent(new Event('pagehide'))
+  frames.mockRestore()
 })

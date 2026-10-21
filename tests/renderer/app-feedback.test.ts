@@ -11,7 +11,7 @@ vi.mock('../../src/renderer/rpc.ts', async () => ({
 }))
 vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./settings-harness.tsx')).toastsModule)
 
-const prefs = (locale: 'zh' | 'en'): UiPreferences => ({ locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true })
+const prefs = (locale: 'zh' | 'en'): UiPreferences => ({ locale, theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, markdownFocus: false, markdownTypewriter: false, markdownImages: 'assets' })
 
 afterEach(() => { vi.unstubAllGlobals() })
 

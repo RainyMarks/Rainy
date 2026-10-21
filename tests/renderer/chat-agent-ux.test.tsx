@@ -14,7 +14,7 @@ vi.mock('../../src/renderer/ui/toasts.tsx', async () => (await import('./setting
 
 const workspaceId = 'w1' as WorkspaceId
 const workspace = { workspaceId, path: '/project', title: 'project' }
-const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'compact', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true }
+const prefs: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'compact', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, markdownFocus: false, markdownTypewriter: false, markdownImages: 'assets' }
 const models: ModelsStatus = {
   models: [{ provider: 'fake', model: 'fake-model', baseURL: 'http://127.0.0.1/v1', contextWindow: 32768, local: true }],
   credentials: [], selected: { provider: 'fake', model: 'fake-model' }, thinkingLevels: { fake: ['off'] }, presets: [], globalPrompt: { text: '', maxChars: 4000 },

@@ -116,6 +116,12 @@ export interface UiPreferences {
   rainEffects: boolean
   /** Chats get web_search and web_fetch when a DeepSeek model has an API key. */
   webSearch: boolean
+  /** Typora's focus mode in the rich Markdown editor: blocks other than the one being written fade. */
+  markdownFocus: boolean
+  /** Typora's typewriter mode: the line being written stays in the middle of the view. */
+  markdownTypewriter: boolean
+  /** Where images pasted or dropped into a Markdown document are saved: `assets` beside it, `<name>.assets`, or its own folder. */
+  markdownImages: 'assets' | 'named' | 'same'
 }
 
 /** An MCP server configured in Settings → Skills & MCP. */

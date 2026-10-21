@@ -9,14 +9,37 @@ import { createIdeExecutionApi, type IdeExecutionApi } from '../ide/ide-executio
 import { IdeModel } from '../ide/ide-model.ts'
 import { IdeExecutionModel } from '../ide/ide-execution-model.ts'
 import { IdeDirectorySelection } from '../ide/ide-directory-selection.ts'
-import { absoluteFilePath, fileKey, fileLabel, keyFromAbsolute } from '../ide/ide-paths.ts'
+import { absoluteFilePath, fileKey, fileLabel, fileReference, keyFromAbsolute } from '../ide/ide-paths.ts'
 import { ideMessages, type IdeMessageKey } from '../ide/messages.ts'
 import type { DesktopWorkbenchBridge } from './desktop-bridge.ts'
 import { emit, on, type WorkbenchEvents } from './bus.ts'
 
+/** A file or folder handed to Rainy by Explorer, a double click or a terminal, as a Host path. */
+export interface LaunchEntry {
+  readonly path: string
+  readonly kind: 'file' | 'directory'
+}
+
 /** Native folder picker exposed by the Electron preload as `__RAINY_IDE_NATIVE__`; absent on an SSH server, whose folders the page browses. */
 export interface NativeIdeBridge {
   selectDirectory?: (() => Promise<{ readonly path: string; readonly displayPath: string } | null>) | undefined
+  /** @returns The files and folders waiting to be opened, which the desktop forgets once taken. */
+  takeLaunchPaths?: (() => Promise<readonly LaunchEntry[]>) | undefined
+  /** @param listener Called when more files or folders arrived. @returns Unsubscribe. */
+  onLaunchPaths?: ((listener: () => void) => () => void) | undefined
+}
+
+/**
+ * The parent folder of a Host path, in the path's own spelling.
+ * @param path Absolute Windows or POSIX path of a file.
+ * @returns Its folder; a file at the root of a drive gives the drive's root.
+ */
+export function parentDirectory(path: string): string {
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  if (separator < 0) return path
+  const parent = path.slice(0, separator)
+  // `C:` alone would mean the drive's current directory, and `` the POSIX root.
+  return /^[A-Za-z]:$/u.test(parent) ? `${parent}\\` : parent === '' ? '/' : parent
 }
 
 /** Construction inputs; every bridge is optional so the page also runs in a plain browser and in tests. */
@@ -201,6 +224,37 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     else await model.reveal(key, line, 1)
   }
 
+  /** Open a launched folder as a project, and a launched file in the project that holds it, else with its folder as the project. */
+  const openLaunched = async (entry: LaunchEntry): Promise<void> => {
+    if (entry.kind === 'directory') { await model.openWorkspace(entry.path); return }
+    const state = model.state.getSnapshot()
+    const current = state.workspace === null ? undefined : keyFromAbsolute(state.workspace, entry.path)
+    if (current !== undefined) { await model.openFile(current); return }
+    // The project with the most specific folder holding the file: the shortest path inside it.
+    const holding = state.workspaces.map(workspace => ({ workspace, key: keyFromAbsolute(workspace, entry.path) }))
+      .filter((match): match is { workspace: IdeWorkspace; key: string } => match.key !== undefined)
+      .sort((left, right) => fileReference(left.key).path.length - fileReference(right.key).path.length)[0]
+    if (holding !== undefined) {
+      await model.selectWorkspace(holding.workspace)
+      if (model.state.getSnapshot().workspace?.workspaceId === holding.workspace.workspaceId) await model.openFile(holding.key)
+      return
+    }
+    await model.openWorkspace(parentDirectory(entry.path))
+    const opened = model.state.getSnapshot().workspace
+    if (opened === null) return
+    // A folder reached through a link has another canonical path; the file is still directly inside it.
+    await model.openFile(keyFromAbsolute(opened, entry.path) ?? entry.path.slice(Math.max(entry.path.lastIndexOf('/'), entry.path.lastIndexOf('\\')) + 1))
+  }
+  let launchReady = false
+  let launching = Promise.resolve()
+  const takeLaunched = (): void => {
+    if (!launchReady || native?.takeLaunchPaths === undefined) return
+    const take = native.takeLaunchPaths
+    launching = launching.then(async () => {
+      for (const entry of await take()) await openLaunched(entry).catch((error: unknown) => { model.fail(error) })
+    }).catch((error: unknown) => { model.fail(error) })
+  }
+
   let workspaceId = model.state.getSnapshot().workspace?.workspaceId ?? null
   const disposers = [
     model.state.subscribe(() => {
@@ -223,6 +277,8 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     return ok ? { ok } : { ok, error: model.state.getSnapshot().error }
   })
   if (unregister !== undefined) disposers.push(unregister)
+  const unlisten = native?.onLaunchPaths?.(takeLaunched)
+  if (unlisten !== undefined) disposers.push(unlisten)
   let started = false
   return {
     model,
@@ -233,7 +289,8 @@ export function createWorkbench(options: WorkbenchOptions = {}): Workbench {
     start: () => {
       if (started) return
       started = true
-      void model.initialize()
+      // Launched paths open after the last project is restored, so the restore does not switch away from them.
+      void model.initialize().then(() => { launchReady = true; takeLaunched() })
     },
     showSession,
     openSession,

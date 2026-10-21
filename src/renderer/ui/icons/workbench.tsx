@@ -50,3 +50,8 @@ export const IconSourceControlOutline = (props: IconProps) => <Glyph {...props}>
   <circle cx="11.5" cy="5.5" r="1.5" />
   <path d="M4.5 5v6M11.5 7c0 2.5-2 3.5-5.5 4.2" />
 </Glyph>
+
+/** Document outline: headings, each level indented under the one above. */
+export const IconOutlineOutline = (props: IconProps) => <Glyph {...props}>
+  <path d="M2.5 3h11M5 6.5h8.5M5 10h8.5M7.5 13.5h6" />
+</Glyph>

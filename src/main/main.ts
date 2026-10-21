@@ -30,12 +30,16 @@ import { pruneWindowsHost, removeRetiredResources } from './retired-resources.ts
 import { chooseIdeDirectory, createIdeDirectoryPicker } from './ide-native.ts'
 import { OfficeConversionError, OfficeConverter, officeKind } from './office-convert.ts'
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
-import { listExecutionTargets, readDesktopPreferences, removeSshHost, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget, saveSshHost,
-  sshDestinationOf, sshTarget, sshTargets, WINDOWS_TARGET } from './execution-targets.ts'
+import { listExecutionTargets, readDesktopPreferences, removeSshHost, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget, saveShellIntegration,
+  saveSshHost, sshDestinationOf, sshTarget, sshTargets, WINDOWS_TARGET } from './execution-targets.ts'
+import { applyShellIntegration, readShellIntegration, REGISTERED_APPLICATION, shellIntegrationCurrent, shellIntegrationPreference,
+  type ShellIntegration } from './shell-integration.ts'
+import { inspectLaunchPaths, launchPaths, type LaunchEntry } from './launch-paths.ts'
+import { exportFileName, printHtmlToPdf } from './document-export.ts'
 import type { ExecutionTarget, PendingProjectTarget } from './execution-targets.ts'
 import { createProjectRegistry } from '../shared/project-registry.ts'
 import { environmentComponentSchema, installWindowsComponent, readEnvironmentComponentCatalog } from './environment-components.ts'
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 import { embeddedReleaseKeys } from './release-trust.ts'
 import { ensureReleaseIntegrity, ReleaseIntegrityError } from './release-integrity.ts'
 import type { ReleaseIntegrity } from './release-integrity.ts'
@@ -68,6 +72,10 @@ let closeAskpass: () => Promise<void> = () => Promise.resolve()
 let componentInstallation: Promise<void> | undefined
 /** Read or created once per run; every Host started in this run encrypts API keys with it. */
 let credentialKeyOnce: Promise<string | null> | undefined
+/** Files and folders from this launch's command line and from later launches, waiting until the workbench can open them. */
+const launchQueue: string[] = launchPaths(process.argv, process.cwd(), process.defaultApp === true)
+/** Hand the queued paths to the workbench; replaced once the Host is ready. */
+let deliverLaunch: () => void = () => undefined
 /** @returns The interface language that matches the Windows display language. */
 const systemLocale = (): Locale => app.getLocale().toLowerCase().startsWith('zh') ? 'zh' : 'en'
 followLocale(() => app.isReady() ? systemLocale() : 'zh')
@@ -187,10 +195,13 @@ async function start(): Promise<void> {
   // Dialogs, menus and errors follow the interface language the page last reported; the system language before that.
   let interfaceLocale: Locale = preferences.locale === 'zh' || preferences.locale === 'en' ? preferences.locale : systemLocale()
   followLocale(() => interfaceLocale)
+  /** Explorer's menu label and the file type names follow the interface language; set once the workbench is up. */
+  let syncShellIntegration: () => Promise<void> = () => Promise.resolve()
   const reportLocale = (locale: Locale): void => {
     if (locale === interfaceLocale) return
     interfaceLocale = locale
     void saveDesktopLocale(settingsPath, locale).catch((error: unknown) => { appendFileSync(logPath, `The interface language was not saved: ${errorText(error)}\n`) })
+    void syncShellIntegration().catch((error: unknown) => { appendFileSync(logPath, `Explorer integration was not updated: ${errorText(error)}\n`) })
   }
   let target = savedExecutionTarget(preferences)
   // A launch that already recorded its resolved WSL target skips the environment window and the registry lookup.
@@ -881,11 +892,12 @@ async function start(): Promise<void> {
   })
   onIpc('rainy:caption-colors', (event, value) => {
     if (!trustedSender(event)) return
-    const colors = captionColors(value)
-    if (!colors) return
+    // A hidden page reports its language before it can measure any colors.
     if (value !== null && typeof value === 'object' && 'locale' in value && (value.locale === 'zh' || value.locale === 'en')) {
       reportLocale(value.locale)
     }
+    const colors = captionColors(value)
+    if (!colors) return
     window.setTitleBarOverlay({ ...colors, color: '#00000000', height: CAPTION_HEIGHT })
     if (value !== null && typeof value === 'object' && 'theme' in value
       && (value.theme === 'dark' || value.theme === 'light' || value.theme === 'system')) nativeTheme.themeSource = value.theme
@@ -958,6 +970,29 @@ async function start(): Promise<void> {
         encrypted: error instanceof OfficeConversionError && error.encrypted }
     }
   })
+  handleIpc('rainy:export-document', async (event, value) => {
+    if (!trustedSender(event) || !isRecord(value) || (value.format !== 'pdf' && value.format !== 'html') || typeof value.html !== 'string'
+      || typeof value.name !== 'string' || (value.directory !== undefined && typeof value.directory !== 'string')) throw new Error('Invalid export request.')
+    const format = value.format
+    // The save dialog starts in the document's folder; a folder on the SSH server is not on this computer.
+    let folder = app.getPath('documents')
+    if (typeof value.directory === 'string' && value.directory !== '' && target.kind !== 'ssh') {
+      try { folder = target.kind === 'wsl' ? await wslPath(distro, '-w', value.directory) : value.directory }
+      catch (error) { appendFileSync(logPath, `The export folder could not be mapped: ${errorText(error)}\n`) }
+    }
+    const chosen = await dialog.showSaveDialog(window, {
+      title: format === 'pdf' ? localized({ zh: '导出为 PDF', en: 'Export as PDF' }) : localized({ zh: '导出为 HTML', en: 'Export as HTML' }),
+      defaultPath: join(folder, `${exportFileName(value.name)}.${format}`),
+      filters: [{ name: format === 'pdf' ? 'PDF' : 'HTML', extensions: format === 'pdf' ? ['pdf'] : ['html', 'htm'] }],
+    })
+    if (chosen.canceled || !chosen.filePath) return null
+    await writeFile(chosen.filePath, format === 'pdf' ? await printHtmlToPdf(value.html) : value.html)
+    return { path: chosen.filePath }
+  })
+  handleIpc('rainy:show-in-folder', (event, value) => {
+    if (!trustedSender(event) || typeof value !== 'string' || !win32.isAbsolute(value)) throw new Error('Invalid path.')
+    shell.showItemInFolder(value)
+  })
   handleIpc('rainy:open-file', async (event, value) => {
     if (!trustedSender(event) || !isRecord(value) || typeof value.path !== 'string' || value.path === '') throw new Error('Invalid open request.')
     const extension = value.path.slice(value.path.lastIndexOf('.') + 1).toLowerCase()
@@ -967,6 +1002,79 @@ async function start(): Promise<void> {
     const path = target.kind === 'wsl' ? await wslPath(distro, '-w', value.path) : value.path
     const failure = await shell.openPath(path)
     return failure === '' ? {} : { error: failure }
+  })
+  // Paths from "Open with Rainy", a double-clicked file or a terminal, mapped into the execution environment; the page takes
+  // them when it starts and again whenever it is told more arrived.
+  const launched: LaunchEntry[] = []
+  const deliver = async (): Promise<void> => {
+    const queued = launchQueue.splice(0)
+    if (queued.length === 0 || window.isDestroyed()) return
+    if (target.kind === 'ssh') {
+      await dialog.showMessageBox(window, { type: 'info', title: 'Rainy', noLink: true,
+        message: localized({ zh: '无法在 SSH 服务器上打开本机文件', en: 'Files on this computer cannot be opened on the SSH server' }),
+        detail: localized({ zh: `当前执行环境是 ${target.label}。要打开本机的文件或文件夹，请先在设置的“运行环境”页切换到 Windows 或 WSL。\n\n${queued.join('\n')}`,
+          en: `The current execution environment is ${target.label}. To open files or folders on this computer, switch to Windows or WSL on the Runtime page of Settings first.\n\n${queued.join('\n')}` }) })
+      return
+    }
+    const { entries, missing } = await inspectLaunchPaths(queued)
+    if (missing.length > 0) {
+      void dialog.showMessageBox(window, { type: 'warning', title: 'Rainy', noLink: true,
+        message: localized({ zh: '找不到要打开的文件或文件夹', en: 'The file or folder to open was not found' }), detail: missing.join('\n') })
+    }
+    if (entries.length === 0) return
+    const paths = target.kind === 'windows' ? entries.map(entry => entry.path) : await wslPaths(distro, entries.map(entry => entry.path))
+    launched.push(...entries.map((entry, index) => ({ path: paths[index]!, kind: entry.kind })))
+    if (!window.isDestroyed()) window.webContents.send('rainy:launch-paths')
+  }
+  let delivering = Promise.resolve()
+  deliverLaunch = () => {
+    delivering = delivering.then(deliver).catch((error: unknown) => {
+      appendFileSync(logPath, `Opening the launched paths failed: ${errorText(error)}\n`)
+      if (!window.isDestroyed()) void dialog.showMessageBox(window, { type: 'error', title: 'Rainy', message: localized({ zh: '无法打开所选的文件或文件夹', en: 'The selected file or folder could not be opened' }), detail: errorText(error) })
+    })
+  }
+  window.on('closed', () => { deliverLaunch = () => undefined })
+  handleIpc('rainy:launch-take', (event) => {
+    if (!trustedSender(event)) throw new Error('Launch paths are available only in the Rainy window.')
+    return launched.splice(0)
+  })
+  deliverLaunch()
+  // Explorer integration is the installed application's: a development checkout never registers its electron.exe.
+  const shellAvailable = app.isPackaged && process.platform === 'win32'
+  let shellQueue = Promise.resolve()
+  syncShellIntegration = () => {
+    if (!shellAvailable) return Promise.resolve()
+    const next = shellQueue.then(async () => {
+      const wanted = shellIntegrationPreference(await readDesktopPreferences(settingsPath))
+      const executable = app.getPath('exe')
+      if (shellIntegrationCurrent(await readShellIntegration(), executable, interfaceLocale, wanted)) return
+      await applyShellIntegration(executable, interfaceLocale, wanted)
+      appendFileSync(logPath, `Explorer integration updated: context menu ${wanted.contextMenu ? 'on' : 'off'}, file types ${wanted.fileTypes ? 'on' : 'off'}\n`)
+    })
+    shellQueue = next.catch(() => undefined)
+    return next
+  }
+  const shellState = async (): Promise<ShellIntegration & { available: boolean }> =>
+    ({ available: shellAvailable, ...shellIntegrationPreference(await readDesktopPreferences(settingsPath)) })
+  handleIpc('rainy:shell-integration', async (event) => {
+    if (!trustedSender(event)) throw new Error('Explorer integration is available only in the Rainy window.')
+    return shellState()
+  })
+  handleIpc('rainy:shell-integration-set', async (event, value) => {
+    if (!trustedSender(event) || !isRecord(value) || (value.contextMenu !== undefined && typeof value.contextMenu !== 'boolean')
+      || (value.fileTypes !== undefined && typeof value.fileTypes !== 'boolean')) throw new Error('Invalid Explorer integration request.')
+    if (!shellAvailable) throw new Error(localized({ zh: '只有安装版 Rainy 可以修改资源管理器集成。', en: 'Only an installed Rainy can change the Explorer integration.' }))
+    const current = shellIntegrationPreference(await readDesktopPreferences(settingsPath))
+    await saveShellIntegration(settingsPath, { contextMenu: typeof value.contextMenu === 'boolean' ? value.contextMenu : current.contextMenu,
+      fileTypes: typeof value.fileTypes === 'boolean' ? value.fileTypes : current.fileTypes })
+    await syncShellIntegration()
+    return shellState()
+  })
+  handleIpc('rainy:default-apps', async (event) => {
+    if (!trustedSender(event)) throw new Error('Default apps can be opened only from the Rainy window.')
+    // Windows 11 opens Rainy's own page; Windows 10 and older builds ignore the parameter and show the Default apps list.
+    try { await shell.openExternal(`ms-settings:defaultapps?registeredAppUser=${REGISTERED_APPLICATION}`) }
+    catch (_unsupported) { await shell.openExternal('ms-settings:defaultapps') }
   })
   handleIpc('rainy:ide-prepare-development', async (event) => {
     if (!trustedSender(event)) throw new Error('Development setup is available only in the Rainy window')
@@ -1106,7 +1214,7 @@ async function start(): Promise<void> {
       event.returnValue = mapped
     } catch (error) { appendFileSync(logPath, `A dropped file could not be mapped into WSL: ${errorText(error)}\n`) }
   })
-  window.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) void shell.openExternal(url); return { action: 'deny' } })
+  window.webContents.setWindowOpenHandler(({ url }) => { if (/^(?:https?|mailto):/i.test(url)) void shell.openExternal(url); return { action: 'deny' } })
   // The page never navigates to project file bytes either: a link in a previewed document must not replace the workbench.
   window.webContents.on('will-navigate', (event, url) => {
     const target = new URL(url)
@@ -1122,6 +1230,11 @@ async function start(): Promise<void> {
   timeline.mark('workbench')
   appendFileSync(logPath, `Rainy startup (${target.label}): ${timeline.summary()}\n`)
   void updates.check()
+  // A first start, a moved installation or a changed language rewrites the Explorer entries once the workbench has settled.
+  const shellTimer = setTimeout(() => {
+    void syncShellIntegration().catch((error: unknown) => { appendFileSync(logPath, `Explorer integration was not updated: ${errorText(error)}\n`) })
+  }, 5000)
+  window.on('closed', () => { clearTimeout(shellTimer) })
   const background = setTimeout(() => {
     void runBackgroundChecks({ integrity, target, settingsPath, logPath, window, busy: () => lifecycle.closing || lifecycle.switching })
     void modules.clean().catch((error: unknown) => { appendFileSync(logPath, `Component cleanup failed: ${errorText(error)}
@@ -1184,10 +1297,20 @@ if (process.argv.includes('--rainy-remove-runtime')) {
   void app.whenReady().then(async () => { if (app.isPackaged) await pruneWindowsHost(process.resourcesPath, { everything: true }); app.exit(0) })
     .catch((error: unknown) => { console.error('Removing the Windows runtime failed', error); app.exit(1) })
 }
+// The uninstaller removes the Explorer entries and file types through the code that wrote them.
+else if (process.argv.includes('--rainy-unregister-shell')) {
+  void app.whenReady().then(async () => {
+    if (app.isPackaged && process.platform === 'win32') await applyShellIntegration(app.getPath('exe'), 'zh', { contextMenu: false, fileTypes: false })
+    app.exit(0)
+  }).catch((error: unknown) => { console.error('Removing the Explorer integration failed', error); app.exit(1) })
+}
 else if (!app.requestSingleInstanceLock()) app.quit()
 else {
   app.on('will-quit', () => { updates?.dispose() })
-  app.on('second-instance', () => {
+  // "Open with Rainy" and double-clicked files start a second process, which hands its paths over and quits.
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    launchQueue.push(...launchPaths(argv, workingDirectory, process.defaultApp === true))
+    deliverLaunch()
     for (const win of BrowserWindow.getAllWindows()) { win.restore(); win.show(); win.focus() }
   })
   app.on('window-all-closed', () => { if (mainWindowCreated) app.quit() })

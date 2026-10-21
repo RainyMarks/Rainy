@@ -146,7 +146,7 @@ describe('window layout', () => {
   it('offers workspace file operations without requiring a chat', async () => {
     const h = await mountWindow()
     click(byRole('button', '文件'))
-    expect(byRole('menu').textContent).toBe('打开 Windows 文件夹浏览当前执行环境文件夹搜索工作区文件新建文件新建文件夹保存全部保存运行配置')
+    expect(byRole('menu').textContent).toBe('打开 Windows 文件夹浏览当前执行环境文件夹搜索工作区文件新建文件新建文件夹保存全部保存导出为 PDF…导出为 HTML…运行配置')
     click(byRole('menuitem', '打开 Windows 文件夹'))
     await waitFor(() => { expect(h.chooseDirectory).toHaveBeenCalledOnce() })
     expect(queryByRole('menu')).toBeNull()

@@ -4,6 +4,21 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 3.9 · 2026-10-21
+
+Write Markdown the way you do in Typora, and open files straight from Explorer.
+
+- **Explorer integration**: right-click a file, a folder or the background of a folder for "Open with Rainy" (on Windows 11 under "Show more options"). Rainy is listed under "Open with" for Markdown, text and common source code files and can be made their default app in Windows' Default apps settings; while Rainy is running, files opened this way go to the same window. A file opens in the project that holds it, or with its folder as the project. Both parts can be turned off in **Settings → General → System integration** and are removed when Rainy is uninstalled.
+- **Outline**: a new side pane lists the document's headings, marks the one you are reading and jumps to any of them.
+- **Find and replace**: Ctrl+F / Ctrl+H in the rich view, with match case and replace all; a replacement is undone in one step.
+- **Pasted images**: paste a screenshot or drop an image into a document and it is saved to an `assets` folder next to it (or a "name.assets" folder, or the document's own folder, set in Settings) with a relative link. Pasted images used to become broken temporary links.
+- **Math and diagrams**: math blocks and Mermaid diagrams show only their rendering until you click them, then their source with a live preview, as in Typora.
+- **Front matter** gets its own editable box at the top instead of being rendered as a rule and a heading.
+- **Typora's shortcuts**: Ctrl+0–6 for paragraph and headings, Ctrl+= / Ctrl+- to change the heading level, Ctrl+T table, Ctrl+Shift+K code block, Ctrl+Shift+M math block, Ctrl+Shift+Q quote, Ctrl+K link, Ctrl+/ source view; Ctrl+click opens a link (a web address, a project file or a `#heading` in the document).
+- **Focus mode (F8) and typewriter mode (F9)**; the status bar shows the word count, with characters and reading time on hover.
+- **Export to PDF or HTML** from the File menu or the "…" menu of the editor, with images, math and diagrams embedded, ready to send. PDFs get bookmarks from the headings, and their Chinese text copies and searches as written: characters such as 二 and 文 no longer come out as the look-alike Kangxi radicals that PDFs printed by many Chromium-based apps contain.
+- Typography follows Typora's GitHub theme: bold headings, underlined first and second levels, bordered tables and roomier lines.
+
 ## 3.8 · 2026-10-19
 
 Lighter: smaller downloads, less CPU while idle and while a reply streams.

@@ -7,6 +7,11 @@ import type { IdeEnvironmentAction, IdeEnvironmentSnapshot } from '../main/ide-e
 import type { StrataNativeHost, StrataModelPicker, StrataSettings } from '../shared/strata-protocol.ts'
 import type { OptionalModuleId, OptionalModulesBridge, OptionalModulesState } from '../shared/modules-protocol.ts'
 import type { OfficePdfResult } from '../shared/office-protocol.ts'
+import type { LaunchEntry } from '../main/launch-paths.ts'
+import type { ShellIntegration } from '../main/shell-integration.ts'
+
+/** The Explorer integration the user chose, and whether this installation can change it. */
+type ShellIntegrationState = ShellIntegration & { available: boolean }
 
 /** Payload sent by the main process on each progress channel. */
 interface ProgressChannels {
@@ -15,6 +20,8 @@ interface ProgressChannels {
   'rainy:modules-progress': OptionalModulesState
   /** Validated by the receiving bridge, which forwards only the message text. */
   'rainy:component-progress': unknown
+  /** More files or folders are waiting to be opened; the page takes them with `rainy:launch-take`. */
+  'rainy:launch-paths': unknown
 }
 
 /** Forward one main-process event channel to a page listener. @returns the unsubscribe callback. */
@@ -61,10 +68,22 @@ if (process.isMainFrame && location.protocol === 'http:' && location.hostname ==
   contextBridge.exposeInMainWorld('__RAINY_IDE_NATIVE__', {
     ...remote ? {} : { selectDirectory: (): Promise<IdeNativeDirectory | null> => ipcRenderer.invoke('rainy:ide-directory') },
     prepareDevelopmentTools: (): Promise<void> => ipcRenderer.invoke('rainy:ide-prepare-development'),
+    takeLaunchPaths: (): Promise<LaunchEntry[]> => ipcRenderer.invoke('rainy:launch-take'),
+    onLaunchPaths: (listener: () => void) => subscribe('rainy:launch-paths', () => { listener() }),
+  })
+  contextBridge.exposeInMainWorld('__RAINY_SHELL__', {
+    state: (): Promise<ShellIntegrationState> => ipcRenderer.invoke('rainy:shell-integration'),
+    set: (change: Partial<ShellIntegration>): Promise<ShellIntegrationState> => ipcRenderer.invoke('rainy:shell-integration-set', change),
+    openDefaultApps: (): Promise<void> => ipcRenderer.invoke('rainy:default-apps'),
   })
   contextBridge.exposeInMainWorld('__RAINY_OFFICE__', {
     toPdf: (bytes: Uint8Array, extension: string): Promise<OfficePdfResult> => ipcRenderer.invoke('rainy:office-pdf', { bytes, extension }),
     ...remote ? {} : { open: (path: string): Promise<{ error?: string }> => ipcRenderer.invoke('rainy:open-file', { path }) },
+  })
+  contextBridge.exposeInMainWorld('__RAINY_EXPORT__', {
+    save: (request: { format: 'pdf' | 'html'; html: string; name: string; directory?: string }): Promise<{ path: string } | null> =>
+      ipcRenderer.invoke('rainy:export-document', request),
+    showInFolder: (path: string): Promise<void> => ipcRenderer.invoke('rainy:show-in-folder', path),
   })
   contextBridge.exposeInMainWorld('__RAINY_DIAGNOSTICS__', {
     export: (): Promise<string | null> => ipcRenderer.invoke('rainy:export-diagnostics'),

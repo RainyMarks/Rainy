@@ -200,6 +200,8 @@ export type IdeFilesRequest =
   | { readonly op: 'files.save'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly content: string; readonly expectedVersion: IdeFileVersion }
   | { readonly op: 'files.create'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly content: string }
   | { readonly op: 'files.mkdir'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string }
+  /** A new file with binary content, such as an image pasted into a Markdown document; `base64` holds its bytes. */
+  | { readonly op: 'files.createBinary'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly base64: string }
   | { readonly op: 'files.rename'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly destination: string; readonly expectedVersion: IdeFileVersion }
   | { readonly op: 'files.deletePreview'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string }
   | { readonly op: 'files.delete'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly token: IdeDeleteToken }
@@ -229,6 +231,7 @@ export interface IdeFilesResults {
   'files.save': IdeFileDocument
   'files.create': IdeFileDocument
   'files.mkdir': IdeFileEntry
+  'files.createBinary': IdeFileEntry
   'files.rename': IdeFileEntry
   'files.deletePreview': IdeDeletePreview
   'files.delete': { readonly path: string; readonly deleted: true }

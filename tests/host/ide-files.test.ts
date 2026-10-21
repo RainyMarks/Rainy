@@ -314,6 +314,21 @@ describe('editor text files', () => {
     expect(await readFile(join(root, 'other.py'), 'utf8')).toBe('keep')
   })
 
+  it('creates a binary file once, inside the project, within the size limit', async () => {
+    const { files, workspaceId, root, outside } = await fixture({ maxBinaryBytes: 8 })
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    await files.handle({ op: 'files.mkdir', workspaceId, path: 'assets' })
+    const created = await files.handle(parseIdeFilesRequest({ op: 'files.createBinary', workspaceId, path: 'assets/图 1.png', base64: bytes.toString('base64') }))
+    expect(created).toMatchObject({ path: 'assets/图 1.png', kind: 'file' })
+    expect(await readFile(join(root, 'assets', '图 1.png'))).toEqual(bytes)
+    await expect(files.handle({ op: 'files.createBinary', workspaceId, path: 'assets/图 1.png', base64: 'AAAA' })).rejects.toMatchObject({ code: 'already-exists' })
+    expect(await readFile(join(root, 'assets', '图 1.png'))).toEqual(bytes)
+    await expect(files.handle({ op: 'files.createBinary', workspaceId, path: 'big.png', base64: Buffer.alloc(9).toString('base64') })).rejects.toMatchObject({ code: 'too-large' })
+    await expect(files.handle({ op: 'files.createBinary', workspaceId, path: '../outside/x.png', base64: 'AAAA' })).rejects.toMatchObject({ code: 'invalid-path' })
+    expect(await readdir(outside)).toEqual([])
+    expect(() => parseIdeFilesRequest({ op: 'files.createBinary', workspaceId, path: 'x.png', base64: 'not base64!' })).toThrow()
+  })
+
   it('refuses a competing destination created after the preliminary absence check', async () => {
     const { root, fs, files, workspaceId } = await fixture()
     await writeFile(join(root, 'source.py'), 'source')

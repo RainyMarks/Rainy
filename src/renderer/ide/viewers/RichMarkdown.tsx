@@ -1,16 +1,29 @@
 /** Markdown edited in place on its rendered form, as in Typora, with Milkdown Crepe. The text goes to the same buffer as
- *  the source editor, so saving, unsaved markers, review and the agent see every change. */
+ *  the source editor, so saving, unsaved markers, review and the agent see every change. Front matter gets its own box,
+ *  pasted and dropped images are saved next to the document, and Typora's shortcuts, find and replace, outline, focus and
+ *  typewriter modes, Mermaid diagrams and Ctrl+click on links work as they do there. */
 import { useEffect, useRef, useState } from 'react'
+import type { EditorView } from '@milkdown/kit/prose/view'
+import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
+import { on } from '../../app/bus.ts'
 import { resolveDocumentPath } from '../../chat/Markdown.tsx'
+import { usePrefs } from '../../prefs.ts'
 import { toast } from '../../ui/index.ts'
+import { outlinePosition, provideOutline } from '../outline-store.ts'
+import { frontMatterContent, splitFrontMatter, withFrontMatterContent } from './front-matter.ts'
 import { preserveSource } from './markdown-merge.ts'
+import { headingForFragment, markdownOutline } from './markdown-outline.ts'
+import { isMermaid, renderMermaid } from './mermaid.ts'
 import { useViewerT } from './messages.ts'
+import { RichFindBar, type FindRequest } from './RichFindBar.tsx'
+import type * as RichPlugins from './rich-plugins.ts'
 import css from './Viewers.module.css'
 import './RichMarkdown.css'
 
 /** Editor handle kept between renders; only the parts this view uses. */
 interface Rich {
+  readonly view: EditorView
   getMarkdown(): string
   /** Hand the current text to the buffer now; the editor's own notice waits 200 ms and is dropped when it closes. */
   flush(): void
@@ -41,30 +54,81 @@ export function conventionalTables(markdown: string): string {
   }).join('\n')
 }
 
+/** @param view Editor. @returns The document position of every heading, in document order. */
+function headingPositions(view: EditorView): number[] {
+  const positions: number[] = []
+  view.state.doc.descendants((node: ProseNode, position: number) => {
+    if (node.type.name === 'heading') positions.push(position)
+    return !node.isTextblock
+  })
+  return positions
+}
+
 /**
+ * @param props.path File key, for the outline.
  * @param props.text The buffer's text.
  * @param props.base Project, mounted directory and the file's folder, for relative images.
  * @param props.version The observed file version, so a reloaded image is fetched again.
  * @param props.onChange The user edited the document; receives the new Markdown.
  * @param props.onSave Ctrl+S inside the editor.
+ * @param props.onImage Saves a pasted or dropped image beside the document; returns the path to write in the Markdown.
+ * @param props.onOpenLink Ctrl+click on a link that leaves this document.
  * @returns The editor.
  */
-export function RichMarkdown({ text, base, version, onChange, onSave }: {
+export function RichMarkdown({ path, text, base, version, onChange, onSave, onImage, onOpenLink }: {
+  path: string
   text: string
   base: { workspaceId: string; rootId?: string | undefined; directory: string }
   version: string | null
   onChange: (text: string) => void
   onSave: () => void
+  onImage: (file: File) => Promise<string>
+  onOpenLink: (href: string) => void
 }): JSX.Element {
   const t = useViewerT()
+  const prefs = usePrefs()
   const root = useRef<HTMLDivElement>(null)
+  const stage = useRef<HTMLDivElement>(null)
   const editor = useRef<Rich | undefined>(undefined)
-  /** The text the editor holds, as last read from it or written into it. */
+  const plugins = useRef<typeof RichPlugins | undefined>(undefined)
+  /** The text the editor holds, as last read from it or written into it, front matter included. */
   const held = useRef(text)
-  const latest = useRef({ onChange, onSave, base, version })
-  latest.current = { onChange, onSave, base, version }
+  const front = useRef(splitFrontMatter(text).front)
+  const body = useRef(splitFrontMatter(text).body)
+  const [frontMatter, setFrontMatter] = useState(front.current)
+  const latest = useRef({ onChange, onSave, onImage, onOpenLink, base, version, t })
+  latest.current = { onChange, onSave, onImage, onOpenLink, base, version, t }
   const [failure, setFailure] = useState('')
   const [ready, setReady] = useState(false)
+  const [find, setFind] = useState<FindRequest | undefined>()
+  const [revision, setRevision] = useState(0)
+
+  /** Hand the document to the buffer unless it is what the buffer already has. */
+  const publish = (nextFront: string, nextBody: string): void => {
+    front.current = nextFront
+    body.current = nextBody
+    const full = nextFront + nextBody
+    if (full === held.current) return
+    held.current = full
+    latest.current.onChange(full)
+  }
+
+  /** Scroll so heading `index` (document order) is at the top of the view. */
+  const reveal = (index: number): void => {
+    const view = editor.current?.view
+    const scroller = stage.current
+    if (view === undefined || scroller === null) return
+    const position = headingPositions(view)[index]
+    if (position === undefined) return
+    const element = view.nodeDOM(position)
+    if (!(element instanceof HTMLElement)) return
+    scroller.scrollTop += element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16
+    element.classList.remove('rainy-heading-flash')
+    void element.offsetWidth
+    element.classList.add('rainy-heading-flash')
+  }
+  const latestReveal = useRef(reveal)
+  latestReveal.current = reveal
 
   useEffect(() => {
     const element = root.current
@@ -72,25 +136,35 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
     let cancelled = false
     let created: Rich | undefined
     void (async () => {
-      const [{ Crepe }, { remarkStringifyOptionsCtx }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { remarkGFMPlugin }] = await Promise.all([
+      const [{ Crepe }, { editorViewCtx, remarkStringifyOptionsCtx }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { remarkGFMPlugin },
+        { uploadConfig }, rich] = await Promise.all([
         import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
-        import('@milkdown/kit/preset/gfm'),
+        import('@milkdown/kit/preset/gfm'), import('@milkdown/kit/plugin/upload'), import('./rich-plugins.ts'),
       ])
       await import('@milkdown/crepe/theme/common/style.css')
       if (cancelled) return
+      plugins.current = rich
       const image = (url: string): string => {
         const { base: folder, version: revision } = latest.current
         if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(url)) return url
-        const path = resolveDocumentPath(folder.directory, url)
-        return path === undefined ? url : ideRawUrl({ workspaceId: folder.workspaceId, rootId: folder.rootId, path, version: revision ?? undefined })
+        const resolved = resolveDocumentPath(folder.directory, url)
+        return resolved === undefined ? url : ideRawUrl({ workspaceId: folder.workspaceId, rootId: folder.rootId, path: resolved, version: revision ?? undefined })
       }
-      const refuseUpload = async (): Promise<string> => {
-        toast(t('richNoUpload'), { tone: 'error' })
-        throw new Error('upload is not supported')
+      const save = async (file: File): Promise<string> => {
+        try { return await latest.current.onImage(file) } catch (error) {
+          toast(latest.current.t('richImageFailed', { error: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
+          throw error
+        }
+      }
+      const failed = (message: string): HTMLElement => {
+        const box = document.createElement('div')
+        box.className = 'rainy-preview-error'
+        box.textContent = message
+        return box
       }
       const crepe = new Crepe({
         root: element,
-        defaultValue: held.current,
+        defaultValue: body.current,
         // Crepe's image block keeps its display size in the alt text, which would replace the author's description; the
         // inline image below writes `![alt](src "title")` back unchanged.
         features: { [Crepe.Feature.ImageBlock]: false },
@@ -98,7 +172,15 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
           [Crepe.Feature.Placeholder]: { text: t('richPlaceholder'), mode: 'block' },
           [Crepe.Feature.LinkTooltip]: { inputPlaceholder: t('richLinkPlaceholder') },
           [Crepe.Feature.CodeMirror]: { searchPlaceholder: t('richLanguageSearch'), noResultText: t('richNoLanguage'), copyText: t('richCopy'),
-            previewLabel: t('richPreview'), previewToggleText: preview => preview ? t('richEdit') : t('richPreview') },
+            previewLabel: t('richPreview'), previewToggleText: preview => preview ? t('richEdit') : t('richPreview'), previewLoading: t('mermaidLoading'),
+            // Mermaid fences show the diagram; math is drawn by Crepe's LaTeX feature, which wraps this one.
+            renderPreview: (language, content, apply) => {
+              if (!isMermaid(language) || content.trim() === '') return null
+              renderMermaid(content).then(apply, (error: unknown) => {
+                apply(failed(latest.current.t('mermaidFailed', { error: error instanceof Error ? error.message : String(error) })))
+              })
+              return undefined
+            } },
           [Crepe.Feature.BlockEdit]: {
             textGroup: { label: t('richGroupText'), text: { label: t('richText') }, h1: { label: t('richHeading', { level: 1 }) },
               h2: { label: t('richHeading', { level: 2 }) }, h3: { label: t('richHeading', { level: 3 }) }, h4: { label: t('richHeading', { level: 4 }) },
@@ -113,24 +195,40 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
         ctx.update(remarkStringifyOptionsCtx, previous => ({ ...previous, ...STRINGIFY }))
         // Aligned table columns would turn one edited cell into a change of every row.
         ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false })
-        ctx.update(inlineImageConfig.key, previous => ({ ...previous, proxyDomURL: image, onUpload: refuseUpload, uploadButton: undefined,
+        ctx.update(inlineImageConfig.key, previous => ({ ...previous, proxyDomURL: image, onUpload: save, uploadButton: t('richUpload'),
           uploadPlaceholderText: t('richImageLink'), confirmButton: t('richConfirm') }))
-      }).use(imageInlineComponent)
+        // Pasted and dropped images are saved beside the document, as Typora does, instead of becoming blob: links.
+        ctx.update(uploadConfig.key, previous => ({ ...previous, uploader: async (files, schema) => {
+          const nodes: ProseNode[] = []
+          for (const file of Array.from(files)) {
+            if (!file.type.startsWith('image/')) continue
+            // A screenshot from the clipboard is called image.png; a dropped file keeps its name as the description.
+            const name = /^image\.\w+$/u.test(file.name) ? '' : file.name.replace(/\.[^.]+$/u, '')
+            let src: string
+            try { src = await save(file) } catch (_reported) { continue } // save() already told the user why.
+            const node = schema.nodes.image?.createAndFill({ src, alt: name })
+            if (node !== null && node !== undefined) nodes.push(node)
+          }
+          return nodes
+        } }))
+      }).use(imageInlineComponent).use(rich.typoraKeymap).use(rich.searchPlugin).use(rich.currentBlockPlugin).use(rich.typewriterPlugin)
+        .use(rich.linkClickPlugin((href) => {
+          if (!href.startsWith('#')) { latest.current.onOpenLink(href); return }
+          const index = headingForFragment(markdownOutline(held.current), href.slice(1))
+          if (index >= 0) latestReveal.current(index)
+        }))
       let quiet = false
       // The file as loaded and the editor's own serialization of it: edits are merged into the file line by line, so
       // escapes, blank lines and table spacing the editor would write differently survive outside the edited lines.
-      let source = held.current
+      let source = body.current
       let loaded = ''
       let started = false
       const push = (written: string): void => {
         if (quiet || !started) return
-        const markdown = preserveSource(source, loaded, conventionalTables(written))
-        if (markdown === held.current) return
-        held.current = markdown
-        latest.current.onChange(markdown)
+        publish(front.current, preserveSource(source, loaded, conventionalTables(written)))
       }
       crepe.on((listen) => {
-        listen.markdownUpdated((_ctx, written) => { push(written) })
+        listen.markdownUpdated((_ctx, written) => { push(written); setRevision(value => value + 1) })
         // Clicking Save in the toolbar, another tab or the chat moves focus out first.
         listen.blur(() => { push(crepe.getMarkdown()) })
       })
@@ -139,6 +237,7 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
       loaded = conventionalTables(crepe.getMarkdown())
       started = true
       created = {
+        view: crepe.editor.ctx.get(editorViewCtx),
         getMarkdown: () => crepe.getMarkdown(),
         flush: () => { push(crepe.getMarkdown()) },
         replace: (next) => {
@@ -146,7 +245,8 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
           try { crepe.editor.action(replaceAll(next)) } finally { quiet = false }
           source = next
           loaded = conventionalTables(crepe.getMarkdown())
-          held.current = next
+          body.current = next
+          setRevision(value => value + 1)
         },
         destroy: () => crepe.destroy(),
       }
@@ -167,20 +267,107 @@ export function RichMarkdown({ text, base, version, onChange, onSave }: {
   // Text changed elsewhere (the source view, a reload, the agent): show it unless it is what the editor itself wrote.
   useEffect(() => {
     if (!ready || text === held.current) return
-    editor.current?.replace(text)
+    const next = splitFrontMatter(text)
+    if (next.front !== front.current) { front.current = next.front; setFrontMatter(next.front) }
+    if (next.body !== body.current) editor.current?.replace(next.body)
+    held.current = text
   }, [text, ready])
+
+  /** @returns The selected text when it fits on one line, to search for. */
+  const selectedText = (): string => {
+    const view = editor.current?.view
+    if (view === undefined) return ''
+    const { from, to } = view.state.selection
+    const selected = view.state.doc.textBetween(from, to, ' ')
+    return selected.includes('\n') || selected.length > 200 ? '' : selected
+  }
+
+  /** Publish the heading at the top of the view to the outline, once per frame. */
+  const track = useRef<() => void>(() => undefined)
+  // The outline beside the editor scrolls this view, and follows the heading at its top.
+  useEffect(() => {
+    if (!ready) return
+    const withdraw = provideOutline(path, { reveal: (index) => { latestReveal.current(index) } })
+    const scroller = stage.current
+    let frame = 0
+    track.current = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        const element = root.current
+        if (scroller === null || element === null) return
+        const top = scroller.getBoundingClientRect().top + 24
+        let index = -1
+        for (const [position, heading] of [...element.querySelectorAll('.ProseMirror h1, .ProseMirror h2, .ProseMirror h3, .ProseMirror h4, .ProseMirror h5, .ProseMirror h6')].entries()) {
+          if (heading.getBoundingClientRect().top <= top) index = position
+          else break
+        }
+        const current = outlinePosition.getSnapshot()
+        if (current.path !== path || current.index !== index) outlinePosition.set({ path, index })
+      })
+    }
+    const scrolled = (): void => { track.current() }
+    track.current()
+    scroller?.addEventListener('scroll', scrolled, { passive: true })
+    return () => { cancelAnimationFrame(frame); track.current = () => undefined; scroller?.removeEventListener('scroll', scrolled); withdraw() }
+  }, [ready, path])
+  // Added or removed headings move the one at the top.
+  useEffect(() => { track.current() }, [revision])
+
+  // Links show a hand while Ctrl is held, the way Ctrl+click opens them.
+  useEffect(() => {
+    const held = (event: KeyboardEvent): void => { stage.current?.toggleAttribute('data-ctrl-held', event.ctrlKey || event.metaKey) }
+    const released = (): void => { stage.current?.removeAttribute('data-ctrl-held') }
+    window.addEventListener('keydown', held)
+    window.addEventListener('keyup', held)
+    window.addEventListener('blur', released)
+    return () => { window.removeEventListener('keydown', held); window.removeEventListener('keyup', held); window.removeEventListener('blur', released) }
+  }, [])
+
+  // Find and Replace from the Edit menu and the command palette.
+  useEffect(() => on('markdown.find', (event) => {
+    if (event.path === path) setFind({ replace: event.replace, seed: selectedText(), at: Date.now() })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [path])
 
   return <div className={css.viewer} data-viewer="markdown-rich">
     {failure !== '' ? <div className={`${css.message} ${css.error}`}>{t('richFailed', { error: failure })}</div> : <>
       {!ready && <div className={css.message}>{t('loading')}</div>}
-      <div className={css.stage} onKeyDown={(event) => {
-        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
-          event.preventDefault()
-          editor.current?.flush()
-          latest.current.onSave()
-        }
-      }}>
-        <div ref={root} className="rainy-rich" hidden={!ready} />
+      {find !== undefined && ready && plugins.current !== undefined && <RichFindBar view={() => editor.current?.view} stage={() => stage.current}
+        plugins={plugins.current} request={find} revision={revision}
+        onClose={() => { setFind(undefined); editor.current?.view.focus() }} />}
+      <div ref={stage} className={css.stage} data-rich-stage data-typewriter={prefs.markdownTypewriter ? 'true' : undefined}
+        data-focus-mode={prefs.markdownFocus ? 'true' : undefined}
+        onClickCapture={(event) => {
+          // A diagram or formula shows its source when clicked, as in Typora.
+          const preview = event.target instanceof Element ? event.target.closest('.milkdown-code-block .preview-panel') : null
+          const content = preview?.closest('.milkdown-code-block')?.querySelector<HTMLElement>('.cm-content')
+          if (content !== null && content !== undefined) { event.preventDefault(); content.focus() }
+        }}
+        onKeyDown={(event) => {
+          const command = (event.ctrlKey || event.metaKey) && !event.altKey ? event.key.toLowerCase() : ''
+          if (command === 's' && !event.shiftKey) {
+            event.preventDefault()
+            editor.current?.flush()
+            latest.current.onSave()
+          } else if ((command === 'f' || command === 'h') && !event.shiftKey) {
+            event.preventDefault()
+            setFind({ replace: command === 'h', seed: selectedText(), at: Date.now() })
+          } else if (event.key === 'Escape' && find !== undefined) {
+            setFind(undefined)
+          }
+        }}>
+        <div className="rainy-rich" hidden={!ready}>
+          {frontMatter !== '' && <div className="rainy-front-matter" data-front-matter>
+            <div className="rainy-front-matter-label" title={t('richFrontMatterTitle')}>{t('richFrontMatter')}</div>
+            <textarea className="rainy-front-matter-text" spellCheck={false} aria-label={t('richFrontMatter')} value={frontMatterContent(frontMatter)}
+              onChange={(event) => {
+                const next = withFrontMatterContent(front.current, event.target.value)
+                setFrontMatter(next)
+                publish(next, body.current)
+              }} />
+          </div>}
+          <div ref={root} />
+        </div>
       </div>
     </>}
   </div>

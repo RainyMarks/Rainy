@@ -18,5 +18,11 @@ declare global {
     __RAINY_HOST_PATHS__?: { pathFor(file: File): string }
     /** Office conversion and "open in default app"; absent outside the desktop app. */
     __RAINY_OFFICE__?: import('../shared/office-protocol.ts').OfficeBridge
+    /** Saves an exported document through the native save dialog, printing it to PDF first; absent outside the desktop app. */
+    __RAINY_EXPORT__?: {
+      save(request: { format: 'pdf' | 'html'; html: string; name: string; directory?: string | undefined }): Promise<{ path: string } | null>
+      /** Show a saved file selected in Explorer. */
+      showInFolder(path: string): Promise<void>
+    }
   }
 }

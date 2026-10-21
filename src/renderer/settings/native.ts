@@ -51,7 +51,26 @@ export interface DiagnosticsNativeHost {
   export(): Promise<string | null>
 }
 
+/** Explorer's "Open with Rainy" entries and the file types Rainy is offered for. */
+export interface ShellIntegrationState {
+  readonly contextMenu: boolean
+  readonly fileTypes: boolean
+  /** Only an installed Rainy registers itself; a development checkout shows the switches disabled. */
+  readonly available: boolean
+}
+
+/** `window.__RAINY_SHELL__`: the Explorer integration of the installed desktop app. */
+export interface ShellNativeHost {
+  /** @returns What the user chose. */
+  state(): Promise<ShellIntegrationState>
+  /** @param change Parts to turn on or off. @returns The new state, after the registry was updated. */
+  set(change: { contextMenu?: boolean; fileTypes?: boolean }): Promise<ShellIntegrationState>
+  /** Open Windows' Default apps settings at Rainy's page. */
+  openDefaultApps(): Promise<void>
+}
+
 interface Bridges {
+  __RAINY_SHELL__?: ShellNativeHost
   __RAINY_DIAGNOSTICS__?: DiagnosticsNativeHost
   __RAINY_STRATA_NATIVE__?: StrataNativeHost
   __RAINY_RUNTIME_NATIVE__?: RuntimeNativeHost
@@ -64,6 +83,8 @@ const bridges = (): Bridges => globalThis as typeof globalThis & Bridges
 export function strataBridge(): StrataNativeHost | undefined { return bridges().__RAINY_STRATA_NATIVE__ }
 /** @returns The execution-target bridge, or `undefined` outside the desktop app. */
 export function runtimeBridge(): RuntimeNativeHost | undefined { return bridges().__RAINY_RUNTIME_NATIVE__ }
+/** @returns The Explorer integration bridge, or `undefined` outside the desktop app. */
+export function shellBridge(): ShellNativeHost | undefined { return bridges().__RAINY_SHELL__ }
 /** @returns The diagnostics export bridge, or `undefined` outside the desktop app. */
 export function diagnosticsBridge(): DiagnosticsNativeHost | undefined { return bridges().__RAINY_DIAGNOSTICS__ }
 /** @returns The optional-component bridge, or `undefined` outside the desktop app. */

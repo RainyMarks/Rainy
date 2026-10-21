@@ -13,7 +13,7 @@
 
 [![下载 Windows 版](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-3.8-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
+[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-3.9-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -89,10 +89,19 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 ### 文档预览：点开就能看，不是一屏十六进制
 
 - **Word** 显示成分页的纸面；**Excel** 和 WPS 表格显示成可切换工作表的表格；**PPT** 与旧版 `.doc` 交给电脑上的 Office 转换，和原软件里看到的一样。
-- **Markdown** 打开就是排好版的样子，像 Typora 一样直接编辑，保存时只改动过的行。
+- **Markdown** 打开就是排好版的样子，像 Typora 一样直接编辑（见下一节）。
 - **PDF**（包括没有嵌入字体的中文论文）、图片、音视频直接预览；其他二进制文件用十六进制查看。
 
 ![PPT 由电脑上的 PowerPoint 转换后直接显示在 Rainy 里](assets/zh/office.png)
+
+### Markdown 写作：像 Typora 一样顺手
+
+- 打开 .md 就是排好版的样子，直接在上面写；**Ctrl+/** 随时切到源码。保存时只改动过的行，其余写法原样保留。
+- 侧栏**大纲**跟着阅读位置走，点标题即跳转；**Ctrl+F / Ctrl+H** 在文档里查找替换；按住 Ctrl 单击打开链接。
+- 截图直接粘贴、图片拖进来，自动存进旁边的 `assets` 文件夹并写好相对路径。
+- 公式和 **Mermaid** 图表平时只显示渲染结果，点一下才显示源码；YAML 前言单独显示，不会被排成标题。
+- Typora 的快捷键：Ctrl+1–6 标题、Ctrl+T 表格、Ctrl+Shift+K 代码块、Ctrl+Shift+M 公式；**F8 专注模式**、**F9 打字机模式**；状态栏显示字数。
+- 一键**导出 PDF / HTML**，图片、公式和图表都嵌进文件，发给别人直接能看。
 
 ### 编辑器与调试：真编辑器，AI 内置
 
@@ -120,6 +129,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 
 | 功能 | 说明 |
 |---|---|
+| **资源管理器集成** | 右键文件或文件夹“通过 Rainy 打开”；.md 和代码等文本文件的“打开方式”里有 Rainy，也能设为默认应用。 |
 | **三种执行环境** | 默认 Windows 原生；需要 Linux 时切到 WSL2 或一台 SSH 服务器。 |
 | **项目记忆** | 开启后在空闲时整理项目要点，新对话开始时自动带上。 |
 | **上下文管理** | 实时显示上下文占用，快满时自动压缩；Claude 的提示词缓存保留一小时。 |
@@ -187,9 +197,9 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 - **发行包可验证**：安装文件首次启动时按签名清单逐个校验。
 
 <a id="whats-new"></a>
-## 3.8 新变化
+## 3.9 新变化
 
-**更轻。** WSL / SSH 运行环境从约 277 MB 缩到约 53 MB；空闲时（雨滴动画开着）CPU 占用降到原来的三分之一左右；AI 长回复不再掉帧；首屏脚本减少约 22%。[查看完整更新日志 →](CHANGELOG.zh.md)
+**像 Typora 一样写 Markdown，也能从资源管理器直接打开。** 侧栏大纲、文内查找替换、粘贴图片自动保存、Mermaid 图表、专注与打字机模式、导出 PDF / HTML；右键“通过 Rainy 打开”，双击 .md 也能交给 Rainy。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档
@@ -261,10 +271,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.8.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.8.0` 换成 `package.json` 中的版本号。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.9.0` 换成 `package.json` 中的版本号。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

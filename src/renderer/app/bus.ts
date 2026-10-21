@@ -13,6 +13,8 @@ export interface WorkbenchEvents {
   'chat.attach': { files: readonly File[] }
   /** Review a chat's changes to one file in the editor; `path` is absolute on the Host. */
   'review.open': { sessionId: string; path: string; toolCallIds: readonly string[] }
+  /** Open the find bar of the rich Markdown editor showing `path`, with the replace row when `replace`. */
+  'markdown.find': { path: string; replace: boolean }
   /** Show a pane of the window. */
   'pane.show': { pane: 'ai' | 'files' | 'bottom' | 'history' | 'settings'; section?: string | undefined }
 }

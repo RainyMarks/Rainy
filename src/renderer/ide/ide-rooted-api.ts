@@ -78,7 +78,7 @@ export function createRootedIdeApi(api: IdeFilesApi): IdeFilesApi {
       return changes.flat()
     }
     if (body.op === 'files.list' || body.op === 'files.read' || body.op === 'files.save' || body.op === 'files.create'
-      || body.op === 'files.mkdir' || body.op === 'files.rename' || body.op === 'files.deletePreview'
+      || body.op === 'files.mkdir' || body.op === 'files.createBinary' || body.op === 'files.rename' || body.op === 'files.deletePreview'
       || body.op === 'files.delete' || body.op === 'files.diff' || body.op === 'format') {
       const reference = fileReference(body.path)
       const location = reference.rootId === undefined ? { path: reference.path } : reference

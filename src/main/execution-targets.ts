@@ -137,6 +137,16 @@ export async function saveDesktopLocale(settingsPath: string, locale: 'zh' | 'en
 }
 
 /**
+ * Remember which Explorer integrations the user wants.
+ * @param settingsPath - private desktop preferences.
+ * @param value - "Open with Rainy" in the context menu, and Rainy offered for text file types.
+ * @returns completion after an atomic preference update.
+ */
+export async function saveShellIntegration(settingsPath: string, value: { contextMenu: boolean; fileTypes: boolean }): Promise<void> {
+  return updateDesktopPreferences(settingsPath, () => ({ shellIntegration: { contextMenu: value.contextMenu, fileTypes: value.fileTypes } }))
+}
+
+/**
  * Remember an SSH host added in Settings.
  * @param settingsPath - private desktop preferences.
  * @param destination - validated destination.

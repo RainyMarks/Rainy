@@ -1,5 +1,5 @@
 /** The window: top bar, side pane, editor area with the project map, AI pane, bottom panel and status bar. */
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent, ReactNode } from 'react'
 import type { IdeFileEntry, IdeRootId } from '../../shared/ide-files-protocol.ts'
 import type { IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
@@ -8,8 +8,12 @@ import {
   IconChevronLeftOutlineRegular, IconCloseOutlineRegular, IconEllipsisOutlineRegular, IconFolderCloseRegular,
   IconPanelBottomOutline, IconPanelLeftOutlineRegular, IconPanelRightOutline, IconPlayOutlineRegular, IconPlusOutlineRegular,
   IconMapOutline, IconProjectAddOutlineRegular, IconSearchOutlineRegular, IconSettingsOutlineRegular, Menu, RainyMark,
-  IconBranchOutlineRegular, IconFilesOutline, IconSourceControlOutline, ShortcutKeys, Tooltip, useStore, type MenuEntry, type MenuItem,
+  IconBranchOutlineRegular, IconFilesOutline, IconOutlineOutline, IconSourceControlOutline, ShortcutKeys, toast, Tooltip, useStore,
+  type MenuEntry, type MenuItem,
 } from '../ui/index.ts'
+import { idePreviewKind } from '../../shared/ide-preview.ts'
+import { Outline } from '../ide/Outline.tsx'
+import { countWords } from '../ide/viewers/word-count.ts'
 import { GitView } from '../git/GitView.tsx'
 import { refreshGit, useGitStatus } from '../git/git-store.ts'
 import { useGitT } from '../git/messages.ts'
@@ -33,7 +37,7 @@ import { IdeBottom } from '../ide/IdeBottom.tsx'
 import { FileTree } from '../ide/FileTree.tsx'
 import { QuickOpenDialog } from '../ide/QuickOpenDialog.tsx'
 import { RunConfigurationDialog } from '../ide/RunConfigurationDialog.tsx'
-import { fileKey, fileLabel, fileReference, keyFromAbsolute } from '../ide/ide-paths.ts'
+import { absoluteFilePath, fileKey, fileLabel, fileReference, keyFromAbsolute } from '../ide/ide-paths.ts'
 import {
   chooseFileLanguage, inferredRunLanguage, pinRunProfile, runLanguageNames, runLanguages, runsFile, runTarget, type RunFile,
 } from '../ide/run-target.ts'
@@ -103,7 +107,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     return { dark, fontSize: prefs.codeFontSize, ...fontFamily === '' ? {} : { fontFamily },
       ...background === '' || foreground === '' ? {} : { background, foreground } }
   }, [dark, prefs.codeFontSize, prefs.codeFont, prefs.colorScheme])
-  const [navigation, setNavigation] = useState<'files' | 'search' | 'git' | 'history'>('files')
+  const [navigation, setNavigation] = useState<'files' | 'search' | 'git' | 'history' | 'outline'>('files')
   const [searchFocus, setSearchFocus] = useState<SearchFocus | undefined>()
   const [palette, setPalette] = useState<string | undefined>()
   const [selected, setSelected] = useState<IdeFileEntry | undefined>()
@@ -168,6 +172,11 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     model.setView(activePath, view === defaultView(activePath) ? undefined : view)
     return true
   }
+  /** A Markdown file with editable text is in front; the rich view shows it unless the tab chose another. */
+  const markdownActive = editing && activePath !== null && idePreviewKind(activePath) === 'markdown' && active.document.content !== null
+  const richActive = markdownActive && currentView === 'rich'
+  const wordText = useDeferredValue(markdownActive ? active.text : '')
+  const words = useMemo(() => markdownActive ? countWords(wordText) : undefined, [markdownActive, wordText])
   const debug = executionState.status.debugSessions.find(entry => entry.id === executionState.debugId)
   const debugFrame = executionState.frames.find(frame => frame.id === executionState.frameId)
   const stoppedPath = debugFrame?.path !== undefined && state.workspace !== null
@@ -307,7 +316,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     if (debugging) await execution.debug(config)
     else await execution.run(config)
   }
-  const showLeft = (mode: 'files' | 'search' | 'git' | 'history'): void => {
+  const showLeft = (mode: 'files' | 'search' | 'git' | 'history' | 'outline'): void => {
     setNavigation(mode)
     setNarrowNavigation(narrow)
     model.layout({ sidebarVisible: true })
@@ -339,6 +348,26 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     model.layout({ bottomVisible: true, bottomTab: 'terminal' })
     run(execution.terminal())
   }
+  /** Ctrl+/ in Typora: switch a Markdown tab between the rich view and its source. */
+  const toggleMarkdownSource = (): boolean => markdownActive && showView(currentView === 'rich' ? 'source' : 'rich')
+  /** Save the active Markdown document as a PDF or a self-contained HTML page. */
+  const exportMarkdown = (format: 'pdf' | 'html'): void => {
+    const workspace = state.workspace
+    if (!markdownActive || activePath === null || workspace === null) return
+    const reference = fileReference(activePath)
+    const absolute = absoluteFilePath(workspace, activePath)
+    const hostDirectory = absolute === undefined || environment?.environment === 'SSH' ? undefined : absolute.slice(0, absolute.lastIndexOf('/'))
+    toast(tv('exporting'))
+    void import('../ide/viewers/markdown-export.ts')
+      .then(({ exportDocument }) => exportDocument({ format, text: active.text, path: reference.path, workspaceId: workspace.workspaceId,
+        rootId: reference.rootId, hostDirectory }))
+      .then((saved) => {
+        if (saved === null) return
+        const bridge = window.__RAINY_EXPORT__
+        toast(tv('exportDone', { path: saved }), { tone: 'success',
+          ...bridge === undefined ? {} : { actions: [{ label: tv('exportShow'), onClick: () => { void bridge.showInFolder(saved) } }] } })
+      }, (error: unknown) => { toast(tv('exportFailed', { error: error instanceof Error ? error.message : String(error) }), { tone: 'error' }) })
+  }
   const action = (id: string): void => {
     setMenu(undefined)
     const actions: Record<string, () => void> = {
@@ -365,8 +394,20 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
       selection: () => { workbench.sendSelection() },
       focus: () => { model.layout({ agentVisible: false, bottomVisible: false }); model.center('editor') },
       format: () => { run(model.format()) },
-      find: () => { run(editor.current?.action('find') ?? Promise.resolve()) },
-      replace: () => { run(editor.current?.action('replace') ?? Promise.resolve()) },
+      find: () => {
+        if (richActive && activePath !== null) emit('markdown.find', { path: activePath, replace: false })
+        else run(editor.current?.action('find') ?? Promise.resolve())
+      },
+      replace: () => {
+        if (richActive && activePath !== null) emit('markdown.find', { path: activePath, replace: true })
+        else run(editor.current?.action('replace') ?? Promise.resolve())
+      },
+      outline: () => { showLeft('outline') },
+      markdownFocus: () => { setPrefs({ markdownFocus: !prefs.markdownFocus }).catch(() => undefined) },
+      markdownTypewriter: () => { setPrefs({ markdownTypewriter: !prefs.markdownTypewriter }).catch(() => undefined) },
+      markdownSource: () => { toggleMarkdownSource() },
+      exportPdf: () => { exportMarkdown('pdf') },
+      exportHtml: () => { exportMarkdown('html') },
       line: () => { run(editor.current?.action('gotoLine') ?? Promise.resolve()) },
       files: () => {
         if (narrow) {
@@ -408,6 +449,27 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     explorer: () => { showLeft('files') },
   }
   useGlobalShortcuts(shortcuts)
+  // Typora's keys for Markdown tabs: Ctrl+/ switches to the source and back, F8 is focus mode, F9 typewriter mode. They are
+  // caught before the editors, so the source editor's Ctrl+/ comment does not take Ctrl+/ in a Markdown file.
+  const markdownKeys = useRef({ active: markdownActive, toggle: toggleMarkdownSource, focus: () => { action('markdownFocus') },
+    typewriter: () => { action('markdownTypewriter') } })
+  markdownKeys.current = { active: markdownActive, toggle: toggleMarkdownSource, focus: () => { action('markdownFocus') },
+    typewriter: () => { action('markdownTypewriter') } }
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent): void => {
+      const keys = markdownKeys.current
+      if (!keys.active || event.isComposing || modalOpen()) return
+      const plain = !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey
+      if ((event.code === 'Slash' || event.key === '/') && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+        if (keys.toggle()) { event.preventDefault(); event.stopPropagation() }
+      } else if (plain && (event.key === 'F8' || event.key === 'F9')) {
+        event.preventDefault()
+        if (event.key === 'F8') keys.focus(); else keys.typewriter()
+      }
+    }
+    window.addEventListener('keydown', keydown, true)
+    return () => { window.removeEventListener('keydown', keydown, true) }
+  }, [])
   const showPane = useRef<(pane: string, section: string | undefined) => void>(() => undefined)
   showPane.current = (pane, section) => {
     if (pane === 'ai') model.layout({ agentVisible: true })
@@ -463,6 +525,8 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         { id: 'directory', label: t('ideNewFolder'), disabled: state.workspace === null },
         { id: 'save', label: t('ideSave'), disabled: activePath === null || active?.source === 'snippet' },
         { id: 'saveAll', label: t('ideSaveAll'), disabled: activePath === null },
+        { id: 'exportPdf', label: tv('exportPdf'), disabled: !markdownActive },
+        { id: 'exportHtml', label: tv('exportHtml'), disabled: !markdownActive },
         { id: 'profiles', label: t('ideRunProfiles'), disabled: state.workspace === null },
       ]
       : kind === 'edit'
@@ -477,6 +541,10 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
         : [
           { id: 'palette', label: ta('cmdPalette') },
           { id: 'focus', label: t('ideFocusEditor') },
+          { id: 'outline', label: t('ideOutline') },
+          { id: 'markdownSource', label: tv('toggleSourceMode'), disabled: !markdownActive, shortcut: { keys: ['Ctrl', '/'], aria: 'Control+/' } },
+          { id: 'markdownFocus', label: tv('focusMode'), icon: checked(prefs.markdownFocus), shortcut: { keys: ['F8'], aria: 'F8' } },
+          { id: 'markdownTypewriter', label: tv('typewriterMode'), icon: checked(prefs.markdownTypewriter), shortcut: { keys: ['F9'], aria: 'F9' } },
           { id: 'files', label: t('ideToggleFiles') },
           { id: 'sourceControl', label: ta('cmdSourceControl'), disabled: state.workspace === null },
           { id: 'agent', label: t('ideToggleAgent') },
@@ -515,6 +583,12 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
     { id: 'file.save', category: ta('catFile'), label: t('ideSave'), keys: ['Ctrl', '+', 'S'], disabled: activePath === null || active?.source === 'snippet', run: () => { run(model.save()) } },
     { id: 'file.saveAll', category: ta('catFile'), label: t('ideSaveAll'), disabled: activePath === null, run: () => { run(model.saveAll()) } },
     { id: 'file.close', category: ta('catFile'), label: ta('cmdCloseEditor'), disabled: activePath === null, run: () => { if (activePath !== null) run(closeFile(activePath)) } },
+    { id: 'file.exportPdf', category: ta('catFile'), label: tv('exportPdf'), disabled: !markdownActive, run: () => { exportMarkdown('pdf') } },
+    { id: 'file.exportHtml', category: ta('catFile'), label: tv('exportHtml'), disabled: !markdownActive, run: () => { exportMarkdown('html') } },
+    { id: 'view.outline', category: ta('catView'), label: t('ideOutline'), run: () => { showLeft('outline') } },
+    { id: 'view.markdownSource', category: ta('catView'), label: tv('toggleSourceMode'), keys: ['Ctrl', '+', '/'], disabled: !markdownActive, run: () => { toggleMarkdownSource() } },
+    { id: 'view.markdownFocus', category: ta('catView'), label: tv('focusMode'), keys: ['F8'], run: () => { action('markdownFocus') } },
+    { id: 'view.markdownTypewriter', category: ta('catView'), label: tv('typewriterMode'), keys: ['F9'], run: () => { action('markdownTypewriter') } },
     { id: 'edit.find', category: ta('catEdit'), label: t('ideFind'), keys: ['Ctrl', '+', 'F'], disabled: !editing, run: () => { action('find') } },
     { id: 'edit.replace', category: ta('catEdit'), label: t('ideReplace'), keys: ['Ctrl', '+', 'H'], disabled: !editing, run: () => { action('replace') } },
     { id: 'edit.line', category: ta('catEdit'), label: t('ideGoLine'), keys: ['Ctrl', '+', 'G'], disabled: !editing, run: () => { action('line') } },
@@ -634,10 +708,11 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
           aria-label={t('ideWorkspace')} style={narrow && leftVisible ? { position: 'absolute', width: leftPanelWidth } : undefined}>
           {navigation !== 'history' && <div className={css.sideTabs} role="group" aria-label={t('ideWorkspace')}>
             {([['files', ta('sideExplorer'), <IconFilesOutline key="files" size={16} />], ['search', ts('searchTitle'), <IconSearchOutlineRegular key="search" size={16} />],
-              ['git', tg('gitTitle'), <IconSourceControlOutline key="git" size={16} />]] as const).map(([id, label, icon]) => (
+              ['git', tg('gitTitle'), <IconSourceControlOutline key="git" size={16} />], ['outline', t('ideOutline'), <IconOutlineOutline key="outline" size={16} />],
+            ] as const).map(([id, label, icon]) => (
               <Tooltip key={id} label={label} side="bottom" portal>
                 <button type="button" className={css.sideTab} aria-pressed={navigation === id} aria-label={label} data-side-tab={id}
-                  onClick={() => { if (id === 'search') openSearch(false); else if (id === 'git') showSourceControl(); else showLeft('files') }}>
+                  onClick={() => { if (id === 'search') openSearch(false); else if (id === 'git') showSourceControl(); else showLeft(id) }}>
                   {icon}
                   {id === 'git' && gitChanges > 0 && <span className={css.sideBadge} data-git-badge>{gitChanges > 999 ? '999+' : gitChanges}</span>}
                 </button>
@@ -650,7 +725,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
             </IconAction>}
             <span className={css.paneTitle} title={state.workspace?.path}>
               {navigation === 'history' ? t('ideHistory') : navigation === 'search' ? ts('searchTitle') : navigation === 'git' ? tg('gitTitle')
-                : (state.workspace?.title ?? t('ideExplorer'))}
+                : navigation === 'outline' ? t('ideOutline') : (state.workspace?.title ?? t('ideExplorer'))}
             </span>
             {navigation === 'files' && <div className={css.explorerActions}>
               <IconAction label={t('ideAddFolder')} disabled={state.phase === 'loading' || directoryPending} onClick={() => { openDirectory('attach') }}>
@@ -699,6 +774,9 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
           </div>
           {navigation === 'git' && leftVisible && <div className={css.retained}>
             <GitView model={model} state={state} />
+          </div>}
+          {navigation === 'outline' && leftVisible && <div className={css.retained}>
+            <Outline model={model} state={state} />
           </div>}
           <div className={css.retained} hidden={navigation !== 'history'} ref={history}>
             <History currentSessionId={sessionId} workspaceId={state.workspace?.workspaceId ?? null} onNewChat={newChat}
@@ -753,6 +831,7 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
                     { id: 'format', label: t('ideFormat'), disabled: active.source === 'snippet' },
                     { id: 'compare', label: t(tab?.kind === 'diff' ? 'ideEditFile' : 'ideCompare'), disabled: active.source === 'snippet' && tab?.kind !== 'diff' },
                     { id: 'selection', label: t('ideSendSelection'), disabled: state.selection === undefined },
+                    ...markdownActive ? [{ id: 'exportPdf', label: tv('exportPdf') }, { id: 'exportHtml', label: tv('exportHtml') }] : [],
                   ]} onSelect={action} />
               </div>}
             </div>
@@ -839,6 +918,10 @@ export function WorkbenchLayout({ workbench, viewportWidth: width, viewportHeigh
           </button>}
           {activity !== undefined && <span className={css.statusItem} data-activity>{activity}</span>}
           <span className={css.spacer} />
+          {words !== undefined && <span className={css.statusItem} data-word-count
+            title={tv('wordCountTitle', { words: words.words.toLocaleString(), characters: words.characters.toLocaleString(), minutes: words.minutes })}>
+            {tv('wordCount', { count: words.words.toLocaleString() })}
+          </span>}
           {caret !== undefined && <span className={css.statusItem}>{t('ideStatusPosition', { line: caret.endLine, column: caret.endColumn })}</span>}
           {caret !== undefined && caret.text.length > 0 && <span className={css.statusItem}>{t('ideStatusSelected', { count: caret.text.length })}</span>}
           {active !== undefined && (active.document.content !== null ? <>

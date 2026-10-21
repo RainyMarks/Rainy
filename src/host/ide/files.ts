@@ -21,6 +21,8 @@ import { searchIdeFiles } from './files-search.ts'
 /** File-operation and Git budgets. */
 export const ideFilesConfigSchema = z.object({
   maxTextBytes: z.number().int().positive().default(5 * 1024 * 1024),
+  /** Largest binary file the page may create, such as a pasted image. */
+  maxBinaryBytes: z.number().int().positive().default(25 * 1024 * 1024),
   maxPreviewBytes: z.number().int().positive().default(64 * 1024),
   maxHexPreviewBytes: z.number().int().positive().default(4 * 1024),
   searchResultLimit: z.number().int().positive().default(200),
@@ -68,6 +70,8 @@ const filesRequestSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('files.save'), ...location, content: z.string(), expectedVersion: versionSchema }).strict(),
   z.object({ op: z.literal('files.create'), ...location, content: z.string() }).strict(),
   z.object({ op: z.literal('files.mkdir'), ...location }).strict(),
+  // Base64 of at most the configured binary limit (4 characters per 3 bytes); the decoded size is checked again.
+  z.object({ op: z.literal('files.createBinary'), ...location, base64: z.string().max(48 * 1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/u) }).strict(),
   z.object({ op: z.literal('files.rename'), ...location, destination: pathSchema, expectedVersion: versionSchema }).strict(),
   z.object({ op: z.literal('files.deletePreview'), ...location }).strict(),
   z.object({ op: z.literal('files.delete'), ...location, token: z.string().min(1).max(128).transform(value => brandString<IdeDeleteToken>(value)) }).strict(),
@@ -261,6 +265,7 @@ export class RainyIdeFiles {
         await mkdir(absolute)
         return this.entry(request.path, await this.observe(workspace, request.path))
       })
+      case 'files.createBinary': return this.mutate(workspace.workspaceId, () => this.createBinary(workspace, request.path, request.base64, signal))
       case 'files.rename': return this.mutate(workspace.workspaceId, () => this.renameEntry(workspace, request, signal))
       case 'files.delete': return this.mutate(workspace.workspaceId, () => this.deleteEntry(workspace, request.path, request.token, signal))
       default: return assertNever(request)
@@ -425,6 +430,17 @@ export class RainyIdeFiles {
     if (!ideContains(workspace.root, target)) throw new IdeOperationError('outside-workspace', 'The destination points outside the selected workspace.')
     await this.fs.writeText(target, content, { kind: 'createIfAbsent' }, signal)
     return this.read(workspace, path, signal)
+  }
+
+  private async createBinary(workspace: ResolvedIdeWorkspace, path: string, base64: string, signal?: AbortSignal): Promise<IdeFileEntry> {
+    const bytes = Buffer.from(base64, 'base64')
+    if (bytes.length > this.options.config.maxBinaryBytes) throw new IdeOperationError('too-large', 'The file exceeds the configured size limit.')
+    signal?.throwIfAborted()
+    const absolute = await this.prepareNew(workspace, path)
+    const target = await this.fs.resolve(absolute)
+    if (!ideContains(workspace.root, target)) throw new IdeOperationError('outside-workspace', 'The destination points outside the selected workspace.')
+    await this.fs.writeBytes(target, bytes, signal)
+    return this.entry(path, await this.observe(workspace, path))
   }
 
   private async renameEntry(workspace: ResolvedIdeWorkspace, request: Extract<IdeFilesRequest, { op: 'files.rename' }>, signal?: AbortSignal): Promise<IdeFileEntry> {

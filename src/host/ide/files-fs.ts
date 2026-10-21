@@ -184,7 +184,23 @@ export class LocalIdeFileSystem {
     return result
   }
 
-  private async write(path: string, content: string, intent: IdeWriteIntent, signal?: AbortSignal): Promise<void> {
+  /**
+   * Publish a new file with binary content through the same synced staging file; an existing file is never replaced.
+   * @param path Canonical target path whose parent directory exists.
+   * @param bytes Complete file content.
+   * @param signal Checked before publication.
+   */
+  writeBytes(path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+    const prior = this.locks.get(path) ?? Promise.resolve()
+    const intent: IdeWriteIntent = { kind: 'createIfAbsent' }
+    const result = prior.then(() => this.write(path, bytes, intent, signal), () => this.write(path, bytes, intent, signal))
+    const tail = result.catch(() => undefined)
+    this.locks.set(path, tail)
+    void tail.then(() => { if (this.locks.get(path) === tail) this.locks.delete(path) })
+    return result
+  }
+
+  private async write(path: string, content: string | Uint8Array, intent: IdeWriteIntent, signal?: AbortSignal): Promise<void> {
     aborted(signal)
     let existing: BigIntStats | undefined
     try { existing = await stat(path, { bigint: true }) } catch (error) {
@@ -199,7 +215,8 @@ export class LocalIdeFileSystem {
     const handle = await open(temporary, 'wx', 0o666)
     try {
       try {
-        await handle.writeFile(content, 'utf8')
+        if (typeof content === 'string') await handle.writeFile(content, 'utf8')
+        else await handle.writeFile(content)
         await handle.sync()
       } finally {
         await handle.close()

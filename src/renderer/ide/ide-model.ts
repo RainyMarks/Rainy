@@ -959,6 +959,49 @@ export class IdeModel {
   }
 
   /**
+   * Save bytes as a new file of the current project, such as an image pasted into a document. The folder is created when it
+   * is missing, and a name already taken gets `-1`, `-2`… before its extension.
+   * @param folder Key of the folder; its parent must exist.
+   * @param name File name.
+   * @param bytes Content.
+   * @returns Key of the new file.
+   */
+  async createBinaryFile(folder: string, name: string, bytes: Uint8Array): Promise<string> {
+    const workspace = this.state.getSnapshot().workspace
+    if (workspace === null) throw new IdeRequestError('workspace-not-found', 'No project is open.')
+    const reference = fileReference(folder)
+    if (reference.path !== '') {
+      try { await this.api.request({ op: 'files.mkdir', workspaceId: workspace.workspaceId, path: folder }) } catch (error) {
+        if (!(error instanceof IdeRequestError && error.code === 'already-exists')) throw error
+      }
+    }
+    let binary = ''
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+    const base64 = btoa(binary)
+    const dot = name.lastIndexOf('.')
+    const [stem, extension] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const candidate = attempt === 0 ? name : `${stem}-${attempt}${extension}`
+      const path = fileKey(reference.path === '' ? candidate : `${reference.path}/${candidate}`, reference.rootId)
+      try {
+        await this.api.request({ op: 'files.createBinary', workspaceId: workspace.workspaceId, path, base64 })
+      } catch (error) {
+        if (error instanceof IdeRequestError && error.code === 'already-exists') continue
+        throw error
+      }
+      // The tree shows a new folder in its parent's listing and the file in the folder's.
+      if (this.state.getSnapshot().workspace?.workspaceId === workspace.workspaceId) {
+        const parent = reference.path.includes('/') ? reference.path.slice(0, reference.path.lastIndexOf('/')) : ''
+        for (const listing of reference.path === '' ? [folder] : [fileKey(parent, reference.rootId), folder]) {
+          if (this.state.getSnapshot().directories[listing] !== undefined) void this.loadDirectory(listing).catch(() => undefined)
+        }
+      }
+      return path
+    }
+    throw new IdeRequestError('already-exists', 'Every candidate file name is taken.')
+  }
+
+  /**
    * Rename an observed tree item, retaining any open local text under its new path.
    * @param entry Observed item.
    * @param destination New relative path.

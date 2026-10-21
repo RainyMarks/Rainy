@@ -21,7 +21,7 @@ vi.mock('../../src/renderer/settings/fonts.ts', async (original) => {
 
 const zh = settingsMessages.zh
 const en = settingsMessages.en
-const defaults: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true }
+const defaults: UiPreferences = { locale: 'zh', theme: 'system', uiFontSize: 14, codeFontSize: 13, busyEnter: 'queue', stepDetail: 'standard', showUsage: true, colorScheme: 'graphite', accent: 'auto', uiFont: '', codeFont: '', inlineCompletion: false, completionModel: '', autoKeepChanges: true, rainEffects: true, webSearch: true, markdownFocus: false, markdownTypewriter: false, markdownImages: 'assets' }
 let stored: UiPreferences
 
 beforeEach(async () => {
@@ -232,6 +232,9 @@ it('shows the version, links to feedback and lists the keyboard shortcuts from t
     `${zh.shortcutSearchChats}: Ctrl+Alt+K`, `${zh.shortcutOpenFolder}: Ctrl+Alt+O`, `${zh.shortcutTerminal}: Ctrl+\``,
     `${zh.shortcutSend}: Enter`, `${zh.shortcutNewline}: Shift+Enter`, `${zh.shortcutAlternate}: Ctrl+Enter`,
     `${zh.shortcutStop}: Esc+Esc`, `${zh.shortcutReload}: F5`,
+    `${zh.shortcutMdFind}: Ctrl+F`, `${zh.shortcutMdSource}: Ctrl+/`, `${zh.shortcutMdHeading}: Ctrl+0–6`, `${zh.shortcutMdTable}: Ctrl+T`,
+    `${zh.shortcutMdCode}: Ctrl+Shift+K`, `${zh.shortcutMdMath}: Ctrl+Shift+M`, `${zh.shortcutMdQuote}: Ctrl+Shift+Q`,
+    `${zh.shortcutMdLink}: Ctrl+Click`, `${zh.shortcutMdFocus}: F8`, `${zh.shortcutMdTypewriter}: F9`,
   ])
 })
 

@@ -5,7 +5,7 @@ Rainy is a lightweight Windows desktop AI coding workbench: an Electron shell, a
 ## Layout
 
 ```
-src/main/       Electron main: window, updates, optional modules, Strata, WSL setup, SSH targets (ssh.ts, ssh-askpass.ts, ssh-prompt.ts)
+src/main/       Electron main: window, updates, optional modules, Strata, WSL setup, SSH targets (ssh.ts, ssh-askpass.ts, ssh-prompt.ts), Explorer integration (shell-integration.ts, launch-paths.ts)
 src/preload/    the __RAINY_* bridges the page may call
 src/host/       the Host: HTTP/WebSocket server, RPC, settings, projects, activity
   agent/        models (pi-ai), sessions (pi-agent-core), tools, prompt, compaction, memory, skills, MCP

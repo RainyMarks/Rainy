@@ -12,6 +12,10 @@ import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer
 import { useViewerT } from './messages.ts'
 import { PdfViewer } from './PdfViewer.tsx'
 import { RichMarkdown } from './RichMarkdown.tsx'
+import { saveMarkdownImage } from './markdown-assets.ts'
+import { emit } from '../../app/bus.ts'
+import { localTarget, resolveDocumentPath } from '../../chat/Markdown.tsx'
+import { getPrefs } from '../../prefs.ts'
 import type { ScrollSync } from './scroll-sync.ts'
 import type { ViewerChoice } from './viewer-choice.ts'
 import css from './Viewers.module.css'
@@ -124,11 +128,21 @@ export function FileViewer({ workspace, path, buffer, choice, model, sync, onScr
           void model.decodeAs(path, encoding).then(() => { model.setView(path, undefined) }, (error: unknown) => { model.fail(error) })
         }} />
       break
-    case 'markdown-rich':
-      content = <RichMarkdown key={path} text={buffer.text} version={buffer.document.version}
-        base={{ workspaceId: workspace.workspaceId, rootId: reference.rootId, directory: reference.path.split('/').slice(0, -1).join('/') }}
-        onChange={(text) => { model.change(path, text) }} onSave={() => { void model.save(path) }} />
+    case 'markdown-rich': {
+      const directory = reference.path.split('/').slice(0, -1).join('/')
+      content = <RichMarkdown key={path} path={path} text={buffer.text} version={buffer.document.version}
+        base={{ workspaceId: workspace.workspaceId, rootId: reference.rootId, directory }}
+        onChange={(text) => { model.change(path, text) }} onSave={() => { void model.save(path) }}
+        onImage={file => saveMarkdownImage((folder, name, bytes) => model.createBinaryFile(folder, name, bytes), path, file, getPrefs().markdownImages)}
+        onOpenLink={(href) => {
+          if (/^(?:https?|mailto):/iu.test(href)) { window.open(href, '_blank', 'noopener'); return }
+          const target = localTarget(href)
+          const resolved = target === undefined ? undefined : resolveDocumentPath(directory, target.path)
+          if (target === undefined || resolved === undefined) return
+          emit('editor.open', { path: resolved, workspaceId: workspace.workspaceId, rootId: reference.rootId, line: target.line })
+        }} />
       break
+    }
     case 'markdown':
       content = <MarkdownPreview key={path} text={buffer.text} version={buffer.document.version}
         base={{ workspaceId: workspace.workspaceId, rootId: reference.rootId, directory: reference.path.split('/').slice(0, -1).join('/') }}

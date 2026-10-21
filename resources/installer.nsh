@@ -37,6 +37,24 @@
 !macroend
 
 
+; A real uninstall (not the one an update runs) removes "Open with Rainy" and the file types Rainy offered itself for; the
+; application removes what it wrote, and the menu keys are deleted here as well in case it cannot run.
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    ${If} ${FileExists} "$INSTDIR\RainyAgent.exe"
+      ExecWait '"$INSTDIR\RainyAgent.exe" --rainy-unregister-shell' $0
+    ${EndIf}
+    DeleteRegKey HKCU "Software\Classes\*\shell\Rainy"
+    DeleteRegKey HKCU "Software\Classes\Directory\shell\Rainy"
+    DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\Rainy"
+    DeleteRegKey HKCU "Software\Classes\Applications\RainyAgent.exe"
+    DeleteRegValue HKCU "Software\RegisteredApplications" "Rainy"
+    DeleteRegKey HKCU "Software\RainyMarks\Rainy"
+    DeleteRegKey /ifempty HKCU "Software\RainyMarks"
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  ${endIf}
+!macroend
+
 ; Explicit application files are removed; runtimes, files of earlier versions and recovery records stay in place.
 !macro rainyRejectReparse directory
   System::Call 'kernel32::GetFileAttributesW(w "${directory}") i .r0'
