@@ -1,0 +1,24 @@
+[package]
+name = "rainy"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "Rainy"
+path = "src/main.rs"
+
+[dependencies]
+rainy-protocol.workspace = true
+rainy-carrier.workspace = true
+anyhow.workspace = true
+gpui-kit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+async-channel = "2"
+similar = "2.7"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+alacritty_terminal = "0.26"

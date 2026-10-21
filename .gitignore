@@ -26,3 +26,6 @@ tmp/
 
 # Release signing keys are builder-owned and never published.
 **/release-signing-key.pem
+
+# Rust build output of the GPUI interface
+/native/target/

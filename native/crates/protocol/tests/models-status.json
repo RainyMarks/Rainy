@@ -1,0 +1,71 @@
+{
+  "credentials": [
+    "qa"
+  ],
+  "globalPrompt": {
+    "maxChars": 4000,
+    "text": ""
+  },
+  "keysEncrypted": true,
+  "models": [
+    {
+      "api": "openai-completions",
+      "baseURL": "http://127.0.0.1:47291/v1",
+      "contextWindow": 65536,
+      "local": true,
+      "model": "qa-model",
+      "provider": "qa"
+    }
+  ],
+  "presets": [
+    {
+      "model": {
+        "api": "openai-responses",
+        "baseURL": "https://api.deepseek.com",
+        "contextWindow": 1000000,
+        "local": false,
+        "maxTokens": 393216,
+        "model": "deepseek-flash",
+        "provider": "rainy-deepseek",
+        "thinking": "max",
+        "thinkingFormat": "deepseek"
+      },
+      "name": "DeepSeek V4.1 Flash"
+    },
+    {
+      "model": {
+        "api": "anthropic-messages",
+        "baseURL": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "local": false,
+        "maxTokens": 64000,
+        "model": "claude-opus-5-5",
+        "provider": "rainy-claude",
+        "thinking": "high"
+      },
+      "name": "Claude Opus 5.5"
+    },
+    {
+      "model": {
+        "api": "anthropic-messages",
+        "baseURL": "https://api.anthropic.com",
+        "contextWindow": 100000,
+        "local": false,
+        "maxTokens": 16000,
+        "model": "claude-haiku-5-5",
+        "provider": "rainy-claude-haiku",
+        "thinking": "high"
+      },
+      "name": "Claude Haiku 5.5"
+    }
+  ],
+  "selected": {
+    "model": "qa-model",
+    "provider": "qa"
+  },
+  "thinkingLevels": {
+    "qa": [
+      "off"
+    ]
+  }
+}

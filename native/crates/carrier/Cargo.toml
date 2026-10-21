@@ -1,0 +1,32 @@
+[package]
+name = "rainy-carrier"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rainy-protocol.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol.workspace = true
+futures.workspace = true
+log.workspace = true
+async-channel = "2"
+async-tungstenite = { version = "0.35", default-features = false, features = ["handshake", "futures-03-sink"] }
+base64 = "0.22"
+aes-gcm = "0.10"
+getrandom = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Networking_WinHttp",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"
