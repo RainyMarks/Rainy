@@ -7,7 +7,7 @@
 ### The AI workbench that gets things done, for office work, research and code
 
 An agent that edits your files, runs commands and checks its own work,<br>
-with an editor, Office previews and SSH remote development, in one 177 MB Windows app.
+with an editor, Office previews and SSH remote development, in one 180 MB Windows app.
 
 <br>
 
@@ -133,7 +133,7 @@ See what a project is made of, how its parts import each other and which stack i
 | **Three execution environments** | Native Windows by default; switch to WSL2 or an SSH server when a project needs Linux. |
 | **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
 | **Context management** | Shows how full the context is and compacts it automatically before it runs out; Claude's prompt cache lasts an hour. |
-| **Light** | A 177 MB installer; the Strata engine, PHP and the Linux runtime download only when needed. |
+| **Light** | A 180 MB installer; the Strata engine, PHP and the Linux runtime download only when needed. |
 | **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
 | **Details** | A light rain falls behind empty views and ripples where you click; turn it off in **Settings → Appearance**. |
 
