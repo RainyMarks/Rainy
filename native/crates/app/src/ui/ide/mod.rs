@@ -20,7 +20,7 @@ use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::tr;
 
-actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection]);
+actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -38,6 +38,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-p", QuickOpen, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-alt-n", NewChat, None),
+        KeyBinding::new("ctrl-shift-p", CommandPalette, None),
+        KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-k", AiEditSelection, Some("Input && mode == editor")),
         KeyBinding::new("f12", gpui_kit::component::input::GoToDefinition, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("Input && mode == editor")),

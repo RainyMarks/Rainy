@@ -7,6 +7,7 @@ pub mod composer;
 pub mod chat;
 pub mod history;
 pub mod markdown;
+pub mod palette;
 pub mod prompt;
 pub mod ide;
 pub mod save_dialog;

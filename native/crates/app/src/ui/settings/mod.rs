@@ -284,6 +284,6 @@ pub(super) fn segmented(
 }
 
 /// Store changed preferences (`prefs.set`); the Host answers every window with `prefs.changed`.
-pub(super) fn set_prefs(patch: Value, window: &mut Window, cx: &mut App) {
+pub(crate) fn set_prefs(patch: Value, window: &mut Window, cx: &mut App) {
     run("prefs.set", patch, window.window_handle(), cx);
 }

@@ -122,7 +122,7 @@ $h = [Drive]::Largest([uint32]$ProcessId)
 if ($h -eq [IntPtr]::Zero) { Write-Output "no window"; exit 1 }
 # Restored without taking the focus from whatever the user is doing.
 if ([Drive]::IsIconic($h)) { [Drive]::ShowWindow($h, 4) | Out-Null; Start-Sleep -Milliseconds 800 }
-$vks = @{ enter = 0x0D; escape = 0x1B; tab = 0x09; down = 0x28; up = 0x26; backspace = 0x08 }
+$vks = @{ enter = 0x0D; escape = 0x1B; tab = 0x09; down = 0x28; up = 0x26; backspace = 0x08; f1 = 0x70; f2 = 0x71; f12 = 0x7B; space = 0x20 }
 $mods = @{ ctrl = 0x11; shift = 0x10; alt = 0x12 }
 foreach ($step in ($Steps -split ';;')) {
   $kind, $arg = $step -split ':', 2

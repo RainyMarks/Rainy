@@ -31,7 +31,8 @@ use crate::ui::ide::search::SearchView;
 use crate::ui::ide::cursor_status::CursorStatus;
 use crate::ui::ide::terminal_panel::TerminalPanel;
 use crate::ui::ide::{
-    CloseFile, FindInFiles, NewChat, OpenFolder, OpenSettings, QuickOpen, ReplaceInFiles, SaveFile, ShowExplorer, ShowSourceControl, ToggleTerminal,
+    CloseFile, CommandPalette, FindInFiles, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen, ReplaceInFiles, SaveFile, ShowExplorer,
+    ShowSourceControl, ToggleTerminal,
     choose_folder, quick_open,
 };
 use crate::ui::settings::{CloseSettings, Section, SettingsView};
@@ -66,6 +67,8 @@ pub struct Workbench {
     ide_started: bool,
     /// Chats known to wait for an approval, so each new wait flashes the taskbar once.
     awaiting: std::collections::HashSet<String>,
+    /// The window's own focus, so shortcuts work while nothing inside it has the focus (after a dialog closed, say).
+    focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -151,6 +154,11 @@ impl Workbench {
             agent_visible: true,
             ide_started: false,
             awaiting: std::collections::HashSet::new(),
+            focus: {
+                let focus = cx.focus_handle();
+                cx.set_global(WorkbenchFocus(focus.clone()));
+                focus
+            },
             _subscriptions: subscriptions,
         }
     }
@@ -490,18 +498,31 @@ impl Workbench {
     }
 }
 
+/// The workbench's own focus, for commands that run after a dialog closed.
+pub struct WorkbenchFocus(pub FocusHandle);
+impl Global for WorkbenchFocus {}
+
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::web::begin_frame(cx);
         let body = self.render_phase(cx).unwrap_or_else(|| self.render_body(window, cx));
         let title_bar = self.render_title_bar(cx);
         let status_bar = self.render_status_bar(cx);
+        if window.focused(cx).is_none() {
+            let focus = self.focus.clone();
+            window.defer(cx, move |window, cx| {
+                if window.focused(cx).is_none() {
+                    focus.focus(window, cx);
+                }
+            });
+        }
         let theme = cx.theme();
         let settings = self.settings.clone();
         v_flex()
             .relative()
             .size_full()
             .key_context("Workbench")
+            .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &SaveFile, window, cx| {
                 this.ide.update(cx, |ide, cx| ide.save(None, false, window, cx));
             }))
@@ -519,6 +540,8 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ShowExplorer, window, cx| this.show_side(Side::Files, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSourceControl, window, cx| this.show_side(Side::Git, window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(Section::General, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenRuntimeSettings, window, cx| this.open_settings(Section::Runtime, window, cx)))
+            .on_action(cx.listener(|_, _: &CommandPalette, window, cx| crate::ui::palette::open(window, cx)))
             .on_action(cx.listener(|this, _: &NewChat, window, cx| {
                 this.agent_visible = true;
                 this.store.update(cx, |store, cx| store.select(None, cx));
