@@ -20,7 +20,7 @@ use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::tr;
 
-actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap]);
+actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([

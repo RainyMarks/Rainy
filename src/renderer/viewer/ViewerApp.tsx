@@ -3,8 +3,8 @@
  * shortcuts and Markdown (rich editing and preview). The workbench keeps the file's text: it sends the text here and
  * receives edits, saves and opened links through `window.ipc`.
  */
-import { useEffect, useState } from 'react'
-import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import type { IdeRootId, IdeWorkspace, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { callIde, IdeRequestError } from '../ide/ide-api.ts'
 import { ImageViewer } from '../ide/viewers/ImageViewer.tsx'
@@ -16,7 +16,11 @@ import { RichMarkdown } from '../ide/viewers/RichMarkdown.tsx'
 import { saveMarkdownImage } from '../ide/viewers/markdown-assets.ts'
 import { localTarget, resolveDocumentPath } from '../chat/Markdown.tsx'
 import { getPrefs } from '../prefs.ts'
+import { useAiActivity } from '../map/activity.ts'
+import { useChanges } from '../review/changes-store.ts'
 import { ToastHost } from '../ui/index.ts'
+
+const ProjectMapView = lazy(async () => ({ default: (await import('../map/ProjectMap.tsx')).ProjectMapView }))
 
 /** What the page tells the workbench. */
 type Message =
@@ -26,13 +30,20 @@ type Message =
   | { type: 'open-url'; url: string }
   | { type: 'open-file'; path: string; rootId?: string | undefined; line?: number | undefined }
   | { type: 'request'; id: number; name: string; params: unknown }
+  | { type: 'open-key'; key: string }
+  | { type: 'ask'; text: string }
 
 declare global {
   interface Window {
     /** wry's message channel to the native workbench. */
     ipc?: { postMessage(message: string): void }
     /** What the workbench calls in the page. */
-    __rainyViewer?: { setText(text: string, version: string | null): void; resolve(id: number, result: unknown): void }
+    __rainyViewer?: {
+      setText(text: string, version: string | null): void
+      resolve(id: number, result: unknown): void
+      /** The chat shown beside the project map, whose changes the map marks. */
+      setSession(sessionId: string | null): void
+    }
   }
 }
 
@@ -54,7 +65,13 @@ function request(name: string, params: unknown): Promise<unknown> {
 
 let receiveText: ((text: string, version: string | null) => void) | undefined
 let latestText: { text: string; version: string | null } | undefined
+let receiveSession: ((sessionId: string | null) => void) | undefined
+let latestSession: string | null = null
 window.__rainyViewer = {
+  setSession(sessionId) {
+    latestSession = sessionId
+    receiveSession?.(sessionId)
+  },
   setText(text, version) {
     latestText = { text, version }
     receiveText?.(text, version)
@@ -131,6 +148,26 @@ function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; work
     }} />
 }
 
+/** The project map of a workspace, as the 3.x workbench shows it in its center. */
+function MapView({ workspaceId }: { workspaceId: WorkspaceId }): JSX.Element {
+  const [workspace, setWorkspace] = useState<IdeWorkspace | null>(null)
+  const [sessionId, setSessionId] = useState(latestSession)
+  useEffect(() => {
+    let cancelled = false
+    void callIde({ op: 'workspaces.list' }).then((list) => {
+      if (!cancelled) setWorkspace((list as readonly IdeWorkspace[]).find(item => item.workspaceId === workspaceId) ?? null)
+    }, () => undefined)
+    receiveSession = setSessionId
+    return () => { cancelled = true; receiveSession = undefined }
+  }, [workspaceId])
+  const changes = useChanges(sessionId)
+  const activity = useAiActivity()
+  return <Suspense fallback={null}>
+    <ProjectMapView workspace={workspace} visible changes={changes} activity={activity}
+      openFile={(key) => { post({ type: 'open-key', key }) }} ask={(text) => { post({ type: 'ask', text }) }} />
+  </Suspense>
+}
+
 /** @returns The viewer the address names. */
 export function ViewerApp(): JSX.Element {
   const params = new URLSearchParams(window.location.search)
@@ -160,6 +197,7 @@ export function ViewerApp(): JSX.Element {
     case 'markdown': case 'markdown-rich':
       content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} />
       break
+    case 'map': content = <MapView workspaceId={workspaceId} />; break
     default: content = null
   }
   return <div data-rainy-viewer={view} style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-editor, var(--background))' }}>

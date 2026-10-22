@@ -31,7 +31,7 @@ use crate::ui::ide::search::SearchView;
 use crate::ui::ide::cursor_status::CursorStatus;
 use crate::ui::ide::terminal_panel::TerminalPanel;
 use crate::ui::ide::{
-    CloseFile, CommandPalette, FindInFiles, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen, ReplaceInFiles, SaveFile, ShowExplorer,
+    CloseFile, CommandPalette, FindInFiles, ShowChat, ShowMap, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen, ReplaceInFiles, SaveFile, ShowExplorer,
     ShowSourceControl, ToggleTerminal,
     choose_folder, quick_open,
 };
@@ -542,6 +542,11 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(Section::General, window, cx)))
             .on_action(cx.listener(|this, _: &OpenRuntimeSettings, window, cx| this.open_settings(Section::Runtime, window, cx)))
             .on_action(cx.listener(|_, _: &CommandPalette, window, cx| crate::ui::palette::open(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowMap, window, cx| this.editor.update(cx, |editor, cx| editor.toggle_map(window, cx))))
+            .on_action(cx.listener(|this, _: &ShowChat, _, cx| {
+                this.agent_visible = true;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &NewChat, window, cx| {
                 this.agent_visible = true;
                 this.store.update(cx, |store, cx| store.select(None, cx));

@@ -28,6 +28,8 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.hostStopped", "执行后端已停止", "The execution backend stopped."),
     ("native.switchTarget", "切换执行环境", "Switch execution environment"),
     ("native.aiEditReview", "新代码已放进编辑器（绿色底色）。可以接受、拒绝，或改写要求后按 Enter 重新生成。", "The new code is in the editor, tinted green. Accept it, reject it, or change the request and press Enter to generate again."),
+    ("native.closeMap", "关闭项目地图", "Close the project map"),
+    ("native.projectMap", "项目地图", "Project map"),
     ("native.languageStarting", "{language} 语言服务启动中", "{language} language service starting"),
     ("native.languageFailed", "{language} 语言服务不可用", "{language} language service unavailable"),
     ("native.switchConfirm", "切换到 {target} 后 Rainy 会重新启动。已有对话保留在原来的执行环境。", "Rainy restarts in {target}. Existing chats stay in their execution environment."),

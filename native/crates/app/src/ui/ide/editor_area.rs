@@ -23,7 +23,7 @@ use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
-use crate::ui::ide::{AiEditSelection, choose_folder, file_icon};
+use crate::ui::ide::{AiEditSelection, ShowChat, choose_folder, file_icon};
 use crate::ui::tr;
 use crate::web::{PaneEvent, WebPane};
 
@@ -55,6 +55,9 @@ pub struct EditorArea {
     scrolled_to: Option<String>,
     /// Ctrl+K on a file's editor.
     ai_edit: Option<Entity<AiEdit>>,
+    /// The project map, shown in place of the open files, for the project it was opened for.
+    map: Option<(String, Entity<WebPane>)>,
+    map_shown: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -87,8 +90,17 @@ fn encode(value: &str) -> String {
 
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![cx.observe(&ide, |_, _, cx| cx.notify())];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, ai_edit: None, _subscriptions: subscriptions }
+        let subscriptions = vec![
+            cx.observe(&ide, |_, _, cx| cx.notify()),
+            // Choosing a tab or opening a file brings the files back in place of the map.
+            cx.subscribe(&ide, |this, _, event: &crate::store::ide::IdeEvent, cx| {
+                if *event == crate::store::ide::IdeEvent::ActiveChanged && this.map_shown {
+                    this.map_shown = false;
+                    cx.notify();
+                }
+            }),
+        ];
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, ai_edit: None, map: None, map_shown: false, _subscriptions: subscriptions }
     }
 
     /// The page of a file view, created on first use and again when the view or the file's version changes.
@@ -174,7 +186,7 @@ impl EditorArea {
                     });
                 }
                 Some(PageRequest::Call { id, name, params }) => self.answer(key, id, &name, &params, cx),
-                None => {}
+                Some(PageRequest::OpenKey(_) | PageRequest::Ask(_)) | None => {}
             },
             PaneEvent::Shortcut(shortcut) => {
                 if let Some(action) = viewers::shortcut_action(*shortcut) {
@@ -605,6 +617,111 @@ pub fn close_tab(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut Ap
 }
 
 impl EditorArea {
+    /// Show or hide the project map; it is created for the project shown now.
+    pub fn toggle_map(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.ide.read(cx).workspace.clone() else { return };
+        self.map_shown = !self.map_shown || self.map.as_ref().is_none_or(|(id, _)| *id != workspace.workspace_id);
+        if self.map_shown && self.map.as_ref().is_none_or(|(id, _)| *id != workspace.workspace_id) {
+            let Some(launch) = Store::global(cx).read(cx).launch_url() else { return };
+            let pane = viewers::create_pane(viewers::map_url(&launch, &workspace.workspace_id), window, cx);
+            cx.subscribe_in(&pane, window, |this, _, event: &PaneEvent, window, cx| this.on_map(event, window, cx)).detach();
+            self.map = Some((workspace.workspace_id.clone(), pane));
+        }
+        cx.notify();
+    }
+
+    /// What the map page asked for.
+    fn on_map(&mut self, event: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            PaneEvent::Message(text) => match viewers::parse_message(text) {
+                Some(PageRequest::Ready) => self.send_session(cx),
+                Some(PageRequest::OpenKey(key)) => {
+                    self.map_shown = false;
+                    self.ide.update(cx, |ide, cx| ide.open(key, true, window, cx));
+                    cx.notify();
+                }
+                Some(PageRequest::Ask(text)) => {
+                    window.dispatch_action(Box::new(ShowChat), cx);
+                    let store = Store::global(cx);
+                    let workspace = self.ide.read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
+                    let session = store.read(cx).selected.clone();
+                    let handle = window.window_handle();
+                    cx.spawn(async move |_, cx: &mut AsyncApp| {
+                        let session = match session {
+                            Some(id) => Some(id),
+                            None => store.update(cx, |store, cx| store.create_chat(workspace, cx)).await,
+                        };
+                        let Some(session) = session else { return };
+                        let call = store.read_with(cx, |store, _| store.call("chat.send", json!({ "sessionId": session, "text": text, "mode": "queue" })));
+                        if let Err(error) = call.await {
+                            let _ = handle.update(cx, |_, window, cx| {
+                                window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx)
+                            });
+                        }
+                    })
+                    .detach();
+                }
+                Some(PageRequest::OpenUrl(url)) => crate::ui::open_link(&url, window, cx),
+                _ => {}
+            },
+            PaneEvent::Shortcut(shortcut) => {
+                if let Some(action) = viewers::shortcut_action(*shortcut) {
+                    crate::web::reclaim_focus(window);
+                    window.dispatch_action(action, cx);
+                }
+            }
+            PaneEvent::NewWindow(url) => crate::ui::open_link(url, window, cx),
+            PaneEvent::Ready | PaneEvent::Failed(_) => cx.notify(),
+        }
+    }
+
+    /// Tell the map which chat's changes to mark.
+    fn send_session(&self, cx: &App) {
+        let Some((_, pane)) = &self.map else { return };
+        let session = Store::global(cx).read(cx).selected.clone();
+        if let Some(view) = pane.read(cx).view() {
+            view.execute(&viewers::set_session_script(session.as_deref()), |_| {});
+        }
+    }
+
+    fn render_map(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (workspace, pane) = self.map.as_ref()?;
+        if !self.map_shown || self.ide.read(cx).workspace.as_ref().map(|shown| &shown.workspace_id) != Some(workspace) {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        Some(
+            v_flex()
+                .size_full()
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .h(px(34.))
+                        .px_3()
+                        .gap_2()
+                        .items_center()
+                        .text_sm()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(Icon::new(gpui_kit::assets::IconName::Map).small())
+                        .child(div().flex_1().font_semibold().child(tr(cx, "native.projectMap")))
+                        .child(
+                            Button::new("map-close")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .tooltip(tr(cx, "native.closeMap"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.map_shown = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(div().flex_1().min_h_0().relative().child(div().absolute().inset_0().child(WebPane::area(pane))))
+                .into_any_element(),
+        )
+    }
+
     /// Open Ctrl+K on the active file's editor.
     fn open_ai_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ide = self.ide.read(cx);
@@ -645,8 +762,11 @@ impl Render for EditorArea {
             }
             self.scrolled_to = active;
         }
+        let map = self.render_map(cx);
         let ide = self.ide.read(cx);
-        let body = if ide.workspace.is_none() {
+        let body = if let Some(map) = map {
+            map
+        } else if ide.workspace.is_none() {
             self.render_welcome(cx)
         } else if ide.tabs.is_empty() {
             let loading = ide.loading;

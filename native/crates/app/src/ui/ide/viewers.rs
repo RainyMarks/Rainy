@@ -114,6 +114,10 @@ pub enum PageRequest {
     OpenUrl(String),
     OpenFile { path: String, root: Option<String>, line: Option<u64> },
     Call { id: u64, name: String, params: Value },
+    /// The project map opens a file by its editor key.
+    OpenKey(String),
+    /// The project map asks the chat something.
+    Ask(String),
 }
 
 pub fn parse_message(text: &str) -> Option<PageRequest> {
@@ -129,6 +133,8 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
             line: value["line"].as_u64(),
         },
         "request" => PageRequest::Call { id: value["id"].as_u64()?, name: value["name"].as_str()?.to_owned(), params: value["params"].clone() },
+        "open-key" => PageRequest::OpenKey(value["key"].as_str()?.to_owned()),
+        "ask" => PageRequest::Ask(value["text"].as_str()?.to_owned()),
         _ => return None,
     })
 }
@@ -136,6 +142,16 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
 /// The script that hands the page the file's current text.
 pub fn set_text_script(text: &str, version: &str) -> String {
     format!("window.__rainyViewer && window.__rainyViewer.setText({}, {})", json!(text), json!(version))
+}
+
+/// The address of the project map page.
+pub fn map_url(launch: &str, workspace_id: &str) -> String {
+    format!("{launch}&next={}", encode(&format!("/?view=map&workspace={}", encode(workspace_id))))
+}
+
+/// The script that tells the map page which chat's changes to mark.
+pub fn set_session_script(session: Option<&str>) -> String {
+    format!("window.__rainyViewer && window.__rainyViewer.setSession({})", json!(session))
 }
 
 /// The script that answers one of the page's requests.
