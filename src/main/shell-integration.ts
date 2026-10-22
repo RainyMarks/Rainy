@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import type { Locale } from '../shared/locale.ts'
 import { windowsPowerShellPath } from './powershell.ts'
 
-/** What the user turned on in Settings; both are on until the user turns them off. */
+/** What the user turned on in Settings; both stay off, and nothing is written, until the user turns them on. */
 export interface ShellIntegration {
   /** "Open with Rainy" on files, folders and the background of a folder in Explorer. */
   readonly contextMenu: boolean
@@ -19,10 +19,11 @@ export interface ShellIntegration {
 /** One change under HKEY_CURRENT_USER; `name` '' is the key's default value. */
 export type RegistryOperation =
   | { readonly op: 'set'; readonly key: string; readonly name: string; readonly value: string }
-  | { readonly op: 'deleteKey'; readonly key: string }
-  | { readonly op: 'deleteValue'; readonly key: string; readonly name: string }
-  /** Delete the key when nothing is left in it, so the vendor key goes once Rainy's own key is removed. */
-  | { readonly op: 'deleteEmptyKey'; readonly key: string }
+  /** Delete the key when it exists; then each parent, in order, while removing it left the parent empty. */
+  | { readonly op: 'removeKey'; readonly key: string; readonly parents: readonly string[] }
+  /** Delete Rainy's value when it is there; then the key and its parents, in order, while that left them empty. A key
+   *  the user already had, empty or not, is never deleted for lacking Rainy's value. */
+  | { readonly op: 'removeValue'; readonly key: string; readonly name: string; readonly parents: readonly string[]; readonly keepKey?: true }
 
 /** A file type Rainy registers, with its name in both interface languages. */
 interface FileType { readonly extensions: readonly string[]; readonly zh: string; readonly en: string }
@@ -89,9 +90,12 @@ const CLASSES = 'Software\\Classes'
 /** The verb's key name under each shell key. */
 const VERB = 'Rainy'
 const CONTEXT_KEYS = [`${CLASSES}\\*\\shell\\${VERB}`, `${CLASSES}\\Directory\\shell\\${VERB}`, `${CLASSES}\\Directory\\Background\\shell\\${VERB}`]
-/** Keys above the verbs that writing them may have created, children first; each is removed only once nothing else uses it. */
-const CONTEXT_PARENTS = [`${CLASSES}\\*\\shell`, `${CLASSES}\\*`, `${CLASSES}\\Directory\\Background\\shell`, `${CLASSES}\\Directory\\Background`,
-  `${CLASSES}\\Directory\\shell`, `${CLASSES}\\Directory`]
+/** Keys above each verb that writing it may have created, children first; each goes only once nothing else uses it. */
+const CONTEXT_PARENTS: readonly (readonly string[])[] = [
+  [`${CLASSES}\\*\\shell`, `${CLASSES}\\*`],
+  [`${CLASSES}\\Directory\\shell`, `${CLASSES}\\Directory`],
+  [`${CLASSES}\\Directory\\Background\\shell`, `${CLASSES}\\Directory\\Background`, `${CLASSES}\\Directory`],
+]
 const VENDOR = 'Software\\RainyMarks'
 const CAPABILITIES = `${VENDOR}\\Rainy\\Capabilities`
 /** The name Rainy is listed under in Default apps; `ms-settings:defaultapps?registeredAppUser=` takes the same name. */
@@ -117,10 +121,20 @@ export function contextMenuLabel(locale: Locale): string {
  * @param locale Language of the menu label and the file type names.
  * @param wanted What the user turned on.
  * @param root Key every path is placed under; tests pass a scratch key.
+ * @param keep Keys the user had before Rainy wrote to them ({@link removableKeys}); they stay even when left empty.
  * @returns The operations, in order.
  */
-export function integrationOperations(executable: string, locale: Locale, wanted: ShellIntegration, root = ''): RegistryOperation[] {
+export function integrationOperations(executable: string, locale: Locale, wanted: ShellIntegration, root = '',
+  keep: ReadonlySet<string> = new Set()): RegistryOperation[] {
   const key = (path: string): string => root === '' ? path : `${root}\\${path}`
+  const kept = (path: string): boolean => keep.has(path.toLowerCase())
+  // The walk up stops below the first key the user had: nothing above it can be left empty by Rainy.
+  const above = (parents: readonly string[]): string[] => {
+    const at = parents.findIndex(kept)
+    return (at < 0 ? parents : parents.slice(0, at)).map(key)
+  }
+  const removeValue = (path: string, name: string, parents: readonly string[]): RegistryOperation =>
+    kept(path) ? { op: 'removeValue', key: key(path), name, parents: [], keepKey: true } : { op: 'removeValue', key: key(path), name, parents: above(parents) }
   const operations: RegistryOperation[] = []
   const icon = `"${executable}",0`
   if (wanted.contextMenu) {
@@ -130,8 +144,7 @@ export function integrationOperations(executable: string, locale: Locale, wanted
         { op: 'set', key: key(`${verb}\\command`), name: '', value: launchCommand(executable, index === 0 ? '%1' : '%V') })
     }
   } else {
-    operations.push(...CONTEXT_KEYS.map(verb => ({ op: 'deleteKey', key: key(verb) }) as const),
-      ...CONTEXT_PARENTS.map(parent => ({ op: 'deleteEmptyKey', key: key(parent) }) as const))
+    operations.push(...CONTEXT_KEYS.map((verb, index) => ({ op: 'removeKey', key: key(verb), parents: above(CONTEXT_PARENTS[index]!) }) as const))
   }
   const application = `${CLASSES}\\Applications\\RainyAgent.exe`
   if (wanted.fileTypes) {
@@ -154,18 +167,43 @@ export function integrationOperations(executable: string, locale: Locale, wanted
       }
     }
   } else {
-    operations.push({ op: 'deleteKey', key: key(application) }, { op: 'deleteEmptyKey', key: key(`${CLASSES}\\Applications`) },
-      { op: 'deleteValue', key: key('Software\\RegisteredApplications'), name: REGISTERED_APPLICATION },
-      { op: 'deleteEmptyKey', key: key('Software\\RegisteredApplications') },
-      { op: 'deleteKey', key: key(`${VENDOR}\\Rainy`) }, { op: 'deleteEmptyKey', key: key(VENDOR) })
+    operations.push({ op: 'removeKey', key: key(application), parents: above([`${CLASSES}\\Applications`]) },
+      removeValue('Software\\RegisteredApplications', REGISTERED_APPLICATION, []),
+      { op: 'removeKey', key: key(`${VENDOR}\\Rainy`), parents: above([VENDOR]) })
     for (const extension of SHELL_EXTENSIONS) {
       const type = `${CLASSES}\\.${extension}`
-      operations.push({ op: 'deleteKey', key: key(`${CLASSES}\\${progId(extension)}`) },
-        { op: 'deleteValue', key: key(`${type}\\OpenWithProgids`), name: progId(extension) },
-        { op: 'deleteEmptyKey', key: key(`${type}\\OpenWithProgids`) }, { op: 'deleteEmptyKey', key: key(type) })
+      operations.push({ op: 'removeKey', key: key(`${CLASSES}\\${progId(extension)}`), parents: [] },
+        removeValue(`${type}\\OpenWithProgids`, progId(extension), [type]))
     }
   }
   return operations
+}
+
+/**
+ * Keys above Rainy's own that turning a part off may delete once they are empty: the ones writing it may have created.
+ * @param parts The parts about to be turned on.
+ * @returns Paths relative to the scratch root, as the operations name them.
+ */
+export function removableKeys(parts: ShellIntegration): string[] {
+  const keys: string[] = []
+  if (parts.contextMenu) keys.push(...new Set(CONTEXT_PARENTS.flat()))
+  if (parts.fileTypes) {
+    keys.push(`${CLASSES}\\Applications`, 'Software\\RegisteredApplications', VENDOR)
+    for (const extension of SHELL_EXTENSIONS) keys.push(`${CLASSES}\\.${extension}`, `${CLASSES}\\.${extension}\\OpenWithProgids`)
+  }
+  return keys
+}
+
+/**
+ * @param keys Paths under the current user (and the scratch root).
+ * @param root Scratch key for tests; empty in the application.
+ * @returns The keys that exist now, lower-cased, so they can be kept when Rainy's entries are removed later.
+ */
+export async function existingKeys(keys: readonly string[], root = ''): Promise<string[]> {
+  if (keys.length === 0) return []
+  const key = (path: string): string => root === '' ? path : `${root}\\${path}`
+  const found = await runRegistry(keys.map(path => ({ op: 'exists', key: key(path) }) as const))
+  return keys.filter((_path, index) => found[index] === true).map(path => path.toLowerCase())
 }
 
 /** What the registry holds now: the context menu's label and command, and the command of Rainy's Markdown type. */
@@ -185,26 +223,52 @@ $root = [Microsoft.Win32.Registry]::CurrentUser
 $operations = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $env:RAINY_REGISTRY_OPERATIONS -Raw -Encoding UTF8)
 $read = New-Object System.Collections.ArrayList
 $changed = $false
+function Test-Empty([string]$path) {
+  $key = $root.OpenSubKey($path)
+  if ($null -eq $key) { return $false }
+  try { return $key.SubKeyCount -eq 0 -and $key.ValueCount -eq 0 } finally { $key.Close() }
+}
+# Parents go one by one while each is left empty; the first one still in use stops the walk.
+function Remove-EmptyParents($parents) {
+  foreach ($parent in @($parents)) {
+    if (-not (Test-Empty ([string]$parent))) { break }
+    $root.DeleteSubKey([string]$parent, $false)
+  }
+}
 foreach ($operation in $operations) {
   $name = [string]$operation.name
-  if ($operation.op -ne 'read') { $changed = $true }
+  if ($operation.op -ne 'read' -and $operation.op -ne 'exists') { $changed = $true }
   switch ($operation.op) {
     'set' {
       $key = $root.CreateSubKey([string]$operation.key)
       try { $key.SetValue($name, [string]$operation.value, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Close() }
     }
-    'deleteKey' { $root.DeleteSubKeyTree([string]$operation.key, $false) }
-    'deleteValue' {
-      $key = $root.OpenSubKey([string]$operation.key, $true)
-      if ($null -ne $key) { try { $key.DeleteValue($name, $false) } finally { $key.Close() } }
-    }
-    'deleteEmptyKey' {
+    'removeKey' {
       $key = $root.OpenSubKey([string]$operation.key)
       if ($null -ne $key) {
-        $empty = $key.SubKeyCount -eq 0 -and $key.ValueCount -eq 0
         $key.Close()
-        if ($empty) { $root.DeleteSubKey([string]$operation.key, $false) }
+        $root.DeleteSubKeyTree([string]$operation.key, $false)
+        Remove-EmptyParents $operation.parents
       }
+    }
+    'removeValue' {
+      $key = $root.OpenSubKey([string]$operation.key, $true)
+      if ($null -ne $key) {
+        $had = $false
+        try {
+          $had = @($key.GetValueNames()) -contains $name
+          if ($had) { $key.DeleteValue($name, $false) }
+        } finally { $key.Close() }
+        if ($had -and -not $operation.keepKey -and (Test-Empty ([string]$operation.key))) {
+          $root.DeleteSubKey([string]$operation.key, $false)
+          Remove-EmptyParents $operation.parents
+        }
+      }
+    }
+    'exists' {
+      $key = $root.OpenSubKey([string]$operation.key)
+      [void]$read.Add($null -ne $key)
+      if ($null -ne $key) { $key.Close() }
     }
     'read' {
       $key = $root.OpenSubKey([string]$operation.key)
@@ -222,7 +286,7 @@ if ($changed) {
 Write-Output ('RAINY_REGISTRY ' + (ConvertTo-Json -InputObject @($read.ToArray()) -Compress))
 `
 
-type ReadOperation = { readonly op: 'read'; readonly key: string; readonly name: string }
+type ReadOperation = { readonly op: 'read'; readonly key: string; readonly name: string } | { readonly op: 'exists'; readonly key: string }
 
 /** Run the registry script with `operations`; a temporary file carries them, since the list is longer than a command line. */
 async function runRegistry(operations: readonly (RegistryOperation | ReadOperation)[], timeoutMs = 60_000): Promise<unknown[]> {
@@ -253,9 +317,42 @@ async function runRegistry(operations: readonly (RegistryOperation | ReadOperati
  * @param locale Language of the labels.
  * @param wanted What the user turned on.
  * @param root Scratch key for tests; empty in the application.
+ * @param keep Keys the user had before Rainy wrote to them, lower-cased ({@link existingKeys}).
  */
-export async function applyShellIntegration(executable: string, locale: Locale, wanted: ShellIntegration, root = ''): Promise<void> {
-  await runRegistry(integrationOperations(executable, locale, wanted, root))
+export async function applyShellIntegration(executable: string, locale: Locale, wanted: ShellIntegration, root = '',
+  keep: readonly string[] = []): Promise<void> {
+  await runRegistry(integrationOperations(executable, locale, wanted, root, new Set(keep.map(path => path.toLowerCase()))))
+}
+
+/**
+ * Bring the registry to `wanted`, remembering the keys the user already had for parts being turned on now, so turning them
+ * off later removes only what Rainy added.
+ * @param executable Absolute path of RainyAgent.exe.
+ * @param locale Language of the labels.
+ * @param wanted What the user turned on.
+ * @param kept Keys remembered when the parts were turned on earlier.
+ * @param root Scratch key for tests; empty in the application.
+ * @returns Whether the registry was changed, and the keys to remember from now on.
+ */
+export async function syncShellIntegration(executable: string, locale: Locale, wanted: ShellIntegration, kept: readonly string[],
+  root = ''): Promise<{ changed: boolean; keep: string[] }> {
+  const status = await readShellIntegration(root)
+  if (shellIntegrationCurrent(status, executable, locale, wanted)) return { changed: false, keep: [...kept] }
+  const turningOn = { contextMenu: wanted.contextMenu && status.contextMenuCommand === null, fileTypes: wanted.fileTypes && status.fileTypeCommand === null }
+  const keep = [...new Set([...kept.map(path => path.toLowerCase()), ...await existingKeys(removableKeys(turningOn), root)])]
+  await applyShellIntegration(executable, locale, wanted, root, keep)
+  // Once both parts are off nothing of Rainy's is left; the next time a part is turned on, it looks again.
+  return { changed: true, keep: wanted.contextMenu || wanted.fileTypes ? keep : [] }
+}
+
+/**
+ * @param preferences Contents of desktop.json.
+ * @returns The keys remembered as the user's own when a part was turned on.
+ */
+export function keptShellKeys(preferences: Record<string, unknown>): string[] {
+  const saved = preferences.explorerIntegration
+  const keep = saved !== null && typeof saved === 'object' ? (saved as Record<string, unknown>).keep : undefined
+  return Array.isArray(keep) ? keep.filter((path): path is string => typeof path === 'string') : []
 }
 
 /**
@@ -289,13 +386,14 @@ export function shellIntegrationCurrent(status: ShellIntegrationStatus, executab
 }
 
 /**
- * Read the user's choice from the desktop preferences.
+ * Read the user's choice from the desktop preferences. 3.9.0 kept both parts on unless turned off, under
+ * `shellIntegration`; that key is no longer read, so an upgrade removes what 3.9.0 wrote until the user opts in again.
  * @param preferences Contents of desktop.json.
- * @returns The choice; both parts are on until turned off.
+ * @returns The choice; each part is on only when the user turned it on.
  */
 export function shellIntegrationPreference(preferences: Record<string, unknown>): ShellIntegration {
-  const saved = preferences.shellIntegration
+  const saved = preferences.explorerIntegration
   const flag = (name: keyof ShellIntegration): boolean =>
-    saved === null || typeof saved !== 'object' || !(name in saved) || (saved as Record<string, unknown>)[name] !== false
+    saved !== null && typeof saved === 'object' && (saved as Record<string, unknown>)[name] === true
   return { contextMenu: flag('contextMenu'), fileTypes: flag('fileTypes') }
 }

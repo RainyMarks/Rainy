@@ -32,7 +32,7 @@ import { OfficeConversionError, OfficeConverter, officeKind } from './office-con
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
 import { listExecutionTargets, readDesktopPreferences, removeSshHost, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget, saveShellIntegration,
   saveSshHost, sshDestinationOf, sshTarget, sshTargets, WINDOWS_TARGET } from './execution-targets.ts'
-import { applyShellIntegration, readShellIntegration, REGISTERED_APPLICATION, shellIntegrationCurrent, shellIntegrationPreference,
+import { applyShellIntegration, keptShellKeys, REGISTERED_APPLICATION, shellIntegrationPreference, syncShellIntegration as syncRegistry,
   type ShellIntegration } from './shell-integration.ts'
 import { inspectLaunchPaths, launchPaths, type LaunchEntry } from './launch-paths.ts'
 import { exportFileName, printHtmlToPdf } from './document-export.ts'
@@ -1045,10 +1045,13 @@ async function start(): Promise<void> {
   syncShellIntegration = () => {
     if (!shellAvailable) return Promise.resolve()
     const next = shellQueue.then(async () => {
-      const wanted = shellIntegrationPreference(await readDesktopPreferences(settingsPath))
-      const executable = app.getPath('exe')
-      if (shellIntegrationCurrent(await readShellIntegration(), executable, interfaceLocale, wanted)) return
-      await applyShellIntegration(executable, interfaceLocale, wanted)
+      const preferences = await readDesktopPreferences(settingsPath)
+      const wanted = shellIntegrationPreference(preferences)
+      const kept = keptShellKeys(preferences)
+      const { changed, keep } = await syncRegistry(app.getPath('exe'), interfaceLocale, wanted, kept)
+      if (!changed) return
+      // Only the remembered keys are saved: a switch the user flipped meanwhile stays as they set it.
+      if (keep.length !== kept.length || keep.some((path, index) => path !== kept[index])) await saveShellIntegration(settingsPath, { keep })
       appendFileSync(logPath, `Explorer integration updated: context menu ${wanted.contextMenu ? 'on' : 'off'}, file types ${wanted.fileTypes ? 'on' : 'off'}\n`)
     })
     shellQueue = next.catch(() => undefined)
@@ -1064,9 +1067,7 @@ async function start(): Promise<void> {
     if (!trustedSender(event) || !isRecord(value) || (value.contextMenu !== undefined && typeof value.contextMenu !== 'boolean')
       || (value.fileTypes !== undefined && typeof value.fileTypes !== 'boolean')) throw new Error('Invalid Explorer integration request.')
     if (!shellAvailable) throw new Error(localized({ zh: '只有安装版 Rainy 可以修改资源管理器集成。', en: 'Only an installed Rainy can change the Explorer integration.' }))
-    const current = shellIntegrationPreference(await readDesktopPreferences(settingsPath))
-    await saveShellIntegration(settingsPath, { contextMenu: typeof value.contextMenu === 'boolean' ? value.contextMenu : current.contextMenu,
-      fileTypes: typeof value.fileTypes === 'boolean' ? value.fileTypes : current.fileTypes })
+    await saveShellIntegration(settingsPath, { contextMenu: value.contextMenu as boolean | undefined, fileTypes: value.fileTypes as boolean | undefined })
     await syncShellIntegration()
     return shellState()
   })
@@ -1300,7 +1301,10 @@ if (process.argv.includes('--rainy-remove-runtime')) {
 // The uninstaller removes the Explorer entries and file types through the code that wrote them.
 else if (process.argv.includes('--rainy-unregister-shell')) {
   void app.whenReady().then(async () => {
-    if (app.isPackaged && process.platform === 'win32') await applyShellIntegration(app.getPath('exe'), 'zh', { contextMenu: false, fileTypes: false })
+    if (app.isPackaged && process.platform === 'win32') {
+      const preferences = await readDesktopPreferences(join(app.getPath('userData'), 'desktop.json')).catch(() => ({}))
+      await applyShellIntegration(app.getPath('exe'), 'zh', { contextMenu: false, fileTypes: false }, '', keptShellKeys(preferences))
+    }
     app.exit(0)
   }).catch((error: unknown) => { console.error('Removing the Explorer integration failed', error); app.exit(1) })
 }
