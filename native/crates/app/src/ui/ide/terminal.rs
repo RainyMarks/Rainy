@@ -180,9 +180,13 @@ impl TerminalView {
         let subscriptions = vec![cx.subscribe(&Execution::global(cx), move |this: &mut Self, _, event: &ExecutionEvent, cx| {
             if let ExecutionEvent::Output { operation, stream, text } = event
                 && *operation == watched
-                && stream == "terminal"
             {
-                this.feed(text, cx);
+                match stream.as_str() {
+                    "terminal" => this.feed(text, cx),
+                    // A run without a pseudo-terminal writes plain lines; the grid needs carriage returns too.
+                    "stdout" | "stderr" => this.feed(&text.replace("\r\n", "\n").replace('\n', "\r\n"), cx),
+                    _ => {}
+                }
             }
         })];
         Self {
@@ -234,6 +238,15 @@ impl TerminalView {
             Execution::global(cx).read(cx).resize(&self.id, cols as u16, rows as u16, cx);
             cx.notify();
         }
+    }
+
+    /// The last lines of the screen and its history, as text (3.x `recentTerminalText`).
+    pub fn recent_text(&self, lines: usize) -> String {
+        let grid = self.term.grid();
+        let bottom = grid.bottommost_line();
+        let top = Line((bottom.0 - lines as i32 + 1).max(grid.topmost_line().0));
+        let text = self.term.bounds_to_string(GridPoint::new(top, Column(0)), GridPoint::new(bottom, grid.last_column()));
+        text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_owned()
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) -> bool {

@@ -38,6 +38,30 @@ pub fn trf(cx: &App, key: &str, vars: &[(&str, &dyn std::fmt::Display)]) -> Shar
     i18n::format(locale(cx), key, vars).into()
 }
 
+/// Send a question to the selected chat, or a new one in the project, and show the chat (3.x `onAsk`).
+pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(crate::ui::ide::ShowChat), cx);
+    let store = Store::global(cx);
+    let workspace = crate::store::ide::Ide::global(cx).read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
+    let session = store.read(cx).selected.clone();
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let session = match session {
+            Some(id) => Some(id),
+            None => store.update(cx, |store, cx| store.create_chat(workspace, cx)).await,
+        };
+        let Some(session) = session else { return };
+        let call = store.read_with(cx, |store, _| store.call("chat.send", serde_json::json!({ "sessionId": session, "text": text, "mode": "queue" })));
+        if let Err(error) = call.await {
+            let _ = handle.update(cx, |_, window, cx| {
+                use gpui_kit::component::WindowExt as _;
+                window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx)
+            });
+        }
+    })
+    .detach();
+}
+
 /// Follow a link in a reply: web pages open in the browser, project files in the editor, anything else nothing.
 /// Other schemes (`file:`, custom protocols) could start programs, so they are never handed to the system.
 pub fn open_link(url: &str, window: &mut Window, cx: &mut App) {

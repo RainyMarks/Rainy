@@ -70,6 +70,17 @@ pub struct Target {
     pub python_path: Option<String>,
 }
 
+/// A problem a language server reported, for the problems list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Problem {
+    pub key: String,
+    /// One-based line and UTF-16 column.
+    pub line: u32,
+    pub column: u32,
+    pub error: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerPhase {
     Starting,
@@ -234,6 +245,25 @@ impl LanguageServers {
         {
             connection.client.notify("textDocument/didSave", json!({ "textDocument": { "uri": document.uri } }));
         }
+    }
+
+    /// Every problem the servers reported in the open files, by file then line (3.x `problems`).
+    pub fn problems(&self) -> Vec<Problem> {
+        let mut problems: Vec<Problem> = self
+            .documents
+            .iter()
+            .flat_map(|(key, document)| {
+                document.diagnostics.iter().filter(|diagnostic| diagnostic.severity != Some(lsp_types::DiagnosticSeverity::HINT)).map(|diagnostic| Problem {
+                    key: key.clone(),
+                    line: diagnostic.range.start.line + 1,
+                    column: diagnostic.range.start.character + 1,
+                    error: diagnostic.severity.is_none_or(|severity| severity == lsp_types::DiagnosticSeverity::ERROR),
+                    message: diagnostic.message.clone(),
+                })
+            })
+            .collect();
+        problems.sort_by(|left, right| (&left.key, left.line, left.column).cmp(&(&right.key, right.line, right.column)));
+        problems
     }
 
     /// The phase of the server of a file, for the status bar.

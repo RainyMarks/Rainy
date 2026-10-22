@@ -23,7 +23,7 @@ use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
-use crate::ui::ide::{AiEditSelection, ShowChat, choose_folder, file_icon};
+use crate::ui::ide::{AiEditSelection, choose_folder, file_icon};
 use crate::ui::tr;
 use crate::web::{PaneEvent, WebPane};
 
@@ -640,27 +640,7 @@ impl EditorArea {
                     self.ide.update(cx, |ide, cx| ide.open(key, true, window, cx));
                     cx.notify();
                 }
-                Some(PageRequest::Ask(text)) => {
-                    window.dispatch_action(Box::new(ShowChat), cx);
-                    let store = Store::global(cx);
-                    let workspace = self.ide.read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
-                    let session = store.read(cx).selected.clone();
-                    let handle = window.window_handle();
-                    cx.spawn(async move |_, cx: &mut AsyncApp| {
-                        let session = match session {
-                            Some(id) => Some(id),
-                            None => store.update(cx, |store, cx| store.create_chat(workspace, cx)).await,
-                        };
-                        let Some(session) = session else { return };
-                        let call = store.read_with(cx, |store, _| store.call("chat.send", json!({ "sessionId": session, "text": text, "mode": "queue" })));
-                        if let Err(error) = call.await {
-                            let _ = handle.update(cx, |_, window, cx| {
-                                window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx)
-                            });
-                        }
-                    })
-                    .detach();
-                }
+                Some(PageRequest::Ask(text)) => crate::ui::ask_ai(text, window, cx),
                 Some(PageRequest::OpenUrl(url)) => crate::ui::open_link(&url, window, cx),
                 _ => {}
             },

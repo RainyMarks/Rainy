@@ -12,8 +12,8 @@ use serde_json::json;
 use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::ide::{
-    AiEditSelection, CloseFile, CommandPalette, FindInFiles, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen,
-    ReplaceInFiles, SaveFile, ShowExplorer, ShowMap, ShowSourceControl, ToggleTerminal,
+    AiEditSelection, CloseFile, CommandPalette, DebugFile, FindInFiles, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen,
+    ReplaceInFiles, RunFile, RunProfiles, SaveFile, ShowExplorer, ShowMap, ShowSourceControl, StopRun, ToggleBreakpoint, ToggleTerminal,
 };
 use crate::ui::tr;
 
@@ -42,6 +42,7 @@ fn commands(cx: &App) -> Vec<Command> {
     let workspace = ide.workspace.is_some();
     let editing = ide.active.as_ref().and_then(|key| ide.files.get(key)).is_some_and(|file| file.editor.is_some());
     let has_file = ide.active.is_some();
+    let php = ide.run_target(ide.active.as_deref()).is_some_and(|(configuration, _)| configuration["language"] == "php");
     let prefs_now = Store::global(cx).read(cx).prefs.clone();
     let locale = if crate::ui::locale(cx) == crate::i18n::Locale::Zh { "en" } else { "zh" };
     let entry = |category: &str, label: SharedString, keys: &'static str, enabled: bool, run: Run| Command {
@@ -63,6 +64,11 @@ fn commands(cx: &App) -> Vec<Command> {
         entry("catView", tr(cx, "app.cmdSourceControl"), "Ctrl+Shift+G", workspace, action(ShowSourceControl)),
         entry("catView", tr(cx, "app.cmdNewTerminal"), "Ctrl+`", workspace, action(ToggleTerminal)),
         entry("catView", tr(cx, "app.cmdMap"), "", workspace, action(ShowMap)),
+        entry("catRun", tr(cx, "app.cmdRunFile"), "Ctrl+F5", editing, action(RunFile)),
+        entry("catRun", tr(cx, "app.cmdDebugFile"), "F5", editing && !php, action(DebugFile)),
+        entry("catRun", tr(cx, "ide.ideStop"), "Shift+F5", workspace, action(StopRun)),
+        entry("catRun", tr(cx, "ide.ideToggleBreakpoint"), "F9", editing, action(ToggleBreakpoint)),
+        entry("catRun", tr(cx, "ide.ideRunProfiles"), "", workspace, action(RunProfiles)),
         entry("catAi", tr(cx, "app.cmdNewChat"), "Ctrl+Alt+N", true, action(NewChat)),
         entry("catAi", tr(cx, "app.cmdAiEdit"), "Ctrl+K", editing, action(AiEditSelection)),
         entry("catAi", tr(cx, "app.cmdToggleSuggest"), "", true, prefs(json!({ "inlineCompletion": !prefs_now.inline_completion }))),

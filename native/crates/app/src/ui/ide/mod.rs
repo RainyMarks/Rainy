@@ -2,12 +2,14 @@
 
 pub mod ai_edit;
 pub mod cursor_status;
+pub mod debug_marks;
 pub mod editor_area;
 pub mod viewers;
 pub mod file_tree;
 pub mod folder_dialog;
 pub mod git;
 pub mod quick_open;
+pub mod run_dialog;
 pub mod search;
 pub mod terminal;
 pub mod terminal_panel;
@@ -20,7 +22,7 @@ use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::tr;
 
-actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat]);
+actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat, RunFile, DebugFile, StopRun, StepOver, StepInto, StepOut, ToggleBreakpoint, RunProfiles]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -40,6 +42,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-n", NewChat, None),
         KeyBinding::new("ctrl-shift-p", CommandPalette, None),
         KeyBinding::new("f1", CommandPalette, None),
+        // Run and debug as in VS Code; F5 continues while the debugger is paused.
+        KeyBinding::new("ctrl-f5", RunFile, None),
+        KeyBinding::new("f5", DebugFile, None),
+        KeyBinding::new("shift-f5", StopRun, None),
+        KeyBinding::new("f10", StepOver, None),
+        KeyBinding::new("f11", StepInto, None),
+        KeyBinding::new("shift-f11", StepOut, None),
+        KeyBinding::new("f9", ToggleBreakpoint, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k", AiEditSelection, Some("Input && mode == editor")),
         KeyBinding::new("f12", gpui_kit::component::input::GoToDefinition, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("Input && mode == editor")),
