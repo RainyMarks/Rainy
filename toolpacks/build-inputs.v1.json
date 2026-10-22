@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "releaseVersion": "3.9.0",
+  "releaseVersion": "3.9.1",
   "baseUrl": "https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.0-resources/",
   "partBytes": 1073741824,
   "files": [
