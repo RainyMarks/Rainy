@@ -200,9 +200,10 @@ impl Render for SettingsView {
                         div()
                             .id("settings-content")
                             .flex_1()
+                            .min_w_0()
                             .h_full()
                             .overflow_y_scroll()
-                            .child(v_flex().px_8().py_6().gap_4().max_w(px(760.)).child(page)),
+                            .child(v_flex().w_full().px_8().py_6().gap_4().max_w(px(760.)).child(page)),
                     )
                     .child(
                         div().absolute().top_3().right_3().child(

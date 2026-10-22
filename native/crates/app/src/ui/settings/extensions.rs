@@ -703,9 +703,9 @@ impl ExtensionsPage {
                 _ => ("settings.mcpStateConnecting", Tag::warning()),
             };
             let line = if server.transport == "stdio" {
-                server.command.iter().chain(server.args.iter().flatten()).cloned().collect::<Vec<_>>().join(" ")
+                mcp_json::masked_command(&server.command.iter().chain(server.args.iter().flatten()).cloned().collect::<Vec<_>>())
             } else {
-                server.url.clone().unwrap_or_default()
+                mcp_json::masked_url(server.url.as_deref().unwrap_or_default())
             };
             let tools = live.filter(|entry| !entry.tools.is_empty()).map(|entry| {
                 trf(cx, "settings.mcpTools", &[("enabled", &entry.tools.iter().filter(|tool| tool.enabled).count()), ("total", &entry.tools.len())])

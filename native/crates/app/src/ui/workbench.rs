@@ -188,7 +188,7 @@ impl Workbench {
                 .child(div().text_sm().font_semibold().child("Rainy"))
                 .child(div().flex_1())
                 .when(ready, |this| {
-                    this.child(
+                    this.child(title_control(
                         Button::new("projects")
                             .ghost()
                             .small()
@@ -217,9 +217,9 @@ impl Workbench {
                                 }
                                 menu
                             }),
-                    )
+                    ))
                     .when(has_project, |this| {
-                        this.child(
+                        this.child(title_control(
                             Button::new("quick-open")
                                 .ghost()
                                 .small()
@@ -227,11 +227,11 @@ impl Workbench {
                                 .label(tr(cx, "ide.ideSearchFiles"))
                                 .tooltip(tr(cx, "ide.ideQuickOpen"))
                                 .on_click(|_, window, cx| quick_open::open(window, cx)),
-                        )
+                        ))
                     })
                 })
                 .child(div().flex_1())
-                .child(
+                .child(title_control(
                     Button::new("toggle-files")
                         .ghost()
                         .small()
@@ -242,8 +242,8 @@ impl Workbench {
                             this.left_visible = !this.left_visible;
                             cx.notify();
                         })),
-                )
-                .child(
+                ))
+                .child(title_control(
                     Button::new("toggle-bottom")
                         .ghost()
                         .small()
@@ -251,8 +251,8 @@ impl Workbench {
                         .selected(bottom)
                         .tooltip(tr(cx, "ide.ideToggleBottom"))
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
-                )
-                .child(
+                ))
+                .child(title_control(
                     Button::new("toggle-agent")
                         .ghost()
                         .small()
@@ -263,15 +263,15 @@ impl Workbench {
                             this.agent_visible = !this.agent_visible;
                             cx.notify();
                         })),
-                )
-                .child(
+                ))
+                .child(title_control(
                     Button::new("open-settings")
                         .ghost()
                         .small()
                         .icon(gpui_kit::component::IconName::Settings)
                         .tooltip(tr(cx, "app.settings"))
                         .on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::General, window, cx))),
-                ),
+                )),
         )
     }
 
@@ -334,6 +334,9 @@ impl Workbench {
 
     fn render_phase(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let phase = self.store.read(cx).phase.clone();
+        if matches!(phase, Phase::Ready) {
+            return None;
+        }
         // A failed WSL or SSH start can continue on Windows, as 3.x offered.
         let on_wsl = targets::read_preferences(&self.store.read(cx).paths.desktop_settings())
             .ok()
@@ -613,4 +616,10 @@ pub(crate) fn confirm_switch(store: Entity<Store>, target: ExecutionTarget, wind
                 true
             })
     });
+}
+
+/// A control in the title bar. The whole bar is the window's drag area, which Windows hit-tests as the caption; the
+/// control blocks that below it, and keeps its mouse-down from the bar's own drag, so a click is not taken as a move.
+fn title_control(control: impl IntoElement) -> impl IntoElement {
+    div().occlude().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(control)
 }

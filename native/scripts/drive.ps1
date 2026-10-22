@@ -3,6 +3,9 @@
 #   click:X,Y        left click at window-relative physical pixels (rclick: right click)
 #   wheel:X,Y,N      turn the mouse wheel N notches at X,Y (negative scrolls down)
 #   type:TEXT        type text (Unicode, as WM_CHAR)
+#   typefile:PATH    type the contents of a UTF-8 file
+#   hittest:X,Y      print WM_NCHITTEST's answer at X,Y after moving the mouse there (1 client, 2 caption)
+#   busy:            print how long the window's thread stays busy (after a click, say)
 #   key:NAME         press enter, escape, tab, down, up, backspace; prefix ctrl+ or shift+
 #   wait:SECONDS     sleep
 #   shot:PATH        capture the window to PATH
@@ -60,6 +63,28 @@ public static class Drive {
     IntPtr wparam = (IntPtr)((notches * 120) << 16);
     PostMessage(h, 0x020A, wparam, (IntPtr)((screenY << 16) | (screenX & 0xFFFF)));
   }
+  [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+  /// How long the window's thread stays busy: until it has answered WM_NULL within 20 ms for 600 ms in a row.
+  public static string Busy(IntPtr h) {
+    var watch = System.Diagnostics.Stopwatch.StartNew(); double longest = 0, last = 0; IntPtr r;
+    while (watch.ElapsedMilliseconds < 15000) {
+      var t = watch.Elapsed.TotalMilliseconds;
+      SendMessageTimeout(h, 0, IntPtr.Zero, IntPtr.Zero, 0, 20000, out r);
+      var d = watch.Elapsed.TotalMilliseconds - t;
+      if (d > 20) { last = watch.Elapsed.TotalMilliseconds; if (d > longest) longest = d; }
+      if (watch.Elapsed.TotalMilliseconds - last > 600) break;
+      System.Threading.Thread.Sleep(2);
+    }
+    return String.Format("busy until {0:N0} ms, longest stall {1:N0} ms", last, longest);
+  }
+  [DllImport("user32.dll", EntryPoint = "SendMessageW")] public static extern IntPtr Send(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  /// What the window answers to WM_NCHITTEST at a screen point after the mouse moved there (1 client, 2 caption).
+  public static long HitTest(IntPtr h, int screenX, int screenY) {
+    POINT p; p.X = screenX; p.Y = screenY; ScreenToClient(h, ref p);
+    PostMessage(h, 0x0200, IntPtr.Zero, (IntPtr)((p.Y << 16) | (p.X & 0xFFFF)));
+    System.Threading.Thread.Sleep(300);
+    return (long)Send(h, 0x0084, IntPtr.Zero, (IntPtr)((screenY << 16) | (screenX & 0xFFFF)));
+  }
   public static void Click(IntPtr h, int screenX, int screenY, bool right) {
     POINT p; p.X = screenX; p.Y = screenY; ScreenToClient(h, ref p);
     IntPtr pos = (IntPtr)((p.Y << 16) | (p.X & 0xFFFF));
@@ -83,6 +108,10 @@ foreach ($step in ($Steps -split ';;')) {
     'wheel' { $x, $y, $n = $arg -split ','; [Drive]::Wheel($h, $r.Left + [int]$x, $r.Top + [int]$y, [int]$n); Start-Sleep -Milliseconds 150 }
     'rclick' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $true); Start-Sleep -Milliseconds 200 }
     'type' { [Drive]::Type($h, $arg); Start-Sleep -Milliseconds 150 }
+    'clickbusy' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $false); Write-Output ("click " + $arg + ": " + [Drive]::Busy($h)) }
+    'hittest' { $x, $y = $arg -split ','; Write-Output ("hittest " + $arg + ": " + [Drive]::HitTest($h, $r.Left + [int]$x, $r.Top + [int]$y)) }
+    'busy' { Write-Output ("busy: " + [Drive]::Busy($h)) }
+    'typefile' { [Drive]::Type($h, [IO.File]::ReadAllText($arg).TrimEnd()); Start-Sleep -Milliseconds 150 }
     'key' {
       $parts = $arg -split '\+'
       if ($parts.Count -gt 1) { [Drive]::Down($h, $mods[$parts[0]]) }
