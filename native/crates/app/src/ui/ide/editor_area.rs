@@ -4,20 +4,37 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::Engine as _;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::diff::Diff;
-use gpui_kit::component::input::Editor;
+use gpui_kit::component::input::{Editor, InputEvent};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use rainy_carrier::ExecutionTarget;
+use serde_json::{Value, json};
+
 use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
+use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::{choose_folder, file_icon};
 use crate::ui::tr;
+use crate::web::{PaneEvent, WebPane};
+
+/// A file shown in a page: which viewer, for which version of the file, and the text the page sent last.
+struct Viewer {
+    kind: &'static str,
+    version: String,
+    pane: Entity<WebPane>,
+    /// The page's own edit, so it is not sent back to it.
+    from_page: Option<String>,
+    _subscriptions: Vec<Subscription>,
+}
 
 /// An image file's decoded bytes, fetched from the Host's `/rainy/ide/raw` route.
 enum Picture {
@@ -30,6 +47,11 @@ pub struct EditorArea {
     ide: Entity<Ide>,
     /// Pictures by file key and version, so a changed file is fetched again.
     pictures: HashMap<(String, String), Picture>,
+    /// Pages by file key.
+    viewers: HashMap<String, Viewer>,
+    /// The tab strip, scrolled so the active tab is in view when it changes.
+    tabs_scroll: ScrollHandle,
+    scrolled_to: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -63,7 +85,137 @@ fn encode(value: &str) -> String {
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![cx.observe(&ide, |_, _, cx| cx.notify())];
-        Self { ide, pictures: HashMap::new(), _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, _subscriptions: subscriptions }
+    }
+
+    /// The page of a file view, created on first use and again when the view or the file's version changes.
+    fn viewer(&mut self, key: &str, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<WebPane>> {
+        let ide = self.ide.read(cx);
+        let file = ide.files.get(key)?;
+        let markdown = kind.starts_with("markdown");
+        let version = file.document.version.clone();
+        if let Some(viewer) = self.viewers.get(key)
+            && viewer.kind == kind
+            && (markdown || viewer.version == version)
+        {
+            return Some(viewer.pane.clone());
+        }
+        let launch = Store::global(cx).read(cx).launch_url()?;
+        let workspace = ide.workspace.clone()?;
+        // The desktop opens Office files in their own application only where it can reach them.
+        let windows = matches!(Store::global(cx).read(cx).target, None | Some(ExecutionTarget::Windows { .. }));
+        let host_path = windows.then(|| {
+            let (root, path) = split_key(key);
+            let base = workspace.roots().iter().find(|known| Some(known.root_id.as_str()) == root || (root.is_none() && known.primary)).map_or(workspace.path.clone(), |known| known.path.clone());
+            format!("{}\\{}", base.trim_end_matches(['\\', '/']), path.replace('/', "\\"))
+        });
+        let url = viewers::viewer_url(&launch, kind, key, &workspace.workspace_id, file.document.bytes as u64, &version, host_path.as_deref());
+        let editor = file.editor.clone();
+        let pane = viewers::create_pane(url, window, cx);
+        let owner = key.to_owned();
+        let mut subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
+        if let (true, Some(editor)) = (markdown, editor) {
+            let owner = key.to_owned();
+            subscriptions.push(cx.subscribe(&editor, move |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.send_text(&owner, cx);
+                }
+            }));
+        }
+        self.viewers.insert(key.to_owned(), Viewer { kind, version, pane: pane.clone(), from_page: None, _subscriptions: subscriptions });
+        Some(pane)
+    }
+
+    /// Hand a Markdown page the file's current text, unless the page wrote it itself.
+    fn send_text(&mut self, key: &str, cx: &mut Context<Self>) {
+        let ide = self.ide.read(cx);
+        let Some(file) = ide.files.get(key) else { return };
+        let Some(editor) = file.editor.as_ref() else { return };
+        let text = editor.read(cx).value().to_string();
+        let version = file.document.version.clone();
+        let Some(viewer) = self.viewers.get_mut(key) else { return };
+        if !viewer.kind.starts_with("markdown") || viewer.from_page.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        viewer.from_page = None;
+        if let Some(view) = viewer.pane.read(cx).view() {
+            view.execute(&viewers::set_text_script(&text, &version), |_| {});
+        }
+    }
+
+    /// What a page asked for.
+    fn on_page(&mut self, key: &str, event: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            PaneEvent::Message(text) => match viewers::parse_message(text) {
+                Some(PageRequest::Ready) => self.send_text(key, cx),
+                Some(PageRequest::Change(text)) => {
+                    if let Some(viewer) = self.viewers.get_mut(key) {
+                        viewer.from_page = Some(text.clone());
+                    }
+                    let key = key.to_owned();
+                    self.ide.update(cx, |ide, cx| ide.set_text(&key, &text, window, cx));
+                }
+                Some(PageRequest::Save) => {
+                    let key = key.to_owned();
+                    self.ide.update(cx, |ide, cx| ide.save(Some(key), false, window, cx));
+                }
+                Some(PageRequest::OpenUrl(url)) => crate::ui::open_link(&url, window, cx),
+                Some(PageRequest::OpenFile { path, root, line }) => {
+                    let key = match root {
+                        Some(root) => format!("\0{root}/{path}"),
+                        None => path,
+                    };
+                    self.ide.update(cx, |ide, cx| match line {
+                        Some(line) => ide.reveal(key, (line as u32).saturating_sub(1), 0, window, cx),
+                        None => ide.open(key, true, window, cx),
+                    });
+                }
+                Some(PageRequest::Call { id, name, params }) => self.answer(key, id, &name, &params, cx),
+                None => {}
+            },
+            PaneEvent::Shortcut(shortcut) => {
+                if let Some(action) = viewers::shortcut_action(*shortcut) {
+                    crate::web::reclaim_focus(window);
+                    window.dispatch_action(action, cx);
+                }
+            }
+            PaneEvent::NewWindow(url) => crate::ui::open_link(url, window, cx),
+            PaneEvent::Ready | PaneEvent::Failed(_) => cx.notify(),
+        }
+    }
+
+    /// Requests only the desktop can carry out for a page.
+    fn answer(&mut self, key: &str, id: u64, name: &str, params: &Value, cx: &mut Context<Self>) {
+        let Some(pane) = self.viewers.get(key).map(|viewer| viewer.pane.clone()) else { return };
+        let respond = move |result: Value, cx: &mut App| {
+            if let Some(view) = pane.read(cx).view() {
+                view.execute(&viewers::resolve_script(id, &result), |_| {});
+            }
+        };
+        match name {
+            "open-external" => {
+                let path = params["path"].as_str().unwrap_or_default().to_owned();
+                cx.open_with_system(std::path::Path::new(&path));
+                respond(json!({}), cx);
+            }
+            // Slides and old Word files are drawn as the PDF the installed Office makes; the bytes came through the
+            // Host, so files in WSL and on SSH servers convert too.
+            "office-pdf" => {
+                let engine = base64::engine::general_purpose::STANDARD;
+                let bytes = engine.decode(params["base64"].as_str().unwrap_or_default()).unwrap_or_default();
+                let extension = params["extension"].as_str().unwrap_or_default().to_ascii_lowercase();
+                let converting = cx.background_spawn(async move { crate::web::office::to_pdf(&bytes, &extension) });
+                cx.spawn(async move |_, cx: &mut AsyncApp| {
+                    let result = match converting.await {
+                        Ok(converted) => json!({ "pdf": engine.encode(&converted.pdf), "application": converted.application }),
+                        Err(failure) => json!({ "error": failure.error, "missing": failure.missing, "encrypted": failure.encrypted }),
+                    };
+                    cx.update(|cx| respond(result, cx));
+                })
+                .detach();
+            }
+            _ => respond(json!({ "error": format!("Unknown request: {name}"), "missing": false }), cx),
+        }
     }
 
     /// The picture of an open image file, fetched on first use.
@@ -114,9 +266,12 @@ impl EditorArea {
         let handle = self.ide.clone();
         h_flex()
             .id("editor-tabs")
+            .w_full()
+            .min_w_0()
             .h(px(36.))
             .flex_shrink_0()
             .overflow_x_scroll()
+            .track_scroll(&self.tabs_scroll)
             .bg(theme.tab_bar)
             .border_b_1()
             .border_color(theme.border)
@@ -203,6 +358,18 @@ impl EditorArea {
         let Some(file) = ide.files.get(&key) else {
             return centered(h_flex().gap_2().child(Spinner::new().small()).child(tr(cx, "ide.ideEditorLoading")), &theme).into_any_element();
         };
+        let markdown = file.editor.is_some() && viewers::preview_kind(&file.document.path) == Some("markdown");
+        if markdown {
+            let view = ide.views.get(&key).cloned();
+            let editor = file.editor.clone();
+            let shown = viewers::page_view(&file.document.path, None, view.as_deref());
+            let toolbar = self.render_views(&key, view.as_deref(), cx);
+            let body = match shown {
+                Some((kind, split)) => self.render_page(&key, kind, split.then_some(editor).flatten(), window, cx),
+                None => editor.map(|editor| Editor::new(&editor).h_full().bordered(false).into_any_element()).unwrap_or_else(|| div().into_any_element()),
+            };
+            return v_flex().size_full().child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
+        }
         if let Some(editor) = file.editor.clone() {
             let conflict = file.conflict;
             let handle = self.ide.clone();
@@ -240,6 +407,9 @@ impl EditorArea {
         let reason = file.document.read_only_reason.clone().unwrap_or_default();
         let preview = file.document.preview.clone();
         let path = file.document.path.clone();
+        if let Some((kind, _)) = viewers::page_view(&path, Some(reason.as_str()), None) {
+            return self.render_page(&key, kind, None, window, cx);
+        }
         if reason == "media" && image_format(&path).is_some() {
             return match self.picture(&key, cx) {
                 Some(Picture::Ready(image)) => div()
@@ -291,6 +461,59 @@ impl EditorArea {
                 )
             })
             .into_any_element()
+    }
+
+    /// The Markdown views of a tab: rich, source, preview and split.
+    fn render_views(&self, key: &str, current: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        h_flex()
+            .flex_shrink_0()
+            .h(px(32.))
+            .px_2()
+            .gap_1()
+            .items_center()
+            .justify_end()
+            .border_b_1()
+            .border_color(theme.border)
+            .children(viewers::MARKDOWN_VIEWS.iter().enumerate().map(|(index, (label, view))| {
+                let selected = current.filter(|current| *current != "rich") == *view;
+                let (ide, key, view) = (self.ide.clone(), key.to_owned(), view.map(str::to_owned));
+                Button::new(("md-view", index)).ghost().xsmall().label(tr(cx, label)).selected(selected).on_click(move |_, _, cx| {
+                    ide.update(cx, |ide, cx| ide.set_view(&key, view.as_deref(), cx));
+                })
+            }))
+            .into_any_element()
+    }
+
+    /// A file in a page, with the text editor on the left when `editor` is given.
+    fn render_page(&mut self, key: &str, kind: &'static str, editor: Option<Entity<gpui_kit::component::input::EditorState>>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let page = match self.viewer(key, kind, window, cx) {
+            Some(pane) => {
+                let (creating, error) = {
+                    let pane = pane.read(cx);
+                    (pane.is_creating(), pane.error())
+                };
+                match error {
+                    Some(error) => centered(div().max_w(px(560.)).text_sm().text_color(theme.danger).child(error), &theme).into_any_element(),
+                    None => div()
+                        .size_full()
+                        .relative()
+                        .when(creating, |this| this.child(centered(Spinner::new().small(), &theme)))
+                        .child(div().absolute().inset_0().child(WebPane::area(&pane)))
+                        .into_any_element(),
+                }
+            }
+            None => centered(Spinner::new().small(), &theme).into_any_element(),
+        };
+        match editor {
+            Some(editor) => h_flex()
+                .size_full()
+                .child(div().flex_1().min_w_0().h_full().border_r_1().border_color(theme.border).child(Editor::new(&editor).h_full().bordered(false)))
+                .child(div().flex_1().min_w_0().h_full().child(page))
+                .into_any_element(),
+            None => page,
+        }
     }
 
     fn render_welcome(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -380,6 +603,17 @@ pub fn close_tab(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut Ap
 impl Render for EditorArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // Pages of closed tabs go away with their tabs.
+        let open: std::collections::HashSet<String> = self.ide.read(cx).tabs.iter().cloned().collect();
+        self.viewers.retain(|key, _| open.contains(key));
+        // A tab that becomes active is brought into view, also when it was opened past the end of the strip.
+        let active = self.ide.read(cx).active.clone();
+        if active != self.scrolled_to {
+            if let Some(index) = active.as_ref().and_then(|key| self.ide.read(cx).tabs.iter().position(|tab| tab == key)) {
+                self.tabs_scroll.scroll_to_item(index);
+            }
+            self.scrolled_to = active;
+        }
         let ide = self.ide.read(cx);
         let body = if ide.workspace.is_none() {
             self.render_welcome(cx)

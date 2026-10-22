@@ -83,12 +83,19 @@ pub fn saved_target(preferences: &Map<String, Value>) -> Result<ExecutionTarget>
 /// Updates of one file run one after another, so concurrent changes of different fields do not lose each other.
 static UPDATES: Mutex<()> = Mutex::new(());
 
-/// Read, change and atomically rewrite `desktop.json`.
+/// Read, change and atomically rewrite `desktop.json`; `change` returns the fields to set.
 pub fn update_preferences(path: &Path, change: impl FnOnce(&Map<String, Value>) -> Map<String, Value>) -> Result<()> {
+    edit_preferences(path, |preferences| {
+        let fields = change(preferences);
+        preferences.extend(fields);
+    })
+}
+
+/// Read, change and atomically rewrite `desktop.json`; `change` may also remove fields.
+pub fn edit_preferences(path: &Path, change: impl FnOnce(&mut Map<String, Value>)) -> Result<()> {
     let _guard = UPDATES.lock().unwrap();
     let mut preferences = read_preferences(path)?;
-    let fields = change(&preferences);
-    preferences.extend(fields);
+    change(&mut preferences);
     if let Some(directory) = path.parent() {
         std::fs::create_dir_all(directory)?;
     }

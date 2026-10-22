@@ -437,6 +437,8 @@ export interface AppInfo {
   executionTargetId: string
   platform: 'win32' | 'linux'
   home: string
+  /** The Node.js version the Host runs on (`process.versions.node`), for diagnostics. */
+  node: string
 }
 
 // ───────────────────────────── Method table ─────────────────────────────

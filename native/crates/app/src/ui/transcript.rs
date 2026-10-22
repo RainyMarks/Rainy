@@ -4,7 +4,6 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, spinner::Spinner, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -48,6 +47,8 @@ pub enum Block {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Footer {
+    /// The `turn` entry, where a fork starts.
+    pub id: SharedString,
     pub duration_ms: f64,
     pub usage: UsageSummary,
     pub requests: f64,
@@ -62,6 +63,12 @@ pub struct TurnRow {
     pub live: bool,
     pub footer: Option<Footer>,
     pub copy: Option<SharedString>,
+    /// Blocks before this index are the steps the reply took; the rest is its answer.
+    pub answer_from: usize,
+    /// Model requests and tool results among the steps.
+    pub work_steps: usize,
+    /// What the steps did: files read, searches, changes, commands.
+    pub summary: String,
 }
 
 fn result_text(content: &[ResultContent]) -> String {
@@ -80,6 +87,7 @@ struct Context<'a> {
     results: HashMap<&'a str, (String, bool)>,
     running: &'a std::collections::BTreeMap<String, RunningTool>,
     waiting: HashSet<&'a str>,
+    thinking_since: Option<&'a (String, std::time::Instant)>,
 }
 
 fn assistant_blocks(ctx: &Context<'_>, key: &str, message: &AssistantMessage, live: bool, thinking_ms: Option<&Map<String, Value>>, out: &mut Vec<Block>) {
@@ -92,7 +100,11 @@ fn assistant_blocks(ctx: &Context<'_>, key: &str, message: &AssistantMessage, li
                 if thinking.trim().is_empty() && !redacted {
                     continue;
                 }
-                let duration_ms = thinking_ms.and_then(|map| map.get(&index.to_string())).and_then(Value::as_f64);
+                let duration_ms = thinking_ms.and_then(|map| map.get(&index.to_string())).and_then(Value::as_f64).or_else(|| {
+                    // A block still thinking counts from when it began.
+                    let live_key = format!("{}:{index}", message.timestamp);
+                    ctx.thinking_since.filter(|(key, _)| live && *key == live_key).map(|(_, since)| since.elapsed().as_millis() as f64)
+                });
                 out.push(Block::Thinking { key: block_key, text: thinking.clone().into(), redacted, live: live && index == last, duration_ms });
             }
             AssistantBlock::Text { text, .. } => {
@@ -149,6 +161,7 @@ pub fn build_rows(view: &ChatView, locale: Locale) -> Vec<TurnRow> {
             .collect(),
         running: &view.tools,
         waiting: snapshot.approvals.iter().map(|approval| approval.tool_call_id.as_str()).collect(),
+        thinking_since: view.thinking_since.as_ref(),
     };
     let busy = view.busy();
     let turns = group_turns(&snapshot.entries);
@@ -161,9 +174,57 @@ pub fn build_rows(view: &ChatView, locale: Locale) -> Vec<TurnRow> {
             let mut blocks = Vec::new();
             let mut footer = None;
             let mut copy = None;
+            // The answer is the last reply when it called no tools, or when it failed or stopped.
+            let answer = (!live)
+                .then(|| {
+                    turn.items.iter().rev().find_map(|item| match item {
+                        TranscriptEntry::Assistant { id, message, .. } => Some((id.as_str(), message)),
+                        _ => None,
+                    })
+                })
+                .flatten()
+                .filter(|(_, message)| {
+                    matches!(message.stop_reason.as_str(), "error" | "aborted")
+                        || !message.content.iter().any(|block| matches!(block, AssistantBlock::ToolCall { .. }))
+                })
+                .map(|(id, _)| id);
+            let mut answer_from = None;
+            let (mut work_steps, mut reads, mut searches, mut changes, mut commands, mut others) = (0, 0, 0, 0, 0, 0);
+            for item in &turn.items {
+                match item {
+                    TranscriptEntry::Assistant { id, .. } if Some(id.as_str()) == answer => {}
+                    TranscriptEntry::Assistant { .. } => work_steps += 1,
+                    TranscriptEntry::ToolResult { tool_name, .. } => {
+                        work_steps += 1;
+                        match tool_name.as_str() {
+                            "read" => reads += 1,
+                            "grep" | "glob" => searches += 1,
+                            "write" | "edit" => changes += 1,
+                            "bash" | "pwsh" => commands += 1,
+                            _ => others += 1,
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let summary = [
+                (reads, "chat.readFiles"),
+                (searches, "chat.searched"),
+                (changes, "chat.changedFiles"),
+                (commands, "chat.ranCommands"),
+                (others, "chat.calledTools"),
+            ]
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, key)| i18n::format(locale, key, &[("count", &count)]))
+            .collect::<Vec<_>>()
+            .join(" · ");
             for item in &turn.items {
                 match item {
                     TranscriptEntry::Assistant { id, message, thinking_ms, .. } => {
+                        if Some(id.as_str()) == answer {
+                            answer_from = Some(blocks.len());
+                        }
                         assistant_blocks(&ctx, id, message, false, thinking_ms.as_ref(), &mut blocks);
                         let text = assistant_text(message);
                         if !text.is_empty() {
@@ -187,8 +248,8 @@ pub fn build_rows(view: &ChatView, locale: Locale) -> Vec<TurnRow> {
                         };
                         blocks.push(Block::Muted { text: i18n::text(locale, key).into() });
                     }
-                    TranscriptEntry::Turn { duration_ms, usage, requests, .. } => {
-                        footer = Some(Footer { duration_ms: *duration_ms, usage: usage.clone(), requests: *requests });
+                    TranscriptEntry::Turn { id, duration_ms, usage, requests, .. } => {
+                        footer = Some(Footer { id: id.clone().into(), duration_ms: *duration_ms, usage: usage.clone(), requests: *requests });
                     }
                     TranscriptEntry::User { .. } | TranscriptEntry::ToolResult { .. } => {}
                 }
@@ -199,15 +260,27 @@ pub fn build_rows(view: &ChatView, locale: Locale) -> Vec<TurnRow> {
                 }
                 _ => ("lead".into(), None),
             };
-            TurnRow { key, user, blocks, live, footer: footer.filter(|_| !live), copy: copy.filter(|_| !live) }
+            let answer_from = answer_from.unwrap_or(blocks.len());
+            TurnRow { key, user, blocks, live, footer: footer.filter(|_| !live), copy: copy.filter(|_| !live), answer_from, work_steps, summary }
         })
         .collect();
     if let Some(streaming) = &snapshot.streaming {
         if rows.is_empty() {
-            rows.push(TurnRow { key: "lead".into(), user: None, blocks: Vec::new(), live: true, footer: None, copy: None });
+            rows.push(TurnRow {
+                key: "lead".into(),
+                user: None,
+                blocks: Vec::new(),
+                live: true,
+                footer: None,
+                copy: None,
+                answer_from: 0,
+                work_steps: 0,
+                summary: String::new(),
+            });
         }
         let last = rows.last_mut().expect("a row");
         assistant_blocks(&ctx, "stream", streaming, true, None, &mut last.blocks);
+        last.answer_from = last.blocks.len();
     }
     rows
 }
@@ -227,7 +300,10 @@ fn render_thinking(
     open: bool, row: usize, toggle: &Toggle, locale: Locale, cx: &App,
 ) -> AnyElement {
     let label = if live {
-        i18n::text(locale, "chat.thinkingRunning").to_owned()
+        match duration_ms {
+            Some(ms) => i18n::format(locale, "chat.thinkingRunningFor", &[("duration", &format_duration(ms))]),
+            None => i18n::text(locale, "chat.thinkingRunning").to_owned(),
+        }
     } else if let Some(ms) = duration_ms {
         i18n::format(locale, "chat.thinkingDoneFor", &[("duration", &format_duration(ms))])
     } else {
@@ -263,7 +339,7 @@ fn render_thinking(
                     .child(if redacted {
                         div().child(i18n::text(locale, "chat.thinkingRedacted")).into_any_element()
                     } else {
-                        TextView::markdown(ElementId::Name(format!("think-md-{key}").into()), text.clone()).selectable(true).into_any_element()
+                        crate::ui::markdown::markdown(ElementId::Name(format!("think-md-{key}").into()), text).into_any_element()
                     }),
             )
         })
@@ -358,8 +434,20 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, locale: 
         .into_any_element()
 }
 
+/// Start a new chat from a turn's `turn` entry.
+pub type Fork = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
+
+/// How a turn is drawn: the interface language and the chat preferences that shape it.
+pub struct TurnStyle {
+    pub locale: Locale,
+    pub show_usage: bool,
+    /// `compact` folds a finished turn's steps; `detailed` opens tool cards.
+    pub step_detail: SharedString,
+}
+
 /// Draw one turn.
-pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &Toggle, locale: Locale, show_usage: bool, cx: &App) -> AnyElement {
+pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &Toggle, fork: &Fork, style: &TurnStyle, cx: &App) -> AnyElement {
+    let (locale, show_usage) = (style.locale, style.show_usage);
     let theme = cx.theme();
     let mut column = v_flex().w_full().gap_3().px_4().py_2();
     if let Some((text, images)) = &row.user {
@@ -371,25 +459,56 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
                     .py_2()
                     .rounded(theme.radius_lg)
                     .bg(theme.muted)
-                    .child(TextView::markdown(ElementId::Name(format!("user-{}", row.key).into()), text.clone()).selectable(true))
+                    .child(crate::ui::markdown::markdown(ElementId::Name(format!("user-{}", row.key).into()), text))
                     .when(*images > 0, |this| {
                         this.child(div().text_xs().text_color(theme.muted_foreground).child(format!("🖼 × {images}")))
                     }),
             ),
         );
     }
-    for block in &row.blocks {
+    // A finished turn's steps fold behind one line in the compact style.
+    let foldable = style.step_detail == "compact" && !row.live && row.work_steps > 0;
+    let fold_key: SharedString = format!("steps:{}", row.key).into();
+    let steps_open = !foldable || expanded.contains(&fold_key);
+    if foldable {
+        let label = match &row.footer {
+            Some(footer) => i18n::format(locale, "chat.workedFor", &[("duration", &format_duration(footer.duration_ms))]),
+            None => i18n::format(locale, "chat.stepsSummary", &[("steps", &row.work_steps)]),
+        };
+        let toggle = toggle.clone();
+        let key = fold_key.clone();
+        column = column.child(
+            h_flex()
+                .id(ElementId::Name(format!("fold-{}", row.key).into()))
+                .gap_2()
+                .items_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .cursor_pointer()
+                .hover(|style| style.text_color(theme.foreground))
+                .on_click(move |_, window, cx| toggle(key.clone(), index, window, cx))
+                .child(label)
+                .when(!row.summary.is_empty(), |this| this.child(div().text_xs().child(row.summary.clone())))
+                .child(chevron(steps_open)),
+        );
+    }
+    let detailed = style.step_detail == "detailed";
+    for (position, block) in row.blocks.iter().enumerate() {
+        if position < row.answer_from && !steps_open {
+            continue;
+        }
         let element = match block {
             Block::Thinking { key, text, redacted, live, duration_ms } => {
                 let open = *live || expanded.contains(key);
                 render_thinking(key, text, *redacted, *live, *duration_ms, open, index, toggle, locale, cx)
             }
             Block::Text { key, text } => {
-                TextView::markdown(ElementId::Name(format!("md-{key}").into()), text.clone()).selectable(true).into_any_element()
+                crate::ui::markdown::markdown(ElementId::Name(format!("md-{key}").into()), text).into_any_element()
             }
             Block::Tool(tool) => {
                 let key: SharedString = format!("tool:{}", tool.call_id).into();
-                let open = expanded.contains(&key) || (tool.state == ToolState::Running && tool.output.is_some());
+                // The detailed style opens cards; a click toggles away from the default either way.
+                let open = expanded.contains(&key) != detailed || (tool.state == ToolState::Running && tool.output.is_some());
                 render_tool(tool, open, index, toggle, locale, cx)
             }
             Block::Notice { level, text } => {
@@ -427,6 +546,8 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
             }
         }
         let copy = row.copy.clone();
+        let fork_from = row.footer.as_ref().map(|footer| footer.id.clone());
+        let fork = fork.clone();
         column = column.child(
             h_flex()
                 .gap_3()
@@ -441,6 +562,16 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
                             .hover(|style| style.text_color(theme.foreground))
                             .child(Icon::new(IconName::Copy).xsmall())
                             .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.to_string()))),
+                    )
+                })
+                .when_some(fork_from, |this, entry| {
+                    this.child(
+                        div()
+                            .id(ElementId::Name(format!("fork-{}", row.key).into()))
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(theme.foreground))
+                            .child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall())
+                            .on_click(move |_, window, cx| fork(entry.clone(), window, cx)),
                     )
                 })
                 .child(parts.join(" · ")),

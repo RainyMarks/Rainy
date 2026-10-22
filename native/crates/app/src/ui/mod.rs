@@ -1,18 +1,23 @@
 //! The GPUI interface.
 
 pub mod actions;
+pub mod attention;
 pub mod changes;
 pub mod composer;
 pub mod chat;
 pub mod history;
+pub mod markdown;
 pub mod prompt;
 pub mod ide;
+pub mod save_dialog;
 pub mod settings;
+pub mod ssh;
 pub mod tool_title;
 pub mod transcript;
+pub mod update;
 pub mod workbench;
 
-use gpui_kit::{App, SharedString};
+use gpui_kit::{App, SharedString, Window};
 
 use crate::i18n::{self, Locale};
 use crate::store::Store;
@@ -30,6 +35,37 @@ pub fn tr(cx: &App, key: &str) -> SharedString {
 /// One interface string with its `{name}` placeholders filled.
 pub fn trf(cx: &App, key: &str, vars: &[(&str, &dyn std::fmt::Display)]) -> SharedString {
     i18n::format(locale(cx), key, vars).into()
+}
+
+/// Follow a link in a reply: web pages open in the browser, project files in the editor, anything else nothing.
+/// Other schemes (`file:`, custom protocols) could start programs, so they are never handed to the system.
+pub fn open_link(url: &str, window: &mut Window, cx: &mut App) {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        cx.open_url(url);
+        return;
+    }
+    if lower.contains("://") || lower.starts_with("javascript:") || lower.starts_with("data:") || lower.starts_with("mailto:") {
+        return;
+    }
+    // A path with an optional `#L12` line, relative to the project or absolute inside it.
+    let (path, line) = match url.split_once("#L") {
+        Some((path, line)) => (path, line.parse::<u32>().ok()),
+        None => (url, None),
+    };
+    let ide = crate::store::ide::Ide::global(cx);
+    let key = {
+        let ide = ide.read(cx);
+        if ide.workspace.is_none() {
+            return;
+        }
+        ide.key_from_absolute(path).or_else(|| (!path.starts_with('/') && !path.contains(':')).then(|| path.trim_start_matches("./").to_owned()))
+    };
+    let Some(key) = key else { return };
+    ide.update(cx, |ide, cx| match line {
+        Some(line) => ide.reveal(key, line.saturating_sub(1), 0, window, cx),
+        None => ide.open(key, true, window, cx),
+    });
 }
 
 /// `12s`, `3m 4s` or `1h 2m` (`formatDuration` in `Transcript.tsx`).

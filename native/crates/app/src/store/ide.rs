@@ -153,6 +153,51 @@ pub enum IdeEvent {
     ActiveChanged,
     /// A file was written from the editor.
     Saved,
+    /// The projects were loaded and the one selected last is shown again; launched paths may open now.
+    Restored,
+}
+
+/// A file or folder handed to Rainy, as a path on the Host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launched {
+    pub path: String,
+    pub directory: bool,
+}
+
+/// The folder of a Host path in the path's own spelling (`parentDirectory`); a file at the root of a drive gives the
+/// drive's root.
+pub fn parent_directory(path: &str) -> String {
+    let Some(separator) = path.rfind(['/', '\\']) else { return path.to_owned() };
+    let parent = &path[..separator];
+    let drive = parent.len() == 2 && parent.as_bytes()[0].is_ascii_alphabetic() && parent.as_bytes()[1] == b':';
+    if drive {
+        format!("{parent}\\")
+    } else if parent.is_empty() {
+        "/".to_owned()
+    } else {
+        parent.to_owned()
+    }
+}
+
+/// The key of an absolute Host path inside one of a project's folders, the most specific folder first.
+pub fn key_in(workspace: &IdeWorkspace, path: &str) -> Option<String> {
+    let candidate = path.replace('\\', "/");
+    let windows = candidate.as_bytes().get(1) == Some(&b':') || candidate.starts_with("//");
+    let fold = |value: &str| if windows { value.to_lowercase() } else { value.to_owned() };
+    let mut roots = workspace.roots();
+    roots.sort_by_key(|root| std::cmp::Reverse(root.path.len()));
+    roots.into_iter().find_map(|root| {
+        let prefix = format!("{}/", root.path.replace('\\', "/").trim_end_matches('/'));
+        fold(&candidate).starts_with(&fold(&prefix)).then(|| file_key(&candidate[prefix.len()..], Some(&root)))
+    })
+}
+
+/// The project whose folder holds a path most closely, with the path's key there.
+pub fn holding_workspace(workspaces: &[IdeWorkspace], path: &str) -> Option<(IdeWorkspace, String)> {
+    workspaces
+        .iter()
+        .filter_map(|workspace| Some((workspace.clone(), key_in(workspace, path)?)))
+        .min_by_key(|(_, key)| split_key(key).1.len())
 }
 
 pub struct Ide {
@@ -165,17 +210,23 @@ pub struct Ide {
     pub tabs: Vec<String>,
     /// Tabs showing a diff instead of the editor.
     pub diff_tabs: BTreeSet<String>,
+    /// How a tab shows its file when it is not the default (`source`, `preview`, `split`, `rich`), as 3.x stores it.
+    pub views: HashMap<String, String>,
     pub diffs: HashMap<String, DiffTab>,
     pub active: Option<String>,
     pub files: HashMap<String, OpenFile>,
     pub loading: bool,
     pub error: Option<SharedString>,
+    /// Whether `initialize` has shown the project selected last (`IdeEvent::Restored`).
+    pub restored: bool,
     state: Option<IdeWorkspaceState>,
     save_task: Option<Task<()>>,
     /// The window editors are created in, for files reloaded after the Host reported a change.
     window: Option<AnyWindowHandle>,
     /// Tabs that close once their save succeeds.
     closing: BTreeSet<String>,
+    /// The chat to show for the project just opened, until the chat list has loaded.
+    pending_session: Option<Option<String>>,
     /// Lists the shown directories again a moment after the Host reports changed files.
     relist: Option<Task<()>>,
     /// Checks open files and listings every few seconds; asking also keeps the Host watching their folders.
@@ -186,6 +237,10 @@ pub struct Ide {
     reveals: HashMap<String, (u32, u32)>,
     /// The file whose editor takes the cursor once loaded.
     focus_next: Option<String>,
+    /// The latest `files.read` of each key; the answer to an earlier one, or to one sent before another project was
+    /// shown, is dropped.
+    reads: HashMap<String, u64>,
+    read_count: u64,
 }
 
 impl EventEmitter<IdeEvent> for Ide {}
@@ -208,6 +263,7 @@ impl Ide {
                 crate::store::StoreEvent::Host { name, data } => this.on_host_event(name, data, cx),
                 // The chat shown last in a project comes back with it.
                 crate::store::StoreEvent::SelectionChanged if this.workspace.is_some() => this.schedule_state_save(cx),
+                crate::store::StoreEvent::SummariesChanged => this.restore_session(cx),
                 _ => {}
             })
             .detach();
@@ -219,20 +275,25 @@ impl Ide {
                 expanded: BTreeSet::new(),
                 tabs: Vec::new(),
                 diff_tabs: BTreeSet::new(),
+                views: HashMap::new(),
                 diffs: HashMap::new(),
                 active: None,
                 files: HashMap::new(),
                 loading: false,
                 error: None,
+                restored: false,
                 state: None,
                 save_task: None,
                 window: None,
                 closing: BTreeSet::new(),
+                pending_session: None,
                 reveals: HashMap::new(),
                 relist: None,
                 poll: None,
                 recovery: HashMap::new(),
                 focus_next: None,
+                reads: HashMap::new(),
+                read_count: 0,
             }
         });
         cx.set_global(GlobalIde(ide.clone()));
@@ -284,16 +345,24 @@ impl Ide {
         let selection = self.request::<WorkspaceSelection>(json!({ "op": "state.selection.read" }), cx);
         cx.spawn_in(window, async move |this, cx| {
             let (list, selection) = (list.await, selection.await);
-            let _ = this.update_in(cx, |this, window, cx| {
+            let shown = this.update_in(cx, |this, window, cx| {
                 match list {
                     Ok(workspaces) => this.workspaces = workspaces,
                     Err(error) => this.error = Some(ide_error(error)),
                 }
                 let selected = selection.ok().and_then(|selection| selection.workspace_id);
-                if let Some(workspace) = selected.and_then(|id| this.workspaces.iter().find(|w| w.workspace_id == id).cloned()) {
-                    this.select(workspace, window, cx);
-                }
+                let shown = selected
+                    .and_then(|id| this.workspaces.iter().find(|w| w.workspace_id == id).cloned())
+                    .map(|workspace| this.select_task(workspace, window, cx));
                 cx.notify();
+                shown
+            });
+            if let Ok(Some(shown)) = shown {
+                shown.await;
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.restored = true;
+                cx.emit(IdeEvent::Restored);
             });
         })
         .detach();
@@ -301,36 +370,55 @@ impl Ide {
 
     /// Register a folder as a project and open it.
     pub fn open_folder(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_folder_task(path, window, cx).detach();
+    }
+
+    /// `open_folder`, done once the project's saved tabs are shown; `false` when it could not be opened.
+    fn open_folder_task(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let request = self.request::<IdeWorkspace>(json!({ "op": "workspaces.open", "path": path }), cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
+            let shown = this.update_in(cx, |this, window, cx| match result {
                 Ok(workspace) => {
                     this.workspaces.retain(|w| w.workspace_id != workspace.workspace_id);
                     this.workspaces.push(workspace.clone());
-                    this.select(workspace, window, cx);
+                    Some(this.select_task(workspace, window, cx))
                 }
                 Err(error) => {
                     this.error = Some(ide_error(error));
                     cx.notify();
+                    None
                 }
             });
+            match shown {
+                Ok(Some(shown)) => {
+                    shown.await;
+                    true
+                }
+                _ => false,
+            }
         })
-        .detach();
     }
 
     /// Show a project: its saved tabs and expanded folders (`selectWorkspace`).
     pub fn select(&mut self, workspace: IdeWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_task(workspace, window, cx).detach();
+    }
+
+    /// `select`, done once the project's saved tabs are shown and their files read.
+    fn select_task(&mut self, workspace: IdeWorkspace, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         if self.workspace.as_ref().is_some_and(|current| current.workspace_id == workspace.workspace_id) {
-            return;
+            return Task::ready(());
         }
         self.flush_state(cx);
         self.workspace = Some(workspace.clone());
         self.listings.clear();
         self.expanded.clear();
         self.recovery.clear();
+        self.reads.clear();
         self.tabs.clear();
         self.diff_tabs.clear();
+        self.views.clear();
         self.diffs.clear();
         self.files.clear();
         self.active = None;
@@ -344,17 +432,24 @@ impl Ide {
         cx.spawn_in(window, async move |this, cx| {
             let state = state.await;
             let _ = selection.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let reads = this.update_in(cx, |this, window, cx| {
                 if this.workspace_id().as_deref() != Some(id.as_str()) {
-                    return;
+                    return Vec::new();
                 }
                 this.loading = false;
                 // Stored paths name their folder by `rootId`; the primary folder's paths stand alone.
+                let mut views = HashMap::new();
                 let (tabs, active, expanded, recovery) = match &state {
                     Ok(state) => {
                         let data = &state.data;
                         let keyed = |entry: &Value| entry["path"].as_str().map(|path| this.key_of_stored(path, entry["rootId"].as_str()));
                         let tabs: Vec<String> = data["tabs"].as_array().into_iter().flatten().filter_map(keyed).collect();
+                        views = data["tabs"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|tab| Some((keyed(tab)?, tab["view"].as_str()?.to_owned())))
+                            .collect();
                         let mut expanded: Vec<String> =
                             data["expandedPaths"].as_array().into_iter().flatten().filter_map(|path| path.as_str().map(str::to_owned)).collect();
                         expanded.extend(data["expandedRoots"].as_array().into_iter().flatten().filter_map(keyed));
@@ -366,6 +461,7 @@ impl Ide {
                     Err(_) => (Vec::new(), None, Vec::new(), HashMap::new()),
                 };
                 this.recovery = recovery;
+                this.views = views;
                 this.state = state.ok();
                 for root in workspace.roots() {
                     this.list(file_key("", Some(&root)), window, cx);
@@ -374,25 +470,65 @@ impl Ide {
                     this.expanded.insert(path.clone());
                     this.list(path, window, cx);
                 }
-                // Tabs come back as files, as in 3.x; a comparison is opened again from Git.
-                for key in &tabs {
-                    this.open(key.clone(), false, window, cx);
-                }
+                // Tabs come back as files, as in 3.x; a comparison is opened again from Git. All are read at once.
+                let reads: Vec<Task<()>> = tabs.iter().map(|key| this.open_task(key.clone(), false, window, cx)).collect();
                 this.active = active.filter(|key| tabs.contains(key)).or_else(|| tabs.first().cloned());
                 let last = this.state.as_ref().and_then(|state| state.data["lastSessionId"].as_str().map(str::to_owned));
-                let store = this.store.clone();
-                store.update(cx, |store, cx| {
-                    let belongs = |id: &String| store.summaries.iter().any(|s| s.id == *id && s.workspace_id.as_deref() == Some(id.as_str()));
-                    let keep = store.selected.as_ref().is_some_and(belongs);
-                    if !keep {
-                        store.select(last.filter(belongs), cx);
-                    }
-                });
+                // The chat list may still be loading; the chat is chosen once it has come.
+                this.pending_session = Some(last);
+                this.restore_session(cx);
                 cx.emit(IdeEvent::ActiveChanged);
                 cx.notify();
+                reads
             });
+            for read in reads.into_iter().flatten() {
+                read.await;
+            }
         })
-        .detach();
+    }
+
+    /// Open launched files and folders one after another (`openLaunched`): a folder as a project; a file in the
+    /// current project, else in the project whose folder holds it most closely, else with its folder as a new project.
+    pub fn open_launched(&mut self, launched: Vec<Launched>, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
+            for entry in launched {
+                if entry.directory {
+                    let Ok(opened) = this.update_in(cx, |ide, window, cx| ide.open_folder_task(entry.path.clone(), window, cx)) else { return };
+                    opened.await;
+                    continue;
+                }
+                let Ok((current, holding)) = this.read_with(cx, |ide, _| (ide.key_from_absolute(&entry.path), holding_workspace(&ide.workspaces, &entry.path)))
+                else {
+                    return;
+                };
+                // Each file is read before the next entry, which may show another project.
+                let read = if let Some(key) = current {
+                    this.update_in(cx, |ide, window, cx| ide.open_task(key, true, window, cx)).ok()
+                } else if let Some((workspace, key)) = holding {
+                    let id = workspace.workspace_id.clone();
+                    let Ok(shown) = this.update_in(cx, |ide, window, cx| ide.select_task(workspace, window, cx)) else { return };
+                    shown.await;
+                    this.update_in(cx, |ide, window, cx| (ide.workspace_id().as_deref() == Some(id.as_str())).then(|| ide.open_task(key, true, window, cx)))
+                        .ok()
+                        .flatten()
+                } else {
+                    let Ok(opened) = this.update_in(cx, |ide, window, cx| ide.open_folder_task(parent_directory(&entry.path), window, cx)) else { return };
+                    if !opened.await {
+                        continue;
+                    }
+                    this.update_in(cx, |ide, window, cx| {
+                        // A folder reached through a link has another canonical path; the file is still directly inside it.
+                        let name = entry.path.rsplit(['/', '\\']).next().unwrap_or(&entry.path).to_owned();
+                        let key = ide.key_from_absolute(&entry.path).unwrap_or(name);
+                        ide.open_task(key, true, window, cx)
+                    })
+                    .ok()
+                };
+                if let Some(read) = read {
+                    read.await;
+                }
+            }
+        })
     }
 
     /// List one directory.
@@ -400,9 +536,13 @@ impl Ide {
         let mut params = self.location(&key);
         params.insert("op".into(), json!("files.list"));
         let request = self.request::<IdeDirectory>(Value::Object(params), cx);
+        let workspace = self.workspace_id();
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
             let _ = this.update(cx, |this, cx| {
+                if this.workspace_id() != workspace {
+                    return;
+                }
                 let listing = match result {
                     Ok(directory) => {
                         let mut entries = directory.entries;
@@ -430,6 +570,11 @@ impl Ide {
 
     /// Open a file in a tab, or show its tab; `focus` makes it the active tab.
     pub fn open(&mut self, key: String, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_task(key, focus, window, cx).detach();
+    }
+
+    /// `open`, done once the file has been read.
+    fn open_task(&mut self, key: String, focus: bool, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         if !self.tabs.contains(&key) {
             self.tabs.push(key.clone());
         }
@@ -443,30 +588,39 @@ impl Ide {
             if focus && let Some(editor) = file.editor.clone() {
                 editor.update(cx, |state, cx| state.focus(window, cx));
             }
-            return;
+            return Task::ready(());
         }
         if focus {
             self.focus_next = Some(key.clone());
         }
+        self.read_count += 1;
+        let read = self.read_count;
+        self.reads.insert(key.clone(), read);
         let mut params = self.location(&key);
         params.insert("op".into(), json!("files.read"));
         let request = self.request::<IdeFileDocument>(Value::Object(params), cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(document) => this.accept_document(key, document, window, cx),
-                Err(error) => {
-                    this.tabs.retain(|tab| *tab != key);
-                    if this.active.as_deref() == Some(key.as_str()) {
-                        this.active = this.tabs.last().cloned();
-                        cx.emit(IdeEvent::ActiveChanged);
+            let _ = this.update_in(cx, |this, window, cx| {
+                // The Host answers in any order; an older read must not replace a newer one or reach another project.
+                if this.reads.get(&key) != Some(&read) {
+                    return;
+                }
+                this.reads.remove(&key);
+                match result {
+                    Ok(document) => this.accept_document(key, document, window, cx),
+                    Err(error) => {
+                        this.tabs.retain(|tab| *tab != key);
+                        if this.active.as_deref() == Some(key.as_str()) {
+                            this.active = this.tabs.last().cloned();
+                            cx.emit(IdeEvent::ActiveChanged);
+                        }
+                        this.error = Some(ide_error(error));
+                        cx.notify();
                     }
-                    this.error = Some(ide_error(error));
-                    cx.notify();
                 }
             });
         })
-        .detach();
     }
 
     fn accept_document(&mut self, key: String, mut document: IdeFileDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -557,10 +711,11 @@ impl Ide {
         params.insert("op".into(), json!("files.diff"));
         let request = self.request::<IdeFileDiff>(Value::Object(params), cx);
         self.diffs.entry(key.clone()).or_default();
+        let workspace = self.workspace_id();
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
             let _ = this.update(cx, |this, cx| {
-                if !this.diff_tabs.contains(&key) {
+                if this.workspace_id() != workspace || !this.diff_tabs.contains(&key) {
                     return;
                 }
                 let mut tab = DiffTab::default();
@@ -606,15 +761,7 @@ impl Ide {
 
     /// The key of an absolute Host path inside one of the project's folders.
     pub fn key_from_absolute(&self, path: &str) -> Option<String> {
-        let candidate = path.replace('\\', "/");
-        let windows = candidate.as_bytes().get(1) == Some(&b':') || candidate.starts_with("//");
-        let fold = |value: &str| if windows { value.to_lowercase() } else { value.to_owned() };
-        let mut roots = self.workspace.as_ref()?.roots();
-        roots.sort_by_key(|root| std::cmp::Reverse(root.path.len()));
-        roots.into_iter().find_map(|root| {
-            let prefix = format!("{}/", root.path.replace('\\', "/").trim_end_matches('/'));
-            fold(&candidate).starts_with(&fold(&prefix)).then(|| file_key(&candidate[prefix.len()..], Some(&root)))
-        })
+        key_in(self.workspace.as_ref()?, path)
     }
 
     /// Close the comparison tab of a file, as after its changes were undone.
@@ -692,12 +839,15 @@ impl Ide {
         params.insert("content".into(), json!(text));
         params.insert("expectedVersion".into(), json!(expected));
         let call = self.store.read(cx).call("ide", Value::Object(params));
+        let workspace = self.workspace_id();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                // After a switch the open files with this key are another project's.
+                let shown = this.workspace_id() == workspace;
                 match result.and_then(|value| serde_json::from_value::<IdeFileDocument>(value).map_err(|e| RpcError { code: "invalid".into(), message: e.to_string(), data: None })) {
                     Ok(document) => {
-                        if let Some(file) = this.files.get_mut(&key) {
+                        if shown && let Some(file) = this.files.get_mut(&key) {
                             file.saved = text;
                             file.document = document;
                             file.dirty = file.editor.as_ref().is_some_and(|editor| editor.read(cx).value() != file.saved.as_str());
@@ -705,13 +855,14 @@ impl Ide {
                             file.disk_version = None;
                         }
                         cx.emit(IdeEvent::Saved);
-                        if this.closing.remove(&key) {
+                        if this.closing.remove(&key) && shown {
                             this.close(&key, cx);
                         }
                     }
                     Err(error) => {
                         this.closing.remove(&key);
-                        if error.code == "version-conflict"
+                        if shown
+                            && error.code == "version-conflict"
                             && let Some(file) = this.files.get_mut(&key)
                         {
                             file.conflict = true;
@@ -739,13 +890,40 @@ impl Ide {
         self.open(key.to_owned(), false, window, cx);
     }
 
+    /// Choose how a tab shows its file; `None` is the default for the file type.
+    pub fn set_view(&mut self, key: &str, view: Option<&str>, cx: &mut Context<Self>) {
+        match view {
+            Some(view) => drop(self.views.insert(key.to_owned(), view.to_owned())),
+            None => drop(self.views.remove(key)),
+        }
+        self.schedule_state_save(cx);
+        cx.notify();
+    }
+
+    /// Replace the unsaved text of an open file, as a viewer that edits it (rich Markdown) does.
+    pub fn set_text(&mut self, key: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.files.get(key).and_then(|file| file.editor.clone()) else { return };
+        if editor.read(cx).value() == text {
+            return;
+        }
+        editor.update(cx, |state, cx| state.set_value(text.to_owned(), window, cx));
+        // Setting the value does not report a change, so the tab's unsaved state and the kept copy follow here.
+        if let Some(file) = self.files.get_mut(key) {
+            file.dirty = text != file.saved;
+        }
+        self.schedule_state_save(cx);
+        cx.notify();
+    }
+
     /// Close a tab; unsaved edits are the caller's to confirm first.
     pub fn close(&mut self, key: &str, cx: &mut Context<Self>) {
         let index = self.tabs.iter().position(|tab| tab == key);
         self.tabs.retain(|tab| tab != key);
         self.files.remove(key);
+        self.reads.remove(key);
         self.diff_tabs.remove(key);
         self.diffs.remove(key);
+        self.views.remove(key);
         if self.active.as_deref() == Some(key) {
             self.active = index.and_then(|index| self.tabs.get(index.min(self.tabs.len().saturating_sub(1))).cloned());
             cx.emit(IdeEvent::ActiveChanged);
@@ -788,11 +966,14 @@ impl Ide {
         }
         let call = self.store.read(cx).call("ide", Value::Object(params));
         let parent = parent_key(key);
+        let workspace = self.workspace_id();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                let shown = this.workspace_id() == workspace;
                 match result {
-                    Ok(value) => then(this, value, window, cx),
+                    Ok(value) if shown => then(this, value, window, cx),
+                    Ok(_) => {}
                     Err(error) => {
                         use gpui_kit::component::WindowExt as _;
                         let message = match error.code.as_str() {
@@ -802,7 +983,9 @@ impl Ide {
                         window.push_notification(gpui_kit::component::notification::Notification::error(message), cx);
                     }
                 }
-                this.list(parent, window, cx);
+                if shown {
+                    this.list(parent, window, cx);
+                }
             });
         })
         .detach();
@@ -865,6 +1048,23 @@ impl Ide {
         }, window, cx);
     }
 
+    /// Show the project's last chat, unless the chat shown already belongs to the project.
+    fn restore_session(&mut self, cx: &mut Context<Self>) {
+        let (Some(workspace), Some(last)) = (self.workspace_id(), self.pending_session.clone()) else { return };
+        let store = self.store.clone();
+        if store.read(cx).summaries.is_empty() && last.is_some() {
+            return;
+        }
+        self.pending_session = None;
+        store.update(cx, |store, cx| {
+            let belongs = |chat: &String| store.summaries.iter().any(|s| s.id == *chat && s.workspace_id.as_deref() == Some(workspace.as_str()));
+            if !store.selected.as_ref().is_some_and(belongs) {
+                let chosen = last.filter(belongs);
+                store.select(chosen, cx);
+            }
+        });
+    }
+
     /// Whether a tab has unsaved edits.
     pub fn is_dirty(&self, key: &str) -> bool {
         self.files.get(key).is_some_and(|file| file.dirty)
@@ -886,6 +1086,7 @@ impl Ide {
                             this.expanded.clear();
                             this.tabs.clear();
                             this.files.clear();
+                            this.reads.clear();
                             this.active = None;
                             cx.emit(IdeEvent::WorkspaceChanged);
                         }
@@ -933,16 +1134,21 @@ impl Ide {
             let (root, path) = split_key(key);
             by_root.entry(root.map(str::to_owned)).or_default().push(path.to_owned());
         }
+        let workspace = self.workspace_id();
         for (root, paths) in by_root {
-            let mut params = json!({ "op": "files.changes", "workspaceId": self.workspace_id(), "paths": paths });
+            let mut params = json!({ "op": "files.changes", "workspaceId": workspace, "paths": paths });
             if let Some(root) = &root {
                 params["rootId"] = json!(root);
             }
             let request = self.request::<Vec<IdeFileChange>>(params, cx);
             let window = self.window;
+            let workspace = workspace.clone();
             cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
                 let Ok(changes) = request.await else { return };
                 let changed = this.update(cx, |this, cx| {
+                    if this.workspace_id() != workspace {
+                        return Vec::new();
+                    }
                     let changed: Vec<String> = changes
                         .into_iter()
                         .filter_map(|change| {
@@ -987,7 +1193,58 @@ impl Ide {
 
     /// Write the editor state now (`state.save`), keeping every field this interface does not use.
     fn flush_state(&mut self, cx: &mut Context<Self>) {
-        let (Some(id), Some(state)) = (self.workspace_id(), self.state.clone()) else { return };
+        let Some(request) = self.state_request(cx) else { return };
+        cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
+            let result = request.await;
+            let _ = this.update(cx, |this, _| this.state_saved(result));
+        })
+        .detach();
+    }
+
+    /// Write the editor state with its unsaved text now and resolve once the Host stored it, as before Rainy restarts
+    /// into an update (3.x `rainy:flush-workbench`). A save that lost to another window's is written again on top of it.
+    pub fn flush_now(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.save_task = None;
+        cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
+            let mut attempts = 0;
+            loop {
+                let request = this.update(cx, |this, cx| this.state_request(cx)).map_err(|_| "The editor is closed.".to_owned())?;
+                let Some(request) = request else { return Ok(()) };
+                let result = request.await;
+                let saved = this.update(cx, |this, _| this.state_saved(result)).map_err(|_| "The editor is closed.".to_owned())?;
+                attempts += 1;
+                match saved {
+                    Ok(()) => return Ok(()),
+                    Err((error, true)) if attempts < 2 => log::info!("The editor state is saved again after a conflict: {}", error.message),
+                    Err((error, _)) => return Err(error.message),
+                }
+            }
+        })
+    }
+
+    /// Take the Host's answer to `state.save`: the saved state, or the error and whether the state another window saved
+    /// replaced this one's base.
+    fn state_saved(&mut self, result: Result<IdeWorkspaceState, RpcError>) -> Result<(), (RpcError, bool)> {
+        match result {
+            Ok(saved) => {
+                self.state = Some(saved);
+                Ok(())
+            }
+            // Another window saved first: take its revision; the next change writes again.
+            Err(error) => {
+                let current = error.data.as_ref().and_then(|data| data.get("currentState")).cloned().and_then(|current| serde_json::from_value::<IdeWorkspaceState>(current).ok());
+                let replaced = current.is_some();
+                if let Some(current) = current {
+                    self.state = Some(current);
+                }
+                Err((error, replaced))
+            }
+        }
+    }
+
+    /// The `state.save` request for what differs from the saved state, if anything does.
+    fn state_request(&mut self, cx: &mut Context<Self>) -> Option<impl Future<Output = Result<IdeWorkspaceState, RpcError>> + use<>> {
+        let (Some(id), Some(state)) = (self.workspace_id(), self.state.clone()) else { return None };
         let mut data = state.data.clone();
         // Tabs keep the fields this interface does not set, such as a cursor saved by 3.x.
         let previous: HashMap<String, Value> = data["tabs"]
@@ -1009,6 +1266,10 @@ impl Ide {
                         None => drop(tab.as_object_mut().and_then(|tab| tab.remove("rootId"))),
                     }
                     tab["kind"] = json!(kind);
+                    match self.views.get(key) {
+                        Some(view) => tab["view"] = json!(view),
+                        None => drop(tab.as_object_mut().and_then(|tab| tab.remove("view"))),
+                    }
                     tab
                 })
                 .collect(),
@@ -1058,24 +1319,9 @@ impl Ide {
             data["lastSessionId"] = json!(selected);
         }
         if data == state.data {
-            return;
+            return None;
         }
-        let request = self.request::<IdeWorkspaceState>(json!({ "op": "state.save", "workspaceId": id, "baseRevision": state.revision, "data": data }), cx);
-        cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
-            let result = request.await;
-            let _ = this.update(cx, |this, _| match result {
-                Ok(saved) => this.state = Some(saved),
-                // Another window saved first: take its revision; the next change writes again.
-                Err(error) => {
-                    if let Some(current) = error.data.as_ref().and_then(|data| data.get("currentState")).cloned()
-                        && let Ok(current) = serde_json::from_value::<IdeWorkspaceState>(current)
-                    {
-                        this.state = Some(current);
-                    }
-                }
-            });
-        })
-        .detach();
+        Some(self.request::<IdeWorkspaceState>(json!({ "op": "state.save", "workspaceId": id, "baseRevision": state.revision, "data": data }), cx))
     }
 }
 
@@ -1096,5 +1342,42 @@ mod tests {
         assert_eq!(file_name(&key), "a.rs");
         assert_eq!(language_of("x/Main.PY"), "python");
         assert_eq!(language_of("README"), "text");
+    }
+
+    #[test]
+    fn finds_the_parent_folder_of_windows_unc_and_posix_paths() {
+        assert_eq!(parent_directory(r"C:\notes.md"), r"C:\");
+        assert_eq!(parent_directory(r"C:\Users\me\a.md"), r"C:\Users\me");
+        assert_eq!(parent_directory(r"\\wsl.localhost\Ubuntu\home\me\a.md"), r"\\wsl.localhost\Ubuntu\home\me");
+        assert_eq!(parent_directory("/home/me/a.md"), "/home/me");
+        assert_eq!(parent_directory("/a.md"), "/");
+        assert_eq!(parent_directory("a.md"), "a.md");
+    }
+
+    #[test]
+    fn opens_a_launched_file_in_the_project_that_holds_it_most_closely() {
+        let project = |id: &str, path: &str, roots: Option<Vec<WorkspaceRoot>>| IdeWorkspace { workspace_id: id.into(), path: path.into(), title: id.into(), roots };
+        let notes = project("notes", r"C:\Users\me\Notes", None);
+        let daily = project("daily", r"C:\Users\me\Notes\daily", None);
+        let linux = project("linux", "/home/me/src", None);
+        let attached = project(
+            "work",
+            r"D:\Work",
+            Some(vec![
+                WorkspaceRoot { root_id: "r1".into(), path: r"D:\Work".into(), title: "Work".into(), primary: true },
+                WorkspaceRoot { root_id: "r2".into(), path: r"E:\Shared".into(), title: "Shared".into(), primary: false },
+            ]),
+        );
+        assert_eq!(key_in(&notes, r"c:\users\ME\notes\daily\today.md").as_deref(), Some("daily/today.md"));
+        assert_eq!(key_in(&notes, r"C:\Users\me\Notesbook\x.md"), None);
+        assert_eq!(key_in(&linux, "/home/me/src/main.rs").as_deref(), Some("main.rs"));
+        assert_eq!(key_in(&linux, "/home/me/SRC/main.rs"), None);
+        assert_eq!(key_in(&attached, r"E:\Shared\a\b.md"), Some(file_key("a/b.md", attached.roots().get(1))));
+        let all = [notes.clone(), daily.clone(), linux, attached];
+        let (found, key) = holding_workspace(&all, r"C:\Users\me\Notes\daily\today.md").unwrap();
+        assert_eq!((found.workspace_id.as_str(), key.as_str()), ("daily", "today.md"));
+        let (found, key) = holding_workspace(&all, r"C:\Users\me\Notes\ideas.md").unwrap();
+        assert_eq!((found.workspace_id.as_str(), key.as_str()), ("notes", "ideas.md"));
+        assert_eq!(holding_workspace(&all, r"F:\elsewhere.md"), None);
     }
 }

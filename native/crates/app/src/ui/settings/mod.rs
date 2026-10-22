@@ -69,7 +69,7 @@ impl SettingsView {
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let version = self.store.read(cx).info.as_ref().map(|info| info.version.clone()).unwrap_or_default();
+        let version = env!("CARGO_PKG_VERSION");
         let shortcuts_active = self.section == Section::Shortcuts;
         let theme = cx.theme();
         v_flex()

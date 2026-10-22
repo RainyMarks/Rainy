@@ -2,6 +2,7 @@
 
 pub mod cursor_status;
 pub mod editor_area;
+pub mod viewers;
 pub mod file_tree;
 pub mod folder_dialog;
 pub mod git;

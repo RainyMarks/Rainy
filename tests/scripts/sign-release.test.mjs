@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, verify } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { prepareReleaseKey, readReleaseSigningKey, releaseSigningKeyPath } from '../../scripts/release-signing-key.mjs'
@@ -70,28 +70,36 @@ test('packaged resources receive a verifiable signature without a license manage
   assert(manifest.files.every(row => !/private|issuer|license-verifier/u.test(row.path)))
 })
 
-test('generated updater configuration is included in the signed resource inventory', async t => {
+test('the signed list records the version it is given and no evidence enters the package', async t => {
   const f = await fixture(t)
   await resources(f)
-  const updater = Buffer.from('provider: github\nowner: RainyMarks\nrepo: RainyAgent\n')
-  await writeFile(join(f.root, 'app-update.yml'), updater)
-  const result = await signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath })
+  const result = await signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath, version: '4.0.0' })
   const envelope = JSON.parse(await readFile(result.path, 'utf8'))
-  const payload = Buffer.from(envelope.payload, 'base64url')
-  assert(verify(null, Buffer.concat([Buffer.from('RainyAgent/release-manifest/v1\0'), payload]), Object.values(f.keys.keys)[0],
-    Buffer.from(envelope.signature, 'base64url')))
-  const manifest = JSON.parse(payload)
-  assert.equal(result.files, 11)
-  assert.deepEqual(manifest.files.find(file => file.path === 'app-update.yml'), {
-    path: 'app-update.yml', bytes: updater.length, sha256: createHash('sha256').update(updater).digest('hex'),
-  })
+  assert.equal(JSON.parse(Buffer.from(envelope.payload, 'base64url')).buildVersion, '4.0.0')
+  assert.equal(result.version, '4.0.0')
+  assert.equal(result.manifestSha256, createHash('sha256').update(await readFile(result.path)).digest('hex'))
+  assert.deepEqual((await readdir(f.directory)).sort(), ['builder', 'resources'])
 })
 
-test('an updater configuration directory prevents resource signing', async t => {
+test('a 3.x updater configuration prevents resource signing', async t => {
   const f = await fixture(t)
   await resources(f)
+  await writeFile(join(f.root, 'app-update.yml'), 'provider: github\nowner: RainyMarks\nrepo: Rainy\n')
+  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath }), /3\.x Electron updater/)
+  await rm(join(f.root, 'app-update.yml'))
   await mkdir(join(f.root, 'app-update.yml'))
-  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath }), /app-update.yml must be a regular file/)
+  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath }), /3\.x Electron updater/)
+  assert(!(await readdir(f.root)).includes('release-manifest.signed.json'))
+})
+
+test('a key inside the package or a linked resource folder prevents signing', async t => {
+  const f = await fixture(t)
+  await resources(f)
+  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath, packageRoot: f.directory }), /outside the package/)
+  const host = join(f.directory, 'elsewhere')
+  await rename(join(f.root, 'windows-host'), host)
+  await symlink(host, join(f.root, 'windows-host'), 'junction')
+  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath }), /symbolic link/)
   assert(!(await readdir(f.root)).includes('release-manifest.signed.json'))
 })
 

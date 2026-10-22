@@ -83,6 +83,9 @@ pub struct AppInfo {
     pub execution_target_id: String,
     pub platform: String,
     pub home: String,
+    /// The Node.js version the Host runs on; Hosts before 4.0 do not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// A registered project directory.

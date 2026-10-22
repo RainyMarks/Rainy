@@ -1,13 +1,19 @@
 //! Application state kept current from the Host: connection, preferences, models, chat list and open chats.
 
 pub mod chat;
+pub mod diagnostics;
 pub mod execution;
 pub mod ide;
+pub mod modules;
+pub mod shell;
+pub mod update;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use gpui_kit::*;
+use rainy_carrier::askpass::{Askpass, Question};
+use rainy_carrier::trust::{Integrity, TrustError};
 use rainy_carrier::{ConnectionState, HostProcess, RpcClient, RpcEvent};
 use rainy_protocol::{
     AppInfo, ModelsStatus, RpcError, SessionEntryEvent, SessionSnapshot, SessionStateEvent, SessionSummary,
@@ -23,7 +29,8 @@ use chat::{ChatView, INITIAL_ENTRIES};
 /// Where startup stands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Phase {
-    Starting(SharedString),
+    /// The step under way and, when known, how much of it is done (0 to 1).
+    Starting(SharedString, Option<f32>),
     Ready,
     Failed(SharedString),
 }
@@ -50,6 +57,25 @@ pub enum StoreEvent {
     SelectionChanged,
     /// A Host event other views follow (`ide.hint`, `memory.changed`, …).
     Host { name: String, data: Value },
+    /// The Host ended while the interface was using it; the exit code, if it had one.
+    HostExited(Option<i32>),
+    /// The daily recheck found installed files changed or damaged.
+    ResourcesDamaged(TrustError),
+    /// Something about an update to show.
+    Update(update::UpdateNotice),
+}
+
+/// A question `ssh` asks, waiting for the window to show it; dropping `reply` cancels it.
+pub struct AskpassRequest {
+    pub question: Question,
+    pub reply: mpsc::Sender<Option<String>>,
+}
+
+/// The Linux runtime could not be downloaded during startup: why, and where the user's choice goes. Dropping `reply`
+/// quits, as closing 3.x's dialog did.
+pub struct RuntimePrompt {
+    pub error: String,
+    pub reply: mpsc::Sender<boot::RuntimeChoice>,
 }
 
 pub struct Store {
@@ -58,14 +84,35 @@ pub struct Store {
     pub connection: ConnectionState,
     pub rpc: Option<RpcClient>,
     host: Option<Arc<HostProcess>>,
+    /// The installed resources as startup accepted them, for the daily recheck; `None` when this run checks none.
+    integrity: Option<Arc<Integrity>>,
+    /// The Host's start left this for the background maintenance.
+    prune: Option<boot::Prune>,
+    maintenance_scheduled: bool,
     /// Where the Host runs; known once startup has read the saved choice.
     pub target: Option<ExecutionTarget>,
+    /// Answers the questions `ssh` asks, in this window.
+    pub askpass: Option<Arc<Askpass>>,
+    /// Questions waiting for the window.
+    pub questions: async_channel::Receiver<AskpassRequest>,
+    /// Failed Linux runtime downloads waiting for the window to ask what to do.
+    pub runtime_prompts: async_channel::Receiver<RuntimePrompt>,
+    prompt: async_channel::Sender<RuntimePrompt>,
+    /// Optional components: PHP in Settings, the Linux runtime base for WSL and SSH.
+    pub modules: modules::OptionalModules,
+    stopping: bool,
     pub info: Option<AppInfo>,
     pub prefs: UiPreferences,
     pub models: Option<ModelsStatus>,
     pub summaries: Vec<SessionSummary>,
     pub chats: HashMap<String, Entity<ChatModel>>,
     pub selected: Option<String>,
+    /// Explorer's "Open with Rainy" and the file types Rainy is offered for.
+    pub shell: shell::Shell,
+    /// Rainy's own updates.
+    pub updates: update::Updates,
+    /// Exporting the diagnostics zip.
+    pub diagnostics: diagnostics::Diagnostics,
     _tasks: Vec<Task<()>>,
 }
 
@@ -86,22 +133,64 @@ impl Store {
 
     /// Create the store and start the Host in the background.
     pub fn init(paths: Paths, cx: &mut App) -> Entity<Store> {
+        rainy_carrier::locale::set_chinese(boot::saved_locale(&paths.user_data) == Locale::Zh);
+        let (questions_tx, questions) = async_channel::unbounded::<AskpassRequest>();
+        // `ssh` starts Rainy.exe itself as its askpass program, which hands the question to this process.
+        let askpass = std::env::current_exe().ok().and_then(|exe| {
+            let ask = move |question: Question| {
+                let (reply, answer) = mpsc::channel();
+                questions_tx.send_blocking(AskpassRequest { question, reply }).ok()?;
+                answer.recv().ok().flatten()
+            };
+            Askpass::start(exe, Arc::new(ask)).inspect_err(|error| log::warn!("SSH questions cannot be answered: {error:#}")).ok()
+        });
+        // The saved target is shown while it starts; the Host runs there unless the saved choice is unreadable.
+        let target = rainy_carrier::targets::read_preferences(&paths.desktop_settings())
+            .ok()
+            .map(|preferences| rainy_carrier::targets::saved_target(&preferences).unwrap_or_else(|_| ExecutionTarget::windows()));
+        let shell = shell::Shell::new(&paths);
+        let updates = update::Updates::new(&paths);
+        let (prompt, runtime_prompts) = async_channel::unbounded::<RuntimePrompt>();
+        let (module_tx, module_states) = async_channel::unbounded::<rainy_carrier::modules::State>();
+        let manager = Arc::new(rainy_carrier::modules::Modules::new(&paths.resources, &paths.user_data, move |state| {
+            let _ = module_tx.try_send(state.clone());
+        }));
         let store = cx.new(|cx| {
             let mut store = Store {
                 paths,
-                phase: Phase::Starting("正在启动执行后端…".into()),
+                phase: Phase::Starting("正在启动执行后端…".into(), None),
                 connection: ConnectionState::Connecting,
                 rpc: None,
                 host: None,
-                target: None,
+                integrity: None,
+                prune: None,
+                maintenance_scheduled: false,
+                target,
+                askpass,
+                questions,
+                runtime_prompts,
+                prompt,
+                modules: modules::OptionalModules::new(manager),
+                stopping: false,
                 info: None,
                 prefs: UiPreferences::default(),
                 models: None,
                 summaries: Vec::new(),
                 chats: HashMap::new(),
                 selected: None,
+                shell,
+                updates,
+                diagnostics: diagnostics::Diagnostics::default(),
                 _tasks: Vec::new(),
             };
+            cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+                while let Ok(state) = module_states.recv().await {
+                    if this.update(cx, |store, cx| store.module_state(state, cx)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
             store.start(cx);
             store
         });
@@ -112,20 +201,70 @@ impl Store {
     fn start(&mut self, cx: &mut Context<Self>) {
         let paths = self.paths.clone();
         let events = CarrierEvents::new(&paths);
-        let (progress_tx, progress_rx) = async_channel::unbounded::<String>();
+        let (progress_tx, progress_rx) = async_channel::unbounded::<boot::Step>();
+        // A Host that ends after startup is reported once, unless Rainy is quitting.
+        let (exit_tx, exit_rx) = async_channel::bounded::<Option<i32>>(1);
+        *events.on_exit.lock().unwrap() = Some(Box::new(move |code| {
+            let _ = exit_tx.try_send(code);
+        }));
+        // The agent's preview commands run in the window, one after another.
+        let (preview_tx, preview_rx) = async_channel::unbounded::<(Value, mpsc::Sender<Value>)>();
+        *events.preview.lock().unwrap() = Some(preview_tx);
+        cx.spawn(async move |_, cx: &mut AsyncApp| {
+            while let Ok((command, reply)) = preview_rx.recv().await {
+                let window = cx.update(|cx| cx.windows().first().copied());
+                let answer = match window {
+                    Some(window) => crate::web::preview::handle(command, window, cx).await,
+                    None => json!({ "error": "The preview window is unavailable." }),
+                };
+                let _ = reply.send(answer);
+            }
+        })
+        .detach();
+        let askpass = self.askpass.clone();
+        let (modules, prompt) = (self.modules.manager.clone(), self.prompt.clone());
+        let (accepted_tx, accepted) = async_channel::bounded::<()>(1);
+        // Nothing from the resources runs before they are accepted.
         let started = cx.background_spawn(async move {
-            let (target, command) = boot::prepare(&paths, &|step| {
+            let report = |step: boot::Step| {
                 let _ = progress_tx.try_send(step);
-            })?;
-            let host = HostProcess::start(&command, events)?;
-            anyhow::Ok((target, Arc::new(host)))
+            };
+            let ask = |error: String| {
+                let (reply, answer) = mpsc::channel();
+                if prompt.send_blocking(RuntimePrompt { error, reply }).is_err() {
+                    return boot::RuntimeChoice::Quit;
+                }
+                answer.recv().unwrap_or(boot::RuntimeChoice::Quit)
+            };
+            let integrity = boot::verify_resources(&paths, &report)?;
+            let _ = accepted_tx.try_send(());
+            let started = boot::start(&paths, events, askpass.as_ref(), &modules, &ask, &report)?;
+            anyhow::Ok((started.target, Arc::new(started.host), started.prune, integrity))
         });
+        // The modules' descriptor is read only once the resources were accepted.
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            if accepted.recv().await.is_ok() {
+                let _ = this.update(cx, |store, cx| store.modules_ready(cx));
+            }
+        })
+        .detach();
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            if let Ok(code) = exit_rx.recv().await {
+                let _ = cx.update(|_| crate::web::preview::close());
+                let _ = this.update(cx, |store, cx| {
+                    if !store.stopping && store.host.is_some() {
+                        cx.emit(StoreEvent::HostExited(code));
+                    }
+                });
+            }
+        })
+        .detach();
         // Startup steps (starting WSL, installing the runtime) are shown while they run.
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             while let Ok(step) = progress_rx.recv().await {
                 let _ = this.update(cx, |store, cx| {
-                    if matches!(store.phase, Phase::Starting(_)) {
-                        store.phase = Phase::Starting(step.into());
+                    if matches!(store.phase, Phase::Starting(..)) {
+                        store.phase = Phase::Starting(step.text.into(), step.fraction);
                         cx.notify();
                     }
                 });
@@ -133,7 +272,7 @@ impl Store {
         })
         .detach();
         let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let (target, host) = match started.await {
+            let (target, host, prune, integrity) = match started.await {
                 Ok(started) => started,
                 Err(error) => {
                     let _ = this.update(cx, |store, cx| {
@@ -158,6 +297,8 @@ impl Store {
                 store.host = Some(host);
                 store.target = Some(target);
                 store.rpc = Some(rpc);
+                store.integrity = integrity.map(Arc::new);
+                store.prune = prune;
                 cx.notify();
             });
             while let Ok(event) = events.recv().await {
@@ -169,8 +310,44 @@ impl Store {
         self._tasks.push(task);
     }
 
+    /// The Host's launch address, which exchanges its token for the session cookie; pages in WebView2 start there.
+    pub fn launch_url(&self) -> Option<String> {
+        self.host.as_ref().map(|host| host.ready().url.clone())
+    }
+
+    /// A minute after the workbench is first ready, as 3.x did: the daily recheck of the installed files, then removing
+    /// what earlier versions left behind and the Linux runtimes they installed. Nothing starts while Rainy is quitting.
+    fn schedule_maintenance(&mut self, cx: &mut Context<Self>) {
+        if self.maintenance_scheduled {
+            return;
+        }
+        self.maintenance_scheduled = true;
+        let (paths, integrity, prune, modules) = (self.paths.clone(), self.integrity.clone(), self.prune.take(), self.modules.manager.clone());
+        let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            cx.background_executor().timer(boot::MAINTENANCE_DELAY).await;
+            let stopping = |cx: &mut AsyncApp| this.update(cx, |store, _| store.stopping).unwrap_or(true);
+            if let Some(integrity) = integrity.clone() {
+                if stopping(cx) {
+                    return;
+                }
+                if let Some(error) = cx.background_spawn(async move { boot::recheck_resources(&integrity) }).await {
+                    let _ = this.update(cx, |_, cx| cx.emit(StoreEvent::ResourcesDamaged(error)));
+                }
+            }
+            if stopping(cx) {
+                return;
+            }
+            cx.background_spawn(async move { boot::clean_up(&paths, integrity.as_deref(), prune, &modules) }).await;
+        });
+        self._tasks.push(task);
+    }
+
     /// Stop the Host; called when the application quits.
     pub fn shutdown(&mut self) {
+        self.stopping = true;
+        // A download stops; what it received is kept for the next attempt.
+        self.modules.manager.close();
+        self.updates.cancel();
         if let Some(rpc) = self.rpc.take() {
             rpc.close();
         }
@@ -214,15 +391,19 @@ impl Store {
             }
             let _ = this.update(cx, |store, cx| {
                 match (&info, &prefs) {
-                    (Ok(_), Ok(_)) => store.phase = Phase::Ready,
+                    (Ok(_), Ok(_)) => {
+                        store.phase = Phase::Ready;
+                        store.schedule_maintenance(cx);
+                        store.schedule_shell(cx);
+                        store.schedule_update_check(cx);
+                    }
                     (Err(error), _) | (_, Err(error)) => store.phase = Phase::Failed(error.message.clone().into()),
                 }
                 if let Ok(info) = info {
                     store.info = Some(info);
                 }
                 if let Ok(prefs) = prefs {
-                    store.prefs = prefs;
-                    cx.emit(StoreEvent::PrefsChanged);
+                    store.set_prefs(prefs, cx);
                 }
                 if let Ok(models) = models {
                     store.models = Some(models);
@@ -305,8 +486,7 @@ impl Store {
             }
             "prefs.changed" => {
                 if let Ok(prefs) = serde_json::from_value::<UiPreferences>(data) {
-                    self.prefs = prefs;
-                    cx.emit(StoreEvent::PrefsChanged);
+                    self.set_prefs(prefs, cx);
                     cx.notify();
                 }
             }
@@ -393,11 +573,33 @@ impl Store {
         }
     }
 
-    /// Start Rainy again with the same arguments, then quit this instance.
+    /// New interface preferences; the language is also recorded for messages shown before the next start's Host answers.
+    fn set_prefs(&mut self, prefs: UiPreferences, cx: &mut Context<Self>) {
+        let changed = prefs.locale != self.prefs.locale || boot::saved_locale(&self.paths.user_data) != Locale::from_code(&prefs.locale);
+        self.prefs = prefs;
+        rainy_carrier::locale::set_chinese(self.locale() == Locale::Zh);
+        self.follow_shell_language(cx);
+        if changed {
+            let (settings, locale) = (self.paths.desktop_settings(), self.prefs.locale.clone());
+            cx.background_spawn(async move {
+                if let Err(error) = rainy_carrier::targets::save_locale(&settings, &locale) {
+                    log::warn!("The interface language was not recorded: {error:#}");
+                }
+            })
+            .detach();
+        }
+        cx.emit(StoreEvent::PrefsChanged);
+    }
+
+    /// Start Rainy again with this run's switches, then quit. The new process waits for this one to exit before it
+    /// takes the single-instance lock, and opens none of the paths this run was launched with.
     pub fn restart(&mut self, cx: &mut Context<Self>) {
         if let Ok(exe) = std::env::current_exe() {
             self.shutdown();
-            let _ = std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn();
+            let arguments = rainy_carrier::launch::relaunch_arguments(&std::env::args_os().collect::<Vec<_>>(), std::process::id());
+            if let Err(error) = std::process::Command::new(exe).args(arguments).spawn() {
+                log::warn!("Rainy could not start again: {error}");
+            }
         }
         cx.quit();
     }

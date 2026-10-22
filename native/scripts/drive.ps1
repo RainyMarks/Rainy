@@ -1,6 +1,7 @@
 # Drive one window of a process by posting messages to it; nothing goes through the global mouse or keyboard,
 # so other windows on the desktop never receive input. Steps are separated by ';;':
 #   click:X,Y        left click at window-relative physical pixels (rclick: right click)
+#   wheel:X,Y,N      turn the mouse wheel N notches at X,Y (negative scrolls down)
 #   type:TEXT        type text (Unicode, as WM_CHAR)
 #   key:NAME         press enter, escape, tab, down, up, backspace; prefix ctrl+ or shift+
 #   wait:SECONDS     sleep
@@ -53,6 +54,12 @@ public static class Drive {
   public static void Type(IntPtr h, string text) {
     foreach (char c in text) { PostMessage(h, 0x0102, (IntPtr)c, (IntPtr)1); System.Threading.Thread.Sleep(4); }
   }
+  public static void Wheel(IntPtr h, int screenX, int screenY, int notches) {
+    POINT p; p.X = screenX; p.Y = screenY; ScreenToClient(h, ref p);
+    PostMessage(h, 0x0200, IntPtr.Zero, (IntPtr)((p.Y << 16) | (p.X & 0xFFFF)));
+    IntPtr wparam = (IntPtr)((notches * 120) << 16);
+    PostMessage(h, 0x020A, wparam, (IntPtr)((screenY << 16) | (screenX & 0xFFFF)));
+  }
   public static void Click(IntPtr h, int screenX, int screenY, bool right) {
     POINT p; p.X = screenX; p.Y = screenY; ScreenToClient(h, ref p);
     IntPtr pos = (IntPtr)((p.Y << 16) | (p.X & 0xFFFF));
@@ -73,6 +80,7 @@ foreach ($step in ($Steps -split ';;')) {
   $r = New-Object Drive+RECT; [Drive]::GetWindowRect($h, [ref]$r) | Out-Null
   switch ($kind) {
     'click' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $false); Start-Sleep -Milliseconds 200 }
+    'wheel' { $x, $y, $n = $arg -split ','; [Drive]::Wheel($h, $r.Left + [int]$x, $r.Top + [int]$y, [int]$n); Start-Sleep -Milliseconds 150 }
     'rclick' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $true); Start-Sleep -Milliseconds 200 }
     'type' { [Drive]::Type($h, $arg); Start-Sleep -Milliseconds 150 }
     'key' {

@@ -28,13 +28,15 @@ pub struct ChatView {
     pub truncated: bool,
     /// Bumped on every change, so views can tell whether to rebuild.
     pub revision: u64,
+    /// The streaming thinking block (`timestamp:index`) and when it began, for its timer.
+    pub thinking_since: Option<(String, std::time::Instant)>,
 }
 
 impl ChatView {
     pub fn new(snapshot: SessionSnapshot, whole: bool) -> Self {
         let tools = snapshot.running_tools.iter().map(|id| (id.clone(), RunningTool::default())).collect();
         let truncated = !whole && snapshot.entries.len() >= INITIAL_ENTRIES;
-        Self { snapshot, tools, truncated, revision: 0 }
+        Self { snapshot, tools, truncated, revision: 0, thinking_since: None }
     }
 
     pub fn busy(&self) -> bool {
@@ -43,7 +45,23 @@ impl ChatView {
 
     fn touched(&mut self) -> bool {
         self.revision += 1;
+        self.follow_thinking();
         true
+    }
+
+    /// Note when the streaming reply's last block began thinking.
+    fn follow_thinking(&mut self) {
+        let live = self.snapshot.streaming.as_ref().and_then(|message| {
+            let index = message.content.len().checked_sub(1)?;
+            matches!(message.content[index], rainy_protocol::AssistantBlock::Thinking { .. }).then(|| format!("{}:{index}", message.timestamp))
+        });
+        match live {
+            None => self.thinking_since = None,
+            Some(key) if self.thinking_since.as_ref().is_none_or(|(known, _)| *known != key) => {
+                self.thinking_since = Some((key, std::time::Instant::now()));
+            }
+            Some(_) => {}
+        }
     }
 
     /// `session.entry`; returns whether anything changed.

@@ -36,7 +36,7 @@ GPUI 界面：聊天、文件树、编辑器、终端、搜索、Git、设置…
 | 控件 | GPUI Kit 0.8（`gpui-component`，Apache-2.0）：按钮、输入框、列表、树、对话框、Markdown、代码编辑器（tree-sitter + LSP） |
 | 着色器 | `runtime_shaders`：运行时编译，不需要 Windows SDK |
 | 终端 | `alacritty_terminal`（Apache-2.0）解析，自己用 GPUI 画；不用 Zed 的终端（GPL） |
-| 文档预览 | PDF、Word、Excel、所见即所得 Markdown、mermaid、给 AI 用的内置浏览器：嵌入系统自带的 WebView2（`gpui-webview`），沿用现有网页代码；Windows 11 自带 WebView2，不占安装包体积 |
+| 文档预览 | PDF、Word、Excel、PPT、所见即所得 Markdown、mermaid、给 AI 用的内置浏览器：嵌入系统自带的 WebView2（直接用 `webview2-com`，不用 wry：wry 创建时会嵌套消息循环），沿用 3.x 的网页代码；Windows 11 自带 WebView2，只多带一个 WebView2Loader.dll |
 | 自动更新 | 自己实现：读 GitHub 发布的 latest.yml，下载、校验 sha512 和签名，再运行 NSIS 安装包 |
 
 不能用 Zed 的 `editor`、`terminal_view` 等 crate：它们是 GPL，和 Rainy 的 PolyForm Strict 许可证冲突。
@@ -58,10 +58,19 @@ GPUI 界面：聊天、文件树、编辑器、终端、搜索、Git、设置…
 - 聊天：流式回复、工具卡、审批、排队、停止、重试（失败后和倒计时中）、后台命令栏、AI 改动栏（审查、保留、撤销）、`@` 引用补全、`/compact` `/new`、粘贴/选择/拖入图片、拖入文件引用、连按两次 Esc 停止。
 - 工作台：三栏布局、项目菜单、文件树（新建、重命名、删除、刷新）、标签页、编辑器（语法高亮）、Ctrl+S、外部修改冲突、未保存内容恢复（与 3.x 状态文件互通）、图片和十六进制查看、快速打开、搜索替换、Git（暂存、提交、AI 写提交说明、差异视图）、终端（alacritty_terminal，中文输入法、选择复制粘贴、回滚）、状态栏行列号。
 - 设置：通用、外观、模型（含编辑器 AI、联网搜索、网络代理）、Skills 与 MCP、运行环境、项目记忆、安全、快捷键。
+- 对话增强：思考计时、分叉对话、等待审批时任务栏闪烁、步骤折叠（简洁/详细）、上次对话恢复、回复里的链接（网页用浏览器打开，文件在 Rainy 里打开）。其中思考计时、任务栏闪烁和链接点击还没在窗口里实测。
+- 数学公式：latex-rust（纯 Rust，STIX Two Math 字体），`$…$`、`$$…$$`，以及模型常写的 `\(…\)`、`\[…\]`；公式里的中文用系统字体补画；`$5 和 $10` 这类金额不当公式；不支持的写法（如 `\ce{}`）显示原文。
 
-未做：SSH 执行环境、可选模块下载、数学公式渲染、思考计时、分叉对话、审批系统通知、步骤折叠、LSP、运行和调试、命令面板、项目地图、PDF/Office/Markdown 预览（WebView2）、内置浏览器、3.9 的“用 Rainy 打开”和所见即所得 Markdown、诊断包、单实例、窗口位置记忆、自动更新、安装包。
+- SSH 远程开发：用系统自带 OpenSSH；连接时在服务器上安装运行环境（服务器自己下载，或从本机上传），再启动后端并转发端口；密码、密钥口令和主机指纹由 Rainy.exe 充当 askpass，在主窗口里询问，同一次运行只问一次；断线后提示重新连接；设置 → 运行环境里添加（先测试连接）、移除、切换主机，并列出 ~/.ssh/config 的别名。用 WSL 里的临时 sshd（127.0.0.1:22022，HOME=/tmp/rainy-ssh-home）实测：口令、主机指纹取消、全新服务器上传安装、命令、终端、断线重连。服务器自己下载基础包（需要发行包里的 optional-modules.json）还没实测。
+- 后端修复：同一台服务器的两个 SSH 别名共用 ~/.rainy-agent 时，第二个别名启动会因项目登记冲突而退出；现在只记一条日志，照常启动。
+- 文档预览（WebView2）：PDF（含未嵌入字体的中文论文）、Word、Excel、PPT（用本机 PowerPoint/Word/WPS 转成 PDF，照搬 3.x 的 PowerShell 脚本，最近 6 个结果缓存）、Markdown 的所见即所得/源码/预览/分栏（网页里改动同步回编辑器并标记未保存，网页里 Ctrl+S 保存，分栏实时预览），每个文件记住上次的视图。网页由后端提供（3.x 的 ViewerApp，`/?view=…`），登录令牌换成 cookie 后跳到同源地址。标签页过多时自动滚到当前标签。
+- AI 内置浏览器：browser_open/read/act/screenshot 实测通过（点击、输入、回车、跳转、控制台错误和失败请求、截图）；只能打开本机地址，页面里的外链、跳转和直接打开外网地址都被拦下。页面固定按 1280×800 桌面尺寸排版（不受屏幕缩放影响），截图也是 1280×800；WebView2 自己请求的 favicon.ico 不算页面错误。
+- 窗口叠放：GPUI 默认的 DirectComposition 画面盖在子窗口之上，会把 WebView2 挡住，所以启动时设置 `GPUI_DISABLE_DIRECT_COMPOSITION=1`（没有用到透明或毛玻璃窗口背景，不损失功能）。网页是独立的子窗口，GPUI 画的东西没法盖在它上面：对话框、设置、菜单（标题栏项目菜单、文件树右键菜单等）打开时网页暂时让开，关闭后回来。
+- 没实测：网页里按 Ctrl+W、Ctrl+P、Ctrl+反引号等快捷键（测试脚本发不出真实的 Ctrl 状态）、改窗口大小时是否闪烁（截图工具看不出来）、提示气泡被网页挡住（悬停提示不抢焦点，无法用菜单的办法处理）。
+
+未做：可选模块下载、LSP、运行和调试、命令面板、项目地图、3.9 的“用 Rainy 打开”、诊断包、单实例、窗口位置记忆、自动更新、安装包（要带上 dist/renderer 和 WebView2Loader.dll）。
 
 ## 开发
 
-- 后台用 `release/win-unpacked/resources/windows-host` 的副本（放在 `tmp/dev-host`），不要直接用主目录 `runtime/windows-host`：运行中的后台会锁住那个文件夹，导致主目录打包失败。
+- 后台用 `release/win-unpacked/resources/windows-host` 的副本（放在 `tmp/dev-resources/windows-host`），不要直接用主目录 `runtime/windows-host`：运行中的后台会锁住那个文件夹，导致主目录打包失败。
 - 测试时 `RAINY_HOME` 指向临时目录，不碰真实配置。

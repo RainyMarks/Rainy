@@ -90,7 +90,7 @@ async function main(): Promise<void> {
 
   rpc.register('app.info', () => ({
     name: 'Rainy' as const, version: env.version, environment: hostEnvironmentKind(env),
-    executionTargetId: env.executionTargetId, platform: env.platform, home: env.home,
+    executionTargetId: env.executionTargetId, platform: env.platform, home: env.home, node: process.versions.node,
   }))
   rpc.register('prefs.get', () => settings.prefs())
   rpc.register('prefs.set', async (change) => {
@@ -123,8 +123,14 @@ async function main(): Promise<void> {
   })
 
   await restorePendingProject()
-  for (const project of projects.list()) await registry.getOrRegister({ workspaceId: project.id, path: project.path, title: project.title })
-  projects.onChange((project) => { void registry.getOrRegister({ workspaceId: project.id, path: project.path, title: project.title }) })
+  // A project the registry refuses (the same folder recorded for another target, as with two SSH aliases of one server)
+  // stays usable here; only its cross-target identity is missing, so the Host still starts.
+  const register = (project: { id: WorkspaceId; path: string; title: string }): Promise<void> =>
+    registry.getOrRegister({ workspaceId: project.id, path: project.path, title: project.title }).then(() => undefined, (error: unknown) => {
+      log(`Project ${project.path} is not registered for this execution target: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  for (const project of projects.list()) await register(project)
+  projects.onChange((project) => { void register(project) })
 
   await server.listen()
   let stopping: Promise<void> | undefined

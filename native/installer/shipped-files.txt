@@ -1,0 +1,19 @@
+# Every path outside resources\windows-host that a Rainy 4.x setup has installed, one per line; a folder ends in "\".
+# scripts/package-native.mjs adds what a release ships for the first time and never removes a line, so setup deletes the
+# files an earlier 4.x installed and this version no longer ships (resources\windows-host is pruned by Rainy itself).
+LICENSE
+LICENSE.Rainy
+LICENSE.upstream
+RainyAgent.exe
+THIRD_PARTY_NOTICES.md
+WebView2Loader.dll
+resources\
+resources\environment-component-catalog.json
+resources\icon.ico
+resources\install-environment-component.py
+resources\install-runtime.py
+resources\linux-app.tar.gz
+resources\linux-runtime.json
+resources\optional-modules.json
+resources\release-manifest.signed.json
+resources\release-public-keys.json

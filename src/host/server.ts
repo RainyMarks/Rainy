@@ -129,9 +129,11 @@ export class HostServer {
         const token = Buffer.from(url.searchParams.get('token') ?? '')
         const expected = Buffer.from(this.launchToken)
         if (token.length !== expected.length || !timingSafeEqual(token, expected)) { response.writeHead(403); response.end(); return }
+        // `next` lets a WebView2 pane of the native workbench land on its own page; only paths on this origin are followed.
+        const next = url.searchParams.get('next') ?? '/'
         response.writeHead(302, {
           'Set-Cookie': `${COOKIE}=${this.sessionSecret}; Path=/; HttpOnly; SameSite=Strict`,
-          Location: '/', 'Cache-Control': 'no-store',
+          Location: next.startsWith('/') && !next.startsWith('//') && !next.includes('\\') ? next : '/', 'Cache-Control': 'no-store',
         })
         response.end()
         return

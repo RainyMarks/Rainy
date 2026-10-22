@@ -12,6 +12,9 @@ import './theme/app.css'
 import './prefs.ts'
 import { App } from './app/App.tsx'
 import { installFeedback } from './app/feedback.ts'
+import { ViewerApp } from './viewer/ViewerApp.tsx'
 
 installFeedback()
-createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)
+// The native workbench shows single files in WebView2 panes at `/?view=…`.
+const viewer = new URLSearchParams(location.search).has('view')
+createRoot(document.getElementById('root')!).render(<StrictMode>{viewer ? <ViewerApp /> : <App />}</StrictMode>)

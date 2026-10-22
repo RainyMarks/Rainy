@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
 use crate::store::{ChatModel, Store, StoreEvent};
-use crate::ui::transcript::{Expanded, Toggle, TurnRow, build_rows, render_turn};
+use crate::ui::transcript::{Expanded, Fork, Toggle, TurnRow, TurnStyle, build_rows, render_turn};
 use crate::ui::{tr, trf};
 
 /// One entry of the composer's suggestion list.
@@ -37,6 +37,8 @@ pub struct ChatPane {
     completion_task: Option<Task<()>>,
     /// When Esc was pressed last while the chat ran; a second Esc soon after stops it.
     last_escape: Option<std::time::Instant>,
+    /// Redraws a thinking timer.
+    ticker: Option<Task<()>>,
     store: Entity<Store>,
     changes: Entity<crate::ui::changes::ChangesBar>,
     chat: Option<Entity<ChatModel>>,
@@ -92,7 +94,7 @@ impl ChatPane {
                     this.composer.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
                     this.rebuild(cx);
                 }
-                StoreEvent::SummariesChanged | StoreEvent::Host { .. } => {}
+                StoreEvent::SummariesChanged | StoreEvent::Host { .. } | StoreEvent::HostExited(_) | StoreEvent::ResourcesDamaged(_) | StoreEvent::Update(_) => {}
             }),
             cx.observe(&store, |_, _, cx| cx.notify()),
         ];
@@ -105,6 +107,7 @@ impl ChatPane {
             completion_seq: 0,
             completion_task: None,
             last_escape: None,
+            ticker: None,
             changes,
             store,
             chat: None,
@@ -138,6 +141,17 @@ impl ChatPane {
 
     /// Build the turns again after the chat changed, and tell the list which rows changed.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        // A reply still thinking is drawn again every second, so its timer runs between deltas.
+        let thinking = self.chat.as_ref().is_some_and(|chat| chat.read(cx).view.as_ref().is_some_and(|view| view.thinking_since.is_some()));
+        if thinking && self.ticker.is_none() {
+            self.ticker = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.ticker = None;
+                    this.rebuild(cx);
+                });
+            }));
+        }
         let locale = self.store.read(cx).locale();
         let rows = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().map(|view| build_rows(view, locale))).unwrap_or_default();
         let (old, count) = (self.row_count, rows.len());
@@ -827,6 +841,28 @@ impl Render for ChatPane {
         });
         let rows = self.rows.clone();
         let expanded = self.expanded.clone();
+        let style = TurnStyle { locale, show_usage, step_detail: self.store.read(cx).prefs.step_detail.clone().into() };
+        let fork_session = self.session_id(cx);
+        let fork_store = self.store.clone();
+        let fork: Fork = Rc::new(move |entry, window, cx| {
+            let Some(session) = fork_session.clone() else { return };
+            let call = fork_store.read(cx).call("sessions.fork", json!({ "sessionId": session, "entryId": entry.to_string() }));
+            let store = fork_store.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let result = call.await;
+                    let _ = cx.update(|window, cx| match result {
+                        Ok(summary) => {
+                            if let Some(id) = summary["id"].as_str() {
+                                store.update(cx, |store, cx| store.select(Some(id.to_owned()), cx));
+                            }
+                            window.push_notification(tr(cx, "chat.forked").to_string(), cx);
+                        }
+                        Err(error) => window.push_notification(Notification_error(error.message), cx),
+                    });
+                })
+                .detach();
+        });
         let body = if rows.is_empty() {
             match failed {
                 Some(error) => div().flex_1().p_4().text_sm().text_color(cx.theme().danger).child(error).into_any_element(),
@@ -837,7 +873,7 @@ impl Render for ChatPane {
                 && !self.list.is_following_tail()
                 && !self.list.is_scrolled_to_end().unwrap_or(false);
             let transcript = list(self.list.clone(), move |index, _, cx| {
-                render_turn(&rows[index], index, &expanded, &toggle, locale, show_usage, cx)
+                render_turn(&rows[index], index, &expanded, &toggle, &fork, &style, cx)
             })
             .size_full()
             .py_2();

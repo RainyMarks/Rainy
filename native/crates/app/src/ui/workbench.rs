@@ -1,19 +1,26 @@
 //! The window (`Workbench.tsx`): title bar with the project menu, the file and history pane, the editor area, the AI
 //! pane, and the status bar.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::dialog::DialogFooter;
 use rainy_carrier::{ExecutionTarget, targets};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::{Selectable as _, StyledExt as _};
 use rainy_carrier::ConnectionState;
+use rainy_carrier::trust::TrustError;
 
 use crate::store::ide::Ide;
-use crate::store::{Phase, Store, StoreEvent};
+use crate::boot::RuntimeChoice;
+use crate::store::{Phase, RuntimePrompt, Store, StoreEvent};
 use crate::theme;
 use crate::ui::chat::ChatPane;
 use crate::ui::history::HistoryPanel;
@@ -57,6 +64,8 @@ pub struct Workbench {
     agent_visible: bool,
     /// Whether the projects were loaded since the Host became ready.
     ide_started: bool,
+    /// Chats known to wait for an approval, so each new wait flashes the taskbar once.
+    awaiting: std::collections::HashSet<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -77,14 +86,27 @@ impl Workbench {
                     this.ide_started = true;
                     this.ide.update(cx, |ide, cx| ide.initialize(window, cx));
                 }
+                let awaiting: std::collections::HashSet<String> =
+                    store.read(cx).summaries.iter().filter(|summary| summary.awaiting_approval == Some(true)).map(|summary| summary.id.clone()).collect();
+                if awaiting.iter().any(|id| !this.awaiting.contains(id)) {
+                    crate::ui::attention::flash(window);
+                }
+                this.awaiting = awaiting;
+                crate::ui::update::taskbar(window, &store.read(cx).updates.phase);
                 cx.notify();
             }),
             cx.observe(&ide, |_, _, cx| cx.notify()),
             cx.observe(&git, |_, _, cx| cx.notify()),
             cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
-                if *event == StoreEvent::PrefsChanged {
-                    let prefs = this.store.read(cx).prefs.clone();
-                    theme::apply(&prefs, Some(window), cx);
+                match event {
+                    StoreEvent::PrefsChanged => {
+                        let prefs = this.store.read(cx).prefs.clone();
+                        theme::apply(&prefs, Some(window), cx);
+                    }
+                    StoreEvent::HostExited(code) => crate::ui::ssh::host_exited(this.store.clone(), *code, window, cx),
+                    StoreEvent::ResourcesDamaged(error) => resources_damaged(error, window, cx),
+                    StoreEvent::Update(notice) => crate::ui::update::show(notice, window, cx),
+                    _ => {}
                 }
             }),
             // "Follow the system" follows a change of the Windows light or dark mode.
@@ -95,6 +117,21 @@ impl Workbench {
                 }
             }),
         ];
+        // The questions `ssh` asks are shown here, one after another.
+        let questions = store.read(cx).questions.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            while let Ok(request) = questions.recv().await {
+                let _ = cx.update(|window, cx| crate::ui::ssh::ask(request, window, cx));
+            }
+        })
+        .detach();
+        let prompts = store.read(cx).runtime_prompts.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            while let Ok(prompt) = prompts.recv().await {
+                let _ = cx.update(|window, cx| runtime_download_failed(prompt, window, cx));
+            }
+        })
+        .detach();
         Self {
             store,
             ide,
@@ -112,6 +149,7 @@ impl Workbench {
             left_visible: true,
             agent_visible: true,
             ide_started: false,
+            awaiting: std::collections::HashSet::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -248,7 +286,7 @@ impl Workbench {
             .into();
         let current = store.target.as_ref().map(|target| target.id().to_owned());
         let handle = self.store.clone();
-        let version = store.info.as_ref().map(|info| info.version.clone()).unwrap_or_default();
+        let version = env!("CARGO_PKG_VERSION");
         let connection = store.connection;
         let theme = cx.theme();
         let dot = match connection {
@@ -296,15 +334,15 @@ impl Workbench {
 
     fn render_phase(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let phase = self.store.read(cx).phase.clone();
-        // A failed WSL start can continue on Windows, as 3.x offered.
+        // A failed WSL or SSH start can continue on Windows, as 3.x offered.
         let on_wsl = targets::read_preferences(&self.store.read(cx).paths.desktop_settings())
             .ok()
             .and_then(|preferences| targets::saved_target(&preferences).ok())
-            .is_some_and(|target| matches!(target, ExecutionTarget::Wsl { .. }));
+            .is_some_and(|target| matches!(target, ExecutionTarget::Wsl { .. } | ExecutionTarget::Ssh { .. }));
         let theme = cx.theme();
         match phase {
             Phase::Ready => None,
-            Phase::Starting(step) => Some(
+            Phase::Starting(step, fraction) => Some(
                 v_flex()
                     .flex_1()
                     .items_center()
@@ -313,6 +351,7 @@ impl Workbench {
                     .child(img("brand/rainy-mark.svg").size(px(56.)))
                     .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(Spinner::new().small()).child(tr(cx, "native.starting")))
                     .when(step != tr(cx, "native.starting"), |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(step)))
+                    .when_some(fraction, |this, fraction| this.child(Progress::new("startup-progress").xsmall().w(px(240.)).value(fraction * 100.)))
                     .into_any_element(),
             ),
             Phase::Failed(error) => Some(
@@ -435,6 +474,7 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::web::begin_frame(cx);
         let body = self.render_phase(cx).unwrap_or_else(|| self.render_body(window, cx));
         let title_bar = self.render_title_bar(cx);
         let status_bar = self.render_status_bar(cx);
@@ -487,8 +527,55 @@ impl Render for Workbench {
             .child(title_bar)
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(status_bar)
-            .children(settings)
+            .children(settings.clone())
+            // Painted after everything else: pages show only where their area was painted and nothing covers them.
+            .child(canvas(|_, _, _| {}, move |_, _, window, cx| crate::web::end_frame(settings.is_some(), window, cx)).absolute().size_0())
     }
+}
+
+/// The daily recheck found installed files changed or damaged. Rainy keeps running; the next start checks every file
+/// again.
+fn resources_damaged(error: &TrustError, window: &mut Window, cx: &mut App) {
+    let message = crate::boot::trust_message(crate::ui::locale(cx), error);
+    let description = trf(cx, "native.resourcesRecheck", &[("message", &message)]);
+    window.open_alert_dialog(cx, move |alert, _, cx| alert.title(tr(cx, "native.resourcesChanged")).description(description.clone()).ok_text(tr(cx, "native.ok")));
+}
+
+/// The Linux runtime could not be downloaded during startup: retry, run on Windows instead, or quit (3.x
+/// `downloadLinuxRuntime`). Closing the dialog quits, as 3.x's cancel button did.
+fn runtime_download_failed(prompt: RuntimePrompt, window: &mut Window, cx: &mut App) {
+    let reply = Rc::new(RefCell::new(Some(prompt.reply)));
+    let answer = move |choice: RuntimeChoice| {
+        if let Some(reply) = reply.borrow_mut().take() {
+            let _ = reply.send(choice);
+        }
+    };
+    let description = trf(cx, "native.linuxDownloadDetail", &[("error", &prompt.error)]);
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let (retry, windows, quit, closed) = (answer.clone(), answer.clone(), answer.clone(), answer.clone());
+        dialog
+            .title(tr(cx, "native.linuxDownloadFailed"))
+            .w(px(520.))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(description.clone()))
+            .on_close(move |_, _, _| closed(RuntimeChoice::Quit))
+            // A stray click beside the dialog must not stop startup; Esc and the close button still mean Quit.
+            .overlay_closable(false)
+            .footer(
+                DialogFooter::new()
+                    .child(Button::new("runtime-quit").outline().label(tr(cx, "native.quit")).on_click(move |_, window, cx| {
+                        quit(RuntimeChoice::Quit);
+                        window.close_dialog(cx);
+                    }))
+                    .child(Button::new("runtime-windows").outline().label(tr(cx, "native.useWindows")).on_click(move |_, window, cx| {
+                        windows(RuntimeChoice::Windows);
+                        window.close_dialog(cx);
+                    }))
+                    .child(Button::new("runtime-retry").primary().label(tr(cx, "native.retry")).on_click(move |_, window, cx| {
+                        retry(RuntimeChoice::Retry);
+                        window.close_dialog(cx);
+                    })),
+            )
+    });
 }
 
 /// Confirm, then remove a project from the list; its files stay on disk.
