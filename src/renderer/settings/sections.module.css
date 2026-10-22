@@ -27,6 +27,7 @@
 .notice { margin: 0; padding: 12px 14px; border-radius: var(--rainy-radius-md); background: var(--rainy-alias-bg-module-platform); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .error, .errorText { color: var(--rainy-alias-state-error-primary); }
 .errorText { margin: 0; overflow-wrap: anywhere; }
+.warnText { margin: 0; color: var(--rainy-alias-state-warn-primary); line-height: 1.6; overflow-wrap: anywhere; }
 /* Cards are outlined, not filled, so the page reads as one surface. */
 .card { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border: 1px solid var(--rainy-alias-card-stroke); border-radius: var(--rainy-radius-lg); min-width: 0; }
 .subcard { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: var(--rainy-radius-md); background: var(--rainy-alias-bg-module-platform); min-width: 0; }

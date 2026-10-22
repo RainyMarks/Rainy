@@ -1,12 +1,13 @@
 /** Projects (workspaces) registered in this Host and the directories mounted into each. */
 import { randomUUID } from 'node:crypto'
-import { realpath, stat } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { basename, isAbsolute, normalize } from 'node:path'
 import { z } from 'zod'
 import { brandString } from '../shared/brand.ts'
 import type { IdeRootId, IdeWorkspace, IdeWorkspaceRoot, WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { readJson, SerialQueue, writeJson } from './files.ts'
 import { ideContains, IdeOperationError } from './ide/files-core.ts'
+import { realpath } from './realpath.ts'
 
 /** Stable identity of each project's primary directory. */
 export const primaryRootId = brandString<IdeRootId>('primary')

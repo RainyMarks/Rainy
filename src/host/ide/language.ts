@@ -1,5 +1,4 @@
 /** Per-connection editor language servers over the `/rainy/ide/lsp` WebSocket. */
-import { realpath } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { RawData, WebSocket } from 'ws'
@@ -15,6 +14,7 @@ import { ideContains } from './files-core.ts'
 import { ideLanguageSchema, type IdeLanguage } from './format.ts'
 import { encodeMessage, MessageDecoder } from './jsonrpc-framing.ts'
 import type { IdeToolPaths } from './tools.ts'
+import { realpath } from '../realpath.ts'
 
 /** Language-process and transport budgets. */
 export interface IdeLanguageLimits {

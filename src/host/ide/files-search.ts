@@ -1,9 +1,10 @@
 /** Bounded filename discovery for Quick Open without reading file contents or following directory links. */
-import { lstat, opendir, realpath } from 'node:fs/promises'
+import { lstat, opendir } from 'node:fs/promises'
 import { relative, resolve } from 'node:path'
 import type { IdeFileSearch } from '../../shared/ide-files-protocol.ts'
 import { ideContains } from './files-core.ts'
 import type { IdeFilesConfig } from './files.ts'
+import { realpath } from '../realpath.ts'
 
 function transient(error: unknown): boolean {
   return error !== null && typeof error === 'object' && 'code' in error

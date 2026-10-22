@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /** Skills & MCP lists discovered skills and configured servers, and validates the server form before the Host sees it. */
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import type { ExtensionsStatus, McpServerConfig } from '../../src/shared/rpc.ts'
@@ -7,7 +8,7 @@ import { ExtensionsSection } from '../../src/renderer/settings/ExtensionsSection
 import { emptyServerForm, isWindowsMcp, parseServerForm, serverFormOf, windowsMcpForm } from '../../src/renderer/settings/mcp-form.ts'
 import { settingsMessages } from '../../src/renderer/settings/messages.ts'
 import {
-  all, button, cleanup, click, control, emit, fakeHost, handle, hasText, listenerCount, render, toast, type, waitFor,
+  all, button, cleanup, click, control, deferred, emit, fakeHost, flush, handle, hasText, listenerCount, render, toast, type, waitFor,
 } from './settings-harness.tsx'
 
 vi.mock('../../src/renderer/rpc.ts', async () => (await import('./settings-harness.tsx')).rpcModule)
@@ -221,6 +222,161 @@ it('offers computer use only where the Host can reach this PC\'s desktop', async
   handle('extensions.status', () => status)
   await render(<ExtensionsSection workspace={workspace} />)
   await waitFor(() => { expect(all('[data-add-desktop]')).toHaveLength(1) })
+})
+
+describe('importing MCP JSON', () => {
+  const panel = (): HTMLElement => document.querySelector<HTMLElement>('[data-mcp-import]')!
+  const imported = (name: string): HTMLElement => panel().querySelector<HTMLElement>(`[data-import-server="${name}"]`)!
+  const readme = JSON.stringify({ mcpServers: {
+    files: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] },
+    github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: '<YOUR_TOKEN>' } },
+    remote: { url: 'https://mcp.example.com/mcp?api_key=secret-1', headers: { Authorization: 'Bearer real' } },
+    broken: { url: 'ftp://nowhere' },
+  } })
+  const paste = async (target: HTMLElement, text: string): Promise<void> => {
+    const event = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } })
+    await act(async () => { target.dispatchEvent(event) })
+  }
+
+  it('previews pasted servers with new names, notes and masked secrets, and imports the checked ones', async () => {
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpImport))
+    expect(button(`导入 0 个服务器`, panel()).disabled).toBe(true)
+    await type(control<HTMLTextAreaElement>(zh.mcpImportLabel), readme)
+    expect(hasText('找到 3 个服务器，勾选要导入的：', panel())).toBe(true)
+    expect(imported('files-2').textContent).toContain('名称 files 改为 files-2')
+    expect(imported('github').textContent).toContain('GITHUB_PERSONAL_ACCESS_TOKEN 里的 <YOUR_TOKEN> 是占位符')
+    expect(imported('github').textContent).toContain('环境变量：GITHUB_PERSONAL_ACCESS_TOKEN')
+    expect(imported('github').textContent).not.toContain('<YOUR_TOKEN>stdio')
+    expect(imported('remote').textContent).toContain('https://mcp.example.com/mcp?api_key=•••')
+    expect(imported('remote').textContent).toContain('请求头：Authorization')
+    const shown = all('[data-import-server]', panel()).map(item => item.textContent).join(' ')
+    expect(shown).not.toContain('secret-1')
+    expect(shown).not.toContain('Bearer real')
+    expect(panel().querySelector('[data-import-problems]')?.textContent).toBe(`${zh.mcpImportSkipped}broken：URL 需要以 http:// 或 https:// 开头`)
+    await click(imported('files-2').querySelector<HTMLInputElement>('input[type="checkbox"]')!)
+    await click(button('导入 2 个服务器', panel()))
+    await waitFor(() => { expect(document.querySelector('[data-mcp-import]')).toBeNull() })
+    expect(calls('extensions.saveServer')).toEqual([
+      { server: { name: 'github', enabled: true, transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: '<YOUR_TOKEN>' }, tools: [] } },
+      { server: { name: 'remote', enabled: true, transport: 'streamable-http', url: 'https://mcp.example.com/mcp?api_key=secret-1',
+        headers: { Authorization: 'Bearer real' }, tools: [] } },
+    ])
+    expect(row('github')).not.toBeNull()
+    expect(row('remote')).not.toBeNull()
+    expect(document.querySelector('[data-server="files-2"]')).toBeNull()
+    expect(toast).toHaveBeenCalledWith('已导入 2 个服务器', { tone: 'success' })
+  })
+
+  it('says why text cannot be imported and keeps the import button off', async () => {
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpImport))
+    await type(control<HTMLTextAreaElement>(zh.mcpImportLabel), '[mcp_servers.github]\ncommand = "npx"')
+    expect(panel().querySelector('[role="alert"]')?.textContent).toBe(zh.mcpJsonToml)
+    expect(button('导入 0 个服务器', panel()).disabled).toBe(true)
+    await type(control<HTMLTextAreaElement>(zh.mcpImportLabel), '')
+    expect(panel().querySelector('[role="alert"]')).toBeNull()
+    await click(button(zh.settingsCancel, panel()))
+    expect(document.querySelector('[data-mcp-import]')).toBeNull()
+    expect(calls('extensions.saveServer')).toEqual([])
+  })
+
+  it('turns MCP JSON pasted into a new server form into an import, but not into an edited server', async () => {
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpEdit, row('files')))
+    await paste(control(zh.mcpCommand), readme)
+    expect(document.querySelector('[data-mcp-import]')).toBeNull()
+    await click(button(zh.mcpAdd))
+    await paste(control(zh.mcpCommand), 'npx -y @modelcontextprotocol/server-github')
+    expect(document.querySelector('[data-mcp-import]')).toBeNull()
+    await paste(control(zh.mcpName), readme)
+    await flush()
+    expect(document.querySelector('[data-server-form]')).toBeNull()
+    expect(control<HTMLTextAreaElement>(zh.mcpImportLabel).value).toBe(readme)
+    expect(imported('github')).not.toBeNull()
+  })
+
+  it('leaves out the servers already saved when one import fails, so trying again adds no copies', async () => {
+    handle('extensions.saveServer', ({ server }) => {
+      if (server.name === 'remote') throw new Error('Host refused')
+      status = { ...status, skills: [], servers: [...status.servers, server] }
+      return status
+    })
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpImport))
+    await type(control<HTMLTextAreaElement>(zh.mcpImportLabel), readme)
+    await click(button('导入 3 个服务器', panel()))
+    await waitFor(() => { expect(toast).toHaveBeenCalledWith('导入 remote 时出错：Host refused。在它之前的 2 个已导入。', { tone: 'error' }) })
+    expect(calls('extensions.saveServer').map(params => (params as { server: McpServerConfig }).server.name)).toEqual(['files-2', 'github', 'remote'])
+    expect(button('导入 1 个服务器', panel()).disabled).toBe(false)
+    expect(row('files-2')).not.toBeNull()
+    expect(row('github')).not.toBeNull()
+    // Editing the text afterwards still leaves the saved servers out: they now match configured ones.
+    await type(control<HTMLTextAreaElement>(zh.mcpImportLabel), `${readme}\n`)
+    expect(all('[data-import-server]', panel()).map(item => item.getAttribute('data-import-server'))).toEqual(['remote'])
+    expect(panel().querySelector('[data-import-problems]')?.textContent).toContain('files：和已有的服务器 files-2 完全相同，不再重复添加')
+  })
+
+  it('locks the panel while the import runs, so what is saved is what is shown', async () => {
+    const saving = deferred<ExtensionsStatus>()
+    handle('extensions.saveServer', () => saving.promise)
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpImport))
+    await type(control<HTMLTextAreaElement>(zh.mcpImportLabel), readme)
+    await click(button('导入 3 个服务器', panel()))
+    expect(control<HTMLTextAreaElement>(zh.mcpImportLabel).disabled).toBe(true)
+    expect(all<HTMLInputElement>('input[type="checkbox"]', panel()).every(box => box.disabled)).toBe(true)
+    expect(button(zh.mcpImportFile, panel()).disabled).toBe(true)
+    await act(async () => { saving.reject(new Error('stop')) })
+    await waitFor(() => { expect(control<HTMLTextAreaElement>(zh.mcpImportLabel).disabled).toBe(false) })
+  })
+
+  it('pastes into a new server form as usual once something is typed, or when the text is only a value', async () => {
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpAdd))
+    await paste(control(zh.mcpEnv), '{"url": "https://api.example.com", "region": "eu"}')
+    expect(document.querySelector('[data-server-form]')).not.toBeNull()
+    await type(control(zh.mcpName), 'typed')
+    await paste(control(zh.mcpEnv), readme)
+    await flush()
+    expect(document.querySelector('[data-server-form]')).not.toBeNull()
+    expect(document.querySelector('[data-mcp-import]')).toBeNull()
+    expect(control<HTMLInputElement>(zh.mcpName).value).toBe('typed')
+  })
+
+  it('drops a file read that finishes after the panel was left', async () => {
+    const content = deferred<ArrayBuffer>()
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpImport))
+    const input = panel().querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'files', { configurable: true, value: [{ size: 100, arrayBuffer: () => content.promise }] })
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    await click(button(zh.mcpAdd))
+    await act(async () => { content.resolve(new TextEncoder().encode(readme).buffer as ArrayBuffer) })
+    await flush()
+    expect(document.querySelector('[data-server-form]')).not.toBeNull()
+    expect(document.querySelector('[data-mcp-import]')).toBeNull()
+  })
+
+  it('reads a chosen file into the text box', async () => {
+    await render(<ExtensionsSection workspace={workspace} />)
+    await waitFor(() => { expect(row('files')).not.toBeNull() })
+    await click(button(zh.mcpImport))
+    const input = panel().querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File([readme], 'claude_desktop_config.json', { type: 'application/json' })] })
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    await waitFor(() => { expect(control<HTMLTextAreaElement>(zh.mcpImportLabel).value).toBe(readme) })
+    expect(imported('remote')).not.toBeNull()
+  })
 })
 
 describe('windowsMcpForm', () => {

@@ -1,8 +1,9 @@
 /** MCP servers configured in Settings: connections, their tools as agent tools, and their instructions. */
 import { createHash } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { ImageContent, TextContent, TSchema } from '@earendil-works/pi-ai'
 import { localized } from '../../shared/locale.ts'
@@ -38,7 +39,19 @@ interface Connection {
   tools: { name: string; description: string; inputSchema: Record<string, unknown>; readOnly: boolean }[]
   instructions: string
   closing?: boolean | undefined
+  /** The client still connecting, so turning the server off ends the attempt. */
+  pending?: Client | undefined
 }
+
+/** Waits that tests shorten. */
+export interface McpTimings {
+  /** Wait for an HTTP server to connect and list its tools, both transports together. */
+  connectMs: number
+  /** An HTTP+SSE stream that drops later than this after connecting is reopened; one that drops sooner is an error. */
+  sseSettleMs: number
+}
+
+const DEFAULT_TIMINGS: McpTimings = { connectMs: CONNECT_TIMEOUT_MS, sseSettleMs: 10_000 }
 
 /** Keeps one connection per enabled server. */
 export class McpManager {
@@ -49,8 +62,10 @@ export class McpManager {
   /**
    * @param log Diagnostics.
    * @param request Request function for HTTP servers, honoring the proxy settings.
+   * @param timings Waits for HTTP servers.
    */
-  constructor(private readonly log: (message: string) => void, private readonly request: typeof globalThis.fetch = globalThis.fetch) {}
+  constructor(private readonly log: (message: string) => void, private readonly request: typeof globalThis.fetch = globalThis.fetch,
+    private readonly timings: McpTimings = DEFAULT_TIMINGS) {}
 
   /**
    * Observe status changes.
@@ -188,13 +203,16 @@ export class McpManager {
 
   private async connect(connection: Connection): Promise<void> {
     const { config } = connection
-    const client = new Client({ name: 'Rainy', version: '2' })
+    let client = new Client({ name: 'Rainy', version: '2' })
+    connection.pending = client
+    let sse = false
     /** The server's latest stderr, which says why a command that exits at once did not start. */
     let stderr = ''
     try {
+      const http = { fetch: this.request, ...(config.headers === undefined ? {} : { requestInit: { headers: config.headers } }) }
       const transport = config.transport === 'stdio'
         ? new StdioClientTransport({ command: config.command!, args: config.args ?? [], env: { ...scrubbedEnv(), ...config.env }, stderr: 'pipe' })
-        : new StreamableHTTPClientTransport(new URL(config.url!), { fetch: this.request, ...(config.headers === undefined ? {} : { requestInit: { headers: config.headers } }) })
+        : new StreamableHTTPClientTransport(new URL(config.url!), http)
       if (transport instanceof StdioClientTransport) {
         transport.stderr?.on('data', (chunk: Buffer) => {
           const text = consoleText(chunk)
@@ -202,8 +220,19 @@ export class McpManager {
           this.log(`[mcp:${config.name}] ${text.trimEnd()}`)
         })
       }
-      const timeout = config.transport === 'stdio' ? STDIO_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS
-      await client.connect(transport, { timeout })
+      const timeout = config.transport === 'stdio' ? STDIO_CONNECT_TIMEOUT_MS : this.timings.connectMs
+      const deadline = Date.now() + timeout
+      try {
+        await client.connect(transport, { timeout })
+      } catch (error) {
+        // A server from before Streamable HTTP refuses its POST with a 4xx status and speaks the older HTTP+SSE transport at
+        // the same address, as many `/sse` addresses in tutorials do. Authorization failures are reported as they are.
+        if (!(error instanceof StreamableHTTPError) || error.code === undefined || error.code < 400 || error.code >= 500 || error.code === 401 || error.code === 403) throw error
+        this.log(`[mcp:${config.name}] ${error.message}; trying HTTP+SSE`)
+        await client.close().catch(() => undefined)
+        client = await this.connectSse(connection, http, Math.max(5_000, deadline - Date.now()), error)
+        sse = true
+      }
       const listed = await client.listTools(undefined, { timeout })
       if (connection.closing) { await client.close(); return }
       connection.client = client
@@ -213,11 +242,23 @@ export class McpManager {
       connection.instructions = client.getInstructions() ?? ''
       connection.state = 'ready'
       connection.error = undefined
+      const connectedAt = Date.now()
+      // An HTTP+SSE stream that drops is reopened by the event source on a new session that was never initialized, so
+      // the client is closed instead and the server connected again.
+      if (sse) client.onerror = (failure) => { if (failure instanceof SseError && connection.client === client) void client.close() }
       client.onclose = () => {
-        if (connection.closing) return
+        if (connection.closing || connection.client !== client) return
+        connection.client = undefined
+        if (sse && Date.now() - connectedAt > this.timings.sseSettleMs) {
+          this.log(`[mcp:${config.name}] the HTTP+SSE stream closed; connecting again`)
+          connection.state = 'connecting'
+          connection.error = undefined
+          this.notify()
+          void this.connect(connection)
+          return
+        }
         connection.state = 'error'
         connection.error = localized({ zh: 'MCP 服务器断开了连接。', en: 'The server closed the connection.' })
-        connection.client = undefined
         this.notify()
       }
     } catch (error) {
@@ -233,13 +274,52 @@ export class McpManager {
             : reason
       this.log(`[mcp:${config.name}] ${reason}`)
       await client.close().catch(() => undefined)
+    } finally {
+      if (connection.pending === client) connection.pending = undefined
     }
     this.notify()
   }
 
+  /**
+   * Connect over the older HTTP+SSE transport, within what is left of the connect timeout: its start waits for the
+   * server's `endpoint` event with no timeout of its own.
+   * @param streamable Why Streamable HTTP failed, reported when the address is no SSE endpoint either.
+   * @returns The connected client.
+   */
+  private async connectSse(connection: Connection, http: { fetch: typeof globalThis.fetch; requestInit?: RequestInit }, timeout: number,
+    streamable: StreamableHTTPError): Promise<Client> {
+    const { config } = connection
+    const client = new Client({ name: 'Rainy', version: '2' })
+    connection.pending = client
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (connection.closing) throw streamable
+      await Promise.race([
+        client.connect(new SSEClientTransport(new URL(config.url!), http), { timeout }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(localized({ zh: 'HTTP+SSE 连接超时：服务器没有发来会话地址。', en: 'The HTTP+SSE connection timed out: the server sent no session address.' })))
+          }, timeout)
+        }),
+      ])
+      this.log(`[mcp:${config.name}] connected over HTTP+SSE`)
+      return client
+    } catch (error) {
+      await client.close().catch(() => undefined)
+      this.log(`[mcp:${config.name}] HTTP+SSE: ${error instanceof Error ? error.message : String(error)}`)
+      // An address that is no SSE endpoint either adds nothing to the first error; anything else, such as a refused token,
+      // a session address on another site or a timeout, is the real cause.
+      const notSse = error instanceof SseError && (error.code === 404 || error.code === 405 || /content.type/iu.test(error.message))
+      throw notSse || error === streamable ? streamable : error
+    } finally {
+      clearTimeout(timer)
+      if (connection.pending === client) connection.pending = undefined
+    }
+  }
+
   private async disconnect(connection: Connection): Promise<void> {
     connection.closing = true
-    await connection.client?.close().catch(() => undefined)
+    await Promise.all([connection.client, connection.pending].map(client => client?.close().catch(() => undefined)))
     connection.client = undefined
   }
 

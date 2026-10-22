@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
-import { fitBounds, initialPlacement, minimumFor, readWindowState, restoredBounds, writeWindowState } from '../../src/main/window-state.ts'
+import { fitBounds, gripArea, initialPlacement, minimumFor, readWindowState, restoredBounds, writeWindowState } from '../../src/main/window-state.ts'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -20,6 +20,15 @@ describe('main window geometry', () => {
   it('shrinks and moves a window into a smaller work area', () => {
     const state = { version: 1 as const, bounds: { x: 900, y: 300, width: 2400, height: 1300 }, maximized: false }
     expect(restoredBounds(state, [primary], minimum)).toEqual({ x: 0, y: 0, width: 1920, height: 1040 })
+  })
+
+  it('lets a moved window hang partly off screen while its top edge can still be grabbed', () => {
+    // Dragged down until most of the window is below the screen, as in the reported recording: it stays where it was dropped.
+    expect(gripArea({ x: 300, y: 900, width: 1300, height: 870 }, [primary])).toEqual(primary)
+    expect(gripArea({ x: -1000, y: 100, width: 1300, height: 870 }, [primary])).toEqual(primary)
+    // Its top edge below the work area, or only a sliver left on screen: it has to be brought back.
+    expect(gripArea({ x: 300, y: 1020, width: 1300, height: 870 }, [primary])).toBeUndefined()
+    expect(gripArea({ x: 1850, y: 100, width: 1300, height: 870 }, [primary])).toBeUndefined()
   })
 
   it('falls back to the default placement when the saved display was disconnected', () => {

@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { readDesktopPreferences, removeSshHost, saveDesktopLocale, saveExecutionTarget, saveSshHost, savedExecutionTarget, sshTarget, sshTargets,
-  WINDOWS_TARGET } from '../../src/main/execution-targets.ts'
+import { readDesktopPreferences, removeSshHost, saveDesktopLocale, saveExecutionTarget, saveShellIntegration, saveSshHost, savedExecutionTarget, sshTarget,
+  sshTargets, WINDOWS_TARGET } from '../../src/main/execution-targets.ts'
 import { ExecutionTargetId } from '../../src/shared/project-registry.ts'
 
 const roots: string[] = []
@@ -26,6 +26,21 @@ it('applies concurrent language and target updates in order without losing eithe
     locale: 'en', unrelated: 1, executionTarget: { id: 'wsl:ubuntu', kind: 'wsl', label: 'WSL · Ubuntu', distro: 'Ubuntu' }, distro: 'Ubuntu',
     pendingProject: null,
   })
+})
+
+it('saves each Explorer switch and the remembered keys apart, dropping 3.9.0\'s on-by-default choice', async () => {
+  const path = await preferencesFile({ locale: 'zh', shellIntegration: { contextMenu: true, fileTypes: true } })
+  await saveShellIntegration(path, { contextMenu: true })
+  expect(await readDesktopPreferences(path)).toEqual({ locale: 'zh', explorerIntegration: { contextMenu: true, fileTypes: false } })
+  // A background sync saving its keys keeps a switch flipped meanwhile, and a switch keeps the keys.
+  await Promise.all([saveShellIntegration(path, { fileTypes: true }), saveShellIntegration(path, { keep: ['software\\classes\\.txt'] })])
+  await saveShellIntegration(path, { contextMenu: false })
+  expect((await readDesktopPreferences(path)).explorerIntegration).toEqual({ contextMenu: false, fileTypes: true, keep: ['software\\classes\\.txt'] })
+  await saveShellIntegration(path, { recorded: { contextMenu: false, fileTypes: true } })
+  expect((await readDesktopPreferences(path)).explorerIntegration).toEqual({ contextMenu: false, fileTypes: true, keep: ['software\\classes\\.txt'],
+    recorded: { contextMenu: false, fileTypes: true } })
+  await saveShellIntegration(path, { fileTypes: false, keep: [], recorded: { contextMenu: false, fileTypes: false } })
+  expect((await readDesktopPreferences(path)).explorerIntegration).toEqual({ contextMenu: false, fileTypes: false })
 })
 
 it('keeps saving after an update fails', async () => {

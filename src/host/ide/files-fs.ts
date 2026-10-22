@@ -1,9 +1,10 @@
 /** Version-checked local file access and no-replace rename for the human editor. */
 import { randomUUID } from 'node:crypto'
 import { createReadStream, type BigIntStats, type Stats } from 'node:fs'
-import { chmod, link, lstat, open, realpath, rename, rm, stat, unlink, type FileHandle } from 'node:fs/promises'
+import { chmod, link, lstat, open, rename, rm, stat, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { IdeOperationError } from './files-core.ts'
+import { realpath } from '../realpath.ts'
 
 /** A path entry observed without following a final symbolic link. */
 export interface IdePathInfo {

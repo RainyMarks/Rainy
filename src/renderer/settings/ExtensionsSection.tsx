@@ -1,5 +1,5 @@
 /** Skills & MCP section: discovered skills and the MCP servers every chat may use. */
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ExtensionsStatus, McpServerConfig, McpServerStatus } from '../../shared/rpc.ts'
 import { host } from '../rpc.ts'
 import { Button } from '../ui/Button.tsx'
@@ -12,6 +12,7 @@ import { useT } from './messages.ts'
 import type { SettingsMessage } from './messages.ts'
 import { emptyServerForm, isWindowsMcp, parseServerForm, serverFormOf, windowsMcpForm } from './mcp-form.ts'
 import type { McpServerForm } from './mcp-form.ts'
+import { MCP_JSON_MAX_LENGTH, decodeConfigFile, importKey, looksLikeMcpJson, maskedCommand, maskedUrl, parseMcpJson } from './mcp-json.ts'
 import { Field, Loading, Notice, errorText, useAction } from './parts.tsx'
 import type { SettingsWorkspace } from './parts.tsx'
 import css from './sections.module.css'
@@ -22,6 +23,12 @@ const stateCopy: Record<McpServerStatus['state'], { key: SettingsMessage; tone: 
   ready: { key: 'mcpStateReady', tone: 'success' },
   error: { key: 'mcpStateError', tone: 'danger' },
 }
+
+const IMPORT_EXAMPLE = `{
+  "mcpServers": {
+    "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }
+  }
+}`
 
 function skillPath(root: string, name: string): string {
   const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/'
@@ -42,6 +49,10 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
   const [form, setForm] = useState<{ value: McpServerForm; previousName?: string | undefined; desktop?: boolean } | undefined>()
   const [formError, setFormError] = useState<string | undefined>()
   const [removing, setRemoving] = useState<string | undefined>()
+  /** Pasted MCP JSON and the servers read from it that the user unchecked, by `importKey`. */
+  const [importing, setImporting] = useState<{ text: string; skipped: ReadonlySet<string> } | undefined>()
+  const [importError, setImportError] = useState<string | undefined>()
+  const fileInput = useRef<HTMLInputElement>(null)
   const { busy, run } = useAction()
   const mounted = useRef(true)
   const transportId = useId()
@@ -66,8 +77,47 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
 
   const servers = status?.servers ?? []
   const live = (name: string): McpServerStatus | undefined => status?.status.find(entry => entry.name === name)
+  /** Counts file reads, so one that finishes after the panel closed or another read started is dropped. */
+  const fileRead = useRef(0)
   const open = (value: McpServerForm, previousName?: string, desktop = false): void => {
-    setForm({ value, previousName, desktop }); setFormError(undefined); setRemoving(undefined)
+    setForm({ value, previousName, desktop }); setFormError(undefined); setRemoving(undefined); setImporting(undefined); setImportError(undefined)
+    fileRead.current++
+  }
+  const startImport = (text: string): void => {
+    setImporting({ text, skipped: new Set() }); setImportError(undefined); setForm(undefined); setFormError(undefined); setRemoving(undefined)
+    fileRead.current++
+  }
+  const closeImport = (): void => { setImporting(undefined); setImportError(undefined); fileRead.current++ }
+  // The configured servers change whenever one is saved, also while an import runs; as text they compare by value.
+  const configured = JSON.stringify(servers)
+  const importText = importing?.text
+  const preview = useMemo(() => importText === undefined || importText.trim() === '' ? undefined
+    : parseMcpJson(importText, JSON.parse(configured) as McpServerConfig[], environment), [importText, configured, environment])
+  const chosen = preview?.ok === true ? preview.servers.filter(entry => importing?.skipped.has(importKey(entry)) !== true) : []
+  const importServers = (): void => {
+    if (chosen.length === 0) return
+    run(async () => {
+      let done = 0
+      for (const entry of chosen) {
+        try {
+          merge(await host.call('extensions.saveServer', { server: entry.server }))
+        } catch (failure) {
+          // The servers already saved now match configured ones, so trying again leaves them out.
+          throw new Error(t('mcpImportFailed', { name: entry.server.name, count: done, error: errorText(failure) }))
+        }
+        done++
+      }
+      if (mounted.current) closeImport()
+    }, t('mcpImportDone', { count: chosen.length }))
+  }
+  const readFile = (file: File | undefined): void => {
+    if (file === undefined) return
+    // A file far larger than any configuration is refused before it is read; the text limit is in characters.
+    if (file.size > MCP_JSON_MAX_LENGTH * 4) { setImportError(t('mcpJsonTooLarge')); return }
+    const read = ++fileRead.current
+    file.arrayBuffer().then((buffer) => {
+      if (mounted.current && fileRead.current === read) { setImporting({ text: decodeConfigFile(new Uint8Array(buffer)), skipped: new Set() }); setImportError(undefined) }
+    }).catch((failure: unknown) => { if (mounted.current && fileRead.current === read) setImportError(t('mcpImportFileError', { error: errorText(failure) })) })
   }
   const edit = (change: Partial<McpServerForm>): void => {
     setForm(current => current === undefined ? current : { ...current, value: { ...current.value, ...change } })
@@ -131,6 +181,7 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
         <div className={css.actions}>
           {desktopHost !== undefined && status !== undefined && !servers.some(isWindowsMcp) && <Button size="sm" variant="outline" disabled={busy}
             data-add-desktop onClick={() => { open(windowsMcpForm(desktopHost, servers.map(server => server.name)), undefined, true) }}>{t('mcpAddDesktop')}</Button>}
+          <Button size="sm" variant="outline" disabled={busy || status === undefined} data-import-json onClick={() => { startImport('') }}>{t('mcpImport')}</Button>
           <Button size="sm" variant="outline" disabled={busy || status === undefined} onClick={() => { open(emptyServerForm()) }}>{t('mcpAdd')}</Button>
         </div>
       </div>
@@ -159,7 +210,63 @@ export function ExtensionsSection({ workspace }: { workspace: SettingsWorkspace 
             </div>
           </li>
         })}</ul>)}
-      {form !== undefined && <div className={css.subcard} data-server-form>
+      {importing !== undefined && <div className={css.subcard} data-mcp-import>
+        <h4 className={css.subheading}>{t('mcpImportTitle')}</h4>
+        <p className={css.muted}>{t('mcpImportHint')}</p>
+        <textarea className={css.textarea} aria-label={t('mcpImportLabel')} value={importing.text} rows={8} spellCheck={false} disabled={busy}
+          placeholder={IMPORT_EXAMPLE} onChange={(event) => { setImporting({ text: event.target.value, skipped: new Set() }); setImportError(undefined) }} />
+        <div className={css.actions}>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => { fileInput.current?.click() }}>{t('mcpImportFile')}</Button>
+          <input ref={fileInput} type="file" hidden accept=".json,.jsonc,.txt,application/json" aria-label={t('mcpImportFile')}
+            onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; readFile(file) }} />
+        </div>
+        {importError !== undefined && <Notice tone="error">{importError}</Notice>}
+        {preview !== undefined && !preview.ok && <Notice tone="error">{t(preview.error.key, preview.error.vars)}</Notice>}
+        {preview?.ok === true && <>
+          {preview.notices.map(notice => <p key={notice.key} className={css.warnText}>{t(notice.key, notice.vars)}</p>)}
+          {preview.servers.length > 0 && <p className={css.muted}>{t('mcpImportFound', { count: preview.servers.length })}</p>}
+          <ul className={css.items}>{preview.servers.map((entry) => {
+            const { server, notes } = entry
+            const key = importKey(entry)
+            return <li key={key} className={css.item} data-import-server={server.name}>
+            <div className={css.itemText}>
+              <div className={css.itemTitle}>
+                <Checkbox label={server.name} checked={!importing.skipped.has(key)} title={t('mcpImportInclude', { name: server.name })} disabled={busy}
+                  onChange={(checked) => {
+                    setImporting(current => {
+                      if (current === undefined) return current
+                      const skipped = new Set(current.skipped)
+                      if (checked) skipped.delete(key); else skipped.add(key)
+                      return { ...current, skipped }
+                    })
+                  }} />
+                <Tag tone="outline">{server.transport === 'stdio' ? 'stdio' : 'HTTP'}</Tag>
+                {!server.enabled && <Tag tone="neutral">{t('mcpStateDisabled')}</Tag>}
+              </div>
+              <div className={css.path}>{server.transport === 'stdio' ? maskedCommand([server.command ?? '', ...server.args ?? []]) : maskedUrl(server.url ?? '')}</div>
+              {server.env !== undefined && <div className={css.muted}>{t('mcpImportEnv', { keys: Object.keys(server.env).join(', ') })}</div>}
+              {server.headers !== undefined && <div className={css.muted}>{t('mcpImportHeaders', { keys: Object.keys(server.headers).join(', ') })}</div>}
+              {notes.map((note, position) => <p key={position} className={css.warnText}>{t(note.key, note.vars)}</p>)}
+            </div>
+          </li>
+          })}</ul>
+          {preview.problems.length > 0 && <div data-import-problems>
+            <p className={css.muted}>{t('mcpImportSkipped')}</p>
+            <ul className={css.list}>{preview.problems.map((problem, position) => <li key={position} className={css.errorText}>{t(problem.key, problem.vars)}</li>)}</ul>
+          </div>}
+        </>}
+        <div className={css.actions}>
+          <Button variant="primary" disabled={busy || chosen.length === 0} onClick={importServers}>{t('mcpImportSubmit', { count: chosen.length })}</Button>
+          <Button disabled={busy} onClick={closeImport}>{t('settingsCancel')}</Button>
+        </div>
+      </div>}
+      {form !== undefined && <div className={css.subcard} data-server-form onPasteCapture={(event) => {
+        // MCP JSON pasted into an empty new server form is imported instead of landing in one field; nothing typed is lost.
+        const typed = [form.value.name, form.value.command, form.value.args, form.value.env, form.value.url, form.value.headers].some(field => field.trim() !== '')
+        if (form.previousName !== undefined || typed) return
+        const text = event.clipboardData.getData('text')
+        if (looksLikeMcpJson(text)) { event.preventDefault(); startImport(text) }
+      }}>
         <h4 className={css.subheading}>{form.previousName === undefined ? t('mcpFormAdd') : t('mcpFormEdit', { name: form.previousName })}</h4>
         {form.desktop === true && <div data-desktop-note>
           <p className={css.muted}>{t('mcpDesktopNote')}</p>

@@ -129,7 +129,7 @@ See what a project is made of, how its parts import each other and which stack i
 
 | Feature | What it does |
 |---|---|
-| **Explorer integration** | Right-click a file or folder for "Open with Rainy"; Rainy is listed under "Open with" for .md, code and other text files and can be their default app. |
+| **Explorer integration** | Optional, off until you turn it on: right-click a file or folder for "Open with Rainy"; Rainy is listed under "Open with" for .md, code and other text files and can be their default app. |
 | **Three execution environments** | Native Windows by default; switch to WSL2 or an SSH server when a project needs Linux. |
 | **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
 | **Context management** | Shows how full the context is and compacts it automatically before it runs out; Claude's prompt cache lasts an hour. |
@@ -199,7 +199,7 @@ The selected Windows, WSL or SSH environment must reach the model service. Throu
 <a id="whats-new"></a>
 ## What's new in 3.9
 
-**Write Markdown as in Typora, and open files from Explorer.** An outline in the side pane, find and replace in the document, pasted images saved for you, Mermaid diagrams, focus and typewriter modes, and export to PDF or HTML; right-click for "Open with Rainy", or let Rainy open your .md files. [Read the full changelog →](CHANGELOG.md)
+**Write Markdown as in Typora, and open files from Explorer.** An outline in the side pane, find and replace in the document, pasted images saved for you, Mermaid diagrams, focus and typewriter modes, and export to PDF or HTML; turn on "Open with Rainy" in Settings if you want it. 3.9.2 imports MCP servers from JSON and opens folders on mounted disk images. [Read the full changelog →](CHANGELOG.md)
 
 <a id="docs"></a>
 ## Documentation
@@ -271,10 +271,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.2/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `3.9.0` with the version in `package.json`. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `3.9.2` with the version in `package.json`. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host without Electron, then prints a URL to open in a browser; `pnpm run start` runs Electron on the built files. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 

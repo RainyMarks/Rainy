@@ -1,7 +1,7 @@
 /** Project-scoped human file operations with explicit version checks. */
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { lstat, mkdir, opendir, realpath, rmdir, unlink, type FileHandle } from 'node:fs/promises'
+import { lstat, mkdir, opendir, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, posix, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
@@ -17,6 +17,7 @@ import { ideChildEnvironment } from './execution-process.ts'
 import { ideContains, IdeOperationError, ideRelativePath } from './files-core.ts'
 import { LocalIdeFileSystem, renameNoReplace, type IdePathInfo, type IdeTargetInfo } from './files-fs.ts'
 import { searchIdeFiles } from './files-search.ts'
+import { realpath } from '../realpath.ts'
 
 /** File-operation and Git budgets. */
 export const ideFilesConfigSchema = z.object({
