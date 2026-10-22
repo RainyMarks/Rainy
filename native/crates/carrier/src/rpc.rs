@@ -117,6 +117,11 @@ impl RpcClient {
         Ok((response.status, response.body))
     }
 
+    /// Open another WebSocket to a Host route, such as `/rainy/ide/lsp?…`.
+    pub(crate) async fn socket(&self, route: &str) -> Result<Socket> {
+        open_route(&self.inner, route).await
+    }
+
     /// Stop reconnecting; pending requests fail.
     pub fn close(&self) {
         self.inner.stopped.store(true, Ordering::SeqCst);
@@ -188,9 +193,14 @@ async fn session_cookie(inner: &Inner) -> Result<String> {
         .ok_or_else(|| anyhow!("The Host did not set a session cookie."))
 }
 
-type Socket = async_tungstenite::WebSocketStream<TcpStream>;
+pub(crate) type Socket = async_tungstenite::WebSocketStream<TcpStream>;
 
 async fn open_socket(inner: &Inner) -> Result<Socket> {
+    open_route(inner, "/rpc").await
+}
+
+/// A WebSocket to a Host route (`/rpc`, `/rainy/ide/lsp?…`) with the session cookie.
+async fn open_route(inner: &Inner, route: &str) -> Result<Socket> {
     let cookie = {
         let known = inner.cookie.lock().unwrap().clone();
         match known {
@@ -203,7 +213,7 @@ async fn open_socket(inner: &Inner) -> Result<Socket> {
         }
     };
     let origin = format!("http://127.0.0.1:{}", inner.port);
-    let mut request = format!("ws://127.0.0.1:{}/rpc", inner.port).into_client_request()?;
+    let mut request = format!("ws://127.0.0.1:{}{route}", inner.port).into_client_request()?;
     request.headers_mut().insert("Cookie", HeaderValue::from_str(&cookie)?);
     request.headers_mut().insert("Origin", HeaderValue::from_str(&origin)?);
     let stream = TcpStream::connect(("127.0.0.1", inner.port)).await?;

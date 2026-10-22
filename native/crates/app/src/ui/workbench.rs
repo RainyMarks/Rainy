@@ -96,6 +96,7 @@ impl Workbench {
                 cx.notify();
             }),
             cx.observe(&ide, |_, _, cx| cx.notify()),
+            cx.observe(&crate::store::language::LanguageServers::global(cx), |_, _, cx| cx.notify()),
             cx.observe(&git, |_, _, cx| cx.notify()),
             cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
                 match event {
@@ -288,6 +289,19 @@ impl Workbench {
         let handle = self.store.clone();
         let version = env!("CARGO_PKG_VERSION");
         let connection = store.connection;
+        // The language service of the file shown, while it starts or after it failed; a working one says nothing.
+        let active = crate::store::ide::Ide::global(cx).read(cx).active.clone();
+        let language = active.and_then(|key| {
+            let servers = crate::store::language::LanguageServers::global(cx);
+            let servers = servers.read(cx);
+            let (name, phase) = servers.phase_of(&key)?;
+            let (label, reason) = match phase {
+                crate::store::language::ServerPhase::Starting => (trf(cx, "native.languageStarting", &[("language", &name)]), None),
+                crate::store::language::ServerPhase::Failed(reason) => (trf(cx, "native.languageFailed", &[("language", &name)]), Some(reason.clone())),
+                crate::store::language::ServerPhase::Ready => return None,
+            };
+            Some(div().id("language-state").child(label).when_some(reason, |this, reason| this.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(reason.clone()).build(window, cx))))
+        });
         let theme = cx.theme();
         let dot = match connection {
             ConnectionState::Open => theme.success,
@@ -328,6 +342,7 @@ impl Workbench {
                     }),
             )
             .child(div().flex_1())
+            .children(language)
             .child(self.cursor.clone())
             .child(format!("Rainy {version}"))
     }

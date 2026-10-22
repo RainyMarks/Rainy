@@ -42,7 +42,7 @@ impl Default for UiPreferences {
             accent: "auto".into(),
             ui_font: String::new(),
             code_font: String::new(),
-            inline_completion: true,
+            inline_completion: false,
             completion_model: String::new(),
             auto_keep_changes: true,
             rain_effects: true,

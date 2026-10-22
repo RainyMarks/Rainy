@@ -4,6 +4,7 @@ pub mod chat;
 pub mod diagnostics;
 pub mod execution;
 pub mod ide;
+pub mod language;
 pub mod modules;
 pub mod shell;
 pub mod update;

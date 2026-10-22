@@ -13,7 +13,8 @@ use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, IsIconic, IsWindowVisible, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos,
+    GetClientRect, GetWindowRect, HWND_BOTTOM, IsIconic, IsWindowVisible, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+    SWP_NOZORDER, SetWindowPos,
 };
 
 /// Windows reports a scaling change as several events in a row; the window is fitted once they settle.
@@ -68,11 +69,29 @@ impl Opening {
         options.display_id = self.display;
         options.window_min_size = Some(self.min_size);
         options.show = false;
+        // Test runs on the developer's desktop show the window behind the others, without taking the focus.
+        if background() {
+            options.window_bounds = Some(WindowBounds::Windowed(self.bounds.get_bounds()));
+            options.show = true;
+            options.focus = false;
+        }
     }
 
     pub fn show(&self, window: &mut Window) {
+        if background() {
+            if let Some(hwnd) = hwnd(window) {
+                // SAFETY: a plain z-order change of the window's live handle.
+                unsafe { SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+            }
+            return;
+        }
         window.activate_window();
     }
+}
+
+/// Whether this is a test run that must not take the focus (`RAINY_QA_BACKGROUND`, debug builds only).
+pub fn background() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("RAINY_QA_BACKGROUND").is_some()
 }
 
 /// The placement on displays with these work areas (logical pixels, the primary one's index if known), the display it

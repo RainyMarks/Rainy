@@ -22,7 +22,8 @@ use serde_json::{Value, json};
 use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
-use crate::ui::ide::{choose_folder, file_icon};
+use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
+use crate::ui::ide::{AiEditSelection, choose_folder, file_icon};
 use crate::ui::tr;
 use crate::web::{PaneEvent, WebPane};
 
@@ -52,6 +53,8 @@ pub struct EditorArea {
     /// The tab strip, scrolled so the active tab is in view when it changes.
     tabs_scroll: ScrollHandle,
     scrolled_to: Option<String>,
+    /// Ctrl+K on a file's editor.
+    ai_edit: Option<Entity<AiEdit>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -85,7 +88,7 @@ fn encode(value: &str) -> String {
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![cx.observe(&ide, |_, _, cx| cx.notify())];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, ai_edit: None, _subscriptions: subscriptions }
     }
 
     /// The page of a file view, created on first use and again when the view or the file's version changes.
@@ -402,6 +405,7 @@ impl EditorArea {
                     )
                 })
                 .child(div().flex_1().min_h_0().child(Editor::new(&editor).h_full().bordered(false)))
+                .children(self.ai_edit.clone().filter(|edit| edit.read(cx).key == key))
                 .into_any_element();
         }
         let reason = file.document.read_only_reason.clone().unwrap_or_default();
@@ -600,6 +604,33 @@ pub fn close_tab(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut Ap
     });
 }
 
+impl EditorArea {
+    /// Open Ctrl+K on the active file's editor.
+    fn open_ai_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ide = self.ide.read(cx);
+        let Some(key) = ide.active.clone() else { return };
+        let Some(file) = ide.files.get(&key) else { return };
+        let Some(editor) = file.editor.clone() else { return };
+        let path = split_key(&key).1.to_owned();
+        let language = crate::store::ide::language_of(&file.document.path).to_owned();
+        if let Some(open) = self.ai_edit.take() {
+            open.update(cx, |edit, cx| edit.dismiss(window, cx));
+        }
+        let store = Store::global(cx);
+        let target = ai_edit::Target { key, path, language };
+        let edit = cx.new(|cx| AiEdit::new(store, target, editor, window, cx));
+        cx.subscribe(&edit, |this, _, event: &AiEditEvent, cx| match event {
+            AiEditEvent::Closed => {
+                this.ai_edit = None;
+                cx.notify();
+            }
+        })
+        .detach();
+        self.ai_edit = Some(edit);
+        cx.notify();
+    }
+}
+
 impl Render for EditorArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -640,6 +671,10 @@ impl Render for EditorArea {
             };
             v_flex().size_full().child(tabs).child(div().flex_1().min_h_0().child(content)).into_any_element()
         };
-        div().size_full().bg(theme.background).child(body)
+        div()
+            .size_full()
+            .bg(theme.background)
+            .on_action(cx.listener(|this, _: &AiEditSelection, window, cx| this.open_ai_edit(window, cx)))
+            .child(body)
     }
 }

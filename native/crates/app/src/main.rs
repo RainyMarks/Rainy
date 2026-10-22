@@ -64,6 +64,7 @@ fn main() {
         let user_data = paths.user_data.clone();
         let store = Store::init(paths, cx);
         let ide = store::ide::Ide::init(store.clone(), cx);
+        store::language::LanguageServers::init(store.clone(), &ide, cx);
         store::execution::Execution::init(store.clone(), ide, cx);
         launch::init(&argv, cx);
         ui::ide::bind_keys(cx);

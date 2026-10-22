@@ -12,6 +12,7 @@ pub mod keyring;
 pub mod launch;
 pub mod locale;
 pub mod logging;
+pub mod lsp;
 pub mod maintenance;
 pub mod mcp_json;
 pub mod modules;

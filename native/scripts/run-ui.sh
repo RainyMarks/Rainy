@@ -6,6 +6,8 @@ if [ -f "$root/tmp/ui.pid" ]; then taskkill //PID "$(cat "$root/tmp/ui.pid")" //
 mkdir -p "$root/tmp/ui-data"
 # Tests never touch the real ~/.rainy-agent inside WSL.
 export RAINY_DEV_WSL_HOME=/tmp/rainy-gpui-home MSYS2_ENV_CONV_EXCL=RAINY_DEV_WSL_HOME
+# The window opens behind the others and leaves the focus where it is (RAINY_QA_FOREGROUND=1 to bring it up).
+[ -n "${RAINY_QA_FOREGROUND:-}" ] || export RAINY_QA_BACKGROUND=1
 "$root/native/target/debug/Rainy.exe" --user-data-dir="$(cygpath -w "$root/tmp/ui-data")" > "$root/tmp/ui.log" 2>&1 &
 echo $! > "$root/tmp/ui.pid.bash"
 # The Windows pid of the started process, for the PowerShell drivers.

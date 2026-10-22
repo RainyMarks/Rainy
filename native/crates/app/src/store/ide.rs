@@ -669,6 +669,10 @@ impl Ide {
             }
             None => (None, None, String::new()),
         };
+        if let (Some(editor), Some(target)) = (&editor, self.language_target(&key)) {
+            let servers = crate::store::language::LanguageServers::global(cx);
+            servers.update(cx, |servers, cx| servers.attach(&key, editor, target, cx));
+        }
         let revealed = key.clone();
         let dirty = recovered.is_some() && editor.is_some();
         self.files.insert(
@@ -756,6 +760,42 @@ impl Ide {
         match split_key(key) {
             (Some(root), path) => json!({ "path": path, "rootId": root }),
             (None, path) => json!({ "path": path }),
+        }
+    }
+
+    /// Where the language server of a file runs, and the file as the Host and the model see it.
+    pub fn language_target(&self, key: &str) -> Option<crate::store::language::Target> {
+        let workspace = self.workspace.as_ref()?;
+        let (root_id, relative) = split_key(key);
+        let roots = workspace.roots();
+        let root = match root_id {
+            Some(id) => roots.iter().find(|root| root.root_id == id)?,
+            None => roots.iter().find(|root| root.primary).or(roots.first())?,
+        };
+        let separator = if root.path.contains('\\') { "\\" } else { "/" };
+        let base = root.path.trim_end_matches(['/', '\\']);
+        let path = format!("{base}{separator}{}", relative.replace('/', separator));
+        Some(crate::store::language::Target {
+            workspace_id: workspace.workspace_id.clone(),
+            root_id: root.root_id.clone(),
+            root_path: root.path.clone(),
+            root_title: root.title.clone(),
+            path,
+            relative: relative.to_owned(),
+            python_path: self.python_path(),
+        })
+    }
+
+    /// The Python of the active run profile, or of the first Python profile with one (`selectedPythonExecutable`).
+    pub fn python_path(&self) -> Option<String> {
+        let execution = self.state.as_ref()?.data.get("execution")?;
+        let profiles = execution.get("profiles")?.as_array()?;
+        let active = execution.get("activeProfile").and_then(Value::as_str);
+        let python = |profile: &&Value| profile.get("language").and_then(Value::as_str) == Some("python");
+        let executable = |profile: &Value| profile.get("executable").and_then(Value::as_str).map(str::to_owned);
+        match profiles.iter().filter(python).find(|profile| profile.get("name").and_then(Value::as_str) == active) {
+            Some(profile) => executable(profile),
+            None => profiles.iter().filter(python).find_map(executable),
         }
     }
 
@@ -855,6 +895,10 @@ impl Ide {
                             file.disk_version = None;
                         }
                         cx.emit(IdeEvent::Saved);
+                        if shown {
+                            let servers = crate::store::language::LanguageServers::global(cx);
+                            servers.update(cx, |servers, _| servers.saved(&key));
+                        }
                         if this.closing.remove(&key) && shown {
                             this.close(&key, cx);
                         }
@@ -919,7 +963,10 @@ impl Ide {
     pub fn close(&mut self, key: &str, cx: &mut Context<Self>) {
         let index = self.tabs.iter().position(|tab| tab == key);
         self.tabs.retain(|tab| tab != key);
-        self.files.remove(key);
+        if self.files.remove(key).is_some() {
+            let servers = crate::store::language::LanguageServers::global(cx);
+            servers.update(cx, |servers, cx| servers.detach(key, cx));
+        }
         self.reads.remove(key);
         self.diff_tabs.remove(key);
         self.diffs.remove(key);

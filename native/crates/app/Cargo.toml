@@ -18,6 +18,8 @@ serde_json.workspace = true
 log.workspace = true
 async-channel = "2"
 similar = "2.7"
+# The editor's language-server types, as GPUI Kit uses them (inline completions are a proposed part).
+lsp-types = { version = "0.97.0", features = ["proposed"] }
 latex-rust = "3.0.1"
 base64 = "0.22"
 raw-window-handle = "0.6"

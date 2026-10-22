@@ -5084,6 +5084,7 @@ dependencies = [
  "image",
  "latex-rust",
  "log",
+ "lsp-types",
  "rainy-carrier",
  "rainy-protocol",
  "raw-window-handle",
