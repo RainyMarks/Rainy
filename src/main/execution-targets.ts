@@ -139,18 +139,22 @@ export async function saveDesktopLocale(settingsPath: string, locale: 'zh' | 'en
 /**
  * Remember which Explorer integrations the user wants.
  * @param settingsPath - private desktop preferences.
- * @param value - "Open with Rainy" in the context menu, Rainy offered for text file types, and the registry keys the user
- *   already had when they were turned on (kept as they are when Rainy's entries are removed); what is left out stays as saved.
+ * @param value - "Open with Rainy" in the context menu, Rainy offered for text file types, the registry keys the user
+ *   already had when they were turned on (kept as they are when Rainy's entries are removed), and the parts that looked
+ *   those keys up; what is left out stays as saved.
  * @returns completion after an atomic preference update.
  */
-export async function saveShellIntegration(settingsPath: string, value: { contextMenu?: boolean; fileTypes?: boolean; keep?: readonly string[] }): Promise<void> {
+export async function saveShellIntegration(settingsPath: string,
+  value: { contextMenu?: boolean; fileTypes?: boolean; keep?: readonly string[]; recorded?: { contextMenu: boolean; fileTypes: boolean } }): Promise<void> {
   // 3.9.0's key is dropped: it held parts that were on without the user choosing them.
   return updateDesktopPreferences(settingsPath, (preferences) => {
     const saved: Record<string, unknown> = preferences.explorerIntegration !== null && typeof preferences.explorerIntegration === 'object'
       ? preferences.explorerIntegration as Record<string, unknown> : {}
     const keep = value.keep ?? (Array.isArray(saved.keep) ? saved.keep as unknown[] : [])
+    const recorded = value.recorded ?? (saved.recorded !== null && typeof saved.recorded === 'object' ? saved.recorded as Record<string, unknown> : {})
+    const parts = { contextMenu: recorded.contextMenu === true, fileTypes: recorded.fileTypes === true }
     return { explorerIntegration: { contextMenu: value.contextMenu ?? saved.contextMenu === true, fileTypes: value.fileTypes ?? saved.fileTypes === true,
-      ...keep.length === 0 ? {} : { keep } }, shellIntegration: undefined }
+      ...keep.length === 0 ? {} : { keep }, ...parts.contextMenu || parts.fileTypes ? { recorded: parts } : {} }, shellIntegration: undefined }
   })
 }
 

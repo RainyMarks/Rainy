@@ -80,6 +80,19 @@ export function fitBounds(bounds: WindowRectangle, area: WindowRectangle, minimu
 }
 
 /**
+ * @param bounds - window bounds.
+ * @param workAreas - work areas of the connected displays.
+ * @returns the work area that shows enough of the window's top edge to grab and move it, if any.
+ */
+export function gripArea(bounds: WindowRectangle, workAreas: readonly WindowRectangle[]): WindowRectangle | undefined {
+  return workAreas.find((work) => {
+    const sharedWidth = Math.min(bounds.x + bounds.width, work.x + work.width) - Math.max(bounds.x, work.x)
+    return sharedWidth >= VISIBLE_GRIP.width
+      && bounds.y >= work.y - VISIBLE_GRIP.height / 2 && bounds.y <= work.y + work.height - VISIBLE_GRIP.height
+  })
+}
+
+/**
  * Place saved bounds on a connected display, shrinking them to its work area when the display became smaller.
  * @param state - saved geometry.
  * @param workAreas - work areas of the connected displays.
@@ -88,14 +101,9 @@ export function fitBounds(bounds: WindowRectangle, area: WindowRectangle, minimu
  */
 export function restoredBounds(state: WindowState, workAreas: readonly WindowRectangle[], minimum: WindowSize):
   WindowRectangle | undefined {
-  const { bounds } = state
-  const area = workAreas.find((work) => {
-    const sharedWidth = Math.min(bounds.x + bounds.width, work.x + work.width) - Math.max(bounds.x, work.x)
-    return sharedWidth >= VISIBLE_GRIP.width
-      && bounds.y >= work.y - VISIBLE_GRIP.height / 2 && bounds.y <= work.y + work.height - VISIBLE_GRIP.height
-  })
+  const area = gripArea(state.bounds, workAreas)
   if (area === undefined) return undefined
-  return fitBounds(bounds, area, minimum)
+  return fitBounds(state.bounds, area, minimum)
 }
 
 /**

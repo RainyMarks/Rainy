@@ -32,7 +32,7 @@ import { OfficeConversionError, OfficeConverter, officeKind } from './office-con
 import { createIdeEnvironmentWindow } from './ide-environment-window.ts'
 import { listExecutionTargets, readDesktopPreferences, removeSshHost, savedExecutionTarget, saveDesktopLocale, saveExecutionTarget, saveShellIntegration,
   saveSshHost, sshDestinationOf, sshTarget, sshTargets, WINDOWS_TARGET } from './execution-targets.ts'
-import { applyShellIntegration, keptShellKeys, REGISTERED_APPLICATION, shellIntegrationPreference, syncShellIntegration as syncRegistry,
+import { applyShellIntegration, REGISTERED_APPLICATION, shellIntegrationPreference, shellMemory, syncShellIntegration as syncRegistry,
   type ShellIntegration } from './shell-integration.ts'
 import { inspectLaunchPaths, launchPaths, type LaunchEntry } from './launch-paths.ts'
 import { exportFileName, printHtmlToPdf } from './document-export.ts'
@@ -47,7 +47,7 @@ import { startupPage, startupProgress, WINDOW_BACKGROUND } from './startup-splas
 import { systemProxyFor } from './system-proxy.ts'
 import { credentialKey } from './credential-key.ts'
 import { exportDiagnostics, newestFiles } from './diagnostics.ts'
-import { fitBounds, initialPlacement, MINIMUM_WINDOW, minimumFor, readWindowState, writeWindowState } from './window-state.ts'
+import { fitBounds, gripArea, initialPlacement, MINIMUM_WINDOW, minimumFor, readWindowState, writeWindowState } from './window-state.ts'
 import type { WindowState } from './window-state.ts'
 import type { WorkspaceId } from '../shared/ide-files-protocol.ts'
 import { IDE_RAW_ROUTE } from '../shared/ide-preview.ts'
@@ -243,11 +243,23 @@ async function start(): Promise<void> {
     const fitted = fitBounds(bounds, area)
     if (fitted.x !== bounds.x || fitted.y !== bounds.y || fitted.width !== bounds.width || fitted.height !== bounds.height) window.setBounds(fitted)
   }
+  // A window the user moved may hang partly off screen, as in any Windows app: only the minimum size follows the display it
+  // is on now, and it is brought back only when no display shows its top edge any more, so it could not be grabbed again.
+  const afterMove = () => {
+    if (window.isDestroyed() || window.isMaximized() || window.isFullScreen() || window.isMinimized()) return
+    const bounds = window.getBounds()
+    const area = screen.getDisplayMatching(bounds).workArea
+    const minimum = minimumFor(area)
+    const [minWidth, minHeight] = window.getMinimumSize()
+    if (minWidth !== minimum.width || minHeight !== minimum.height) window.setMinimumSize(minimum.width, minimum.height)
+    if (gripArea(bounds, screen.getAllDisplays().map(display => display.workArea)) === undefined) window.setBounds(fitBounds(bounds, area))
+  }
   let fitTimer: NodeJS.Timeout | undefined
   // Windows reports a scaling change as several events in a row; fitting once they settle avoids fighting its own resize.
   const scheduleFit = () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitDisplay, 250) }
+  const scheduleMove = () => { clearTimeout(fitTimer); fitTimer = setTimeout(afterMove, 250) }
   screen.on('display-metrics-changed', scheduleFit).on('display-added', scheduleFit).on('display-removed', scheduleFit)
-  window.on('moved', scheduleFit)
+  window.on('moved', scheduleMove)
   window.on('closed', () => {
     clearTimeout(fitTimer)
     screen.off('display-metrics-changed', scheduleFit).off('display-added', scheduleFit).off('display-removed', scheduleFit)
@@ -1047,11 +1059,12 @@ async function start(): Promise<void> {
     const next = shellQueue.then(async () => {
       const preferences = await readDesktopPreferences(settingsPath)
       const wanted = shellIntegrationPreference(preferences)
-      const kept = keptShellKeys(preferences)
-      const { changed, keep } = await syncRegistry(app.getPath('exe'), interfaceLocale, wanted, kept)
+      // Only the memory is saved, never the switches: a switch the user flipped meanwhile stays as they set it. It is saved
+      // before the registry is written and again after, when parts that ended off forget theirs.
+      const remember = (memory: { keep: readonly string[]; recorded: ShellIntegration }) => saveShellIntegration(settingsPath, memory)
+      const { changed, memory } = await syncRegistry(app.getPath('exe'), interfaceLocale, wanted, shellMemory(preferences), '', remember)
       if (!changed) return
-      // Only the remembered keys are saved: a switch the user flipped meanwhile stays as they set it.
-      if (keep.length !== kept.length || keep.some((path, index) => path !== kept[index])) await saveShellIntegration(settingsPath, { keep })
+      await remember(memory)
       appendFileSync(logPath, `Explorer integration updated: context menu ${wanted.contextMenu ? 'on' : 'off'}, file types ${wanted.fileTypes ? 'on' : 'off'}\n`)
     })
     shellQueue = next.catch(() => undefined)
@@ -1067,8 +1080,16 @@ async function start(): Promise<void> {
     if (!trustedSender(event) || !isRecord(value) || (value.contextMenu !== undefined && typeof value.contextMenu !== 'boolean')
       || (value.fileTypes !== undefined && typeof value.fileTypes !== 'boolean')) throw new Error('Invalid Explorer integration request.')
     if (!shellAvailable) throw new Error(localized({ zh: '只有安装版 Rainy 可以修改资源管理器集成。', en: 'Only an installed Rainy can change the Explorer integration.' }))
-    await saveShellIntegration(settingsPath, { contextMenu: value.contextMenu as boolean | undefined, fileTypes: value.fileTypes as boolean | undefined })
-    await syncShellIntegration()
+    const contextMenu = value.contextMenu as boolean | undefined
+    const fileTypes = value.fileTypes as boolean | undefined
+    const previous = shellIntegrationPreference(await readDesktopPreferences(settingsPath))
+    await saveShellIntegration(settingsPath, { contextMenu, fileTypes })
+    try { await syncShellIntegration() } catch (error) {
+      // The page keeps showing the old switch after an error; the saved choice must match it, or the next start applies it unasked.
+      await saveShellIntegration(settingsPath, { ...contextMenu === undefined ? {} : { contextMenu: previous.contextMenu },
+        ...fileTypes === undefined ? {} : { fileTypes: previous.fileTypes } })
+      throw error
+    }
     return shellState()
   })
   handleIpc('rainy:default-apps', async (event) => {
@@ -1303,7 +1324,7 @@ else if (process.argv.includes('--rainy-unregister-shell')) {
   void app.whenReady().then(async () => {
     if (app.isPackaged && process.platform === 'win32') {
       const preferences = await readDesktopPreferences(join(app.getPath('userData'), 'desktop.json')).catch(() => ({}))
-      await applyShellIntegration(app.getPath('exe'), 'zh', { contextMenu: false, fileTypes: false }, '', keptShellKeys(preferences))
+      await applyShellIntegration(app.getPath('exe'), 'zh', { contextMenu: false, fileTypes: false }, '', shellMemory(preferences))
     }
     app.exit(0)
   }).catch((error: unknown) => { console.error('Removing the Explorer integration failed', error); app.exit(1) })

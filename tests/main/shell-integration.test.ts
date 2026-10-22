@@ -3,8 +3,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { applyShellIntegration, contextMenuLabel, FILE_TYPES, integrationOperations, keptShellKeys, launchCommand, readShellIntegration,
-  removableKeys, SHELL_EXTENSIONS, shellIntegrationCurrent, shellIntegrationPreference, syncShellIntegration } from '../../src/main/shell-integration.ts'
+import { applyShellIntegration, contextMenuLabel, FILE_TYPES, integrationOperations, launchCommand, NO_MEMORY, readShellIntegration,
+  removableKeys, SHELL_EXTENSIONS, shellIntegrationCurrent, shellIntegrationPreference, shellMemory, syncShellIntegration } from '../../src/main/shell-integration.ts'
 import { inspectLaunchPaths, launchPaths } from '../../src/main/launch-paths.ts'
 
 const executable = 'C:\\Program Files\\Rainy\\RainyAgent.exe'
@@ -100,7 +100,8 @@ describe.runIf(process.platform === 'win32')('Explorer integration in the regist
     const status = await readShellIntegration(root)
     expect(status).toEqual({ contextMenuLabel: '通过 Rainy 打开', contextMenuCommand: launchCommand(unicode), fileTypeCommand: launchCommand(unicode) })
     expect(shellIntegrationCurrent(status, unicode, 'zh', { contextMenu: true, fileTypes: true })).toBe(true)
-    await applyShellIntegration(unicode, 'zh', { contextMenu: false, fileTypes: false }, root)
+    // Both parts were recorded as turned on into an empty key: everything Rainy created goes, up to the scratch key.
+    await applyShellIntegration(unicode, 'zh', { contextMenu: false, fileTypes: false }, root, { keep: [], recorded: { contextMenu: true, fileTypes: true } })
     expect(await readShellIntegration(root)).toEqual({ contextMenuLabel: null, contextMenuCommand: null, fileTypeCommand: null })
     // Nothing the registration created is left, not even the empty keys above its values.
     const left = execFileSync('reg.exe', ['query', `HKCU\\${root}`, '/s'], { windowsHide: true, encoding: 'utf8' })
@@ -143,14 +144,25 @@ describe.runIf(process.platform === 'win32')('Explorer integration in the regist
     try {
       execFileSync('reg.exe', ['add', `${classes}\\.text\\OpenWithProgids`, '/f'], { windowsHide: true, stdio: 'ignore' })
       execFileSync('reg.exe', ['add', `${classes}\\Directory\\shell`, '/f'], { windowsHide: true, stdio: 'ignore' })
-      const { changed, keep } = await syncShellIntegration(executable, 'zh', { contextMenu: true, fileTypes: true }, [], own)
+      // The memory is saved before anything is written, so a write cut short cannot lose it.
+      const saved: unknown[] = []
+      const { changed, memory } = await syncShellIntegration(executable, 'zh', { contextMenu: true, fileTypes: true }, NO_MEMORY, own,
+        async (remembered) => { saved.push({ remembered, written: (await readShellIntegration(own)).fileTypeCommand !== null }) })
       expect(changed).toBe(true)
-      expect(keep).toContain('software\\classes\\.text\\openwithprogids')
-      expect(keep).toContain('software\\classes\\directory\\shell')
-      expect(keep).not.toContain('software\\classes\\.md')
-      // Already current: nothing is written or looked up again and the list stays.
-      expect(await syncShellIntegration(executable, 'zh', { contextMenu: true, fileTypes: true }, keep, own)).toEqual({ changed: false, keep })
-      expect(await syncShellIntegration(executable, 'zh', { contextMenu: false, fileTypes: false }, keep, own)).toEqual({ changed: true, keep: [] })
+      expect(saved).toEqual([{ remembered: memory, written: false }])
+      expect(memory.recorded).toEqual({ contextMenu: true, fileTypes: true })
+      expect(memory.keep).toContain('software\\classes\\.text\\openwithprogids')
+      expect(memory.keep).toContain('software\\classes\\directory\\shell')
+      expect(memory.keep).not.toContain('software\\classes\\.md')
+      // Already current: nothing is written or looked up again and the memory stays.
+      expect(await syncShellIntegration(executable, 'zh', { contextMenu: true, fileTypes: true }, memory, own)).toEqual({ changed: false, memory })
+      // Turning the menu off forgets only the menu's keys.
+      const menuOff = await syncShellIntegration(executable, 'zh', { contextMenu: false, fileTypes: true }, memory, own)
+      expect(menuOff.memory.recorded).toEqual({ contextMenu: false, fileTypes: true })
+      expect(menuOff.memory.keep).toContain('software\\classes\\.text\\openwithprogids')
+      expect(menuOff.memory.keep).not.toContain('software\\classes\\directory\\shell')
+      expect(await syncShellIntegration(executable, 'zh', { contextMenu: false, fileTypes: false }, menuOff.memory, own))
+        .toEqual({ changed: true, memory: { keep: [], recorded: { contextMenu: false, fileTypes: false } } })
       expect(exists('.text\\OpenWithProgids')).toBe(true)
       expect(exists('Directory\\shell')).toBe(true)
       expect(exists('Directory\\shell\\Rainy')).toBe(false)
@@ -163,6 +175,41 @@ describe.runIf(process.platform === 'win32')('Explorer integration in the regist
     }
   })
 
+  it('leaves the application key Windows wrote for "Choose another app", and removes nothing of a part Rainy has not written', async () => {
+    const own = `${root}-app`
+    const classes = `HKCU\\${own}\\Software\\Classes`
+    const command = `"${executable}" "%1"`
+    try {
+      // Picking RainyAgent.exe under "Open with -> Choose another app" makes Windows write this key.
+      execFileSync('reg.exe', ['add', `${classes}\\Applications\\RainyAgent.exe\\shell\\open\\command`, '/ve', '/d', command, '/f'], { windowsHide: true, stdio: 'ignore' })
+      // Only the menu turned on: the file-type part is not Rainy's, so its keys are not touched.
+      const menu = await syncShellIntegration(executable, 'zh', { contextMenu: true, fileTypes: false }, NO_MEMORY, own)
+      const query = (key: string): string => execFileSync('reg.exe', ['query', `${classes}\\${key}`, '/s'], { windowsHide: true, encoding: 'utf8' })
+      expect(query('Applications\\RainyAgent.exe')).toContain(command)
+      const types = await syncShellIntegration(executable, 'zh', { contextMenu: true, fileTypes: true }, menu.memory, own)
+      expect(types.memory.keep).toContain('software\\classes\\applications\\rainyagent.exe')
+      expect(query('Applications\\RainyAgent.exe')).toContain('SupportedTypes')
+      await syncShellIntegration(executable, 'zh', { contextMenu: false, fileTypes: false }, types.memory, own)
+      const left = query('Applications\\RainyAgent.exe')
+      expect(left).toContain(command)
+      expect(left).not.toContain('SupportedTypes')
+      expect(left).not.toContain('FriendlyAppName')
+    } finally {
+      try { execFileSync('reg.exe', ['delete', `HKCU\\${own}`, '/f'], { windowsHide: true, stdio: 'ignore' }) } catch (_absent) { /* Nothing was left. */ }
+    }
+  })
+
+  it('removes only Rainy\'s own keys and values for a part without a record, as 3.9.0 left them', () => {
+    const operations = integrationOperations(executable, 'zh', { contextMenu: false, fileTypes: false }, '', new Set(), { contextMenu: false, fileTypes: false })
+    expect(operations).toContainEqual({ op: 'removeKey', key: 'Software\\Classes\\*\\shell\\Rainy', parents: [] })
+    expect(operations).toContainEqual({ op: 'removeValue', key: 'Software\\Classes\\.md\\OpenWithProgids', name: 'Rainy.md', parents: [], keepKey: true })
+    expect(operations).toContainEqual({ op: 'removeKey', key: 'Software\\Classes\\Applications\\RainyAgent.exe', parents: [] })
+    // A part that is not present is not removed at all.
+    const menuOnly = integrationOperations(executable, 'zh', { contextMenu: false, fileTypes: false }, '', new Set(), undefined, { contextMenu: true, fileTypes: false })
+    expect(menuOnly.some(operation => operation.key.includes('Applications') || operation.key.includes('OpenWithProgids'))).toBe(false)
+    expect(menuOnly.some(operation => operation.key.endsWith('\\shell\\Rainy'))).toBe(true)
+  })
+
   it('stops removing parents at a kept key and keeps a kept key that held only Rainy\'s value', () => {
     const keep = new Set(['software\\classes\\directory', 'software\\classes\\.txt\\openwithprogids'])
     const operations = integrationOperations(executable, 'zh', { contextMenu: false, fileTypes: false }, '', keep)
@@ -171,7 +218,8 @@ describe.runIf(process.platform === 'win32')('Explorer integration in the regist
     expect(operations).toContainEqual({ op: 'removeValue', key: 'Software\\Classes\\.txt\\OpenWithProgids', name: 'Rainy.txt', parents: [], keepKey: true })
     expect(removableKeys({ contextMenu: true, fileTypes: false })).toContain('Software\\Classes\\Directory')
     expect(removableKeys({ contextMenu: false, fileTypes: false })).toEqual([])
-    expect(keptShellKeys({ explorerIntegration: { keep: ['a', 1, 'b'] } })).toEqual(['a', 'b'])
-    expect(keptShellKeys({ explorerIntegration: true })).toEqual([])
+    expect(shellMemory({ explorerIntegration: { keep: ['a', 1, 'b'], recorded: { fileTypes: true } } }))
+      .toEqual({ keep: ['a', 'b'], recorded: { contextMenu: false, fileTypes: true } })
+    expect(shellMemory({ explorerIntegration: true })).toEqual(NO_MEMORY)
   })
 })

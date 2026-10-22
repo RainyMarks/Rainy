@@ -1,5 +1,5 @@
 /** Text search across a project's roots with ripgrep, and replacement in the files it found. */
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises'
+import { lstat, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IdeRootId, IdeWorkspaceRoot, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { localized } from '../../shared/locale.ts'
@@ -11,6 +11,7 @@ import { ideContains, ideRelativePath } from '../ide/files-core.ts'
 import { scrubbedEnv, spawnProcess } from '../process.ts'
 import { roots, type Projects } from '../projects.ts'
 import { RpcError } from '../rpc.ts'
+import { realpath } from '../realpath.ts'
 
 /** Matches a search returns at most; the rest of the project is not searched. */
 export const MAX_MATCHES = 5000

@@ -36,7 +36,10 @@ it('saves each Explorer switch and the remembered keys apart, dropping 3.9.0\'s 
   await Promise.all([saveShellIntegration(path, { fileTypes: true }), saveShellIntegration(path, { keep: ['software\\classes\\.txt'] })])
   await saveShellIntegration(path, { contextMenu: false })
   expect((await readDesktopPreferences(path)).explorerIntegration).toEqual({ contextMenu: false, fileTypes: true, keep: ['software\\classes\\.txt'] })
-  await saveShellIntegration(path, { fileTypes: false, keep: [] })
+  await saveShellIntegration(path, { recorded: { contextMenu: false, fileTypes: true } })
+  expect((await readDesktopPreferences(path)).explorerIntegration).toEqual({ contextMenu: false, fileTypes: true, keep: ['software\\classes\\.txt'],
+    recorded: { contextMenu: false, fileTypes: true } })
+  await saveShellIntegration(path, { fileTypes: false, keep: [], recorded: { contextMenu: false, fileTypes: false } })
   expect((await readDesktopPreferences(path)).explorerIntegration).toEqual({ contextMenu: false, fileTypes: false })
 })
 

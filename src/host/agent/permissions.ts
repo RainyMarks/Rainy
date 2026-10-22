@@ -1,7 +1,7 @@
 /** Which tool calls run, wait for the user, or are refused, by the chat's permission mode. */
-import { realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { PendingApproval, PermissionMode, PermissionRules } from '../../shared/rpc.ts'
+import { realpath } from '../realpath.ts'
 
 /**
  * Tools that only read; they run in every mode. `stop_command` only ends a command this chat already started, and a

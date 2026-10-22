@@ -1,6 +1,6 @@
 /** Resolve human launch choices into explicit native commands and workspace-contained source paths. */
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, readFile, realpath, rm, stat, unlink } from 'node:fs/promises'
+import { lstat, mkdir, readFile, rm, stat, unlink } from 'node:fs/promises'
 import { posix, win32 } from 'node:path'
 import { assertNever } from '../../shared/brand.ts'
 import type { IdeCommandSpec, IdeResolvedRunSpec, IdeRunConfiguration } from '../../shared/ide-execution-protocol.ts'
@@ -10,6 +10,7 @@ import { resolveCmakeBuild } from './execution-cmake.ts'
 import type { IdeSubprocess } from './execution-process.ts'
 import { ideRunConfigurationSchema } from './execution-schema.ts'
 import { localized } from '../../shared/locale.ts'
+import { realpath } from '../realpath.ts'
 
 /** Absolute paths supplied by the packaged IDE resource resolver. */
 export interface IdeExecutionResources {

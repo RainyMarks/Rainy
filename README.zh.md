@@ -199,7 +199,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 <a id="whats-new"></a>
 ## 3.9 新变化
 
-**像 Typora 一样写 Markdown，也能从资源管理器直接打开。** 侧栏大纲、文内查找替换、粘贴图片自动保存、Mermaid 图表、专注与打字机模式、导出 PDF / HTML；需要时可在设置里打开“通过 Rainy 打开”。3.9.1 把这项集成改为默认关闭、由你决定。[查看完整更新日志 →](CHANGELOG.zh.md)
+**像 Typora 一样写 Markdown，也能从资源管理器直接打开。** 侧栏大纲、文内查找替换、粘贴图片自动保存、Mermaid 图表、专注与打字机模式、导出 PDF / HTML；需要时可在设置里打开“通过 Rainy 打开”。3.9.2 支持用 JSON 导入 MCP 服务器，挂载的磁盘镜像里的文件夹也能打开了。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档
@@ -271,10 +271,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.2/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.9.1` 换成 `package.json` 中的版本号。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.9.2` 换成 `package.json` 中的版本号。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 
