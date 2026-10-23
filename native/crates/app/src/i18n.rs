@@ -1,6 +1,6 @@
-//! Chinese and English interface strings, exported from `src/renderer/**/messages.ts` by
-//! `native/scripts/export-messages.mts`. Keys are `module.key`, such as `chat.send`; `{name}` placeholders are filled
-//! from the variables given.
+//! Chinese and English interface strings from `assets/messages.json`, the one place they are written (3.x kept them in
+//! `src/renderer/**/messages.ts`). Keys are `module.key`, such as `chat.send`; `{name}` placeholders are filled from the
+//! variables given.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

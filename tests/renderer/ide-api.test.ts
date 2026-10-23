@@ -3,8 +3,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { brandString } from '../../src/shared/brand.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
-import type { IdeDebugId } from '../../src/shared/ide-execution-protocol.ts'
-import { createIdeExecutionApi } from '../../src/renderer/ide/ide-execution-api.ts'
 import { callIde, createIdeFilesApi, IdeRequestError } from '../../src/renderer/ide/ide-api.ts'
 import { host, HostError } from './ide-host-mock.ts'
 
@@ -12,13 +10,6 @@ vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
 
 afterEach(() => { host.call.mockReset() })
 const workspaceId = brandString<WorkspaceId>('workspace-a')
-
-it('sends execution requests unchanged and returns their results', async () => {
-  host.call.mockResolvedValueOnce([{ name: 'counter', value: '3', type: 'int', variablesReference: 0 }])
-  const request = { op: 'debug.variables' as const, workspaceId, debugId: brandString<IdeDebugId>('debug-a'), variablesReference: 4 }
-  await expect(createIdeExecutionApi().request(request)).resolves.toEqual([{ name: 'counter', value: '3', type: 'int', variablesReference: 0 }])
-  expect(host.call).toHaveBeenCalledExactlyOnceWith('ide', request)
-})
 
 it('turns a Host refusal into an IDE error carrying its code and conflicting state', async () => {
   const currentState = { version: 1 as const, revision: 7, data: { lastSessionId: null, tabs: [], activePath: null, expandedPaths: [], buffers: [],

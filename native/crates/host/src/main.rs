@@ -135,12 +135,10 @@ async fn start() -> Result<()> {
     let registry = Arc::new(Registry::new(env.carrier_state_root.clone(), env.target_id.clone()));
     let activity = Arc::new(Activity::default());
     let rpc = Arc::new(RpcHub::default());
-    let workbench = settings.get().workbench.unwrap_or_default();
     let (info_env, label) = (env.clone(), env.target_label.clone().unwrap_or_else(|| env.kind().to_owned()));
     let server = HostServer::new(env.renderer_root(), move || {
         vec![
             ("__RAINY_AGENT__".to_owned(), json!({ "name": "Rainy", "version": info_env.version, "environment": info_env.kind(), "label": label })),
-            ("__RAINY_WORKBENCH_CONFIG__".to_owned(), Value::Object(workbench.clone())),
         ]
     });
     let runtime = Runtime::new(env.clone(), projects.clone(), registry.clone(), activity.clone())?;

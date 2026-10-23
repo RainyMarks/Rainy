@@ -44,3 +44,16 @@ jobs:
         run: pnpm run test:node
       - name: Build
         run: pnpm run build
+
+  host:
+    # The Rust Host also runs in WSL and on SSH servers, so its tests run on Linux; the interface crates need Windows.
+    name: Rust Host / ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Host and protocol tests
+        working-directory: native
+        run: cargo test --locked -p rainy-host -p rainy-protocol
