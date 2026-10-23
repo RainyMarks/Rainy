@@ -270,7 +270,7 @@ impl Client {
                 for (name, value) in headers {
                     request = request.header(name, value);
                 }
-                let response = request.send().await.map_err(|error| Failure::Other(format!("fetch failed: {error}")))?;
+                let response = request.send().await.map_err(|error| Failure::Other(format!("fetch failed: {}", crate::agent::llm::transport_error(&error))))?;
                 let status = response.status().as_u16();
                 if !(200..300).contains(&status) {
                     return Err(Failure::Http(status, response.text().await.unwrap_or_default()));
@@ -288,7 +288,7 @@ impl Client {
                 if let Some(version) = version.lock().unwrap().clone() {
                     request = request.header("mcp-protocol-version", version);
                 }
-                let response = request.send().await.map_err(|error| Failure::Other(format!("fetch failed: {error}")))?;
+                let response = request.send().await.map_err(|error| Failure::Other(format!("fetch failed: {}", crate::agent::llm::transport_error(&error))))?;
                 if let Some(id) = response.headers().get("mcp-session-id").and_then(|value| value.to_str().ok()) {
                     *session.lock().unwrap() = Some(id.to_owned());
                 }

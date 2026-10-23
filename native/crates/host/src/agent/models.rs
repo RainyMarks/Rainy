@@ -359,7 +359,10 @@ impl Models {
         } else if let Some(key) = &key {
             request = request.header("authorization", format!("Bearer {key}"));
         }
-        let response = request.send().await.map_err(|error| failed(l(&format!("无法连接 {url}：{error}"), &format!("Could not connect to {url}: {error}"))))?;
+        let response = request.send().await.map_err(|error| {
+            let error = crate::agent::llm::transport_error(&error);
+            failed(l(&format!("无法连接 {url}：{error}"), &format!("Could not connect to {url}: {error}")))
+        })?;
         if response.status().is_redirection() || !response.status().is_success() {
             let status = response.status().as_u16();
             return Err(failed(l(&format!("模型列表请求失败（HTTP {status}）。"), &format!("The model list request failed (HTTP {status})."))));

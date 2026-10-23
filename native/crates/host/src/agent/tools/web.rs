@@ -73,7 +73,7 @@ async fn post(web: &WebAccess, path: &str, body: Value, timeout: Duration, cance
         let response = match response {
             Ok(response) => response,
             Err(error) if error.is_timeout() => return Err(format!("web {what} timed out after {} s", timeout.as_secs())),
-            Err(error) => return Err(format!("web {what} could not reach DeepSeek: {error}")),
+            Err(error) => return Err(format!("web {what} could not reach DeepSeek: {}", crate::agent::llm::transport_error(&error))),
         };
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();

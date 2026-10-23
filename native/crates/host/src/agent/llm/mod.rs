@@ -620,7 +620,8 @@ pub(crate) fn http_error(status: u16, body: &str) -> String {
     format!("{status} {detail}")
 }
 
-fn transport_error(error: &reqwest::Error) -> String {
+/// A request failure with its causes and never its URL, which may carry a key in the query.
+pub(crate) fn transport_error(error: &reqwest::Error) -> String {
     use std::error::Error as _;
     let mut message = if error.is_timeout() { "Request timed out".to_owned() } else { "Connection error".to_owned() };
     let mut source = error.source();

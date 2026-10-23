@@ -101,9 +101,13 @@ pub fn resolve_executable(command: &str, env: Option<&BTreeMap<OsString, OsStrin
             &own
         }
     };
+    // Windows runs a file only by a PATHEXT extension: a bare `npx` is `npx.cmd`, never Node's extensionless shell
+    // script beside it; a name that already ends in such an extension is taken as it is.
     let extensions: Vec<String> = if cfg!(windows) {
         let pathext = env.iter().find(|(name, _)| name.to_string_lossy().eq_ignore_ascii_case("PATHEXT")).map(|(_, value)| value.to_string_lossy().into_owned());
-        std::iter::once(String::new()).chain(pathext.unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into()).split(';').filter(|ext| !ext.is_empty()).map(str::to_lowercase)).collect()
+        let known: Vec<String> = pathext.unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into()).split(';').filter(|ext| !ext.is_empty()).map(str::to_lowercase).collect();
+        let named = Path::new(command).extension().is_some_and(|ext| known.contains(&format!(".{}", ext.to_string_lossy().to_lowercase())));
+        if named { vec![String::new()] } else { known }
     } else {
         vec![String::new()]
     };
@@ -293,4 +297,21 @@ pub struct Output {
     pub success: bool,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_names_take_a_pathext_extension_on_windows() {
+        let dir = std::env::temp_dir().join(format!("rainy-resolve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tool"), "#!/bin/sh\n").unwrap();
+        std::fs::write(dir.join("tool.cmd"), "@echo off\r\n").unwrap();
+        let env = BTreeMap::from([(OsString::from("PATH"), dir.clone().into_os_string()), (OsString::from("PATHEXT"), OsString::from(".EXE;.CMD"))]);
+        assert_eq!(resolve_executable("tool", Some(&env)).map(|path| path.file_name().unwrap().to_ascii_lowercase()), Some("tool.cmd".into()));
+        assert_eq!(resolve_executable("tool.cmd", Some(&env)).map(|path| path.file_name().unwrap().to_ascii_lowercase()), Some("tool.cmd".into()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
