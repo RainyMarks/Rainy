@@ -1,5 +1,33 @@
 # Rainy 验收记录
 
+## 4.1.0（2026-10-23）
+
+被测产物为 `Rainy-4.1.0-windows-x64-setup.exe`（51,909,517 字节，SHA-256 `92a652f2228fe6fc6bbb94b2b3212dfb25f36d5c9d21090f514757eb6bc2e6c4`），构建自提交 `ee3c573f5b`（之后只改了文档）。安装包含 917 个文件、162,202,662 字节。Linux 运行环境底座只剩开发工具（内容标识 `ceb190296cbf6d4d1bb57a668b4e63e362b48b8e2ec7e5145284dfd1fca0e69e`），xz 分片 26,633,872 字节（SHA-256 `3ec2ddd088f72253f5f2a27b8c2f8200e474254e5de4b60a0d38d3f6113be82a`），解开后约 90 MB；应用层 10,547,000 字节随安装包附带。`linux-dev-packages` 与 PHP 分片内容与 4.0.0 相同，重新上传到 `v4.1.0-resources`。按正常流程打包（`scripts/package.ps1`）。
+
+### 改动
+
+- **后台改用 Rust**：`rainy-host`（`native/crates/host`）取代 Node 后台，Windows、WSL、SSH 都用它；Linux 版用 cargo-zigbuild 交叉编译（glibc 2.17）。RPC、控制通道、所有数据文件格式不变。Rainy 不再附带 Node.js。
+- **开发工具改为原生**：ty、TypeScript 7.0.2 原生编译器（语言服务和 JS/TS 格式化）、Ruff 0.16.9、debugpy 1.8.22、js-debug 1.140.0，按平台准备（`prepare-ide-tools.py`，来源清单 v2）；不再需要 Biome、Pyright、Prettier。
+- **Strata 回归**：载体 `strata/`（引擎管理、模型解析沿用 3.x 指纹缓存、loopback 健康检查），设置 → 模型的 Strata 卡片。
+- **MCP 工具逐个开关**（`disabledTools`），开关不重连服务器。
+- QA 中发现并修复：Windows 上裸命令名先匹配到无扩展名文件（`npx` 报 os error 193）；请求失败信息带 URL（可能含密钥）；缺 `/rainy/pdfjs/` 路由导致 PDF 打不开；终端读线程里发提示时调用 `tokio::spawn` 使后台中止（exit 0xC0000409）；没有组件清单时 Strata 卡片一直显示“正在读取”；窄对话面板里发送按钮被挤出窗口；MCP 工具开关会重连服务器。
+- 删除不再被任何预览页用到的 3.x 页面代码及其测试、`export-messages.mts`（界面文字以 `messages.json` 为准）；CI 增加 Rust Host 测试（Ubuntu）；bootstrap 只从 `ide-resources.tar.gz` 取离线 Ubuntu 软件包。
+
+### 检查
+
+- **测试**：`rainy-host` 81 项（Windows）/ 80 项（Linux，WSL 中运行），协议 8 项，`rainy-carrier` 231 项（3 项忽略），`rainy` 59 项；Vitest 6 个文件 20 项；脚本测试 41 项（4 项按平台跳过）；两套类型检查通过；Host 端到端脚本（模拟模型 + `/rpc`）37 项，含 TypeScript 格式化、项目地图扫描与 AI 讲解。
+- **调试版实测（Windows，临时用户数据，测试项目，假模型）**：对话、PowerShell 命令工具（中文文件名）、写文件和改动栏；MCP 工具面板（files 服务器 14 个工具，关一个工具写入 `disabledTools` 且连接不断，悬停说明换行显示，远程服务器失败原因不含密钥）；Strata 卡片（模拟服务被识别为外部服务，连接并设为默认后对话走 Strata）；各设置页；Word、Excel、PowerPoint（本机 PowerPoint 转换）和中文未嵌入字体 PDF 预览；项目地图；Ctrl+F5 带参数（含中文）和环境变量运行；F5 断点、调用栈和变量；PowerShell 终端中文输入输出。
+- **WSL（`RAINY_DEV_WSL_HOME`，临时 HOME）**：切换执行环境后安装底座和应用层并启动；Strata 卡片从 Windows 识别 WSL 内的模拟服务，WSL Host 连接并设为默认后对话成功；通过系统文件夹对话框打开 Windows 项目（wslpath）；Git 状态；bash 终端中文输出；运行 Python 文件。
+- **SSH（WSL 内临时 sshd，127.0.0.1:22022，HOME=/tmp/rainy-ssh-home）**：全新服务器首次连接即安装底座和应用层（服务器上的 `rainy-host` 与本机构建一致）；远程文件夹浏览（中文目录名）、打开项目、运行 Python 文件。
+- **安装包 QA（`tmp/qa/installer/run-qa.ps1`，QA 身份）**：0 项失败。全新安装 917 个文件逐字节一致；在新装上更新、注册表缺 InstallLocation 时按卸载程序所在目录更新；在 3.9.2 的 Electron 安装上更新时 21 个 Electron 文件全部删除、用户文件保留；**在 4.0.0 安装上更新**（4.0.0 的 win-unpacked 副本）时 917 个文件逐字节一致、用户文件保留，旧 Node Host 文件留给 Rainy 启动前清理；有进程占用目录时静默安装数秒内以 1 退出，更新等进程结束后再装、60 秒后放弃且不改动任何东西；测试前后真实 Rainy 的注册表、快捷方式、安装目录和用户数据不变。脚本里卸载项大小的下限从 200,000 KB 改为 100,000 KB（4.1 装好后 158,402 KB）。
+- **打包版实测（QA 安装，临时用户数据）**：签名资源校验通过后启动，版本 4.1.0；Strata 卡片读到组件清单（下载 533 MB），识别 WSL 内的模拟 Strata，连接并设为默认后对话成功；端到端脚本对安装包内的 `rainy-host.exe` 37 项通过。从 4.0.0 升级后的安装启动时，旧 Node Host 的文件（`node.exe`、`host.js`、`node_modules`）全部被清理，`windows-host` 只剩 `runtime.json` 列出的 901 个文件（留下 8 个空目录），后台正常启动。`v4.1.0-resources` 上传后用全新 WSL HOME 切换到 WSL：底座从该发布下载并校验通过（解开后 87 MB），应用层 26 MB，连接成功。
+
+### 验收范围
+
+- 没有实测：真实 GPU 上的 Strata 推理（只用模拟服务）、JavaScript / C / C++ / PHP 的实时调试、项目地图页内的点击（测试脚本发不进 WebView2 子窗口；`map.explain` 由端到端脚本覆盖）、Windows 10 上缺少 WebView2 时的提示。
+- 已知小问题：从 4.0 升级后 `windows-host` 下留有 `node`、`node_modules` 的空目录（文件已清理）；确认对话框里句末的“。”可能单独折到下一行（GPUI 的换行不处理中文标点避头）。
+- 没有运行打包出的卸载程序；没有改动用户的 Rainy 安装、设置、WSL `~/.rainy-agent`、SSH 服务器或系统代理。
+
 ## 4.0.0（2026-10-22）
 
 被测产物为 `Rainy-4.0.0-windows-x64-setup.exe`（66,871,377 字节，SHA-256 `c8ba6c48ed2aafcd2f3d7da032a70f2c1173b1ced203fa26b27f0b9601827fc0`），构建自提交 `354d2cb1e7`（之后只改了文档）。安装包含 9,019 个文件、273,219,546 字节，其中 9,012 个由签名资源清单固定（清单 SHA-256 `0502041df3a8bb9ae59806c9dc626806d03ea421a5a966bcf4b18f3b72e9f177`）。Linux 运行环境底座内容与 3.8.0 起相同（内容标识 `28cf656086674b71d6d4b521223555e0ba47b6e093ba641a4eff93a912b43fa1`），本版 xz 分片 52,727,784 字节（SHA-256 `fa9b87d6befeeeed7284894ed608819f027a29c893969568a702dfe095a2dac2`）；`linux-dev-packages`（165,115,848 字节）与 PHP（38,191,707 字节）分片内容与 3.9.2 相同，重新上传到 `v4.0.0-resources`。按正常流程打包（`scripts/package.ps1`，界面由 `native/scripts/build-release.sh` 构建，`scripts/package-native.mjs` 暂存并生成 NSIS 安装包）。
