@@ -169,6 +169,25 @@ fn mark_previous_turn(body: &mut Map<String, Value>) {
     }
 }
 
+/// Remove every breakpoint: nothing in this request is sent again.
+fn strip_cache(body: &mut Map<String, Value>) {
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                map.remove("cache_control");
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    for field in ["system", "tools", "messages"] {
+        if let Some(value) = body.get_mut(field) {
+            strip(value);
+        }
+    }
+}
+
 /// Leave the last user message unmarked: a compaction request reads the previous request's cache entry but writes
 /// nothing worth keeping, since the history changes once the summary lands.
 fn unmark_last_user(body: &mut Map<String, Value>) {
@@ -245,7 +264,14 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
         }
     }
     body.insert("max_tokens".into(), json!(max_tokens));
-    mark_previous_turn(&mut body);
+    if request.no_tool_calls && !request.tools.is_empty() {
+        body.insert("tool_choice".into(), json!({ "type": "none" }));
+    }
+    if request.no_cache {
+        strip_cache(&mut body);
+    } else {
+        mark_previous_turn(&mut body);
+    }
     if request.unmark_last_user {
         unmark_last_user(&mut body);
     }
@@ -434,7 +460,7 @@ mod tests {
         second.content = vec![AssistantBlock::Text { text: "done".into(), text_signature: None, rest: Map::new() }];
         let messages = vec![Message::user("one"), Message::Assistant(first), Message::ToolResult(result), Message::Assistant(second), Message::user("two")];
         let tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }) }];
-        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::Max), max_tokens: None, session_id: None, unmark_last_user: false };
+        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::Max), max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false };
         let mut output = crate::agent::llm::empty_reply(&model);
         let (http, _) = super::request(&model, &request, Some("key"), &mut output);
         let body = &http.body;

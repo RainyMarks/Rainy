@@ -286,6 +286,17 @@ pub struct Request<'a> {
     pub session_id: Option<&'a str>,
     /// For Anthropic: leave the conversation's last user message without a cache breakpoint (compaction).
     pub unmark_last_user: bool,
+    /// Write no prompt cache: the request's prefix will not be sent again.
+    pub no_cache: bool,
+    /// The tools stay declared but the model may not call them.
+    pub no_tool_calls: bool,
+}
+
+impl<'a> Request<'a> {
+    /// A request with the defaults of a chat request.
+    pub fn new(system: &'a str, messages: &'a [Message], tools: &'a [ToolSpec]) -> Self {
+        Self { system, messages, tools, reasoning: None, max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false }
+    }
 }
 
 /// What changed in the reply being streamed.

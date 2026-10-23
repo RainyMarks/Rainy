@@ -147,7 +147,7 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     body.insert("model".into(), json!(model.id));
     body.insert("input".into(), Value::Array(input(model, request)));
     body.insert("stream".into(), json!(true));
-    if let Some(session) = request.session_id {
+    if let Some(session) = request.session_id.filter(|_| !request.no_cache) {
         body.insert("prompt_cache_key".into(), json!(session.chars().take(64).collect::<String>()));
     }
     body.insert("store".into(), json!(false));
@@ -155,6 +155,9 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     if !request.tools.is_empty() {
         let tools: Vec<Value> = request.tools.iter().map(|tool| json!({ "type": "function", "name": tool.name, "description": tool.description, "parameters": tool.parameters })).collect();
         body.insert("tools".into(), Value::Array(tools));
+        if request.no_tool_calls {
+            body.insert("tool_choice".into(), json!("none"));
+        }
     }
     if model.reasoning {
         match request.reasoning.filter(|level| *level != Level::Off) {
@@ -464,7 +467,7 @@ mod tests {
         assert_eq!(output.stop_reason, "toolUse");
         assert_eq!((output.usage.input, output.usage.cache_read), (30.0, 20.0));
         let messages = vec![Message::user("hi"), Message::Assistant(output)];
-        let request = Request { system: "sys", messages: &messages, tools: &[], reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false };
+        let request = Request { system: "sys", messages: &messages, tools: &[], reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false, no_cache: false, no_tool_calls: false };
         let (http, _) = super::request(&model, &request, Some("k"), "ua");
         let input = http.body["input"].as_array().unwrap();
         assert_eq!(input[0]["role"], "developer");

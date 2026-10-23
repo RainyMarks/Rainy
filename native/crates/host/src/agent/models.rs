@@ -483,6 +483,8 @@ impl Models {
             max_tokens: options.max_tokens,
             session_id: None,
             unmark_last_user: false,
+            no_cache: false,
+            no_tool_calls: false,
         };
         let cancel = options.cancel.clone().unwrap_or_default();
         let key = self.settings.api_key(&resolved.setup.provider);

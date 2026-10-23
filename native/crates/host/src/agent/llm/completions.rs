@@ -183,6 +183,7 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     body.insert("messages".into(), Value::Array(messages(model, request, &compat)));
     body.insert("stream".into(), json!(true));
     if model.base_url.contains("api.openai.com")
+        && !request.no_cache
         && let Some(session) = request.session_id
     {
         body.insert("prompt_cache_key".into(), json!(session.chars().take(64).collect::<String>()));
@@ -198,6 +199,9 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     } else if request.messages.iter().any(|message| matches!(message, Message::ToolResult(_)) || matches!(message, Message::Assistant(reply) if reply.content.iter().any(|block| matches!(block, AssistantBlock::ToolCall { .. })))) {
         // Proxies in front of Anthropic want the field whenever the conversation used tools.
         body.insert("tools".into(), json!([]));
+    }
+    if request.no_tool_calls && !request.tools.is_empty() {
+        body.insert("tool_choice".into(), json!("none"));
     }
     if model.reasoning {
         thinking(model, request.reasoning.filter(|level| *level != Level::Off), &compat, &mut body);
@@ -455,7 +459,7 @@ mod tests {
         ];
         let messages = vec![Message::user("hi"), Message::Assistant(reply)];
         let tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), parameters: json!({ "type": "object" }) }];
-        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false };
+        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false, no_cache: false, no_tool_calls: false };
         let (http, _) = super::request(&model, &request, Some("k"), "ua");
         let body = &http.body;
         assert_eq!(http.url, "https://api.deepseek.com/chat/completions");
