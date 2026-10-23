@@ -61,7 +61,7 @@ try {
     & node (Join-Path $PSScriptRoot 'package-native.mjs'); Check-Exit
     $rainyInstaller = Join-Path $rainyApp "release/Rainy-$rainyVersion-windows-x64-setup.exe"
     Copy-Item -LiteralPath $rainyInstaller -Destination $rainyOffline -Force
-    Copy-Item -LiteralPath (Join-Path $rainyApp 'resources/offline-readme.txt') -Destination (Join-Path $rainyOffline '安装说明.txt') -Force
+    Copy-Item -LiteralPath (Join-Path $rainyApp 'native/installer/offline-readme.txt') -Destination (Join-Path $rainyOffline '安装说明.txt') -Force
     $rainyChecksums = Get-ChildItem -LiteralPath $rainyOffline -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object FullName | ForEach-Object {
         $rainyHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         $rainyRelative = $_.FullName.Substring($rainyOffline.Length + 1).Replace('\', '/')

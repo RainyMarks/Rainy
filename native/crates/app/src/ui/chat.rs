@@ -7,6 +7,7 @@ use std::rc::Rc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -235,7 +236,7 @@ impl ChatPane {
             }
             let call = store.read_with(cx, |store, _| store.call("chat.send", params));
             if let Err(error) = call.await {
-                window_handle.update(cx, |_, window, cx| window.push_notification(Notification_error(error.message), cx))?;
+                window_handle.update(cx, |_, window, cx| window.push_notification(Notification::error(error.message), cx))?;
             }
             Ok(())
         })
@@ -247,7 +248,7 @@ impl ChatPane {
         let window_handle = window.window_handle();
         cx.spawn(async move |_, cx: &mut AsyncApp| {
             if let Err(error) = request.await {
-                let _ = window_handle.update(cx, |_, window, cx| window.push_notification(Notification_error(error.message), cx));
+                let _ = window_handle.update(cx, |_, window, cx| window.push_notification(Notification::error(error.message), cx));
             }
         })
         .detach();
@@ -428,8 +429,8 @@ impl ChatPane {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(image) if this.attachments.len() < crate::ui::composer::MAX_IMAGES => this.attachments.push(image),
-                    Ok(_) => window.push_notification(Notification_error(trf(cx, "chat.imageLimit", &[("count", &crate::ui::composer::MAX_IMAGES)]).to_string()), cx),
-                    Err(error) => window.push_notification(Notification_error(format!("{name}: {error}")), cx),
+                    Ok(_) => window.push_notification(Notification::error(trf(cx, "chat.imageLimit", &[("count", &crate::ui::composer::MAX_IMAGES)]).to_string()), cx),
+                    Err(error) => window.push_notification(Notification::error(format!("{name}: {error}")), cx),
                 }
                 cx.notify();
             });
@@ -446,14 +447,14 @@ impl ChatPane {
             if let Some(mime) = crate::ui::composer::image_mime(&path) {
                 match std::fs::read(&path) {
                     Ok(bytes) if bytes.len() <= crate::ui::composer::MAX_IMAGE_BYTES => self.attach_bytes(name, bytes, mime, window, cx),
-                    Ok(_) => window.push_notification(Notification_error(trf(cx, "chat.imageTooLarge", &[("name", &name)]).to_string()), cx),
-                    Err(error) => window.push_notification(Notification_error(format!("{name}: {error}")), cx),
+                    Ok(_) => window.push_notification(Notification::error(trf(cx, "chat.imageTooLarge", &[("name", &name)]).to_string()), cx),
+                    Err(error) => window.push_notification(Notification::error(format!("{name}: {error}")), cx),
                 }
                 continue;
             }
             match crate::ui::composer::host_path(&path, target.as_ref()) {
                 Some(host) => references.push(format!("@{}", crate::ui::composer::quote_path(&host))),
-                None => window.push_notification(Notification_error(trf(cx, "chat.attachPathFailed", &[("name", &name)]).to_string()), cx),
+                None => window.push_notification(Notification::error(trf(cx, "chat.attachPathFailed", &[("name", &name)]).to_string()), cx),
             }
         }
         if !references.is_empty() {
@@ -824,11 +825,6 @@ fn set_model(store: &Entity<Store>, session: Option<String>, choice: ModelSelect
     .detach();
 }
 
-#[allow(non_snake_case)]
-fn Notification_error(message: String) -> gpui_kit::component::notification::Notification {
-    gpui_kit::component::notification::Notification::error(message)
-}
-
 impl Render for ChatPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let locale = self.store.read(cx).locale();
@@ -858,7 +854,7 @@ impl Render for ChatPane {
                             }
                             window.push_notification(tr(cx, "chat.forked").to_string(), cx);
                         }
-                        Err(error) => window.push_notification(Notification_error(error.message), cx),
+                        Err(error) => window.push_notification(Notification::error(error.message), cx),
                     });
                 })
                 .detach();
