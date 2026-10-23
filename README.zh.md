@@ -270,10 +270,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.1.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.1.1/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.1.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.1.1` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

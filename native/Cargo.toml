@@ -4,7 +4,7 @@ members = ["crates/protocol", "crates/carrier", "crates/app", "crates/host"]
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "4.1.0"
+version = "4.1.1"
 edition = "2024"
 publish = false
 license-file = "../LICENSE"

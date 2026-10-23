@@ -270,10 +270,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.1.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.1.1/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `4.1.0` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `4.1.1` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host on its own, then prints a URL to open in a browser; the interface lives in `native/`: `cargo build -p rainy --offline` builds it and `bash native/scripts/run-ui.sh` starts it with a scratch data folder. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
