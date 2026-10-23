@@ -5255,6 +5255,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
+ "bytes",
  "dunce",
  "encoding_rs",
  "fancy-regex 0.14.0",

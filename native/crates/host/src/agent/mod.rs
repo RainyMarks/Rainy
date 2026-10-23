@@ -12,3 +12,5 @@ pub mod permissions;
 pub mod prompt;
 pub mod skills;
 pub mod snapshots;
+pub mod mcp;
+pub mod run;

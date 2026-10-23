@@ -9,7 +9,7 @@ pub mod catalog;
 pub mod completions;
 pub mod json;
 pub mod responses;
-mod sse;
+pub(crate) mod sse;
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
