@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::ide::{
-    CheckUpdates, CompareWithSaved, ExportHtml, ExportPdf, FindReferences, FocusEditor, FormatDocument, GitRefresh, GoToLine, MarkdownFocus,
+    AttachFolder, CheckUpdates, CompareWithSaved, ExportHtml, ExportPdf, FindReferences, FocusEditor, FormatDocument, GitRefresh, GoToLine, MarkdownFocus,
     MarkdownSource, MarkdownTypewriter, RenameSymbol, SaveAll, SearchHistory, SendSelection, ShowOutline, ShowProblems, ToggleAgent, ToggleFiles,
 };
 use crate::ui::settings::Section;
@@ -74,6 +74,7 @@ fn commands(cx: &App) -> Vec<Command> {
     };
     vec![
         entry("catFile", tr(cx, "ide.ideOpenFolder"), "Ctrl+Alt+O", true, action(OpenFolder)),
+        entry("catFile", tr(cx, "ide.ideAddFolder"), "", workspace, action(AttachFolder)),
         entry("catFile", tr(cx, "ide.ideQuickOpen"), "Ctrl+P", workspace, action(QuickOpen)),
         entry("catFile", tr(cx, "ide.ideSave"), "Ctrl+S", editing, action(SaveFile)),
         entry("catFile", tr(cx, "ide.ideSaveAll"), "", any_dirty, action(SaveAll)),

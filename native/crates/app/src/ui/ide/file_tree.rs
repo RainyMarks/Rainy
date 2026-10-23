@@ -165,7 +165,10 @@ impl Render for FileTree {
                     let row = rows[index].clone();
                     let ide = ide_handle.clone();
                     match row {
-                        Row::Root { key, title } => h_flex()
+                        Row::Root { key, title } => {
+                            let root_id = split_key(&key).0.map(str::to_owned);
+                            let menu_ide = ide.clone();
+                            h_flex()
                             .id(index)
                             .h(px(26.))
                             .px_2()
@@ -180,7 +183,25 @@ impl Render for FileTree {
                                 let key = key.clone();
                                 ide.update(cx, |ide, cx| ide.list(key, window, cx));
                             })
-                            .into_any_element(),
+                            // Folders added to the project can be taken out of it; the main folder stays.
+                            .map(|this| match root_id {
+                                None => this.into_any_element(),
+                                Some(root_id) => this.context_menu(move |menu, _, cx| {
+                                    let (ide, root_id) = (menu_ide.clone(), root_id.clone());
+                                    menu.item(PopupMenuItem::new(tr(cx, "ide.ideRemoveRoot")).on_click(move |_, window, cx| {
+                                        let removed = ide.update(cx, |ide, cx| ide.remove_root(root_id.clone(), window, cx));
+                                        if !removed {
+                                            use gpui_kit::component::WindowExt as _;
+                                            window.push_notification(
+                                                gpui_kit::component::notification::Notification::warning(tr(cx, "native.unsavedRoot")),
+                                                cx,
+                                            );
+                                        }
+                                    }))
+                                })
+                                .into_any_element(),
+                            })
+                        }
                         Row::Message { text, depth } => div()
                             .id(index)
                             .h(px(26.))

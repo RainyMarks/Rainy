@@ -35,7 +35,7 @@ use crate::store::ide::{RUN_LANGUAGES, RunMode, run_language};
 use crate::ui::ide::debug_marks::DebugMarks;
 use crate::ui::ide::outline::OutlineView;
 use crate::ui::ide::{
-    CheckUpdates, ExportHtml, ExportPdf, FocusEditor, GitRefresh, MarkdownFocus, MarkdownSource, MarkdownTypewriter, SaveAll, SearchHistory,
+    AttachFolder, CheckUpdates, ExportHtml, ExportPdf, FocusEditor, GitRefresh, MarkdownFocus, MarkdownSource, MarkdownTypewriter, SaveAll, SearchHistory,
     ShowOutline, ShowProblems, ToggleAgent, ToggleFiles,
 };
 use crate::ui::ide::terminal_panel::{BottomTab, TerminalPanel};
@@ -235,6 +235,11 @@ impl Workbench {
                                     menu = menu.separator();
                                 }
                                 menu = menu.item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| choose_folder(window, cx)));
+                                if current.is_some() {
+                                    menu = menu.item(
+                                        PopupMenuItem::new(tr(cx, "ide.ideAddFolder")).on_click(|_, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx)),
+                                    );
+                                }
                                 if let Some(current) = current.clone() {
                                     let handle = handle.clone();
                                     let title = workspaces.iter().find(|w| w.workspace_id == current).map(|w| w.title.clone()).unwrap_or_default();
@@ -838,6 +843,7 @@ impl Render for Workbench {
                 this.agent_visible = true;
                 this.show_side(Side::History, window, cx);
             }))
+            .on_action(|_: &AttachFolder, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx))
             .on_action(cx.listener(|this, _: &GitRefresh, window, cx| this.git.update(cx, |git, cx| git.refresh(window, cx))))
             .on_action(cx.listener(|this, _: &CheckUpdates, _, cx| this.store.update(cx, |store, cx| store.check_updates(true, cx))))
             .on_action(|_: &FormatDocument, window, cx| editor_commands::format_document(window, cx))

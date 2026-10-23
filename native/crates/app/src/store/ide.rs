@@ -1341,6 +1341,78 @@ impl Ide {
     }
 
     /// Forget the selected project, as when it was removed from the list.
+    /// Add a folder to the shown project without changing its chats or main folder (3.x `attachRoot`); with no project
+    /// shown, open the folder as one.
+    pub fn attach_root(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.workspace_id() else {
+            self.open_folder(path, window, cx);
+            return;
+        };
+        self.flush_state(cx);
+        let request = self.request::<IdeWorkspace>(json!({ "op": "workspaces.attach", "workspaceId": workspace_id, "path": path }), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(workspace) => this.replace_workspace(workspace, window, cx),
+                Err(error) => {
+                    this.error = Some(ide_error(error));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Take a folder other than the main one out of the shown project; its files stay on disk (3.x `removeRoot`).
+    /// Files with unsaved edits in it keep it until they are saved or closed.
+    pub fn remove_root(&mut self, root_id: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(workspace_id) = self.workspace_id() else { return false };
+        let inside = |key: &str| split_key(key).0 == Some(root_id.as_str());
+        if self.files.iter().any(|(key, file)| inside(key) && file.dirty) {
+            return false;
+        }
+        self.flush_state(cx);
+        let request = self.request::<IdeWorkspace>(json!({ "op": "workspaces.removeRoot", "workspaceId": workspace_id, "rootId": root_id }), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(workspace) => {
+                    let inside = |key: &str| split_key(key).0 == Some(root_id.as_str());
+                    let open: Vec<String> = this.tabs.iter().filter(|key| inside(key)).cloned().collect();
+                    for key in open {
+                        this.close(&key, cx);
+                    }
+                    this.listings.retain(|key, _| !inside(key));
+                    this.expanded.retain(|key| !inside(key));
+                    this.replace_workspace(workspace, window, cx);
+                    this.schedule_state_save(cx);
+                }
+                Err(error) => {
+                    this.error = Some(ide_error(error));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        true
+    }
+
+    /// A project as the Host now has it, after its folders changed.
+    fn replace_workspace(&mut self, workspace: IdeWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        for known in &mut self.workspaces {
+            if known.workspace_id == workspace.workspace_id {
+                *known = workspace.clone();
+            }
+        }
+        if self.workspace_id().as_deref() == Some(workspace.workspace_id.as_str()) {
+            self.workspace = Some(workspace);
+            self.error = None;
+            self.refresh(window, cx);
+            cx.emit(IdeEvent::FilesChanged);
+        }
+        cx.notify();
+    }
+
     pub fn remove_workspace(&mut self, workspace_id: String, window: &mut Window, cx: &mut Context<Self>) {
         let request = self.request::<Value>(json!({ "op": "workspaces.remove", "workspaceId": workspace_id }), cx);
         cx.spawn_in(window, async move |this, cx| {

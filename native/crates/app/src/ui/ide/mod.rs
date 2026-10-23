@@ -24,7 +24,7 @@ use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::tr;
 
-actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat, RunFile, DebugFile, StopRun, StepOver, StepInto, StepOut, ToggleBreakpoint, RunProfiles, GoToLine, FormatDocument, CompareWithSaved, SendSelection, FindReferences, RenameSymbol, ExportPdf, ExportHtml, ShowOutline, MarkdownSource, MarkdownFocus, MarkdownTypewriter, SaveAll, ToggleFiles, ToggleAgent, FocusEditor, ShowProblems, SearchHistory, GitRefresh, CheckUpdates]);
+actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat, RunFile, DebugFile, StopRun, StepOver, StepInto, StepOut, ToggleBreakpoint, RunProfiles, GoToLine, FormatDocument, CompareWithSaved, SendSelection, FindReferences, RenameSymbol, ExportPdf, ExportHtml, ShowOutline, MarkdownSource, MarkdownFocus, MarkdownTypewriter, AttachFolder, SaveAll, ToggleFiles, ToggleAgent, FocusEditor, ShowProblems, SearchHistory, GitRefresh, CheckUpdates]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -69,23 +69,43 @@ pub fn bind_keys(cx: &mut App) {
 /// Choose a folder and open it as a project: Windows' own picker for the Windows host, the in-app browser for a
 /// Linux host, whose folders the Windows picker cannot reach as the Host sees them.
 pub fn choose_folder(window: &mut Window, cx: &mut App) {
+    pick_folder(false, window, cx);
+}
+
+/// Choose a folder and add it to the shown project (3.x "add folder to workspace").
+pub fn choose_folder_to_attach(window: &mut Window, cx: &mut App) {
+    pick_folder(true, window, cx);
+}
+
+fn pick_folder(attach: bool, window: &mut Window, cx: &mut App) {
+    // Debug builds under test take the folder from the environment instead of a picker over the tester's windows.
+    if cfg!(debug_assertions)
+        && let Some(path) = std::env::var_os("RAINY_QA_PICK_FOLDER")
+    {
+        let path = path.to_string_lossy().into_owned();
+        Ide::global(cx).update(cx, |ide, cx| if attach { ide.attach_root(path, window, cx) } else { ide.open_folder(path, window, cx) });
+        return;
+    }
     let on_windows = Store::global(cx).read(cx).target.as_ref().is_none_or(|target| matches!(target, ExecutionTarget::Windows { .. }));
     if !on_windows {
-        folder_dialog::open(window, cx);
+        folder_dialog::open(attach, window, cx);
         return;
     }
     let chosen = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
         multiple: false,
-        prompt: Some(tr(cx, "ide.ideOpenFolder")),
+        prompt: Some(tr(cx, if attach { "ide.ideAddFolder" } else { "ide.ideOpenFolder" })),
     });
     let ide = Ide::global(cx);
     window
         .spawn(cx, async move |cx| {
             let Ok(Ok(Some(paths))) = chosen.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let _ = cx.update(|window, cx| ide.update(cx, |ide, cx| ide.open_folder(path.to_string_lossy().into_owned(), window, cx)));
+            let path = path.to_string_lossy().into_owned();
+            let _ = cx.update(|window, cx| {
+                ide.update(cx, |ide, cx| if attach { ide.attach_root(path, window, cx) } else { ide.open_folder(path, window, cx) })
+            });
         })
         .detach();
 }

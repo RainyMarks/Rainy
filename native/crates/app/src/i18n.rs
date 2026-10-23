@@ -33,6 +33,7 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.noFormatter", "这个文件没有可用的格式化程序", "No formatter is available for this file"),
     ("native.noReferences", "没有找到引用", "No references found"),
     ("native.checkUpdates", "检查更新", "Check for updates"),
+    ("native.unsavedRoot", "先保存或关闭这个文件夹里有改动的文件，再把它移出项目", "Save or close the modified files in this folder before removing it from the project"),
     ("native.cut", "剪切", "Cut"),
     ("native.copy", "复制", "Copy"),
     ("native.paste", "粘贴", "Paste"),

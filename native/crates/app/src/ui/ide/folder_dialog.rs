@@ -178,8 +178,8 @@ impl Render for FolderBrowser {
     }
 }
 
-/// Browse the Host's folders and open the chosen one as a project.
-pub fn open(window: &mut Window, cx: &mut App) {
+/// Browse the Host's folders and open the chosen one as a project, or add it to the shown one.
+pub fn open(attach: bool, window: &mut Window, cx: &mut App) {
     let browser = cx.new(|cx| FolderBrowser::new(window, cx));
     window.open_dialog(cx, move |dialog, _, cx| {
         let chosen = browser.clone();
@@ -194,7 +194,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
                     .child(Button::new("folder-open").primary().label(tr(cx, "app.browserOpen")).on_click(move |_, window, cx| {
                         let Some(path) = chosen.read(cx).current() else { return };
                         window.close_dialog(cx);
-                        Ide::global(cx).update(cx, |ide, cx| ide.open_folder(path, window, cx));
+                        Ide::global(cx).update(cx, |ide, cx| if attach { ide.attach_root(path, window, cx) } else { ide.open_folder(path, window, cx) });
                     })),
             )
     });
