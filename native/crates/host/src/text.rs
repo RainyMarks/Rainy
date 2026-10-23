@@ -48,6 +48,19 @@ pub fn js_length(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
+/// JavaScript's `encodeURIComponent`.
+pub fn encode_uri_component(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,8 +6,10 @@ mod control;
 mod credentials;
 mod env;
 mod error;
+mod git;
 mod ide;
 mod locale;
+mod map;
 mod network;
 mod paths;
 mod process;
@@ -15,6 +17,7 @@ mod projects;
 mod registry;
 mod rpc;
 mod runtime;
+mod search;
 mod server;
 mod settings;
 mod store;
@@ -69,6 +72,7 @@ pub struct Host {
     pub runtime: Arc<Runtime>,
     pub control: ControlInput,
     pub ide: std::sync::OnceLock<Arc<ide::Ide>>,
+    pub maps: Arc<map::ProjectMaps>,
 }
 
 fn main() {
@@ -137,7 +141,8 @@ async fn start() -> Result<()> {
         ]
     });
     let runtime = Runtime::new(env.clone(), projects.clone(), registry.clone(), activity.clone())?;
-    let host = Arc::new(Host { env: env.clone(), settings, network, projects, registry, activity, rpc, server, runtime, control, ide: std::sync::OnceLock::new() });
+    let maps = Arc::new(map::ProjectMaps::new(projects.clone(), env.home.join("maps")));
+    let host = Arc::new(Host { env: env.clone(), settings, network, projects, registry, activity, rpc, server, runtime, control, ide: std::sync::OnceLock::new(), maps });
     let _ = host.ide.set(ide::Ide::new(&host));
 
     register(&host);
@@ -215,6 +220,7 @@ fn selected_workspace(host: &Host) -> Option<String> {
 
 async fn stop(host: &Arc<Host>) {
     host.rpc.close();
+    host.maps.close();
     if let Some(ide) = host.ide.get() {
         let _ = tokio::time::timeout(Duration::from_secs(10), ide.close()).await;
     }
@@ -271,6 +277,64 @@ fn register(host: &Arc<Host>) {
             let host = host.clone();
             async move { host.runtime.handle(params).await }
         });
+    }
+    {
+        let maps = host.maps.clone();
+        rpc.register("map.get", move |params| {
+            let maps = maps.clone();
+            async move {
+                let workspace_id = params["workspaceId"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("workspaceId is required"))?.to_owned();
+                maps.get(&workspace_id, params["refresh"] == true).await
+            }
+        });
+    }
+    {
+        let search = Arc::new(search::TextSearch::new(host.projects.clone()));
+        for method in ["search.text", "search.replace"] {
+            let search = search.clone();
+            rpc.register(method, move |params| {
+                let search = search.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || if method == "search.text" { search.search(&params) } else { search.replace(&params) })
+                        .await
+                        .map_err(|error| HostError::other(error.to_string()))?
+                }
+            });
+        }
+    }
+    {
+        let git = Arc::new(git::Git::new(host.projects.clone(), host.runtime.clone()));
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GitRequest {
+            workspace_id: String,
+            #[serde(default)]
+            root_id: String,
+            #[serde(default)]
+            paths: Vec<String>,
+            #[serde(default)]
+            message: String,
+            #[serde(default)]
+            stage_all: bool,
+        }
+        for method in ["git.status", "git.stage", "git.unstage", "git.discard", "git.commit", "git.init"] {
+            let git = git.clone();
+            rpc.register(method, move |params| {
+                let git = git.clone();
+                async move {
+                    let request: GitRequest = rpc::params(params)?;
+                    let (ws, root) = (request.workspace_id.as_str(), request.root_id.as_str());
+                    match method {
+                        "git.status" => git.status(ws).await,
+                        "git.stage" => git.stage(ws, root, &request.paths).await.map(|()| Value::Null),
+                        "git.unstage" => git.unstage(ws, root, &request.paths).await.map(|()| Value::Null),
+                        "git.discard" => git.discard(ws, root, &request.paths).await.map(|()| Value::Null),
+                        "git.commit" => git.commit(ws, root, &request.message, request.stage_all).await,
+                        _ => git.init(ws, root).await.map(|()| Value::Null),
+                    }
+                }
+            });
+        }
     }
     {
         let host_socket = host.rpc.clone();
