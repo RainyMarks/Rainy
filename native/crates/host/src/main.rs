@@ -2,6 +2,7 @@
 //! editor services, runs and terminals — served to the interface over one loopback HTTP server.
 
 mod activity;
+mod agent;
 mod control;
 mod credentials;
 mod env;

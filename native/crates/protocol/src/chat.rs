@@ -12,12 +12,18 @@ pub enum AssistantBlock {
     #[serde(rename = "text")]
     Text {
         text: String,
+        /// Replay data of the OpenAI Responses API (`{"v":1,"id":…}`).
+        #[serde(default, rename = "textSignature", skip_serializing_if = "Option::is_none")]
+        text_signature: Option<String>,
         #[serde(flatten)]
         rest: Map<String, Value>,
     },
     #[serde(rename = "thinking")]
     Thinking {
         thinking: String,
+        /// Anthropic's signature, the Responses API's reasoning item, or the Chat Completions field the text came in.
+        #[serde(default, rename = "thinkingSignature", skip_serializing_if = "Option::is_none")]
+        thinking_signature: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         redacted: Option<bool>,
         #[serde(flatten)]
@@ -91,6 +97,9 @@ pub struct Usage {
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
     pub content: Vec<AssistantBlock>,
+    /// The protocol the reply came through: `openai-completions`, `openai-responses` or `anthropic-messages`.
+    #[serde(default)]
+    pub api: String,
     #[serde(default)]
     pub provider: String,
     #[serde(default)]

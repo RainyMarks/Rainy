@@ -1,6 +1,5 @@
 //! What a project is built with: its main languages, the frameworks and libraries it declares or imports, and build tools.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use regex::Regex;
