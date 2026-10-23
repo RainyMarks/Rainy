@@ -6,6 +6,7 @@ mod control;
 mod credentials;
 mod env;
 mod error;
+mod ide;
 mod locale;
 mod network;
 mod paths;
@@ -67,6 +68,7 @@ pub struct Host {
     pub server: Arc<HostServer>,
     pub runtime: Arc<Runtime>,
     pub control: ControlInput,
+    pub ide: std::sync::OnceLock<Arc<ide::Ide>>,
 }
 
 fn main() {
@@ -135,7 +137,8 @@ async fn start() -> Result<()> {
         ]
     });
     let runtime = Runtime::new(env.clone(), projects.clone(), registry.clone(), activity.clone())?;
-    let host = Arc::new(Host { env: env.clone(), settings, network, projects, registry, activity, rpc, server, runtime, control });
+    let host = Arc::new(Host { env: env.clone(), settings, network, projects, registry, activity, rpc, server, runtime, control, ide: std::sync::OnceLock::new() });
+    let _ = host.ide.set(ide::Ide::new(&host));
 
     register(&host);
     host.server.listen(env.port).await?;
@@ -205,14 +208,16 @@ async fn inspect_project(host: &Host, requested: Option<String>) -> Result<Value
     Ok(json!({ "projectId": project_id, "workspaceId": project.id, "roots": project.roots() }))
 }
 
-/// The project selected last in the editor (`ide/selection.json`).
+/// The project selected last in the editor.
 fn selected_workspace(host: &Host) -> Option<String> {
-    let selection: Value = store::read_json(&host.env.home.join("ide").join("selection.json")).ok().flatten()?;
-    selection.get("workspaceId").and_then(Value::as_str).map(str::to_owned)
+    host.ide.get().and_then(|ide| ide.selection())
 }
 
 async fn stop(host: &Arc<Host>) {
     host.rpc.close();
+    if let Some(ide) = host.ide.get() {
+        let _ = tokio::time::timeout(Duration::from_secs(10), ide.close()).await;
+    }
     let _ = std::fs::remove_dir_all(&host.env.tmp);
 }
 
@@ -247,6 +252,16 @@ fn register(host: &Arc<Host>) {
                 locale::set(&host.settings.locale());
                 host.rpc.emit("prefs.changed", &prefs);
                 Ok(prefs)
+            }
+        });
+    }
+    {
+        let host = host.clone();
+        rpc.register("ide", move |params| {
+            let host = host.clone();
+            async move {
+                let ide = host.ide.get().cloned().ok_or_else(|| HostError::other("The IDE is not ready."))?;
+                ide.handle(&host, params).await
             }
         });
     }

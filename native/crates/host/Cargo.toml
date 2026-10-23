@@ -28,6 +28,9 @@ uuid = { version = "1", features = ["v4"] }
 dunce = "1"
 encoding_rs = "0.8"
 regex = "1.13"
+tokio-util = "0.7"
+portable-pty = "0.9"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
