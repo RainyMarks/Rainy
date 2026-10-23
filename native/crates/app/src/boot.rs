@@ -122,9 +122,10 @@ fn dev_resources(install_root: &Path) -> Option<PathBuf> {
 /// The native Windows Host (`WindowsHostTransport`).
 pub fn windows_host(paths: &Paths) -> Result<HostCommand> {
     let root = paths.resources.join("windows-host");
+    let native = root.join("rainy-host.exe");
     let node = root.join("node").join("node.exe");
     let host = root.join("app").join("dist").join("host.js");
-    if !node.is_file() || !host.is_file() {
+    if !native.is_file() && (!node.is_file() || !host.is_file()) {
         bail!(i18n::text(saved_locale(&paths.user_data), "native.windowsHostMissing"));
     }
     let data = |name: &str| paths.user_data.join(name).display().to_string();
@@ -143,9 +144,10 @@ pub fn windows_host(paths: &Paths) -> Result<HostCommand> {
         ]
         .map(|(name, value)| (name.to_owned(), value)),
     );
+    let (program, args) = if native.is_file() { (native, Vec::new()) } else { (node, vec![host.into()]) };
     Ok(HostCommand {
-        program: node,
-        args: vec![host.into()],
+        program,
+        args,
         env: env.into_iter().map(|(name, value)| (name.into(), value.into())).collect(),
         cwd: Some(paths.install_root.clone()),
         scrub_environment: true,

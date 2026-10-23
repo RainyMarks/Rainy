@@ -96,7 +96,7 @@ impl RpcHub {
                     break;
                 }
             };
-            let (Some(request), Some(method)) = (frame.get("id").and_then(Value::as_f64), frame.get("method").and_then(Value::as_str)) else {
+            let (Some(request), Some(method)) = (frame.get("id").filter(|id| id.is_number()).cloned(), frame.get("method").and_then(Value::as_str)) else {
                 let _ = outgoing.send(close_frame(1003, "invalid frame"));
                 break;
             };
