@@ -13,6 +13,7 @@ mod locale;
 mod map;
 mod network;
 mod paths;
+mod pdfjs;
 mod process;
 mod projects;
 mod registry;
@@ -329,6 +330,7 @@ fn register(host: &Arc<Host>) {
         let host_socket = host.rpc.clone();
         host.server.socket("/rpc", Arc::new(move |socket, _| Box::pin(host_socket.clone().serve(socket))));
     }
+    pdfjs::install(&host.server, &host.env.resources);
     {
         let icon = host.env.resources.join("icon.png");
         host.server.route(
