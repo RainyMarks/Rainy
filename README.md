@@ -153,7 +153,7 @@ Rainy downloads stable updates in the background and then offers **Later** or **
 | Item | Requirement |
 |---|---|
 | Operating system | Windows 10 / 11 x64 |
-| Disk space | About 280 MB installed |
+| Disk space | About 165 MB installed |
 | WSL (optional) | WSL2; the bundled Ubuntu development tools wizard supports Ubuntu 26.04 |
 | SSH server (optional) | x86_64 Linux with `python3` and glibc 2.17 or later; the runtime takes about 110 MB |
 | WebView2 | For PDF, Office and Markdown previews; Windows 11 includes it, Windows 10 installs it when asked |

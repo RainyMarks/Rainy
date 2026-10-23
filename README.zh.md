@@ -153,7 +153,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | 项目 | 要求 |
 |---|---|
 | 操作系统 | Windows 10 / 11 x64 |
-| 磁盘空间 | 安装后约 280 MB |
+| 磁盘空间 | 安装后约 165 MB |
 | WSL（可选） | WSL2；随附的 Ubuntu 开发工具向导适用于 Ubuntu 26.04 |
 | SSH 服务器（可选） | x86_64 Linux，装有 `python3`，glibc 2.17 或更新；运行环境约占 110 MB |
 | WebView2 | 预览 PDF、Office 和 Markdown 时使用；Windows 11 自带，Windows 10 上没有时按提示安装 |
