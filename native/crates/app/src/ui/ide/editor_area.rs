@@ -23,7 +23,7 @@ use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
-use crate::ui::ide::{AiEditSelection, choose_folder, file_icon};
+use crate::ui::ide::{AiEditSelection, choose_folder, editor_commands, file_icon};
 use crate::ui::tr;
 use crate::web::{PaneEvent, WebPane};
 
@@ -58,6 +58,10 @@ pub struct EditorArea {
     /// The project map, shown in place of the open files, for the project it was opened for.
     map: Option<(String, Entity<WebPane>)>,
     map_shown: bool,
+    /// The heading at the top of each rich editor, by file key.
+    outline: HashMap<String, i64>,
+    /// An export to start once the file's page is ready.
+    pending_export: Option<(String, &'static str)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -100,7 +104,7 @@ impl EditorArea {
                 }
             }),
         ];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, ai_edit: None, map: None, map_shown: false, _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, ai_edit: None, map: None, map_shown: false, outline: HashMap::new(), pending_export: None, _subscriptions: subscriptions }
     }
 
     /// The page of a file view, created on first use and again when the view or the file's version changes.
@@ -162,7 +166,23 @@ impl EditorArea {
     fn on_page(&mut self, key: &str, event: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             PaneEvent::Message(text) => match viewers::parse_message(text) {
-                Some(PageRequest::Ready) => self.send_text(key, cx),
+                Some(PageRequest::Ready) => {
+                    self.send_text(key, cx);
+                    if self.pending_export.as_ref().is_some_and(|(pending, _)| pending == key)
+                        && let Some((_, format)) = self.pending_export.take()
+                        && let Some(view) = self.viewers.get(key).and_then(|viewer| viewer.pane.read(cx).view())
+                    {
+                        view.execute(&viewers::export_script(format), |_| {});
+                    }
+                }
+                Some(PageRequest::Outline(index)) => {
+                    self.outline.insert(key.to_owned(), index);
+                    cx.notify();
+                }
+                Some(PageRequest::Notice { error, text }) => {
+                    use gpui_kit::component::notification::Notification;
+                    window.push_notification(if error { Notification::error(text) } else { Notification::success(text) }, cx);
+                }
                 Some(PageRequest::Change(text)) => {
                     if let Some(viewer) = self.viewers.get_mut(key) {
                         viewer.from_page = Some(text.clone());
@@ -185,7 +205,7 @@ impl EditorArea {
                         None => ide.open(key, true, window, cx),
                     });
                 }
-                Some(PageRequest::Call { id, name, params }) => self.answer(key, id, &name, &params, cx),
+                Some(PageRequest::Call { id, name, params }) => self.answer(key, id, &name, &params, window, cx),
                 Some(PageRequest::OpenKey(_) | PageRequest::Ask(_)) | None => {}
             },
             PaneEvent::Shortcut(shortcut) => {
@@ -200,7 +220,7 @@ impl EditorArea {
     }
 
     /// Requests only the desktop can carry out for a page.
-    fn answer(&mut self, key: &str, id: u64, name: &str, params: &Value, cx: &mut Context<Self>) {
+    fn answer(&mut self, key: &str, id: u64, name: &str, params: &Value, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pane) = self.viewers.get(key).map(|viewer| viewer.pane.clone()) else { return };
         let respond = move |result: Value, cx: &mut App| {
             if let Some(view) = pane.read(cx).view() {
@@ -210,8 +230,94 @@ impl EditorArea {
         match name {
             "open-external" => {
                 let path = params["path"].as_str().unwrap_or_default().to_owned();
-                cx.open_with_system(std::path::Path::new(&path));
+                if params["reveal"] == true {
+                    cx.reveal_path(std::path::Path::new(&path));
+                } else {
+                    cx.open_with_system(std::path::Path::new(&path));
+                }
                 respond(json!({}), cx);
+            }
+            // An exported Markdown document: ask where, then write the page or print it to PDF.
+            "export-save" => {
+                let pdf = params["format"] == "pdf";
+                let html = params["html"].as_str().unwrap_or_default().to_owned();
+                let name = crate::web::export::file_name(params["name"].as_str().unwrap_or_default());
+                let extension = if pdf { "pdf" } else { "html" };
+                let title = tr(cx, if pdf { "viewers.exportPdf" } else { "viewers.exportHtml" }).trim_end_matches('…').to_owned();
+                let folder = self.export_folder(key, cx);
+                // Debug builds under test save without the dialog, which would come up over the tester's own windows.
+                let qa_folder = if cfg!(debug_assertions) { std::env::var_os("RAINY_QA_EXPORT_DIR").map(std::path::PathBuf::from) } else { None };
+                let qa_path = qa_folder.map(|folder| folder.join(format!("{name}.{extension}")));
+                let chosen = qa_path.is_none().then(|| {
+                    crate::ui::save_dialog::save(
+                        window,
+                        crate::ui::save_dialog::SaveDialog {
+                            title,
+                            folder,
+                            name: format!("{name}.{extension}"),
+                            type_name: extension.to_uppercase(),
+                            extension: extension.to_owned(),
+                        },
+                    )
+                });
+                let parent = crate::web::hwnd(window);
+                let profile = Store::global(cx).read(cx).paths.user_data.join("WebView2");
+                cx.spawn_in(window, async move |_, cx| {
+                    let answer = match qa_path {
+                        Some(path) => Ok(Ok(Some(path))),
+                        None => match chosen {
+                            Some(chosen) => chosen.recv().await,
+                            None => Ok(Ok(None)),
+                        },
+                    };
+                    let path = match answer {
+                        Ok(Ok(Some(path))) => path,
+                        Ok(Ok(None)) => {
+                            let _ = cx.update(|_, cx| respond(json!({}), cx));
+                            return;
+                        }
+                        Ok(Err(error)) => {
+                            let _ = cx.update(|_, cx| respond(json!({ "error": error.to_string() }), cx));
+                            return;
+                        }
+                        Err(error) => {
+                            let _ = cx.update(|_, cx| respond(json!({ "error": error.to_string() }), cx));
+                            return;
+                        }
+                    };
+                    let bytes = if pdf {
+                        let (sender, receiver) = async_channel::bounded(1);
+                        let started = cx.update(|_, _| match parent {
+                            Some(parent) => {
+                                crate::web::export::print_to_pdf(parent, profile, html, move |result| {
+                                    let _ = sender.try_send(result);
+                                });
+                                true
+                            }
+                            None => false,
+                        });
+                        if !matches!(started, Ok(true)) {
+                            let _ = cx.update(|_, cx| respond(json!({ "error": "No window to print in." }), cx));
+                            return;
+                        }
+                        let made = receiver.recv().await.unwrap_or_else(|_| Err("The PDF was not made.".to_owned()));
+                        let _ = cx.update(|_, _| crate::web::export::close_finished());
+                        made
+                    } else {
+                        Ok(html.into_bytes())
+                    };
+                    let target = path.clone();
+                    let written = match bytes {
+                        Ok(bytes) => cx.background_spawn(async move { std::fs::write(&target, bytes).map_err(|error| error.to_string()) }).await,
+                        Err(error) => Err(error),
+                    };
+                    let result = match written {
+                        Ok(()) => json!({ "path": path.to_string_lossy() }),
+                        Err(error) => json!({ "error": error }),
+                    };
+                    let _ = cx.update(|_, cx| respond(result, cx));
+                })
+                .detach();
             }
             // Slides and old Word files are drawn as the PDF the installed Office makes; the bytes came through the
             // Host, so files in WSL and on SSH servers convert too.
@@ -231,6 +337,78 @@ impl EditorArea {
             }
             _ => respond(json!({ "error": format!("Unknown request: {name}"), "missing": false }), cx),
         }
+    }
+
+    /// Where the export dialog opens: the document's own folder when this computer can reach it, else Documents.
+    fn export_folder(&self, key: &str, cx: &App) -> std::path::PathBuf {
+        let windows = matches!(Store::global(cx).read(cx).target, None | Some(ExecutionTarget::Windows { .. }));
+        let own = windows
+            .then(|| self.ide.read(cx).language_target(key))
+            .flatten()
+            .and_then(|target| std::path::Path::new(&target.path).parent().map(std::path::Path::to_path_buf))
+            .filter(|folder| folder.is_dir());
+        own.unwrap_or_else(|| {
+            let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
+            let documents = home.join("Documents");
+            if documents.is_dir() { documents } else { home }
+        })
+    }
+
+    /// The heading at the top of a file's rich editor, once its page told it.
+    pub fn outline_index(&self, key: &str) -> Option<i64> {
+        self.viewers.get(key).filter(|viewer| viewer.kind.starts_with("markdown"))?;
+        self.outline.get(key).copied()
+    }
+
+    /// Go to a heading: the page scrolls to it, the source editor puts the cursor on its line.
+    pub fn reveal_heading(&mut self, key: &str, index: usize, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let source = self.ide.read(cx).views.get(key).map(String::as_str) == Some("source");
+        let page = (!source).then(|| self.viewers.get(key).and_then(|viewer| viewer.pane.read(cx).view())).flatten();
+        match page {
+            Some(view) => view.execute(&viewers::reveal_heading_script(index), |_| {}),
+            None => {
+                let key = key.to_owned();
+                self.ide.update(cx, |ide, cx| ide.reveal(key, line.saturating_sub(1) as u32, 0, window, cx));
+            }
+        }
+    }
+
+    /// Whether the shown file is Markdown with an editor.
+    fn markdown_active(&self, cx: &App) -> Option<String> {
+        let ide = self.ide.read(cx);
+        let key = ide.active.clone()?;
+        let file = ide.files.get(&key)?;
+        (file.editor.is_some() && viewers::preview_kind(&file.document.path) == Some("markdown")).then_some(key)
+    }
+
+    /// Export the shown Markdown document; its page renders it, so a document shown as source gets its page first.
+    pub fn export_markdown(&mut self, format: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::notification::Notification;
+        let Some(key) = self.markdown_active(cx) else { return };
+        window.push_notification(Notification::info(tr(cx, "viewers.exporting")), cx);
+        let page = self.viewers.get(&key).filter(|viewer| viewer.kind.starts_with("markdown")).and_then(|viewer| viewer.pane.read(cx).view());
+        match page {
+            Some(view) => view.execute(&viewers::export_script(format), |_| {}),
+            None => {
+                self.pending_export = Some((key.clone(), format));
+                self.ide.update(cx, |ide, cx| ide.set_view(&key, None, cx));
+            }
+        }
+    }
+
+    /// Bring the open files back in place of the project map.
+    pub fn hide_map(&mut self, cx: &mut Context<Self>) {
+        if self.map_shown {
+            self.map_shown = false;
+            cx.notify();
+        }
+    }
+
+    /// Ctrl+/ as in Typora: switch a Markdown tab between the rich view and its source.
+    pub fn toggle_markdown_source(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.markdown_active(cx) else { return };
+        let source = self.ide.read(cx).views.get(&key).map(String::as_str) == Some("source");
+        self.ide.update(cx, |ide, cx| ide.set_view(&key, if source { None } else { Some("source") }, cx));
     }
 
     /// The picture of an open image file, fetched on first use.
@@ -416,7 +594,7 @@ impl EditorArea {
                             })),
                     )
                 })
-                .child(div().flex_1().min_h_0().child(Editor::new(&editor).h_full().bordered(false)))
+                .child(div().flex_1().min_h_0().child(Editor::new(&editor).h_full().bordered(false).context_menu(editor_commands::context_menu)))
                 .children(self.ai_edit.clone().filter(|edit| edit.read(cx).key == key))
                 .into_any_element();
         }

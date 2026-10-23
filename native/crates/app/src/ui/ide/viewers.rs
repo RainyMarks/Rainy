@@ -87,6 +87,18 @@ pub fn shortcut_action(shortcut: Shortcut) -> Option<Box<dyn Action>> {
     use crate::ui::ide::*;
     const VK_OEM_COMMA: u32 = 0xBC;
     const VK_OEM_3: u32 = 0xC0;
+    const VK_OEM_2: u32 = 0xBF;
+    const VK_F1: u32 = 0x70;
+    const VK_F8: u32 = 0x77;
+    const VK_F9: u32 = 0x78;
+    // Typora's keys for the rich editor: F8 focus mode, F9 typewriter mode, Ctrl+/ source.
+    match (shortcut.ctrl, shortcut.shift, shortcut.alt, shortcut.key) {
+        (false, false, false, VK_F1) => return Some(Box::new(CommandPalette)),
+        (false, false, false, VK_F8) => return Some(Box::new(MarkdownFocus)),
+        (false, false, false, VK_F9) => return Some(Box::new(MarkdownTypewriter)),
+        (true, false, false, VK_OEM_2) => return Some(Box::new(MarkdownSource)),
+        _ => {}
+    }
     if !shortcut.ctrl {
         return None;
     }
@@ -94,6 +106,7 @@ pub fn shortcut_action(shortcut: Shortcut) -> Option<Box<dyn Action>> {
     Some(match (shortcut.shift, shortcut.alt, letter, shortcut.key) {
         (false, false, Some('W'), _) => Box::new(CloseFile),
         (false, false, Some('P'), _) | (false, true, Some('P'), _) => Box::new(QuickOpen),
+        (true, false, Some('P'), _) => Box::new(CommandPalette),
         (true, false, Some('F'), _) => Box::new(FindInFiles),
         (true, false, Some('H'), _) => Box::new(ReplaceInFiles),
         (true, false, Some('E'), _) => Box::new(ShowExplorer),
@@ -118,6 +131,10 @@ pub enum PageRequest {
     OpenKey(String),
     /// The project map asks the chat something.
     Ask(String),
+    /// The heading at the top of the rich editor, in outline order; -1 above the first.
+    Outline(i64),
+    /// Something to tell the user, such as where an export went.
+    Notice { error: bool, text: String },
 }
 
 pub fn parse_message(text: &str) -> Option<PageRequest> {
@@ -135,6 +152,8 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
         "request" => PageRequest::Call { id: value["id"].as_u64()?, name: value["name"].as_str()?.to_owned(), params: value["params"].clone() },
         "open-key" => PageRequest::OpenKey(value["key"].as_str()?.to_owned()),
         "ask" => PageRequest::Ask(value["text"].as_str()?.to_owned()),
+        "outline" => PageRequest::Outline(value["index"].as_i64()?),
+        "notice" => PageRequest::Notice { error: value["tone"] == "error", text: value["text"].as_str()?.to_owned() },
         _ => return None,
     })
 }
@@ -152,6 +171,16 @@ pub fn map_url(launch: &str, workspace_id: &str) -> String {
 /// The script that tells the map page which chat's changes to mark.
 pub fn set_session_script(session: Option<&str>) -> String {
     format!("window.__rainyViewer && window.__rainyViewer.setSession({})", json!(session))
+}
+
+/// The script that scrolls the rich editor to a heading.
+pub fn reveal_heading_script(index: usize) -> String {
+    format!("window.__rainyViewer && window.__rainyViewer.revealHeading({index})")
+}
+
+/// The script that exports the document as `pdf` or `html`.
+pub fn export_script(format: &str) -> String {
+    format!("window.__rainyViewer && window.__rainyViewer.exportDocument({})", json!(format))
 }
 
 /// The script that answers one of the page's requests.

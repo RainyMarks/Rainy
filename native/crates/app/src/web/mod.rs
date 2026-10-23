@@ -4,7 +4,9 @@
 //! A WebView2 control is a child window on top of everything GPUI draws, so a pane is shown only in frames where its
 //! area was painted and no dialog covers the window.
 
+pub mod export;
 pub mod office;
+pub mod pdf_text;
 pub mod preview;
 pub mod webview;
 

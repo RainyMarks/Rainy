@@ -14,6 +14,8 @@ import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer
 import { PdfViewer } from '../ide/viewers/PdfViewer.tsx'
 import { RichMarkdown } from '../ide/viewers/RichMarkdown.tsx'
 import { saveMarkdownImage } from '../ide/viewers/markdown-assets.ts'
+import { viewerMessages } from '../ide/viewers/messages.ts'
+import { outlinePosition, outlineTarget } from '../ide/outline-store.ts'
 import { localTarget, resolveDocumentPath } from '../chat/Markdown.tsx'
 import { getPrefs } from '../prefs.ts'
 import { useAiActivity } from '../map/activity.ts'
@@ -32,6 +34,8 @@ type Message =
   | { type: 'request'; id: number; name: string; params: unknown }
   | { type: 'open-key'; key: string }
   | { type: 'ask'; text: string }
+  | { type: 'outline'; index: number }
+  | { type: 'notice'; tone: 'success' | 'error'; text: string }
 
 declare global {
   interface Window {
@@ -43,6 +47,10 @@ declare global {
       resolve(id: number, result: unknown): void
       /** The chat shown beside the project map, whose changes the map marks. */
       setSession(sessionId: string | null): void
+      /** Scroll the rich editor to a heading, in the order the outline lists them. */
+      revealHeading(index: number): void
+      /** Save the Markdown document as a PDF or a self-contained HTML page. */
+      exportDocument(format: 'pdf' | 'html'): void
     }
   }
 }
@@ -67,6 +75,8 @@ let receiveText: ((text: string, version: string | null) => void) | undefined
 let latestText: { text: string; version: string | null } | undefined
 let receiveSession: ((sessionId: string | null) => void) | undefined
 let latestSession: string | null = null
+/** The Markdown document this page shows, for exporting it. */
+let shownDocument: { workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string } | undefined
 window.__rainyViewer = {
   setSession(sessionId) {
     latestSession = sessionId
@@ -80,7 +90,21 @@ window.__rainyViewer = {
     pending.get(id)?.(result)
     pending.delete(id)
   },
+  revealHeading(index) {
+    if (shownDocument !== undefined) outlineTarget(shownDocument.path)?.reveal(index)
+  },
+  exportDocument(format) {
+    const shown = shownDocument
+    if (shown === undefined || latestText === undefined) return
+    const text = latestText.text
+    void import('../ide/viewers/markdown-export.ts')
+      .then(({ exportDocument }) => exportDocument({ format, text, path: shown.path, workspaceId: shown.workspaceId, rootId: shown.rootId }))
+      .then((saved) => { if (saved !== null) post({ type: 'notice', tone: 'success', text: viewerMessages.t('exportDone', { path: saved }) }) },
+        (error: unknown) => { post({ type: 'notice', tone: 'error', text: viewerMessages.t('exportFailed', { error: error instanceof Error ? error.message : String(error) }) }) })
+  },
 }
+// The heading at the top of the rich editor, for the outline beside it.
+outlinePosition.subscribe(() => { post({ type: 'outline', index: outlinePosition.getSnapshot().index }) })
 
 if (window.ipc !== undefined) {
   window.__RAINY_OFFICE__ = {
@@ -96,6 +120,14 @@ if (window.ipc !== undefined) {
     },
     open: async (path: string) => await request('open-external', { path }) as { error?: string },
   } as never
+  window.__RAINY_EXPORT__ = {
+    save: async (options) => {
+      const result = await request('export-save', options) as { path?: string; error?: string }
+      if (typeof result.error === 'string') throw new Error(result.error)
+      return typeof result.path === 'string' ? { path: result.path } : null
+    },
+    showInFolder: async (path) => { await request('open-external', { path, reveal: true }) },
+  }
 }
 
 /** Save an image pasted into the rich editor next to the document, as the editor tab does. */
@@ -127,6 +159,7 @@ async function createBinary(workspaceId: WorkspaceId, rootId: IdeRootId | undefi
 /** The Markdown views: the text arrives from the workbench, and rich edits go back to it. */
 function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string }): JSX.Element | null {
   const [text, setText] = useState(latestText)
+  shownDocument = { workspaceId, rootId, path }
   useEffect(() => {
     receiveText = (value, version) => { setText({ text: value, version }) }
     post({ type: 'ready' })

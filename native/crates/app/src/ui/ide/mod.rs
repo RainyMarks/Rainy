@@ -3,10 +3,12 @@
 pub mod ai_edit;
 pub mod cursor_status;
 pub mod debug_marks;
+pub mod editor_commands;
 pub mod editor_area;
 pub mod viewers;
 pub mod file_tree;
 pub mod folder_dialog;
+pub mod outline;
 pub mod git;
 pub mod quick_open;
 pub mod run_dialog;
@@ -22,7 +24,7 @@ use crate::store::Store;
 use crate::store::ide::Ide;
 use crate::ui::tr;
 
-actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat, RunFile, DebugFile, StopRun, StepOver, StepInto, StepOut, ToggleBreakpoint, RunProfiles]);
+actions!(rainy, [SaveFile, CloseFile, OpenFolder, FindInFiles, ReplaceInFiles, ShowExplorer, ShowSourceControl, ToggleTerminal, QuickOpen, OpenSettings, NewChat, AiEditSelection, CommandPalette, OpenRuntimeSettings, ShowMap, ShowChat, RunFile, DebugFile, StopRun, StepOver, StepInto, StepOut, ToggleBreakpoint, RunProfiles, GoToLine, FormatDocument, CompareWithSaved, SendSelection, FindReferences, RenameSymbol, ExportPdf, ExportHtml, ShowOutline, MarkdownSource, MarkdownFocus, MarkdownTypewriter, SaveAll, ToggleFiles, ToggleAgent, FocusEditor, ShowProblems, SearchHistory, GitRefresh, CheckUpdates]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -50,6 +52,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("f11", StepInto, None),
         KeyBinding::new("shift-f11", StepOut, None),
         KeyBinding::new("f9", ToggleBreakpoint, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-/", MarkdownSource, None),
+        KeyBinding::new("f8", MarkdownFocus, None),
+        KeyBinding::new("ctrl-alt-k", SearchHistory, None),
+        KeyBinding::new("ctrl-g", GoToLine, Some("Input && mode == editor")),
+        KeyBinding::new("shift-alt-f", FormatDocument, Some("Input && mode == editor")),
+        KeyBinding::new("shift-f12", FindReferences, Some("Input && mode == editor")),
+        KeyBinding::new("f2", RenameSymbol, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k", AiEditSelection, Some("Input && mode == editor")),
         KeyBinding::new("f12", gpui_kit::component::input::GoToDefinition, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("Input && mode == editor")),

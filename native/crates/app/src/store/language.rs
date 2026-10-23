@@ -560,6 +560,24 @@ impl LanguageServers {
         cx.notify();
     }
 
+    /// Whether a server serves the file.
+    pub fn has_server(&self, key: &str) -> bool {
+        self.documents.get(key).is_some_and(|document| document.server.is_some())
+    }
+
+    /// Ask the server of a document something about it, with the text synced first; `params` gets the document.
+    pub fn document_request(
+        &mut self,
+        key: &str,
+        text: &Rope,
+        method: &str,
+        mut params: Value,
+    ) -> Option<impl std::future::Future<Output = Result<Value>> + Send + 'static + use<>> {
+        let (client, uri, _) = self.ready_server(key, text)?;
+        params["textDocument"] = json!({ "uri": uri });
+        Some(client.request(method, params))
+    }
+
     /// The server of a document with the text synced, and the document's URI and trigger characters.
     fn ready_server(&mut self, key: &str, text: &Rope) -> Option<(LspClient, String, Vec<String>)> {
         let client = self.sync_text(key, text.to_string())?;
@@ -581,7 +599,7 @@ fn static_language(language: &str) -> Option<&'static str> {
 fn client_capabilities() -> Value {
     json!({
         "general": { "positionEncodings": ["utf-16"] },
-        "workspace": { "configuration": true, "workspaceFolders": true },
+        "workspace": { "configuration": true, "workspaceFolders": true, "workspaceEdit": { "documentChanges": true } },
         "textDocument": {
             "synchronization": { "didSave": true, "dynamicRegistration": false },
             "completion": {
@@ -590,6 +608,9 @@ fn client_capabilities() -> Value {
             },
             "hover": { "contentFormat": ["markdown", "plaintext"] },
             "definition": { "linkSupport": true },
+            "references": {},
+            "rename": { "prepareSupport": false },
+            "formatting": {},
             "publishDiagnostics": { "relatedInformation": false },
         },
     })

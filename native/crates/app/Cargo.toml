@@ -22,6 +22,9 @@ similar = "2.7"
 lsp-types = { version = "0.97.0", features = ["proposed"] }
 latex-rust = "3.0.1"
 base64 = "0.22"
+# Markdown export: the PDF text fix (`web/pdf_text.rs`).
+flate2 = "1.1"
+regex = "1.13"
 raw-window-handle = "0.6"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }

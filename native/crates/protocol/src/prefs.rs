@@ -26,6 +26,11 @@ pub struct UiPreferences {
     pub auto_keep_changes: bool,
     pub rain_effects: bool,
     pub web_search: bool,
+    /// Typora's focus and typewriter modes of the rich Markdown editor.
+    #[serde(default)]
+    pub markdown_focus: bool,
+    #[serde(default)]
+    pub markdown_typewriter: bool,
 }
 
 impl Default for UiPreferences {
@@ -47,6 +52,8 @@ impl Default for UiPreferences {
             auto_keep_changes: true,
             rain_effects: true,
             web_search: true,
+            markdown_focus: false,
+            markdown_typewriter: false,
         }
     }
 }

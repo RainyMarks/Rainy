@@ -610,7 +610,7 @@ impl Ide {
     }
 
     /// `open`, done once the file has been read.
-    fn open_task(&mut self, key: String, focus: bool, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+    pub fn open_task(&mut self, key: String, focus: bool, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         if !self.tabs.contains(&key) {
             self.tabs.push(key.clone());
         }

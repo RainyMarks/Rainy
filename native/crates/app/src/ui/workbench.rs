@@ -33,11 +33,16 @@ use crate::ui::ide::cursor_status::CursorStatus;
 use crate::store::execution::Execution;
 use crate::store::ide::{RUN_LANGUAGES, RunMode, run_language};
 use crate::ui::ide::debug_marks::DebugMarks;
+use crate::ui::ide::outline::OutlineView;
+use crate::ui::ide::{
+    CheckUpdates, ExportHtml, ExportPdf, FocusEditor, GitRefresh, MarkdownFocus, MarkdownSource, MarkdownTypewriter, SaveAll, SearchHistory,
+    ShowOutline, ShowProblems, ToggleAgent, ToggleFiles,
+};
 use crate::ui::ide::terminal_panel::{BottomTab, TerminalPanel};
 use crate::ui::ide::{
     CloseFile, CommandPalette, DebugFile, FindInFiles, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen, ReplaceInFiles, RunFile, RunProfiles,
     SaveFile, ShowChat, ShowExplorer, ShowMap, ShowSourceControl, StepInto, StepOut, StepOver, StopRun, ToggleBreakpoint, ToggleTerminal, choose_folder,
-    quick_open, run_dialog,
+    quick_open, run_dialog, editor_commands, GoToLine, FormatDocument, CompareWithSaved, SendSelection, FindReferences, RenameSymbol,
 };
 use crate::ui::settings::{CloseSettings, Section, SettingsView};
 use crate::ui::{tr, trf};
@@ -49,6 +54,7 @@ enum Side {
     Search,
     Git,
     History,
+    Outline,
 }
 
 pub struct Workbench {
@@ -62,6 +68,7 @@ pub struct Workbench {
     editor: Entity<EditorArea>,
     terminals: Entity<TerminalPanel>,
     cursor: Entity<CursorStatus>,
+    outline: Entity<OutlineView>,
     _marks: Entity<DebugMarks>,
     bottom_visible: bool,
     settings: Option<Entity<SettingsView>>,
@@ -89,6 +96,7 @@ impl Workbench {
         let cursor = cx.new(|cx| CursorStatus::new(ide.clone(), cx));
         let editor = cx.new(|cx| EditorArea::new(ide.clone(), cx));
         let marks = cx.new(DebugMarks::new);
+        let outline = cx.new(|cx| OutlineView::new(ide.clone(), editor.clone(), cx));
         let subscriptions = vec![
             cx.observe(&Execution::global(cx), |_, _, cx| cx.notify()),
             cx.observe_in(&store, window, |this, store, window, cx| {
@@ -154,6 +162,7 @@ impl Workbench {
             editor,
             terminals,
             cursor,
+            outline,
             _marks: marks,
             bottom_visible: false,
             settings: None,
@@ -165,6 +174,7 @@ impl Workbench {
             focus: {
                 let focus = cx.focus_handle();
                 cx.set_global(WorkbenchFocus(focus.clone()));
+                cx.set_global(WorkbenchHandle(cx.entity().downgrade()));
                 focus
             },
             _subscriptions: subscriptions,
@@ -603,9 +613,14 @@ impl Workbench {
     }
 
     /// Set or clear the breakpoint on the cursor's line, in the running session too.
-    fn toggle_breakpoint(&mut self, cx: &mut Context<Self>) {
+    fn toggle_breakpoint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ide = self.ide.read(cx);
         let Some(key) = ide.active.clone() else { return };
+        // In Markdown, F9 is Typora's typewriter mode.
+        if crate::ui::ide::viewers::preview_kind(&key) == Some("markdown") {
+            window.dispatch_action(Box::new(MarkdownTypewriter), cx);
+            return;
+        }
         let Some(editor) = ide.files.get(&key).and_then(|file| file.editor.clone()) else { return };
         let line = editor.read(cx).cursor_position().line + 1;
         let source = self.ide.update(cx, |ide, cx| ide.toggle_breakpoint(&key, line, cx));
@@ -642,11 +657,20 @@ impl Workbench {
         let git_label: SharedString = if changes > 0 { format!("Git {}", changes.min(999)).into() } else { tr(cx, "git.gitTab") };
         let git = self.side_tab("side-git", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::GitBranch), git_label, Side::Git, cx);
         let history = self.side_tab("side-history", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Clock), tr(cx, "ide.ideHistory"), Side::History, cx);
+        // The outline is only an icon: the pane is narrow, and the four tabs before it have their names.
+        let outline = Button::new("side-outline")
+            .ghost()
+            .xsmall()
+            .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::ListTree))
+            .tooltip(tr(cx, "ide.ideOutline"))
+            .selected(self.side == Side::Outline)
+            .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Outline, window, cx)));
         let content: AnyView = match self.side {
             Side::Files => self.files.clone().into(),
             Side::Search => self.search.clone().into(),
             Side::Git => self.git.clone().into(),
             Side::History => self.history.clone().into(),
+            Side::Outline => self.outline.clone().into(),
         };
         let theme = cx.theme();
         v_flex()
@@ -666,7 +690,9 @@ impl Workbench {
                     .child(files)
                     .child(search)
                     .child(git)
-                    .child(history),
+                    .child(history)
+                    .child(div().flex_1())
+                    .child(outline),
             )
             .child(div().flex_1().min_h_0().child(content))
     }
@@ -698,6 +724,10 @@ impl Workbench {
 /// The workbench's own focus, for commands that run after a dialog closed.
 pub struct WorkbenchFocus(pub FocusHandle);
 impl Global for WorkbenchFocus {}
+
+/// The workbench, for commands that reach it from outside its own tree (the palette).
+pub struct WorkbenchHandle(pub WeakEntity<Workbench>);
+impl Global for WorkbenchHandle {}
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -763,8 +793,58 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &StepOver, _, cx| this.step("next", cx)))
             .on_action(cx.listener(|this, _: &StepInto, _, cx| this.step("stepIn", cx)))
             .on_action(cx.listener(|this, _: &StepOut, _, cx| this.step("stepOut", cx)))
-            .on_action(cx.listener(|this, _: &ToggleBreakpoint, _, cx| this.toggle_breakpoint(cx)))
+            .on_action(cx.listener(|this, _: &ToggleBreakpoint, window, cx| this.toggle_breakpoint(window, cx)))
             .on_action(cx.listener(|_, _: &RunProfiles, window, cx| run_dialog::open(window, cx)))
+            .on_action(|_: &GoToLine, window, cx| editor_commands::go_to_line(window, cx))
+            .on_action(cx.listener(|this, _: &ExportPdf, window, cx| this.editor.update(cx, |editor, cx| editor.export_markdown("pdf", window, cx))))
+            .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.editor.update(cx, |editor, cx| editor.export_markdown("html", window, cx))))
+            .on_action(cx.listener(|this, _: &ShowOutline, window, cx| this.show_side(Side::Outline, window, cx)))
+            .on_action(cx.listener(|this, _: &MarkdownSource, _, cx| this.editor.update(cx, |editor, cx| editor.toggle_markdown_source(cx))))
+            .on_action(cx.listener(|this, _: &MarkdownFocus, window, cx| {
+                let on = this.store.read(cx).prefs.markdown_focus;
+                crate::ui::settings::set_prefs(serde_json::json!({ "markdownFocus": !on }), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MarkdownTypewriter, window, cx| {
+                let on = this.store.read(cx).prefs.markdown_typewriter;
+                crate::ui::settings::set_prefs(serde_json::json!({ "markdownTypewriter": !on }), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SaveAll, window, cx| {
+                this.ide.update(cx, |ide, cx| ide.save_all(window, cx)).detach();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFiles, _, cx| {
+                this.left_visible = !this.left_visible;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleAgent, _, cx| {
+                this.agent_visible = !this.agent_visible;
+                cx.notify();
+            }))
+            // 3.x "focus editor": the AI pane and the bottom panel step aside.
+            .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
+                this.agent_visible = false;
+                this.bottom_visible = false;
+                this.editor.update(cx, |editor, cx| editor.hide_map(cx));
+                if let Some((_, editor)) = editor_commands::active_editor(cx) {
+                    editor.update(cx, |state, cx| state.focus(window, cx));
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ShowProblems, _, cx| {
+                this.bottom_visible = true;
+                this.terminals.update(cx, |terminals, cx| terminals.show(BottomTab::Problems, cx));
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SearchHistory, window, cx| {
+                this.agent_visible = true;
+                this.show_side(Side::History, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GitRefresh, window, cx| this.git.update(cx, |git, cx| git.refresh(window, cx))))
+            .on_action(cx.listener(|this, _: &CheckUpdates, _, cx| this.store.update(cx, |store, cx| store.check_updates(true, cx))))
+            .on_action(|_: &FormatDocument, window, cx| editor_commands::format_document(window, cx))
+            .on_action(|_: &CompareWithSaved, window, cx| editor_commands::compare_with_saved(window, cx))
+            .on_action(|_: &SendSelection, window, cx| editor_commands::send_selection(window, cx))
+            .on_action(|_: &FindReferences, window, cx| editor_commands::find_references(window, cx))
+            .on_action(|_: &RenameSymbol, window, cx| editor_commands::rename_symbol(window, cx))
             .on_action(cx.listener(|_, _: &QuickOpen, window, cx| quick_open::open(window, cx)))
             .on_action(cx.listener(|this, _: &OpenFolder, window, cx| {
                 if matches!(this.store.read(cx).phase, Phase::Ready) {
