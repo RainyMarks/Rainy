@@ -5,7 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use futures::future::join_all;
-use rainy_protocol::chat::{AssistantBlock, AssistantMessage, ResultContent};
+use rainy_protocol::chat::{AssistantBlock, AssistantMessage};
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
@@ -245,7 +245,3 @@ pub async fn run<H: Hooks>(llm: &Llm, state: &mut State, prompts: Vec<(Message, 
     }
 }
 
-/// Text of a tool result, for progress cards.
-pub fn result_text(content: &[ResultContent]) -> String {
-    llm::text_parts(content)
-}

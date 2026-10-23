@@ -42,13 +42,8 @@ pub struct ModelSetup {
     pub max_tokens_field: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelSelection {
-    pub provider: String,
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<String>,
-}
+/// The model a chat or future chats use; the page reads the same type.
+pub use rainy_protocol::models::ModelSelection;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServerConfig {

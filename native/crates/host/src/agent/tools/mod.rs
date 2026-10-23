@@ -52,6 +52,7 @@ impl ToolOutput {
 pub type Updates = Arc<dyn Fn(ToolOutput) + Send + Sync>;
 
 /// Updates nobody reads.
+#[cfg(test)]
 pub fn no_updates() -> Updates {
     Arc::new(|_| {})
 }

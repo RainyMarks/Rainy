@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rainy_protocol::chat::{AssistantBlock, ResultContent, TranscriptEntry};
+use rainy_protocol::chat::TranscriptEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -108,17 +108,6 @@ fn valid_id(id: &str) -> bool {
 
 fn not_found(id: &str) -> HostError {
     HostError::new("not-found", format!("Chat {id} not found"))
-}
-
-/// Searchable text of an entry.
-pub fn entry_text(entry: &TranscriptEntry) -> String {
-    match entry {
-        TranscriptEntry::User { text, .. } | TranscriptEntry::Context { text, .. } | TranscriptEntry::Notice { text, .. } => text.clone(),
-        TranscriptEntry::Assistant { message, .. } => message.content.iter().filter_map(|block| if let AssistantBlock::Text { text, .. } = block { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n"),
-        TranscriptEntry::ToolResult { content, .. } => content.iter().filter_map(|part| if let ResultContent::Text { text } = part { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n"),
-        TranscriptEntry::Compaction { summary, .. } => summary.clone(),
-        TranscriptEntry::Turn { .. } => String::new(),
-    }
 }
 
 struct State {
@@ -420,48 +409,6 @@ impl ChatStore {
         Ok(())
     }
 
-    /// Chats whose title or text contains `query` (case-insensitive), with a short snippet.
-    pub fn search(&self, query: &str, limit: usize) -> Vec<(StoredChat, String)> {
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Vec::new();
-        }
-        let mut hits = Vec::new();
-        for chat in self.list() {
-            if hits.len() >= limit {
-                break;
-            }
-            if chat.title.to_lowercase().contains(&needle) {
-                let title = chat.title.clone();
-                hits.push((chat, title));
-                continue;
-            }
-            if let Some(snippet) = self.find_text(&chat.id, &needle) {
-                hits.push((chat, snippet));
-            }
-        }
-        hits
-    }
-
-    fn find_text(&self, id: &str, needle: &str) -> Option<String> {
-        let text = std::fs::read_to_string(self.path(id)).ok()?;
-        for line in text.lines().filter(|line| line.contains("\"type\":\"entry\"")) {
-            let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
-            let Ok(entry) = serde_json::from_value::<TranscriptEntry>(record["entry"].clone()) else { continue };
-            let text = entry_text(&entry);
-            let lower = text.to_lowercase();
-            if let Some(at) = lower.find(needle) {
-                // Character positions in the lowered text match the original's for nearly all text.
-                let at = lower[..at].chars().count();
-                let (start, end) = (at.saturating_sub(40), at + needle.chars().count() + 80);
-                let snippet: String = text.chars().skip(start).take(end - start).collect();
-                static SPACE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
-                return Some(SPACE.replace_all(&snippet, " ").into_owned());
-            }
-        }
-        None
-    }
-
     fn schedule_index(self: &Arc<Self>) {
         {
             let mut state = self.state.lock().unwrap();
@@ -515,7 +462,6 @@ mod tests {
         let file = fresh.read(&chat.id).await.unwrap();
         assert_eq!(file.entries.len(), 2);
         assert_eq!((file.chat.title.as_str(), file.chat.permission.as_deref(), file.kept.as_slice()), ("T", Some("ask"), &["c1".to_owned()][..]));
-        assert_eq!(fresh.search("NEEDLE", 5)[0].1, "找到 needle 了");
         fresh.delete(&chat.id).await.unwrap();
         assert!(fresh.get(&chat.id).is_none());
         let _ = std::fs::remove_dir_all(dir);

@@ -295,15 +295,6 @@ async fn route(server: &Arc<HostServer>, request: Request) -> Response {
     server.serve_renderer(&url).await
 }
 
-/// A JSON response that is never cached.
-pub fn json_response(code: StatusCode, value: &Value) -> Response {
-    let mut response = Response::new(Body::from(value.to_string()));
-    *response.status_mut() = code;
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
 pub fn empty(code: StatusCode) -> Response {
     status(code)
 }

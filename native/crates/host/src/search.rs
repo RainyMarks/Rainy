@@ -194,12 +194,6 @@ impl TextSearch {
         }
         Ok(json!({ "files": done, "failed": failed }))
     }
-
-    pub fn close(&self) {
-        for cancelled in self.running.lock().unwrap().values() {
-            cancelled.store(true, Ordering::Relaxed);
-        }
-    }
 }
 
 fn replace_file(root: &Root, path: &str, regex: &Regex, replacement: &str) -> Result<usize, String> {

@@ -10,9 +10,6 @@ use tokio::process::{Child, Command};
 
 use crate::locale::l;
 
-/// The default wait between the polite and the forced stop.
-pub const GRACE: Duration = Duration::from_secs(3);
-
 /// Whether an environment name looks like a credential; such variables are never inherited by child processes.
 pub fn sensitive(name: &str) -> bool {
     let upper = name.to_uppercase();

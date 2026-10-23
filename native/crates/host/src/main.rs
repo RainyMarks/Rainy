@@ -148,6 +148,7 @@ async fn start() -> Result<()> {
     let _ = host.ide.set(ide::Ide::new(&host));
 
     register(&host);
+    let agent = agent::service::Agent::start(&host, preview_access(&host)).await?;
     host.server.listen(env.port).await?;
 
     // A project the registry refuses (the same folder recorded for another target, as with two SSH aliases of one
@@ -181,8 +182,28 @@ async fn start() -> Result<()> {
             _ = tokio::signal::ctrl_c() => break,
         }
     }
+    agent.close().await;
     stop(&host).await;
     Ok(())
+}
+
+/// The carrier shows the agent's preview window when it says so; a page may take a while to load, so a command
+/// waits up to a minute.
+fn preview_access(host: &Arc<Host>) -> Option<agent::tools::browser::Preview> {
+    if std::env::var("RAINY_CARRIER_PREVIEW").as_deref() != Ok("1") {
+        return None;
+    }
+    let control = host.control.clone();
+    Some(Arc::new(move |command: Value| {
+        let control = control.clone();
+        Box::pin(async move {
+            let reply = control.ask(control::request("preview", json!({ "command": command })), Duration::from_secs(60)).await.map_err(|error| error.to_string())?;
+            match reply.get("answer") {
+                Some(answer @ Value::Object(_)) => Ok(answer.clone()),
+                _ => Err("The carrier sent an invalid preview answer".to_owned()),
+            }
+        })
+    }))
 }
 
 /// Answer one carrier command.
@@ -300,40 +321,6 @@ fn register(host: &Arc<Host>) {
                     tokio::task::spawn_blocking(move || if method == "search.text" { search.search(&params) } else { search.replace(&params) })
                         .await
                         .map_err(|error| HostError::other(error.to_string()))?
-                }
-            });
-        }
-    }
-    {
-        let git = Arc::new(git::Git::new(host.projects.clone(), host.runtime.clone()));
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct GitRequest {
-            workspace_id: String,
-            #[serde(default)]
-            root_id: String,
-            #[serde(default)]
-            paths: Vec<String>,
-            #[serde(default)]
-            message: String,
-            #[serde(default)]
-            stage_all: bool,
-        }
-        for method in ["git.status", "git.stage", "git.unstage", "git.discard", "git.commit", "git.init"] {
-            let git = git.clone();
-            rpc.register(method, move |params| {
-                let git = git.clone();
-                async move {
-                    let request: GitRequest = rpc::params(params)?;
-                    let (ws, root) = (request.workspace_id.as_str(), request.root_id.as_str());
-                    match method {
-                        "git.status" => git.status(ws).await,
-                        "git.stage" => git.stage(ws, root, &request.paths).await.map(|()| Value::Null),
-                        "git.unstage" => git.unstage(ws, root, &request.paths).await.map(|()| Value::Null),
-                        "git.discard" => git.discard(ws, root, &request.paths).await.map(|()| Value::Null),
-                        "git.commit" => git.commit(ws, root, &request.message, request.stage_all).await,
-                        _ => git.init(ws, root).await.map(|()| Value::Null),
-                    }
                 }
             });
         }
