@@ -1,12 +1,12 @@
 # Rainy 桌面版
 
-本指南说明离线安装、模型设置、SSH 远程开发及从源码打包。Rainy 是面向 Windows 的轻量 AI 编程工作台，由 Windows Electron 外壳、按执行目标运行的 Host（Windows 原生、WSL 或通过 SSH 连接的 Linux 服务器）和一个 React 页面组成：外壳管理窗口和 Host 生命周期，Host 运行智能体、编辑器服务和文件操作。功能范围和测量结果见 [验收记录](validation.md)。
+本指南说明离线安装、模型设置、SSH 远程开发及从源码打包。Rainy 是面向 Windows 的轻量 AI 编程工作台，由原生界面 `RainyAgent.exe`（Rust + GPUI，自 4.0 起取代 Electron 外壳）和按执行目标运行的 Host（Windows 原生、WSL 或通过 SSH 连接的 Linux 服务器）组成：界面管理窗口和 Host 生命周期，Host 运行智能体、编辑器服务和文件操作；PDF、Office 和所见即所得 Markdown 等预览嵌入系统自带的 WebView2，沿用 3.x 的网页代码。功能范围和测量结果见 [验收记录](validation.md)。
 
 ## 安装与使用
 
-使用 Windows x64，新安装默认原生执行，无需先安装 WSL。核心安装包包含 Windows Host；Strata 引擎、Windows PHP 和 Linux 运行环境是按需下载的可选组件。主模型与 MTP 权重由用户提供。完整离线目录另含 WSL 安装介质、Ubuntu 26.04.1 镜像，以及 Windows/Linux 基础、科学计算 CPU/CUDA 和 Windows C/C++ 组件。已有 Python、Conda、项目虚拟环境或 WSL 可直接检测并复用，不向它们安装软件包。也可连接自行管理的推理服务。
+使用 Windows x64，新安装默认原生执行，无需先安装 WSL。核心安装包包含 Windows Host；Windows PHP 和 Linux 运行环境是按需下载的可选组件（3.x 的 Strata 引擎在 4.0 中暂不提供）。完整离线目录另含 WSL 安装介质、Ubuntu 26.04.1 镜像，以及 Windows/Linux 基础、科学计算 CPU/CUDA 和 Windows C/C++ 组件。已有 Python、Conda、项目虚拟环境或 WSL 可直接检测并复用，不向它们安装软件包。也可连接自行管理的推理服务。
 
-1. 运行 `Rainy-3.9.2-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
+1. 运行 `Rainy-4.0.0-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
 2. 从旧版本升级时，旧版下载的 CTF 工具留在原安装位置（安装目录的 `tools` 文件夹或 `%APPDATA%\RainyAgent\native-tools`），Rainy 3.0 不再管理它们；不再需要时可自行删除这些文件夹。
 3. 从桌面 Rainy 快捷方式启动，无需设备码、激活码或授权管理器。已有保存的 WSL 目标继续保留；新安装先使用 Windows。运行环境页可以选择已有 WSL，或点击准备环境并选择外置 `environment/` 目录创建专用 Ubuntu。需要系统组件时明确请求管理员确认；若提示重启，保存其他工作、自行重启后再次打开应用。首次启动会校验全部发行资源，之后启动直接打开；已记录的 WSL 目标跳过环境检查窗口。
 4. Linux 运行环境分两层：底座（Node.js、依赖包、开发工具资源和 ripgrep，约 280 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（Host、界面和小资源，几 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。下载失败时可选择“重试”“改用 Windows 原生运行”（记录为执行目标，与在设置中切换相同）或“退出”。
@@ -25,13 +25,13 @@ WSL 系统组件安装、管理员确认和 Windows 重启续装按具体发行�
 
 ## 编辑、运行与调试
 
-先打开工作区，再从文件树打开文件。CodeMirror 6 编辑器提供完整文本编辑、多标签、查找替换（Ctrl+F / Ctrl+H）、转到行（Ctrl+G）、撤销和内联差异视图；使用保存操作（Ctrl+S）写入磁盘。Python、JavaScript/TypeScript 和 C/C++ 文件有补全、悬停提示、诊断、转到定义（F12）、查找引用（Shift+F12）和重命名（F2）；右键菜单也提供这些操作以及“发送到 AI”。点击行号左侧可切换断点。默认可编辑上限为 5 MiB，二进制、无法无损解码及超限文件只读。超限 UTF-8 文件最多预览 64 KiB。图片、Markdown、SVG、PDF、音视频直接在编辑区预览，Markdown 与 SVG 可切换源码 / 预览 / 分栏（Ctrl+Shift+V、Ctrl+K V）；任何文件都能以十六进制打开，GBK、UTF-16 等文本以只读方式显示。快速打开可搜索尚未展开的文件树路径，结果过多时提示截断。更改查询、切换项目或重新打开窗口会撤销旧结果；等待或搜索失败时不能误打开上一轮的文件。
+先打开工作区，再从文件树打开文件。编辑器（GPUI Kit 的代码编辑器，基于 tree-sitter 高亮）提供完整文本编辑、多标签、查找替换（Ctrl+F / Ctrl+H）、转到行（Ctrl+G）、撤销和内联差异视图；使用保存操作（Ctrl+S）写入磁盘。Python、JavaScript/TypeScript 和 C/C++ 文件有补全、悬停提示、诊断、转到定义（F12）、查找引用（Shift+F12）和重命名（F2）；格式化为 Shift+Alt+F；右键菜单也提供这些操作以及“发送到 AI”。F9 切换光标所在行的断点。默认可编辑上限为 5 MiB，二进制、无法无损解码及超限文件只读。超限 UTF-8 文件最多预览 64 KiB。图片、Markdown、SVG、PDF、音视频直接在编辑区预览，Markdown 可切换所见即所得 / 源码 / 预览 / 分栏（Ctrl+/ 在所见即所得和源码之间切换）；任何文件都能以十六进制打开，GBK、UTF-16 等文本以只读方式显示。快速打开可搜索尚未展开的文件树路径，结果过多时提示截断。更改查询、切换项目或重新打开窗口会撤销旧结果；等待或搜索失败时不能误打开上一轮的文件。
 
 顶栏中部的项目切换器可切换已有项目，“搜索文件”显示快速打开的快捷键。窗口底部状态栏显示执行环境（如 `Windows`、`WSL · Ubuntu`、`SSH · 主机`）、运行与调试状态、光标行列、选中长度、语言、行尾和编码。
 
 Host 重启后恢复活动工作区，未保存缓冲区按工作区恢复；外部修改与保存版本冲突会保留草稿并要求比较处理。选中代码后可发送到右侧 AI，路径、范围与文本会进入普通用户消息。
 
-在“设置 → 运行环境”检查解释器与库能力，手动选择已有解释器，或从 `environment-components/` 选择匹配目标的 JSON 导入离线组件。Python/Node/PHP 基础、CPU 科学计算、CUDA 科学计算和 Windows C/C++ 分别提供；选中的环境会用于该项目的 Agent 命令、终端、运行及语言服务。科学组件使用配套的 PyTorch、torchvision、torchaudio，CUDA 实算还需要兼容驱动。同一页的“可选组件”可下载或删除 Strata 引擎（约 560 MB）和 PHP 8.5：组件保存在 `%APPDATA%\RainyAgent\modules\<id>`，从 GitHub 发行分片下载，逐片及整体校验 SHA-256，支持断点续传，取消后保留已下载的分片。WSL 的“准备 Ubuntu 开发工具”仅在 Ubuntu 26.04 amd64 明确安装经过校验的 C/C++、GDB、CMake、clangd 与 PHP 软件包，安装时不访问软件源。
+在“设置 → 运行环境”检查解释器与库能力，手动选择已有解释器，或从 `environment-components/` 选择匹配目标的 JSON 导入离线组件。Python/Node/PHP 基础、CPU 科学计算、CUDA 科学计算和 Windows C/C++ 分别提供；选中的环境会用于该项目的 Agent 命令、终端、运行及语言服务。科学组件使用配套的 PyTorch、torchvision、torchaudio，CUDA 实算还需要兼容驱动。同一页的“可选组件”可下载或删除 PHP 8.5：组件保存在 `%APPDATA%\RainyAgent\modules\<id>`，从 GitHub 发行分片下载，逐片及整体校验 SHA-256，支持断点续传，取消后保留已下载的分片。WSL 的“准备 Ubuntu 开发工具”仅在 Ubuntu 26.04 amd64 明确安装经过校验的 C/C++、GDB、CMake、clangd 与 PHP 软件包，安装时不访问软件源。
 
 运行按钮默认按当前文件后缀选择语言；需要时点击旁边的“运行方式”为该文件改选 Python、JavaScript、TypeScript、PHP、C 或 C++，之后会记住。在 Windows 原生环境运行 PHP 前，请在“设置 → 运行环境 → 可选组件”下载 PHP 8.5（含 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展），或在运行配置中选择已安装的 `php.exe`；未下载时运行 PHP 文件会提示下载位置。已安装的环境组件或项目选定的 PHP 优先；WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。也可在运行配置中保存当前文件或 Python 模块、参数、工作目录和可选的目标平台绝对解释器路径。支持 Windows 原生、WSL 和 SSH 的 Python、Node、TypeScript、PHP 运行，以及 C/C++ 单文件和 CMake 构建；默认 Debug 构建，失败时停止启动。运行与调试前保存全部修改，失败则中止。Python、JavaScript/TypeScript、C/C++ 调试提供断点、单步、调用栈、变量和监视；PHP 仅运行。此版本只调试由工作区启动的程序。
 
@@ -61,6 +61,8 @@ SSH 远程开发让智能体、终端、运行调试和语言服务在 Linux 服
 - 连接断开时，点击“重新连接”会重新打开 Rainy，对话历史保留在服务器上。启动失败时可选择“重试”“改用 Windows 原生运行”或“退出”。
 
 ## Strata 本地模型
+
+> 4.0 暂不提供 Strata；本节描述 3.x 的行为。
 
 Strata 引擎不随安装包附带，是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14 以及服务、准备脚本和 CUDA 运行依赖；下载后不需要预装 Strata、创建 Python 环境或手工运行转换命令。推理引擎面向 Windows x64 与 NVIDIA CUDA 13，要求 580 或更新的 NVIDIA 驱动，提供 `sm75`、`sm86`、`sm89`、`sm120` 目标；本包不提供 AMD 或 Linux 推理引擎。安装程序不安装显卡驱动。
 
@@ -114,25 +116,25 @@ MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对�
 
 ## 从源码构建
 
-构建需要 Windows Node `^22.19 || >=24`、仓库锁定的 pnpm、Git，以及所选 WSL2 中的 Python 3.12+ 和 HTTPS 访问。环境介质的签名验证需要 GnuPG，可通过 `RAINY_GPG` 指定 `gpg.exe`。目标平台专用的 npm 包按锁文件的 SHA-512 校验，Node 发行包按官方 SHA-256 校验。
+构建需要 Windows Node `^22.19 || >=24`、仓库锁定的 pnpm、Git、Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）和 MSYS2 UCRT64，以及所选 WSL2 中的 Python 3.12+ 和 HTTPS 访问。环境介质的签名验证需要 GnuPG，可通过 `RAINY_GPG` 指定 `gpg.exe`。目标平台专用的 npm 包按锁文件的 SHA-512 校验，Node 发行包按官方 SHA-256 校验。
 
-日常开发在仓库根目录运行 `pnpm run build`（只构建外壳与 Host 时用 `pnpm run build:host`），输出 `dist/main.cjs`、`dist/preload.cjs`、`dist/setup/`、`dist/host.js` 和 `dist/renderer/`（含编辑器分块与 `THIRD_PARTY_NOTICES.txt`）。`pnpm run dev` 构建后以 `tmp/dev-home` 为数据目录直接启动 Host 并打印工作台地址，`--no-build`、`--home <目录>`、`--port <端口>` 可调整，Ctrl+C 通过控制行停止 Host。`pnpm start` 从仓库根目录启动 Electron，Windows 原生目标需要先由 `scripts/stage-windows.mjs` 暂存 `runtime/windows-host`。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 中的 node:test 测试。开发和测试时可用环境变量 `RAINY_SSH_CONFIG` 让 ssh 读取另一份配置文件。
+日常开发在仓库根目录运行 `pnpm run build`（只构建外壳与 Host 时用 `pnpm run build:host`），输出 `dist/host.js` 和 `dist/renderer/`（含编辑器分块与 `THIRD_PARTY_NOTICES.txt`），以及 4.0 不再打包的 3.x Electron 外壳 `dist/main.cjs`、`dist/preload.cjs`、`dist/setup/`。`pnpm run dev` 构建后以 `tmp/dev-home` 为数据目录直接启动 Host 并打印工作台地址，`--no-build`、`--home <目录>`、`--port <端口>` 可调整，Ctrl+C 通过控制行停止 Host。界面在 `native/`：`cargo build -p rainy --offline` 构建调试版，`bash native/scripts/run-ui.sh` 以 `tmp/ui-data` 为数据目录启动它（Host 取自 `tmp/dev-resources/windows-host`，见 [GPUI 重写说明](gpui-rewrite.zh.md)），`cargo test -p rainy -p rainy-carrier --offline` 运行它的测试。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 中的 node:test 测试。开发和测试时可用环境变量 `RAINY_SSH_CONFIG` 让 ssh 读取另一份配置文件。
 
 从仓库根目录运行：
 
 ```powershell
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.0.0/environment-components
 ```
 
-[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，运行 `build.ts --release`，由 `runtime-graph.mjs` 从 `node_modules/.pnpm` 计算 Host 外部依赖（node-pty、ripgrep、Pyright、TypeScript 语言服务、TypeScript、Prettier、tsx）的生产依赖闭包，分别生成 Windows 与 Linux Host，再由 `prepare-shell.mjs` 暂存 `build/shell` 并生成 NSIS 安装包。`-ComponentSource` 指向恢复到 `release/offline-3.9.2` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
+[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，运行 `build.ts --release`，由 `runtime-graph.mjs` 从 `node_modules/.pnpm` 计算 Host 外部依赖（node-pty、ripgrep、Pyright、TypeScript 语言服务、TypeScript、Prettier、tsx）的生产依赖闭包，分别生成 Windows 与 Linux Host，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。`-ComponentSource` 指向恢复到 `release/offline-4.0.0` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
 
 Windows Host 构建先按官方 SHA-256 校验 Node ZIP，再使用 Windows 随附的 .NET ZIP 解压器展开；这一环节无需额外安装压缩工具。
 
 生产构建使用独立 Ed25519 发行密钥。默认在忽略提交的 `build/release-signing-key.pem` 创建并复用本机构建密钥；`RAINY_RELEASE_SIGNING_KEY` 可指定已有私钥文件，路径缺失、格式不符或与暂存公钥不匹配时构建失败。公开资源只包含发行公钥，载体将该公钥嵌入并校验签名资源清单。该流程不读取客户授权数据库。
 
-完整离线目录为 `release/offline-3.9.2/`，包含核心安装程序、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、Strata 引擎、PHP 组件和 Linux 运行环境都位于核心 EXE 之外；安装包只附带固定这三个可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；Windows Host 使用实体依赖文件，Linux Host 使用包内相对链接。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
+完整离线目录为 `release/offline-4.0.0/`，包含核心安装程序、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、PHP 组件和 Linux 运行环境都位于核心 EXE 之外；安装包只附带固定可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；Windows Host 使用实体依赖文件，Linux Host 使用包内相对链接。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
 
 ## 诊断信息
 
@@ -140,6 +142,6 @@ Windows Host 构建先按官方 SHA-256 校验 Node ZIP，再使用 Windows 随�
 
 ## 已知限制和后续工作
 
-当前发布目标是 Windows x64，可选择 Windows 原生、WSL2 或通过 SSH 连接的 x86_64 Linux 服务器。应用提供可下载的 Strata 引擎和离线运行环境，模型权重与兼容显卡驱动由使用者准备，启动模型需要明确操作。程序运行、断点调试、CPU/CUDA 组件导入与计算，以及各模型端点按具体产物分别验收。没有精确 tokenizer 的服务使用估计，其误差会影响压缩时机。
+当前发布目标是 Windows x64，可选择 Windows 原生、WSL2 或通过 SSH 连接的 x86_64 Linux 服务器。应用提供离线运行环境；3.x 的 Strata 本地推理在 4.0 中暂不提供。程序运行、断点调试、CPU/CUDA 组件导入与计算，以及各模型端点按具体产物分别验收。没有精确 tokenizer 的服务使用估计，其误差会影响压缩时机。
 
 安装包的 Windows Authenticode 签名状态和更新验收以本次发行记录为准。组件许可与归属见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

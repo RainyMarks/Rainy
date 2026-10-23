@@ -4,6 +4,18 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.0 · 2026-10-22
+
+The interface is now a native program: no Chromium inside, faster to open and lighter to run.
+
+- **Native interface**: the window, chats, editor, terminal and settings are drawn on the GPU with Rust and GPUI; the installer no longer carries Electron and its Chromium. The backend is unchanged: the Windows, WSL and SSH execution environments, and your chats, settings, keys and projects carry over, so an upgrade from 3.9 needs no setup.
+- **Document previews use the WebView2 that comes with Windows**: PDF, Word, Excel, PowerPoint, rich Markdown, the project map and the AI's built-in browser work as before. Windows 11 includes WebView2; on Windows 10 without it, opening such a file says how to install it.
+- **Language services in the editor**: Python, JavaScript / TypeScript and C / C++ get completion, hover, error squiggles, go to definition (F12), find all references (Shift+F12), rename symbol (F2) and formatting (Shift+Alt+F), also on the right-click menu.
+- **Editor AI**: grey inline suggestions (Tab accepts; turn them on in Settings); select code and press Ctrl+K to say how to change it, the new code goes straight into the editor, Ctrl+Enter keeps it and Esc restores the old; send the selection to the AI; "Fix with AI" on every problem in the list.
+- **Run and debug**: the Run button and its menu in the title bar, run configurations (arguments, environment, interpreter, single-file or CMake builds for C/C++); Ctrl+F5 runs, F5 debugs, F9 sets breakpoints, F10 / F11 / Shift+F11 step, Shift+F5 stops. The bottom panel has Terminal, Problems and Debug pages; Debug shows the call stack, threads, breakpoints, variables, watches and a debug console, and the editor marks breakpoints and where execution stopped.
+- **The command palette** (F1 or Ctrl+Shift+P) has every 3.x command; the project map, the Markdown outline, PDF / HTML export, focus and typewriter modes and adding folders to a project are all there.
+- **Strata local inference is not offered yet**: its engine manager has not moved to the new interface; keep 3.9 if you need it.
+
 ## 3.9 · 2026-10-21
 
 Write Markdown the way you do in Typora, and open files straight from Explorer.

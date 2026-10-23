@@ -2,9 +2,16 @@
 
 [English](desktop.md) | 中文
 
-Rainy 是面向 Windows x64 的轻量 AI 编程工作台，使用 Electron 外壳；核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境是可选组件，首次用到时下载。模型权重由用户自行提供。智能体基于 [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core)，内置 `read`、`write`、`edit`、`grep`、`glob` 和所选平台的 Shell（`pwsh` 或 `bash`），另加用户启用的 MCP 工具。项目可以在 Windows 原生环境、WSL2 发行版，或通过 SSH 连接的 x86_64 Linux 服务器上运行。
+Rainy 是面向 Windows x64 的轻量 AI 编程工作台。自 4.0 起界面是原生程序（Rust + GPUI，`native/`），文档预览嵌入系统自带的 WebView2；核心安装包包含 Windows Host。Windows PHP 和 Linux 运行环境是可选组件，首次用到时下载。模型权重由用户自行提供。智能体基于 [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core)，内置 `read`、`write`、`edit`、`grep`、`glob` 和所选平台的 Shell（`pwsh` 或 `bash`），另加用户启用的 MCP 工具。项目可以在 Windows 原生环境、WSL2 发行版，或通过 SSH 连接的 x86_64 Linux 服务器上运行。
 
 [中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍打包的依赖及其许可。
+
+## 4.0 与 3.x 的不同
+
+- 界面由 `RainyAgent.exe`（GPUI）直接绘制，不再有 Electron 和 Chromium；Host、执行环境、协议和用户数据不变，3.x 的设置、对话、密钥和项目原样沿用。
+- 3.x 顶部的“文件”“编辑”“视图”菜单合并到标题栏的项目菜单和命令面板（F1 或 Ctrl+Shift+P）：本文中“文件 → …”“视图 → …”指的命令都可以在命令面板里按名字找到。
+- PDF、Office、所见即所得 Markdown、项目地图和 AI 内置浏览器由嵌入的 WebView2 显示，网页代码与 3.x 相同。
+- Strata 本地推理暂不提供，下文“Strata 本地推理”一节只适用于 3.x。
 
 ## 离线安装与恢复
 
@@ -43,7 +50,7 @@ WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：�
 
 ## 诊断信息
 
-Rainy 用 Electron 的崩溃记录功能在本机保存窗口崩溃信息，不会上传。“设置 → 通用 → 诊断信息 → 导出…”会把版本和系统信息、执行后端日志和 Strata 日志的末尾部分，以及最近 5 份崩溃记录打包成 zip，并在文件夹中显示。日志里的密钥、令牌、密码和 Windows 用户名会被隐去；设置、对话和 API 密钥不会被打包。报错、对话框和菜单跟随“设置 → 通用”中选择的界面语言。
+Rainy 在本机保存 WebView2 的崩溃记录，不会上传。“设置 → 通用 → 诊断信息 → 导出…”会把版本和系统信息、执行后端日志和 Strata 日志的末尾部分，以及最近 5 份崩溃记录打包成 zip，并在文件夹中显示。日志里的密钥、令牌、密码和 Windows 用户名会被隐去；设置、对话和 API 密钥不会被打包。报错、对话框和菜单跟随“设置 → 通用”中选择的界面语言。
 
 ## 运行时约定
 
@@ -88,7 +95,7 @@ CodeMirror 6 编辑器提供多文件标签、按文件类型加载的语法高�
 
 编辑器不能编辑的文件会用查看器打开。图片可缩放、拖动、查看像素颜色，并可“添加到对话”。Markdown 默认以所见即所得方式打开（Milkdown Crepe），可切换到源码、预览和左右分栏；所见即所得的修改写入同一缓冲区，保存时按行与载入时的序列化结果合并，只有改动的行使用编辑器的写法。SVG 可在源码、预览和分栏之间切换（Ctrl+Shift+V、Ctrl+K V）；Markdown 预览跟随未保存的修改，并与编辑器同步滚动。PDF 按需渲染页面，可复制全部文字（包括隐藏文字）；未嵌入的 CJK 字体使用随附的 pdf.js 字符映射（`resources/pdfjs/cmaps`）和标准字体显示。Word（.docx）由页面自己排成分页纸面，也可切换为“用 Office 版式显示”；PPT（.pptx、.ppt）和旧版 Word（.doc）在桌面版中交给本机的 Microsoft Office 或 WPS 转成 PDF 显示（文件经 Host 读取，所以 WSL 和 SSH 上的文件同样可以），没有 Office 时列出每页幻灯片的文字；Excel（.xlsx、.xls、.ods）显示为表格，最多 2000 行、200 列。文档上方的“用默认程序打开”只接受文档类型，SSH 上的文件不提供。`~$` 开头的 Office 锁定文件显示是谁打开了哪个文档，`.lnk` 快捷方式显示目标路径、参数和起始位置。音频和视频用系统播放器播放。任何文件都可以用十六进制视图打开：任意大小的文件都能翻阅，支持跳转偏移（Ctrl+G）、数据检查器、多种复制格式和文件类型识别。GBK、UTF-16 等非 UTF-8 文本以只读方式显示，可选择编码。快速打开搜索工作区路径，限制结果数量，并提示截断。更改查询、切换项目或重新打开窗口会使旧结果失效；搜索等待或失败时不能打开旧结果。
 
-Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”列出文档的标题，跟随阅读位置（源码视图中为光标所在行）高亮，点击即跳转。Ctrl+F / Ctrl+H 打开查找替换，匹配可以跨越加粗等格式，不进入代码块，可区分大小写；“全部替换”一步即可撤销。粘贴或拖入的图片（每张不超过 25 MB）经 Host 保存到文档旁的 `assets` 文件夹、“文档名.assets”文件夹或文档所在的文件夹（**设置 → 通用设置 → Markdown**），同名时加 `-1` 等后缀，文档中写入相对路径；剪贴板中的截图按时间命名。公式块和 Mermaid 图表失去焦点后只显示渲染结果，点击后显示源码和实时预览；Mermaid 按需加载，以 strict 安全级别渲染。YAML（`---`）或 TOML（`+++`）前言显示在顶部单独的文本框中。快捷键：Ctrl+0–6 正文和各级标题，Ctrl+= / Ctrl+- 调整标题级别，Ctrl+T 插入 3×3 表格，Ctrl+Shift+K 代码块，Ctrl+Shift+M 公式块，Ctrl+Shift+Q 引用，Ctrl+Shift+[ / ] 有序和无序列表，Alt+Shift+5 删除线，Ctrl+Shift+` 行内代码，Ctrl+K 链接，Ctrl+/ 切换源码；按住 Ctrl 单击链接时，网址和邮件地址交给系统打开，项目里的文件在编辑器中打开，`#标题` 跳到本文的标题。F8 专注模式淡化当前段落以外的内容，F9 打字机模式让光标所在行保持在视图中部。状态栏显示字数（中日韩文字按字计，其他文字按词计），悬停显示字符数和阅读时间。“文件 → 导出为 PDF… / 导出为 HTML…”生成自包含的页面：代码高亮、公式（MathML）、Mermaid 图表（SVG）和本地图片（data URL）都嵌入其中，前言不打印，网络图片保留原链接；PDF 在禁用脚本的隐藏窗口中按 A4 打印，带书签和无障碍标签；Chromium 的 ToUnicode 映射把与部首共用字形的汉字（如“二”“文”）记成康熙部首，导出时以增量更新改回 NFKC 对应的汉字，使复制和搜索得到原文（`src/main/pdf-text.ts`）。保存位置默认是文档所在的文件夹（SSH 项目为“文档”文件夹）。
+Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”列出文档的标题，跟随阅读位置（源码视图中为光标所在行）高亮，点击即跳转。Ctrl+F / Ctrl+H 打开查找替换，匹配可以跨越加粗等格式，不进入代码块，可区分大小写；“全部替换”一步即可撤销。粘贴或拖入的图片（每张不超过 25 MB）经 Host 保存到文档旁的 `assets` 文件夹、“文档名.assets”文件夹或文档所在的文件夹（**设置 → 通用设置 → Markdown**），同名时加 `-1` 等后缀，文档中写入相对路径；剪贴板中的截图按时间命名。公式块和 Mermaid 图表失去焦点后只显示渲染结果，点击后显示源码和实时预览；Mermaid 按需加载，以 strict 安全级别渲染。YAML（`---`）或 TOML（`+++`）前言显示在顶部单独的文本框中。快捷键：Ctrl+0–6 正文和各级标题，Ctrl+= / Ctrl+- 调整标题级别，Ctrl+T 插入 3×3 表格，Ctrl+Shift+K 代码块，Ctrl+Shift+M 公式块，Ctrl+Shift+Q 引用，Ctrl+Shift+[ / ] 有序和无序列表，Alt+Shift+5 删除线，Ctrl+Shift+` 行内代码，Ctrl+K 链接，Ctrl+/ 切换源码；按住 Ctrl 单击链接时，网址和邮件地址交给系统打开，项目里的文件在编辑器中打开，`#标题` 跳到本文的标题。F8 专注模式淡化当前段落以外的内容，F9 打字机模式让光标所在行保持在视图中部。状态栏显示字数（中日韩文字按字计，其他文字按词计），悬停显示字符数和阅读时间。“文件 → 导出为 PDF… / 导出为 HTML…”生成自包含的页面：代码高亮、公式（MathML）、Mermaid 图表（SVG）和本地图片（data URL）都嵌入其中，前言不打印，网络图片保留原链接；PDF 在禁用脚本的隐藏窗口中按 A4 打印，带书签和无障碍标签；Chromium 的 ToUnicode 映射把与部首共用字形的汉字（如“二”“文”）记成康熙部首，导出时以增量更新改回 NFKC 对应的汉字，使复制和搜索得到原文（`native/crates/app/src/web/pdf_text.rs`，PDF 由隐藏的 WebView2 打印）。保存位置默认是文档所在的文件夹（SSH 项目为“文档”文件夹）。
 
 语言服务接收 Host 文件 URI。语言服务返回的 URI 写法不同时（例如编码后的盘符冒号或 Windows 上不同的大小写），编辑器仍将其对应到同一文件，包括 Windows 盘符根和 UNC 共享。
 
@@ -106,6 +113,8 @@ Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”
 
 <a id="strata-local-inference"></a>
 ## Strata 本地推理
+
+> 4.0 暂不提供 Strata；本节描述 3.x 的行为。
 
 Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14，以及所需服务、准备脚本和 CUDA 运行依赖。引擎缺失时，“模型 → Strata 本地模型”显示“下载”按钮；“运行环境 → 可选组件”也列出该引擎。用户无需另装 Strata 或 Python。推理引擎面向 Windows x64、NVIDIA CUDA 13 和 580 或更新驱动，内含 `sm75`、`sm86`、`sm89`、`sm120` 目标。本包不提供 AMD 或 Linux 推理引擎。[运行时来源清单](../toolpacks/strata-runtime.sources.json)固定输入与许可。
 
@@ -143,7 +152,7 @@ Skills 是 `<项目>/.rainy/skills` 和 `~/.rainy-agent/skills` 下包含 `SKILL
 
 Rainy 自有代码使用 [PolyForm Strict License 1.0.0](../LICENSE.Rainy)（适用范围见 [LICENSE](../LICENSE)）：非商业用途可免费使用；不允许修改（包括改名、换品牌和用 AI 改写）和分发；包括企业内部使用在内的任何商业用途，都需要另行向 RainyMarks 取得商业授权。3.8.0 及更早的版本仍按 Rainy Source Available License 1.0 授权。应用启动和执行不读取设备码、激活码或有效期，设置中没有激活入口。既有授权文件保留在原处，不参与启动或执行判断。项目、模型配置和聊天仍使用原有存储位置。
 
-生产载体使用构建时嵌入的发行公钥验证资源清单，并保留 Electron ASAR 完整性保护。构建密钥独立于用户数据：默认保存在被忽略的 build 目录，也可通过 RAINY_RELEASE_SIGNING_KEY 指定已有 Ed25519 私钥文件；私钥不进入发行包。Windows Authenticode 签名使用另行配置的证书。
+生产载体使用构建时嵌入的发行公钥验证资源清单，。构建密钥独立于用户数据：默认保存在被忽略的 build 目录，也可通过 RAINY_RELEASE_SIGNING_KEY 指定已有 Ed25519 私钥文件；私钥不进入发行包。Windows Authenticode 签名使用另行配置的证书。
 
 已安装发行版首次启动时对完整签名清单计算哈希，然后记录包含清单及文件大小、修改时间和文件 ID 的验证戳。之后启动若验证戳匹配则无需计算哈希。工作台加载约一分钟后，后台检查每天至多比较一次这些文件元数据，仅在其变化时重新计算清单哈希。检查失败会删除验证戳并报告受损资源。
 

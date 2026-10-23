@@ -13,7 +13,7 @@
 
 [![下载 Windows 版](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-3.9-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
+[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.0-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -133,7 +133,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 | **三种执行环境** | 默认 Windows 原生；需要 Linux 时切到 WSL2 或一台 SSH 服务器。 |
 | **项目记忆** | 开启后在空闲时整理项目要点，新对话开始时自动带上。 |
 | **上下文管理** | 实时显示上下文占用，快满时自动压缩；Claude 的提示词缓存保留一小时。 |
-| **轻量** | 安装包 180 MB；Strata 引擎、PHP 和 Linux 运行环境都在用到时才下载。 |
+| **轻量** | 安装包 180 MB；PHP 和 Linux 运行环境都在用到时才下载。 |
 | **适配任意屏幕** | 高缩放（如 225%）和小屏幕上自动适配，换显示器或改缩放后自动调整。 |
 | **细节** | 空白页飘着细雨，点一下泛起涟漪；可在 **设置 → 外观** 关闭。 |
 
@@ -141,10 +141,10 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 ## 快速开始
 
 1. 下载并安装[最新版 Windows x64 安装包](https://github.com/RainyMarks/Rainy/releases/latest)，无需激活码。
-2. 打开 Rainy，选择 **文件 → 打开文件夹**。
-3. 在 **设置 → 模型** 连接一个模型（见[连接模型](#connect-a-model)），然后打开右侧的 **AI 助手**。
+2. 打开 Rainy，点击标题栏的 **打开文件夹**（打开项目后，这个按钮显示项目名，点开是项目菜单）。
+3. 在 **设置 → 模型** 连接一个模型（见[连接模型](#connect-a-model)），然后在右侧的 AI 面板里提问。
 
-连接 Linux 服务器：先确认终端里能用 `ssh` 登录，再到 **设置 → 运行环境 → SSH 远程开发** 选择主机并点击 **切换到此主机**，最后用 **文件 → 浏览当前执行环境文件夹** 打开服务器上的项目。详见[桌面指南](docs/desktop.zh.md#ssh-remote-development)。
+连接 Linux 服务器：先确认终端里能用 `ssh` 登录，再到 **设置 → 运行环境 → SSH 远程开发** 选择主机并点击 **切换到此主机**，最后用标题栏项目菜单里的 **浏览当前执行环境文件夹** 打开服务器上的项目。详见[桌面指南](docs/desktop.zh.md#ssh-remote-development)。
 
 Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** 或 **重启安装**。
 
@@ -156,7 +156,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | 磁盘空间 | 安装后约 570 MB |
 | WSL（可选） | WSL2；随附的 Ubuntu 开发工具向导适用于 Ubuntu 26.04 |
 | SSH 服务器（可选） | x86_64 Linux，装有 `python3`；运行环境约占 250 MB |
-| 本地推理（可选） | NVIDIA 显卡，CUDA 13，驱动 580 或更新 |
+| WebView2 | 预览 PDF、Office 和 Markdown 时使用；Windows 11 自带，Windows 10 上没有时按提示安装 |
 
 ### 按需下载的组件
 
@@ -165,7 +165,6 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | Linux 运行环境 | 约 53 MB | 第一次使用 WSL 或 SSH 主机时自动下载 |
 | Ubuntu 开发工具包 | 约 165 MB | 在“准备开发工具”中点击安装时，装好后自动删除 |
 | PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
-| Strata 引擎 | 约 560 MB | **设置 → 运行环境 → 可选组件** |
 
 <a id="connect-a-model"></a>
 ## 连接模型
@@ -178,13 +177,12 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | **Claude** | 内置 Claude Opus 5.5、Claude Haiku 5.5 预设，自适应思考，提示词缓存保留一小时 |
 | **兼容接口** | 任意 OpenAI 或 Anthropic 兼容的 Base URL，可自动发现模型；中转服务同样可用 |
 | **本地服务** | Ollama 等运行在本机的 OpenAI 兼容服务 |
-| **Strata** | 在 NVIDIA 显卡上本地推理，需自备 Qwen3.8 Flash Next 权重 |
 
 1. 打开 **设置 → 模型**，点击预设的 **载入**，或填写供应商 ID、Base URL、协议和密钥。
 2. 点击 **发现模型**，或手动填写模型 ID。
 3. 填写服务实际的上下文窗口和输出上限，保存后运行流式与工具调用检查。
 
-所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。Strata 的准备步骤和资源控制见[桌面指南](docs/desktop.zh.md#strata-local-inference)。
+所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。3.x 的 Strata 本地推理在 4.0 中暂不提供。
 
 <a id="privacy"></a>
 ## 隐私与安全
@@ -197,16 +195,16 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 - **发行包可验证**：安装文件首次启动时按签名清单逐个校验。
 
 <a id="whats-new"></a>
-## 3.9 新变化
+## 4.0 新变化
 
-**像 Typora 一样写 Markdown，也能从资源管理器直接打开。** 侧栏大纲、文内查找替换、粘贴图片自动保存、Mermaid 图表、专注与打字机模式、导出 PDF / HTML；需要时可在设置里打开“通过 Rainy 打开”。3.9.2 支持用 JSON 导入 MCP 服务器，挂载的磁盘镜像里的文件夹也能打开了。[查看完整更新日志 →](CHANGELOG.zh.md)
+**界面整个改成原生程序。** 不再带 Electron 和 Chromium，窗口、对话、编辑器和终端由 GPUI 直接用显卡绘制，文档预览交给 Windows 自带的 WebView2；后台、执行环境和你的数据原样沿用。编辑器补上了语言服务（补全、跳转、引用、重命名、格式化）、运行和调试，以及包含 3.x 全部命令的命令面板。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [桌面指南](docs/desktop.zh.md) | 可选组件、更新、SSH、Strata、模型、项目记忆和已知限制 |
+| [桌面指南](docs/desktop.zh.md) | 可选组件、更新、SSH、模型、项目记忆和已知限制 |
 | [安装与构建指南](docs/desktop-setup.zh-CN.md) | 离线安装、编辑与调试、权限与撤销、从源码构建 |
 | [更新日志](CHANGELOG.zh.md) | 每个版本的要点 |
 | [验收记录](docs/validation.md) | 每个版本完成的构建、安装和运行检查 |
@@ -254,7 +252,7 @@ AI 改过的文件都列在输入框上方，可以在编辑器里逐处撤销�
 <details>
 <summary><b>没有网络能用吗？</b></summary>
 <br>
-可以连接本机的模型服务（如 Ollama）或用 Strata 在 NVIDIA 显卡上本地推理。完整的离线发行包和安装方法见<a href="docs/desktop-setup.zh-CN.md">安装与构建指南</a>。
+可以连接本机的模型服务（如 Ollama）。完整的离线发行包和安装方法见<a href="docs/desktop-setup.zh-CN.md">安装与构建指南</a>。
 </details>
 
 <a id="run-from-source"></a>
@@ -271,12 +269,12 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-3.9.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.0.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`3.9.2` 换成 `package.json` 中的版本号。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.0.0` 换成 `package.json` 中的版本号。构建原生界面还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）和 MSYS2 UCRT64。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
-日常开发时，`pnpm run dev` 构建并以无 Electron 的方式启动 Host，打印可在浏览器中打开的地址；`pnpm run start` 用已构建的文件启动 Electron。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
+日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 
 </details>
 
