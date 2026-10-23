@@ -10,7 +10,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::ExecutionTarget;
@@ -40,8 +40,12 @@ pub struct McpServer {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
+    /// Tools the server lists that are allowed; empty allows all.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Tools turned off in the server's tool list; a tool the server adds later is on.
+    #[serde(default, rename = "disabledTools", skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -174,6 +178,7 @@ struct Form {
     url: Entity<InputState>,
     headers: Entity<TextareaState>,
     tools: Vec<String>,
+    disabled_tools: Vec<String>,
     error: Option<SharedString>,
 }
 
@@ -216,6 +221,7 @@ impl Form {
                 url: Some(url),
                 headers: (!headers.is_empty()).then_some(headers),
                 tools,
+                disabled_tools: self.disabled_tools.clone(),
             });
         }
         let command = self.command.read(cx).value().trim().to_owned();
@@ -241,6 +247,7 @@ impl Form {
             url: None,
             headers: None,
             tools,
+            disabled_tools: self.disabled_tools.clone(),
         })
     }
 }
@@ -251,6 +258,8 @@ pub struct ExtensionsPage {
     error: Option<SharedString>,
     busy: bool,
     removing: Option<String>,
+    /// Servers whose tool list is open.
+    expanded: HashSet<String>,
     form: Option<Form>,
     import: Option<Import>,
     /// Counts file reads, so one that finishes after the import closed or another read started is dropped.
@@ -268,7 +277,7 @@ impl ExtensionsPage {
                 this.merge(status, cx);
             }
         })];
-        let mut page = Self { store, status: None, error: None, busy: false, removing: None, form: None, import: None, file_read: 0, _subscriptions: subscriptions };
+        let mut page = Self { store, status: None, error: None, busy: false, removing: None, expanded: HashSet::new(), form: None, import: None, file_read: 0, _subscriptions: subscriptions };
         page.read(window, cx);
         page
     }
@@ -347,6 +356,7 @@ impl ExtensionsPage {
             url: None,
             headers: None,
             tools: Vec::new(),
+            disabled_tools: Vec::new(),
         });
         let input = |value: String, window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx).default_value(value));
         let area = |value: String, window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).default_value(value));
@@ -364,6 +374,7 @@ impl ExtensionsPage {
             url: input(server.url.clone().unwrap_or_default(), window, cx),
             headers: area(headers, window, cx),
             tools: server.tools.clone(),
+            disabled_tools: server.disabled_tools.clone(),
             error: None,
         });
         self.removing = None;
@@ -574,6 +585,7 @@ impl ExtensionsPage {
             url: None,
             headers: None,
             tools: Vec::new(),
+            disabled_tools: Vec::new(),
         };
         self.open_form(Some(server), true, window, cx);
     }
@@ -607,6 +619,109 @@ impl ExtensionsPage {
     fn toggle(&mut self, server: McpServer, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
         let previous = server.name.clone();
         self.change("extensions.saveServer", json!({ "server": McpServer { enabled, ..server }, "previousName": previous }), |_, _, _| {}, window, cx);
+    }
+
+    /// Turn some of a server's tools on or off. The list switches keep a deny list, so a tool the server adds later is
+    /// on; an allow list from before (or from an import) is replaced by the same choice written as a deny list.
+    fn set_tools(&mut self, server: McpServer, live: &[McpTool], names: &[String], on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let mut disabled: Vec<String> = live.iter().filter(|tool| !tool.enabled).map(|tool| tool.name.clone()).collect();
+        disabled.retain(|name| !names.contains(name));
+        if !on {
+            disabled.extend(names.iter().cloned());
+        }
+        // Names the server no longer lists stay as they were.
+        for name in &server.disabled_tools {
+            if !live.iter().any(|tool| tool.name == *name) && !disabled.contains(name) {
+                disabled.push(name.clone());
+            }
+        }
+        disabled.sort();
+        disabled.dedup();
+        let previous = server.name.clone();
+        let changed = McpServer { tools: Vec::new(), disabled_tools: disabled, ..server };
+        self.change("extensions.saveServer", json!({ "server": changed, "previousName": previous }), |_, _, _| {}, window, cx);
+    }
+
+    /// The tool list under a server: what each tool does on hover, and a switch for each.
+    fn render_tools(&self, index: usize, server: &McpServer, live: &[McpTool], cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let open = self.expanded.contains(&server.name);
+        let enabled = live.iter().filter(|tool| tool.enabled).count();
+        let name = server.name.clone();
+        let header = h_flex()
+            .id(("mcp-tools-toggle", index))
+            .gap_1()
+            .items_center()
+            .cursor_pointer()
+            .text_sm()
+            .font_semibold()
+            .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall())
+            .child(trf(cx, "settings.mcpToolsSummary", &[("enabled", &enabled), ("total", &live.len())]))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.expanded.remove(&name) {
+                    this.expanded.insert(name.clone());
+                }
+                cx.notify();
+            }));
+        let mut panel = v_flex().gap_2().mt_1().pt_2().border_t_1().border_color(theme.border).child(header);
+        if !open {
+            return panel.into_any_element();
+        }
+        let all: Vec<String> = live.iter().map(|tool| tool.name.clone()).collect();
+        let (on_server, on_live, on_all) = (server.clone(), live.to_vec(), all.clone());
+        let (off_server, off_live, off_all) = (server.clone(), live.to_vec(), all);
+        panel = panel.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Button::new(("mcp-tools-all-on", index)).outline().xsmall().label(tr(cx, "settings.mcpToolsAllOn")).disabled(self.busy || enabled == live.len()).on_click(cx.listener(
+                    move |this, _, window, cx| this.set_tools(on_server.clone(), &on_live, &on_all, true, window, cx),
+                )))
+                .child(Button::new(("mcp-tools-all-off", index)).outline().xsmall().label(tr(cx, "settings.mcpToolsAllOff")).disabled(self.busy || enabled == 0).on_click(cx.listener(
+                    move |this, _, window, cx| this.set_tools(off_server.clone(), &off_live, &off_all, false, window, cx),
+                )))
+                .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.mcpToolsNextMessage"))),
+        );
+        let rows = live.iter().enumerate().map(|(position, tool)| {
+            let (server, live, names) = (server.clone(), live.to_vec(), vec![tool.name.clone()]);
+            let description: SharedString = if tool.description.trim().is_empty() { tr(cx, "settings.mcpToolNoDescription") } else { tool.description.trim().to_owned().into() };
+            let title: SharedString = tool.name.clone().into();
+            h_flex()
+                .id(SharedString::from(format!("mcp-tool-{index}-{position}")))
+                .w(relative(0.5))
+                .p_1()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .px_3()
+                        .py_2()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.background)
+                        .child(div().size(px(7.)).rounded_full().flex_none().bg(if tool.enabled { theme.success } else { theme.muted_foreground.opacity(0.5) }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_sm()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(if tool.enabled { theme.foreground } else { theme.muted_foreground })
+                                .child(tool.name.clone()),
+                        )
+                        .child(Switch::new(SharedString::from(format!("mcp-tool-switch-{index}-{position}"))).checked(tool.enabled).disabled(self.busy).on_click(cx.listener(
+                            move |this, checked: &bool, window, cx| this.set_tools(server.clone(), &live, &names, *checked, window, cx),
+                        ))),
+                )
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(format!("{title}\n\n{description}")).build(window, cx))
+        });
+        panel
+            .child(div().id(("mcp-tools-list", index)).max_h(px(360.)).overflow_y_scroll().child(h_flex().flex_wrap().children(rows)))
+            .into_any_element()
     }
 
     /// The first click asks, the second removes.
@@ -707,19 +822,13 @@ impl ExtensionsPage {
             } else {
                 mcp_json::masked_url(server.url.as_deref().unwrap_or_default())
             };
-            let tools = live.filter(|entry| !entry.tools.is_empty()).map(|entry| {
-                trf(cx, "settings.mcpTools", &[("enabled", &entry.tools.iter().filter(|tool| tool.enabled).count()), ("total", &entry.tools.len())])
-            });
+            let tools = live.filter(|entry| !entry.tools.is_empty() && server.enabled).map(|entry| self.render_tools(index, server, &entry.tools, cx));
             let error = live.filter(|_| state == "error").and_then(|entry| entry.error.clone());
             let (toggled, edited, removed) = (server.clone(), server.clone(), server.name.clone());
             let desktop_server = is_windows_mcp(server);
             let confirming = self.removing.as_deref() == Some(server.name.as_str());
-            body.push(
-                h_flex()
+            let row = h_flex()
                     .gap_3()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(theme.border)
                     .items_start()
                     .child(
                         v_flex()
@@ -736,7 +845,6 @@ impl ExtensionsPage {
                                     .child(tag.small().child(tr(cx, label))),
                             )
                             .child(div().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(line))
-                            .when_some(tools, |this, tools| this.child(div().text_xs().text_color(theme.muted_foreground).child(tools)))
                             .when_some(error, |this, error| this.child(div().text_xs().text_color(theme.danger).child(error))),
                     )
                     .child(
@@ -757,15 +865,14 @@ impl ExtensionsPage {
                                     .disabled(self.busy)
                                     .on_click(cx.listener(move |this, _, window, cx| this.remove(removed.clone(), window, cx))),
                             ),
-                    )
-                    .into_any_element(),
-            );
+                    );
+            body.push(v_flex().gap_1().py_2().border_t_1().border_color(theme.border).child(row).children(tools).into_any_element());
         }
         if let Some(import) = &self.import {
             body.push(self.render_import(import, cx));
         }
         if let Some(form) = &self.form {
-            body.push(self.render_form(form, status, cx));
+            body.push(self.render_form(form, cx));
         }
         card(cx, "settings.mcpTitle", None, body)
     }
@@ -887,20 +994,13 @@ impl ExtensionsPage {
             .into_any_element()
     }
 
-    fn render_form(&self, form: &Form, status: &Status, cx: &mut Context<Self>) -> AnyElement {
+    fn render_form(&self, form: &Form, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let label = |key: &str| div().text_xs().text_color(theme.muted_foreground).child(tr(cx, key));
         let title = match &form.previous {
             None => tr(cx, "settings.mcpFormAdd"),
             Some(name) => trf(cx, "settings.mcpFormEdit", &[("name", name)]),
         };
-        let known: Vec<McpTool> = form.previous.as_ref().and_then(|name| status.status.iter().find(|entry| entry.name == *name)).map(|entry| entry.tools.clone()).unwrap_or_default();
-        let mut names: Vec<String> = known.iter().map(|tool| tool.name.clone()).collect();
-        for tool in &form.tools {
-            if !names.contains(tool) {
-                names.push(tool.clone());
-            }
-        }
         let transport = form.transport;
         let transport_button = |value: &'static str, key: &str| {
             let button = Button::new(SharedString::from(format!("mcp-transport-{value}"))).small().label(tr(cx, key));
@@ -942,21 +1042,7 @@ impl ExtensionsPage {
                     .child(label("settings.mcpHeaders"))
                     .child(Textarea::new(&form.headers).on_paste(Self::paste_handler(cx)))
             })
-            .child(div().mt_1().text_sm().font_semibold().child(tr(cx, "settings.mcpToolsTitle")))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, if names.is_empty() { "settings.mcpToolsUnknown" } else { "settings.mcpToolsHint" })))
-            .child(h_flex().flex_wrap().gap_3().children(names.into_iter().enumerate().map(|(index, name)| {
-                let checked = form.tools.contains(&name);
-                let tool = name.clone();
-                Checkbox::new(("mcp-tool", index)).label(name).checked(checked).on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                    if let Some(form) = &mut this.form {
-                        form.tools.retain(|known| *known != tool);
-                        if *checked {
-                            form.tools.push(tool.clone());
-                        }
-                        cx.notify();
-                    }
-                }))
-            })))
+            .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.mcpToolsInList")))
             .when_some(form.error.clone(), |this, error| this.child(notice(cx, error, true)))
             .child(
                 h_flex()

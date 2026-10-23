@@ -65,7 +65,19 @@ pub struct McpServerConfig {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
+    /// Tools the server lists that are allowed; empty allows all.
     pub tools: Vec<String>,
+    /// Tools turned off in Settings; a tool the server adds later is on.
+    #[serde(default, rename = "disabledTools", skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
+}
+
+impl McpServerConfig {
+    /// Whether the agent may call a tool of this server, by its own name or as `mcp__<server>__<tool>`.
+    pub fn allows(&self, tool: &str, qualified: &str) -> bool {
+        let listed = |names: &[String]| names.iter().any(|name| name == tool || name == qualified);
+        (self.tools.is_empty() || listed(&self.tools)) && !listed(&self.disabled_tools)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
