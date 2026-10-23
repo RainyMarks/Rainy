@@ -389,7 +389,7 @@ impl Reader for AnthropicReader {
                     }
                 }
                 let usage = &event["usage"];
-                let mut set = |field: &str, target: &mut f64| {
+                let set = |field: &str, target: &mut f64| {
                     if let Some(value) = usage[field].as_u64() {
                         *target = value as f64;
                     }

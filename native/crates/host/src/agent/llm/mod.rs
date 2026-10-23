@@ -266,13 +266,6 @@ pub struct ToolSpec {
     pub parameters: Value,
 }
 
-/// How long the provider keeps the prompt cache.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cache {
-    Short,
-    Long,
-}
-
 /// One model request.
 pub struct Request<'a> {
     pub system: &'a str,

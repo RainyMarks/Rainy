@@ -6,3 +6,4 @@ pub mod context;
 pub mod llm;
 pub mod models;
 pub mod store;
+pub mod tools;

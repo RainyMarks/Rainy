@@ -86,6 +86,27 @@ impl HostEnv {
         })
     }
 
+    /// An environment rooted in a scratch directory, for tests.
+    #[cfg(test)]
+    pub fn for_tests(dir: &Path) -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION"),
+            home: dir.join(".home"),
+            app_root: dir.join(".app"),
+            resources: dir.join(".app/resources"),
+            windows: cfg!(windows),
+            target_id: "test".into(),
+            target_label: None,
+            carrier_state_root: dir.join(".state"),
+            toolchain_root: dir.join(".components"),
+            builtin_php: None,
+            pwsh_path: None,
+            configure_deepseek: false,
+            tmp: dir.join(".tmp"),
+            port: 0,
+        }
+    }
+
     /// `Windows`, `WSL` or `SSH`, as the status bar and the model name the machine.
     pub fn kind(&self) -> &'static str {
         if self.target_id.starts_with("ssh:") {
