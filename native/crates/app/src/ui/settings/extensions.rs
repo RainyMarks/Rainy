@@ -717,7 +717,14 @@ impl ExtensionsPage {
                             move |this, checked: &bool, window, cx| this.set_tools(server.clone(), &live, &names, *checked, window, cx),
                         ))),
                 )
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(format!("{title}\n\n{description}")).build(window, cx))
+                // A long description wraps inside a bounded box instead of running off the window.
+                .tooltip(move |window, cx| {
+                    let (title, description) = (title.clone(), description.clone());
+                    gpui_kit::component::tooltip::Tooltip::element(move |_, _| {
+                        v_flex().max_w(px(440.)).gap_1().py_1().child(div().font_semibold().child(title.clone())).child(div().text_xs().child(description.clone()))
+                    })
+                    .build(window, cx)
+                })
         });
         panel
             .child(div().id(("mcp-tools-list", index)).max_h(px(360.)).overflow_y_scroll().child(h_flex().flex_wrap().children(rows)))

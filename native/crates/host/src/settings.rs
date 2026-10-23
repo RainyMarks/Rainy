@@ -73,6 +73,12 @@ impl McpServerConfig {
         let listed = |names: &[String]| names.iter().any(|name| name == tool || name == qualified);
         (self.tools.is_empty() || listed(&self.tools)) && !listed(&self.disabled_tools)
     }
+
+    /// Whether a connection made for `other` serves this config too: the tool switches never need a reconnect.
+    pub fn same_connection(&self, other: &Self) -> bool {
+        let bare = |config: &Self| Self { tools: Vec::new(), disabled_tools: Vec::new(), ..config.clone() };
+        bare(self) == bare(other)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -472,6 +478,14 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_switches_keep_an_mcp_connection() {
+        let server = McpServerConfig { name: "files".into(), enabled: true, transport: "stdio".into(), command: Some("npx".into()), args: None, env: None, url: None, headers: None, tools: Vec::new(), disabled_tools: Vec::new() };
+        let switched = McpServerConfig { disabled_tools: vec!["write_file".into()], ..server.clone() };
+        assert!(server.same_connection(&switched));
+        assert!(!server.same_connection(&McpServerConfig { command: Some("uvx".into()), ..server.clone() }));
+    }
 
     #[test]
     fn reads_a_3x_file_and_drops_unknown_preferences() {

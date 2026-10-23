@@ -86,12 +86,17 @@ impl McpManager {
     pub fn sync(self: &Arc<Self>, servers: &[McpServerConfig]) {
         let mut connections = self.connections.lock().unwrap();
         connections.retain(|connection| {
-            let held = connection.lock().unwrap();
-            let keep = servers.iter().any(|server| server.enabled && *server == held.config);
-            if !keep {
-                Self::retire(&held);
+            let mut held = connection.lock().unwrap();
+            match servers.iter().find(|server| server.enabled && server.same_connection(&held.config)) {
+                Some(server) => {
+                    held.config = server.clone();
+                    true
+                }
+                None => {
+                    Self::retire(&held);
+                    false
+                }
             }
-            keep
         });
         for server in servers {
             if connections.iter().any(|connection| connection.lock().unwrap().config.name == server.name) {
