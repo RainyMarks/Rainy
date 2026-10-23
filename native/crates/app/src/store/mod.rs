@@ -135,6 +135,7 @@ impl Store {
     /// Create the store and start the Host in the background.
     pub fn init(paths: Paths, cx: &mut App) -> Entity<Store> {
         rainy_carrier::locale::set_chinese(boot::saved_locale(&paths.user_data) == Locale::Zh);
+        let starting: SharedString = crate::i18n::text(boot::saved_locale(&paths.user_data), "native.starting").into();
         let (questions_tx, questions) = async_channel::unbounded::<AskpassRequest>();
         // `ssh` starts Rainy.exe itself as its askpass program, which hands the question to this process.
         let askpass = std::env::current_exe().ok().and_then(|exe| {
@@ -159,7 +160,7 @@ impl Store {
         let store = cx.new(|cx| {
             let mut store = Store {
                 paths,
-                phase: Phase::Starting("正在启动执行后端…".into(), None),
+                phase: Phase::Starting(starting, None),
                 connection: ConnectionState::Connecting,
                 rpc: None,
                 host: None,
@@ -251,7 +252,7 @@ impl Store {
         .detach();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             if let Ok(code) = exit_rx.recv().await {
-                let _ = cx.update(|_| crate::web::preview::close());
+                cx.update(|_| crate::web::preview::close());
                 let _ = this.update(cx, |store, cx| {
                     if !store.stopping && store.host.is_some() {
                         cx.emit(StoreEvent::HostExited(code));
@@ -387,7 +388,6 @@ impl Store {
             ] {
                 if let Some(error) = error {
                     log::warn!("{method} failed: {} {}", error.code, error.message);
-                    eprintln!("{method} failed: {} {}", error.code, error.message);
                 }
             }
             let _ = this.update(cx, |store, cx| {
@@ -420,7 +420,7 @@ impl Store {
                 cx.notify();
             });
         });
-        self._tasks.push(task);
+        task.detach();
     }
 
     fn set_summaries(&mut self, mut summaries: Vec<SessionSummary>, cx: &mut Context<Self>) {
@@ -537,7 +537,7 @@ impl Store {
         let request = rpc.request::<SessionSnapshot>("sessions.get", params);
         cx.spawn(async move |_, cx: &mut AsyncApp| {
             let result = request.await;
-            let _ = chat.update(cx, |chat, cx| {
+            chat.update(cx, |chat, cx| {
                 if chat.load != load {
                     return;
                 }
@@ -634,8 +634,7 @@ impl Store {
         .detach();
     }
 
-    /// Create a chat in no project and select it; resolves with its id.
-    /// Start a chat in a project, or outside any project.
+    /// Start a chat in a project, or outside any project, and select it; resolves with its id.
     pub fn create_chat(&mut self, workspace_id: Option<String>, cx: &mut Context<Self>) -> Task<Option<String>> {
         let request = self.call("sessions.create", json!({ "workspaceId": workspace_id }));
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {

@@ -387,10 +387,7 @@ impl Workbench {
             return None;
         }
         // A failed WSL or SSH start can continue on Windows, as 3.x offered.
-        let on_wsl = targets::read_preferences(&self.store.read(cx).paths.desktop_settings())
-            .ok()
-            .and_then(|preferences| targets::saved_target(&preferences).ok())
-            .is_some_and(|target| matches!(target, ExecutionTarget::Wsl { .. } | ExecutionTarget::Ssh { .. }));
+        let on_wsl = matches!(self.store.read(cx).target, Some(ExecutionTarget::Wsl { .. } | ExecutionTarget::Ssh { .. }));
         let theme = cx.theme();
         match phase {
             Phase::Ready => None,
@@ -781,11 +778,10 @@ impl Render for Workbench {
                 this.agent_visible = true;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &NewChat, window, cx| {
+            .on_action(cx.listener(|this, _: &NewChat, _, cx| {
                 this.agent_visible = true;
                 this.store.update(cx, |store, cx| store.select(None, cx));
                 cx.notify();
-                let _ = window;
             }))
             .on_action(cx.listener(|this, _: &FindInFiles, window, cx| {
                 this.show_side(Side::Search, window, cx);

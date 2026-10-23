@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn wsl_paths() {
-        let target = ExecutionTarget::wsl("id".into(), "Ubuntu".into());
+        let target = ExecutionTarget::wsl("id".into(), "Ubuntu");
         assert_eq!(host_path(Path::new(r"C:\Users\a b\x.txt"), Some(&target)).as_deref(), Some("/mnt/c/Users/a b/x.txt"));
         assert_eq!(quote_path("/mnt/c/a b"), "\"/mnt/c/a b\"");
     }

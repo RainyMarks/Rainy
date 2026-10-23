@@ -79,18 +79,7 @@ fn image_format(path: &str) -> Option<ImageFormat> {
     })
 }
 
-/// Percent-encode a query value: everything but unreserved characters.
-fn encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
+use rainy_carrier::text::percent_encode as encode;
 
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
@@ -623,7 +612,6 @@ impl EditorArea {
             "too-large" => tr(cx, "ide.ideTooLarge"),
             _ => tr(cx, "ide.ideReadOnly"),
         };
-        let _ = window;
         v_flex()
             .size_full()
             .child(
@@ -912,6 +900,8 @@ impl Render for EditorArea {
         // Pages of closed tabs go away with their tabs.
         let open: std::collections::HashSet<String> = self.ide.read(cx).tabs.iter().cloned().collect();
         self.viewers.retain(|key, _| open.contains(key));
+        self.pictures.retain(|(key, _), _| open.contains(key));
+        self.outline.retain(|key, _| open.contains(key));
         // A tab that becomes active is brought into view, also when it was opened past the end of the strip.
         let active = self.ide.read(cx).active.clone();
         if active != self.scrolled_to {

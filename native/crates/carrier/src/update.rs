@@ -491,7 +491,7 @@ pub fn launch(_installer: &Path) -> io::Result<u32> {
 fn os_version() -> Option<Version> {
     use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
 
-    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    use crate::text::wide;
     let key = wide("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
     let number = |name: &str| {
         let (name, mut value, mut size) = (wide(name), 0u32, 4u32);

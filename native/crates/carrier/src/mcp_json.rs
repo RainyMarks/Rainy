@@ -1111,7 +1111,7 @@ pub fn clean_server_name(source: &str, fallback: &str) -> String {
     let mut cleaned = hyphenated.trim_matches(['-', '_']).to_owned();
     if cleaned.len() > 32 {
         // `@modelcontextprotocol/server-github` is named after its package; `awslabs.aws-documentation-mcp-server` loses the MCP part.
-        let last = trimmed.split(['\\', '/']).filter(|part| !part.is_empty()).last();
+        let last = trimmed.split(['\\', '/']).rfind(|part| !part.is_empty());
         if let Some(last) = last
             && last != trimmed
         {
@@ -1169,7 +1169,7 @@ pub fn unnamed_server_hint(server: &McpServerConfig) -> String {
         pick = &pick[..at];
     }
     let pick = without_version(pick);
-    pick.split(['\\', '/']).map(bare_name).filter(|part| !part.is_empty() && !GENERIC_PARTS.contains(&part.to_lowercase().as_str())).last().unwrap_or_default()
+    pick.split(['\\', '/']).map(bare_name).rfind(|part| !part.is_empty() && !GENERIC_PARTS.contains(&part.to_lowercase().as_str())).unwrap_or_default()
 }
 
 /// `name`, or `name-2`, `name-3`… — the first one not in `taken` (compared without case), cut to 32 characters.
@@ -1987,7 +1987,7 @@ mod tests {
     }
 
     fn refusal(text: &str) -> McpImportMessage {
-        parse_mcp_json(text, &[], None).err().expect("the text is refused")
+        parse_mcp_json(text, &[], None).expect_err("the text is refused")
     }
 
     fn message(key: &'static str, vars: &[(&'static str, &str)]) -> McpImportMessage {

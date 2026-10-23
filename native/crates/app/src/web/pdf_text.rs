@@ -19,7 +19,7 @@ fn ideograph_of(unit: u16) -> Option<u16> {
 
 /// UTF-16BE hex of a mapping's text with radicals replaced.
 fn fix_destination(destination: &str) -> String {
-    if destination.len() % 4 != 0 || !destination.is_ascii() {
+    if !destination.len().is_multiple_of(4) || !destination.is_ascii() {
         return destination.to_owned();
     }
     let mut fixed = String::with_capacity(destination.len());

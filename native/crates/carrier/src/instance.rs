@@ -482,9 +482,7 @@ fn sid_text(sid: PSID) -> Result<String> {
     Ok(sid)
 }
 
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
+use crate::text::wide;
 
 #[cfg(test)]
 mod tests {

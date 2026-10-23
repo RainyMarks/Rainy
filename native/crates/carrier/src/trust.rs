@@ -19,6 +19,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::keyring::Keyring;
 use crate::paths::canonical;
+use crate::text::hex;
 
 /// The signed list, in the resources folder.
 pub const MANIFEST_FILE: &str = "release-manifest.signed.json";
@@ -260,11 +261,6 @@ fn js_length(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    bytes.iter().flat_map(|byte| [DIGITS[usize::from(byte >> 4)], DIGITS[usize::from(byte & 15)]]).map(char::from).collect()
-}
-
 fn unreadable(path: &str, error: io::Error) -> TrustError {
     TrustError::Io(format!("{path}: {error}"))
 }
@@ -492,10 +488,7 @@ fn write_record(path: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
-/// Milliseconds since 1970, as records store them.
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
+pub use crate::text::now_ms;
 
 /// What to check, and where the record of the check is kept.
 pub struct Options<'a> {

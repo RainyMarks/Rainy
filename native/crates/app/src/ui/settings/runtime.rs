@@ -235,7 +235,7 @@ impl RuntimePage {
         }
         let port_text = self.ssh_port.read(cx).value().trim().to_owned();
         let port = if port_text.is_empty() { Ok(None) } else { port_text.parse::<u32>().map(Some) };
-        let destination = port.map_err(anyhow::Error::from).and_then(|port| ssh::parse_destination(&typed, port).map_err(Into::into));
+        let destination = port.map_err(anyhow::Error::from).and_then(|port| ssh::parse_destination(&typed, port));
         let destination = match destination {
             Ok(destination) => destination,
             Err(_) if port_text.parse::<u32>().is_err() && !port_text.is_empty() => {

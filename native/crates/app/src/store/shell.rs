@@ -156,6 +156,16 @@ impl Store {
     }
 }
 
+/// Open Windows' Default apps settings on Rainy's page (`rainy:default-apps`); a failure is shown in `window`.
+pub fn open_default_apps(window: AnyWindowHandle, cx: &mut App) {
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        if let Err(error) = cx.background_spawn(async move { shell::open_default_apps() }).await {
+            let _ = window.update(cx, |_, window, cx| window.push_notification(Notification::error(format!("{error:#}")), cx));
+        }
+    })
+    .detach();
+}
+
 #[cfg(test)]
 mod tests {
     use ::core::prelude::v1::test;
@@ -183,14 +193,4 @@ mod tests {
         assert_eq!(i18n::text(Locale::Zh, "native.shellUnavailable"), "只有安装版 Rainy 可以修改这些设置");
         assert_eq!(i18n::text(Locale::En, "native.defaultAppsOpen"), "Open system settings…");
     }
-}
-
-/// Open Windows' Default apps settings on Rainy's page (`rainy:default-apps`); a failure is shown in `window`.
-pub fn open_default_apps(window: AnyWindowHandle, cx: &mut App) {
-    cx.spawn(async move |cx: &mut AsyncApp| {
-        if let Err(error) = cx.background_spawn(async move { shell::open_default_apps() }).await {
-            let _ = window.update(cx, |_, window, cx| window.push_notification(Notification::error(format!("{error:#}")), cx));
-        }
-    })
-    .detach();
 }

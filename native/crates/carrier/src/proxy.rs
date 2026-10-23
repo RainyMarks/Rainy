@@ -122,7 +122,7 @@ pub fn system_proxy(url: &str) -> Option<String> {
         unsafe { GlobalFree(ptr.cast()) };
         Some(text)
     }
-    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    use crate::text::wide;
 
     // SAFETY: plain WinHTTP calls; every string WinHTTP returns is freed by `take`.
     unsafe {

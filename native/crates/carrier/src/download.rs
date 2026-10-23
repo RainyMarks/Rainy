@@ -554,9 +554,7 @@ mod transport {
 
     use super::{Address, DownloadError, Options, is_loopback};
 
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain(Some(0)).collect()
-    }
+    use crate::text::wide;
 
     /// A session or connection handle, closed when dropped.
     struct Handle(*mut c_void);

@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn refuses_links_and_devices() {
-        for kind in [b'1', b'2', b'3', b'4', b'6', b'S', b'V'] {
+        for kind in *b"12346SV" {
             let mut tar = Vec::new();
             file(&mut tar, "ok.txt", b"ok");
             entry(&mut tar, "special", kind, b"");

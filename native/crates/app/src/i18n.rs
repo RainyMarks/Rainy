@@ -305,7 +305,22 @@ fn tables() -> &'static (Table, Table) {
 pub fn text(locale: Locale, key: &str) -> &'static str {
     let (zh, en) = tables();
     let table = if locale == Locale::En { en } else { zh };
-    table.get(key).map(String::as_str).unwrap_or_else(|| Box::leak(key.to_owned().into_boxed_str()))
+    table.get(key).map(String::as_str).unwrap_or_else(|| missing(key))
+}
+
+/// An unknown key as a lasting string, made once per key, however often a view asks for it.
+fn missing(key: &str) -> &'static str {
+    static MISSING: OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> = OnceLock::new();
+    let mut known = MISSING.get_or_init(Default::default).lock().unwrap();
+    match known.get(key) {
+        Some(text) => text,
+        None => {
+            log::warn!("No message for {key}");
+            let text: &'static str = Box::leak(key.to_owned().into_boxed_str());
+            known.insert(text);
+            text
+        }
+    }
 }
 
 /// Look up one message and fill its `{name}` placeholders.

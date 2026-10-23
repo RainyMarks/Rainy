@@ -189,7 +189,7 @@ fn report_startup_panics(locale: Locale) {
 
 fn error_box(message: &str, detail: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MessageBoxW};
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    use rainy_carrier::text::wide;
     let (text, caption) = (wide(&format!("{message}\n\n{detail}")), wide("Rainy"));
     // SAFETY: both strings end with NUL and outlive the call; no owner window.
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND) };

@@ -23,6 +23,7 @@ pub mod shell;
 pub mod ssh;
 pub mod tarball;
 pub mod targets;
+pub mod text;
 pub mod trust;
 pub mod update;
 pub mod window_state;

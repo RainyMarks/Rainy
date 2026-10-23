@@ -57,17 +57,7 @@ pub fn page_view(path: &str, reason: Option<&str>, view: Option<&str>) -> Option
 pub const MARKDOWN_VIEWS: [(&str, Option<&str>); 4] =
     [("viewers.viewRich", None), ("viewers.viewSource", Some("source")), ("viewers.viewPreview", Some("preview")), ("viewers.viewSplit", Some("split"))];
 
-fn encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
+use rainy_carrier::text::percent_encode as encode;
 
 /// The address a pane opens: the Host's launch address, which sets the session cookie and lands on the viewer page.
 pub fn viewer_url(launch: &str, viewer: &str, key: &str, workspace_id: &str, bytes: u64, version: &str, host_path: Option<&str>) -> String {

@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn pieces_name_the_release_assets() {
         let php = entry("php", "php.tar.gz", &php_archive(), 2);
-        let resources = resources(&[php.clone()]);
+        let resources = resources(std::slice::from_ref(&php));
         let pieces = pieces(resources.path(), "php");
         assert_eq!(pieces.as_array().unwrap().len(), 2);
         assert_eq!(pieces[0]["url"], format!("{BASE}{}", php["pieces"][0]["file"].as_str().unwrap()));
@@ -844,7 +844,7 @@ mod tests {
     #[test]
     fn cleans_leftovers_and_unpinned_downloads() {
         let php = entry("php", "php.tar.gz", &php_archive(), 2);
-        let resources = resources(&[php.clone()]);
+        let resources = resources(std::slice::from_ref(&php));
         let user_data = tempfile::tempdir().unwrap();
         let root = user_data.path().join("modules");
         let downloads = root.join(DOWNLOADS);
@@ -915,7 +915,7 @@ mod tests {
         fn installs_a_module_from_its_pieces() {
             let archive = php_archive();
             let php = entry("php", "php.tar.gz", &archive, 3);
-            let resources = resources(&[php.clone()]);
+            let resources = resources(std::slice::from_ref(&php));
             let server = serve(&[(php.clone(), archive.clone())]);
             let user_data = tempfile::tempdir().unwrap();
             let (states, publish) = recorded();
@@ -955,7 +955,7 @@ mod tests {
         fn installs_the_linux_runtime_as_a_file() {
             let archive = vec![9u8; 200_000];
             let runtime = entry("linux-runtime", "linux-runtime.tar.xz", &archive, 1);
-            let resources = resources(&[runtime.clone()]);
+            let resources = resources(std::slice::from_ref(&runtime));
             let server = serve(&[(runtime, archive.clone())]);
             let user_data = tempfile::tempdir().unwrap();
             let (states, publish) = recorded();
@@ -992,7 +992,7 @@ mod tests {
         fn a_cancelled_download_resumes_on_retry() {
             let archive: Vec<u8> = (0..300_000u32).map(|index| (index % 253) as u8).collect();
             let runtime = entry("linux-runtime", "linux-runtime.tar.xz", &archive, 1);
-            let resources = resources(&[runtime.clone()]);
+            let resources = resources(std::slice::from_ref(&runtime));
             let served = archive.clone();
             let stalls = Arc::new(AtomicBool::new(true));
             let stalling = stalls.clone();
@@ -1028,7 +1028,7 @@ mod tests {
         fn a_damaged_piece_is_an_error() {
             let archive = php_archive();
             let php = entry("php", "php.tar.gz", &archive, 1);
-            let resources = resources(&[php.clone()]);
+            let resources = resources(std::slice::from_ref(&php));
             let mut damaged = archive.clone();
             damaged[100] ^= 0xff;
             let server = serve(&[(php, damaged)]);

@@ -761,7 +761,7 @@ impl CompletionProvider for Provider {
             let value = call.await.map_err(|error| anyhow!(error.message))?;
             let suggestion = value.get("text").and_then(Value::as_str).unwrap_or_default().to_owned();
             let error = value.get("error").and_then(Value::as_str).map(str::to_owned);
-            let _ = servers.update(cx, |servers, cx| match &error {
+            servers.update(cx, |servers, cx| match &error {
                 Some(message) if servers.reported.as_ref() != Some(message) => {
                     servers.reported = Some(message.clone());
                     let message = message.clone();

@@ -388,7 +388,7 @@ impl TerminalView {
                         && run.italic == italic
                         && run.underline == underline
                         && run.strike == strike
-                        && !run.text.chars().any(|c| unicode_wide(c))
+                        && !run.text.chars().any(unicode_wide)
                 });
             if merge {
                 let run = line.last_mut().unwrap();

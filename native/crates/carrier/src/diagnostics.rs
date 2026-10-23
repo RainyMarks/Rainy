@@ -392,9 +392,7 @@ mod platform {
 
     const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
+    use crate::text::wide;
 
     fn until_nul(units: &[u16]) -> String {
         let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());

@@ -71,7 +71,7 @@ pub fn format_document(window: &mut Window, cx: &mut App) {
                 Ok(value) => {
                     let edits: Vec<TextEdit> = serde_json::from_value(value).unwrap_or_default();
                     // Edits for an older text would land in the wrong places.
-                    if edits.is_empty() || editor.read(cx).text().to_string() != text.to_string() {
+                    if edits.is_empty() || *editor.read(cx).text() != text {
                         return;
                     }
                     editor.update(cx, |state, cx| state.apply_lsp_edits(&edits, window, cx));

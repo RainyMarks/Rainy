@@ -132,7 +132,7 @@ pub fn save_locale(path: &Path, locale: &str) -> Result<()> {
 #[cfg(windows)]
 pub fn wsl_distributions() -> Vec<ExecutionTarget> {
     use windows_sys::Win32::System::Registry::*;
-    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    use crate::text::wide;
     let mut found = Vec::new();
     // SAFETY: plain registry reads into buffers sized by the calls themselves; every opened key is closed.
     unsafe {

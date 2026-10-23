@@ -645,9 +645,7 @@ mod win32 {
     /// HKEY_CURRENT_USER through the Win32 registry API.
     pub struct CurrentUser;
 
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
+    use crate::text::wide;
 
     fn missing(status: WIN32_ERROR) -> bool {
         matches!(status, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND)

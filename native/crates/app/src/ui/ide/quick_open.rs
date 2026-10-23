@@ -30,14 +30,11 @@ pub struct QuickOpen {
 impl QuickOpen {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "ide.ideSearchPlaceholder")));
-        let subscriptions = vec![cx.subscribe_in(&query, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::Change => {
-                this.debounce = Some(cx.spawn_in(window, async move |this, cx| {
-                    cx.background_executor().timer(Duration::from_millis(120)).await;
-                    let _ = this.update(cx, |this, cx| this.search(cx));
-                }));
-            }
-            _ => {}
+        let subscriptions = vec![cx.subscribe_in(&query, window, |this, _, event: &InputEvent, window, cx| if let InputEvent::Change = event {
+            this.debounce = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(120)).await;
+                let _ = this.update(cx, |this, cx| this.search(cx));
+            }));
         })];
         let mut view = Self {
             ide: Ide::global(cx),

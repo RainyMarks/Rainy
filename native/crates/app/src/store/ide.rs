@@ -956,7 +956,7 @@ impl Ide {
                 fields.remove("pythonModule");
             }
         }
-        let plain = ["arguments", "environment"].iter().all(|field| next[*field].as_array().map_or(true, Vec::is_empty) && next[*field].as_object().map_or(true, |map| map.is_empty()))
+        let plain = ["arguments", "environment"].iter().all(|field| next[*field].as_array().is_none_or(Vec::is_empty) && next[*field].as_object().is_none_or(|map| map.is_empty()))
             && ["executable", "build", "cwd", "pythonModule"].iter().all(|field| next.get(*field).is_none_or(Value::is_null));
         if !(choice.is_none() && plain) {
             others.push(next);
