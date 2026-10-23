@@ -234,7 +234,9 @@ impl Workbench {
                                 if !workspaces.is_empty() {
                                     menu = menu.separator();
                                 }
-                                menu = menu.item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| choose_folder(window, cx)));
+                                menu = menu
+                                    .item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| choose_folder(window, cx)))
+                                    .item(PopupMenuItem::new(tr(cx, "ide.ideWslFolder")).on_click(|_, window, cx| crate::ui::ide::browse_folder(window, cx)));
                                 if current.is_some() {
                                     menu = menu.item(
                                         PopupMenuItem::new(tr(cx, "ide.ideAddFolder")).on_click(|_, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx)),

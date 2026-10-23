@@ -66,8 +66,8 @@ pub fn bind_keys(cx: &mut App) {
     terminal::bind_keys(cx);
 }
 
-/// Choose a folder and open it as a project: Windows' own picker for the Windows host, the in-app browser for a
-/// Linux host, whose folders the Windows picker cannot reach as the Host sees them.
+/// Choose a folder and open it as a project (3.x "open Windows folder"): Windows' own picker, its path mapped into WSL
+/// with `wslpath` on a WSL host; on an SSH server, whose folders the Windows picker cannot reach, the in-app browser.
 pub fn choose_folder(window: &mut Window, cx: &mut App) {
     pick_folder(false, window, cx);
 }
@@ -77,35 +77,59 @@ pub fn choose_folder_to_attach(window: &mut Window, cx: &mut App) {
     pick_folder(true, window, cx);
 }
 
+/// Browse the execution host's own folders in the app (3.x "browse folders on current host").
+pub fn browse_folder(window: &mut Window, cx: &mut App) {
+    folder_dialog::open(false, window, cx);
+}
+
+fn adopt(path: String, attach: bool, window: &mut Window, cx: &mut App) {
+    Ide::global(cx).update(cx, |ide, cx| if attach { ide.attach_root(path, window, cx) } else { ide.open_folder(path, window, cx) });
+}
+
 fn pick_folder(attach: bool, window: &mut Window, cx: &mut App) {
     // Debug builds under test take the folder from the environment instead of a picker over the tester's windows.
     if cfg!(debug_assertions)
         && let Some(path) = std::env::var_os("RAINY_QA_PICK_FOLDER")
     {
-        let path = path.to_string_lossy().into_owned();
-        Ide::global(cx).update(cx, |ide, cx| if attach { ide.attach_root(path, window, cx) } else { ide.open_folder(path, window, cx) });
+        adopt(path.to_string_lossy().into_owned(), attach, window, cx);
         return;
     }
-    let on_windows = Store::global(cx).read(cx).target.as_ref().is_none_or(|target| matches!(target, ExecutionTarget::Windows { .. }));
-    if !on_windows {
-        folder_dialog::open(attach, window, cx);
-        return;
-    }
+    let target = Store::global(cx).read(cx).target.clone();
+    let distro = match &target {
+        Some(ExecutionTarget::Ssh { .. }) => {
+            folder_dialog::open(attach, window, cx);
+            return;
+        }
+        Some(ExecutionTarget::Wsl { distro, .. }) => Some(distro.clone()),
+        _ => None,
+    };
     let chosen = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
         multiple: false,
         prompt: Some(tr(cx, if attach { "ide.ideAddFolder" } else { "ide.ideOpenFolder" })),
     });
-    let ide = Ide::global(cx);
     window
         .spawn(cx, async move |cx| {
             let Ok(Ok(Some(paths))) = chosen.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let path = path.to_string_lossy().into_owned();
-            let _ = cx.update(|window, cx| {
-                ide.update(cx, |ide, cx| if attach { ide.attach_root(path, window, cx) } else { ide.open_folder(path, window, cx) })
-            });
+            let path = match distro {
+                Some(distro) => {
+                    let mapped = cx.background_spawn(async move { rainy_carrier::wsl::linux_paths(&distro, &[path.as_path()]) }).await;
+                    match mapped.map(|mut paths| paths.remove(0)) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            let _ = cx.update(|window, cx| {
+                                use gpui_kit::component::WindowExt as _;
+                                window.push_notification(gpui_kit::component::notification::Notification::error(error.to_string()), cx);
+                            });
+                            return;
+                        }
+                    }
+                }
+                None => path.to_string_lossy().into_owned(),
+            };
+            let _ = cx.update(|window, cx| adopt(path, attach, window, cx));
         })
         .detach();
 }
