@@ -7,3 +7,8 @@ pub mod llm;
 pub mod models;
 pub mod store;
 pub mod tools;
+pub mod instructions;
+pub mod permissions;
+pub mod prompt;
+pub mod skills;
+pub mod snapshots;
