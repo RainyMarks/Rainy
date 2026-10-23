@@ -669,7 +669,9 @@ impl ChatPane {
             Some(model) => {
                 let level = model.thinking.as_deref().unwrap_or("off");
                 let thinking = THINKING.iter().find(|(id, _)| *id == level).map_or(level, |(_, key)| i18n::text(locale, key));
-                format!("{} · {}", model.model, thinking)
+                // A long model name is cut so the composer's buttons keep their place.
+                let name: String = if model.model.chars().count() > 22 { format!("{}…", model.model.chars().take(21).collect::<String>()) } else { model.model.clone() };
+                format!("{name} · {thinking}")
             }
             None => i18n::text(locale, "chat.noModel").to_owned(),
         };
@@ -776,19 +778,19 @@ impl ChatPane {
                             .tooltip(tr(cx, "chat.attachImage"))
                             .on_click(cx.listener(|this, _, window, cx| this.choose_images(window, cx))),
                     )
-                    .child(model_picker)
-                    .child(permission_picker)
-                    .child(div().flex_1())
+                    // The pickers give way in a narrow panel; the context share and the send button never leave it.
+                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().child(model_picker).child(permission_picker))
                     .when_some(context, |this, context| {
                         let percent = if context.input_limit > 0.0 { (context.tokens / context.input_limit * 100.0).round() } else { 0.0 };
                         this.child(
                             div()
+                                .flex_none()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .child(i18n::format(locale, "chat.contextUsage", &[("percent", &percent)])),
                         )
                     })
-                    .child(if busy {
+                    .child(div().flex_none().child(if busy {
                         Button::new("stop")
                             .small()
                             .icon(Icon::new(gpui_kit::assets::IconName::CircleStop))
@@ -805,7 +807,7 @@ impl ChatPane {
                             .icon(Icon::new(gpui_kit::assets::IconName::Send))
                             .tooltip(i18n::text(locale, "chat.send"))
                             .on_click(cx.listener(|this, _, window, cx| this.send(false, window, cx)))
-                    }),
+                    })),
             )
     }
 }

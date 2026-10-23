@@ -29,7 +29,15 @@ impl Store {
         if self.strata.manager.is_some() {
             return;
         }
-        let Ok(root) = self.modules.manager.path("strata") else { return };
+        let root = match self.modules.manager.path("strata") {
+            Ok(root) => root,
+            Err(error) => {
+                // The card says why instead of waiting for a manager that never comes.
+                self.strata.error = Some(crate::boot::module_message(self.locale(), &error));
+                cx.notify();
+                return;
+            }
+        };
         let (changed_tx, changed) = async_channel::unbounded::<()>();
         let manager = Manager::new(root, &self.paths.user_data, move || {
             let _ = changed_tx.try_send(());

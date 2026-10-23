@@ -493,7 +493,10 @@ impl Render for StrataCard {
         let mut body = vec![self.header(status.as_ref().map(|status| status.phase), cx)];
         if self.open {
             if !available {
-                body.push(notice(cx, tr(cx, "settings.strataLoading"), false));
+                body.push(match error {
+                    Some(error) => notice(cx, error.into(), true),
+                    None => notice(cx, tr(cx, "settings.strataLoading"), false),
+                });
             } else {
                 if let Some(error) = error {
                     body.push(notice(cx, error.into(), true));
