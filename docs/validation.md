@@ -1,5 +1,27 @@
 # Rainy 验收记录
 
+## 4.0.0（2026-10-22）
+
+被测产物为 `Rainy-4.0.0-windows-x64-setup.exe`（66,871,377 字节，SHA-256 `c8ba6c48ed2aafcd2f3d7da032a70f2c1173b1ced203fa26b27f0b9601827fc0`），构建自提交 `354d2cb1e7`（之后只改了文档）。安装包含 9,019 个文件、273,219,546 字节，其中 9,012 个由签名资源清单固定（清单 SHA-256 `0502041df3a8bb9ae59806c9dc626806d03ea421a5a966bcf4b18f3b72e9f177`）。Linux 运行环境底座内容与 3.8.0 起相同（内容标识 `28cf656086674b71d6d4b521223555e0ba47b6e093ba641a4eff93a912b43fa1`），本版 xz 分片 52,727,784 字节（SHA-256 `fa9b87d6befeeeed7284894ed608819f027a29c893969568a702dfe095a2dac2`）；`linux-dev-packages`（165,115,848 字节）与 PHP（38,191,707 字节）分片内容与 3.9.2 相同，重新上传到 `v4.0.0-resources`。按正常流程打包（`scripts/package.ps1`，界面由 `native/scripts/build-release.sh` 构建，`scripts/package-native.mjs` 暂存并生成 NSIS 安装包）。
+
+### 改动
+
+- 界面改为原生程序 `RainyAgent.exe`（Rust + GPUI，`native/`），不再打包 Electron；Host、协议和用户数据格式不变。PDF、Office、所见即所得 Markdown、项目地图和内置浏览器嵌入 WebView2，沿用 3.x 的网页代码（`src/renderer/viewer`）。
+- 3.x 的功能除 Strata 外全部移植：对话与智能体、编辑器与语言服务、编辑器 AI、命令面板、运行与调试、Markdown 大纲与导出、执行环境（Windows / WSL / SSH）、可选组件、更新、资源管理器集成（默认关闭）、MCP JSON 导入与 3.9.2 的修复。详见 [GPUI 重写说明](gpui-rewrite.zh.md)。
+
+### 检查
+
+- **测试**：`cargo test -p rainy -p rainy-carrier --offline` 58 + 225 项通过；渲染进程类型检查通过（只改了 `ViewerApp.tsx` 的导出、大纲定位和标题跳转）。
+- **调试版实测（临时用户数据、测试项目、假模型）**：Python 断点、单步（F10 / F11 / Shift+F11）、监视、调试控制台、切换栈帧、Shift+F5 停止；带参数和环境变量运行（以 `RAINY_` 开头的变量名在对话框里拒绝，与 Host 一致）；问题列表跳转和“用 AI 修复”；F2 重命名、Shift+F12 查找引用并跳转、与已保存版本比较；Markdown 大纲跳转和高亮、F8 专注模式；导出 HTML 和 PDF（PDF 文字可正确提取，含书签，康熙部首修正生效）；往工作区添加和移除文件夹；内置浏览器；设置等按钮打开不再卡顿。
+- **安装包 QA（`tmp/qa/installer/run-qa.ps1`，QA 身份，0 项失败）**：全新安装 9,019 个文件逐字节一致；在新装上更新、注册表缺 InstallLocation 时按卸载程序所在目录更新；在 3.9.2 的 Electron 安装上更新时 21 个 Electron 文件全部删除，`runtime`、`tools` 和工具包日志保留；有进程占用目录时，静默安装数秒内以 1 退出，更新等进程自行结束后再装、60 秒后放弃且不改动任何东西；测试前后真实 Rainy 的注册表、快捷方式、安装目录和用户数据不变。
+- **打包版实测（QA 安装，临时用户数据）**：签名资源校验通过后启动；对话和富 Markdown 渲染、调试、悬停说明正常；检查更新报告最新为 3.9.2（发布前预期）。WSL 执行环境用临时 HOME：已有底座时连接成功，从项目菜单“浏览当前执行环境文件夹”打开 `/tmp` 下的测试项目，运行 `hello.py` 在终端输出 `wsl ok`；全新 HOME 下载底座得到 404，是因为 `v4.0.0-resources` 尚未发布，发布后复查。
+
+### 验收范围
+
+- 没有实测：原生右键菜单（测试窗口在后台时 Win32 菜单不弹出）、JavaScript / C / C++ / PHP 的实时调试（只测了 Python）、挂载盘上的文件夹、资源管理器集成的注册表写入（代码与 3.9.2 相同的逻辑移植到 Rust，由单元测试覆盖）、SSH 执行环境、Windows 10 上缺少 WebView2 时的提示。
+- 没有运行打包出的卸载程序；没有改动用户的 Rainy 安装、设置、WSL `~/.rainy-agent` 或系统代理。
+- Strata 本地推理在 4.0 中不提供。
+
 ## 3.9.2（2026-10-22）
 
 被测产物为 `Rainy-3.9.2-windows-x64-setup.exe`（180,197,303 字节，SHA-256 `fc5f71c4fc8e020f585f47041296120fecba1aedcd7438b22c13492b2ae7c52c`），构建自提交 `eba30097b7`。Linux 运行环境底座内容与 3.8.0 起相同（内容标识 `28cf656086674b71d6d4b521223555e0ba47b6e093ba641a4eff93a912b43fa1`），本版 xz 分片 52,720,964 字节（SHA-256 `b3e299d81fbc18de50e473207b538b98653221835f70f8850740617b3681b5da`）；应用层 6,669,918 字节随安装包附带；`linux-dev-packages` 与 PHP 分片和 3.9.1 相同。本版按正常流程打包（`scripts/package.ps1`）。

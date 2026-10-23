@@ -8,7 +8,7 @@ English | [中文](CHANGELOG.zh.md)
 
 The interface is now a native program: no Chromium inside, faster to open and lighter to run.
 
-- **Native interface**: the window, chats, editor, terminal and settings are drawn on the GPU with Rust and GPUI; the installer no longer carries Electron and its Chromium. The backend is unchanged: the Windows, WSL and SSH execution environments, and your chats, settings, keys and projects carry over, so an upgrade from 3.9 needs no setup.
+- **Native interface**: the window, chats, editor, terminal and settings are drawn on the GPU with Rust and GPUI; the installer no longer carries Electron and its Chromium and shrinks from 180 MB to 67 MB, about 280 MB installed (3.9: about 570 MB). The backend is unchanged: the Windows, WSL and SSH execution environments, and your chats, settings, keys and projects carry over, so an upgrade from 3.9 needs no setup.
 - **Document previews use the WebView2 that comes with Windows**: PDF, Word, Excel, PowerPoint, rich Markdown, the project map and the AI's built-in browser work as before. Windows 11 includes WebView2; on Windows 10 without it, opening such a file says how to install it.
 - **Language services in the editor**: Python, JavaScript / TypeScript and C / C++ get completion, hover, error squiggles, go to definition (F12), find all references (Shift+F12), rename symbol (F2) and formatting (Shift+Alt+F), also on the right-click menu.
 - **Editor AI**: grey inline suggestions (Tab accepts; turn them on in Settings); select code and press Ctrl+K to say how to change it, the new code goes straight into the editor, Ctrl+Enter keeps it and Esc restores the old; send the selection to the AI; "Fix with AI" on every problem in the list.

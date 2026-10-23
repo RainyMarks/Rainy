@@ -8,7 +8,7 @@
 
 界面整个改成原生程序：不再带 Chromium，打开更快，占用更少。
 
-- **原生界面**：窗口、对话、编辑器、终端和设置改用 Rust 和 GPUI 直接用显卡绘制，安装包里不再有 Electron 和它自带的 Chromium。后台没有变：Windows、WSL 和 SSH 三种执行环境，以及对话记录、设置、密钥和项目都原样沿用，从 3.9 升级不用重新配置。
+- **原生界面**：窗口、对话、编辑器、终端和设置改用 Rust 和 GPUI 直接用显卡绘制，安装包里不再有 Electron 和它自带的 Chromium，从 180 MB 降到 67 MB，装好后约 280 MB（3.9 约 570 MB）。后台没有变：Windows、WSL 和 SSH 三种执行环境，以及对话记录、设置、密钥和项目都原样沿用，从 3.9 升级不用重新配置。
 - **文档预览用系统自带的 WebView2**：PDF、Word、Excel、PPT、所见即所得 Markdown、项目地图和 AI 的内置浏览器照旧。Windows 11 自带 WebView2；Windows 10 上没有时，打开这类文件会提示安装。
 - **编辑器的语言服务**：Python、JavaScript / TypeScript 和 C / C++ 有补全、悬停说明、错误波浪线、转到定义（F12）、查找所有引用（Shift+F12）、重命名符号（F2）和格式化（Shift+Alt+F），右键菜单里也有。
 - **编辑器 AI**：灰色的行内补全（按 Tab 采纳，在设置里打开）；选中代码按 Ctrl+K 说出要怎么改，新代码直接放进编辑器，Ctrl+Enter 接受、Esc 还原；选中的代码可以发给 AI 分析；问题列表里每条都能“用 AI 修复”。
