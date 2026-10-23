@@ -7,6 +7,7 @@ pub mod ide;
 pub mod language;
 pub mod modules;
 pub mod shell;
+pub mod strata;
 pub mod update;
 
 use std::collections::HashMap;
@@ -101,6 +102,8 @@ pub struct Store {
     prompt: async_channel::Sender<RuntimePrompt>,
     /// Optional components: PHP in Settings, the Linux runtime base for WSL and SSH.
     pub modules: modules::OptionalModules,
+    /// The Strata local model engine, once the modules are read.
+    pub strata: strata::Strata,
     stopping: bool,
     pub info: Option<AppInfo>,
     pub prefs: UiPreferences,
@@ -173,6 +176,7 @@ impl Store {
                 runtime_prompts,
                 prompt,
                 modules: modules::OptionalModules::new(manager),
+                strata: strata::Strata::default(),
                 stopping: false,
                 info: None,
                 prefs: UiPreferences::default(),

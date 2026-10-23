@@ -8,6 +8,7 @@ mod models;
 mod models_extra;
 mod runtime;
 mod security;
+mod strata;
 mod shortcuts;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};

@@ -8,8 +8,8 @@ use rainy_carrier::modules::{ModuleError, Modules, Phase, State, Status};
 
 use super::Store;
 
-/// The modules Settings offers. Strata is not offered until its engine manager is ported.
-pub const OFFERED: [&str; 1] = ["php"];
+/// The modules Settings offers.
+pub const OFFERED: [&str; 2] = ["strata", "php"];
 
 /// The modules as the settings page shows them.
 pub struct OptionalModules {
@@ -40,6 +40,7 @@ impl Store {
     pub(super) fn modules_ready(&mut self, cx: &mut Context<Self>) {
         self.modules.ready = true;
         self.refresh_modules(cx);
+        self.strata_ready(cx);
     }
 
     /// A module operation published its state.
@@ -48,6 +49,8 @@ impl Store {
         self.modules.state = state;
         if complete {
             self.refresh_modules(cx);
+            // The engine may have been installed or removed.
+            self.refresh_strata(false, cx);
         }
         cx.notify();
     }

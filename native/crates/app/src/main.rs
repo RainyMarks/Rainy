@@ -75,12 +75,16 @@ fn main() {
         let quitting = store.clone();
         cx.on_app_quit(move |cx| {
             placement::save(cx);
-            let modules = quitting.update(cx, |store, _| {
+            let (modules, strata) = quitting.update(cx, |store, _| {
                 store.shutdown();
-                store.modules.manager.clone()
+                (store.modules.manager.clone(), store.strata_manager())
             });
             // An install stops at its next chunk; waiting for it keeps the module folders whole.
             modules.wait_idle(std::time::Duration::from_secs(10));
+            // The model server Rainy started does not outlive it; a server it did not start is left running.
+            if let Some(strata) = strata {
+                strata.close();
+            }
             async {}
         })
         .detach();

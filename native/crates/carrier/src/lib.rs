@@ -21,6 +21,7 @@ pub mod proxy;
 pub mod rpc;
 pub mod shell;
 pub mod ssh;
+pub mod strata;
 pub mod tarball;
 pub mod targets;
 pub mod text;

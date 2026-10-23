@@ -552,7 +552,7 @@ impl Render for RuntimePage {
 }
 
 /// A size as 3.x's settings show it (`fileSizeText`): `512B`, `9.5KB`, `36MB`, `1.2GB`.
-fn file_size_text(bytes: u64) -> String {
+pub(super) fn file_size_text(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes}B");
     }

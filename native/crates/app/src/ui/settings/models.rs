@@ -58,6 +58,7 @@ pub struct ModelsPage {
     busy: bool,
     loaded: bool,
     proxy: Entity<super::models_extra::ProxyCard>,
+    strata: Entity<super::strata::StrataCard>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -74,8 +75,10 @@ impl ModelsPage {
             cx.notify();
         })];
         let proxy = cx.new(|cx| super::models_extra::ProxyCard::new(store.clone(), window, cx));
+        let strata = cx.new(|cx| super::strata::StrataCard::new(store.clone(), window, cx));
         let mut page = Self {
             proxy,
+            strata,
             provider: input(window, cx),
             model: input(window, cx),
             base_url: input(window, cx),
@@ -689,6 +692,7 @@ impl Render for ModelsPage {
             )
             .children(list)
             .child(form)
+            .child(self.strata.clone())
             .child(editor_ai)
             .child(web_search)
             .child(prompt)
