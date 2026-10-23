@@ -24,6 +24,8 @@ struct WatchSet {
 
 struct Inner {
     emit: Emit,
+    /// Hints also come from plain threads (a terminal's reader), which have no runtime of their own.
+    runtime: tokio::runtime::Handle,
     lease: Duration,
     /// Throttle state per `kind:workspace`: whether another hint is pending.
     throttled: Mutex<HashMap<String, bool>>,
@@ -37,9 +39,11 @@ pub struct Hints {
 }
 
 impl Hints {
-    /// `lease`: watchers of a project folder close when the page has not checked its files for this long.
+    /// `lease`: watchers of a project folder close when the page has not checked its files for this long. Call it on the
+    /// runtime, whose handle every later hint uses.
     pub fn new(emit: impl Fn(&str, &str) + Send + Sync + 'static, lease: Duration) -> Self {
-        Self { inner: Arc::new(Inner { emit: Arc::new(emit), lease, throttled: Mutex::default(), sets: Mutex::default(), leases: Default::default() }) }
+        let runtime = tokio::runtime::Handle::current();
+        Self { inner: Arc::new(Inner { emit: Arc::new(emit), runtime, lease, throttled: Mutex::default(), sets: Mutex::default(), leases: Default::default() }) }
     }
 
     /// Send a hint now, or once at the end of the current interval when one was sent recently.
@@ -60,7 +64,7 @@ impl Hints {
         (inner.emit)(workspace_id, kind);
         let weak = Arc::downgrade(inner);
         let (workspace_id, kind) = (workspace_id.to_owned(), kind.to_owned());
-        tokio::spawn(async move {
+        inner.runtime.spawn(async move {
             tokio::time::sleep(INTERVAL).await;
             let Some(inner) = weak.upgrade() else { return };
             let pending = inner.throttled.lock().unwrap().remove(&key).unwrap_or(false);
@@ -84,7 +88,7 @@ impl Hints {
         if !sets.contains_key(&key) {
             let weak: Weak<Inner> = Arc::downgrade(&self.inner);
             let workspace = workspace_id.to_owned();
-            let handle = tokio::runtime::Handle::current();
+            let handle = self.inner.runtime.clone();
             let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 if event.is_ok_and(|event| !event.kind.is_access()) {
                     if let Some(inner) = weak.upgrade() {
@@ -124,7 +128,7 @@ impl Hints {
         drop(sets);
         let weak = Arc::downgrade(&self.inner);
         let duration = self.inner.lease;
-        tokio::spawn(async move {
+        self.inner.runtime.spawn(async move {
             tokio::time::sleep(duration).await;
             let Some(inner) = weak.upgrade() else { return };
             let mut sets = inner.sets.lock().unwrap();
@@ -136,5 +140,27 @@ impl Hints {
 
     pub fn close(&self) {
         self.inner.sets.lock().unwrap().clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hints_from_a_plain_thread_reach_the_page() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let seen = sent.clone();
+        let hints = Hints::new(move |workspace, kind| seen.lock().unwrap().push(format!("{kind}:{workspace}")), Duration::from_secs(1));
+        let from_thread = hints.clone();
+        // A terminal's reader thread: before the fix this panicked with no reactor running.
+        std::thread::spawn(move || {
+            from_thread.notify("w1", "execution");
+            from_thread.notify("w1", "execution");
+        })
+        .join()
+        .unwrap();
+        tokio::time::sleep(INTERVAL * 3).await;
+        assert_eq!(*sent.lock().unwrap(), vec!["execution:w1".to_owned(), "execution:w1".to_owned()]);
     }
 }
