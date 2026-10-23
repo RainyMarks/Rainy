@@ -1,7 +1,7 @@
-//! The development tools the editor starts (3.x `ide/tools.ts`). Rainy ships native ones in `resources/ide/bin`: Ruff
-//! (Python formatting), ty (Python language service), TypeScript 7's native compiler (JavaScript and TypeScript
-//! language service) and Biome (JavaScript and TypeScript formatting); debugpy and js-debug are scripts the user's
-//! Python and Node.js run.
+//! The development tools the editor starts (3.x `ide/tools.ts`). Rainy ships native ones in `resources/ide`: Ruff
+//! (Python formatting) and ty (Python language service) in `bin`, and TypeScript 7's native compiler (JavaScript and
+//! TypeScript language service and formatting) in `typescript`; debugpy and js-debug are scripts the user's Python and
+//! Node.js run.
 
 use std::path::{Path, PathBuf};
 
@@ -36,10 +36,6 @@ impl Tools {
         self.bin("ty")
     }
 
-    pub fn biome(&self) -> PathBuf {
-        self.bin("biome")
-    }
-
     /// TypeScript 7's native `tsc`, which serves the language protocol with `--lsp --stdio`.
     pub fn tsc(&self) -> PathBuf {
         self.root.join("typescript").join("lib").join(exe("tsc"))
@@ -51,7 +47,6 @@ impl Tools {
             ("ruff", self.ruff()),
             ("ty", self.ty()),
             ("typescript", self.tsc()),
-            ("biome", self.biome()),
             ("debugpy", self.root.join("python").join("debugpy").join("adapter").join("__main__.py")),
             ("js-debug", self.root.join("js-debug").join("src").join("dapDebugServer.js")),
         ]
