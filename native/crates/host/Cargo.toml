@@ -1,0 +1,39 @@
+[package]
+name = "rainy-host"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The Rainy Host: agent, editor services and files for one execution environment"
+
+[[bin]]
+name = "rainy-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+futures.workspace = true
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "query"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "stream", "json", "http2"] }
+base64 = "0.22"
+getrandom = "0.3"
+sha2 = "0.11.1"
+aes-gcm = "0.10"
+url = "2.5"
+percent-encoding = "2"
+uuid = { version = "1", features = ["v4"] }
+dunce = "1"
+encoding_rs = "0.8"
+regex = "1.13"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Console"] }
+
+[dev-dependencies]
+tempfile = "3"
