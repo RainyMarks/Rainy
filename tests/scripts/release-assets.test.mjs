@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
@@ -146,16 +147,18 @@ test('PowerShell reassembles binary and Unicode files and rejects a modified or 
   await assert.rejects(invoke(join(f.root, 'ps-missing')))
 })
 
-test('build bootstrap extracts pinned IDE and Windows resources and prepares the existing builder layout', async t => {
+test('build bootstrap extracts the offline Ubuntu packages, Strata and Windows resources and prepares the existing builder layout', async t => {
   const f = await fixture(t)
   const ide = join(f.root, 'ide')
   const basic = join(f.root, 'basic')
   await mkdir(ide)
   await mkdir(join(basic, 'pwsh'), { recursive: true })
   await writeFile(join(ide, 'manifest.json'), '{"fixture":true}\n')
+  await mkdir(join(ide, 'system-packages'))
+  await writeFile(join(ide, 'system-packages/manifest.json'), '{"packages":[]}\n')
   await writeFile(join(basic, 'pwsh/pwsh.exe'), 'portable shell')
   await mkdir(join(f.source, 'build-inputs'))
-  await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/ide-resources.tar.gz'), gzip: true }, ['manifest.json'])
+  await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/ide-resources.tar.gz'), gzip: true }, ['manifest.json', 'system-packages'])
   await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/strata-runtime.tar.gz'), gzip: true }, ['manifest.json'])
   await tar.c({ cwd: basic, file: join(f.source, 'environment-components/windows-basic.tar.gz'), gzip: true }, ['pwsh'])
   await f.put('environment/media-verification.json', '{}\n')
@@ -167,7 +170,9 @@ test('build bootstrap extracts pinned IDE and Windows resources and prepares the
   await writeFile(join(app, 'package.json'), '{"version":"1.0.0"}\n')
   await bootstrapReleaseInputs({ appDirectory: app, manifest, inputsDirectory: f.source })
   assert.equal(await readFile(join(app, 'runtime/component-stage/windows-basic/pwsh/pwsh.exe'), 'utf8'), 'portable shell')
-  assert.equal(await readFile(join(app, 'resources/ide/manifest.json'), 'utf8'), '{"fixture":true}\n')
+  assert.equal(await readFile(join(app, 'resources/ide/system-packages/manifest.json'), 'utf8'), '{"packages":[]}\n')
+  // prepare-ide-tools.py writes the IDE manifest; the archive's copy is not taken.
+  assert.equal(existsSync(join(app, 'resources/ide/manifest.json')), false)
   assert.equal(await readFile(join(app, 'resources/strata-runtime/manifest.json'), 'utf8'), '{"fixture":true}\n')
   assert.equal(await readFile(join(app, 'runtime/environment/media-verification.json'), 'utf8'), '{}\n')
   await bootstrapReleaseInputs({ appDirectory: app, manifest, inputsDirectory: f.source })

@@ -90,9 +90,10 @@ export async function restoreReleaseInputs(options) {
  * Extract only regular files and directories; existing different destination files are preserved.
  * @param {string} archive Verified gzip tar archive.
  * @param {string} destination Builder-owned generated directory.
+ * @param {string} [only] Extract only this top-level folder of the archive; every member is still checked.
  * @returns {Promise<void>} Resolves after safe archive members have been copied.
  */
-export async function extractBuildInput(archive, destination) {
+export async function extractBuildInput(archive, destination, only) {
   await releaseTarget(dirname(destination), basename(destination))
   const names = new Map()
   let invalid
@@ -116,7 +117,8 @@ export async function extractBuildInput(archive, destination) {
   const staging = join(destination, `.release-input-${randomUUID()}`)
   await mkdir(staging)
   try {
-    await tar.x({ file: archive, cwd: staging, strict: true, preservePaths: false, noChmod: false })
+    const wanted = only === undefined ? undefined : path => { const name = path.replace(/^\.\//u, '').replace(/\/$/u, ''); return name === only || name.startsWith(`${only}/`) }
+    await tar.x({ file: archive, cwd: staging, strict: true, preservePaths: false, noChmod: false, ...(wanted ? { filter: wanted } : {}) })
     async function merge(relative = '') {
       for (const entry of await readdir(join(staging, relative), { withFileTypes: true })) {
         const path = relative ? `${relative}/${entry.name}` : entry.name
@@ -166,7 +168,8 @@ export async function bootstrapReleaseInputs(options) {
   for (const path of required) if (!manifest.files.some(entry => entry.path === path && entry.category !== 'installer')) throw new Error(`Required build input is absent: ${path}`)
   const offline = join(app, `release/offline-${manifest.releaseVersion}`)
   await restoreReleaseInputs({ ...options, outputDirectory: offline })
-  await extractBuildInput(join(offline, 'build-inputs/ide-resources.tar.gz'), join(app, 'resources/ide'))
+  // The IDE tools themselves come from prepare-ide-tools.py; the archive still carries the offline Ubuntu packages.
+  await extractBuildInput(join(offline, 'build-inputs/ide-resources.tar.gz'), join(app, 'resources/ide'), 'system-packages')
   await extractBuildInput(join(offline, 'build-inputs/strata-runtime.tar.gz'), join(app, 'resources/strata-runtime'))
   await extractBuildInput(join(offline, 'environment-components/windows-basic.tar.gz'), join(app, 'runtime/component-stage/windows-basic'))
   const catalog = []
