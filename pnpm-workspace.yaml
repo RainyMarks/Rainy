@@ -16,13 +16,8 @@ overrides:
 # Install scripts are denied unless listed here.
 allowBuilds:
   esbuild: true
-  electron: true
-  node-pty: true
   '@google/genai': false
   protobufjs: false
   electron-winstaller: false
   msgpackr-extract: false
 
-patchedDependencies:
-  # Tool-call arguments are parsed once at the end instead of on every streamed delta.
-  '@earendil-works/pi-ai@1.0.0': patches/@earendil-works__pi-ai@1.0.0.patch

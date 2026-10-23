@@ -17,12 +17,12 @@ async function fixture(t) {
   for (const dir of ['toolpacks', 'scripts', 'resources/ide/system-packages']) await mkdir(join(app, dir), { recursive: true })
   const hash = value => createHash('sha256').update(value).digest('hex')
   const licenses = [{ id: 'fixture-license', version: '1', url: 'https://example.invalid/LICENSE', path: 'LICENSE.txt', bytes: 7, sha256: hash('license') }]
-  const source = JSON.stringify({ assets: [], licenses, ubuntuBaseline: '26.04', systemPackages: ['compiler'] })
+  const source = JSON.stringify({ version: 2, platforms: ['linux-x64', 'win32-x64'], assets: [], licenses, ubuntuBaseline: '26.04', systemPackages: ['compiler'] })
   await writeFile(join(app, 'toolpacks/ide-tools.sources.json'), source)
   for (const name of ['prepare-ide-tools.py', 'install-ide-system-packages.py']) await writeFile(join(app, 'scripts', name), 'fixture')
   await writeFile(join(app, 'resources/ide/helper'), 'helper')
   await writeFile(join(app, 'resources/ide/LICENSE.txt'), 'license')
-  await writeFile(join(app, 'resources/ide/manifest.json'), JSON.stringify({ version: 1, assets: [], licenses, sourceSha256: hash(source),
+  await writeFile(join(app, 'resources/ide/manifest.json'), JSON.stringify({ version: 2, platform: 'linux-x64', assets: [], licenses, sourceSha256: hash(source),
     preparerSha256: hash('fixture'), installerSourceSha256: hash('fixture'), required: ['helper', 'LICENSE.txt'],
     files: [{ path: 'helper', bytes: 6, sha256: hash('helper') }, { path: 'LICENSE.txt', bytes: 7, sha256: hash('license') }] }))
   const system = join(app, 'resources/ide/system-packages')

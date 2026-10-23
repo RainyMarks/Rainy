@@ -15,5 +15,5 @@
     "resolveJsonModule": true,
     "types": ["vite/client"]
   },
-  "include": ["src/renderer", "src/shared/rpc.ts", "src/shared/brand.ts", "src/shared/config.ts", "src/shared/budget.ts", "src/shared/*-protocol.ts", "src/editor", "tests/renderer"]
+  "include": ["src/renderer", "src/shared/rpc.ts", "src/shared/brand.ts", "src/shared/config.ts", "src/shared/*-protocol.ts", "tests/renderer"]
 }

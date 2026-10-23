@@ -3,11 +3,18 @@
 param([string]$Distribution = 'Ubuntu', [string]$ComponentSource, [string]$StrataArchive)
 $ErrorActionPreference = 'Stop'
 $rainyApp = Split-Path $PSScriptRoot -Parent
-# The native application (native/Cargo.toml) gives the release its version; the Host package must carry the same one.
+# The native application (native/Cargo.toml) gives the release its version; the viewer page (package.json) carries the same one.
 $rainyVersion = [regex]::Match((Get-Content -LiteralPath (Join-Path $rainyApp 'native/Cargo.toml') -Raw), '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"').Groups[1].Value
 $rainyHostVersion = (Get-Content -LiteralPath (Join-Path $rainyApp 'package.json') -Raw | ConvertFrom-Json).version
 if (-not $rainyVersion) { throw 'native/Cargo.toml has no [workspace.package] version' }
 if ($rainyHostVersion -ne $rainyVersion) { throw "package.json is version $rainyHostVersion, native/Cargo.toml $rainyVersion; release them together" }
+# Windows Python prepares the Windows IDE tools; WSL's python3 the Linux ones.
+function Find-Python {
+    if ($env:RAINY_PYTHON) { return @($env:RAINY_PYTHON) }
+    if (Get-Command py.exe -ErrorAction SilentlyContinue) { return @('py.exe', '-3') }
+    if (Get-Command python.exe -ErrorAction SilentlyContinue) { return @('python.exe') }
+    throw 'Install Python 3 for Windows, or set RAINY_PYTHON to its python.exe'
+}
 $rainyOffline = Join-Path $rainyApp "release/offline-$rainyVersion"
 function Check-Exit { if ($LASTEXITCODE -ne 0) { throw "Build step failed with exit code $LASTEXITCODE" } }
 # Git for Windows' bash (or MSYS2's) runs the native build script; System32\bash.exe would be WSL.
@@ -27,13 +34,19 @@ try {
     $rainyInputs = @('--output', $rainyOffline)
     if ($ComponentSource) { $rainyInputs += @('--components', [IO.Path]::GetFullPath($ComponentSource)) }
     & node --import tsx (Join-Path $PSScriptRoot 'prepare-release-inputs.ts') @rainyInputs; Check-Exit
+    # The IDE tools of both platforms (Ruff, ty, TypeScript 7, debugpy, js-debug), pinned in toolpacks/ide-tools.sources.json.
+    $rainyPython = @(Find-Python)
+    $rainyPythonArgs = @($rainyPython | Select-Object -Skip 1) + @((Join-Path $PSScriptRoot 'prepare-ide-tools.py'), '--platform', 'win32-x64')
+    & $rainyPython[0] @rainyPythonArgs; Check-Exit
+    $ideScript = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $PSScriptRoot 'prepare-ide-tools.py')).Trim(); Check-Exit
+    & wsl.exe -d $Distribution --exec python3 $ideScript --platform linux-x64; Check-Exit
     & node --import tsx (Join-Path $PSScriptRoot 'build.ts') --release; Check-Exit
-    & node (Join-Path $PSScriptRoot 'runtime-graph.mjs') --windows; Check-Exit
+    # The Rust Host for Windows and, through cargo-zigbuild, for Linux.
+    & (Find-Bash) ((Join-Path $rainyApp 'native/scripts/build-hosts.sh').Replace('\', '/')); Check-Exit
     & node (Join-Path $PSScriptRoot 'stage-windows.mjs'); Check-Exit
-    & node (Join-Path $PSScriptRoot 'runtime-graph.mjs'); Check-Exit
     $stageScript = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $PSScriptRoot 'stage-linux.py')).Trim(); Check-Exit
     $runtimeDir = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $rainyApp 'runtime')).Trim(); Check-Exit
-    & wsl.exe -d $Distribution --exec python3 $stageScript --graph "$runtimeDir/graph.json" --output $runtimeDir; Check-Exit
+    & wsl.exe -d $Distribution --exec python3 $stageScript --output $runtimeDir; Check-Exit
     # Strata, PHP, the Linux runtime base and the offline Ubuntu packages ship as downloadable components; their pieces go to the resources release.
     $rainyPieces = Join-Path $rainyApp "release/resources-$rainyVersion"
     foreach ($rainyModule in @('php', 'linux-runtime', 'linux-dev-packages')) { Remove-Item -LiteralPath (Join-Path $rainyPieces $rainyModule) -Recurse -Force -ErrorAction SilentlyContinue }

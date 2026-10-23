@@ -3,8 +3,8 @@
  *
  * 1. check that every input belongs to the version in native/Cargo.toml (a QA build only warns), then stage
  *    `release/win-unpacked` afresh: `RainyAgent.exe` (native/target/release/Rainy.exe), `WebView2Loader.dll`, the
- *    license files, `THIRD_PARTY_NOTICES.md` with the Rust crates and their license texts appended, and `resources\`
- *    (runtime/windows-host plus the resources 3.x shipped beside it, without its Electron files);
+ *    license files, `THIRD_PARTY_NOTICES.md` with the Rust crates of Rainy.exe and both Hosts and their license texts
+ *    appended, and `resources\` (runtime/windows-host plus the resources beside it);
  * 2. check that RainyAgent.exe carries the public release keys and sign the resources with the release key
  *    (`scripts/sign-release.mjs`); with --skip-sign, check that it carries none;
  * 3. build `Rainy-<version>-windows-x64-setup.exe` from `native/installer/rainy.nsi` with NSIS 3.04, extracted afresh from
@@ -118,7 +118,7 @@ export function versionStrings(exe) {
  */
 export function releaseMismatches(version, { host, linux, exe, modules }) {
   const problems = []
-  const hostVersion = (Array.isArray(host?.packages) ? host.packages : []).find(item => item?.name === 'rainy-agent')?.version
+  const hostVersion = typeof host?.host === 'string' ? host.host : undefined
   if (hostVersion !== version) problems.push(`runtime/windows-host/runtime.json holds the Host ${hostVersion ?? 'without a version'}`)
   if (linux?.version !== version) problems.push(`runtime/linux-runtime.json is for ${linux?.version ?? 'no version'}`)
   if (exe.fileVersion !== version || exe.productVersion !== version) {
@@ -257,17 +257,31 @@ async function licenseFiles(crate) {
   return [...found].sort()
 }
 
-/** The crates RainyAgent.exe links on the release target of native/rust-toolchain.toml, with their license texts. */
+/** The Linux Host's target (native/scripts/build-hosts.sh). */
+const LINUX_TARGET = 'x86_64-unknown-linux-gnu'
+
+/**
+ * The crates RainyAgent.exe and the Windows Host link on the release target of native/rust-toolchain.toml, and the
+ * Linux Host on its own, with their license texts.
+ */
 async function rustLicenses() {
   const target = (await readFile(join(native, 'rust-toolchain.toml'), 'utf8')).match(/^targets\s*=\s*\[\s*"([^"]+)"/mu)?.[1]
   if (!target) throw new Error('native/rust-toolchain.toml names no target')
   const installed = join(cargoHome(), 'bin/cargo.exe')
   const cargo = process.env.CARGO ?? (existsSync(installed) ? installed : 'cargo')
-  const result = spawnSync(cargo, ['metadata', '--offline', '--locked', '--format-version', '1', '--filter-platform', target],
-    { cwd: native, encoding: 'utf8', maxBuffer: 1 << 28, windowsHide: true })
-  if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`cargo metadata failed:\n${result.stderr}`)
-  const crates = linkedCrates(JSON.parse(result.stdout))
+  const metadataFor = platform => {
+    const result = spawnSync(cargo, ['metadata', '--offline', '--locked', '--format-version', '1', '--filter-platform', platform],
+      { cwd: native, encoding: 'utf8', maxBuffer: 1 << 28, windowsHide: true })
+    if (result.error) throw result.error
+    if (result.status !== 0) throw new Error(`cargo metadata failed:\n${result.stderr}`)
+    return JSON.parse(result.stdout)
+  }
+  const [windows, linux] = [metadataFor(target), metadataFor(LINUX_TARGET)]
+  const byId = new Map()
+  for (const [metadata, rootName] of [[windows, 'rainy'], [windows, 'rainy-host'], [linux, 'rainy-host']]) {
+    for (const crate of linkedCrates(metadata, rootName)) byId.set(crate.id, crate)
+  }
+  const crates = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
   const texts = new Map()
   const unlicensed = []
   for (const crate of crates) {
@@ -294,9 +308,10 @@ async function notices() {
   const loader = normalized(await readFile(join(native, 'installer/WebView2Loader-LICENSE.txt'), 'utf8'))
   const cell = text => String(text).replaceAll('|', '\\|').replaceAll('<', '\\<').replaceAll('>', '\\>')
   const license = crate => crate.license ?? (crate.license_file ? `see ${basename(crate.license_file)} in the crate` : 'not declared')
-  const lines = [base, '', '## Rust crates in RainyAgent.exe', '',
-    `RainyAgent.exe is built from the Rust workspace in \`native/\` for ${target} and links the crates below, as \`native/Cargo.lock\` `
-      + 'locks them. Each is used under the license its Cargo.toml declares; their license and notice files follow.', '',
+  const lines = [base, '', '## Rust crates in RainyAgent.exe and the Host', '',
+    `RainyAgent.exe and the Host (\`rainy-host.exe\`, and \`rainy-host\` in the Linux runtime for WSL and SSH) are built from the Rust `
+      + `workspace in \`native/\` for ${target} and ${LINUX_TARGET} and link the crates below, as \`native/Cargo.lock\` locks them. `
+      + 'Each is used under the license its Cargo.toml declares; their license and notice files follow.', '',
     '| Crate | Version | License |', '| --- | --- | --- |', ...crates.map(crate => `| ${crate.name} | ${crate.version} | ${cell(license(crate))} |`), '',
     '## WebView2Loader.dll', '',
     '`WebView2Loader.dll` is the Microsoft Edge WebView2 loader of the Microsoft WebView2 SDK, as the `webview2-com-sys` crate carries '

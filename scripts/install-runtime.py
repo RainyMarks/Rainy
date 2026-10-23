@@ -1,8 +1,8 @@
 """Verify and unpack the Host into Rainy's private directory on a WSL distribution or an SSH server.
 
-The runtime comes in two layers. The base (`linux-runtime.tar.xz`: Node.js, the dependency packages, the IDE resources
-and ripgrep) is downloaded and changes only when those change; it is identified by the digest of its content. The
-application layer (`linux-app.tar.gz`: the Host, the interface and the small resources) ships with every desktop
+The runtime comes in two layers. The base (`linux-runtime.tar.xz`: the IDE tools in `app/resources/ide`) is downloaded
+and changes only when those change; it is identified by the digest of its content. The application layer
+(`linux-app.tar.gz`: the Rust Host `rainy-host`, the viewer page and the small resources) ships with every desktop
 version. A version installs as `<application digest>/`, which holds the application layer and links to `base-<id>/`, so
 an update whose base did not change unpacks a few megabytes and downloads nothing.
 
@@ -14,7 +14,7 @@ the base downloaded there when needed.
 standard input.
 
 METADATA is a path to `linux-runtime.json`, or its JSON text (the SSH modes, which pass every argument inline):
-{sha256, bytes} of the base archive, `content` (the base's identity), `app: {sha256, bytes}`, and the Node and Rainy versions.
+{sha256, bytes} of the base archive, `content` (the base's identity), `app: {sha256, bytes}`, and the Rainy version.
 PIECES is a JSON list of `{url, bytes, sha256}` whose concatenation is the base archive.
 """
 import fcntl
@@ -36,16 +36,12 @@ CHUNK = 1024 * 1024
 # A server that downloads slower than this after a minute leaves the transfer to the desktop's upload.
 SLOW_BYTES_PER_SECOND = 256 * 1024
 SLOW_AFTER_SECONDS = 60
-# Parts of `app/` that belong to the base: dependency links, the ripgrep link and the IDE resources.
-BASE_IN_APP = ('app/node_modules', 'app/bin', 'app/resources/ide')
+# The parts of the runtime that belong to the base: the IDE tools.
+BASE_IN_APP = ('app/resources/ide',)
 
 
 def in_app_layer(relative):
     """Whether a path of the runtime (relative, with `/`) belongs to the application layer rather than the base."""
-    if relative == 'runtime.json':
-        return True
-    if relative != 'app' and not relative.startswith('app/'):
-        return False
     return not any(relative == kept or relative.startswith(kept + '/') for kept in BASE_IN_APP)
 
 
@@ -124,11 +120,11 @@ def running_runtimes(owned):
 
 
 def base_of(runtime):
-    """The base a layered runtime links to, or None for a runtime from before the layers."""
-    node = runtime / 'node'
-    if not node.is_symlink():
-        return None
-    return Path(os.readlink(node)).parts[1] if len(Path(os.readlink(node)).parts) > 1 else None
+    """The base a layered runtime links to (through its IDE tools, or its `node` in Rainy 3.6-4.0), or None."""
+    for link in (runtime / BASE_IN_APP[0], runtime / 'node'):
+        if link.is_symlink():
+            return next((part for part in Path(os.readlink(link)).parts if part.startswith('base-')), None)
+    return None
 
 
 def prune(owned, metadata):
@@ -213,33 +209,11 @@ def unpack(archive, destination):
 
 
 def installed(target):
-    return {'node': str(target / 'node/bin/node'), 'host': str(target / 'app/dist/host.js')}
+    return {'host': str(target / 'rainy-host')}
 
 
 def matches(archive, expected):
     return archive is not None and archive.is_file() and archive.stat().st_size == expected['bytes'] and file_digest(archive) == expected['sha256']
-
-
-def seed(owned, base, identity):
-    """Reuse the base of a runtime an earlier version unpacked when its content is the same, by hard links, so the
-    first update to layered runtimes downloads nothing either. Returns whether the base is now installed."""
-    candidates = [entry for entry in owned.iterdir() if DIGEST.fullmatch(entry.name) and not entry.is_symlink()
-                  and (entry / '.complete').is_file() and (entry / 'node').is_dir() and not (entry / 'node').is_symlink()]
-    for candidate in sorted(candidates, key=lambda entry: entry.stat().st_mtime, reverse=True):
-        if content_digest(candidate) != identity:
-            continue
-        staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
-        os.rmdir(staging)
-
-        def ignore(directory, names):
-            relative_dir = Path(directory).relative_to(candidate).as_posix()
-            return {name for name in names if not in_base(name if relative_dir == '.' else f'{relative_dir}/{name}')
-                    or (relative_dir == '.' and name == '.complete')}
-        shutil.copytree(candidate, staging, symlinks=True, copy_function=os.link, ignore=ignore)
-        (staging / '.complete').write_text(identity + '\n')
-        staging.rename(base)
-        return True
-    return False
 
 
 def install(owned, base_archive, app_archive, metadata):
@@ -261,21 +235,18 @@ def install(owned, base_archive, app_archive, metadata):
             if matches(base_archive, metadata):
                 staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
                 extract(base_archive, staging)
-                if not (staging / 'node/bin/node').is_file():
-                    raise RuntimeError('Rainy runtime is missing its executable')
+                if not (staging / BASE_IN_APP[0] / 'manifest.json').is_file():
+                    raise RuntimeError('Rainy runtime is missing its IDE tools')
                 (staging / '.complete').write_text(identity + '\n')
                 staging.rename(base)
-            elif not seed(owned, base, identity):
+            else:
                 # The carrier downloads the base only when no installed one has this content.
                 return {'needsArchive': True}
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
         extract(app_archive, staging)
-        if not (staging / 'app/dist/host.js').is_file():
+        if not (staging / 'rainy-host').is_file():
             raise RuntimeError('Rainy runtime is missing its Host')
-        # The application layer links to the base: its top-level entries, and the base parts that live under app/.
-        for entry in base.iterdir():
-            if entry.name not in ('app', '.complete'):
-                (staging / entry.name).symlink_to(f'../{base.name}/{entry.name}')
+        # The application layer links to the base parts.
         for kept in BASE_IN_APP:
             if (base / kept).exists() or (base / kept).is_symlink():
                 link = staging / kept

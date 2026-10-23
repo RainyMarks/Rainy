@@ -1,4 +1,4 @@
-/** Pinned official installation media; packaging must verify these exact bytes. */
+/** Pinned official installation media of the environment setup; packaging verifies these exact bytes. */
 export const environmentMedia = {
   wsl: {
     version: '3.0.1.0',

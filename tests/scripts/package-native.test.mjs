@@ -35,7 +35,7 @@ test('reads FileVersion and ProductVersion from the version resource only', () =
 
 test('a release needs every input of its own version', () => {
   const inputs = version => ({
-    host: { packages: [{ name: 'node-pty', version: '1.2.0' }, { name: 'rainy-agent', version }] },
+    host: { version: 2, host: version },
     linux: { version },
     exe: { fileVersion: version, productVersion: version },
     modules: { modules: [
@@ -50,7 +50,7 @@ test('a release needs every input of its own version', () => {
   assert.match(problems.join('\n'), /linux-runtime\.json is for 3\.9\.1/u)
   assert.match(problems.join('\n'), /Rainy\.exe is 3\.9\.1/u)
   assert.match(problems.join('\n'), /downloads php from .*v3\.9\.1-resources/u)
-  assert.equal(releaseMismatches('4.0.0', { ...inputs('4.0.0'), host: { packages: [] }, linux: {} }).length, 2)
+  assert.equal(releaseMismatches('4.0.0', { ...inputs('4.0.0'), host: { version: 2 }, linux: {} }).length, 2)
   assert.equal(releaseMismatches('4.0.0', { ...inputs('4.0.0'), exe: { fileVersion: '4.0.0' } }).length, 1)
 })
 

@@ -245,7 +245,7 @@ p=json.loads(sys.argv[1])
 os.chdir(os.path.expanduser(\"~\"))
 env=dict(os.environ)
 env.update(p[\"env\"])
-os.execve(p[\"node\"],[p[\"node\"],p[\"host\"]],env)
+os.execve(p[\"host\"],[p[\"host\"]],env)
 ";
 
 fn ssh_command(args: &[String], env: &[(String, String)]) -> Result<Command> {
@@ -418,7 +418,7 @@ impl<R: Read> Read for Counted<R> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRuntime {
     /// The Host is installed: absolute paths of `node` and `host.js` on the server.
-    Ready { node: String, host: String },
+    Ready { host: String },
     /// The base of this version is missing there; `error` says why the server could not download it, when it tried.
     NeedsArchive { error: Option<String> },
     /// Not an x86_64 Linux server: its system and machine.
@@ -436,7 +436,7 @@ fn installer_answer(stdout: &str) -> Result<ServerRuntime> {
         return Ok(ServerRuntime::NeedsArchive { error: value.get("error").and_then(Value::as_str).map(str::to_owned) });
     }
     match crate::wsl::parse_installed(line)? {
-        Installed::Ready { node, host } => Ok(ServerRuntime::Ready { node, host }),
+        Installed::Ready { host } => Ok(ServerRuntime::Ready { host }),
         Installed::NeedsArchive => Ok(ServerRuntime::NeedsArchive { error: None }),
     }
 }
@@ -520,10 +520,10 @@ pub fn receive_runtime(
 
 /// The Host's paths from the installer's answer, or why there are none. `uploaded`: the base was sent from here, so a
 /// base still missing means the upload broke off.
-pub fn installed_paths(target: &Destination, answer: ServerRuntime, uploaded: bool) -> Result<(String, String)> {
+pub fn installed_paths(target: &Destination, answer: ServerRuntime, uploaded: bool) -> Result<String> {
     let name = name(target);
     match answer {
-        ServerRuntime::Ready { node, host } => Ok((node, host)),
+        ServerRuntime::Ready { host } => Ok(host),
         ServerRuntime::Unsupported(system) => bail!(localized(
             &format!("{name} 是 {system}；SSH 远程开发目前只支持 x86_64 Linux 服务器。"),
             &format!("{name} runs {system}; SSH remote development supports x86_64 Linux servers only."),
@@ -558,10 +558,10 @@ pub fn free_loopback_port() -> Result<u16> {
 
 /// The Host on the server: its port is forwarded to the same loopback port here, so the page's origin matches the one
 /// the Host checks; closing the session closes the Host's standard input, which stops it (`SshHostTransport`).
-pub fn host_command(target: &Destination, node: &str, host: &str, env: &[(String, String)], port: u16, askpass: &[(String, String)]) -> Result<HostCommand> {
+pub fn host_command(target: &Destination, host: &str, env: &[(String, String)], port: u16, askpass: &[(String, String)]) -> Result<HostCommand> {
     let mut variables: Map<String, Value> = env.iter().map(|(name, value)| (name.clone(), Value::String(value.clone()))).collect();
     variables.insert("RAINY_PORT".into(), Value::String(port.to_string()));
-    let parameters = json!({ "node": node, "host": host, "env": variables }).to_string();
+    let parameters = json!({ "host": host, "env": variables }).to_string();
     let args = arguments(target, &remote_python(HOST_LAUNCHER, &[&parameters]), Some(port));
     Ok(HostCommand {
         program: executable()?,
@@ -613,8 +613,8 @@ mod tests {
 
     #[test]
     fn reads_installer_answers() {
-        let ready = installer_answer("noise\n{\"node\": \"/h/r/node/bin/node\", \"host\": \"/h/r/app/dist/host.js\"}\n").unwrap();
-        assert_eq!(ready, ServerRuntime::Ready { node: "/h/r/node/bin/node".into(), host: "/h/r/app/dist/host.js".into() });
+        let ready = installer_answer("noise\n{\"host\": \"/h/r/rainy-host\"}\n").unwrap();
+        assert_eq!(ready, ServerRuntime::Ready { host: "/h/r/rainy-host".into() });
         assert_eq!(installer_answer("{\"needsArchive\": true}").unwrap(), ServerRuntime::NeedsArchive { error: None });
         assert_eq!(
             installer_answer("{\"needsArchive\": true, \"error\": \"URLError: timed out\"}").unwrap(),
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(installer_answer("{\"unsupported\": \"Linux aarch64\"}").unwrap(), ServerRuntime::Unsupported("Linux aarch64".into()));
         assert!(installer_answer("not json").is_err());
         let target = Destination { destination: "box".into(), port: None };
-        assert_eq!(installed_paths(&target, ready, false).unwrap().0, "/h/r/node/bin/node");
+        assert_eq!(installed_paths(&target, ready, false).unwrap(), "/h/r/rainy-host");
         assert!(installed_paths(&target, ServerRuntime::NeedsArchive { error: None }, true).is_err());
     }
 

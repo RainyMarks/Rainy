@@ -6,7 +6,6 @@
  * - response `{ id, result }` or `{ id, error: RpcErrorBody }` from the Host
  * - event    `{ event, data }` from the Host, broadcast to every connected renderer
  */
-import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai'
 import type { StreamPatch } from './stream-patch.ts'
 import type { Accent, ColorScheme } from './appearance.ts'
 import type { IdeExecutionRequest, IdeExecutionResponseMap } from './ide-execution-protocol.ts'
@@ -21,9 +20,30 @@ export type { WorkspaceId }
 /** Chat identifier: a UUID string. */
 export type SessionId = string
 
+// ───────────────────────────── Messages ─────────────────────────────
+// The shapes of `rainy-protocol`'s `chat` module (pi-ai's in 3.x), as far as pages read them.
+
+export interface TextContent { type: 'text'; text: string; textSignature?: string | undefined }
+export interface ImageContent { type: 'image'; data: string; mimeType: string }
+export interface ThinkingContent { type: 'thinking'; thinking: string; thinkingSignature?: string | undefined; redacted?: boolean | undefined }
+export interface ToolCall { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> }
+
+/** One model reply. */
+export interface AssistantMessage {
+  role: 'assistant'
+  content: (TextContent | ThinkingContent | ToolCall)[]
+  api: string
+  provider: string
+  model: string
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  stopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
+  errorMessage?: string | undefined
+  timestamp: number
+}
+
 // ───────────────────────────── Models and settings ─────────────────────────────
 
-/** Wire protocols the Host can stream through pi-ai. */
+/** Wire protocols the Host speaks to model services. */
 export type ModelApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages'
 /** RainyAgent reasoning levels; each model maps them to its own wire values. */
 export type ThinkingLevel = 'off' | 'low' | 'high' | 'max'

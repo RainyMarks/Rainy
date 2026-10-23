@@ -105,8 +105,8 @@ pub struct RuntimeFiles {
 /// What the installer answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Installed {
-    /// The Host is installed: absolute Linux paths of `node` and `host.js`.
-    Ready { node: String, host: String },
+    /// The Host is installed: the absolute Linux path of `rainy-host`.
+    Ready { host: String },
     /// The base of this version is not installed and no archive was given; download it and try again.
     NeedsArchive,
 }
@@ -128,11 +128,9 @@ pub fn parse_installed(text: &str) -> Result<Installed> {
     if value.get("needsArchive").is_some() {
         return Ok(Installed::NeedsArchive);
     }
-    let node = value.get("node").and_then(Value::as_str).filter(|path| path.starts_with('/'));
-    let host = value.get("host").and_then(Value::as_str).filter(|path| path.starts_with('/'));
-    match (node, host) {
-        (Some(node), Some(host)) => Ok(Installed::Ready { node: node.to_owned(), host: host.to_owned() }),
-        _ => bail!("The runtime files of the execution environment are invalid: {}", line.trim()),
+    match value.get("host").and_then(Value::as_str).filter(|path| path.starts_with('/')) {
+        Some(host) => Ok(Installed::Ready { host: host.to_owned() }),
+        None => bail!("The runtime files of the execution environment are invalid: {}", line.trim()),
     }
 }
 
@@ -144,14 +142,13 @@ pub fn prune_runtimes(distro: &str, files: &RuntimeFiles) -> Result<Vec<String>>
     Ok(value.get("removed").and_then(Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()).unwrap_or_default())
 }
 
-/// The Host inside the distribution: `wsl.exe --distribution D --exec env K=V… node host.js` (`WslHostTransport`).
-pub fn host_command(distro: &str, node: &str, host: &str, env: &[(String, String)]) -> HostCommand {
+/// The Host inside the distribution: `wsl.exe --distribution D --exec env K=V… rainy-host` (`WslHostTransport`).
+pub fn host_command(distro: &str, host: &str, env: &[(String, String)]) -> HostCommand {
     let mut args: Vec<OsString> = ["--distribution", distro, "--exec", "env"].into_iter().map(OsString::from).collect();
     if let Ok(home) = std::env::var("RAINY_DEV_WSL_HOME") {
         args.push(format!("HOME={home}").into());
     }
     args.extend(env.iter().map(|(name, value)| OsString::from(format!("{name}={value}"))));
-    args.push(node.into());
     args.push(host.into());
     HostCommand {
         program: "wsl.exe".into(),
@@ -175,10 +172,10 @@ mod tests {
     fn parses_installer_answers() {
         assert_eq!(parse_installed("noise\n{\"needsArchive\": true}\n").unwrap(), Installed::NeedsArchive);
         assert_eq!(
-            parse_installed(r#"{"node": "/h/.rainy-agent/runtime/x/node/bin/node", "host": "/h/.rainy-agent/runtime/x/app/dist/host.js"}"#).unwrap(),
-            Installed::Ready { node: "/h/.rainy-agent/runtime/x/node/bin/node".into(), host: "/h/.rainy-agent/runtime/x/app/dist/host.js".into() }
+            parse_installed(r#"{"host": "/h/.rainy-agent/runtime/x/rainy-host"}"#).unwrap(),
+            Installed::Ready { host: "/h/.rainy-agent/runtime/x/rainy-host".into() }
         );
-        assert!(parse_installed(r#"{"node": "relative", "host": "/x"}"#).is_err());
+        assert!(parse_installed(r#"{"host": "relative"}"#).is_err());
         assert!(parse_installed("").is_err());
     }
 
@@ -200,11 +197,11 @@ mod tests {
 
     #[test]
     fn builds_the_host_command() {
-        let command = host_command("Ubuntu", "/n/node", "/a/host.js", &[("RAINY_HOME".into(), "/home/u/.rainy-agent".into())]);
+        let command = host_command("Ubuntu", "/r/rainy-host", &[("RAINY_HOME".into(), "/home/u/.rainy-agent".into())]);
         let args: Vec<String> = command.args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(&args[..4], ["--distribution", "Ubuntu", "--exec", "env"]);
         assert!(args.contains(&"RAINY_HOME=/home/u/.rainy-agent".to_owned()));
-        assert_eq!(&args[args.len() - 2..], ["/n/node", "/a/host.js"]);
+        assert_eq!(args.last().map(String::as_str), Some("/r/rainy-host"));
         assert!(command.wait_for_loopback);
     }
 }

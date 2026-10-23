@@ -1,34 +1,130 @@
 {
-  "version": 1,
-  "platform": "linux-x64",
+  "version": 2,
+  "platforms": [
+    "linux-x64",
+    "win32-x64"
+  ],
   "ubuntuBaseline": "26.04",
   "assets": [
     {
       "id": "debugpy",
       "version": "1.8.22",
+      "platform": "any",
       "url": "https://files.pythonhosted.org/packages/56/3d/c7dc9f35bc9e22cdb53679f844bee40fd5cff871862f60595869a433400d/debugpy-1.8.22-py2.py3-none-any.whl",
       "sha256": "a9e9d3550e15ca479c59333e90845029190531f0cacfedab3b815a57bd913947",
       "bytes": 5374857,
       "format": "zip",
-      "destination": "python"
+      "place": [
+        {
+          "from": "",
+          "to": "python"
+        }
+      ]
     },
     {
       "id": "js-debug",
       "version": "1.140.0",
+      "platform": "any",
       "url": "https://github.com/microsoft/vscode-js-debug/releases/download/v1.140.0/js-debug-dap-v1.140.0.tar.gz",
       "sha256": "27dab92937ec1ab35821ae955aac867544fe06a1b6307229049f2d789af10968",
       "bytes": 1249709,
       "format": "tar.gz",
-      "destination": "."
+      "place": [
+        {
+          "from": "js-debug",
+          "to": "js-debug"
+        }
+      ]
     },
     {
       "id": "ruff",
       "version": "0.16.9",
+      "platform": "linux-x64",
       "url": "https://github.com/astral-sh/ruff/releases/download/0.16.9/ruff-x86_64-unknown-linux-gnu.tar.gz",
       "sha256": "1bfbb819b5d4f9af501748862276b60e412d336034d99387691a4d4bce7a6f13",
       "bytes": 10016146,
       "format": "tar.gz",
-      "destination": "."
+      "place": [
+        {
+          "from": "ruff-x86_64-unknown-linux-gnu/ruff",
+          "to": "bin/ruff"
+        }
+      ]
+    },
+    {
+      "id": "ruff",
+      "version": "0.16.9",
+      "platform": "win32-x64",
+      "url": "https://github.com/astral-sh/ruff/releases/download/0.16.9/ruff-x86_64-pc-windows-msvc.zip",
+      "sha256": "fe5eb06b2f185b0d8035e17df9df0c831e59b3c98f11170206500650218a0b76",
+      "bytes": 9762824,
+      "format": "zip",
+      "place": [
+        {
+          "from": "ruff.exe",
+          "to": "bin/ruff.exe"
+        }
+      ]
+    },
+    {
+      "id": "ty",
+      "version": "0.0.85",
+      "platform": "linux-x64",
+      "url": "https://github.com/astral-sh/ty/releases/download/0.0.85/ty-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "0c3564f13296c42f96e576a06276f7f0b67cbdf030888ff99c697259946162f0",
+      "bytes": 13904841,
+      "format": "tar.gz",
+      "place": [
+        {
+          "from": "ty-x86_64-unknown-linux-gnu/ty",
+          "to": "bin/ty"
+        }
+      ]
+    },
+    {
+      "id": "ty",
+      "version": "0.0.85",
+      "platform": "win32-x64",
+      "url": "https://github.com/astral-sh/ty/releases/download/0.0.85/ty-x86_64-pc-windows-msvc.zip",
+      "sha256": "d03974c578a0f1842f8548737435ccea415119deaec7ee8d1ebbef716e50fd8c",
+      "bytes": 13239288,
+      "format": "zip",
+      "place": [
+        {
+          "from": "ty.exe",
+          "to": "bin/ty.exe"
+        }
+      ]
+    },
+    {
+      "id": "typescript",
+      "version": "7.0.2",
+      "platform": "linux-x64",
+      "url": "https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.0.2.tgz",
+      "sha256": "7ecad6f67377e831856367ab062ef394f21506a611405bf8ac0ff039348637d3",
+      "bytes": 9669334,
+      "format": "tar.gz",
+      "place": [
+        {
+          "from": "package",
+          "to": "typescript"
+        }
+      ]
+    },
+    {
+      "id": "typescript",
+      "version": "7.0.2",
+      "platform": "win32-x64",
+      "url": "https://registry.npmjs.org/@typescript/typescript-win32-x64/-/typescript-win32-x64-7.0.2.tgz",
+      "sha256": "61fc4e141d2bc687db580e71bbfa63b9c209f0310645d82ca1b457eb3a24fd19",
+      "bytes": 9776626,
+      "format": "tar.gz",
+      "place": [
+        {
+          "from": "package",
+          "to": "typescript"
+        }
+      ]
     }
   ],
   "licenses": [
@@ -39,7 +135,29 @@
       "sha256": "2597d854122b77ddc71971564ca2350a37608575ce324adc5650a2b2051c8f18",
       "bytes": 20731,
       "path": "licenses/ruff-0.16.9-LICENSE.txt"
+    },
+    {
+      "id": "ty-license",
+      "version": "0.0.85",
+      "url": "https://raw.githubusercontent.com/astral-sh/ty/0.0.85/LICENSE",
+      "sha256": "860e3d7a86b84e6a7012c7a635fc64df475cebc6cce34dfeb73a5982ec58176c",
+      "bytes": 1077,
+      "path": "licenses/ty-0.0.85-LICENSE.txt"
     }
   ],
-  "systemPackages": ["build-essential", "gdb", "cmake", "ninja-build", "clangd", "clang-format", "python3-venv", "php-cli", "php-curl", "php-mbstring", "php-sqlite3", "php-zip", "php-xml"]
+  "systemPackages": [
+    "build-essential",
+    "gdb",
+    "cmake",
+    "ninja-build",
+    "clangd",
+    "clang-format",
+    "python3-venv",
+    "php-cli",
+    "php-curl",
+    "php-mbstring",
+    "php-sqlite3",
+    "php-zip",
+    "php-xml"
+  ]
 }

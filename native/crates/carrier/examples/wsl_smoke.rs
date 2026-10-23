@@ -49,9 +49,9 @@ fn main() -> Result<()> {
         installed = wsl::install_runtime(&distro, &RuntimeFiles { base: Some(resources.join("linux-runtime.tar.xz")), ..files.clone() })?;
         println!("with base archive: {installed:?} ({:?})", started.elapsed());
     }
-    let Installed::Ready { node, host } = installed else { bail!("runtime not installed") };
+    let Installed::Ready { host } = installed else { bail!("runtime not installed") };
     let home = std::env::var("RAINY_DEV_WSL_HOME")?;
-    let command = wsl::host_command(&distro, &node, &host, &[
+    let command = wsl::host_command(&distro, &host, &[
         ("RAINY_EXECUTION_TARGET_ID".into(), format!("wsl:{distro}")),
         ("RAINY_EXECUTION_TARGET_LABEL".into(), format!("WSL · {distro}")),
         ("RAINY_HOME".into(), format!("{home}/.rainy-agent")),

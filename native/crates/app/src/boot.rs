@@ -122,10 +122,8 @@ fn dev_resources(install_root: &Path) -> Option<PathBuf> {
 /// The native Windows Host (`WindowsHostTransport`).
 pub fn windows_host(paths: &Paths) -> Result<HostCommand> {
     let root = paths.resources.join("windows-host");
-    let native = root.join("rainy-host.exe");
-    let node = root.join("node").join("node.exe");
-    let host = root.join("app").join("dist").join("host.js");
-    if !native.is_file() && (!node.is_file() || !host.is_file()) {
+    let host = root.join("rainy-host.exe");
+    if !host.is_file() {
         bail!(i18n::text(saved_locale(&paths.user_data), "native.windowsHostMissing"));
     }
     let data = |name: &str| paths.user_data.join(name).display().to_string();
@@ -137,17 +135,14 @@ pub fn windows_host(paths: &Paths) -> Result<HostCommand> {
             ("RAINY_HOME", data("native-home")),
             ("RAINY_TOOLCHAIN_ROOT", data("env")),
             ("RAINY_BUILTIN_PHP", php.display().to_string()),
-            // Module compilation is cached across launches; resolution still dominates the native Host's startup.
-            ("NODE_COMPILE_CACHE", data("node-compile-cache")),
             // Model requests follow the Windows system proxy, which the Host asks this process for.
             ("RAINY_CARRIER_PROXY", "1".to_owned()),
         ]
         .map(|(name, value)| (name.to_owned(), value)),
     );
-    let (program, args) = if native.is_file() { (native, Vec::new()) } else { (node, vec![host.into()]) };
     Ok(HostCommand {
-        program,
-        args,
+        program: host,
+        args: Vec::new(),
         env: env.into_iter().map(|(name, value)| (name.into(), value.into())).collect(),
         cwd: Some(paths.install_root.clone()),
         scrub_environment: true,
@@ -284,7 +279,7 @@ pub fn wsl_host(
         files.base = Some(modules.path(LINUX_RUNTIME)?);
         installed = wsl::install_runtime(distro, &files)?;
     }
-    let Installed::Ready { node, host } = installed else { bail!(i18n::text(locale, "native.linuxMismatch")) };
+    let Installed::Ready { host } = installed else { bail!(i18n::text(locale, "native.linuxMismatch")) };
     remove_linux_runtime(paths, modules, events);
     let state = wsl::linux_paths(distro, &[&carrier_state])?.remove(0);
     let mut env = shared_env(target);
@@ -298,7 +293,7 @@ pub fn wsl_host(
             Err(error) => log::warn!("Earlier WSL runtimes were not removed: {error:#}"),
         }) as Prune
     });
-    Ok(Some((wsl::host_command(distro, &node, &host, &env), prune)))
+    Ok(Some((wsl::host_command(distro, &host, &env), prune)))
 }
 
 /// The language of messages shown before the Host answers, as the last run recorded it.
@@ -594,7 +589,7 @@ fn ssh_host(
         answer = installer(&|env| ssh::receive_runtime(&destination, &files, &base, env, &report, &log))?;
         uploaded = true;
     }
-    let (node, host) = ssh::installed_paths(&destination, answer, uploaded)?;
+    let host = ssh::installed_paths(&destination, answer, uploaded)?;
     if uploaded {
         remove_linux_runtime(paths, modules, &events);
     }
@@ -607,7 +602,7 @@ fn ssh_host(
         let session = askpass.session();
         events.clear_recent();
         let port = ssh::free_loopback_port()?;
-        let command = ssh::host_command(&destination, &node, &host, &env, port, session.env())?;
+        let command = ssh::host_command(&destination, &host, &env, port, session.env())?;
         match HostProcess::start(&command, events.clone()) {
             Ok(process) => {
                 let prune = paths.packaged().then(|| {

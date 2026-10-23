@@ -1,4 +1,4 @@
-/** Refuse a release with missing, stale or changed offline development resources. */
+/** Refuse a release with missing, stale or changed Linux IDE tools (`prepare-ide-tools.py --platform linux-x64`) or offline Ubuntu packages. */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
@@ -15,11 +15,12 @@ const root = await realpath(resolve(app, 'resources/ide'))
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const source = JSON.parse(await readFile(sourceFile, 'utf8'))
 const helpers = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'))
-assert.equal(helpers.version, 1)
+assert.equal(helpers.version, 2)
+assert.equal(helpers.platform, 'linux-x64')
 assert.equal(helpers.sourceSha256, sha256(await readFile(sourceFile)))
 assert.equal(helpers.preparerSha256, sha256(await readFile(resolve(app, 'scripts/prepare-ide-tools.py'))))
 assert.equal(helpers.installerSourceSha256, sha256(await readFile(resolve(app, 'scripts/install-ide-system-packages.py'))))
-assert.deepEqual(helpers.assets, source.assets)
+assert.deepEqual(helpers.assets, source.assets.filter(asset => asset.platform === 'any' || asset.platform === 'linux-x64'))
 assert.deepEqual(helpers.licenses, source.licenses)
 
 async function inventory(directory, rows, field) {

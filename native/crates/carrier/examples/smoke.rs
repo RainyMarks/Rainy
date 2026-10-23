@@ -38,8 +38,8 @@ fn main() -> Result<()> {
     let user_data = scratch.join("user-data");
     std::fs::create_dir_all(&user_data)?;
     let command = HostCommand {
-        program: root.join("node").join("node.exe"),
-        args: vec![root.join("app").join("dist").join("host.js").into()],
+        program: root.join("rainy-host.exe"),
+        args: Vec::new(),
         env: [
             ("RAINY_EXECUTION_TARGET_ID", "windows-local".into()),
             ("RAINY_EXECUTION_TARGET_LABEL", "Windows".into()),
