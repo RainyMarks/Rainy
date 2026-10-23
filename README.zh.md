@@ -13,7 +13,7 @@
 
 [![下载 Windows 版](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.0-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
+[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.1-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -82,7 +82,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 - 从 `~/.ssh/config` 里选主机，或直接填写 `user@host`。
 - AI、终端、运行调试和语言服务都在服务器上处理文件，界面留在这台电脑上。
 - 使用 Windows 自带的 OpenSSH 客户端，密钥、ssh-agent 和 ProxyJump 照常可用。
-- 首次连接在服务器的 `~/.rainy-agent` 安装约 53 MB 的运行环境，之后几秒就能进入工作台。
+- 首次连接在服务器的 `~/.rainy-agent` 安装约 27 MB 的运行环境，之后几秒就能进入工作台。
 
 ![设置里的 SSH 远程开发卡片，列出了 ~/.ssh/config 中的主机](assets/zh/ssh.png)
 
@@ -155,14 +155,15 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | 操作系统 | Windows 10 / 11 x64 |
 | 磁盘空间 | 安装后约 280 MB |
 | WSL（可选） | WSL2；随附的 Ubuntu 开发工具向导适用于 Ubuntu 26.04 |
-| SSH 服务器（可选） | x86_64 Linux，装有 `python3`；运行环境约占 250 MB |
+| SSH 服务器（可选） | x86_64 Linux，装有 `python3`，glibc 2.17 或更新；运行环境约占 110 MB |
 | WebView2 | 预览 PDF、Office 和 Markdown 时使用；Windows 11 自带，Windows 10 上没有时按提示安装 |
 
 ### 按需下载的组件
 
 | 组件 | 大小 | 何时下载 |
 |---|---|---|
-| Linux 运行环境 | 约 53 MB | 第一次使用 WSL 或 SSH 主机时自动下载 |
+| Linux 运行环境 | 约 27 MB | 第一次使用 WSL 或 SSH 主机时自动下载 |
+| Strata 引擎 | 约 533 MB | **设置 → 模型 → Strata 本地模型**，在 NVIDIA 显卡上运行本地模型时 |
 | Ubuntu 开发工具包 | 约 165 MB | 在“准备开发工具”中点击安装时，装好后自动删除 |
 | PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
 
@@ -182,7 +183,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 2. 点击 **发现模型**，或手动填写模型 ID。
 3. 填写服务实际的上下文窗口和输出上限，保存后运行流式与工具调用检查。
 
-所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。3.x 的 Strata 本地推理在 4.0 中暂不提供。
+所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。想在自己的 NVIDIA 显卡上跑模型，可在 **设置 → 模型 → Strata 本地模型** 下载 Strata 引擎，载入你的 Qwen3.8 Flash Next GGUF 并设为默认模型。
 
 <a id="privacy"></a>
 ## 隐私与安全
@@ -195,9 +196,9 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 - **发行包可验证**：安装文件首次启动时按签名清单逐个校验。
 
 <a id="whats-new"></a>
-## 4.0 新变化
+## 4.1 新变化
 
-**界面整个改成原生程序。** 不再带 Electron 和 Chromium，窗口、对话、编辑器和终端由 GPUI 直接用显卡绘制，文档预览交给 Windows 自带的 WebView2；后台、执行环境和你的数据原样沿用。编辑器补上了语言服务（补全、跳转、引用、重命名、格式化）、运行和调试，以及包含 3.x 全部命令的命令面板。[查看完整更新日志 →](CHANGELOG.zh.md)
+**彻底不再需要 Node.js。** 负责对话、工具、文件和终端的后台在 Windows、WSL 和 SSH 服务器上都换成了 Rust 程序，编辑器的语言服务也改用原生程序（Python 用 ty，JavaScript 和 TypeScript 用 TypeScript 7 原生编译器）。**Strata 本地推理回来了**，在“设置 → 模型”中；每个 MCP 服务器都列出它的工具，可逐个开关。你的对话、设置和密钥原样沿用。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档
@@ -269,10 +270,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.0.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.1.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.0.0` 换成 `package.json` 中的版本号。构建原生界面还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）和 MSYS2 UCRT64。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.1.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

@@ -364,7 +364,7 @@ mod tests {
 let x = 1;
 fn helper() {}
 ").unwrap();
-        std::fs::write(root.join("b.bin"), b"fn   binary").unwrap();
+        std::fs::write(root.join("b.bin"), b"fn \0 binary").unwrap();
         let grep = Grep::new(context(&root));
         let flag = AtomicBool::new(false);
         let params = |mode: &str| GrepParams { pattern: "^fn".into(), path: None, glob: None, output_mode: Some(mode.into()), ignore_case: None, context: Some(1.0), limit: None };

@@ -2,7 +2,7 @@
 
 [English](desktop.md) | 中文
 
-Rainy 是面向 Windows x64 的轻量 AI 编程工作台。自 4.0 起界面是原生程序（Rust + GPUI，`native/`），文档预览嵌入系统自带的 WebView2；核心安装包包含 Windows Host。Windows PHP 和 Linux 运行环境是可选组件，首次用到时下载。模型权重由用户自行提供。智能体基于 [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core)，内置 `read`、`write`、`edit`、`grep`、`glob` 和所选平台的 Shell（`pwsh` 或 `bash`），另加用户启用的 MCP 工具。项目可以在 Windows 原生环境、WSL2 发行版，或通过 SSH 连接的 x86_64 Linux 服务器上运行。
+Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编程。界面是原生程序（Rust + GPUI，`native/`），文档预览嵌入系统自带的 WebView2；自 4.1 起 Host 也是 Rust 程序，Rainy 不再附带 Node.js。核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境底座是可选组件，首次用到时下载。模型权重由用户自行提供。智能体运行在 Host 中，内置 `read`、`write`、`edit`、`grep`、`glob`、所选平台的 Shell（`pwsh` 或 `bash`）、`task` 以及联网和浏览器工具，另加用户启用的 MCP 工具。项目可以在 Windows 原生环境、WSL2 发行版，或通过 SSH 连接的 x86_64 Linux 服务器上运行。
 
 [中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍打包的依赖及其许可。
 
@@ -11,7 +11,13 @@ Rainy 是面向 Windows x64 的轻量 AI 编程工作台。自 4.0 起界面是�
 - 界面由 `RainyAgent.exe`（GPUI）直接绘制，不再有 Electron 和 Chromium；Host、执行环境、协议和用户数据不变，3.x 的设置、对话、密钥和项目原样沿用。
 - 3.x 顶部的“文件”“编辑”“视图”菜单合并到标题栏的项目菜单和命令面板（F1 或 Ctrl+Shift+P）：本文中“文件 → …”“视图 → …”指的命令都可以在命令面板里按名字找到。
 - PDF、Office、所见即所得 Markdown、项目地图和 AI 内置浏览器由嵌入的 WebView2 显示，网页代码与 3.x 相同。
-- Strata 本地推理暂不提供，下文“Strata 本地推理”一节只适用于 3.x。
+
+## 4.1 的变化
+
+- Host 在每个执行目标上都是 Rust 程序 `rainy-host`：Windows、WSL 和 SSH 服务器。Rainy 不再包含 Node.js；运行和调试你自己的 JavaScript、TypeScript 使用目标环境中已安装的 Node.js。对话、设置、密钥、项目和记忆的格式不变，3.x、4.0 和 4.1 可以互相读取。
+- 编辑器的语言服务和格式化改用原生程序：Python 用 ty，JavaScript 和 TypeScript 用 TypeScript 7 的原生编译器（语言服务和格式化），Python 格式化用 Ruff，C/C++ 用已安装的 clangd 和 clang-format。
+- [Strata 本地推理](#strata-local-inference)回到“设置 → 模型”。
+- “设置 → Skills 与 MCP”中每个 MCP 服务器都列出它的工具，可逐个开关。
 
 ## 离线安装与恢复
 
@@ -27,7 +33,7 @@ Rainy 3.0 不再包含 CTF 工具目录。旧版本下载的工具留在原安�
 
 “设置 → 运行环境 → 可选组件”可下载和删除 Strata 引擎（约 560 MB）及 PHP。Strata 引擎就是已作为 1.0.0 构建输入 `build-inputs/strata-runtime.tar.gz` 发布的归档；[Strata 本地推理](#strata-local-inference)说明其内容和用法。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。
 
-WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Node.js、依赖包、开发工具资源和 ripgrep，下载约 53 MB，解开后约 240 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（Host、界面和小资源，几 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的 Node.js、依赖和开发工具资源是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
+WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB，解开后约 90 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 11 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的开发工具是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
 
 启动约 60 秒后，安装版会删除旧安装程序留在 `resources` 目录中的资源：`strata-runtime`、`php`、`linux-runtime.tar.gz`、`native-tools-metadata.json`、`native-tools-download.json`、`native-tools-catalog.json`、`native-tools-channel.signed.json` 和 `native-tools-public-keys.json`。
 
@@ -91,7 +97,7 @@ Host 在服务器上只监听 127.0.0.1，ssh 把同一端口号转发到这台�
 
 AI 窗格中是与智能体的对话。智能体在每个对话所选的权限模式下读写项目文件、运行命令（权限模式见“模型体验”）。被智能体修改的文件列在输入框上方；打开后可在编辑器中逐处查看改动，选择保留或撤销；开启“自动保留”后，发送下一条消息时会保留尚未处理的改动。编辑器提供 AI 行内补全和 Ctrl+K 改写选中代码。侧边栏包含文件树、跨文件搜索替换和 Git 面板，Git 面板可以用对话模型生成提交说明。项目地图展示项目的各个部分及其引用关系，命令面板可按名称执行命令。项目记忆、Skills（`.rainy/skills`）和 MCP 服务在设置中配置。设置里有 DeepSeek 模型的 API 密钥时，对话还有 `web_search`（DeepSeek Search 接口，`POST /v1/tools/search`）和 `web_fetch`（Fetch 接口，`POST /v1/tools/fetch`）两个工具，请求经 Host 发出并遵循网络代理设置；搜索不需要批准，读取网页在询问和只读模式下按网站询问一次，可在项目中记住为 `web_fetch:<网站>` 规则（设置 → 安全中可移除）。在 **设置 → 模型 → 联网搜索** 中可以关闭。“添加文件夹”挂载其他目录，每个根目录拥有稳定标识，跨根文件操作按该标识限定范围。Windows 项目使用原生路径；WSL 项目使用在所选发行版中映射并规范化的路径；SSH 项目使用服务器上的路径。已有工作区保留身份、编辑恢复和原执行目标中的聊天。在 Windows 与 WSL 之间切换项目时把公开项目身份绑定至新目标，恢复目录挂载，并在 Host 就绪前选中该工作区；旧聊天及编辑恢复仍留在原 Host。
 
-CodeMirror 6 编辑器提供多文件标签、按文件类型加载的语法高亮、查找替换、转到行、撤销、显式保存和内联差异视图。文件操作保留 UTF-8 BOM 和换行方式；混用两种换行的文件保存时统一为 LF。二进制、非 UTF-8 及超限文档只读，默认可编辑上限为 5 MiB。超限 UTF-8 文件最多预览 64 KiB，不截断字符。
+编辑器提供多文件标签、按文件类型加载的语法高亮、查找替换、转到行、撤销、显式保存和内联差异视图。文件操作保留 UTF-8 BOM 和换行方式；混用两种换行的文件保存时统一为 LF。二进制、非 UTF-8 及超限文档只读，默认可编辑上限为 5 MiB。超限 UTF-8 文件最多预览 64 KiB，不截断字符。
 
 编辑器不能编辑的文件会用查看器打开。图片可缩放、拖动、查看像素颜色，并可“添加到对话”。Markdown 默认以所见即所得方式打开（Milkdown Crepe），可切换到源码、预览和左右分栏；所见即所得的修改写入同一缓冲区，保存时按行与载入时的序列化结果合并，只有改动的行使用编辑器的写法。SVG 可在源码、预览和分栏之间切换（Ctrl+Shift+V、Ctrl+K V）；Markdown 预览跟随未保存的修改，并与编辑器同步滚动。PDF 按需渲染页面，可复制全部文字（包括隐藏文字）；未嵌入的 CJK 字体使用随附的 pdf.js 字符映射（`resources/pdfjs/cmaps`）和标准字体显示。Word（.docx）由页面自己排成分页纸面，也可切换为“用 Office 版式显示”；PPT（.pptx、.ppt）和旧版 Word（.doc）在桌面版中交给本机的 Microsoft Office 或 WPS 转成 PDF 显示（文件经 Host 读取，所以 WSL 和 SSH 上的文件同样可以），没有 Office 时列出每页幻灯片的文字；Excel（.xlsx、.xls、.ods）显示为表格，最多 2000 行、200 列。文档上方的“用默认程序打开”只接受文档类型，SSH 上的文件不提供。`~$` 开头的 Office 锁定文件显示是谁打开了哪个文档，`.lnk` 快捷方式显示目标路径、参数和起始位置。音频和视频用系统播放器播放。任何文件都可以用十六进制视图打开：任意大小的文件都能翻阅，支持跳转偏移（Ctrl+G）、数据检查器、多种复制格式和文件类型识别。GBK、UTF-16 等非 UTF-8 文本以只读方式显示，可选择编码。快速打开搜索工作区路径，限制结果数量，并提示截断。更改查询、切换项目或重新打开窗口会使旧结果失效；搜索等待或失败时不能打开旧结果。
 
@@ -101,9 +107,9 @@ Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”
 
 恢复存储按工作区保留未保存缓冲区、已开标签及面板尺寸。外部修改会刷新未编辑的缓冲区；已编辑的缓冲区保留文本并提供比较。版本冲突会阻止保存，直到用户处理已显示的差异。运行与调试先保存当前工作区的全部修改，任一保存失败就停止启动。
 
-持续的语言服务分析尚未保存的文档：Python 使用 Pyright，JavaScript/TypeScript 使用 TypeScript Language Server，C/C++ 使用 clangd。补全、悬停提示、签名帮助、诊断、转到定义（F12）、查找引用（Shift+F12）和重命名（F2）都来自这些语言服务；重命名也会修改未打开的文件，这些文件随后以未保存标签页显示。格式化使用随包 Ruff、Prettier 或已准备的 clang-format。Python 解释器选择与 CMake 编译数据库也用于配置编辑器语言服务。选中代码通过普通用户消息发送，路径、范围和文本一起进入会话记录。
+持续的语言服务分析尚未保存的文档：Python 使用 ty，JavaScript/TypeScript 使用 TypeScript 7 原生编译器（`tsc --lsp`），C/C++ 使用 clangd。补全、悬停提示、签名帮助、诊断、转到定义（F12）、查找引用（Shift+F12）和重命名（F2）都来自这些语言服务；重命名也会修改未打开的文件，这些文件随后以未保存标签页显示。格式化：Python 使用随包 Ruff，JavaScript/TypeScript 使用 TypeScript 自带的格式化，C/C++ 使用已准备的 clang-format。Python 解释器选择与 CMake 编译数据库也用于配置编辑器语言服务。选中代码通过普通用户消息发送，路径、范围和文本一起进入会话记录。
 
-运行按钮按当前文件后缀对应的语言运行该文件。旁边的菜单可为该文件改选其他语言（工作区会记住），或固定运行另一个入口程序的已保存配置；保存当前文件的配置不会将其固定。运行配置按工作区保留入口、参数、解释器或编译器、工作目录及 CMake 选项。Python 支持文件、模块和已有虚拟环境；JavaScript、TypeScript 使用 Node；PHP 支持直接运行脚本；C/C++ 支持单文件及 CMake 构建，失败时停止启动。debugpy、js-debug、Windows CodeLLDB 与 Linux GDB DAP 调试由工作区启动的程序；界面提供断点、单步、调用栈、变量、监视和停止。不提供外部进程附加或 PHP 调试。
+运行按钮按当前文件后缀对应的语言运行该文件。旁边的菜单可为该文件改选其他语言（工作区会记住），或固定运行另一个入口程序的已保存配置；保存当前文件的配置不会将其固定。运行配置按工作区保留入口、参数、解释器或编译器、工作目录及 CMake 选项。Python 支持文件、模块和已有虚拟环境；JavaScript、TypeScript 使用目标环境中已安装的 Node.js（Rainy 不附带）；PHP 支持直接运行脚本；C/C++ 支持单文件及 CMake 构建，失败时停止启动。debugpy、js-debug、Windows CodeLLDB 与 Linux GDB DAP 调试由工作区启动的程序；界面提供断点、单步、调用栈、变量、监视和停止。不提供外部进程附加或 PHP 调试。
 
 运行环境检测检查项目虚拟环境、Conda 注册记录、常见 Python 目录、PATH 和已导入组件，不向这些已有环境安装软件包。所选解释器通过每个进程的环境配置项目工具、终端、运行及语言服务。可执行文件就绪和库能力分别显示：能运行 Python 不代表具备 PyTorch 或 CUDA。另一执行平台的解释器会被拒绝。“设置 → 运行环境 → 可选组件”为 Windows 原生目标下载 PHP 8.5 及 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展。下载前，在 Windows 原生目标运行 PHP 文件会提示下载位置；也可在运行配置中选择已安装的 `php.exe`。已安装的环境组件或项目选定的 PHP 优先。WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。
 
@@ -114,8 +120,6 @@ Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”
 <a id="strata-local-inference"></a>
 ## Strata 本地推理
 
-> 4.0 暂不提供 Strata；本节描述 3.x 的行为。
-
 Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14，以及所需服务、准备脚本和 CUDA 运行依赖。引擎缺失时，“模型 → Strata 本地模型”显示“下载”按钮；“运行环境 → 可选组件”也列出该引擎。用户无需另装 Strata 或 Python。推理引擎面向 Windows x64、NVIDIA CUDA 13 和 580 或更新驱动，内含 `sm75`、`sm86`、`sm89`、`sm120` 目标。本包不提供 AMD 或 Linux 推理引擎。[运行时来源清单](../toolpacks/strata-runtime.sources.json)固定输入与许可。
 
 用户提供受支持的 Qwen3.8 Flash Next 主模型 GGUF 及全部分片，以及配套 MTP GGUF 或已准备 MTP 目录。运行时不分发主模型/MTP 权重或派生的 dense/expert 文件。在“模型 → Strata 本地模型”中选择主模型、MTP 来源或兼容 profile，然后保存。MTP 路径留空时尝试从主模型附近检测匹配文件；API 服务仍然需要 MTP。只有明确点击启动后，才在本机准备所需模型文件并加载服务，不下载权重。准备和启动均可取消。
@@ -124,7 +128,7 @@ Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Pyt
 
 “连接并设为默认”先让当前 Host 验证实际已加载模型与窗口，再保存本地端点。即使项目 Host 使用 WSL，Strata 仍在 Windows 运行。若 WSL NAT 无法访问 Windows loopback，请为 Strata 选择 Windows 执行环境；应用不修改网络设置，也不替换成云端模型。SSH 服务器上的 Host 无法访问这台电脑上的 Strata。
 
-当前 Strata 验证覆盖引擎运行时迁移、Python 导入以及模拟服务的健康检查与聊天衔接，尚不能说明真实 GPU 推理、吞吐量或跨硬件兼容性。[验收记录](validation.md)负责具体被测产物和剩余项目。
+当前 Strata 验证覆盖引擎运行时迁移、Python 导入以及模拟服务的健康检查与聊天衔接（4.1 用模拟 Strata 服务检查了卡片，从 Windows 和 WSL Host 连接），尚不能说明真实 GPU 推理、吞吐量或跨硬件兼容性。[验收记录](validation.md)负责具体被测产物和剩余项目。
 
 ## 模型体验
 

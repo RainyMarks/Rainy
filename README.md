@@ -13,7 +13,7 @@ with an editor, Office previews and SSH remote development, in one 67 MB Windows
 
 [![Download for Windows](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=Download%20for%20Windows&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![Changelog](https://img.shields.io/badge/Changelog-4.0-0f172a?style=for-the-badge)](CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/Changelog-4.1-0f172a?style=for-the-badge)](CHANGELOG.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -82,7 +82,7 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 - Pick a host from `~/.ssh/config`, or enter `user@host`.
 - The agent, terminals, run and debug, and language services work on the server's files; the interface stays on your PC.
 - It uses the OpenSSH client built into Windows, so your keys, ssh-agent and ProxyJump just work.
-- The first connection installs a runtime of about 53 MB in `~/.rainy-agent` on the server; later connections reach the workbench in seconds.
+- The first connection installs a runtime of about 27 MB in `~/.rainy-agent` on the server; later connections reach the workbench in seconds.
 
 ![The SSH remote development card in Settings, listing hosts from ~/.ssh/config](assets/ssh.png)
 
@@ -155,14 +155,15 @@ Rainy downloads stable updates in the background and then offers **Later** or **
 | Operating system | Windows 10 / 11 x64 |
 | Disk space | About 280 MB installed |
 | WSL (optional) | WSL2; the bundled Ubuntu development tools wizard supports Ubuntu 26.04 |
-| SSH server (optional) | x86_64 Linux with `python3`; the runtime takes about 250 MB |
+| SSH server (optional) | x86_64 Linux with `python3` and glibc 2.17 or later; the runtime takes about 110 MB |
 | WebView2 | For PDF, Office and Markdown previews; Windows 11 includes it, Windows 10 installs it when asked |
 
 ### Components downloaded on demand
 
 | Component | Size | When |
 |---|---|---|
-| Linux runtime | about 53 MB | Automatically, the first time you use WSL or an SSH host |
+| Linux runtime | about 27 MB | Automatically, the first time you use WSL or an SSH host |
+| Strata engine | about 533 MB | **Settings → Models → Strata local model**, for local models on an NVIDIA GPU |
 | Ubuntu development packages | about 165 MB | When you install the development tools; deleted once installed |
 | PHP | about 38 MB | **Settings → Runtime → Optional components** |
 
@@ -182,7 +183,7 @@ Bring your own model; Rainy never switches to another one behind your back.
 2. Select **Discover models**, or enter the model ID.
 3. Set the service's actual context window and output limit, save, then run the streaming and tool-call check.
 
-The selected Windows, WSL or SSH environment must reach the model service. Through a relay, keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`). Strata local inference from 3.x is not offered in 4.0 yet.
+The selected Windows, WSL or SSH environment must reach the model service. Through a relay, keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`). To run a model on your own NVIDIA GPU, **Settings → Models → Strata local model** downloads the Strata engine, loads your Qwen3.8 Flash Next GGUF and sets it as the default model.
 
 <a id="privacy"></a>
 ## Privacy and security
@@ -195,9 +196,9 @@ The selected Windows, WSL or SSH environment must reach the model service. Throu
 - **Verifiable releases**: on first start the installed files are checked one by one against a signed manifest.
 
 <a id="whats-new"></a>
-## What's new in 4.0
+## What's new in 4.1
 
-**The interface is now a native program.** No Electron or Chromium: the window, chats, editor and terminal are drawn on the GPU by GPUI, and document previews use the WebView2 that comes with Windows; the backend, the execution environments and your data carry over. The editor gains language services (completion, go to definition, references, rename, formatting), run and debug, and a command palette with every 3.x command. [Read the full changelog →](CHANGELOG.md)
+**No Node.js anywhere.** The backend that runs your chats, tools, files and terminals is now a Rust program on Windows, in WSL and on SSH servers, and the editor's language services are native too (ty for Python, TypeScript 7's native compiler for JavaScript and TypeScript). **Strata local inference is back** in Settings → Models, and every MCP server lists its tools with a switch per tool. Your chats, settings and keys carry over. [Read the full changelog →](CHANGELOG.md)
 
 <a id="docs"></a>
 ## Documentation
@@ -269,10 +270,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.0.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.1.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `4.0.0` with the version in `package.json`. The native interface also needs Rust's GNU toolchain (`x86_64-pc-windows-gnu`) and MSYS2 UCRT64. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `4.1.0` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host on its own, then prints a URL to open in a browser; the interface lives in `native/`: `cargo build -p rainy --offline` builds it and `bash native/scripts/run-ui.sh` starts it with a scratch data folder. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 

@@ -2,6 +2,8 @@
 
 状态：功能已补齐，作为 4.0 发布（分支 `gpui`，已合入 3.9.2 的 main）。
 
+> 4.1 起后台也换成了 Rust（`native/crates/host`，见下文“4.1：后台改用 Rust”和 [architecture.md](architecture.md)）。下文“后台一行不改”“Host（Node）”描述的是 4.0。
+
 ## 目标
 
 - 去掉 Electron（安装包里压缩后约 103 MB 的 Chromium），界面用 Rust + GPUI 直接调显卡绘制。
@@ -75,6 +77,17 @@ GPUI 界面：聊天、文件树、编辑器、终端、搜索、Git、设置…
 - 发布：NSIS 安装包（`scripts/package.ps1`）、首次启动校验资源、可选模块下载、自动更新、单实例、窗口位置记忆、诊断包、可选开启的资源管理器“通过 Rainy 打开”。
 
 测试辅助（只在调试版生效）：`RAINY_QA_BACKGROUND` 让窗口在后台打开不抢焦点，`RAINY_QA_EXPORT_DIR` 导出时跳过保存对话框，`RAINY_QA_PICK_FOLDER` 选文件夹时跳过系统对话框。
+
+## 4.1：后台改用 Rust（2026-10-23）
+
+- `rainy-host`（`native/crates/host`，tokio + axum + reqwest + portable-pty + notify）取代 `src/host` 的 Node 后台，Windows、WSL 和 SSH 服务器上都是它；Linux 版在 Windows 上用 cargo-zigbuild 交叉编译（glibc 2.17）。RPC、控制通道和所有数据文件格式不变，3.x/4.0/4.1 互相读写。
+- 智能体整个移植：三种模型协议（Chat Completions、Responses、Anthropic Messages，含提示缓存）、重试、流式补丁、工具（含后台命令、子智能体、联网、内置浏览器）、权限、提示词、压缩、项目记忆、技能、MCP（stdio、Streamable HTTP、HTTP+SSE，按工具开关）、编辑器 AI、`@` 补全、Git 提交说明、项目地图讲解。
+- 编辑器工具改为原生：ty（Python 语言服务）、TypeScript 7 原生编译器（JS/TS 语言服务和格式化）、Ruff；Biome 不再需要。运行、调试用户自己的 JS/TS 用目标环境装的 Node.js。
+- Linux 运行环境底座只剩开发工具（下载约 27 MB），应用层约 11 MB。
+- Strata 回归：载体 `strata/`（引擎管理、沿用 3.x 指纹缓存的模型解析、loopback 健康检查），设置 → 模型里的 Strata 卡片。
+- 实测（GUI，`run-ui.sh` + `drive.ps1`）：Windows 上对话、命令和写文件工具、MCP 工具面板（开关不重连）、Strata 卡片（模拟服务，连接并设为默认后对话走 Strata）、各设置页、PDF/Word/Excel/PPT 预览、项目地图、运行、断点调试、终端；WSL 上安装运行环境、切换、Strata 连接、对话、打开 Windows 文件夹、终端、运行；SSH 上全新服务器安装、远程文件夹浏览、运行。Host 端到端脚本 37 项（模拟模型 + /rpc）。
+- QA 中发现并修好：Windows 上 `npx` 找到 Node 的无扩展名脚本（os error 193），stdio MCP 起不来；请求失败信息里带 URL（可能含密钥）；PDF 预览缺 `/rainy/pdfjs/` 路由；终端读线程里发提示调用 `tokio::spawn` 导致后台崩溃；Strata 卡片在没有组件清单时一直“正在读取”；窄面板里发送按钮被挤出窗口；MCP 工具开关会重连服务器。
+- 仍未实测：真实 GPU 上的 Strata 推理、JS/C/C++/PHP 实际调试、地图页内的点击（测试脚本发不进 WebView2 子窗口）。
 
 ## 开发
 

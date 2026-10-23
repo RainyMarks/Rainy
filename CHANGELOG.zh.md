@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) | 中文
 
+## 4.1 · 2026-10-23
+
+彻底不再需要 Node.js，Strata 本地推理回来了。
+
+- **后台换成 Rust 程序**：负责对话、智能体工具、文件、终端、运行和调试的后台现在是原生程序 `rainy-host`，Windows、WSL 和 SSH 服务器上都是它。Rainy 不再包含 Node.js。对话、设置、密钥、项目和项目记忆的格式不变，4.1 能打开 3.x 和 4.0 写下的数据，反过来也一样。WSL 和 SSH 服务器要下载的 Linux 运行环境从 53 MB 减到 27 MB（服务器上安装后约 110 MB，原来约 250 MB）。
+- **原生语言服务**：Python 用 ty，JavaScript 和 TypeScript 用 TypeScript 7 原生编译器（补全、报错、转到定义、查找引用、重命名和格式化）；Python 仍由 Ruff 格式化。运行和调试你自己的 JavaScript、TypeScript 使用项目所在环境中安装的 Node.js。
+- **Strata 本地推理回来了**，在 **设置 → 模型 → Strata 本地模型**：下载引擎（约 533 MB），选择你的 Qwen3.8 Flash Next GGUF（或模型目录、Strata profile）和配套 MTP 权重，启动后连接并设为默认模型。别处启动的 Strata 服务也能识别，Rainy 不会停止它。WSL 或 SSH 项目只有能访问该服务时才连接，不会改用云端模型。
+- **MCP 工具逐个开关**：**设置 → Skills 与 MCP** 里每个服务器下有“工具：已启用 x / y”，列出它的全部工具，每个一个开关，另有全部启用、全部停用；鼠标悬停显示工具说明。开关从下一条消息起生效，不会重连服务器。
+- 对话面板较窄、模型名较长时，发送按钮不再被挤出窗口。
+
 ## 4.0 · 2026-10-22
 
 界面整个改成原生程序：不再带 Chromium，打开更快，占用更少。
