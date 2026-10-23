@@ -22,6 +22,7 @@ mod search;
 mod server;
 mod settings;
 mod store;
+mod strata;
 mod text;
 
 use std::sync::Arc;

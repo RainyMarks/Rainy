@@ -208,6 +208,9 @@ pub enum TranscriptEntry {
         summary: String,
         tokens_before: f64,
         trigger: String,
+        /// How the checkpoint was asked for (`{ mode, usage }`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<Value>,
     },
     #[serde(rename_all = "camelCase")]
     Notice {
