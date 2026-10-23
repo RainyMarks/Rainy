@@ -53,6 +53,8 @@ pub struct EditorArea {
     /// The tab strip, scrolled so the active tab is in view when it changes.
     tabs_scroll: ScrollHandle,
     scrolled_to: Option<String>,
+    /// Frames left to bring the active tab into view; the strip has no size until it was laid out once.
+    scroll_retries: u8,
     /// Ctrl+K on a file's editor.
     ai_edit: Option<Entity<AiEdit>>,
     /// The project map, shown in place of the open files, for the project it was opened for.
@@ -93,7 +95,7 @@ impl EditorArea {
                 }
             }),
         ];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, ai_edit: None, map: None, map_shown: false, outline: HashMap::new(), pending_export: None, _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, outline: HashMap::new(), pending_export: None, _subscriptions: subscriptions }
     }
 
     /// The page of a file view, created on first use and again when the view or the file's version changes.
@@ -894,6 +896,16 @@ impl EditorArea {
     }
 }
 
+impl EditorArea {
+    /// Whether the tab at `index` lies wholly inside the visible part of the tab strip.
+    fn tab_shown(&self, index: usize) -> bool {
+        let view = self.tabs_scroll.bounds();
+        let Some(item) = self.tabs_scroll.bounds_for_item(index) else { return false };
+        let offset = self.tabs_scroll.offset().x;
+        view.size.width > px(0.) && item.left() + offset >= view.left() - px(1.) && item.right() + offset <= view.right() + px(1.)
+    }
+}
+
 impl Render for EditorArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -902,13 +914,24 @@ impl Render for EditorArea {
         self.viewers.retain(|key, _| open.contains(key));
         self.pictures.retain(|(key, _), _| open.contains(key));
         self.outline.retain(|key, _| open.contains(key));
-        // A tab that becomes active is brought into view, also when it was opened past the end of the strip.
+        // A tab that becomes active is brought into view, also when it was opened past the end of the strip or restored
+        // before the strip was first laid out (a scroll asked for then has no sizes to work with, so it is asked again).
         let active = self.ide.read(cx).active.clone();
+        let index = active.as_ref().and_then(|key| self.ide.read(cx).tabs.iter().position(|tab| tab == key));
         if active != self.scrolled_to {
-            if let Some(index) = active.as_ref().and_then(|key| self.ide.read(cx).tabs.iter().position(|tab| tab == key)) {
-                self.tabs_scroll.scroll_to_item(index);
-            }
             self.scrolled_to = active;
+            self.scroll_retries = 12;
+        }
+        if let Some(index) = index
+            && self.scroll_retries > 0
+        {
+            if self.tab_shown(index) {
+                self.scroll_retries = 0;
+            } else {
+                self.tabs_scroll.scroll_to_item(index);
+                self.scroll_retries -= 1;
+                window.request_animation_frame();
+            }
         }
         let map = self.render_map(cx);
         let ide = self.ide.read(cx);

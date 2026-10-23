@@ -1,15 +1,32 @@
 /* Milkdown Crepe in Rainy's colors and fonts. Crepe's own structure comes from its common stylesheet; every color here is
- * a Rainy token, so the editor follows the color mode, scheme and accent. Global because Crepe's classes are global. */
+ * a Rainy token, so the editor follows the color mode, scheme and accent. Global because Crepe's classes are global.
+ *
+ * Two surfaces of our own: blocks in the text (code, formulas, table headers, front matter) and panels that float over
+ * it (toolbar, / menu, link and formula popups, table buttons). In the light mode every Rainy layer is white, so blocks
+ * take the scheme's lightest gray and panels a border and shadow; otherwise both would vanish into the page. */
+.rainy-rich {
+  --rainy-rich-block: var(--rainy-static-gray-50);
+  --rainy-rich-panel: var(--rainy-alias-bg-base);
+  --rainy-rich-panel-border: var(--rainy-alias-border-l3);
+  --rainy-rich-panel-shadow: 0 6px 20px rgb(0 0 0 / 14%), 0 1px 3px rgb(0 0 0 / 10%);
+}
+body[data-rainy-dark] .rainy-rich {
+  --rainy-rich-block: var(--rainy-alias-bg-layer-1);
+  --rainy-rich-panel: var(--rainy-alias-bg-layer-3);
+  --rainy-rich-panel-shadow: 0 8px 24px rgb(0 0 0 / 50%), 0 1px 3px rgb(0 0 0 / 40%);
+}
 .rainy-rich .milkdown {
   --crepe-color-background: var(--rainy-alias-bg-base);
   --crepe-color-on-background: var(--rainy-alias-label-primary);
-  --crepe-color-surface: var(--rainy-alias-bg-layer-1);
-  --crepe-color-surface-low: var(--rainy-alias-bg-layer-1);
+  --crepe-color-surface: var(--rainy-rich-block);
+  --crepe-color-surface-low: var(--rainy-rich-panel);
   --crepe-color-on-surface: var(--rainy-alias-label-primary);
   --crepe-color-on-surface-variant: var(--rainy-alias-label-secondary);
-  --crepe-color-outline: var(--rainy-alias-border-l2);
+  /* Crepe draws icons, list markers, checkboxes, labels and the caret in this color (its own dark theme uses a mid
+   * gray), and mixes it into faint borders; a border token here made every icon invisible. */
+  --crepe-color-outline: var(--rainy-alias-label-secondary);
   --crepe-color-primary: var(--rainy-alias-state-business-primary);
-  --crepe-color-secondary: var(--rainy-alias-button-ghost-active-fill);
+  --crepe-color-secondary: var(--rainy-alias-interactive-bg-active);
   --crepe-color-on-secondary: var(--rainy-alias-label-primary);
   --crepe-color-inverse: var(--rainy-alias-label-primary);
   --crepe-color-on-inverse: var(--rainy-alias-bg-base);
@@ -17,7 +34,7 @@
   --crepe-color-error: var(--rainy-alias-state-error-primary);
   --crepe-color-hover: var(--rainy-alias-interactive-bg-hover);
   --crepe-color-selected: var(--rainy-alias-interactive-bg-active);
-  --crepe-color-inline-area: var(--rainy-alias-bg-layer-2);
+  --crepe-color-inline-area: var(--rainy-rich-block);
   --crepe-color-diff-added: var(--rainy-alias-file-diff-added-marker);
   --crepe-color-diff-removed: var(--rainy-alias-file-diff-deleted-marker);
   --crepe-color-diff-added-bg: var(--rainy-alias-file-diff-added-bg);
@@ -35,7 +52,33 @@
   max-width: 920px;
   margin: 0 auto;
 }
-.rainy-rich .milkdown .ProseMirror { padding: 28px 64px 40vh; outline: none; line-height: 1.75; }
+/* The left gutter holds the block handle (+ and drag), which sits just left of each block; with less room it was pushed
+ * out of the window. */
+.rainy-rich .milkdown .ProseMirror { padding: 28px 56px 40vh 88px; outline: none; line-height: 1.75; }
+@media (max-width: 560px) {
+  .rainy-rich .milkdown .ProseMirror { padding: 20px 20px 40vh 80px; }
+}
+
+/* Floating panels stand off the page. */
+.rainy-rich .milkdown :is(.milkdown-toolbar, .milkdown-slash-menu, .milkdown-latex-inline-edit, .milkdown-link-preview > .link-preview,
+  .milkdown-link-edit > .link-edit, .milkdown-table-block .cell-handle, .milkdown-table-block .button-group, .milkdown-table-block .add-button,
+  .milkdown-code-block .list-wrapper) {
+  background: var(--rainy-rich-panel);
+  border: 1px solid var(--rainy-rich-panel-border);
+  box-shadow: var(--rainy-rich-panel-shadow);
+}
+.rainy-rich .milkdown :is(.milkdown-toolbar, .milkdown-slash-menu) .milkdown-icon svg { fill: var(--rainy-alias-label-secondary); }
+.rainy-rich .milkdown :is(.milkdown-toolbar .toolbar-item, .milkdown-slash-menu li):hover .milkdown-icon svg { fill: var(--rainy-alias-label-primary); }
+.rainy-rich .milkdown .milkdown-toolbar .toolbar-item.active .milkdown-icon svg { fill: var(--rainy-alias-state-business-primary); }
+/* The / menu fits the window: a short preview pane cut its top off. Its height comes from the room the menu found. */
+.rainy-rich .milkdown .milkdown-slash-menu .menu-groups { max-height: min(420px, calc(var(--rainy-menu-room, 480px) - 64px)); }
+
+/* Code blocks in Rainy's code font and size; CodeMirror's own theme asks for the browser's monospace. */
+.rainy-rich .milkdown .milkdown-code-block .cm-editor :is(.cm-content, .cm-gutters, .cm-line) {
+  font-family: var(--crepe-font-code); font-size: var(--rainy-code-font-size, 13px);
+}
+.rainy-rich .milkdown .milkdown-code-block .cm-gutters { color: var(--rainy-alias-label-tertiary); border-right: none; }
+.rainy-rich .milkdown .milkdown-code-block :is(.cm-activeLineGutter, .cm-activeLine) { background: var(--rainy-alias-interactive-bg-hover); }
 .rainy-rich .milkdown .ProseMirror ::selection { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 30%, transparent); }
 
 /* Typography close to Typora's GitHub theme: bold headings of moderate size, the first two underlined, roomy paragraphs. */
@@ -48,7 +91,7 @@
 .rainy-rich .milkdown .ProseMirror h6 { font-size: 0.95em; color: var(--rainy-alias-label-secondary); }
 .rainy-rich .milkdown .ProseMirror > :first-child:is(h1, h2, h3, h4, h5, h6) { margin-top: 0.2em; }
 .rainy-rich .milkdown .ProseMirror p { line-height: 1.75; padding: 0.3em 0; }
-.rainy-rich .milkdown .ProseMirror code { color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-layer-2); padding: 0 4px; border-radius: 3px; }
+.rainy-rich .milkdown .ProseMirror code { color: var(--rainy-alias-label-primary); background: var(--rainy-rich-block); padding: 0 4px; border-radius: 3px; }
 .rainy-rich .milkdown .ProseMirror blockquote { padding-left: 1em; color: var(--rainy-alias-label-secondary); }
 .rainy-rich .milkdown .ProseMirror blockquote::before { width: 3px; background: var(--rainy-alias-border-l2); border-radius: 2px; }
 .rainy-rich .milkdown .ProseMirror hr { padding: 10px 0; height: 21px; }
@@ -58,7 +101,7 @@
 .rainy-rich .milkdown .ProseMirror table { border-collapse: collapse; }
 .rainy-rich .milkdown .milkdown-table-block th,
 .rainy-rich .milkdown .milkdown-table-block td { border: 1px solid var(--rainy-alias-border-l1); }
-.rainy-rich .milkdown .milkdown-table-block th { background: var(--rainy-alias-bg-layer-1); font-weight: 600; }
+.rainy-rich .milkdown .milkdown-table-block th { background: var(--rainy-rich-block); font-weight: 600; }
 
 /* Formulas and diagrams show only their rendering until the cursor or a click goes into them, as in Typora. The source
  * stays focusable (it is collapsed, not removed), so arrow keys can still enter it. */
@@ -71,17 +114,18 @@
 
 /* Front matter above the document, in the same column. */
 .rainy-front-matter {
-  max-width: 920px; margin: 20px auto 0; padding: 0 64px; box-sizing: border-box;
+  max-width: 920px; margin: 20px auto 0; padding: 0 56px 0 88px; box-sizing: border-box;
 }
 .rainy-front-matter-label { font-size: 12px; color: var(--rainy-alias-label-tertiary, var(--rainy-alias-label-secondary)); margin-bottom: 4px; }
 .rainy-front-matter-text {
   display: block; width: 100%; box-sizing: border-box; field-sizing: content; min-height: 2.5em; resize: none;
   padding: 8px 10px; border: 1px solid var(--rainy-alias-border-l1); border-radius: 4px;
-  background: var(--rainy-alias-bg-layer-1); color: var(--rainy-alias-label-secondary);
+  background: var(--rainy-rich-block); color: var(--rainy-alias-label-secondary);
   font: 13px/1.6 var(--rainy-font-family-code); outline: none;
 }
 .rainy-front-matter-text:focus { border-color: var(--rainy-alias-state-business-primary); color: var(--rainy-alias-label-primary); }
 .rainy-front-matter + div .milkdown .ProseMirror { padding-top: 12px; }
+@media (max-width: 560px) { .rainy-front-matter { padding: 0 20px 0 80px; } }
 
 /* Find and replace. */
 .rainy-search-match { background: color-mix(in srgb, var(--rainy-alias-state-warning-primary, #e5a50a) 32%, transparent); border-radius: 2px; }

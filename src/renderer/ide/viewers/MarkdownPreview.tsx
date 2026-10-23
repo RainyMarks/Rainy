@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { IdeRootId, WorkspaceId } from '../../../shared/ide-files-protocol.ts'
 import { emit } from '../../app/bus.ts'
 import { MarkdownDocument, type MarkdownOptions } from '../../chat/Markdown.tsx'
+import { frontMatterContent, splitFrontMatter } from './front-matter.ts'
 import { useViewerT } from './messages.ts'
 import type { ScrollSync } from './scroll-sync.ts'
 import css from './Viewers.module.css'
@@ -73,6 +74,13 @@ export function MarkdownPreview({ text, base, version, sync, onScrollLine }: {
     return () => { window.clearTimeout(timer) }
   }, [text, shown])
 
+  // Front matter shows in its own box: as Markdown its `---` lines would become a rule and a heading. Blank lines take
+  // its place, so every block keeps the source line the scroll sync goes by.
+  const { front, rendered } = useMemo(() => {
+    const split = splitFrontMatter(shown.replace(/\r\n?/gu, '\n'))
+    return { front: split.front, rendered: split.front === '' ? shown : '\n'.repeat((split.front.match(/\n/gu) ?? []).length) + split.body }
+  }, [shown])
+
   const options = useMemo<MarkdownOptions>(() => ({
     base,
     codeActions: false,
@@ -106,7 +114,8 @@ export function MarkdownPreview({ text, base, version, sync, onScrollLine }: {
       </div>
       <div ref={stage} className={css.stage} onScroll={onScroll}>
         <div className={css.markdownStage}>
-          <MarkdownDocument text={shown} options={options} />
+          {front !== '' && <pre className={css.frontMatter} data-line={1} title={t('richFrontMatterTitle')}>{frontMatterContent(front)}</pre>}
+          <MarkdownDocument text={rendered} options={options} />
         </div>
       </div>
     </div>

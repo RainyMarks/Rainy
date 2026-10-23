@@ -23,8 +23,22 @@ export function renderMermaid(source: string, dark = isDark()): Promise<string> 
   const task = queue.then(async () => {
     library ??= import('mermaid').then(module => module.default, (error: unknown) => { library = undefined; throw error })
     const mermaid = await library
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default',
-      fontFamily: getComputedStyle(document.body).getPropertyValue('--rainy-font-family').trim() || undefined })
+    const style = getComputedStyle(document.body)
+    const token = (name: string): string => style.getPropertyValue(name).trim()
+    const fontFamily = token('--rainy-font-family') || undefined
+    // In the page's own mode the diagram takes the page's colors: Mermaid's dark theme drew near-black boxes on Rainy's
+    // blue-gray pages. A diagram for the other mode (an export) keeps Mermaid's matching theme.
+    const block = dark ? token('--rainy-alias-bg-layer-3') : token('--rainy-static-gray-50')
+    const themed = dark === isDark() && block !== ''
+    mermaid.initialize(themed ? {
+      startOnLoad: false, securityLevel: 'strict', theme: 'base', fontFamily, darkMode: dark,
+      themeVariables: {
+        background: token('--rainy-alias-bg-base'), primaryColor: block, secondaryColor: block, tertiaryColor: block,
+        primaryTextColor: token('--rainy-alias-label-primary'), textColor: token('--rainy-alias-label-primary'),
+        primaryBorderColor: token('--rainy-alias-state-business-primary'), lineColor: token('--rainy-alias-label-secondary'),
+        fontSize: '14px',
+      },
+    } : { startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default', fontFamily })
     const { svg } = await mermaid.render(`rainy-mermaid-${++counter}`, source)
     return svg
   })

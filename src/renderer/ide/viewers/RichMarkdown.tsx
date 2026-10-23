@@ -64,6 +64,36 @@ function headingPositions(view: EditorView): number[] {
   return positions
 }
 
+type ViewerKey = Parameters<ReturnType<typeof useViewerT>>[0]
+
+/** Crepe's icon-only controls, which come without a tooltip, and what each does. */
+const CONTROL_TIPS: readonly (readonly [string, ViewerKey])[] = [
+  ['.milkdown-link-preview .link-icon', 'richCopyLink'], ['.milkdown-link-preview .link-edit-button', 'richEditLink'],
+  ['.milkdown-link-preview .link-remove-button', 'richRemoveLink'],
+  ['.milkdown-block-handle > .operation-item:first-child', 'richAddBlock'], ['.milkdown-block-handle > .operation-item:last-child', 'richDragBlock'],
+  ['[data-role="col-drag-handle"] > .milkdown-icon', 'richSelectColumn'], ['[data-role="row-drag-handle"] > .milkdown-icon', 'richSelectRow'],
+  ['[data-role="col-drag-handle"] .button-group > button:nth-child(1)', 'richAlignLeft'],
+  ['[data-role="col-drag-handle"] .button-group > button:nth-child(2)', 'richAlignCenter'],
+  ['[data-role="col-drag-handle"] .button-group > button:nth-child(3)', 'richAlignRight'],
+  ['[data-role="col-drag-handle"] .button-group > button:nth-child(4)', 'richDeleteColumn'],
+  ['[data-role="row-drag-handle"] .button-group > button', 'richDeleteRow'],
+  ['[data-role="x-line-drag-handle"] .add-button', 'richAddRow'], ['[data-role="y-line-drag-handle"] .add-button', 'richAddColumn'],
+]
+
+/** Give the control under the pointer its tooltip and accessible name, the first time it is pointed at. */
+function labelControl(target: EventTarget | null, t: ReturnType<typeof useViewerT>): void {
+  if (!(target instanceof Element)) return
+  for (const [selector, key] of CONTROL_TIPS) {
+    const control = target.closest(selector)
+    if (control === null) continue
+    if (!control.hasAttribute('title')) {
+      control.setAttribute('title', t(key))
+      control.setAttribute('aria-label', t(key))
+    }
+    return
+  }
+}
+
 /**
  * @param props.path File key, for the outline.
  * @param props.text The buffer's text.
@@ -171,6 +201,9 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         featureConfigs: {
           [Crepe.Feature.Placeholder]: { text: t('richPlaceholder'), mode: 'block' },
           [Crepe.Feature.LinkTooltip]: { inputPlaceholder: t('richLinkPlaceholder') },
+          // The selection toolbar's tooltips; Crepe adds the shortcut.
+          [Crepe.Feature.Toolbar]: { boldLabel: t('richBold'), italicLabel: t('richItalic'), strikethroughLabel: t('richStrike'),
+            codeLabel: t('richInlineCode'), latexLabel: t('richInlineMath'), linkLabel: t('richLink') },
           [Crepe.Feature.CodeMirror]: { searchPlaceholder: t('richLanguageSearch'), noResultText: t('richNoLanguage'), copyText: t('richCopy'),
             previewLabel: t('richPreview'), previewToggleText: preview => preview ? t('richEdit') : t('richPreview'), previewLoading: t('mermaidLoading'),
             // Mermaid fences show the diagram; math is drawn by Crepe's LaTeX feature, which wraps this one.
@@ -182,6 +215,17 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
               return undefined
             } },
           [Crepe.Feature.BlockEdit]: {
+            // The handle sits close to its block, in the editor's left gutter (RichMarkdown.css), not outside the window.
+            blockHandle: { getOffset: () => 4 },
+            // The / menu takes the larger of the room above and below the caret and scrolls within it, instead of running
+            // off a short window; the stylesheet caps its list with this room.
+            slashMenu: { middleware: [{ name: 'rainyFitHeight', fn: ({ elements }) => {
+              const caret = elements.reference.getBoundingClientRect()
+              const room = `${Math.max(140, Math.floor(Math.max(window.innerHeight - caret.bottom, caret.top) - 24))}px`
+              if (elements.floating.style.getPropertyValue('--rainy-menu-room') === room) return {}
+              elements.floating.style.setProperty('--rainy-menu-room', room)
+              return { reset: { rects: true } }
+            } }] },
             textGroup: { label: t('richGroupText'), text: { label: t('richText') }, h1: { label: t('richHeading', { level: 1 }) },
               h2: { label: t('richHeading', { level: 2 }) }, h3: { label: t('richHeading', { level: 3 }) }, h4: { label: t('richHeading', { level: 4 }) },
               h5: { label: t('richHeading', { level: 5 }) }, h6: { label: t('richHeading', { level: 6 }) }, quote: { label: t('richQuote') }, divider: { label: t('richDivider') } },
@@ -337,6 +381,7 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         onClose={() => { setFind(undefined); editor.current?.view.focus() }} />}
       <div ref={stage} className={css.stage} data-rich-stage data-typewriter={prefs.markdownTypewriter ? 'true' : undefined}
         data-focus-mode={prefs.markdownFocus ? 'true' : undefined}
+        onPointerOver={(event) => { labelControl(event.target, latest.current.t) }}
         onClickCapture={(event) => {
           // A diagram or formula shows its source when clicked, as in Typora.
           const preview = event.target instanceof Element ? event.target.closest('.milkdown-code-block .preview-panel') : null

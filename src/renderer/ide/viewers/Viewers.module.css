@@ -48,6 +48,11 @@
 
 /* Markdown preview. */
 .markdownStage { padding: 20px 28px 40vh; box-sizing: border-box; max-width: 980px; margin: 0 auto; }
+.frontMatter {
+  margin: 0 0 16px; padding: 8px 10px; border: 1px solid var(--rainy-alias-border-l2); border-radius: 4px; white-space: pre-wrap;
+  background: var(--rainy-static-gray-50); color: var(--rainy-alias-label-secondary); font: 13px/1.6 var(--rainy-font-family-code);
+}
+:global(body[data-rainy-dark]) .frontMatter { background: var(--rainy-alias-bg-layer-1); }
 
 /* Hex view: fixed-height rows, offset | 16 bytes | ASCII, and the inspector beside them. */
 .hex { display: flex; flex: 1; min-height: 0; }
