@@ -37,12 +37,21 @@ struct Viewer {
     _subscriptions: Vec<Subscription>,
 }
 
-/// An image file's decoded bytes, fetched from the Host's `/rainy/ide/raw` route.
+/// An image file's decoded bytes, fetched from the Host's `/rainy/ide/raw` route, for when its page cannot be shown.
 enum Picture {
     Loading,
     Ready(Arc<Image>),
-    Failed(SharedString),
+    /// What went wrong, and the Host's own answer as a detail.
+    Failed(SharedString, Option<SharedString>),
 }
+
+/// What the editor area asks of the window around it.
+pub enum EditorAreaEvent {
+    /// Add an image a page made to the AI composer.
+    AttachImage { name: String, mime: &'static str, bytes: Vec<u8> },
+}
+
+impl EventEmitter<EditorAreaEvent> for EditorArea {}
 
 pub struct EditorArea {
     ide: Entity<Ide>,
@@ -102,14 +111,19 @@ impl EditorArea {
     fn viewer(&mut self, key: &str, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<WebPane>> {
         let ide = self.ide.read(cx);
         let file = ide.files.get(key)?;
-        let markdown = kind.starts_with("markdown");
+        // Pages of the editor's text follow it as it changes; the others show one version of the file's bytes.
+        let live = viewers::shows_text(kind);
         let version = file.document.version.clone();
         if let Some(viewer) = self.viewers.get(key)
             && viewer.kind == kind
-            && (markdown || viewer.version == version)
+            && (live || viewer.version == version)
         {
             return Some(viewer.pane.clone());
         }
+        // A hex page chosen in place of the file's own view offers the way back to it.
+        let back = kind == "hex"
+            && ide.views.get(key).map(String::as_str) == Some("hex")
+            && viewers::page_view(&file.document.path, file.document.read_only_reason.as_deref(), None).map(|(shown, _)| shown) != Some("hex");
         let launch = Store::global(cx).read(cx).launch_url()?;
         let workspace = ide.workspace.clone()?;
         // The desktop opens Office files in their own application only where it can reach them.
@@ -119,12 +133,12 @@ impl EditorArea {
             let base = workspace.roots().iter().find(|known| Some(known.root_id.as_str()) == root || (root.is_none() && known.primary)).map_or(workspace.path.clone(), |known| known.path.clone());
             format!("{}\\{}", base.trim_end_matches(['\\', '/']), path.replace('/', "\\"))
         });
-        let url = viewers::viewer_url(&launch, kind, key, &workspace.workspace_id, file.document.bytes as u64, &version, host_path.as_deref());
+        let url = viewers::viewer_url(&launch, kind, key, &workspace.workspace_id, file.document.bytes as u64, &version, host_path.as_deref(), back);
         let editor = file.editor.clone();
         let pane = viewers::create_pane(url, window, cx);
         let owner = key.to_owned();
         let mut subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
-        if let (true, Some(editor)) = (markdown, editor) {
+        if let (true, Some(editor)) = (live, editor) {
             let owner = key.to_owned();
             subscriptions.push(cx.subscribe(&editor, move |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -136,7 +150,7 @@ impl EditorArea {
         Some(pane)
     }
 
-    /// Hand a Markdown page the file's current text, unless the page wrote it itself.
+    /// Hand a Markdown or SVG page the file's current text, unless the page wrote it itself.
     fn send_text(&mut self, key: &str, cx: &mut Context<Self>) {
         let ide = self.ide.read(cx);
         let Some(file) = ide.files.get(key) else { return };
@@ -144,7 +158,7 @@ impl EditorArea {
         let text = editor.read(cx).value().to_string();
         let version = file.document.version.clone();
         let Some(viewer) = self.viewers.get_mut(key) else { return };
-        if !viewer.kind.starts_with("markdown") || viewer.from_page.as_deref() == Some(text.as_str()) {
+        if !viewers::shows_text(viewer.kind) || viewer.from_page.as_deref() == Some(text.as_str()) {
             return;
         }
         viewer.from_page = None;
@@ -197,6 +211,17 @@ impl EditorArea {
                     });
                 }
                 Some(PageRequest::Call { id, name, params }) => self.answer(key, id, &name, &params, window, cx),
+                Some(PageRequest::Attach { name, mime, bytes }) => cx.emit(EditorAreaEvent::AttachImage { name, mime, bytes }),
+                Some(PageRequest::View(view)) => {
+                    let key = key.to_owned();
+                    self.ide.update(cx, |ide, cx| ide.set_view(&key, view.as_deref(), cx));
+                }
+                Some(PageRequest::Reload) => {
+                    let key = key.to_owned();
+                    if !self.ide.read(cx).is_dirty(&key) {
+                        self.ide.update(cx, |ide, cx| ide.reload(&key, window, cx));
+                    }
+                }
                 Some(PageRequest::OpenKey(_) | PageRequest::Ask(_)) | None => {}
             },
             PaneEvent::Shortcut(shortcut) => {
@@ -422,15 +447,22 @@ impl EditorArea {
             let rpc = Store::global(cx).read(cx).rpc.clone();
             self.pictures.insert(entry.clone(), Picture::Loading);
             let fetched = entry.clone();
+            let (offline, failed) = (tr(cx, "viewers.hostOffline"), tr(cx, "viewers.imageReadFailed"));
+            let missing = tr(cx, "viewers.imageMissing");
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 let result = match rpc {
-                    Some(rpc) => cx.background_spawn(async move { rpc.get(&query).await }).await,
-                    None => Err(anyhow::anyhow!("Not connected to the Host.")),
+                    Some(rpc) => Some(cx.background_spawn(async move { rpc.get(&query).await }).await),
+                    None => None,
                 };
+                // The Host's answer is English and technical, so it is only a detail under the reason.
                 let picture = match result {
-                    Ok((200..=299, bytes)) => Picture::Ready(Arc::new(Image::from_bytes(format, bytes))),
-                    Ok((status, body)) => Picture::Failed(format!("HTTP {status}: {}", String::from_utf8_lossy(&body)).into()),
-                    Err(error) => Picture::Failed(error.to_string().into()),
+                    None => Picture::Failed(offline, None),
+                    Some(Ok((200..=299, bytes))) => Picture::Ready(Arc::new(Image::from_bytes(format, bytes))),
+                    Some(Ok((status, body))) => {
+                        let detail = format!("HTTP {status} {}", String::from_utf8_lossy(&body)).trim().to_owned();
+                        Picture::Failed(if matches!(status, 404 | 409) { missing } else { failed }, Some(detail.into()))
+                    }
+                    Some(Err(error)) => Picture::Failed(failed, Some(error.to_string().into())),
                 };
                 let _ = this.update(cx, |this, cx| {
                     this.pictures.insert(fetched, picture);
@@ -542,17 +574,26 @@ impl EditorArea {
         let Some(file) = ide.files.get(&key) else {
             return centered(h_flex().gap_2().child(Spinner::new().small()).child(tr(cx, "ide.ideEditorLoading")), &theme).into_any_element();
         };
-        let markdown = file.editor.is_some() && viewers::preview_kind(&file.document.path) == Some("markdown");
-        if markdown {
-            let view = ide.views.get(&key).cloned();
+        let view = ide.views.get(&key).cloned();
+        // Markdown and SVG text have views of their own: a page, the source, or both.
+        let text_views: Option<&'static [(&'static str, Option<&'static str>)]> = match viewers::preview_kind(&file.document.path) {
+            _ if file.editor.is_none() => None,
+            Some("markdown") => Some(&viewers::MARKDOWN_VIEWS),
+            Some("svg") => Some(&viewers::SVG_VIEWS),
+            _ => None,
+        };
+        if let Some(views) = text_views {
             let editor = file.editor.clone();
             let shown = viewers::page_view(&file.document.path, None, view.as_deref());
-            let toolbar = self.render_views(&key, view.as_deref(), cx);
+            let toolbar = self.render_views(&key, view.as_deref(), views, cx);
             let body = match shown {
                 Some((kind, split)) => self.render_page(&key, kind, split.then_some(editor).flatten(), window, cx),
                 None => editor.map(|editor| Editor::new(&editor).h_full().bordered(false).into_any_element()).unwrap_or_else(|| div().into_any_element()),
             };
             return v_flex().size_full().child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
+        }
+        if view.as_deref() == Some("hex") {
+            return self.render_page(&key, "hex", None, window, cx);
         }
         if let Some(editor) = file.editor.clone() {
             let conflict = file.conflict;
@@ -592,10 +633,12 @@ impl EditorArea {
         let reason = file.document.read_only_reason.clone().unwrap_or_default();
         let preview = file.document.preview.clone();
         let path = file.document.path.clone();
-        if let Some((kind, _)) = viewers::page_view(&path, Some(reason.as_str()), None) {
-            return self.render_page(&key, kind, None, window, cx);
-        }
-        if reason == "media" && image_format(&path).is_some() {
+        if let Some((kind, _)) = viewers::page_view(&path, Some(reason.as_str()), view.as_deref()) {
+            // Without WebView2 an image is still shown, as GPUI decodes it, only without the viewer's tools.
+            let failed = self.viewers.get(&key).filter(|viewer| viewer.kind == kind).is_some_and(|viewer| viewer.pane.read(cx).error().is_some());
+            if !(kind == "image" && failed && image_format(&path).is_some()) {
+                return self.render_page(&key, kind, None, window, cx);
+            }
             return match self.picture(&key, cx) {
                 Some(Picture::Ready(image)) => div()
                     .size_full()
@@ -606,14 +649,16 @@ impl EditorArea {
                     .bg(theme.muted.opacity(0.3))
                     .child(img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::ScaleDown))
                     .into_any_element(),
-                Some(Picture::Failed(error)) => centered(div().text_color(theme.danger).child(error.clone()), &theme).into_any_element(),
+                Some(Picture::Failed(error, detail)) => centered(failure(error.clone(), detail.clone(), &theme), &theme).into_any_element(),
                 _ => centered(Spinner::new().small(), &theme).into_any_element(),
             };
         }
         let notice = match reason.as_str() {
-            "too-large" => tr(cx, "ide.ideTooLarge"),
+            "too-large" => tr(cx, "viewers.readOnlyLarge"),
+            "unsupported-encoding" => tr(cx, "viewers.notUtf8"),
             _ => tr(cx, "ide.ideReadOnly"),
         };
+        let (handle, shown) = (self.ide.clone(), key.clone());
         v_flex()
             .size_full()
             .child(
@@ -628,7 +673,11 @@ impl EditorArea {
                     .border_b_1()
                     .border_color(theme.border)
                     .child(Icon::new(IconName::Info).small())
-                    .child(notice),
+                    .child(div().flex_1().min_w_0().child(notice))
+                    // The hex page reads the whole file in ranges; the text below is only its beginning.
+                    .child(Button::new("view-hex").outline().xsmall().label(tr(cx, "viewers.viewAsHex")).on_click(move |_, _, cx| {
+                        handle.update(cx, |ide, cx| ide.set_view(&shown, Some("hex"), cx));
+                    })),
             )
             .when_some(preview, |this, preview| {
                 this.child(
@@ -647,9 +696,12 @@ impl EditorArea {
             .into_any_element()
     }
 
-    /// The Markdown views of a tab: rich, source, preview and split.
-    fn render_views(&self, key: &str, current: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+    /// The views of a Markdown or SVG tab, the default first; nothing is marked while the tab shows hex.
+    fn render_views(&self, key: &str, current: Option<&str>, views: &'static [(&'static str, Option<&'static str>)], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
+        let hex = current == Some("hex");
+        // A stored view this file type does not list (`rich` of Markdown, `preview` of SVG) is its default.
+        let current = current.filter(|current| views.iter().any(|(_, view)| *view == Some(*current)));
         h_flex()
             .flex_shrink_0()
             .h(px(32.))
@@ -659,8 +711,8 @@ impl EditorArea {
             .justify_end()
             .border_b_1()
             .border_color(theme.border)
-            .children(viewers::MARKDOWN_VIEWS.iter().enumerate().map(|(index, (label, view))| {
-                let selected = current.filter(|current| *current != "rich") == *view;
+            .children(views.iter().enumerate().map(|(index, (label, view))| {
+                let selected = !hex && current == *view;
                 let (ide, key, view) = (self.ide.clone(), key.to_owned(), view.map(str::to_owned));
                 Button::new(("md-view", index)).ghost().xsmall().label(tr(cx, label)).selected(selected).on_click(move |_, _, cx| {
                     ide.update(cx, |ide, cx| ide.set_view(&key, view.as_deref(), cx));
@@ -679,7 +731,7 @@ impl EditorArea {
                     (pane.is_creating(), pane.error())
                 };
                 match error {
-                    Some(error) => centered(div().max_w(px(560.)).text_sm().text_color(theme.danger).child(error), &theme).into_any_element(),
+                    Some(error) => centered(failure(tr(cx, "viewers.pageFailed"), Some(error), &theme), &theme).into_any_element(),
                     None => div()
                         .size_full()
                         .relative()
@@ -754,6 +806,17 @@ impl EditorArea {
 
 fn centered(content: impl IntoElement, theme: &gpui_kit::component::Theme) -> Div {
     div().size_full().flex().items_center().justify_center().text_sm().text_color(theme.muted_foreground).child(content)
+}
+
+/// Why a file is not shown, in the interface language, with the underlying error as a smaller detail line.
+fn failure(reason: SharedString, detail: Option<SharedString>, theme: &gpui_kit::component::Theme) -> Div {
+    v_flex()
+        .max_w(px(560.))
+        .gap_1()
+        .items_center()
+        .text_center()
+        .child(div().text_sm().text_color(theme.danger).child(reason))
+        .when_some(detail.filter(|detail| !detail.is_empty()), |this, detail| this.child(div().text_xs().text_color(theme.muted_foreground).child(detail)))
 }
 
 /// Close a tab, asking first when it has unsaved edits.

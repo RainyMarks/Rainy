@@ -114,6 +114,16 @@ impl Workbench {
                 cx.notify();
             }),
             cx.observe(&ide, |_, _, cx| cx.notify()),
+            // An image viewer's "添加到对话" lands in the composer, which is shown for it.
+            cx.subscribe_in(&editor, window, |this, _, event: &crate::ui::ide::editor_area::EditorAreaEvent, window, cx| match event {
+                crate::ui::ide::editor_area::EditorAreaEvent::AttachImage { name, mime, bytes } => {
+                    this.agent_visible = true;
+                    let (name, mime, bytes) = (name.clone(), *mime, bytes.clone());
+                    let added = tr(cx, "viewers.imageAttached").to_string();
+                    this.chat.update(cx, |chat, cx| chat.attach_bytes(name, bytes, mime, Some(added), window, cx));
+                    cx.notify();
+                }
+            }),
             cx.observe(&crate::store::language::LanguageServers::global(cx), |_, _, cx| cx.notify()),
             cx.observe(&git, |_, _, cx| cx.notify()),
             cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {

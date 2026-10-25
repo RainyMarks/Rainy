@@ -148,3 +148,7 @@
 .pdfPasswordInput::placeholder { color: var(--rainy-alias-label-dimmed); }
 .pdfPasswordInput:focus { border-color: var(--rainy-alias-state-business-primary); }
 .pdfPasswordInput[aria-invalid='true'] { border-color: var(--rainy-alias-state-error-primary); }
+
+/* Toolbars on a narrow pane: a long label such as the hex view's file type gives way first, and the offset box shrinks. */
+.ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 520px) { .toolbar input { width: 96px; } }

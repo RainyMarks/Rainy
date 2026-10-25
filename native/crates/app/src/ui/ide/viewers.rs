@@ -35,32 +35,52 @@ pub fn preview_kind(path: &str) -> Option<&'static str> {
 }
 
 /// The page a tab shows, and whether the text editor stays beside it (`chooseViewer`); `None` is the native editor or
-/// image view. `reason` is why the Host returned no editable text; `view` the tab's chosen view.
+/// read-only notice. `reason` is why the Host returned no editable text; `view` the tab's chosen view. Every file can be
+/// shown as hex; binary files without a viewer are.
 pub fn page_view(path: &str, reason: Option<&str>, view: Option<&str>) -> Option<(&'static str, bool)> {
     let kind = preview_kind(path);
+    if view == Some("hex") {
+        return Some(("hex", false));
+    }
     match reason {
         Some("media") => match kind {
-            Some("image" | "svg" | "markdown") | None => None,
+            Some("svg" | "markdown") | None => Some(("hex", false)),
             Some(kind) => Some((kind, false)),
         },
+        Some("binary") => Some(("hex", false)),
         None if kind == Some("markdown") => match view {
-            Some("source" | "hex") => None,
+            Some("source") => None,
             Some("preview") => Some(("markdown", false)),
             Some("split") => Some(("markdown", true)),
             _ => Some(("markdown-rich", false)),
         },
+        None if kind == Some("svg") => match view {
+            Some("source") => None,
+            Some("split") => Some(("svg", true)),
+            _ => Some(("svg", false)),
+        },
         _ => None,
     }
+}
+
+/// Pages that show the editor's current text, which the workbench hands them, rather than the file's bytes.
+pub fn shows_text(kind: &str) -> bool {
+    kind.starts_with("markdown") || kind == "svg"
 }
 
 /// The tab views Markdown offers, with their labels and what the tab stores for them.
 pub const MARKDOWN_VIEWS: [(&str, Option<&str>); 4] =
     [("viewers.viewRich", None), ("viewers.viewSource", Some("source")), ("viewers.viewPreview", Some("preview")), ("viewers.viewSplit", Some("split"))];
 
+/// The tab views of an SVG file: the picture by default, its source, or both.
+pub const SVG_VIEWS: [(&str, Option<&str>); 3] = [("viewers.viewPreview", None), ("viewers.viewSource", Some("source")), ("viewers.viewSplit", Some("split"))];
+
 use rainy_carrier::text::percent_encode as encode;
 
 /// The address a pane opens: the Host's launch address, which sets the session cookie and lands on the viewer page.
-pub fn viewer_url(launch: &str, viewer: &str, key: &str, workspace_id: &str, bytes: u64, version: &str, host_path: Option<&str>) -> String {
+/// `back` tells a hex page that the tab has another view to return to.
+#[allow(clippy::too_many_arguments)]
+pub fn viewer_url(launch: &str, viewer: &str, key: &str, workspace_id: &str, bytes: u64, version: &str, host_path: Option<&str>, back: bool) -> String {
     let (root, path) = split_key(key);
     let mut page = format!("/?view={viewer}&workspace={}&path={}&bytes={bytes}&version={}", encode(workspace_id), encode(path), encode(version));
     if let Some(root) = root {
@@ -68,6 +88,9 @@ pub fn viewer_url(launch: &str, viewer: &str, key: &str, workspace_id: &str, byt
     }
     if let Some(host_path) = host_path {
         page.push_str(&format!("&hostPath={}", encode(host_path)));
+    }
+    if back {
+        page.push_str("&back=1");
     }
     format!("{launch}&next={}", encode(&page))
 }
@@ -125,6 +148,23 @@ pub enum PageRequest {
     Outline(i64),
     /// Something to tell the user, such as where an export went.
     Notice { error: bool, text: String },
+    /// An image for the AI composer, as the page encoded it.
+    Attach { name: String, mime: &'static str, bytes: Vec<u8> },
+    /// Show the tab in another view (`hex`), or in its default one.
+    View(Option<String>),
+    /// The file changed on disk while the page read it; read it again.
+    Reload,
+}
+
+/// The image types the composer accepts from a page.
+fn attach_mime(mime: &str) -> Option<&'static str> {
+    Some(match mime {
+        "image/png" => "image/png",
+        "image/jpeg" => "image/jpeg",
+        "image/webp" => "image/webp",
+        "image/gif" => "image/gif",
+        _ => return None,
+    })
 }
 
 pub fn parse_message(text: &str) -> Option<PageRequest> {
@@ -144,6 +184,17 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
         "ask" => PageRequest::Ask(value["text"].as_str()?.to_owned()),
         "outline" => PageRequest::Outline(value["index"].as_i64()?),
         "notice" => PageRequest::Notice { error: value["tone"] == "error", text: value["text"].as_str()?.to_owned() },
+        "attach" => {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(value["base64"].as_str()?).ok()?;
+            PageRequest::Attach { name: value["name"].as_str()?.to_owned(), mime: attach_mime(value["mime"].as_str()?)?, bytes }
+        }
+        "view" => match &value["view"] {
+            Value::Null => PageRequest::View(None),
+            Value::String(view) if view == "hex" => PageRequest::View(Some(view.clone())),
+            _ => return None,
+        },
+        "reload" => PageRequest::Reload,
         _ => return None,
     })
 }
@@ -197,4 +248,38 @@ pub fn create_pane(url: String, window: &mut Window, cx: &mut App) -> Entity<Web
         };
         WebPane::new(url, options, window, cx)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    #[test]
+    fn views_of_files() {
+        assert_eq!(page_view("a.png", Some("media"), None), Some(("image", false)));
+        assert_eq!(page_view("a.avif", Some("media"), None), Some(("image", false)));
+        assert_eq!(page_view("a.svg", None, None), Some(("svg", false)));
+        assert_eq!(page_view("a.svg", None, Some("source")), None);
+        assert_eq!(page_view("a.svg", None, Some("split")), Some(("svg", true)));
+        assert_eq!(page_view("a.bin", Some("binary"), None), Some(("hex", false)));
+        assert_eq!(page_view("a.mp4", Some("media"), Some("hex")), Some(("hex", false)));
+        assert_eq!(page_view("a.log", Some("too-large"), None), None);
+        assert_eq!(page_view("a.md", None, Some("rich")), Some(("markdown-rich", false)));
+        assert_eq!(page_view("a.md", None, Some("hex")), Some(("hex", false)));
+        assert!(shows_text("svg") && shows_text("markdown-rich") && !shows_text("hex"));
+    }
+
+    #[test]
+    fn page_messages() {
+        assert!(matches!(parse_message(r#"{"type":"view","view":"hex"}"#), Some(PageRequest::View(Some(view))) if view == "hex"));
+        assert!(matches!(parse_message(r#"{"type":"view","view":null}"#), Some(PageRequest::View(None))));
+        assert!(parse_message(r#"{"type":"view","view":"source"}"#).is_none());
+        assert!(matches!(parse_message(r#"{"type":"reload"}"#), Some(PageRequest::Reload)));
+        let attach = parse_message(r#"{"type":"attach","name":"a.png","mime":"image/png","base64":"AAEC"}"#);
+        assert!(matches!(attach, Some(PageRequest::Attach { mime: "image/png", bytes, .. }) if bytes == [0, 1, 2]));
+        assert!(parse_message(r#"{"type":"attach","name":"a.svg","mime":"image/svg+xml","base64":"AAEC"}"#).is_none());
+        assert!(viewer_url("http://127.0.0.1:1/launch?t=x", "hex", "a.bin", "w", 3, "v1", None, true).contains(&encode("&back=1")));
+    }
 }

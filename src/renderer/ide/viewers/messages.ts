@@ -71,6 +71,7 @@ const zh = {
   shortcutTitle: 'Windows 快捷方式', shortcutTarget: '指向', shortcutArguments: '参数', shortcutFolder: '起始位置', shortcutComment: '备注',
   shortcutBroken: '无法读取这个快捷方式。', shortcutCopy: '复制路径', shortcutCopied: '已复制路径',
   toolMore: '更多',
+  hexBack: '退出十六进制', fileDamaged: '文件内容无法解析，可能已损坏，或者不是扩展名所表示的格式',
 }
 
 const en: typeof zh = {
@@ -143,6 +144,7 @@ const en: typeof zh = {
   shortcutTitle: 'Windows shortcut', shortcutTarget: 'Target', shortcutArguments: 'Arguments', shortcutFolder: 'Start in', shortcutComment: 'Comment',
   shortcutBroken: 'This shortcut cannot be read.', shortcutCopy: 'Copy path', shortcutCopied: 'Path copied',
   toolMore: 'More',
+  hexBack: 'Leave hex view', fileDamaged: 'the content cannot be read. The file may be damaged or not in the format its extension says',
 }
 
 /** Viewer strings. */

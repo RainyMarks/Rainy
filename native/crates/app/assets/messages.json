@@ -2419,7 +2419,12 @@
    "shortcutComment": "备注",
    "shortcutBroken": "无法读取这个快捷方式。",
    "shortcutCopy": "复制路径",
-   "shortcutCopied": "已复制路径"
+   "shortcutCopied": "已复制路径",
+   "hostOffline": "没有连上 Rainy 后台服务，暂时无法读取这个文件。",
+   "imageReadFailed": "无法读取这张图片。",
+   "imageMissing": "这张图片已被移动、删除或刚刚改动，请重新打开。",
+   "pageFailed": "无法在页面中显示这个文件。",
+   "notUtf8": "这个文件不是 UTF-8 文本，只能只读查看，下面是开头部分。"
   },
   "en": {
    "viewRich": "Rich",
@@ -2578,7 +2583,12 @@
    "shortcutComment": "Comment",
    "shortcutBroken": "This shortcut cannot be read.",
    "shortcutCopy": "Copy path",
-   "shortcutCopied": "Path copied"
+   "shortcutCopied": "Path copied",
+   "hostOffline": "Rainy is not connected to its Host, so the file cannot be read now.",
+   "imageReadFailed": "This image cannot be read.",
+   "imageMissing": "This image was moved, deleted or just changed. Open it again.",
+   "pageFailed": "This file cannot be shown in a page.",
+   "notUtf8": "This file is not UTF-8 text and is shown read-only. Its beginning is below."
   }
  }
 }

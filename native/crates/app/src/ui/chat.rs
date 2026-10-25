@@ -413,7 +413,7 @@ impl ChatPane {
                         ImageFormat::Webp => "image/webp",
                         _ => "image/png",
                     };
-                    self.attach_bytes("clipboard".into(), image.bytes.clone(), mime, window, cx);
+                    self.attach_bytes("clipboard".into(), image.bytes.clone(), mime, None, window, cx);
                     cx.stop_propagation();
                 }
             }
@@ -421,14 +421,19 @@ impl ChatPane {
         }
     }
 
-    /// Encode an image off the interface thread, then attach it.
-    fn attach_bytes(&mut self, name: String, bytes: Vec<u8>, mime: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Encode an image off the interface thread, then attach it; `added` is said once it is attached.
+    pub fn attach_bytes(&mut self, name: String, bytes: Vec<u8>, mime: &'static str, added: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let encoded = cx.background_spawn(async move { crate::ui::composer::encode_image(&bytes, mime) });
         cx.spawn_in(window, async move |this, cx| {
             let result = encoded.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok(image) if this.attachments.len() < crate::ui::composer::MAX_IMAGES => this.attachments.push(image),
+                    Ok(image) if this.attachments.len() < crate::ui::composer::MAX_IMAGES => {
+                        this.attachments.push(image);
+                        if let Some(added) = added {
+                            window.push_notification(Notification::success(added), cx);
+                        }
+                    }
                     Ok(_) => window.push_notification(Notification::error(trf(cx, "chat.imageLimit", &[("count", &crate::ui::composer::MAX_IMAGES)]).to_string()), cx),
                     Err(error) => window.push_notification(Notification::error(format!("{name}: {error}")), cx),
                 }
@@ -446,7 +451,7 @@ impl ChatPane {
             let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
             if let Some(mime) = crate::ui::composer::image_mime(&path) {
                 match std::fs::read(&path) {
-                    Ok(bytes) if bytes.len() <= crate::ui::composer::MAX_IMAGE_BYTES => self.attach_bytes(name, bytes, mime, window, cx),
+                    Ok(bytes) if bytes.len() <= crate::ui::composer::MAX_IMAGE_BYTES => self.attach_bytes(name, bytes, mime, None, window, cx),
                     Ok(_) => window.push_notification(Notification::error(trf(cx, "chat.imageTooLarge", &[("name", &name)]).to_string()), cx),
                     Err(error) => window.push_notification(Notification::error(format!("{name}: {error}")), cx),
                 }

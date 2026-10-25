@@ -1,13 +1,14 @@
 /**
- * One file shown alone (`/?view=…`), for the WebView2 panes of the native workbench: PDF, Office documents, media,
- * shortcuts and Markdown (rich editing and preview). The workbench keeps the file's text: it sends the text here and
- * receives edits, saves and opened links through `window.ipc`.
+ * One file shown alone (`/?view=…`), for the WebView2 panes of the native workbench: PDF, Office documents, images,
+ * SVG, media, hex, shortcuts and Markdown (rich editing and preview). The workbench keeps the file's text: it sends the
+ * text here and receives edits, saves, opened links, attachments and view changes through `window.ipc`.
  */
 import { lazy, Suspense, useEffect, useState } from 'react'
-import type { IdeRootId, IdeWorkspace, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { callIde, IdeRequestError } from '../ide/ide-api.ts'
-import { ImageViewer } from '../ide/viewers/ImageViewer.tsx'
+import { HexViewer } from '../ide/viewers/HexViewer.tsx'
+import { ImageViewer, type ImageAttachment } from '../ide/viewers/ImageViewer.tsx'
 import { MarkdownPreview } from '../ide/viewers/MarkdownPreview.tsx'
 import { MediaViewer } from '../ide/viewers/MediaViewer.tsx'
 import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer, type DocumentLocation } from '../ide/viewers/OfficeViewers.tsx'
@@ -36,6 +37,11 @@ type Message =
   | { type: 'ask'; text: string }
   | { type: 'outline'; index: number }
   | { type: 'notice'; tone: 'success' | 'error'; text: string }
+  | ({ type: 'attach' } & ImageAttachment)
+  /** Show the tab as hex, or in its default view again. */
+  | { type: 'view'; view: 'hex' | null }
+  /** The file changed on disk while this page read it. */
+  | { type: 'reload' }
 
 declare global {
   interface Window {
@@ -181,6 +187,28 @@ function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; work
     }} />
 }
 
+/** "Add to chat" of the image viewer, where the workbench is there to take the image. */
+const attachImage = window.ipc === undefined ? undefined : (image: ImageAttachment): void => { post({ type: 'attach', ...image }) }
+
+/** An SVG file as the picture of the editor's current text, which the workbench sends as it changes. Before it arrives
+ *  the saved file is shown. SVG shown through <img> never runs its scripts, so unsaved text is shown as it is. */
+function SvgView({ url, name, bytes }: { url: string; name: string; bytes: number }): JSX.Element {
+  const [text, setText] = useState(latestText)
+  const [live, setLive] = useState<string | undefined>()
+  useEffect(() => {
+    receiveText = (value, version) => { setText({ text: value, version }) }
+    post({ type: 'ready' })
+    return () => { receiveText = undefined }
+  }, [])
+  useEffect(() => {
+    if (text === undefined) return
+    const timer = window.setTimeout(() => { setLive(URL.createObjectURL(new Blob([text.text], { type: 'image/svg+xml' }))) }, 150)
+    return () => { window.clearTimeout(timer) }
+  }, [text])
+  useEffect(() => () => { if (live !== undefined) URL.revokeObjectURL(live) }, [live])
+  return <ImageViewer url={live ?? url} name={name} bytes={text === undefined ? bytes : new Blob([text.text]).size} onAttach={attachImage} />
+}
+
 /** The project map of a workspace, as the 3.x workbench shows it in its center. */
 function MapView({ workspaceId }: { workspaceId: WorkspaceId }): JSX.Element {
   const [sessionId, setSessionId] = useState(latestSession)
@@ -209,13 +237,19 @@ export function ViewerApp(): JSX.Element {
   const hostPath = params.get('hostPath') ?? undefined
   const url = ideRawUrl({ workspaceId, rootId, path, version })
   const documentLocation: DocumentLocation = { name, extension: name.slice(name.lastIndexOf('.') + 1).toLowerCase(), hostPath }
+  // Pages of the editor's text say they are ready once they can take it.
   useEffect(() => {
-    if (view !== 'markdown' && view !== 'markdown-rich') post({ type: 'ready' })
+    if (view !== 'markdown' && view !== 'markdown-rich' && view !== 'svg') post({ type: 'ready' })
   }, [view])
   let content: JSX.Element | null
   switch (view) {
-    case 'image': case 'svg': content = <ImageViewer url={url} name={name} bytes={bytes} />; break
-    case 'audio': case 'video': content = <MediaViewer url={url} kind={view} bytes={bytes} onHex={() => undefined} />; break
+    case 'image': content = <ImageViewer url={url} name={name} bytes={bytes} onAttach={attachImage} />; break
+    case 'svg': content = <SvgView url={url} name={name} bytes={bytes} />; break
+    case 'hex':
+      content = <HexViewer url={url} size={bytes} onChanged={() => { post({ type: 'reload' }) }}
+        onBack={params.get('back') === '1' ? () => { post({ type: 'view', view: null }) } : undefined} />
+      break
+    case 'audio': case 'video': content = <MediaViewer url={url} kind={view} bytes={bytes} onHex={() => { post({ type: 'view', view: 'hex' }) }} />; break
     case 'pdf': content = <PdfViewer url={url} bytes={bytes} />; break
     case 'word': content = <WordViewer url={url} size={bytes} location={documentLocation} />; break
     case 'sheet': content = <SheetViewer url={url} size={bytes} location={documentLocation} />; break
@@ -228,7 +262,7 @@ export function ViewerApp(): JSX.Element {
     case 'map': content = <MapView workspaceId={workspaceId} />; break
     default: content = null
   }
-  return <div data-rainy-viewer={view} style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-editor, var(--background))' }}>
+  return <div data-rainy-viewer={view} style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--rainy-alias-bg-base)' }}>
     {content}
     <ToastHost />
   </div>
