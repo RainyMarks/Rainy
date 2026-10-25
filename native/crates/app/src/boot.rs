@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use rainy_carrier::askpass::Askpass;
+use rainy_carrier::control::StoppedEarly;
 use rainy_carrier::download::DownloadError;
 use rainy_carrier::modules::{ModuleError, Modules};
 use rainy_carrier::ssh::{self, InstallProgress, ServerRuntime};
@@ -507,7 +508,7 @@ pub fn start(
         ExecutionTarget::Windows { .. } => Some((windows_host(paths)?, None)),
         ExecutionTarget::Wsl { .. } => wsl_host(paths, &saved, modules, &events, ask, progress)?,
         ExecutionTarget::Ssh { .. } => {
-            let askpass = askpass.context("Rainy could not start the service that answers SSH questions.")?;
+            let askpass = askpass.with_context(|| i18n::text(saved_locale(&paths.user_data), "native.sshAskpassFailed"))?;
             if let Some((host, prune)) = ssh_host(paths, &saved, events.clone(), askpass, modules, ask, progress)? {
                 return Ok(Started { target: saved, host, prune });
             }
@@ -624,7 +625,7 @@ fn ssh_host(
                 if said.contains("Permission denied") {
                     session.failed();
                 }
-                return Err(if format!("{error:#}").contains("The execution Host stopped") { ssh::failure(&destination, None, &said) } else { error });
+                return Err(if error.downcast_ref::<StoppedEarly>().is_some() { ssh::failure(&destination, None, &said) } else { error });
             }
         }
     }

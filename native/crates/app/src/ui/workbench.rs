@@ -11,7 +11,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use rainy_carrier::{ExecutionTarget, targets};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
+use gpui_kit::component::{ActiveTheme as _, ResizableState, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::{Disableable as _, Selectable as _, StyledExt as _};
@@ -19,7 +19,7 @@ use serde_json::Value;
 use rainy_carrier::ConnectionState;
 use rainy_carrier::trust::TrustError;
 
-use crate::store::ide::Ide;
+use crate::store::ide::{Ide, PaneLayout};
 use crate::boot::RuntimeChoice;
 use crate::store::{Phase, RuntimePrompt, Store, StoreEvent};
 use crate::theme;
@@ -57,6 +57,41 @@ enum Side {
     Outline,
 }
 
+/// Pane sizes in logical pixels: the file pane's width, the AI pane's (0 follows the window) and the bottom panel's
+/// height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Sizes {
+    sidebar: f32,
+    agent: f32,
+    bottom: f32,
+}
+
+/// What a new project starts with, as the Host stores it.
+const DEFAULT_SIZES: Sizes = Sizes { sidebar: 240., agent: 0., bottom: 220. };
+/// The narrowest the editor between the panes gets while the window allows, and the narrowest AI pane (3.x
+/// `clampAgent`).
+const EDITOR_MIN: f32 = 300.;
+const AGENT_MIN: f32 = 300.;
+
+impl Sizes {
+    /// The sizes to lay out in a window of `width` × `height` (3.x `layout.ts`): the file pane 180–360 px, the AI pane
+    /// following the window (28%, 340–600 px) until it was resized and never under 300 px, the bottom panel from 120
+    /// px to the window height less 230, and the editor not under 300 px while the window allows.
+    fn clamped(self, width: f32, height: f32, left: bool, agent: bool) -> Sizes {
+        let sidebar = self.sidebar.clamp(180., 360.).min(sidebar_max(width, agent)).round();
+        let left_width = if left { sidebar } else { 0. };
+        // 400 is the fixed width projects stored before the pane followed the window; a pane never resized still has it.
+        let preferred = if self.agent > 0. && self.agent != 400. { self.agent } else { (width * 0.28).clamp(340., 600.) };
+        let agent = preferred.min(width - left_width - EDITOR_MIN).max(AGENT_MIN).round();
+        Sizes { sidebar, agent, bottom: self.bottom.min(height - 230.).max(120.).round() }
+    }
+}
+
+/// The widest file pane that leaves the editor and the AI pane their least.
+fn sidebar_max(width: f32, agent: bool) -> f32 {
+    (width - EDITOR_MIN - if agent { AGENT_MIN } else { 0. }).clamp(180., 360.)
+}
+
 pub struct Workbench {
     store: Entity<Store>,
     ide: Entity<Ide>,
@@ -75,6 +110,12 @@ pub struct Workbench {
     side: Side,
     left_visible: bool,
     agent_visible: bool,
+    /// The pane sizes dragged in this window, for a window without a project and a project that has none saved; a
+    /// project's own are kept with it (`Ide::layout`).
+    sizes: Sizes,
+    /// The states of the pane groups: the window's columns, and the editor above the bottom panel.
+    panes: Option<PaneGroup>,
+    bottom_panes: Option<PaneGroup>,
     /// Whether the projects were loaded since the Host became ready.
     ide_started: bool,
     /// Chats known to wait for an approval, so each new wait flashes the taskbar once.
@@ -87,7 +128,7 @@ pub struct Workbench {
 impl Workbench {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let ide = Ide::global(cx);
-        let history = cx.new(|cx| HistoryPanel::new(store.clone(), cx));
+        let history = cx.new(|cx| HistoryPanel::new(store.clone(), window, cx));
         let chat = cx.new(|cx| ChatPane::new(store.clone(), window, cx));
         let files = cx.new(|cx| FileTree::new(ide.clone(), cx));
         let search = cx.new(|cx| SearchView::new(ide.clone(), window, cx));
@@ -179,6 +220,9 @@ impl Workbench {
             side: Side::Files,
             left_visible: true,
             agent_visible: true,
+            sizes: DEFAULT_SIZES,
+            panes: None,
+            bottom_panes: None,
             ide_started: false,
             awaiting: std::collections::HashSet::new(),
             focus: {
@@ -203,7 +247,9 @@ impl Workbench {
         cx.notify();
     }
 
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_title_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // In a narrow window the quick-open and run buttons show only their icons and the project name is cut shorter.
+        let narrow = window.viewport_size().width < px(1100.);
         let ready = matches!(self.store.read(cx).phase, Phase::Ready);
         let ide = self.ide.read(cx);
         let title: SharedString =
@@ -215,108 +261,128 @@ impl Workbench {
         let handle = self.ide.clone();
         let (left, agent, bottom) = (self.left_visible, self.agent_visible, self.bottom_visible);
         let tooltip: SharedString = if path.is_empty() { tr(cx, "native.projects") } else { path.into() };
+        // The name is cut with an ellipsis; the tooltip keeps the whole path.
+        let projects = Button::new("projects")
+            .ghost()
+            .small()
+            .min_w_0()
+            .flex_shrink_1()
+            .max_w(px(if narrow { 180. } else { 280. }))
+            .icon(gpui_kit::component::IconName::Folder)
+            .label(title)
+            .tooltip(tooltip)
+            .dropdown_menu(move |mut menu, _, cx| {
+                for workspace in workspaces.iter().rev() {
+                    let checked = current.as_deref() == Some(workspace.workspace_id.as_str());
+                    let (handle, workspace) = (handle.clone(), workspace.clone());
+                    menu = menu.item(PopupMenuItem::new(workspace.title.clone()).checked(checked).on_click(move |_, window, cx| {
+                        let workspace = workspace.clone();
+                        handle.update(cx, |ide, cx| ide.select(workspace, window, cx));
+                    }));
+                }
+                if !workspaces.is_empty() {
+                    menu = menu.separator();
+                }
+                menu = menu
+                    .item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| choose_folder(window, cx)))
+                    .item(PopupMenuItem::new(tr(cx, "ide.ideWslFolder")).on_click(|_, window, cx| crate::ui::ide::browse_folder(window, cx)));
+                if current.is_some() {
+                    menu = menu.item(
+                        PopupMenuItem::new(tr(cx, "ide.ideAddFolder")).on_click(|_, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx)),
+                    );
+                }
+                if let Some(current) = current.clone() {
+                    let handle = handle.clone();
+                    let title = workspaces.iter().find(|w| w.workspace_id == current).map(|w| w.title.clone()).unwrap_or_default();
+                    menu = menu.item(PopupMenuItem::new(tr(cx, "ide.ideRemoveWorkspace")).on_click(move |_, window, cx| {
+                        confirm_remove(handle.clone(), current.clone(), title.clone(), window, cx);
+                    }));
+                }
+                menu
+            });
+        let quick_open = Button::new("quick-open")
+            .ghost()
+            .small()
+            .icon(gpui_kit::component::IconName::Search)
+            .when(!narrow, |this| this.label(tr(cx, "ide.ideSearchFiles")))
+            .tooltip(tr(cx, "ide.ideQuickOpen"))
+            .on_click(|_, window, cx| quick_open::open(window, cx));
+        let toggle = |on: bool, button: Button| button.toggled(on).selected(on).when(on, |this| this.custom(crate::theme::selected_button(cx)));
+        let toggle_files = toggle(
+            left,
+            Button::new("toggle-files")
+                .ghost()
+                .small()
+                .icon(gpui_kit::component::IconName::PanelLeft)
+                .tooltip(tr(cx, "ide.ideToggleFiles"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.left_visible = !this.left_visible;
+                    cx.notify();
+                })),
+        );
+        let toggle_bottom = toggle(
+            bottom,
+            Button::new("toggle-bottom")
+                .ghost()
+                .small()
+                .icon(gpui_kit::component::IconName::PanelBottom)
+                .tooltip(tr(cx, "ide.ideToggleBottom"))
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
+        );
+        let toggle_agent = toggle(
+            agent,
+            Button::new("toggle-agent")
+                .ghost()
+                .small()
+                .icon(gpui_kit::component::IconName::PanelRight)
+                .tooltip(tr(cx, "ide.ideToggleAgent"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.agent_visible = !this.agent_visible;
+                    cx.notify();
+                })),
+        );
+        let settings = Button::new("open-settings")
+            .ghost()
+            .small()
+            .icon(gpui_kit::component::IconName::Settings)
+            .tooltip(tr(cx, "app.settings"))
+            .on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::General, window, cx)));
+        let run_controls = (ready && has_project).then(|| self.render_run_controls(narrow, cx));
         TitleBar::new().child(
+            // The bar keeps at least the width its children need, so a row wider than the window would push the window
+            // buttons out of it: this row asks for none (no width of its own, what does not fit is cut), and its middle
+            // part gives way first, the project name before the buttons.
             h_flex()
-                .w_full()
+                .flex_1()
+                .w_0()
+                .min_w_0()
+                .overflow_hidden()
                 .pr_2()
                 .gap_2()
                 .items_center()
-                .child(img("brand/rainy-mark.svg").size(px(18.)))
-                .child(div().text_sm().font_semibold().child("Rainy"))
+                .child(img("brand/rainy-mark.svg").size(px(18.)).flex_shrink_0())
+                .child(div().flex_shrink_0().text_sm().font_semibold().child("Rainy"))
                 .child(div().flex_1())
-                .when(ready, |this| {
-                    this.child(title_control(
-                        Button::new("projects")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::component::IconName::Folder)
-                            .label(title)
-                            .tooltip(tooltip)
-                            .dropdown_menu(move |mut menu, _, cx| {
-                                for workspace in workspaces.iter().rev() {
-                                    let checked = current.as_deref() == Some(workspace.workspace_id.as_str());
-                                    let (handle, workspace) = (handle.clone(), workspace.clone());
-                                    menu = menu.item(PopupMenuItem::new(workspace.title.clone()).checked(checked).on_click(move |_, window, cx| {
-                                        let workspace = workspace.clone();
-                                        handle.update(cx, |ide, cx| ide.select(workspace, window, cx));
-                                    }));
-                                }
-                                if !workspaces.is_empty() {
-                                    menu = menu.separator();
-                                }
-                                menu = menu
-                                    .item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| choose_folder(window, cx)))
-                                    .item(PopupMenuItem::new(tr(cx, "ide.ideWslFolder")).on_click(|_, window, cx| crate::ui::ide::browse_folder(window, cx)));
-                                if current.is_some() {
-                                    menu = menu.item(
-                                        PopupMenuItem::new(tr(cx, "ide.ideAddFolder")).on_click(|_, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx)),
-                                    );
-                                }
-                                if let Some(current) = current.clone() {
-                                    let handle = handle.clone();
-                                    let title = workspaces.iter().find(|w| w.workspace_id == current).map(|w| w.title.clone()).unwrap_or_default();
-                                    menu = menu.item(PopupMenuItem::new(tr(cx, "ide.ideRemoveWorkspace")).on_click(move |_, window, cx| {
-                                        confirm_remove(handle.clone(), current.clone(), title.clone(), window, cx);
-                                    }));
-                                }
-                                menu
-                            }),
-                    ))
-                    .when(has_project, |this| {
-                        this.child(title_control(
-                            Button::new("quick-open")
-                                .ghost()
-                                .small()
-                                .icon(gpui_kit::component::IconName::Search)
-                                .label(tr(cx, "ide.ideSearchFiles"))
-                                .tooltip(tr(cx, "ide.ideQuickOpen"))
-                                .on_click(|_, window, cx| quick_open::open(window, cx)),
-                        ))
-                    })
-                })
-                .when(ready && has_project, |this| this.child(self.render_run_controls(cx)))
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap_2()
+                        .items_center()
+                        .when(ready, |this| this.child(title_control(projects).min_w_0()).when(has_project, |this| this.child(title_control(quick_open))))
+                        .children(run_controls),
+                )
                 .child(div().flex_1())
-                .child(title_control(
-                    Button::new("toggle-files")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::component::IconName::PanelLeft)
-                        .selected(left)
-                        .tooltip(tr(cx, "ide.ideToggleFiles"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.left_visible = !this.left_visible;
-                            cx.notify();
-                        })),
-                ))
-                .child(title_control(
-                    Button::new("toggle-bottom")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::component::IconName::PanelBottom)
-                        .selected(bottom)
-                        .tooltip(tr(cx, "ide.ideToggleBottom"))
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
-                ))
-                .child(title_control(
-                    Button::new("toggle-agent")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::component::IconName::PanelRight)
-                        .selected(agent)
-                        .tooltip(tr(cx, "ide.ideToggleAgent"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.agent_visible = !this.agent_visible;
-                            cx.notify();
-                        })),
-                ))
-                .child(title_control(
-                    Button::new("open-settings")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::component::IconName::Settings)
-                        .tooltip(tr(cx, "app.settings"))
-                        .on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::General, window, cx))),
-                )),
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_2()
+                        .items_center()
+                        .child(title_control(toggle_files))
+                        .child(title_control(toggle_bottom))
+                        .child(title_control(toggle_agent))
+                        .child(title_control(settings)),
+                ),
         )
     }
 
@@ -344,7 +410,35 @@ impl Workbench {
                 crate::store::language::ServerPhase::Failed(reason) => (trf(cx, "native.languageFailed", &[("language", &name)]), Some(reason.clone())),
                 crate::store::language::ServerPhase::Ready => return None,
             };
-            Some(div().id("language-state").child(label).when_some(reason, |this, reason| this.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(reason.clone()).build(window, cx))))
+            Some(
+                div()
+                    .id("language-state")
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(label)
+                    .when_some(reason, |this, reason| this.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(reason.clone()).build(window, cx))),
+            )
+        });
+        // The branch of the project's repository and its changed files (3.x status bar); a click shows them.
+        let changes = self.git.read(cx).change_count();
+        let branch = self.ide.read(cx).workspace.as_ref().and(self.git.read(cx).branch()).map(|branch| {
+            let label: SharedString = branch.map(SharedString::from).unwrap_or_else(|| tr(cx, "git.gitNoCommits"));
+            let theme = cx.theme();
+            Button::new("status-branch")
+                .ghost()
+                .xsmall()
+                .min_w_0()
+                .flex_shrink_1()
+                .max_w(px(220.))
+                .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::GitBranch))
+                .label(label)
+                .when(changes > 0, |this| {
+                    this.child(div().flex_shrink_0().px_1().rounded(theme.radius).bg(theme.muted).text_color(theme.foreground).child(changes.min(999).to_string()))
+                })
+                .tooltip(tr(cx, "git.gitPanel"))
+                .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Git, window, cx)))
         });
         let theme = cx.theme();
         let dot = match connection {
@@ -352,9 +446,11 @@ impl Workbench {
             ConnectionState::Connecting => theme.warning,
             ConnectionState::Closed => theme.danger,
         };
+        // What does not fit in a narrow window is cut: the branch and the language state give way first.
         h_flex()
             .h(px(24.))
             .flex_shrink_0()
+            .overflow_hidden()
             .px_3()
             .gap_2()
             .items_center()
@@ -363,11 +459,12 @@ impl Workbench {
             .bg(theme.status_bar)
             .border_t_1()
             .border_color(theme.status_bar_border)
-            .child(div().size(px(7.)).rounded_full().bg(dot))
+            .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(dot))
             .child(
                 Button::new("target")
                     .ghost()
                     .xsmall()
+                    .max_w(px(200.))
                     .label(target)
                     .tooltip(tr(cx, "native.switchTarget"))
                     .dropdown_menu(move |mut menu, _, _| {
@@ -385,10 +482,11 @@ impl Workbench {
                         menu
                     }),
             )
+            .children(branch)
             .child(div().flex_1())
             .children(language)
-            .child(self.cursor.clone())
-            .child(format!("Rainy {version}"))
+            .child(div().flex_shrink_0().child(self.cursor.clone()))
+            .child(div().flex_shrink_0().whitespace_nowrap().child(format!("Rainy {version}")))
     }
 
     fn render_phase(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -416,14 +514,28 @@ impl Workbench {
             Phase::Failed(error) => Some(
                 v_flex()
                     .flex_1()
+                    .min_h_0()
                     .items_center()
                     .justify_center()
                     .gap_3()
                     .p_8()
-                    .child(img("brand/rainy-mark.svg").size(px(56.)))
-                    .child(div().text_sm().text_color(theme.danger).max_w(px(640.)).child(error))
+                    .child(img("brand/rainy-mark.svg").size(px(56.)).flex_shrink_0())
+                    // A long error scrolls, and gives way in a short window: the buttons below it stay in sight.
+                    .child(
+                        div()
+                            .id("startup-error")
+                            .w_full()
+                            .max_w(px(640.))
+                            .max_h(px(360.))
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .text_sm()
+                            .text_color(theme.danger)
+                            .child(error),
+                    )
                     .child(
                         h_flex()
+                            .flex_shrink_0()
                             .gap_2()
                             .child(Button::new("retry").primary().label(tr(cx, "native.retry")).on_click(cx.listener(|this, _, _, cx| {
                                 this.store.update(cx, |store, cx| store.restart(cx));
@@ -443,13 +555,19 @@ impl Workbench {
         }
     }
     fn side_tab(&self, id: &'static str, icon: gpui_kit::component::Icon, label: SharedString, value: Side, cx: &mut Context<Self>) -> Button {
-        Button::new(id).ghost().xsmall().icon(icon).label(label).selected(self.side == value).on_click(cx.listener(move |this, _, window, cx| {
-            this.show_side(value, window, cx);
-        }))
+        let selected = self.side == value;
+        Button::new(id)
+            .ghost()
+            .when(selected, |this| this.custom(crate::theme::selected_button(cx)))
+            .xsmall()
+            .icon(icon)
+            .label(label)
+            .selected(selected)
+            .on_click(cx.listener(move |this, _, window, cx| this.show_side(value, window, cx)))
     }
 
-    /// Run, the run menu, Debug and Stop (3.x title-bar run group).
-    fn render_run_controls(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Run, the run menu, Debug and Stop (3.x title-bar run group); in a narrow window Run shows only its icon.
+    fn render_run_controls(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let ide = self.ide.read(cx);
         let active = ide.active.clone().filter(|key| ide.files.get(key).is_some_and(|file| file.editor.is_some()));
         let target = ide.run_target(active.as_deref());
@@ -494,8 +612,8 @@ impl Workbench {
                     .ghost()
                     .small()
                     .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play))
-                    .label(label)
-                    .tooltip(tr(cx, "app.cmdRunFile"))
+                    .when(!narrow, |this| this.label(label.clone()))
+                    .tooltip(if narrow { label } else { tr(cx, "app.cmdRunFile") })
                     .on_click(cx.listener(|this, _, window, cx| this.launch(false, window, cx))),
             ))
             .child(title_control(
@@ -596,7 +714,7 @@ impl Workbench {
                 return;
             };
             if let Err(error) = started.await {
-                let _ = cx.update(|window, cx| window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx));
+                let _ = cx.update(|window, cx| window.push_notification(crate::ui::error_notification(cx, &error), cx));
             }
         })
         .detach();
@@ -674,6 +792,7 @@ impl Workbench {
         // The outline is only an icon: the pane is narrow, and the four tabs before it have their names.
         let outline = Button::new("side-outline")
             .ghost()
+            .when(self.side == Side::Outline, |this| this.custom(crate::theme::selected_button(cx)))
             .xsmall()
             .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::ListTree))
             .tooltip(tr(cx, "ide.ideOutline"))
@@ -711,27 +830,124 @@ impl Workbench {
             .child(div().flex_1().min_h_0().child(content))
     }
 
-    fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The pane sizes to lay out: the shown project's, else those of this window, fitted to the window.
+    fn pane_sizes(&self, window: &Window, cx: &App) -> Sizes {
+        let saved = self.ide.read(cx).layout().unwrap_or_default();
+        let stored = Sizes {
+            sidebar: saved.sidebar_width.unwrap_or(self.sizes.sidebar),
+            agent: saved.agent_width.unwrap_or(self.sizes.agent),
+            bottom: saved.bottom_height.unwrap_or(self.sizes.bottom),
+        };
+        let viewport = window.viewport_size();
+        stored.clamped(f32::from(viewport.width), f32::from(viewport.height), self.left_visible, self.agent_visible)
+    }
+
+    /// Keep the sizes a pane was dragged to, in this window and in the shown project.
+    fn resized(&mut self, patch: PaneLayout, cx: &mut Context<Self>) {
+        self.sizes = Sizes {
+            sidebar: patch.sidebar_width.unwrap_or(self.sizes.sidebar),
+            agent: patch.agent_width.unwrap_or(self.sizes.agent),
+            bottom: patch.bottom_height.unwrap_or(self.sizes.bottom),
+        };
+        self.ide.update(cx, |ide, cx| ide.set_layout(patch, cx));
+        cx.notify();
+    }
+
+    fn render_body(&mut self, sizes: Sizes, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (left, agent) = (self.left_visible, self.agent_visible);
-        // The AI pane takes 28% of the window, between 340 and 600 px, as in 3.x.
-        let agent_width = (f32::from(window.viewport_size().width) * 0.28).clamp(340., 600.);
-        let mut panes = h_resizable(SharedString::from(format!("workbench-{left}-{agent}")));
+        let viewport = window.viewport_size();
+        let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
+        let left_width = if left { sizes.sidebar } else { 0. };
+        let agent_width = if agent { sizes.agent } else { 0. };
+        let this = cx.entity().downgrade();
+        let dragged = |now: Option<&Pixels>, before: f32| now.map(|size| f32::from(*size).round()).filter(|size| (size - before).abs() >= 1.);
+        let mut targets = Vec::new();
         if left {
-            panes = panes.child(resizable_panel().size(px(260.)).size_range(px(180.)..px(360.)).child(self.render_side(cx)));
+            targets.push((0, sizes.sidebar));
+        }
+        if agent {
+            targets.push((usize::from(left) + 1, sizes.agent));
+        }
+        let state = pane_group(&mut self.panes, format!("{left}-{agent}"), targets, window, cx);
+        let mut panes = h_resizable("workbench").with_state(&state).on_resize({
+            let this = this.clone();
+            move |state, _, cx| {
+                let now = state.read(cx).sizes().clone();
+                let patch = PaneLayout {
+                    sidebar_width: left.then(|| dragged(now.first(), sizes.sidebar)).flatten(),
+                    agent_width: agent.then(|| dragged(now.last(), sizes.agent)).flatten(),
+                    bottom_height: None,
+                };
+                if patch != PaneLayout::default() {
+                    let _ = this.update(cx, |this, cx| this.resized(patch, cx));
+                }
+            }
+        });
+        if left {
+            panes = panes.child(
+                resizable_panel().size(px(sizes.sidebar)).size_range(px(180.)..px(sidebar_max(width, agent))).fixed().child(self.render_side(cx)),
+            );
         }
         let center = if self.bottom_visible && self.ide.read(cx).workspace.is_some() {
+            let state = pane_group(&mut self.bottom_panes, String::new(), vec![(1, sizes.bottom)], window, cx);
             v_resizable("center")
+                .with_state(&state)
+                .on_resize(move |state, _, cx| {
+                    if let Some(height) = dragged(state.read(cx).sizes().last(), sizes.bottom) {
+                        let _ = this.update(cx, |this, cx| this.resized(PaneLayout { bottom_height: Some(height), ..PaneLayout::default() }, cx));
+                    }
+                })
                 .child(resizable_panel().child(self.editor.clone()))
-                .child(resizable_panel().size(px(280.)).size_range(px(120.)..px(900.)).child(self.terminals.clone()))
+                .child(resizable_panel().size(px(sizes.bottom)).size_range(px(120.)..px((height - 230.).max(120.))).fixed().child(self.terminals.clone()))
                 .into_any_element()
         } else {
+            self.bottom_panes = None;
             self.editor.clone().into_any_element()
         };
-        panes = panes.child(resizable_panel().child(center));
+        let editor_min = (width - left_width - agent_width).clamp(100., EDITOR_MIN);
+        panes = panes.child(resizable_panel().size_range(px(editor_min)..Pixels::MAX).child(center));
         if agent {
-            panes = panes.child(resizable_panel().size(px(agent_width)).size_range(px(300.)..px(900.)).child(self.chat.clone()));
+            let agent_max = (width - left_width - EDITOR_MIN).max(AGENT_MIN);
+            panes = panes.child(resizable_panel().size(px(sizes.agent)).size_range(px(AGENT_MIN)..px(agent_max)).fixed().child(self.chat.clone()));
         }
         panes.into_any_element()
+    }
+}
+
+/// The state of a group of resizable panes, and the sizes last put into it.
+struct PaneGroup {
+    /// Which panes the group holds; its state is only good for those.
+    key: String,
+    state: Entity<ResizableState>,
+    applied: Vec<(usize, f32)>,
+}
+
+/// The state of a group of panes, new when the panes changed, and given the `targets` sizes (panel index, size) when
+/// they changed since the last frame: another project, or a window too small for them. A drag changes no target until
+/// it ends, so it is not fought, and leaves the sizes it made. The group's element id stays the same, so what the panes
+/// keep in element state, such as scroll positions, survives all this.
+fn pane_group(slot: &mut Option<PaneGroup>, key: String, targets: Vec<(usize, f32)>, window: &mut Window, cx: &mut App) -> Entity<ResizableState> {
+    match slot {
+        Some(group) if group.key == key => {
+            if group.applied != targets {
+                group.state.update(cx, |state, cx| {
+                    for &(ix, size) in &targets {
+                        let now = state.sizes().get(ix).map(|now| f32::from(*now));
+                        if state.container_size() > px(0.) && now.is_some_and(|now| (now - size).abs() >= 1.) {
+                            state.resize_panel(ix, px(size), window, cx);
+                        }
+                    }
+                });
+                group.applied = targets;
+            }
+            group.state.clone()
+        }
+        _ => {
+            // A new state lays the panes out at their initial sizes, which are the targets.
+            let state = cx.new(|_| ResizableState::default());
+            *slot = Some(PaneGroup { key, state: state.clone(), applied: targets });
+            state
+        }
     }
 }
 
@@ -746,8 +962,16 @@ impl Global for WorkbenchHandle {}
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::web::begin_frame(cx);
-        let body = self.render_phase(cx).unwrap_or_else(|| self.render_body(window, cx));
-        let title_bar = self.render_title_bar(cx);
+        let sizes = self.pane_sizes(window, cx);
+        let phase = self.render_phase(cx);
+        // Toasts stack in the top right corner, over the AI pane: while it is shown they are narrowed to fit inside it,
+        // so no page, which is only ever in the editor area, has to step aside for them (`web::end_frame`).
+        let toast_width = px(if phase.is_none() && self.agent_visible { (sizes.agent - 32.).clamp(260., 382.) } else { 382. });
+        if cx.theme().notification.width != toast_width {
+            gpui_kit::component::Theme::global_mut(cx).notification.width = toast_width;
+        }
+        let body = phase.unwrap_or_else(|| self.render_body(sizes, window, cx));
+        let title_bar = self.render_title_bar(window, cx);
         let status_bar = self.render_status_bar(cx);
         if window.focused(cx).is_none() {
             let focus = self.focus.clone();
@@ -850,6 +1074,7 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &SearchHistory, window, cx| {
                 this.agent_visible = true;
                 this.show_side(Side::History, window, cx);
+                this.history.update(cx, |history, cx| history.focus_search(window, cx));
             }))
             .on_action(|_: &AttachFolder, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx))
             .on_action(cx.listener(|this, _: &GitRefresh, window, cx| this.git.update(cx, |git, cx| git.refresh(window, cx))))
@@ -870,7 +1095,7 @@ impl Render for Workbench {
             .font_family(theme.font_family.clone())
             .text_size(theme.font_size)
             .child(title_bar)
-            .child(div().flex_1().min_h_0().flex().child(body))
+            .child(div().flex_1().min_h_0().flex().overflow_hidden().child(body))
             .child(status_bar)
             .children(settings.clone())
             // Painted after everything else: pages show only where their area was painted and nothing covers them.
@@ -896,12 +1121,22 @@ fn runtime_download_failed(prompt: RuntimePrompt, window: &mut Window, cx: &mut 
         }
     };
     let description = trf(cx, "native.linuxDownloadDetail", &[("error", &prompt.error)]);
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let (retry, windows, quit, closed) = (answer.clone(), answer.clone(), answer.clone(), answer.clone());
+        // A long error scrolls inside the dialog, so its buttons stay in the window.
+        let room = (f32::from(window.viewport_size().height) - 260.).clamp(120., 420.);
         dialog
             .title(tr(cx, "native.linuxDownloadFailed"))
             .w(px(520.))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(description.clone()))
+            .child(
+                div()
+                    .id("runtime-download-error")
+                    .max_h(px(room))
+                    .overflow_y_scroll()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(description.clone()),
+            )
             .on_close(move |_, _, _| closed(RuntimeChoice::Quit))
             // A stray click beside the dialog must not stop startup; Esc and the close button still mean Quit.
             .overlay_closable(false)
@@ -962,6 +1197,6 @@ pub(crate) fn confirm_switch(store: Entity<Store>, target: ExecutionTarget, wind
 
 /// A control in the title bar. The whole bar is the window's drag area, which Windows hit-tests as the caption; the
 /// control blocks that below it, and keeps its mouse-down from the bar's own drag, so a click is not taken as a move.
-fn title_control(control: impl IntoElement) -> impl IntoElement {
+fn title_control(control: impl IntoElement) -> Div {
     div().occlude().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(control)
 }

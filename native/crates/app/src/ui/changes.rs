@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -16,6 +17,9 @@ use crate::store::{Store, StoreEvent};
 use crate::ui::ide::file_icon;
 use crate::ui::{tr, trf};
 
+/// Height of the open list: five rows, the rest scrolls.
+const MAX_LIST_HEIGHT: f32 = 140.;
+
 pub struct ChangesBar {
     store: Entity<Store>,
     session: Option<String>,
@@ -23,6 +27,7 @@ pub struct ChangesBar {
     open: bool,
     pending: bool,
     refresh: Option<Task<()>>,
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -42,7 +47,7 @@ impl ChangesBar {
             _ => {}
         })];
         let session = store.read(cx).selected.clone();
-        let mut bar = Self { store, session, changes: Vec::new(), open: false, pending: false, refresh: None, _subscriptions: subscriptions };
+        let mut bar = Self { store, session, changes: Vec::new(), open: false, pending: false, refresh: None, scroll: ScrollHandle::new(), _subscriptions: subscriptions };
         bar.load(cx);
         bar
     }
@@ -137,7 +142,7 @@ impl ChangesBar {
                         Ide::global(cx).update(cx, |ide, cx| ide.check_files(cx));
                     }
                     Ok(_) => {}
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 this.load(cx);
             });
@@ -162,7 +167,7 @@ impl ChangesBar {
                     let current = value["current"].as_str().unwrap_or_default().to_owned();
                     ide.update(cx, |ide, cx| ide.show_review(key, base, current, window, cx));
                 }
-                Err(error) => window.push_notification(Notification::error(error.message), cx),
+                Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
             });
         })
         .detach();
@@ -213,9 +218,9 @@ impl Render for ChangesBar {
                     .items_center()
                     .cursor_pointer()
                     .child(Icon::new(if self.open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(theme.muted_foreground))
-                    .child(div().text_sm().font_semibold().child(trf(cx, "review.changesTitle", &[("count", &self.changes.len())])))
-                    .child(div().text_xs().text_color(theme.success).child(format!("+{added}")))
-                    .child(div().text_xs().text_color(theme.danger).child(format!("−{removed}")))
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(trf(cx, "review.changesTitle", &[("count", &self.changes.len())])))
+                    .child(div().flex_shrink_0().text_xs().text_color(theme.success).child(format!("+{added}")))
+                    .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.open = !this.open;
                         if this.open {
@@ -248,23 +253,26 @@ impl Render for ChangesBar {
                     h_flex()
                         .id(("change", index))
                         .h(px(28.))
+                        .flex_shrink_0()
                         .gap_1p5()
                         .items_center()
                         .text_sm()
                         .child(Icon::new(file_icon(&name)).small())
-                        .child(div().flex_shrink_0().child(name))
+                        // The name gives way before the buttons do, so a long one never pushes them out of a narrow pane.
+                        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
                         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
-                        .when(change.created, |this| this.child(div().text_xs().text_color(theme.success).child(tr(cx, "review.changesCreated"))))
-                        .when(change.deleted, |this| this.child(div().text_xs().text_color(theme.danger).child(tr(cx, "review.changesDeleted"))))
+                        .when(change.created, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.success).child(tr(cx, "review.changesCreated"))))
+                        .when(change.deleted, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(tr(cx, "review.changesDeleted"))))
                         .child(if change.comparable {
                             h_flex()
+                                .flex_shrink_0()
                                 .gap_1()
                                 .text_xs()
                                 .child(div().text_color(theme.success).child(format!("+{}", change.added)))
                                 .child(div().text_color(theme.danger).child(format!("−{}", change.removed)))
                                 .into_any_element()
                         } else {
-                            div().text_xs().text_color(theme.muted_foreground).child("…").into_any_element()
+                            div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child("…").into_any_element()
                         })
                         .child(Button::new(("change-review", index)).ghost().xsmall().label(tr(cx, "review.changesReview")).disabled(!reviewable).on_click(cx.listener(
                             move |this, _, window, cx| this.review(reviewed.clone(), window, cx),
@@ -287,6 +295,7 @@ impl Render for ChangesBar {
             Vec::new()
         };
         v_flex()
+            .flex_shrink_0()
             .mx_3()
             .mb_2()
             .px_3()
@@ -297,7 +306,15 @@ impl Render for ChangesBar {
             .border_color(theme.border)
             .bg(theme.secondary)
             .child(header)
-            .children(rows)
+            // A long list scrolls inside the bar, which never pushes the composer out of the pane.
+            .when(!rows.is_empty(), |this| {
+                this.child(
+                    div()
+                        .relative()
+                        .child(v_flex().id("changes-list").max_h(px(MAX_LIST_HEIGHT)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))
+                        .vertical_scrollbar(&self.scroll),
+                )
+            })
             .when(self.open && auto_keep, |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "review.changesAutoKeep"))))
             .into_any_element()
     }

@@ -16,6 +16,7 @@ use rainy_protocol::{
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
+use crate::i18n::Locale;
 use crate::store::Store;
 
 const PREFIX: char = '\0';
@@ -159,6 +160,15 @@ pub enum IdeEvent {
     ExecutionChanged,
 }
 
+/// Pane sizes as 3.x keeps them in a project's `data.layout`, in logical pixels: the file pane's width, the AI pane's
+/// (0 follows the window) and the bottom panel's height. As a patch, `None` leaves a size as it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PaneLayout {
+    pub sidebar_width: Option<f32>,
+    pub agent_width: Option<f32>,
+    pub bottom_height: Option<f32>,
+}
+
 /// Why Run starts what it starts (3.x `RunTarget.mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -277,6 +287,8 @@ pub struct Ide {
     /// shown, is dropped.
     reads: HashMap<String, u64>,
     read_count: u64,
+    /// Pane sizes changed in this window and not yet in the saved state, with the project they belong to.
+    layout: Option<(String, PaneLayout)>,
 }
 
 impl EventEmitter<IdeEvent> for Ide {}
@@ -284,8 +296,10 @@ impl EventEmitter<IdeEvent> for Ide {}
 struct GlobalIde(Entity<Ide>);
 impl Global for GlobalIde {}
 
-fn ide_error(error: RpcError) -> SharedString {
-    error.message.into()
+/// A Host failure as the project view shows it: in the interface language, with a raw system message ("No such file or
+/// directory (os error 2)", as WSL and SSH report it) kept on the next line.
+fn ide_error(locale: Locale, error: &RpcError) -> SharedString {
+    crate::i18n::error_text(locale, error).into()
 }
 
 impl Ide {
@@ -330,6 +344,7 @@ impl Ide {
                 focus_next: None,
                 reads: HashMap::new(),
                 read_count: 0,
+                layout: None,
             }
         });
         cx.set_global(GlobalIde(ide.clone()));
@@ -347,6 +362,11 @@ impl Ide {
 
     fn workspace_id(&self) -> Option<String> {
         self.workspace.as_ref().map(|workspace| workspace.workspace_id.clone())
+    }
+
+    /// The interface language, for failures the Host reports.
+    fn locale(&self, cx: &App) -> Locale {
+        self.store.read(cx).locale()
     }
 
     /// The request fields locating a key: the workspace, the root of an attached directory, and the path.
@@ -384,7 +404,7 @@ impl Ide {
             let shown = this.update_in(cx, |this, window, cx| {
                 match list {
                     Ok(workspaces) => this.workspaces = workspaces,
-                    Err(error) => this.error = Some(ide_error(error)),
+                    Err(error) => this.error = Some(ide_error(this.locale(cx), &error)),
                 }
                 let selected = selection.ok().and_then(|selection| selection.workspace_id);
                 let shown = selected
@@ -421,7 +441,7 @@ impl Ide {
                     Some(this.select_task(workspace, window, cx))
                 }
                 Err(error) => {
-                    this.error = Some(ide_error(error));
+                    this.error = Some(ide_error(this.locale(cx), &error));
                     cx.notify();
                     None
                 }
@@ -585,7 +605,7 @@ impl Ide {
                         entries.sort_by(|a, b| b.is_directory().cmp(&a.is_directory()).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
                         Listing { entries, error: None }
                     }
-                    Err(error) => Listing { entries: Vec::new(), error: Some(ide_error(error)) },
+                    Err(error) => Listing { entries: Vec::new(), error: Some(ide_error(this.locale(cx), &error)) },
                 };
                 this.listings.insert(key, listing);
                 cx.emit(IdeEvent::FilesChanged);
@@ -651,7 +671,7 @@ impl Ide {
                             this.active = this.tabs.last().cloned();
                             cx.emit(IdeEvent::ActiveChanged);
                         }
-                        this.error = Some(ide_error(error));
+                        this.error = Some(ide_error(this.locale(cx), &error));
                         cx.notify();
                     }
                 }
@@ -685,19 +705,20 @@ impl Ide {
                 });
                 let watched = key.clone();
                 let subscription = cx.subscribe(&editor, move |this: &mut Ide, editor, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        let text = editor.read(cx).value().to_string();
-                        if let Some(file) = this.files.get_mut(&watched) {
-                            let dirty = text != file.saved;
-                            let changed = dirty != file.dirty;
-                            if changed {
-                                file.dirty = dirty;
-                                cx.notify();
-                            }
-                            // Unsaved text is kept in the project state, so it survives a crash or restart.
-                            if dirty || changed {
-                                this.schedule_state_save(cx);
-                            }
+                    if matches!(event, InputEvent::Change)
+                        && let Some(file) = this.files.get_mut(&watched)
+                    {
+                        // Compared in place on every keystroke: lengths first, then chunk by chunk up to the first
+                        // difference, without copying the document.
+                        let dirty = editor.read(cx).text() != file.saved.as_str();
+                        let changed = dirty != file.dirty;
+                        if changed {
+                            file.dirty = dirty;
+                            cx.notify();
+                        }
+                        // Unsaved text is kept in the project state, so it survives a crash or restart.
+                        if dirty || changed {
+                            this.schedule_state_save(cx);
                         }
                     }
                 });
@@ -773,7 +794,7 @@ impl Ide {
                             Err(error) => tab.error = Some(error.to_string().into()),
                         }
                     }
-                    Err(error) => tab.error = Some(ide_error(error)),
+                    Err(error) => tab.error = Some(ide_error(this.locale(cx), &error)),
                 }
                 this.diffs.insert(key, tab);
                 cx.notify();
@@ -1089,7 +1110,7 @@ impl Ide {
         if !file.dirty && !overwrite {
             return Task::ready(true);
         }
-        let text = editor.read(cx).value().to_string();
+        let text = editor.read(cx).text().to_string();
         let expected = match (&file.disk_version, overwrite) {
             (Some(disk), true) => disk.clone(),
             _ => file.document.version.clone(),
@@ -1110,7 +1131,7 @@ impl Ide {
                         if shown && let Some(file) = this.files.get_mut(&key) {
                             file.saved = text;
                             file.document = document;
-                            file.dirty = file.editor.as_ref().is_some_and(|editor| editor.read(cx).value() != file.saved.as_str());
+                            file.dirty = file.editor.as_ref().is_some_and(|editor| editor.read(cx).text() != file.saved.as_str());
                             file.conflict = false;
                             file.disk_version = None;
                         }
@@ -1135,7 +1156,7 @@ impl Ide {
                             file.disk_version = error.data.as_ref().and_then(|data| data["currentVersion"].as_str()).map(str::to_owned);
                         }
                         use gpui_kit::component::WindowExt as _;
-                        window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx);
+                        window.push_notification(crate::ui::error_notification(cx, &error), cx);
                         cx.notify();
                         false
                     }
@@ -1170,7 +1191,7 @@ impl Ide {
     /// Replace the unsaved text of an open file, as a viewer that edits it (rich Markdown) does.
     pub fn set_text(&mut self, key: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.files.get(key).and_then(|file| file.editor.clone()) else { return };
-        if editor.read(cx).value() == text {
+        if editor.read(cx).text() == text {
             return;
         }
         editor.update(cx, |state, cx| state.set_value(text.to_owned(), window, cx));
@@ -1246,11 +1267,11 @@ impl Ide {
                     Ok(_) => {}
                     Err(error) => {
                         use gpui_kit::component::WindowExt as _;
-                        let message = match error.code.as_str() {
-                            "already-exists" => crate::ui::tr(cx, "ide.ideAlreadyExists").to_string(),
-                            _ => error.message,
+                        let notification = match error.code.as_str() {
+                            "already-exists" => gpui_kit::component::notification::Notification::error(crate::ui::tr(cx, "ide.ideAlreadyExists")),
+                            _ => crate::ui::error_notification(cx, &error),
                         };
-                        window.push_notification(gpui_kit::component::notification::Notification::error(message), cx);
+                        window.push_notification(notification, cx);
                     }
                 }
                 if shown {
@@ -1355,7 +1376,7 @@ impl Ide {
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(workspace) => this.replace_workspace(workspace, window, cx),
                 Err(error) => {
-                    this.error = Some(ide_error(error));
+                    this.error = Some(ide_error(this.locale(cx), &error));
                     cx.notify();
                 }
             });
@@ -1388,7 +1409,7 @@ impl Ide {
                     this.schedule_state_save(cx);
                 }
                 Err(error) => {
-                    this.error = Some(ide_error(error));
+                    this.error = Some(ide_error(this.locale(cx), &error));
                     cx.notify();
                 }
             });
@@ -1433,7 +1454,7 @@ impl Ide {
                             cx.emit(IdeEvent::WorkspaceChanged);
                         }
                     }
-                    Err(error) => this.error = Some(ide_error(error)),
+                    Err(error) => this.error = Some(ide_error(this.locale(cx), &error)),
                 }
                 cx.notify();
             });
@@ -1525,6 +1546,33 @@ impl Ide {
         }
     }
 
+    /// The pane sizes of the shown project: those changed in this window, else those saved; a size neither knows is
+    /// `None`. None without a project.
+    pub fn layout(&self) -> Option<PaneLayout> {
+        let id = self.workspace_id()?;
+        let changed = self.layout.as_ref().filter(|(project, _)| *project == id).map(|(_, layout)| *layout).unwrap_or_default();
+        // While a project's state is read, the state held is still the one of the project shown before.
+        let saved = self.state.as_ref().filter(|_| !self.loading).map(|state| &state.data["layout"]);
+        let read = |key: &str| saved.and_then(|layout| layout[key].as_f64()).map(|value| value as f32);
+        Some(PaneLayout {
+            sidebar_width: changed.sidebar_width.or_else(|| read("sidebarWidth")),
+            agent_width: changed.agent_width.or_else(|| read("agentWidth")),
+            bottom_height: changed.bottom_height.or_else(|| read("bottomHeight")),
+        })
+    }
+
+    /// Change pane sizes of the shown project; they are saved with its state a moment later. Without a project nothing
+    /// is kept.
+    pub fn set_layout(&mut self, patch: PaneLayout, cx: &mut Context<Self>) {
+        let Some(id) = self.workspace_id() else { return };
+        let mut layout = self.layout.take().filter(|(project, _)| *project == id).map(|(_, layout)| layout).unwrap_or_default();
+        layout.sidebar_width = patch.sidebar_width.or(layout.sidebar_width);
+        layout.agent_width = patch.agent_width.or(layout.agent_width);
+        layout.bottom_height = patch.bottom_height.or(layout.bottom_height);
+        self.layout = Some((id, layout));
+        self.schedule_state_save(cx);
+    }
+
     /// Save tabs, the active file and expanded folders a moment after the last change.
     fn schedule_state_save(&mut self, cx: &mut Context<Self>) {
         self.save_task = Some(cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
@@ -1547,18 +1595,20 @@ impl Ide {
     /// into an update (3.x `rainy:flush-workbench`). A save that lost to another window's is written again on top of it.
     pub fn flush_now(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
         self.save_task = None;
+        let locale = self.locale(cx);
+        let closed = move |_| crate::i18n::text(locale, "ide.ideClosed").to_owned();
         cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
             let mut attempts = 0;
             loop {
-                let request = this.update(cx, |this, cx| this.state_request(cx)).map_err(|_| "The editor is closed.".to_owned())?;
+                let request = this.update(cx, |this, cx| this.state_request(cx)).map_err(closed)?;
                 let Some(request) = request else { return Ok(()) };
                 let result = request.await;
-                let saved = this.update(cx, |this, _| this.state_saved(result)).map_err(|_| "The editor is closed.".to_owned())?;
+                let saved = this.update(cx, |this, _| this.state_saved(result)).map_err(closed)?;
                 attempts += 1;
                 match saved {
                     Ok(()) => return Ok(()),
                     Err((error, true)) if attempts < 2 => log::info!("The editor state is saved again after a conflict: {}", error.message),
-                    Err((error, _)) => return Err(error.message),
+                    Err((error, _)) => return Err(crate::i18n::error_text(locale, &error)),
                 }
             }
         })
@@ -1637,7 +1687,7 @@ impl Ide {
             .iter()
             .filter(|(_, file)| file.dirty)
             .filter_map(|(key, file)| {
-                let content = file.editor.as_ref()?.read(cx).value().to_string();
+                let content = file.editor.as_ref()?.read(cx).text().to_string();
                 let mut buffer = Self::stored(key);
                 buffer["content"] = json!(content);
                 buffer["baseVersion"] = json!(file.document.version);
@@ -1659,6 +1709,17 @@ impl Ide {
         let in_project = |chat: &&String| store.summaries.iter().any(|s| s.id == **chat && s.workspace_id.as_deref() == Some(id.as_str()));
         if let Some(selected) = store.selected.as_ref().filter(in_project) {
             data["lastSessionId"] = json!(selected);
+        }
+        // Pane sizes changed here; the layout's other fields (visibility, bottom tab) stay as stored.
+        if let Some((_, layout)) = self.layout.as_ref().filter(|(project, _)| *project == id) {
+            if !data["layout"].is_object() {
+                data["layout"] = json!({});
+            }
+            for (key, value) in [("sidebarWidth", layout.sidebar_width), ("agentWidth", layout.agent_width), ("bottomHeight", layout.bottom_height)] {
+                if let Some(value) = value {
+                    data["layout"][key] = json!(value.round() as i64);
+                }
+            }
         }
         if data == state.data {
             return None;

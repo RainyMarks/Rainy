@@ -758,23 +758,28 @@ impl EditorArea {
         let recent: Vec<_> = ide.workspaces.iter().rev().take(8).cloned().collect();
         let error = ide.error.clone();
         let handle = self.ide.clone();
-        v_flex()
-            .size_full()
+        // The content keeps to the editor area: as wide as it allows up to its own width, and scrolled when the area is
+        // shorter than it.
+        let content = v_flex()
+            .w_full()
+            .min_h_full()
+            .flex_shrink_0()
             .items_center()
             .justify_center()
             .gap_4()
             .p_8()
-            .child(img("brand/rainy-mark.svg").size(px(48.)))
-            .child(div().text_xl().font_semibold().child(tr(cx, "ide.ideWelcomeTitle")))
-            .child(div().max_w(px(460.)).text_sm().text_center().text_color(theme.muted_foreground).child(tr(cx, "ide.ideWelcomeDescription")))
+            .child(img("brand/rainy-mark.svg").size(px(48.)).flex_shrink_0())
+            .child(div().text_xl().font_semibold().text_center().child(tr(cx, "ide.ideWelcomeTitle")))
+            .child(div().w_full().max_w(px(460.)).text_sm().text_center().text_color(theme.muted_foreground).child(tr(cx, "ide.ideWelcomeDescription")))
             .child(Button::new("welcome-open").primary().icon(IconName::FolderOpen).label(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| {
                 choose_folder(window, cx);
             }))
-            .when_some(error, |this, error| this.child(div().max_w(px(520.)).text_sm().text_color(theme.danger).child(error)))
+            .when_some(error, |this, error| this.child(div().w_full().max_w(px(520.)).text_sm().text_color(theme.danger).child(error)))
             .when(!recent.is_empty(), |this| {
                 this.child(
                     v_flex()
-                        .w(px(420.))
+                        .w_full()
+                        .max_w(px(420.))
                         .gap_0p5()
                         .pt_2()
                         .child(div().px_2().pb_1().text_xs().text_color(theme.muted_foreground).child(tr(cx, "ide.ideRecentProjects")))
@@ -790,8 +795,8 @@ impl EditorArea {
                                 .rounded(theme.radius)
                                 .cursor_pointer()
                                 .hover(|style| style.bg(theme.list_hover))
-                                .child(Icon::new(IconName::Folder).small().text_color(theme.muted_foreground))
-                                .child(div().text_sm().child(workspace.title.clone()))
+                                .child(Icon::new(IconName::Folder).small().flex_shrink_0().text_color(theme.muted_foreground))
+                                .child(div().max_w(px(220.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().child(workspace.title.clone()))
                                 .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(path))
                                 .on_click(move |_, window, cx| {
                                     let workspace = workspace.clone();
@@ -799,8 +804,8 @@ impl EditorArea {
                                 })
                         })),
                 )
-            })
-            .into_any_element()
+            });
+        div().id("welcome").size_full().overflow_y_scroll().child(content).into_any_element()
     }
 }
 

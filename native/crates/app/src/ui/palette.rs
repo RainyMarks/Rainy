@@ -136,6 +136,8 @@ pub struct Palette {
     /// Indexes of the commands that match the query, in order.
     shown: Vec<usize>,
     selected: usize,
+    /// Follows the highlighted row as the arrow keys move it.
+    scroll: ScrollHandle,
     /// What had the focus when the palette opened.
     back: Option<FocusHandle>,
     _subscriptions: Vec<Subscription>,
@@ -150,7 +152,7 @@ impl Palette {
             }
         })];
         let back = window.focused(cx);
-        let mut palette = Self { query, commands: commands(cx), shown: Vec::new(), selected: 0, back, _subscriptions: subscriptions };
+        let mut palette = Self { query, commands: commands(cx), shown: Vec::new(), selected: 0, scroll: ScrollHandle::new(), back, _subscriptions: subscriptions };
         palette.filter(cx);
         palette
     }
@@ -172,6 +174,7 @@ impl Palette {
         // Commands that can run now come first.
         self.shown.sort_by_key(|index| !self.commands[*index].enabled);
         self.selected = 0;
+        self.scroll.scroll_to_item(0);
         cx.notify();
     }
 
@@ -190,6 +193,7 @@ impl Palette {
             "up" => self.selected = (self.selected + count - 1) % count,
             _ => return,
         }
+        self.scroll.scroll_to_item(self.selected);
         cx.stop_propagation();
         cx.notify();
     }
@@ -250,12 +254,18 @@ impl Render for Palette {
             .capture_key_down(cx.listener(Self::key_down))
             .child(Input::new(&self.query))
             .child(
-                v_flex()
-                    .id("palette-results")
-                    .max_h(px(420.))
-                    .overflow_y_scrollbar()
-                    .children(rows)
-                    .when(empty, |this| this.child(div().p_2().text_sm().text_color(theme.muted_foreground).child(tr(cx, "app.paletteEmpty")))),
+                div()
+                    .relative()
+                    .child(
+                        v_flex()
+                            .id("palette-results")
+                            .max_h(px(420.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .children(rows)
+                            .when(empty, |this| this.child(div().p_2().text_sm().text_color(theme.muted_foreground).child(tr(cx, "app.paletteEmpty")))),
+                    )
+                    .vertical_scrollbar(&self.scroll),
             )
     }
 }

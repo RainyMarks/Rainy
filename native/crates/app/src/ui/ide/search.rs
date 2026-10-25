@@ -1,6 +1,8 @@
 //! Search and replace across the project (`SearchView.tsx`).
 
 use std::collections::HashSet;
+use std::ops::Range;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -8,16 +10,26 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Theme, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use rainy_protocol::{TextReplaceResult, TextSearchFile, TextSearchResult};
+use rainy_protocol::{TextReplaceResult, TextSearchFile, TextSearchMatch, TextSearchResult};
 use serde_json::{Value, json};
 
-use crate::store::Store;
 use crate::store::ide::{Ide, IdeEvent};
+use crate::store::{Store, StoreEvent};
 use crate::ui::ide::file_icon;
 use crate::ui::{tr, trf};
+
+/// The height of every line of the results; the list only builds the lines on screen, so they must all be this tall.
+const ROW_HEIGHT: f32 = 24.;
+
+/// One line of the results: a file's header, or one of its matches (file index, match index).
+#[derive(Clone, Copy)]
+enum Row {
+    File(usize),
+    Match(usize, usize),
+}
 
 pub struct SearchView {
     ide: Entity<Ide>,
@@ -30,7 +42,10 @@ pub struct SearchView {
     regex: bool,
     show_replace: bool,
     show_filters: bool,
-    result: Option<TextSearchResult>,
+    result: Option<Rc<TextSearchResult>>,
+    /// The lines of `result` that are shown: every file, and the matches of those not collapsed.
+    rows: Vec<Row>,
+    scroll: UniformListScrollHandle,
     error: Option<SharedString>,
     searching: bool,
     collapsed: HashSet<(String, String)>,
@@ -73,13 +88,19 @@ impl SearchView {
         subscriptions.push(cx.subscribe_in(&ide, window, |this, _, event: &IdeEvent, window, cx| {
             match event {
                 IdeEvent::WorkspaceChanged => {
-                    this.result = None;
+                    this.set_result(None);
                     this.error = None;
                     cx.notify();
                 }
                 // Results follow what was just written.
                 IdeEvent::Saved if this.result.is_some() => this.schedule(window, cx),
                 _ => {}
+            }
+        }));
+        // The fields' hints follow the interface language.
+        subscriptions.push(cx.subscribe_in(&Store::global(cx), window, |this, _, event: &StoreEvent, window, cx| {
+            if matches!(event, StoreEvent::PrefsChanged) {
+                this.set_placeholders(window, cx);
             }
         }));
         Self {
@@ -94,6 +115,8 @@ impl SearchView {
             show_replace: false,
             show_filters: false,
             result: None,
+            rows: Vec::new(),
+            scroll: UniformListScrollHandle::new(),
             error: None,
             searching: false,
             collapsed: HashSet::new(),
@@ -112,6 +135,35 @@ impl SearchView {
     pub fn show_replace(&mut self, cx: &mut Context<Self>) {
         self.show_replace = true;
         cx.notify();
+    }
+
+    fn set_placeholders(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let fields = [
+            (&self.query, "search.searchPlaceholder"),
+            (&self.replacement, "search.searchReplacePlaceholder"),
+            (&self.include, "search.searchIncludePlaceholder"),
+            (&self.exclude, "search.searchExcludePlaceholder"),
+        ];
+        for (input, key) in fields {
+            let placeholder = tr(cx, key);
+            input.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
+        }
+    }
+
+    fn set_result(&mut self, result: Option<TextSearchResult>) {
+        self.result = result.map(Rc::new);
+        self.rebuild_rows();
+    }
+
+    fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        let Some(result) = &self.result else { return };
+        for (index, file) in result.files.iter().enumerate() {
+            self.rows.push(Row::File(index));
+            if self.collapsed.is_empty() || !self.collapsed.contains(&(file.root_id.clone(), file.path.clone())) {
+                self.rows.extend((0..file.matches.len()).map(|found| Row::Match(index, found)));
+            }
+        }
     }
 
     fn options(&self, cx: &App) -> Value {
@@ -140,7 +192,7 @@ impl SearchView {
         let workspace = self.ide.read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
         let mut params = self.options(cx);
         if workspace.is_none() || params["pattern"].as_str().is_none_or(str::is_empty) {
-            self.result = None;
+            self.set_result(None);
             self.error = None;
             self.searching = false;
             cx.notify();
@@ -159,11 +211,11 @@ impl SearchView {
                 this.searching = false;
                 match result.map(serde_json::from_value::<TextSearchResult>) {
                     Ok(Ok(result)) => {
-                        this.result = Some(result);
+                        this.set_result(Some(result));
                         this.error = None;
                     }
                     Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                    Err(error) => this.error = Some(error.message.into()),
+                    Err(error) => this.error = Some(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });
@@ -226,7 +278,7 @@ impl SearchView {
                         }
                     }
                     Ok(Err(error)) => window.push_notification(Notification::error(error.to_string()), cx),
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 // Clean editors follow the files on disk; the results are searched again.
                 this.ide.update(cx, |ide, cx| ide.check_files(cx));
@@ -236,65 +288,79 @@ impl SearchView {
         .detach();
     }
 
-    fn render_file(&self, index: usize, file: &TextSearchFile, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The results' lines in `range`, built only while they are on screen.
+    fn render_rows(&self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(result) = self.result.clone() else { return Vec::new() };
         let theme = cx.theme().clone();
+        let highlight = HighlightStyle { background_color: Some(theme.warning.opacity(0.35)), ..Default::default() };
+        range
+            .filter_map(|row| match *self.rows.get(row)? {
+                Row::File(index) => Some(self.render_file(row, result.files.get(index)?, &theme, cx)),
+                Row::Match(index, found) => {
+                    let file = result.files.get(index)?;
+                    Some(self.render_match(row, file, file.matches.get(found)?, highlight, &theme))
+                }
+            })
+            .collect()
+    }
+
+    fn render_file(&self, row: usize, file: &TextSearchFile, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let id = (file.root_id.clone(), file.path.clone());
         let collapsed = self.collapsed.contains(&id);
         let (name, directory) = match file.path.rsplit_once('/') {
             Some((directory, name)) => (name.to_owned(), directory.to_owned()),
             None => (file.path.clone(), String::new()),
         };
-        let key = key_of(file);
-        let highlight = HighlightStyle { background_color: Some(theme.warning.opacity(0.35)), ..Default::default() };
-        v_flex()
-            .child(
-                h_flex()
-                    .id(("search-file", index))
-                    .h(px(26.))
-                    .px_2()
-                    .gap_1()
-                    .items_center()
-                    .text_sm()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.list_hover))
-                    .child(Icon::new(if collapsed { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().text_color(theme.muted_foreground))
-                    .child(Icon::new(file_icon(&name)).small())
-                    .child(div().flex_shrink_0().child(name))
-                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
-                    .child(div().px_1p5().rounded_full().bg(theme.muted).text_xs().child(file.matches.len().to_string()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.collapsed.remove(&id) {
-                            this.collapsed.insert(id.clone());
-                        }
-                        cx.notify();
-                    })),
-            )
-            .when(!collapsed, |this| {
-                this.children(file.matches.iter().enumerate().map(|(row, found)| {
-                    let range = utf16_range(&found.preview, found.preview_column, found.length);
-                    let text = StyledText::new(found.preview.trim_end().to_owned()).with_highlights(
-                        Some((range, highlight)).into_iter().filter(|(range, _)| range.end <= found.preview.trim_end().len()),
-                    );
-                    let (key, line, column) = (key.clone(), found.line.saturating_sub(1), found.column);
-                    let ide = self.ide.clone();
-                    h_flex()
-                        .id(SharedString::from(format!("match-{index}-{row}")))
-                        .h(px(24.))
-                        .pl(px(30.))
-                        .pr_2()
-                        .gap_2()
-                        .items_center()
-                        .text_sm()
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme.list_hover))
-                        .child(div().w(px(32.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(found.line.to_string()))
-                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
-                        .on_click(move |_, window, cx| {
-                            let key = key.clone();
-                            ide.update(cx, |ide, cx| ide.reveal(key, line, column, window, cx));
-                        })
-                }))
+        h_flex()
+            .id(("search-file", row))
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .px_2()
+            .gap_1()
+            .items_center()
+            .text_sm()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.list_hover))
+            .child(Icon::new(if collapsed { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
+            .child(Icon::new(file_icon(&name)).small().flex_shrink_0())
+            // A long name gives way before the match count does.
+            .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
+            .child(div().flex_shrink_0().px_1p5().rounded_full().bg(theme.muted).text_xs().child(file.matches.len().to_string()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.collapsed.remove(&id) {
+                    this.collapsed.insert(id.clone());
+                }
+                this.rebuild_rows();
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    fn render_match(&self, row: usize, file: &TextSearchFile, found: &TextSearchMatch, highlight: HighlightStyle, theme: &Theme) -> AnyElement {
+        let preview = found.preview.trim_end();
+        let range = utf16_range(&found.preview, found.preview_column, found.length);
+        let text = StyledText::new(preview.to_owned()).with_highlights(Some((range, highlight)).into_iter().filter(|(range, _)| range.end <= preview.len()));
+        let (key, line, column) = (key_of(file), found.line.saturating_sub(1), found.column);
+        let ide = self.ide.clone();
+        h_flex()
+            .id(("search-match", row))
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .pl(px(30.))
+            .pr_2()
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.list_hover))
+            .child(div().w(px(32.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(found.line.to_string()))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+            .on_click(move |_, window, cx| {
+                let key = key.clone();
+                ide.update(cx, |ide, cx| ide.reveal(key, line, column, window, cx));
             })
+            .into_any_element()
     }
 }
 
@@ -328,9 +394,11 @@ impl Render for SearchView {
         });
         let truncated = self.result.as_ref().is_some_and(|result| result.truncated);
         let empty = self.result.as_ref().is_some_and(|result| result.files.is_empty());
-        let files: Vec<TextSearchFile> = self.result.as_ref().map(|result| result.files.clone()).unwrap_or_default();
-        let can_replace = !files.is_empty();
-        let rows: Vec<AnyElement> = files.iter().enumerate().map(|(index, file)| self.render_file(index, file, cx).into_any_element()).collect();
+        let can_replace = self.result.as_ref().is_some_and(|result| !result.files.is_empty());
+        let no_rows = self.rows.is_empty();
+        let list = uniform_list("search-results", self.rows.len(), cx.processor(|this, range: Range<usize>, _, cx| this.render_rows(range, cx)))
+            .flex_1()
+            .track_scroll(&self.scroll);
         v_flex()
             .size_full()
             .child(
@@ -405,21 +473,19 @@ impl Render for SearchView {
             )
             .child(
                 v_flex()
-                    .id("search-results")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
                     .when(!has_workspace, |this| this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, "search.searchNoWorkspace"))))
-                    .when(self.searching && files.is_empty(), |this| {
+                    .when(self.searching && no_rows, |this| {
                         this.child(h_flex().p_3().gap_2().text_sm().text_color(theme.muted_foreground).child(Spinner::new().small()).child(tr(cx, "search.searchSearching")))
                     })
                     .when_some(self.error.clone(), |this, error| this.child(div().p_3().text_sm().text_color(theme.danger).child(error)))
                     .when(empty && !self.searching, |this| this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, "search.searchNone"))))
                     .when(truncated, |this| {
                         let count = self.result.as_ref().map_or(0, |result| result.matches);
-                        this.child(div().px_3().py_1().text_xs().text_color(theme.warning).child(trf(cx, "search.searchTruncated", &[("count", &count)])))
+                        this.child(div().px_3().py_1().text_xs().text_color(crate::theme::warning_text(cx)).child(trf(cx, "search.searchTruncated", &[("count", &count)])))
                     })
-                    .children(rows),
+                    .child(v_flex().relative().flex_1().min_h_0().child(list).vertical_scrollbar(&self.scroll)),
             )
     }
 }

@@ -641,6 +641,7 @@ mod win32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     use super::{DEFAULT_APPS, DEFAULT_APPS_LIST, Registry};
+    use crate::locale::localized;
 
     /// HKEY_CURRENT_USER through the Win32 registry API.
     pub struct CurrentUser;
@@ -652,7 +653,15 @@ mod win32 {
     }
 
     fn failed(status: WIN32_ERROR, doing: &str, key: &str) -> anyhow::Error {
-        anyhow::Error::new(std::io::Error::from_raw_os_error(status as i32)).context(format!(r"{doing} HKCU\{key}"))
+        let chinese = match doing {
+            "Opening" => format!(r"无法打开 HKCU\{key}"),
+            "Reading" => format!(r"无法读取 HKCU\{key}"),
+            "Creating" => format!(r"无法创建 HKCU\{key}"),
+            "Writing" => format!(r"无法写入 HKCU\{key}"),
+            "Deleting" => format!(r"无法删除 HKCU\{key}"),
+            _ => format!(r"无法删除 HKCU\{key} 中的值"),
+        };
+        anyhow::Error::new(std::io::Error::from_raw_os_error(status as i32)).context(localized(&chinese, &format!(r"{doing} HKCU\{key}")))
     }
 
     /// An open key, closed when dropped.
@@ -800,7 +809,8 @@ mod win32 {
                 return Ok(());
             }
         }
-        bail!("Windows could not open the Default apps settings: {}", std::io::Error::last_os_error())
+        let error = std::io::Error::last_os_error();
+        bail!(localized(&format!("Windows 无法打开“默认应用”设置：{error}"), &format!("Windows could not open the Default apps settings: {error}")))
     }
 }
 

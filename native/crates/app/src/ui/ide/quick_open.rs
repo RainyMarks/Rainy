@@ -22,6 +22,8 @@ pub struct QuickOpen {
     results: Vec<String>,
     truncated: bool,
     selected: usize,
+    /// Follows the highlighted row as the arrow keys move it.
+    scroll: ScrollHandle,
     generation: u64,
     debounce: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -42,6 +44,7 @@ impl QuickOpen {
             results: Vec::new(),
             truncated: false,
             selected: 0,
+            scroll: ScrollHandle::new(),
             generation: 0,
             debounce: None,
             _subscriptions: subscriptions,
@@ -82,6 +85,7 @@ impl QuickOpen {
                     this.results = results;
                     this.truncated = truncated;
                     this.selected = 0;
+                    this.scroll.scroll_to_item(0);
                     cx.notify();
                 }
             });
@@ -109,6 +113,7 @@ impl QuickOpen {
             "up" => self.selected = (self.selected + count - 1) % count,
             _ => return,
         }
+        self.scroll.scroll_to_item(self.selected);
         cx.stop_propagation();
         cx.notify();
     }
@@ -140,9 +145,10 @@ impl Render for QuickOpen {
                     .cursor_pointer()
                     .when(index == selected, |this| this.bg(theme.list_active))
                     .hover(|style| style.bg(theme.list_hover))
-                    .child(Icon::new(file_icon(&name)).small())
-                    .child(div().flex_shrink_0().child(name))
-                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
+                    .child(Icon::new(file_icon(&name)).small().flex_shrink_0())
+                    // The folder gives way first, then the name.
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
                     .on_click(cx.listener(move |this, _, window, cx| this.open(index, window, cx)))
                     .into_any_element()
             })
@@ -153,12 +159,18 @@ impl Render for QuickOpen {
             .capture_key_down(cx.listener(Self::key_down))
             .child(Input::new(&self.query))
             .child(
-                v_flex()
-                    .id("quick-open-results")
-                    .max_h(px(420.))
-                    .overflow_y_scrollbar()
-                    .children(rows)
-                    .when(empty, |this| this.child(div().p_2().text_sm().text_color(theme.muted_foreground).child(tr(cx, "ide.ideSearchEmpty")))),
+                div()
+                    .relative()
+                    .child(
+                        v_flex()
+                            .id("quick-open-results")
+                            .max_h(px(420.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .children(rows)
+                            .when(empty, |this| this.child(div().p_2().text_sm().text_color(theme.muted_foreground).child(tr(cx, "ide.ideSearchEmpty")))),
+                    )
+                    .vertical_scrollbar(&self.scroll),
             )
             .when(self.truncated, |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "ide.ideSearchTruncated"))))
     }

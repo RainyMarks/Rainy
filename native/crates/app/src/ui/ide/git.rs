@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -87,13 +87,21 @@ impl GitView {
                 IdeEvent::Saved => this.refresh_soon(window, cx),
                 _ => {}
             }),
-            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
-                if let StoreEvent::Host { name, data } = event {
+            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
+                StoreEvent::Host { name, data } => {
                     let files = name == "ide.hint" && data.get("kind").and_then(Value::as_str) == Some("files");
                     if files || name == "session.changes" {
                         this.refresh_soon(window, cx);
                     }
                 }
+                // The interface language may have changed.
+                StoreEvent::PrefsChanged => {
+                    let placeholder = tr(cx, "git.gitMessagePlaceholder");
+                    for input in this.messages.values() {
+                        input.update(cx, |state, cx| state.set_placeholder(placeholder.clone(), window, cx));
+                    }
+                }
+                _ => {}
             }),
         ];
         let mut view = Self {
@@ -115,6 +123,12 @@ impl GitView {
     /// Changed files across the project's repositories, for the badge on the pane's tab.
     pub fn change_count(&self) -> usize {
         self.status.as_ref().map_or(0, |status| status.repositories.iter().map(|repository| repository.files.len()).sum())
+    }
+
+    /// The first repository's branch, or its short detached head, or None while the project is not a Git repository (3.x status bar).
+    pub fn branch(&self) -> Option<Option<String>> {
+        let repository = self.status.as_ref()?.repositories.first()?;
+        Some(repository.branch.clone().or_else(|| repository.head.as_ref().map(|head| head.chars().take(7).collect())))
     }
 
     pub fn set_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -159,8 +173,14 @@ impl GitView {
                                     cx.notify();
                                 }
                             }
-                            Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                            Err(error) => this.error = Some(error.message.into()),
+                            Ok(Err(error)) => {
+                                this.error = Some(error.to_string().into());
+                                cx.notify();
+                            }
+                            Err(error) => {
+                                this.error = Some(crate::ui::error_text(cx, &error));
+                                cx.notify();
+                            }
                         }
                     }
                     if this.visible { FAST } else { SLOW }
@@ -196,7 +216,7 @@ impl GitView {
                             this.ide.update(cx, |ide, cx| ide.check_files(cx));
                         }
                     }
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 this.refresh(window, cx);
             });
@@ -269,7 +289,7 @@ impl GitView {
                             message.update(cx, |state, cx| state.set_value(text, window, cx));
                         }
                     }
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 cx.notify();
             });
@@ -310,7 +330,7 @@ impl GitView {
         let color = match kind.as_str() {
             "added" | "untracked" => theme.success,
             "deleted" | "conflicted" => theme.danger,
-            _ => theme.warning,
+            _ => crate::theme::warning_text(cx),
         };
         let key = key_of(root_id, &change.path);
         let id = SharedString::from(format!("git-{}-{}-{index}", if section == Section::Staged { "s" } else { "u" }, root_id));
@@ -320,11 +340,14 @@ impl GitView {
         let new_file = kind == "untracked" || kind == "added";
         let (stage_root, discard_root) = (root_id.to_owned(), root_id.to_owned());
         let (stage_change, discard_change) = (change.clone(), change.clone());
-        let tooltip: SharedString = match &change.from {
-            Some(from) => format!("{} · {}", change.path, trf(cx, "git.gitRenamedFrom", &[("from", from)])).into(),
-            None => format!("{} · {}", change.path, tr(cx, kind_label(&kind))).into(),
+        let (tip_path, tip_from, tip_kind) = (change.path.clone(), change.from.clone(), kind_label(&kind));
+        let tooltip = move |window: &mut Window, cx: &mut App| {
+            let text = match &tip_from {
+                Some(from) => format!("{tip_path} · {}", trf(cx, "git.gitRenamedFrom", &[("from", from)])),
+                None => format!("{tip_path} · {}", tr(cx, tip_kind)),
+            };
+            Tooltip::new(text).build(window, cx)
         };
-        let _ = tooltip;
         h_flex()
             .id(id.clone())
             .group(id.clone())
@@ -336,11 +359,14 @@ impl GitView {
             .text_sm()
             .cursor_pointer()
             .hover(|style| style.bg(theme.list_hover))
+            .tooltip(tooltip)
             .child(Icon::new(file_icon(&name)).small().flex_shrink_0())
-            .child(div().flex_shrink_0().when(deleted, |this| this.line_through()).child(name))
+            // A long name gives way before the buttons and the status letter do.
+            .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().when(deleted, |this| this.line_through()).child(name))
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .gap_0p5()
                     .invisible()
                     .group_hover(id, |style| style.visible())
@@ -425,8 +451,8 @@ impl GitView {
                     .gap_1p5()
                     .items_center()
                     .text_sm()
-                    .when(titled, |this| this.child(div().font_semibold().child(repository.title.clone())))
-                    .child(Icon::new(gpui_kit::assets::IconName::GitBranch).small().text_color(theme.muted_foreground))
+                    .when(titled, |this| this.child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_semibold().child(repository.title.clone())))
+                    .child(Icon::new(gpui_kit::assets::IconName::GitBranch).small().flex_shrink_0().text_color(theme.muted_foreground))
                     .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(branch))
                     .when(repository.ahead > 0, |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(format!("↑{}", repository.ahead))))
                     .when(repository.behind > 0, |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(format!("↓{}", repository.behind)))),
@@ -456,7 +482,7 @@ impl GitView {
                             .on_click(cx.listener(move |this, _, window, cx| this.generate(generate_root.clone(), window, cx))),
                     ),
             )
-            .when(repository.truncated, |this| this.child(div().px_2().text_xs().text_color(theme.warning).child(tr(cx, "git.gitTruncated"))))
+            .when(repository.truncated, |this| this.child(div().px_2().text_xs().text_color(crate::theme::warning_text(cx)).child(tr(cx, "git.gitTruncated"))))
             .when(!staged.is_empty(), |this| {
                 this.child(section(
                     tr(cx, "git.gitStaged"),

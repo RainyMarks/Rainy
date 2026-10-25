@@ -117,6 +117,7 @@ impl Store {
         }
         self.strata.pending = Some("connect");
         cx.notify();
+        let locale = self.locale();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             let connection: Result<Connection, String> = cx.background_spawn(async move { manager.connection() }).await.map_err(|error| error.to_string());
             let call = match connection {
@@ -130,7 +131,7 @@ impl Store {
                 }
             };
             let result = match call {
-                Some(call) => call.await.map_err(|error| error.message),
+                Some(call) => call.await.map_err(|error| crate::i18n::error_text(locale, &error)),
                 None => Err(String::new()),
             };
             let _ = this.update(cx, |store, cx| {

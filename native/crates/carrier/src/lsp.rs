@@ -14,6 +14,7 @@ use futures::channel::oneshot;
 use futures::{FutureExt as _, StreamExt as _};
 use serde_json::{Value, json};
 
+use crate::locale::localized;
 use crate::rpc::RpcClient;
 
 /// How long a request may take before it is abandoned; the first answer of pyright or clangd on a cold project can be
@@ -36,6 +37,11 @@ pub enum LspIncoming {
 pub type Answer = Box<dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync>;
 
 type Pending = oneshot::Sender<Result<Value, String>>;
+
+/// Why a connection ended when the Host gave no reason; the status bar shows it.
+fn closed() -> String {
+    localized("语言服务连接已断开。", "Language service connection closed.")
+}
 
 struct Inner {
     next_id: AtomicI64,
@@ -107,7 +113,7 @@ impl LspClient {
         async move {
             if !sent {
                 inner.pending.lock().unwrap().remove(&id);
-                return Err(anyhow!("Language service connection closed."));
+                return Err(anyhow!(closed()));
             }
             let timeout = futures::FutureExt::fuse(smol::Timer::after(REQUEST_TIMEOUT));
             let answer = rx.fuse();
@@ -116,14 +122,14 @@ impl LspClient {
                 result = answer => match result {
                     Ok(Ok(value)) => Ok(value),
                     Ok(Err(message)) => Err(anyhow!(message)),
-                    Err(_) => Err(anyhow!("Language service connection closed.")),
+                    Err(_) => Err(anyhow!(closed())),
                 },
                 _ = timeout => {
                     inner.pending.lock().unwrap().remove(&id);
                     // The server may still be working on it; tell it the answer is no longer wanted.
                     let cancel = json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": id } }).to_string();
                     let _ = inner.outgoing.try_send(cancel);
-                    Err(anyhow!("{method} timed out."))
+                    Err(anyhow!(localized(&format!("{method} 请求超时。"), &format!("{method} timed out."))))
                 }
             }
         }
@@ -157,28 +163,28 @@ async fn serve(
                     if let Some(reply) = dispatch(inner, events, answer, text.as_str()).await
                         && sink.send(Message::text(reply)).await.is_err()
                     {
-                        return ("Language service connection closed.".into(), false);
+                        return (closed(), false);
                     }
                 }
                 Some(Ok(Message::Close(frame))) => {
                     let (reason, restart) = frame.map_or((String::new(), false), |frame| {
                         (frame.reason.to_string(), frame.code == CloseCode::from(RESTART_CODE))
                     });
-                    let reason = if reason.is_empty() { "Language service connection closed.".to_owned() } else { reason };
+                    let reason = if reason.is_empty() { closed() } else { reason };
                     return (reason, restart);
                 }
-                None | Some(Err(_)) => return ("Language service connection closed.".into(), false),
+                None | Some(Err(_)) => return (closed(), false),
                 Some(Ok(_)) => {}
             },
             outgoing = queue.recv().fuse() => match outgoing {
                 Ok(frame) => {
                     if sink.send(Message::text(frame)).await.is_err() {
-                        return ("Language service connection closed.".into(), false);
+                        return (closed(), false);
                     }
                 }
                 Err(_) => {
                     let _ = sink.close(None).await;
-                    return ("Language service connection closed.".into(), false);
+                    return (closed(), false);
                 }
             },
         }
@@ -209,7 +215,7 @@ async fn dispatch(inner: &Inner, events: &async_channel::Sender<LspIncoming>, an
             let id = id.as_i64()?;
             let pending = inner.pending.lock().unwrap().remove(&id)?;
             let result = match message.get("error") {
-                Some(error) => Err(error.get("message").and_then(Value::as_str).unwrap_or("Language server error").to_owned()),
+                Some(error) => Err(error.get("message").and_then(Value::as_str).map_or_else(|| localized("语言服务器出错。", "Language server error"), str::to_owned)),
                 None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
             };
             let _ = pending.send(result);

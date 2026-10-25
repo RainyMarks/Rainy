@@ -2,7 +2,6 @@
 //! tools the current project allows without asking.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::notification::Notification;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
@@ -83,8 +82,8 @@ impl SecurityPage {
                         }
                     }
                     Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                    Err(error) if reading => this.error = Some(error.message.into()),
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) if reading => this.error = Some(crate::ui::error_text(cx, &error)),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 cx.notify();
             });

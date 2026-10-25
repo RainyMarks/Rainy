@@ -38,6 +38,21 @@ pub fn trf(cx: &App, key: &str, vars: &[(&str, &dyn std::fmt::Display)]) -> Shar
     i18n::format(locale(cx), key, vars).into()
 }
 
+/// A Host failure as a notification in the interface language: its meaning, and the system's own words below it
+/// when they were replaced (`i18n::describe_error`).
+pub fn error_notification(cx: &App, error: &rainy_protocol::RpcError) -> gpui_kit::component::notification::Notification {
+    use gpui_kit::component::notification::Notification;
+    match i18n::describe_error(locale(cx), error) {
+        (text, Some(detail)) => Notification::error(detail).title(text),
+        (text, None) => Notification::error(text),
+    }
+}
+
+/// A Host failure as one text in the interface language, the system's own words on the next line.
+pub fn error_text(cx: &App, error: &rainy_protocol::RpcError) -> SharedString {
+    i18n::error_text(locale(cx), error).into()
+}
+
 /// Send a question to the selected chat, or a new one in the project, and show the chat (3.x `onAsk`).
 pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::ui::ide::ShowChat), cx);
@@ -46,17 +61,26 @@ pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
     let session = store.read(cx).selected.clone();
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
-        let session = match session {
-            Some(id) => Some(id),
-            None => store.update(cx, |store, cx| store.create_chat(workspace, cx)).await,
-        };
-        let Some(session) = session else { return };
-        let call = store.read_with(cx, |store, _| store.call("chat.send", serde_json::json!({ "sessionId": session, "text": text, "mode": "queue" })));
-        if let Err(error) = call.await {
+        let failed = |error: rainy_protocol::RpcError, cx: &mut gpui_kit::AsyncApp| {
             let _ = handle.update(cx, |_, window, cx| {
                 use gpui_kit::component::WindowExt as _;
-                window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx)
+                let text = trf(cx, "chat.sendFailed", &[("message", &error_text(cx, &error))]);
+                window.push_notification(gpui_kit::component::notification::Notification::error(text), cx)
             });
+        };
+        let session = match session {
+            Some(id) => id,
+            None => match store.update(cx, |store, cx| store.create_chat(workspace, cx)).await {
+                Ok(id) => {
+                    store.update(cx, |store, cx| store.select(Some(id.clone()), cx));
+                    id
+                }
+                Err(error) => return failed(error, cx),
+            },
+        };
+        let call = store.read_with(cx, |store, _| store.call("chat.send", serde_json::json!({ "sessionId": session, "text": text, "mode": "queue" })));
+        if let Err(error) = call.await {
+            failed(error, cx);
         }
     })
     .detach();

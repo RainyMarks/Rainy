@@ -693,8 +693,9 @@ impl Execution {
         }
         let epoch = self.epoch;
         let read = self.decoded::<DebugEvaluation>(params, cx);
+        let locale = self.store.read(cx).locale();
         cx.spawn(async move |this: WeakEntity<Execution>, cx: &mut AsyncApp| {
-            let result = read.await.map(|evaluation| evaluation.result).map_err(|error| error.message);
+            let result = read.await.map(|evaluation| evaluation.result).map_err(|error| crate::i18n::error_text(locale, &error));
             if context == "watch" {
                 let _ = this.update(cx, |this, cx| {
                     if this.epoch == epoch

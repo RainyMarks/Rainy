@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -16,6 +15,7 @@ use serde_json::Value;
 use crate::store::execution::{Execution, ExecutionEvent, OperationKind};
 use crate::store::ide::{Ide, IdeEvent, file_name};
 use crate::store::language::LanguageServers;
+use crate::store::{Store, StoreEvent};
 use crate::ui::ide::terminal::TerminalView;
 use crate::ui::{tr, trf};
 
@@ -82,6 +82,14 @@ impl TerminalPanel {
             cx.subscribe_in(&console, window, |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     this.evaluate(window, cx);
+                }
+            }),
+            // The fields' hints follow the interface language.
+            cx.subscribe_in(&Store::global(cx), window, |this, _, event: &StoreEvent, window, cx| {
+                if matches!(event, StoreEvent::PrefsChanged) {
+                    let (watch, console) = (tr(cx, "ide.ideAddWatch"), tr(cx, "ide.ideConsole"));
+                    this.watch.update(cx, |state, cx| state.set_placeholder(watch, window, cx));
+                    this.console.update(cx, |state, cx| state.set_placeholder(console, window, cx));
                 }
             }),
         ];
@@ -166,7 +174,7 @@ impl TerminalPanel {
                             handle.focus(window, cx);
                         }
                     }
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 cx.notify();
             });
@@ -425,7 +433,7 @@ impl TerminalPanel {
                     .text_sm()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.list_hover))
-                    .child(div().flex_shrink_0().text_color(if problem.error { theme.danger } else { theme.warning }).child(if problem.error { "×" } else { "△" }))
+                    .child(div().flex_shrink_0().text_color(if problem.error { theme.danger } else { crate::theme::warning_text(cx) }).child(if problem.error { "×" } else { "△" }))
                     .child(div().flex_1().min_w_0().truncate().child(problem.message.clone()))
                     .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(format!("{}:{line}:{column}", crate::store::ide::split_key(&problem.key).1)))
                     .child(Button::new(("problem-fix", index)).ghost().xsmall().label(tr(cx, "ide.ideProblemFix")).on_click(move |_, window, cx| {

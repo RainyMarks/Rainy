@@ -2,7 +2,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -16,7 +16,8 @@ use crate::ui::{tr, trf};
 /// One visible line of the tree.
 #[derive(Clone)]
 enum Row {
-    Root { key: String, title: SharedString },
+    /// `path` is the folder's own path on the Host, shown as the tooltip.
+    Root { key: String, title: SharedString, path: SharedString },
     Entry { key: String, entry: FileEntry, depth: usize, open: bool },
     Message { text: SharedString, depth: usize },
 }
@@ -50,7 +51,7 @@ impl FileTree {
             for root in &roots {
                 let key = file_key("", Some(root));
                 if several {
-                    rows.push(Row::Root { key: key.clone(), title: root.title.clone().into() });
+                    rows.push(Row::Root { key: key.clone(), title: root.title.clone().into(), path: root.path.clone().into() });
                 }
                 Self::push_children(ide, &key, usize::from(several), &mut rows);
             }
@@ -81,6 +82,14 @@ impl FileTree {
             }
         }
     }
+}
+
+/// What a row's tooltip says (3.x `fileLabel`): the path in the main folder, or an added folder's title and the path in it.
+fn file_label(ide: &Entity<Ide>, key: &str, cx: &App) -> String {
+    let (root, path) = split_key(key);
+    let Some(root) = root else { return path.to_owned() };
+    let title = ide.read(cx).workspace.as_ref().and_then(|workspace| workspace.roots().into_iter().find(|known| known.root_id == root)).map(|known| known.title);
+    format!("{}/{path}", title.as_deref().unwrap_or(root))
 }
 
 /// Ask for a name, then create a file or folder in `directory`.
@@ -130,7 +139,7 @@ fn ask_delete(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut App) 
                             })
                     });
                 }
-                Err(error) => window.push_notification(Notification::error(error.message), cx),
+                Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
             });
         })
         .detach();
@@ -165,11 +174,12 @@ impl Render for FileTree {
                     let row = rows[index].clone();
                     let ide = ide_handle.clone();
                     match row {
-                        Row::Root { key, title } => {
+                        Row::Root { key, title, path } => {
                             let root_id = split_key(&key).0.map(str::to_owned);
                             let menu_ide = ide.clone();
                             h_flex()
                             .id(index)
+                            .w_full()
                             .h(px(26.))
                             .px_2()
                             .gap_1()
@@ -177,8 +187,9 @@ impl Render for FileTree {
                             .text_xs()
                             .font_semibold()
                             .text_color(theme.muted_foreground)
-                            .child(Icon::new(IconName::FolderOpen).xsmall())
-                            .child(title)
+                            .child(Icon::new(IconName::FolderOpen).xsmall().flex_shrink_0())
+                            .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                            .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
                             .on_click(move |_, window, cx| {
                                 let key = key.clone();
                                 ide.update(cx, |ide, cx| ide.list(key, window, cx));
@@ -204,11 +215,14 @@ impl Render for FileTree {
                         }
                         Row::Message { text, depth } => div()
                             .id(index)
+                            .w_full()
                             .h(px(26.))
                             .pl(px(12. + 14. * depth as f32))
+                            .pr_2()
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .overflow_hidden()
+                            .text_ellipsis()
                             .whitespace_nowrap()
                             .child(text)
                             .into_any_element(),
@@ -221,8 +235,10 @@ impl Render for FileTree {
                                 file_icon(&entry.name)
                             };
                             let (menu_ide, menu_key) = (ide.clone(), key.clone());
+                            let (tip_ide, tip_key) = (ide.clone(), key.clone());
                             h_flex()
                                 .id(index)
+                                .w_full()
                                 .h(px(26.))
                                 .pl(px(8. + 14. * depth as f32))
                                 .pr_2()
@@ -237,8 +253,10 @@ impl Render for FileTree {
                                         this.child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(theme.muted_foreground))
                                     }),
                                 )
-                                .child(Icon::new(icon).small().text_color(if directory { theme.muted_foreground } else { theme.foreground }))
+                                .child(Icon::new(icon).small().flex_shrink_0().text_color(if directory { theme.muted_foreground } else { theme.foreground }))
                                 .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(entry.name.clone()))
+                                // Built only when the pointer rests on the row.
+                                .tooltip(move |window, cx| Tooltip::new(file_label(&tip_ide, &tip_key, cx)).build(window, cx))
                                 .on_click(move |_, window, cx| {
                                     let key = key.clone();
                                     ide.update(cx, |ide, cx| {

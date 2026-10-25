@@ -134,6 +134,7 @@ impl Store {
         self.shell.busy = true;
         cx.notify();
         let registration = self.shell.registration.clone();
+        let title = crate::i18n::text(self.locale(), "native.shellFailed");
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             let (written, saved) = cx
                 .background_spawn(async move {
@@ -148,8 +149,10 @@ impl Store {
                 }
                 cx.notify();
             });
+            // What failed, with the registry key or file and the system's words below it.
             if let Err(error) = written {
-                let _ = window.update(cx, |_, window, cx| window.push_notification(Notification::error(format!("{error:#}")), cx));
+                let notification = Notification::error(format!("{error:#}")).title(title);
+                let _ = window.update(cx, |_, window, cx| window.push_notification(notification, cx));
             }
         })
         .detach();

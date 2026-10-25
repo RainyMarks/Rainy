@@ -229,7 +229,7 @@ impl ModelsPage {
                 this.busy = false;
                 match result {
                     Ok(value) => done(this, value, window, cx),
-                    Err(error) => this.failure = Some(error.message.into()),
+                    Err(error) => this.failure = Some(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });

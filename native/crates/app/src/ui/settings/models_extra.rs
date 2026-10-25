@@ -198,7 +198,7 @@ impl ProxyCard {
                         this.status = Some(status);
                     }
                     Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                    Err(error) => this.error = Some(error.message.into()),
+                    Err(error) => this.error = Some(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });
@@ -227,7 +227,7 @@ impl ProxyCard {
                 this.test = Some(match result.map(serde_json::from_value::<ProxyTest>) {
                     Ok(Ok(test)) => test,
                     Ok(Err(error)) => ProxyTest { ok: false, url: String::new(), status: None, ms: 0., error: Some(error.to_string()) },
-                    Err(error) => ProxyTest { ok: false, url: String::new(), status: None, ms: 0., error: Some(error.message) },
+                    Err(error) => ProxyTest { ok: false, url: String::new(), status: None, ms: 0., error: Some(crate::ui::error_text(cx, &error).to_string()) },
                 });
                 cx.notify();
             });
@@ -253,7 +253,7 @@ impl ProxyCard {
                         window.push_notification(tr(cx, "settings.settingsSaved").to_string(), cx);
                     }
                     Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                    Err(error) => this.error = Some(error.message.into()),
+                    Err(error) => this.error = Some(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });
