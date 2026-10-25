@@ -2,7 +2,7 @@
 //! Markdown, and the agent's preview of the project's own server.
 //!
 //! A WebView2 control is a child window on top of everything GPUI draws, so a pane is shown only in frames where its
-//! area was painted and no dialog covers the window.
+//! area was painted, no dialog covers the window and no toast is shown over it.
 
 pub mod export;
 pub mod office;
@@ -12,7 +12,7 @@ pub mod webview;
 
 use std::collections::{HashMap, HashSet};
 
-use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -58,6 +58,8 @@ struct Panes {
     focus: HashMap<WindowId, Option<WeakFocusHandle>>,
     /// Windows with a menu open, whose focus is looked at every frame.
     following: HashSet<WindowId>,
+    /// Toasts that ask for a frame once they are gone.
+    toasts: HashSet<EntityId>,
 }
 
 impl Global for Panes {}
@@ -111,7 +113,7 @@ impl WebPane {
                     });
                 }
             }),
-            None => drop(events.try_send(PaneEvent::Failed("No window handle for the page.".into()))),
+            None => drop(events.try_send(PaneEvent::Failed(crate::ui::tr(cx, "viewers.pageNoWindow")))),
         }
         // Events come from WebView2 callbacks, outside any GPUI update; they are applied here, in order.
         let forward = cx.spawn(async move |this: WeakEntity<WebPane>, cx: &mut AsyncApp| {
@@ -225,7 +227,7 @@ pub fn begin_frame(cx: &mut App) {
 }
 
 /// End a frame: show the panes painted in it, unless a dialog, a sheet or the caller's own overlay (`covered`) is over
-/// the window, and hide the others.
+/// the window or a toast over the pane, and hide the others.
 pub fn end_frame(covered: bool, window: &mut Window, cx: &mut App) {
     // A click anywhere GPUI draws takes the keyboard back from a page; clicks inside a page never reach GPUI.
     window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
@@ -248,18 +250,53 @@ pub fn end_frame(covered: bool, window: &mut Window, cx: &mut App) {
         follow_menu(id, focused.clone(), window);
     }
     let covered = covered || menu_open || window.has_active_dialog(cx) || window.has_active_sheet(cx);
+    let toasts = toast_column(window, cx);
     let (all, painted) = cx.update_global::<Panes, _>(|panes, _| {
         panes.all.retain(|pane| pane.upgrade().is_some());
         (panes.all.clone(), panes.painted.clone())
     });
     for pane in all.iter().filter_map(WeakEntity::upgrade) {
-        let shown = !covered && painted.contains(&pane.entity_id());
+        let under_toast =
+            toasts.is_some_and(|(left, right)| pane.read(cx).bounds.is_some_and(|bounds| bounds.left() < right && bounds.right() > left));
+        let shown = !covered && !under_toast && painted.contains(&pane.entity_id());
         pane.update(cx, |pane, _| {
             if pane.shown != shown || shown {
                 pane.place(shown);
             }
         });
     }
+}
+
+/// While toasts are shown, the x-range of the column they stack in. Toasts are drawn by GPUI as well, under the pages'
+/// windows, and the least a page may do is step aside while one would sit on it: only the pages crossing that column
+/// hide. The workbench narrows the column to fit inside the AI pane while it is shown (pages are only ever in the editor
+/// area), so a page hides only while that pane is hidden. Each toast asks for a frame once it is gone, so the pages come
+/// back even when nothing else draws one.
+fn toast_column(window: &mut Window, cx: &mut App) -> Option<(Pixels, Pixels)> {
+    let toasts = window.notifications(cx);
+    if toasts.is_empty() {
+        return None;
+    }
+    let handle = Window::window_handle(window);
+    for toast in toasts.iter() {
+        let id = toast.entity_id();
+        if cx.update_global::<Panes, _>(|panes, _| panes.toasts.insert(id)) {
+            cx.observe_release(toast, move |_, cx| {
+                cx.defer(move |cx| {
+                    cx.update_global::<Panes, _>(|panes, _| panes.toasts.remove(&id));
+                    let _ = handle.update(cx, |_, window, _| window.refresh());
+                });
+            })
+            .detach();
+        }
+    }
+    let settings = &cx.theme().notification;
+    let (width, margins, viewport) = (settings.width, &settings.margins, window.viewport_size().width);
+    Some(match settings.placement {
+        Anchor::TopLeft | Anchor::BottomLeft | Anchor::LeftCenter => (margins.left, margins.left + width),
+        Anchor::TopCenter | Anchor::BottomCenter => ((viewport - width) / 2., (viewport + width) / 2.),
+        _ => (viewport - margins.right - width, viewport - margins.right),
+    })
 }
 
 /// Look at the focus every frame while a menu is open: a menu that closes may hand the focus back while a frame is

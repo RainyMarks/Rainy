@@ -160,6 +160,15 @@ pub enum IdeEvent {
     ExecutionChanged,
 }
 
+/// Pane sizes as 3.x keeps them in a project's `data.layout`, in logical pixels: the file pane's width, the AI pane's
+/// (0 follows the window) and the bottom panel's height. As a patch, `None` leaves a size as it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PaneLayout {
+    pub sidebar_width: Option<f32>,
+    pub agent_width: Option<f32>,
+    pub bottom_height: Option<f32>,
+}
+
 /// Why Run starts what it starts (3.x `RunTarget.mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -278,6 +287,8 @@ pub struct Ide {
     /// shown, is dropped.
     reads: HashMap<String, u64>,
     read_count: u64,
+    /// Pane sizes changed in this window and not yet in the saved state, with the project they belong to.
+    layout: Option<(String, PaneLayout)>,
 }
 
 impl EventEmitter<IdeEvent> for Ide {}
@@ -333,6 +344,7 @@ impl Ide {
                 focus_next: None,
                 reads: HashMap::new(),
                 read_count: 0,
+                layout: None,
             }
         });
         cx.set_global(GlobalIde(ide.clone()));
@@ -1534,6 +1546,33 @@ impl Ide {
         }
     }
 
+    /// The pane sizes of the shown project: those changed in this window, else those saved; a size neither knows is
+    /// `None`. None without a project.
+    pub fn layout(&self) -> Option<PaneLayout> {
+        let id = self.workspace_id()?;
+        let changed = self.layout.as_ref().filter(|(project, _)| *project == id).map(|(_, layout)| *layout).unwrap_or_default();
+        // While a project's state is read, the state held is still the one of the project shown before.
+        let saved = self.state.as_ref().filter(|_| !self.loading).map(|state| &state.data["layout"]);
+        let read = |key: &str| saved.and_then(|layout| layout[key].as_f64()).map(|value| value as f32);
+        Some(PaneLayout {
+            sidebar_width: changed.sidebar_width.or_else(|| read("sidebarWidth")),
+            agent_width: changed.agent_width.or_else(|| read("agentWidth")),
+            bottom_height: changed.bottom_height.or_else(|| read("bottomHeight")),
+        })
+    }
+
+    /// Change pane sizes of the shown project; they are saved with its state a moment later. Without a project nothing
+    /// is kept.
+    pub fn set_layout(&mut self, patch: PaneLayout, cx: &mut Context<Self>) {
+        let Some(id) = self.workspace_id() else { return };
+        let mut layout = self.layout.take().filter(|(project, _)| *project == id).map(|(_, layout)| layout).unwrap_or_default();
+        layout.sidebar_width = patch.sidebar_width.or(layout.sidebar_width);
+        layout.agent_width = patch.agent_width.or(layout.agent_width);
+        layout.bottom_height = patch.bottom_height.or(layout.bottom_height);
+        self.layout = Some((id, layout));
+        self.schedule_state_save(cx);
+    }
+
     /// Save tabs, the active file and expanded folders a moment after the last change.
     fn schedule_state_save(&mut self, cx: &mut Context<Self>) {
         self.save_task = Some(cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
@@ -1670,6 +1709,17 @@ impl Ide {
         let in_project = |chat: &&String| store.summaries.iter().any(|s| s.id == **chat && s.workspace_id.as_deref() == Some(id.as_str()));
         if let Some(selected) = store.selected.as_ref().filter(in_project) {
             data["lastSessionId"] = json!(selected);
+        }
+        // Pane sizes changed here; the layout's other fields (visibility, bottom tab) stay as stored.
+        if let Some((_, layout)) = self.layout.as_ref().filter(|(project, _)| *project == id) {
+            if !data["layout"].is_object() {
+                data["layout"] = json!({});
+            }
+            for (key, value) in [("sidebarWidth", layout.sidebar_width), ("agentWidth", layout.agent_width), ("bottomHeight", layout.bottom_height)] {
+                if let Some(value) = value {
+                    data["layout"][key] = json!(value.round() as i64);
+                }
+            }
         }
         if data == state.data {
             return None;
