@@ -501,7 +501,7 @@ pub fn start(
     ask: &AskRuntime<'_>,
     progress: &(dyn Fn(Step) + Sync),
 ) -> Result<Started> {
-    let preferences = targets::read_preferences(&paths.desktop_settings())?;
+    let preferences = targets::recover_preferences(&paths.desktop_settings())?;
     let saved = targets::saved_target(&preferences).unwrap_or_else(|_| ExecutionTarget::windows());
     let prepared = match &saved {
         ExecutionTarget::Windows { .. } => Some((windows_host(paths)?, None)),
@@ -661,6 +661,7 @@ pub struct CarrierEvents {
 
 impl CarrierEvents {
     pub fn new(paths: &Paths) -> Arc<Self> {
+        rotate_host_log(&paths.log_path());
         let log = std::fs::OpenOptions::new().create(true).append(true).open(paths.log_path()).ok();
         Arc::new(Self { user_data: paths.user_data.clone(), log: Mutex::new(log), recent: Mutex::default(), preview: Mutex::new(None), key: Mutex::new(None), on_exit: Mutex::new(None) })
     }
@@ -677,6 +678,20 @@ impl CarrierEvents {
         use std::io::Write as _;
         if let Some(file) = self.log.lock().unwrap().as_mut() {
             let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// Past this size, `host.log` moves to `host.log.1` when Rainy starts, replacing the one before, as `rainy.log` does;
+/// the Host and every MCP server it runs write there.
+const HOST_LOG_LIMIT: u64 = 4 * 1024 * 1024;
+
+fn rotate_host_log(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() >= HOST_LOG_LIMIT) {
+        let mut older = path.as_os_str().to_owned();
+        older.push(".1");
+        if let Err(error) = std::fs::rename(path, &older) {
+            log::warn!("{} was not moved aside: {error}", path.display());
         }
     }
 }
@@ -821,6 +836,20 @@ mod tests {
         assert_eq!(detail, "下载校验失败，请重试\nWSL 和 SSH 远程开发用的 Linux 运行环境底座有变化，需要联网下载一次，已下载的部分会保留。");
         let step = i18n::format(Locale::Zh, "native.linuxDownloading", &[("done", &megabytes(26_000_000)), ("total", &megabytes(52_717_256))]);
         assert_eq!(step, "正在下载 Linux 运行环境 25 / 50 MB");
+    }
+
+    #[test]
+    fn a_large_host_log_moves_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("host.log");
+        std::fs::write(&log, b"small").unwrap();
+        rotate_host_log(&log);
+        assert!(log.exists());
+        std::fs::write(&log, vec![b'x'; HOST_LOG_LIMIT as usize]).unwrap();
+        std::fs::write(dir.path().join("host.log.1"), b"older").unwrap();
+        rotate_host_log(&log);
+        assert!(!log.exists());
+        assert_eq!(std::fs::metadata(dir.path().join("host.log.1")).unwrap().len(), HOST_LOG_LIMIT);
     }
 
     #[test]
