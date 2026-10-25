@@ -259,6 +259,11 @@ impl Store {
                 cx.update(|_| crate::web::preview::close());
                 let _ = this.update(cx, |store, cx| {
                     if !store.stopping && store.host.is_some() {
+                        // Nothing answers any more: requests fail at once instead of waiting for a reconnect that
+                        // never comes, also after "Later" in the dialog.
+                        if let Some(rpc) = &store.rpc {
+                            rpc.close();
+                        }
                         cx.emit(StoreEvent::HostExited(code));
                     }
                 });
@@ -338,6 +343,9 @@ impl Store {
                 }
                 if let Some(error) = cx.background_spawn(async move { boot::recheck_resources(&integrity) }).await {
                     let _ = this.update(cx, |_, cx| cx.emit(StoreEvent::ResourcesDamaged(error)));
+                    // The cleanup trusts lists among the damaged files (`runtime.json` names what may stay); the next
+                    // start checks every file first.
+                    return;
                 }
             }
             if stopping(cx) {
