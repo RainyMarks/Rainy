@@ -80,11 +80,20 @@ fn environment(folder: &Path, done: Waiter) {
     let started = unsafe {
         // No mini menu over selected text, no PDF menu of Edge's own and no SmartScreen lookups of local pages.
         options.set_additional_browser_arguments("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection".to_owned());
+        // Context menus, media controls and the pages' `navigator.language` follow the interface language. An
+        // environment keeps the language it was created with, so a change in Settings applies after a restart.
+        options.set_language(rainy_carrier::locale::localized("zh-CN", "en-US"));
         CreateCoreWebView2EnvironmentWithOptions(PCWSTR::null(), &HSTRING::from(folder), &ICoreWebView2EnvironmentOptions::from(options), &handler)
     };
     if let Err(error) = started {
         settle(folder, Err(describe(&error)));
     }
+}
+
+/// Whether this process was started for page QA with a DevTools Protocol port
+/// (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`), which keeps DevTools enabled in release builds.
+fn remote_debugging() -> bool {
+    std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_ok_and(|arguments| arguments.contains("--remote-debugging-port"))
 }
 
 /// The version of the WebView2 runtime new controls would use, such as `141.0.3537.71`; otherwise why there is none.
@@ -208,7 +217,15 @@ impl WebView {
             let settings = view.Settings()?;
             settings.SetIsStatusBarEnabled(false)?;
             settings.SetIsZoomControlEnabled(false)?;
-            settings.SetAreDevToolsEnabled(cfg!(debug_assertions))?;
+            settings.SetAreDevToolsEnabled(cfg!(debug_assertions) || remote_debugging())?;
+            // The browser's own keys make no sense in an embedded page: F5 / Ctrl+R would reload it and lose the rich
+            // editor's undo history, Ctrl+P, Ctrl+U, Ctrl+F, F12 and Alt+Left open browser features. Editing keys
+            // (copy, paste, undo, select all) are not browser accelerators and keep working, and the keys reach the
+            // page, which handles its own find and zoom. DevTools stay reachable from the context menu and the
+            // debugging port where they are enabled above.
+            if let Ok(settings) = settings.cast::<ICoreWebView2Settings3>() {
+                settings.SetAreBrowserAcceleratorKeysEnabled(false)?;
+            }
             let mut token = 0i64;
             if let Some(mut on_message) = options.on_message.take() {
                 let handler = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
