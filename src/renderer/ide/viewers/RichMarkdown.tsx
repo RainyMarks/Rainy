@@ -182,9 +182,9 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
     let cancelled = false
     let created: Rich | undefined
     void (async () => {
-      const [{ Crepe }, { editorViewCtx }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig }, { codeBlockConfig }, rich,
+      const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig }, { codeBlockConfig }, rich,
         { codeTheme }] = await Promise.all([
-        import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
+        import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/preset/commonmark'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
         import('@milkdown/kit/plugin/upload'), import('@milkdown/kit/component/code-block'), import('./rich-plugins.ts'), import('./code-theme.ts'),
       ])
       await import('@milkdown/crepe/theme/common/style.css')
@@ -267,6 +267,13 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
             listGroup: { label: t('richGroupList'), bulletList: { label: t('richBullet') }, orderedList: { label: t('richOrdered') }, taskList: { label: t('richTask') } },
             advancedGroup: { label: t('richGroupAdvanced'), image: { label: t('richImage') }, codeBlock: { label: t('richCode') }, table: { label: t('richTable') },
               math: { label: t('richMath') } },
+            // Crepe offers an image only with its image block, which is off; this one inserts an inline image.
+            buildMenu: (builder) => {
+              builder.getGroup('advanced').addItem('rainy-image', { label: t('richImage'), icon: rich.IMAGE_ICON, onRun: (ctx) => {
+                ctx.get(commandsCtx).call(clearTextInCurrentBlockCommand.key)
+                rich.insertImage(ctx)
+              } })
+            },
           },
         },
       })

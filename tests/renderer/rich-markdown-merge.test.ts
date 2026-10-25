@@ -156,6 +156,7 @@ describe('an edited line', () => {
     ['keeps a latex fence', '```latex\n\\begin{document}\n```\n\nEDITME\n', '```latex\n\\begin{document}\n```\n\nEDITED\n'],
     ['keeps ordered markers with parentheses', '1) one EDITME\n2) two\n', '1) one EDITED\n2) two\n'],
     ['keeps star bullets', '* one EDITME\n* two\n', '* one EDITED\n* two\n'],
+    ['keeps an underlined heading', 'Title EDITME\n=====\n\nBody\n', 'Title EDITED\n=====\n\nBody\n'],
     ['keeps dollar amounts as text', '价格 $5 到 $10 EDITME\n', '价格 \\$5 到 \\$10 EDITED\n'],
   ]
   for (const [name, text, expected] of cases) {

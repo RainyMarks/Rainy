@@ -172,6 +172,23 @@ function insertBlock(state: EditorState, dispatch: ((transaction: Transaction) =
   return true
 }
 
+/** The / menu's image icon, in the style of Crepe's others. */
+export const IMAGE_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h14q.825 0 1.413.588T21 5v14q0 .825-.587 1.413T19 21zm0-2h14V5H5zm1-2h12l-3.75-5-3 4L9 13zm-1 2V5z"/></svg>'
+
+/**
+ * Insert an inline image without a target at the cursor; the editor then asks for a link or a file, as Typora's
+ * Ctrl+Shift+I does. Crepe's image block stays off (see RichMarkdown.tsx).
+ * @param ctx Editor context.
+ * @returns Whether it was inserted.
+ */
+export function insertImage(ctx: Ctx): boolean {
+  const view = ctx.get(editorViewCtx)
+  const image = view.state.schema.nodes.image
+  if (image === undefined || view.state.selection.$from.parent.type.spec.code === true) return false
+  view.dispatch(view.state.tr.replaceSelectionWith(image.create({ src: '' })).scrollIntoView())
+  return true
+}
+
 /** Typora's paragraph and format shortcuts, on top of Milkdown's own (Ctrl+B, Ctrl+I, Tab in lists…). */
 export const typoraKeymap = $prose((ctx) => {
   const call = <T,>(key: CmdKey<T>, payload?: T): Command => () => ctx.get(commandsCtx).call(key, payload)
@@ -198,6 +215,7 @@ export const typoraKeymap = $prose((ctx) => {
     'Alt-Shift-5': call(toggleStrikethroughCommand.key),
     'Mod-Shift-`': call(toggleInlineCodeCommand.key),
     'Mod-k': call(toggleLinkCommand.key),
+    'Mod-Shift-i': () => insertImage(ctx),
   })
 })
 
@@ -320,14 +338,20 @@ export const STRINGIFY = { bullet: '-', bulletOther: '*', bulletOrdered: '.', em
   listItemIndent: 'one', incrementListMarker: true } as const
 
 /**
- * Write back the list markers the document itself uses, so an edited list keeps them.
+ * Write back the list markers and heading style the document itself uses, so an edited list or heading keeps them.
  * @param markdown Document text.
  * @returns Overrides of {@link STRINGIFY}.
  */
-export function documentStyle(markdown: string): { bullet?: '-' | '*' | '+'; bulletOther?: '-' | '*' | '+'; bulletOrdered?: '.' | ')' } {
+export function documentStyle(markdown: string): { bullet?: '-' | '*' | '+'; bulletOther?: '-' | '*' | '+'; bulletOrdered?: '.' | ')'; setext?: boolean } {
   const counts = new Map<string, number>()
   let fence: string | undefined
+  let previous = ''
   for (const line of markdown.split('\n')) {
+    const above = previous
+    previous = line
+    // Level 1 headings underlined with `=` against `#` and `##` ones; a `---` underline could be a rule.
+    if (/^ {0,3}=+[ \t]*$/u.test(line) && above.trim() !== '' && fence === undefined) counts.set('setext', (counts.get('setext') ?? 0) + 1)
+    if (/^ {0,3}#{1,2}(?:[ \t]|$)/u.test(line) && fence === undefined) counts.set('atx', (counts.get('atx') ?? 0) + 1)
     const opening = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
     if (opening !== undefined) {
       if (fence === undefined) fence = opening
@@ -347,6 +371,7 @@ export function documentStyle(markdown: string): { bullet?: '-' | '*' | '+'; bul
   const bullet = bullets[0]
   if (bullet !== undefined && bullet !== '-') { style.bullet = bullet; style.bulletOther = bullets[1] ?? (bullet === '*' ? '-' : '*') }
   if ((counts.get('ordered)') ?? 0) > (counts.get('ordered.') ?? 0)) style.bulletOrdered = ')'
+  if ((counts.get('setext') ?? 0) > (counts.get('atx') ?? 0)) style.setext = true
   return style
 }
 

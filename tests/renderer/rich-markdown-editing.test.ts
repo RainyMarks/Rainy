@@ -34,7 +34,7 @@ async function open(markdown: string): Promise<Crepe> {
   return crepe
 }
 
-function press(target: Element, key: string, modifiers: { ctrlKey?: boolean } = {}): void {
+function press(target: Element, key: string, modifiers: { ctrlKey?: boolean; shiftKey?: boolean; keyCode?: number } = {}): void {
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers }))
 }
 
@@ -83,6 +83,17 @@ describe('Enter in a table', () => {
     expect(view.state.doc.childCount).toBe(2)
     await crepe.destroy()
   })
+})
+
+it('inserts an image to fill in with Ctrl+Shift+I', async () => {
+  const crepe = await open('Text\n')
+  const view = crepe.editor.ctx.get(editorViewCtx)
+  cursorAfter(crepe, 'Text')
+  press(view.dom, 'I', { ctrlKey: true, shiftKey: true, keyCode: 73 })
+  let images = 0
+  view.state.doc.descendants((node) => { if (node.type.name === 'image') images++ })
+  expect(images).toBe(1)
+  await crepe.destroy()
 })
 
 it('cannot undo a change that came from outside', async () => {
