@@ -18,6 +18,8 @@ use crate::network::Network;
 /// The protocol version Rainy asks for; servers may answer with an older one they support.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
+/// Wait for a notification or an answer to the server's request to be taken.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Why a request failed.
 #[derive(Debug)]
@@ -101,7 +103,9 @@ impl Waiting {
 
 /// How messages leave.
 enum Outgoing {
-    Stdio(AsyncMutex<tokio::process::ChildStdin>),
+    /// Lines for the program's standard input, written in order by a task of their own, so a request given up while
+    /// the program does not read never leaves half a message behind.
+    Stdio(mpsc::UnboundedSender<String>),
     Http { client: reqwest::Client, url: String, headers: Vec<(String, String)>, session: Mutex<Option<String>>, version: Mutex<Option<String>> },
     Sse { client: reqwest::Client, endpoint: String, headers: Vec<(String, String)> },
 }
@@ -148,6 +152,39 @@ fn pump_events(mut body: impl futures::Stream<Item = reqwest::Result<bytes::Byte
     });
 }
 
+/// Route every message a local program writes, one per line, until its output ends. Lines are read as bytes, so one
+/// that is not UTF-8 is dropped like any other that is no message, and the pipe is drained to its end.
+async fn read_messages(stdout: impl tokio::io::AsyncRead + Unpin, waiting: &Waiting, reply: &mpsc::UnboundedSender<Value>) {
+    let mut stdout = tokio::io::BufReader::new(stdout);
+    let mut line = Vec::new();
+    while stdout.read_until(b'\n', &mut line).await.is_ok_and(|read| read > 0) {
+        if let Ok(message) = serde_json::from_str::<Value>(String::from_utf8_lossy(&line).trim()) {
+            waiting.incoming(message, reply);
+        }
+        line.clear();
+    }
+}
+
+/// Log what a local program writes on its error stream and keep the end of it, until the stream ends. Python servers
+/// on a Chinese Windows write there in the console's code page.
+async fn keep_errors(stderr: impl tokio::io::AsyncRead + Unpin, kept: Stderr, server: String) {
+    let mut stderr = tokio::io::BufReader::new(stderr);
+    let mut bytes = Vec::new();
+    while stderr.read_until(b'\n', &mut bytes).await.is_ok_and(|read| read > 0) {
+        let line = crate::process::console_text(&bytes);
+        bytes.clear();
+        let line = line.trim_end_matches(['\r', '\n']);
+        log::info!("[mcp:{server}] {}", line.trim_end());
+        let mut text = kept.lock().unwrap();
+        text.push_str(line);
+        text.push('\n');
+        let excess = text.chars().count().saturating_sub(600);
+        if excess > 0 {
+            *text = text.chars().skip(excess).collect();
+        }
+    }
+}
+
 impl Client {
     fn new(outgoing: Outgoing, child: Option<tokio::process::Child>) -> Arc<Self> {
         let (replies, mut queue) = mpsc::unbounded_channel::<Value>();
@@ -164,7 +201,7 @@ impl Client {
         tokio::spawn(async move {
             while let Some(answer) = queue.recv().await {
                 let Some(client) = weak.upgrade() else { break };
-                let _ = client.send(&answer).await;
+                let _ = client.send_within(&answer, NOTIFY_TIMEOUT).await;
             }
         });
         client
@@ -174,34 +211,34 @@ impl Client {
     pub fn stdio(program: &std::path::Path, args: &[String], env: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>, cwd: &std::path::Path, name: &str) -> std::io::Result<(Arc<Self>, Stderr)> {
         let mut child = crate::process::spawn(program, args, cwd, env, true)?;
         let missing = || std::io::Error::other("the program's streams are not available");
-        let (stdin, stdout, stderr) = (child.stdin.take().ok_or_else(missing)?, child.stdout.take().ok_or_else(missing)?, child.stderr.take().ok_or_else(missing)?);
-        let client = Self::new(Outgoing::Stdio(AsyncMutex::new(stdin)), Some(child));
+        let (mut stdin, stdout, stderr) = (child.stdin.take().ok_or_else(missing)?, child.stdout.take().ok_or_else(missing)?, child.stderr.take().ok_or_else(missing)?);
+        let (lines, mut queue) = mpsc::unbounded_channel::<String>();
+        let client = Self::new(Outgoing::Stdio(lines), Some(child));
+        let (waiting, closed) = (client.waiting.clone(), client.closed.clone());
+        tokio::spawn(async move {
+            let write = async {
+                while let Some(line) = queue.recv().await {
+                    stdin.write_all(line.as_bytes()).await?;
+                    stdin.flush().await?;
+                }
+                std::io::Result::Ok(())
+            };
+            tokio::select! {
+                written = write => if written.is_err() {
+                    closed.cancel();
+                    waiting.fail_all();
+                },
+                () = closed.cancelled() => {}
+            }
+        });
         let (waiting, reply, closed) = (client.waiting.clone(), client.replies.clone(), client.closed.clone());
         tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(message) = serde_json::from_str::<Value>(line.trim()) {
-                    waiting.incoming(message, &reply);
-                }
-            }
+            read_messages(stdout, &waiting, &reply).await;
             closed.cancel();
             waiting.fail_all();
         });
         let errors: Stderr = Arc::default();
-        let (kept, server) = (errors.clone(), name.to_owned());
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                log::info!("[mcp:{server}] {}", line.trim_end());
-                let mut text = kept.lock().unwrap();
-                text.push_str(&line);
-                text.push('\n');
-                let excess = text.chars().count().saturating_sub(600);
-                if excess > 0 {
-                    *text = text.chars().skip(excess).collect();
-                }
-            }
-        });
+        tokio::spawn(keep_errors(stderr, errors.clone(), name.to_owned()));
         Ok((client, errors))
     }
 
@@ -260,11 +297,7 @@ impl Client {
     /// Send one message; an HTTP answer is routed like any other message from the server.
     async fn send(&self, message: &Value) -> Result<(), Failure> {
         match &self.outgoing {
-            Outgoing::Stdio(stdin) => {
-                let mut stdin = stdin.lock().await;
-                stdin.write_all(format!("{message}\n").as_bytes()).await.map_err(|_| Failure::Closed)?;
-                stdin.flush().await.map_err(|_| Failure::Closed)
-            }
+            Outgoing::Stdio(lines) => lines.send(format!("{message}\n")).map_err(|_| Failure::Closed),
             Outgoing::Sse { client, endpoint, headers } => {
                 let mut request = client.post(endpoint).header("content-type", "application/json").body(message.to_string());
                 for (name, value) in headers {
@@ -315,14 +348,24 @@ impl Client {
         }
     }
 
+    /// Send one message, giving up when the connection closes or after `limit`: an HTTP server may hold the request
+    /// open without ever answering.
+    async fn send_within(&self, message: &Value, limit: Duration) -> Result<(), Failure> {
+        tokio::select! {
+            sent = tokio::time::timeout(limit, self.send(message)) => sent.unwrap_or(Err(Failure::Timeout)),
+            () = self.closed.cancelled() => Err(Failure::Closed),
+        }
+    }
+
     /// Send a notification.
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), Failure> {
-        self.send(&json!({ "jsonrpc": "2.0", "method": method, "params": params })).await
+        self.send_within(&json!({ "jsonrpc": "2.0", "method": method, "params": params }), NOTIFY_TIMEOUT).await
     }
 
     /// One request. Progress the server reports restarts the timeout, up to `total`; a cancelled or timed-out request
-    /// is cancelled at the server too.
-    pub async fn request(&self, method: &str, mut params: Value, timeout: Duration, total: Duration, cancel: &CancellationToken) -> Result<Value, Failure> {
+    /// is cancelled at the server too. Sending counts towards the timeout: over HTTP the answer may be the body of the
+    /// request itself.
+    pub async fn request(self: &Arc<Self>, method: &str, mut params: Value, timeout: Duration, total: Duration, cancel: &CancellationToken) -> Result<Value, Failure> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (answer, waiting) = oneshot::channel();
         self.waiting.answers.lock().unwrap().insert(id, answer);
@@ -336,16 +379,19 @@ impl Client {
             self.waiting.answers.lock().unwrap().remove(&id);
             self.waiting.progress.lock().unwrap().remove(&token);
         };
-        if let Err(failure) = self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).await {
-            cleanup();
-            return Err(failure);
-        }
+        let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let sending = self.send(&message);
         let started = Instant::now();
         let mut deadline = started + timeout;
-        tokio::pin!(waiting);
+        let mut sent = false;
+        tokio::pin!(sending, waiting);
         let result = loop {
             let wait = deadline.min(started + total).saturating_duration_since(Instant::now());
             tokio::select! {
+                outcome = &mut sending, if !sent => match outcome {
+                    Ok(()) => sent = true,
+                    Err(failure) => break Err(failure),
+                },
                 answer = &mut waiting => break answer.unwrap_or(Err(Failure::Closed)),
                 Some(()) = progress.recv() => deadline = Instant::now() + timeout,
                 () = tokio::time::sleep(wait) => break Err(Failure::Timeout),
@@ -354,14 +400,18 @@ impl Client {
             }
         };
         cleanup();
-        if let Err(Failure::Timeout | Failure::Cancelled) = &result {
-            let _ = self.notify("notifications/cancelled", json!({ "requestId": id, "reason": result.as_ref().err().map(ToString::to_string) })).await;
+        if let Err(failure @ (Failure::Timeout | Failure::Cancelled)) = &result {
+            // As in the TypeScript SDK, the server hears of it without the caller waiting.
+            let (client, reason) = (self.clone(), failure.to_string());
+            tokio::spawn(async move {
+                let _ = client.notify("notifications/cancelled", json!({ "requestId": id, "reason": reason })).await;
+            });
         }
         result
     }
 
     /// The MCP handshake; the server's instructions are kept.
-    pub async fn initialize(&self, timeout: Duration) -> Result<(), Failure> {
+    pub async fn initialize(self: &Arc<Self>, timeout: Duration) -> Result<(), Failure> {
         let params = json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": { "name": "Rainy", "version": env!("CARGO_PKG_VERSION") } });
         let result = self.request("initialize", params, timeout, timeout, &CancellationToken::new()).await?;
         let version = result["protocolVersion"].as_str().unwrap_or_default();
@@ -372,20 +422,22 @@ impl Client {
             *held.lock().unwrap() = Some(version.to_owned());
         }
         *self.instructions.lock().unwrap() = result["instructions"].as_str().unwrap_or_default().to_owned();
-        self.notify("notifications/initialized", json!({})).await
+        self.send_within(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} }), timeout).await
     }
 
     pub fn instructions(&self) -> String {
         self.instructions.lock().unwrap().clone()
     }
 
-    /// Every tool the server lists, page by page.
-    pub async fn list_tools(&self, timeout: Duration) -> Result<Vec<Value>, Failure> {
+    /// Every tool the server lists, page by page, all pages within `timeout`.
+    pub async fn list_tools(self: &Arc<Self>, timeout: Duration) -> Result<Vec<Value>, Failure> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
+        let deadline = Instant::now() + timeout;
         for _ in 0..100 {
             let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
-            let result = self.request("tools/list", params, timeout, timeout, &CancellationToken::new()).await?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            let result = self.request("tools/list", params, left, left, &CancellationToken::new()).await?;
             tools.extend(result["tools"].as_array().cloned().unwrap_or_default());
             cursor = result["nextCursor"].as_str().filter(|next| !next.is_empty()).map(str::to_owned);
             if cursor.is_none() {
@@ -412,5 +464,53 @@ impl Client {
             crate::process::kill_tree(&mut child, Duration::from_secs(2)).await;
         }
         self.waiting.fail_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_silent_http_server_times_out_and_stops() {
+        // A server that takes requests and never answers them.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let client = Client::new(Outgoing::Http { client: http, url: format!("http://{address}/mcp"), headers: Vec::new(), session: Mutex::new(None), version: Mutex::new(None) }, None);
+        let started = Instant::now();
+        let cancel = CancellationToken::new();
+        let timed_out = client.request("tools/call", json!({}), Duration::from_millis(300), Duration::from_secs(5), &cancel).await;
+        assert!(matches!(timed_out, Err(Failure::Timeout)));
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            stop.cancel();
+        });
+        let cancelled = client.request("tools/call", json!({}), Duration::from_secs(60), Duration::from_secs(60), &cancel).await;
+        assert!(matches!(cancelled, Err(Failure::Cancelled)));
+        assert!(matches!(client.initialize(Duration::from_millis(300)).await, Err(Failure::Timeout)));
+        assert!(matches!(client.list_tools(Duration::from_millis(300)).await, Err(Failure::Timeout)));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn output_that_is_not_utf8_does_not_end_the_streams() {
+        let waiting = Waiting::default();
+        let (answer, mut answered) = oneshot::channel();
+        waiting.answers.lock().unwrap().insert(7, answer);
+        let (reply, _replies) = mpsc::unbounded_channel();
+        read_messages(&b"\xd6\xd0\xce\xc4\n{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n"[..], &waiting, &reply).await;
+        assert_eq!(answered.try_recv().unwrap().unwrap(), json!({ "ok": true }));
+        let kept: Stderr = Arc::default();
+        keep_errors(&b"\xd6\xd0\xce\xc4 failed\r\nlast line\n"[..], kept.clone(), "test".into()).await;
+        assert!(kept.lock().unwrap().ends_with("failed\nlast line\n"));
     }
 }
