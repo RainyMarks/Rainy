@@ -794,7 +794,10 @@ impl Session {
             let mut inner = self.inner.lock().unwrap();
             let last = last(&inner);
             let Some(run) = &mut inner.run else { return false };
-            let overflow = !run.aborted && !run.overflow_retried && last.as_ref().is_some_and(|(_, message)| context_overflow(message, resolved.model.context_window));
+            // Only a failed request is compacted and asked again (3.x); a reply that ended normally keeps the chat.
+            let overflow = !run.aborted
+                && !run.overflow_retried
+                && last.as_ref().is_some_and(|(_, message)| message.stop_reason == "error" && context_overflow(message, resolved.model.context_window));
             if overflow {
                 run.overflow_retried = true;
             }
