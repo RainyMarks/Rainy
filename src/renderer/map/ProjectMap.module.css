@@ -45,6 +45,14 @@
   color: var(--rainy-alias-label-secondary);
   text-align: center;
 }
+.failureDetail {
+  max-width: min(560px, 100%);
+  color: var(--rainy-alias-label-tertiary);
+  font-family: var(--rainy-font-family-code);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 
 .header {
   flex: none;

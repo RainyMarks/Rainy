@@ -183,20 +183,15 @@ function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; work
 
 /** The project map of a workspace, as the 3.x workbench shows it in its center. */
 function MapView({ workspaceId }: { workspaceId: WorkspaceId }): JSX.Element {
-  const [workspace, setWorkspace] = useState<IdeWorkspace | null>(null)
   const [sessionId, setSessionId] = useState(latestSession)
   useEffect(() => {
-    let cancelled = false
-    void callIde({ op: 'workspaces.list' }).then((list) => {
-      if (!cancelled) setWorkspace((list as readonly IdeWorkspace[]).find(item => item.workspaceId === workspaceId) ?? null)
-    }, () => undefined)
     receiveSession = setSessionId
-    return () => { cancelled = true; receiveSession = undefined }
-  }, [workspaceId])
+    return () => { receiveSession = undefined }
+  }, [])
   const changes = useChanges(sessionId)
   const activity = useAiActivity()
   return <Suspense fallback={null}>
-    <ProjectMapView workspace={workspace} visible changes={changes} activity={activity}
+    <ProjectMapView workspaceId={workspaceId} visible changes={changes} activity={activity}
       openFile={(key) => { post({ type: 'open-key', key }) }} ask={(text) => { post({ type: 'ask', text }) }} />
   </Suspense>
 }

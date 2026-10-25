@@ -4,7 +4,7 @@
  */
 import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent } from 'react'
 import clsx from 'clsx'
-import type { IdeWorkspace } from '../../shared/ide-files-protocol.ts'
+import type { IdeWorkspace, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { mapView, nodeForPath, parentOf, type MapNode, type MapView } from '../../shared/map-graph.ts'
 import type { MapFileKind, ProjectMap } from '../../shared/map-protocol.ts'
 import type { ChatChange } from '../../shared/rpc.ts'
@@ -18,13 +18,15 @@ import { explainMap, loadMap, useProjectMap } from './map-store.ts'
 import { aiMarks, type AiMark } from './marks.ts'
 import { useMapT, type MapMessageKey } from './messages.ts'
 import { layoutTreemap } from './treemap.ts'
+import { useWorkspaceLookup } from './workspace-lookup.ts'
 import css from './ProjectMap.module.css'
 
 type Translate = ReturnType<typeof useMapT>
 
 /** What the map needs from the window. */
 export interface ProjectMapProps {
-  readonly workspace: IdeWorkspace | null
+  /** The project; the map finds it among the Host's projects. */
+  readonly workspaceId: WorkspaceId
   /** The map is on screen; it loads and follows changes only then. */
   readonly visible: boolean
   /** Files the agent changed in the current chat and the user has not reviewed. */
@@ -474,9 +476,11 @@ function ScopeBar({ scope, onJump, onBack, children, t }: {
  * @param props Project, visibility, the agents' changes and activity, and window actions.
  * @returns The map.
  */
-export function ProjectMapView({ workspace, visible, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
+export function ProjectMapView({ workspaceId, visible, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
   const t = useMapT()
   const locale = useLocale()
+  const lookup = useWorkspaceLookup(workspaceId)
+  const workspace = lookup.status === 'ready' ? lookup.workspace : null
   const state = useProjectMap(workspace?.workspaceId ?? null, visible)
   const [mode, setMode] = useState<'architecture' | 'files'>('architecture')
   const [scope, setScope] = useState('')
@@ -503,16 +507,20 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
     }
     return result
   }, [view, marks])
-  if (workspace === null) return <div className={css.root}><div className={css.empty}>{t('mapNoProject')}</div></div>
-  if (map === undefined || view === undefined) {
+  if (workspace === null || map === undefined || view === undefined) {
+    const failure = lookup.status === 'failed' ? { title: t('mapProjectFailed'), message: lookup.message, retry: lookup.retry }
+      : workspace !== null && state.error !== undefined ? { title: t('mapFailed'), message: state.error, retry: () => { loadMap(workspace.workspaceId, true) } }
+        : undefined
     return (
       <div className={css.root} data-project-map>
-        <div className={css.empty} role="status">
-          {state.error === undefined ? t('mapLoading') : <>
-            <span>{t('mapFailed', { message: state.error })}</span>
-            <Button size="sm" variant="outline" onClick={() => { loadMap(workspace.workspaceId, true) }}>{t('mapRetry')}</Button>
-          </>}
-        </div>
+        {failure !== undefined
+          ? <div className={css.empty} role="alert">
+            <span>{failure.title}</span>
+            {/* The Host's or the connection's own words, which may be English: a detail under the message, not the message. */}
+            <span className={css.failureDetail}>{failure.message}</span>
+            <Button size="sm" variant="outline" onClick={failure.retry}>{t('mapRetry')}</Button>
+          </div>
+          : <div className={css.empty} role="status">{t(lookup.status === 'missing' ? 'mapProjectMissing' : 'mapLoading')}</div>}
       </div>
     )
   }
