@@ -38,6 +38,21 @@ pub fn trf(cx: &App, key: &str, vars: &[(&str, &dyn std::fmt::Display)]) -> Shar
     i18n::format(locale(cx), key, vars).into()
 }
 
+/// A Host failure as a notification in the interface language: its meaning, and the system's own words below it
+/// when they were replaced (`i18n::describe_error`).
+pub fn error_notification(cx: &App, error: &rainy_protocol::RpcError) -> gpui_kit::component::notification::Notification {
+    use gpui_kit::component::notification::Notification;
+    match i18n::describe_error(locale(cx), error) {
+        (text, Some(detail)) => Notification::error(detail).title(text),
+        (text, None) => Notification::error(text),
+    }
+}
+
+/// A Host failure as one text in the interface language, the system's own words on the next line.
+pub fn error_text(cx: &App, error: &rainy_protocol::RpcError) -> SharedString {
+    i18n::error_text(locale(cx), error).into()
+}
+
 /// Send a question to the selected chat, or a new one in the project, and show the chat (3.x `onAsk`).
 pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::ui::ide::ShowChat), cx);

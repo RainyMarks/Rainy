@@ -24,6 +24,7 @@ use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use smol::net::TcpStream;
 
 use crate::control::HostReady;
+use crate::locale::localized;
 
 /// Whether the interface is connected to the Host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +60,8 @@ pub struct RpcClient {
 }
 
 fn disconnected() -> RpcError {
-    RpcError { code: "disconnected".into(), message: "The connection to Rainy was lost, so this action did not finish.".into(), data: None }
+    let message = localized("与 Rainy 的连接已断开，这次操作没有完成。", "The connection to Rainy was lost, so this action did not finish.");
+    RpcError { code: "disconnected".into(), message, data: None }
 }
 
 impl RpcClient {
@@ -112,7 +114,7 @@ impl RpcClient {
 
     /// GET a Host route with the session cookie, such as `/rainy/ide/raw?…`; returns the status and body.
     pub async fn get(&self, path: &str) -> Result<(u16, Vec<u8>)> {
-        let cookie = self.inner.cookie.lock().unwrap().clone().ok_or_else(|| anyhow!("Not connected to the Host."))?;
+        let cookie = self.inner.cookie.lock().unwrap().clone().ok_or_else(|| anyhow!(localized("尚未连接到执行后端。", "Not connected to the Host.")))?;
         let response = http_get(self.inner.port, path, Some(&cookie)).await?;
         Ok((response.status, response.body))
     }

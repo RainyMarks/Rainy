@@ -73,7 +73,7 @@ impl FolderBrowser {
                         this.listing = Some(listing);
                         this.error = None;
                     }
-                    Err(error) => this.error = Some(error.message.into()),
+                    Err(error) => this.error = Some(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });

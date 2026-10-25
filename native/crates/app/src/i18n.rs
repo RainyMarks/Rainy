@@ -99,6 +99,8 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.defaultAppsOpen", "打开系统设置…", "Open system settings…"),
     ("native.defaultAppsDescription", "Windows 只允许你自己选择默认应用：在打开的系统设置里把 .md 等类型改为 Rainy；也可以右键文件，选择“打开方式 → 选择其他应用”，选 Rainy 并点“始终”", "Windows lets only you choose default apps: in the settings that open, set Rainy for .md and other types. You can also right-click a file, choose \"Open with → Choose another app\", pick Rainy and click \"Always\""),
     ("native.shellUnavailable", "只有安装版 Rainy 可以修改这些设置", "Only an installed Rainy can change these settings"),
+    ("native.shellFailed", "资源管理器集成没有更改", "Explorer integration was not changed"),
+    ("native.sshAskpassFailed", "Rainy 无法启动用于回答 SSH 验证提问的服务。", "Rainy could not start the service that answers SSH questions."),
     ("native.startingWsl", "正在启动 WSL · {distro}…", "Starting WSL · {distro}…"),
     ("native.linuxDownloading", "正在下载 Linux 运行环境 {done} / {total} MB", "Downloading the Linux runtime {done} / {total} MB"),
     ("native.linuxDownloadFailed", "Linux 运行环境下载失败", "The Linux runtime could not be downloaded."),
@@ -175,6 +177,7 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.dontQuit", "取消退出", "Do not quit"),
     // The diagnostics export in src/main/main.ts
     ("native.diagnosticsSaveTitle", "导出诊断信息", "Export diagnostics"),
+    ("native.diagnosticsSaving", "无法保存 {path}", "Could not save {path}"),
     // Settings → Skills & MCP → Import JSON, from the 3.9.2 src/renderer/settings/messages.ts
     ("native.mcpImport", "从 JSON 导入", "Import JSON"),
     ("native.mcpImportTitle", "从 JSON 导入 MCP 服务器", "Import MCP servers from JSON"),
@@ -353,6 +356,61 @@ pub fn format(locale: Locale, key: &str, vars: &[(&str, &dyn std::fmt::Display)]
     out
 }
 
+/// The meaning of the Host's failure codes, for messages it could not write in the interface language (3.x
+/// `describeIdeError`).
+const ERROR_KEYS: &[(&str, &str)] = &[
+    ("not-found", "ide.ideMissingPath"),
+    ("invalid-path", "ide.ideInvalidPath"),
+    ("outside-workspace", "ide.ideOutsideRoot"),
+    ("workspace-unavailable", "ide.ideUnavailableRoot"),
+    ("unsaved-root", "ide.ideUnsavedRoot"),
+    ("root-overlap", "ide.ideRootOverlap"),
+    ("already-exists", "ide.ideAlreadyExists"),
+    ("not-file", "ide.ideNotFile"),
+    ("not-directory", "ide.ideNotDirectory"),
+    ("read-only", "ide.ideReadOnly"),
+    ("too-large", "ide.ideTooLarge"),
+    ("version-conflict", "ide.ideVersionConflict"),
+    ("permission-denied", "ide.idePermissionDenied"),
+    ("workspace-not-found", "ide.ideWorkspaceNotFound"),
+    ("revision-conflict", "ide.ideRecoveryConflict"),
+    ("state-too-large", "ide.ideStateTooLarge"),
+    ("confirmation-required", "ide.ideConfirmationRequired"),
+    ("aborted", "ide.ideAborted"),
+    ("closed", "ide.ideClosed"),
+    ("diff-unavailable", "ide.ideDiffUnavailable"),
+    ("io-error", "ide.ideIoError"),
+];
+
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{3000}'..='\u{303f}' | '\u{3400}'..='\u{9fff}' | '\u{ff00}'..='\u{ffef}')
+}
+
+/// A Host failure in the interface language: what to show, and the Host's own words when they are kept as detail.
+/// The Host writes most messages in the chosen language; one taken from the system ("No such file or directory (os
+/// error 2)", on WSL and SSH always English) or from code without a Chinese text is replaced by the meaning of its
+/// code. A lost connection always reads the same.
+pub fn describe_error(locale: Locale, error: &rainy_protocol::RpcError) -> (String, Option<String>) {
+    if error.code == "disconnected" {
+        return (text(locale, "app.connectionLost").to_owned(), None);
+    }
+    let raw = error.message.trim();
+    let untranslated = raw.contains("(os error") || (locale == Locale::Zh && !raw.chars().any(is_cjk));
+    match ERROR_KEYS.iter().find(|(code, _)| *code == error.code) {
+        Some((_, key)) if untranslated || raw.is_empty() => (text(locale, key).to_owned(), (!raw.is_empty()).then(|| raw.to_owned())),
+        _ if raw.is_empty() => (text(locale, "chat.errorTitle").to_owned(), None),
+        _ => (raw.to_owned(), None),
+    }
+}
+
+/// [`describe_error`] as one text, the detail on its own line.
+pub fn error_text(locale: Locale, error: &rainy_protocol::RpcError) -> String {
+    match describe_error(locale, error) {
+        (text, Some(detail)) => format!("{text}\n{detail}"),
+        (text, None) => text,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ::core::prelude::v1::test;
@@ -366,6 +424,23 @@ mod tests {
         assert_eq!(format(Locale::Zh, "chat.exitCode", &[("code", &3)]), "退出码 3");
         assert_eq!(format(Locale::Zh, "chat.toolRead", &[]), "读取 {path}");
         assert_eq!(text(Locale::Zh, "chat.noSuchKey"), "chat.noSuchKey");
+    }
+
+    #[test]
+    fn describes_host_failures() {
+        let error = |code: &str, message: &str| rainy_protocol::RpcError { code: code.into(), message: message.into(), data: None };
+        let raw = error("not-found", "No such file or directory (os error 2)");
+        assert_eq!(describe_error(Locale::Zh, &raw), (text(Locale::Zh, "ide.ideMissingPath").to_owned(), Some(raw.message.clone())));
+        assert_eq!(describe_error(Locale::En, &raw).0, text(Locale::En, "ide.ideMissingPath"));
+        // The Host's own Chinese text stays.
+        assert_eq!(describe_error(Locale::Zh, &error("not-found", "对话不存在。")), ("对话不存在。".to_owned(), None));
+        assert_eq!(describe_error(Locale::En, &error("not-found", "This chat does not exist.")).0, "This chat does not exist.");
+        assert_eq!(describe_error(Locale::Zh, &error("disconnected", "The execution backend is not connected.")).0, text(Locale::Zh, "app.connectionLost"));
+        assert_eq!(
+            error_text(Locale::Zh, &error("permission-denied", "Permission denied (os error 13)")),
+            format!("{}\nPermission denied (os error 13)", text(Locale::Zh, "ide.idePermissionDenied"))
+        );
+        assert_eq!(describe_error(Locale::Zh, &error("execution-error", "boom")).0, "boom");
     }
 
     #[test]

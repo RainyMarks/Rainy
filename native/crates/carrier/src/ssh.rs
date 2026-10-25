@@ -283,7 +283,7 @@ pub fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("Starting ssh")?;
+        .with_context(|| localized("无法启动 ssh", "Starting ssh"))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -425,6 +425,15 @@ pub enum ServerRuntime {
     Unsupported(String),
 }
 
+/// The context of a runtime file of this installation that could not be read or opened.
+fn reading(path: &Path) -> String {
+    localized(&format!("无法读取 {}", path.display()), &format!("Reading {}", path.display()))
+}
+
+fn opening(path: &Path) -> String {
+    localized(&format!("无法打开 {}", path.display()), &format!("Opening {}", path.display()))
+}
+
 fn installer_answer(stdout: &str) -> Result<ServerRuntime> {
     let line = stdout.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
     let value: Value = serde_json::from_str(line.trim())
@@ -451,8 +460,8 @@ fn installer(
     input: Option<Box<dyn Read + Send>>,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<std::result::Result<ServerRuntime, RunOutput>> {
-    let script = std::fs::read_to_string(&files.installer).with_context(|| format!("Reading {}", files.installer.display()))?;
-    let metadata = std::fs::read_to_string(&files.metadata).with_context(|| format!("Reading {}", files.metadata.display()))?;
+    let script = std::fs::read_to_string(&files.installer).with_context(|| reading(&files.installer))?;
+    let metadata = std::fs::read_to_string(&files.metadata).with_context(|| reading(&files.metadata))?;
     let mut args = vec![mode, metadata.as_str()];
     args.extend_from_slice(extra);
     let output = run(target, &remote_python(&script, &args), env, input, on_line, None)?;
@@ -485,7 +494,7 @@ pub fn fetch_runtime(
     log: &(dyn Fn(&str) + Sync),
 ) -> Result<std::result::Result<ServerRuntime, RunOutput>> {
     let name = name(target);
-    let app = std::fs::File::open(&files.app).with_context(|| format!("Opening {}", files.app.display()))?;
+    let app = std::fs::File::open(&files.app).with_context(|| opening(&files.app))?;
     let pieces = pieces.to_string();
     installer(target, files, "--fetch", &[&pieces], env, Some(Box::new(app)), &mut progress_lines(&name, progress, log))
 }
@@ -500,9 +509,9 @@ pub fn receive_runtime(
     log: &(dyn Fn(&str) + Sync),
 ) -> Result<std::result::Result<ServerRuntime, RunOutput>> {
     let name = name(target);
-    let size = std::fs::metadata(&files.app)?.len() + std::fs::metadata(base).with_context(|| format!("Reading {}", base.display()))?.len();
+    let size = std::fs::metadata(&files.app)?.len() + std::fs::metadata(base).with_context(|| reading(base))?.len();
     // The application layer first, then the base.
-    let chain = std::fs::File::open(&files.app)?.chain(std::fs::File::open(base).with_context(|| format!("Opening {}", base.display()))?);
+    let chain = std::fs::File::open(&files.app)?.chain(std::fs::File::open(base).with_context(|| opening(base))?);
     // The upload is read on another thread; its counts come back here to be reported.
     let (tx, rx) = mpsc::channel::<(u64, u64)>();
     let counted = Counted { inner: chain, done: 0, total: size, report: Box::new(move |done, total| {
@@ -629,11 +638,11 @@ mod tests {
 
     #[test]
     fn explains_failures() {
+        // The language stays the default one: other tests read it at the same time.
         let target = Destination { destination: "box".into(), port: None };
-        crate::locale::set_chinese(false);
         let message = failure(&target, Some(255), "Warning: Permanently added x\nuser@box: Permission denied (publickey).").to_string();
-        assert!(message.starts_with("box refused the login."));
+        assert!(message.starts_with(&crate::locale::localized("box 拒绝了登录。", "box refused the login.")), "{message}");
         assert!(message.ends_with("Permission denied (publickey)."));
-        crate::locale::set_chinese(true);
+        assert!(!message.contains("Permanently added"));
     }
 }

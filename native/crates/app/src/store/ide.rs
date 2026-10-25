@@ -16,6 +16,7 @@ use rainy_protocol::{
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
+use crate::i18n::Locale;
 use crate::store::Store;
 
 const PREFIX: char = '\0';
@@ -284,8 +285,10 @@ impl EventEmitter<IdeEvent> for Ide {}
 struct GlobalIde(Entity<Ide>);
 impl Global for GlobalIde {}
 
-fn ide_error(error: RpcError) -> SharedString {
-    error.message.into()
+/// A Host failure as the project view shows it: in the interface language, with a raw system message ("No such file or
+/// directory (os error 2)", as WSL and SSH report it) kept on the next line.
+fn ide_error(locale: Locale, error: &RpcError) -> SharedString {
+    crate::i18n::error_text(locale, error).into()
 }
 
 impl Ide {
@@ -349,6 +352,11 @@ impl Ide {
         self.workspace.as_ref().map(|workspace| workspace.workspace_id.clone())
     }
 
+    /// The interface language, for failures the Host reports.
+    fn locale(&self, cx: &App) -> Locale {
+        self.store.read(cx).locale()
+    }
+
     /// The request fields locating a key: the workspace, the root of an attached directory, and the path.
     fn location(&self, key: &str) -> Map<String, Value> {
         let (root, path) = split_key(key);
@@ -384,7 +392,7 @@ impl Ide {
             let shown = this.update_in(cx, |this, window, cx| {
                 match list {
                     Ok(workspaces) => this.workspaces = workspaces,
-                    Err(error) => this.error = Some(ide_error(error)),
+                    Err(error) => this.error = Some(ide_error(this.locale(cx), &error)),
                 }
                 let selected = selection.ok().and_then(|selection| selection.workspace_id);
                 let shown = selected
@@ -421,7 +429,7 @@ impl Ide {
                     Some(this.select_task(workspace, window, cx))
                 }
                 Err(error) => {
-                    this.error = Some(ide_error(error));
+                    this.error = Some(ide_error(this.locale(cx), &error));
                     cx.notify();
                     None
                 }
@@ -585,7 +593,7 @@ impl Ide {
                         entries.sort_by(|a, b| b.is_directory().cmp(&a.is_directory()).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
                         Listing { entries, error: None }
                     }
-                    Err(error) => Listing { entries: Vec::new(), error: Some(ide_error(error)) },
+                    Err(error) => Listing { entries: Vec::new(), error: Some(ide_error(this.locale(cx), &error)) },
                 };
                 this.listings.insert(key, listing);
                 cx.emit(IdeEvent::FilesChanged);
@@ -651,7 +659,7 @@ impl Ide {
                             this.active = this.tabs.last().cloned();
                             cx.emit(IdeEvent::ActiveChanged);
                         }
-                        this.error = Some(ide_error(error));
+                        this.error = Some(ide_error(this.locale(cx), &error));
                         cx.notify();
                     }
                 }
@@ -773,7 +781,7 @@ impl Ide {
                             Err(error) => tab.error = Some(error.to_string().into()),
                         }
                     }
-                    Err(error) => tab.error = Some(ide_error(error)),
+                    Err(error) => tab.error = Some(ide_error(this.locale(cx), &error)),
                 }
                 this.diffs.insert(key, tab);
                 cx.notify();
@@ -1135,7 +1143,7 @@ impl Ide {
                             file.disk_version = error.data.as_ref().and_then(|data| data["currentVersion"].as_str()).map(str::to_owned);
                         }
                         use gpui_kit::component::WindowExt as _;
-                        window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx);
+                        window.push_notification(crate::ui::error_notification(cx, &error), cx);
                         cx.notify();
                         false
                     }
@@ -1246,11 +1254,11 @@ impl Ide {
                     Ok(_) => {}
                     Err(error) => {
                         use gpui_kit::component::WindowExt as _;
-                        let message = match error.code.as_str() {
-                            "already-exists" => crate::ui::tr(cx, "ide.ideAlreadyExists").to_string(),
-                            _ => error.message,
+                        let notification = match error.code.as_str() {
+                            "already-exists" => gpui_kit::component::notification::Notification::error(crate::ui::tr(cx, "ide.ideAlreadyExists")),
+                            _ => crate::ui::error_notification(cx, &error),
                         };
-                        window.push_notification(gpui_kit::component::notification::Notification::error(message), cx);
+                        window.push_notification(notification, cx);
                     }
                 }
                 if shown {
@@ -1355,7 +1363,7 @@ impl Ide {
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(workspace) => this.replace_workspace(workspace, window, cx),
                 Err(error) => {
-                    this.error = Some(ide_error(error));
+                    this.error = Some(ide_error(this.locale(cx), &error));
                     cx.notify();
                 }
             });
@@ -1388,7 +1396,7 @@ impl Ide {
                     this.schedule_state_save(cx);
                 }
                 Err(error) => {
-                    this.error = Some(ide_error(error));
+                    this.error = Some(ide_error(this.locale(cx), &error));
                     cx.notify();
                 }
             });
@@ -1433,7 +1441,7 @@ impl Ide {
                             cx.emit(IdeEvent::WorkspaceChanged);
                         }
                     }
-                    Err(error) => this.error = Some(ide_error(error)),
+                    Err(error) => this.error = Some(ide_error(this.locale(cx), &error)),
                 }
                 cx.notify();
             });
@@ -1547,18 +1555,20 @@ impl Ide {
     /// into an update (3.x `rainy:flush-workbench`). A save that lost to another window's is written again on top of it.
     pub fn flush_now(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
         self.save_task = None;
+        let locale = self.locale(cx);
+        let closed = move |_| crate::i18n::text(locale, "ide.ideClosed").to_owned();
         cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
             let mut attempts = 0;
             loop {
-                let request = this.update(cx, |this, cx| this.state_request(cx)).map_err(|_| "The editor is closed.".to_owned())?;
+                let request = this.update(cx, |this, cx| this.state_request(cx)).map_err(closed)?;
                 let Some(request) = request else { return Ok(()) };
                 let result = request.await;
-                let saved = this.update(cx, |this, _| this.state_saved(result)).map_err(|_| "The editor is closed.".to_owned())?;
+                let saved = this.update(cx, |this, _| this.state_saved(result)).map_err(closed)?;
                 attempts += 1;
                 match saved {
                     Ok(()) => return Ok(()),
                     Err((error, true)) if attempts < 2 => log::info!("The editor state is saved again after a conflict: {}", error.message),
-                    Err((error, _)) => return Err(error.message),
+                    Err((error, _)) => return Err(crate::i18n::error_text(locale, &error)),
                 }
             }
         })

@@ -402,7 +402,9 @@ impl Store {
                         store.schedule_shell(cx);
                         store.schedule_update_check(cx);
                     }
-                    (Err(error), _) | (_, Err(error)) => store.phase = Phase::Failed(error.message.clone().into()),
+                    (Err(error), _) | (_, Err(error)) => {
+                        store.phase = Phase::Failed(crate::i18n::error_text(boot::saved_locale(&store.paths.user_data), error).into());
+                    }
                 }
                 if let Ok(info) = info {
                     store.info = Some(info);
@@ -570,10 +572,11 @@ impl Store {
     /// Call a Host method; fails at once while the Host is not connected.
     pub fn call(&self, method: &str, params: Value) -> impl Future<Output = Result<Value, RpcError>> + use<> {
         let call = self.rpc.as_ref().map(|rpc| rpc.call(method, params));
+        let disconnected = crate::i18n::text(self.locale(), "app.connectionLost");
         async move {
             match call {
                 Some(call) => call.await,
-                None => Err(RpcError { code: "disconnected".into(), message: "The execution backend is not connected.".into(), data: None }),
+                None => Err(RpcError { code: "disconnected".into(), message: disconnected.into(), data: None }),
             }
         }
     }

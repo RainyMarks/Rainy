@@ -14,7 +14,13 @@ use flate2::Compression;
 use flate2::write::DeflateEncoder;
 use regex::Regex;
 
+use crate::locale::localized;
 use crate::logging;
+
+/// The context of a file that could not be read, as the export failure shows it.
+fn reading(path: &Path) -> String {
+    localized(&format!("无法读取 {}", path.display()), &format!("Reading {}", path.display()))
+}
 
 /// Rainy's own log and the one before it, and the Host's log, are cut to their last 4 MiB.
 const LOG_BYTES: u64 = 4 * 1024 * 1024;
@@ -164,7 +170,7 @@ pub fn standard_files(user_data: &Path) -> Result<Vec<DiagnosticFile>> {
         file("desktop.json", user_data.join("desktop.json"), SETTINGS_BYTES, true),
     ];
     let reports = user_data.join("WebView2").join("EBWebView").join("Crashpad").join("reports");
-    let dumps = newest_files(std::slice::from_ref(&reports), ".dmp", DUMPS).with_context(|| format!("Reading {}", reports.display()))?;
+    let dumps = newest_files(std::slice::from_ref(&reports), ".dmp", DUMPS).with_context(|| reading(&reports))?;
     for dump in dumps {
         let name = format!("crashes/{}", dump.file_name().unwrap_or_default().to_string_lossy());
         files.push(file(&name, dump, DUMP_BYTES, false));
@@ -188,7 +194,7 @@ pub fn export(target: &Path, about: &[(String, String)], files: &[DiagnosticFile
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
-    written.with_context(|| format!("Saving {}", target.display()))
+    written.with_context(|| localized(&format!("无法保存 {}", target.display()), &format!("Saving {}", target.display())))
 }
 
 fn write(path: &Path, about: &[(String, String)], files: &[DiagnosticFile], account: &Account) -> Result<Vec<String>> {
@@ -198,7 +204,7 @@ fn write(path: &Path, about: &[(String, String)], files: &[DiagnosticFile], acco
     let lines: String = about.iter().map(|(key, value)| format!("{key}: {}\n", scrub(value, account))).collect();
     zip.add("about.txt", lines.as_bytes())?;
     for file in files {
-        let Some(data) = tail(&file.path, file.max_bytes).with_context(|| format!("Reading {}", file.path.display()))? else { continue };
+        let Some(data) = tail(&file.path, file.max_bytes).with_context(|| reading(&file.path))? else { continue };
         if file.text {
             zip.add(&file.name, scrub(&String::from_utf8_lossy(&data), account).as_bytes())?;
         } else {
@@ -740,7 +746,9 @@ mod tests {
         let target = folder.path().join("out.zip");
         let file = DiagnosticFile { name: "logs/host.log".to_owned(), path: unreadable, max_bytes: 10, text: true };
         let error = format!("{:#}", export(&target, &[], &[file], &alice()).unwrap_err());
-        assert!(error.starts_with(&format!("Saving {}: Reading ", target.display())), "{error}");
+        // The zip first, then the file, in either interface language.
+        let at = |text: &str| error.find(text).unwrap_or_else(|| panic!("{text} in {error}"));
+        assert!(at(&target.display().to_string()) < at("a folder.log"), "{error}");
         assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 1);
     }
 
@@ -801,7 +809,7 @@ mod tests {
         std::fs::create_dir_all(&crashpad).unwrap();
         std::fs::write(crashpad.join("reports"), "not a folder").unwrap();
         let error = format!("{:#}", standard_files(folder.path()).unwrap_err());
-        assert!(error.starts_with(&format!("Reading {}: ", crashpad.join("reports").display())), "{error}");
+        assert!(error.contains(&format!("{}: ", crashpad.join("reports").display())), "{error}");
     }
 
     #[cfg(windows)]

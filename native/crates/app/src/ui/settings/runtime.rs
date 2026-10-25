@@ -382,8 +382,8 @@ impl RuntimePage {
                     }
                     Ok(Ok(_)) => {}
                     Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                    Err(error) if reading => this.error = Some(error.message.into()),
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) if reading => this.error = Some(crate::ui::error_text(cx, &error)),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 cx.notify();
             });

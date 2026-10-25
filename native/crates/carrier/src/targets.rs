@@ -10,6 +10,8 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::locale::localized;
+
 /// One destination the Host runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -63,9 +65,10 @@ impl ExecutionTarget {
 /// Read `desktop.json`; a missing file is empty.
 pub fn read_preferences(path: &Path) -> Result<Map<String, Value>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("{} is not a JSON object", path.display())),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .with_context(|| localized(&format!("{} 不是有效的 JSON 对象", path.display()), &format!("{} is not a JSON object", path.display()))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-        Err(error) => Err(error).with_context(|| format!("Reading {}", path.display())),
+        Err(error) => Err(error).with_context(|| localized(&format!("无法读取 {}", path.display()), &format!("Reading {}", path.display()))),
     }
 }
 

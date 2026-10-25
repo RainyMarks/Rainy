@@ -310,7 +310,7 @@ impl ExtensionsPage {
                         this.refresh_preview(cx);
                     }
                     Ok(Err(error)) => this.error = Some(error.to_string().into()),
-                    Err(error) => this.error = Some(error.message.into()),
+                    Err(error) => this.error = Some(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });
@@ -333,7 +333,7 @@ impl ExtensionsPage {
                         done(this, window, cx);
                     }
                     Ok(Err(error)) => window.push_notification(Notification::error(error.to_string()), cx),
-                    Err(error) => window.push_notification(Notification::error(error.message), cx),
+                    Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 cx.notify();
             });
@@ -523,7 +523,7 @@ impl ExtensionsPage {
                         continue;
                     }
                     Ok(Err(error)) => error.to_string(),
-                    Err(error) => error.message,
+                    Err(error) => cx.update(|_, cx| crate::ui::error_text(cx, &error).to_string()).unwrap_or(error.message),
                 };
                 failure = Some((server.name, done, error));
                 break;
@@ -889,7 +889,8 @@ impl ExtensionsPage {
         let theme = cx.theme().clone();
         let busy = self.busy;
         let muted = |text: SharedString| div().text_xs().text_color(theme.muted_foreground).child(text);
-        let warning = |text: SharedString| div().text_xs().text_color(theme.warning).child(text);
+        let warning_color = crate::theme::warning_text(cx);
+        let warning = |text: SharedString| div().text_xs().text_color(warning_color).child(text);
         let chosen = self.chosen().len();
         let mut panel = v_flex()
             .gap_2()
@@ -968,6 +969,7 @@ impl ExtensionsPage {
         let env = keys(&server.env).map(|keys| trf(cx, "native.mcpImportEnv", &[("keys", &keys)]));
         let headers = keys(&server.headers).map(|keys| trf(cx, "native.mcpImportHeaders", &[("keys", &keys)]));
         let notes: Vec<SharedString> = entry.notes.iter().map(|note| message_text(cx, note)).collect();
+        let warning = crate::theme::warning_text(cx);
         let include = trf(cx, "native.mcpImportInclude", &[("name", &server.name)]);
         v_flex()
             .gap_0p5()
@@ -997,7 +999,7 @@ impl ExtensionsPage {
             .child(div().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(line))
             .when_some(env, |this, env| this.child(div().text_xs().text_color(theme.muted_foreground).child(env)))
             .when_some(headers, |this, headers| this.child(div().text_xs().text_color(theme.muted_foreground).child(headers)))
-            .children(notes.into_iter().map(|note| div().text_xs().text_color(theme.warning).child(note)))
+            .children(notes.into_iter().map(|note| div().text_xs().text_color(warning).child(note)))
             .into_any_element()
     }
 

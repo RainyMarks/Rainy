@@ -113,8 +113,9 @@ fn about(known: &Known) -> Vec<(String, String)> {
 }
 
 fn export(target: &Path, known: &Known) -> anyhow::Result<()> {
+    let locale = crate::i18n::Locale::from_code(&known.locale);
     diagnostics::standard_files(&known.user_data)
-        .with_context(|| format!("Saving {}", target.display()))
+        .with_context(|| crate::i18n::format(locale, "native.diagnosticsSaving", &[("path", &target.display())]))
         .and_then(|files| diagnostics::export(target, &about(known), &files, &Account::current()))
         .inspect_err(|error| log::warn!("Diagnostics were not exported: {error:#}"))?;
     log::info!("Diagnostics exported to {}", target.display());
@@ -181,11 +182,15 @@ mod tests {
         let crashpad = folder.path().join("WebView2").join("EBWebView").join("Crashpad");
         std::fs::create_dir_all(&crashpad).unwrap();
         std::fs::write(crashpad.join("reports"), "not a folder").unwrap();
-        let known = Known { user_data: folder.path().to_owned(), installed: false, host: None, node: None, target: None, locale: "en".to_owned() };
         let target = folder.path().join("Rainy-diagnostics.zip");
-        let error = format!("{:#}", export(&target, &known).unwrap_err());
-        assert!(error.starts_with(&format!("Saving {}: Reading {}: ", target.display(), crashpad.join("reports").display())), "{error}");
-        assert!(!target.exists());
+        for (code, saving) in [("en", "Could not save"), ("zh", "无法保存")] {
+            let known = Known { user_data: folder.path().to_owned(), installed: false, host: None, node: None, target: None, locale: code.to_owned() };
+            let error = format!("{:#}", export(&target, &known).unwrap_err());
+            // The carrier names the folder in the language it was last told.
+            assert!(error.starts_with(&format!("{saving} {}: ", target.display())), "{error}");
+            assert!(error.contains(&format!("{}: ", crashpad.join("reports").display())), "{error}");
+            assert!(!target.exists());
+        }
     }
 
     #[test]

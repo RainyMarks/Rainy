@@ -136,7 +136,7 @@ impl AiEdit {
                     }
                     // A stopped request ends quietly.
                     Err(_) if matches!(this.phase, Phase::Prompt) => {}
-                    Err(error) => this.phase = Phase::Failed(error.message.into()),
+                    Err(error) => this.phase = Phase::Failed(crate::ui::error_text(cx, &error)),
                 }
                 cx.notify();
             });

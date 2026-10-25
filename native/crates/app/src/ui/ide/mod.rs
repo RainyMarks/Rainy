@@ -121,7 +121,7 @@ fn pick_folder(attach: bool, window: &mut Window, cx: &mut App) {
                         Err(error) => {
                             let _ = cx.update(|window, cx| {
                                 use gpui_kit::component::WindowExt as _;
-                                window.push_notification(gpui_kit::component::notification::Notification::error(error.to_string()), cx);
+                                window.push_notification(gpui_kit::component::notification::Notification::error(error.to_string()).title(tr(cx, "ide.ideWslPathFailed")), cx);
                             });
                             return;
                         }
