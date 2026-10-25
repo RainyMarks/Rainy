@@ -78,12 +78,16 @@ pub fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     ToolSpec { name: name.into(), description: description.into(), parameters }
 }
 
-/// A file's identity at one observation: device, file id, size and times, as the editor's file versions.
+/// A file's identity at one observation: device, file id, size and modification time, the editor's file version
+/// without its change time.
 pub type FileVersion = String;
 
-/// The current version of a file; `None` when it does not exist.
+/// The current version of a file; `None` when it does not exist. The change time is left out, as 3.x compared size,
+/// modification time and file id only: attributes or permissions changed alone (an indexer, a sync client, chmod)
+/// are no edit the chat must read first.
 pub fn version_of(path: &Path) -> Result<Option<FileVersion>, String> {
-    crate::ide::fs::stat(path).map(|info| info.map(|info| info.version)).map_err(|error| error.to_string())
+    let without_change_time = |version: String| version.rsplit_once(':').map_or_else(|| version.clone(), |(kept, _)| kept.to_owned());
+    crate::ide::fs::stat(path).map(|info| info.map(|info| without_change_time(info.version))).map_err(|error| error.to_string())
 }
 
 fn path_key(path: &Path) -> String {
@@ -242,5 +246,29 @@ pub fn test_context(cwd: &Path) -> ToolContext {
         on_file_touched: None,
         record_change: None,
         jobs: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_change_of_attributes_alone_keeps_the_version() {
+        let path = std::env::temp_dir().join(format!("rainy-version-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "one").unwrap();
+        let read = version_of(&path).unwrap().unwrap();
+        assert_eq!(read.split(':').count(), 4);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        assert_eq!(version_of(&path).unwrap().as_ref(), Some(&read));
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        std::fs::write(&path, "two").unwrap();
+        assert_ne!(version_of(&path).unwrap().as_ref(), Some(&read));
+        let _ = std::fs::remove_file(path);
     }
 }

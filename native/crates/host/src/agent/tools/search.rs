@@ -1,6 +1,8 @@
 //! `grep` and `glob`: content and file-name search, with ripgrep's walk (the `ignore` crate) and its regular
 //! expressions (the `regex` crate), in process. Both only read, so they never wait for approval.
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +26,12 @@ const MAX_RESULT_LIMIT: usize = 2000;
 const GLOB_SORT_LIMIT: usize = 5000;
 /// Longer lines are shown cut, as ripgrep's `--max-columns 500 --max-columns-preview` prints them.
 const MAX_COLUMNS: usize = 500;
+/// The start of a file that decides, as in ripgrep, whether it is binary data or UTF-16 text.
+const SNIFF_BYTES: usize = 8 * 1024;
+/// Longer lines are searched in their first part only, so a file without line breaks is never held whole in memory.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+/// Text read between checks for Stop and the search deadline.
+const CHECK_BYTES: usize = 256 * 1024;
 
 fn clamp_limit(limit: Option<f64>) -> usize {
     (limit.unwrap_or(DEFAULT_RESULT_LIMIT as f64).floor().max(1.0) as usize).min(MAX_RESULT_LIMIT)
@@ -70,6 +78,95 @@ fn preview(line: &str) -> String {
         end -= 1;
     }
     format!("{} [... omitted end of long line]", &line[..end])
+}
+
+/// A file's text for searching, or None when it cannot be opened or is binary data found by a walk. The first 8 KiB
+/// decide, as in ripgrep: UTF-16 with a byte order mark (PowerShell 5.1 output, .reg and .rc files) is decoded, a UTF-8
+/// byte order mark is dropped, and a NUL byte means binary data, searched up to the NUL only when the file was named.
+fn open_text(path: &Path, explicit: bool) -> Option<Box<dyn BufRead>> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = Vec::with_capacity(SNIFF_BYTES);
+    file.by_ref().take(SNIFF_BYTES as u64).read_to_end(&mut head).ok()?;
+    let utf16 = match head.get(..2) {
+        Some([0xff, 0xfe]) => Some(encoding_rs::UTF_16LE),
+        Some([0xfe, 0xff]) => Some(encoding_rs::UTF_16BE),
+        _ => None,
+    };
+    if let Some(encoding) = utf16 {
+        return Some(Box::new(BufReader::with_capacity(64 * 1024, Utf16Text::new(encoding, Cursor::new(head).chain(file)))));
+    }
+    if let Some(at) = head.iter().position(|byte| *byte == 0) {
+        if !explicit {
+            return None;
+        }
+        head.truncate(at);
+        return Some(Box::new(Cursor::new(head)));
+    }
+    let bom = if head.starts_with(&[0xef, 0xbb, 0xbf]) { 3 } else { 0 };
+    let mut head = Cursor::new(head);
+    head.set_position(bom);
+    Some(Box::new(BufReader::with_capacity(64 * 1024, head.chain(file))))
+}
+
+/// UTF-16 text read as UTF-8 a block at a time; the byte order mark is dropped and unpaired surrogates read as U+FFFD.
+struct Utf16Text<R> {
+    inner: R,
+    decoder: encoding_rs::Decoder,
+    input: Vec<u8>,
+    output: Vec<u8>,
+    position: usize,
+    done: bool,
+}
+
+impl<R: Read> Utf16Text<R> {
+    fn new(encoding: &'static encoding_rs::Encoding, inner: R) -> Self {
+        Self { inner, decoder: encoding.new_decoder_with_bom_removal(), input: vec![0; 32 * 1024], output: Vec::new(), position: 0, done: false }
+    }
+}
+
+impl<R: Read> Read for Utf16Text<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        while self.position == self.output.len() && !self.done {
+            let read = self.inner.read(&mut self.input)?;
+            self.done = read == 0;
+            // An output of the decoder's maximum length always takes the whole input.
+            self.output.resize(self.decoder.max_utf8_buffer_length(read).unwrap_or(4 * read + 16), 0);
+            let (_, _, written, _) = self.decoder.decode_to_utf8(&self.input[..read], &mut self.output, self.done);
+            self.output.truncate(written);
+            self.position = 0;
+        }
+        let count = buffer.len().min(self.output.len() - self.position);
+        buffer[..count].copy_from_slice(&self.output[self.position..self.position + count]);
+        self.position += count;
+        Ok(count)
+    }
+}
+
+/// Read the next line without its line feed into `line`, keeping at most `cap` bytes of it; false at the end of the text.
+fn next_line(reader: &mut dyn BufRead, line: &mut Vec<u8>, cap: usize) -> std::io::Result<bool> {
+    line.clear();
+    let mut started = false;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if available.is_empty() {
+            return Ok(started);
+        }
+        started = true;
+        let (piece, used, ended) = match available.iter().position(|byte| *byte == b'\n') {
+            Some(at) => (&available[..at], at + 1, true),
+            None => (available, available.len(), false),
+        };
+        let room = cap.saturating_sub(line.len());
+        line.extend_from_slice(&piece[..piece.len().min(room)]);
+        reader.consume(used);
+        if ended {
+            return Ok(true);
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -142,7 +239,8 @@ impl Grep {
         let (mut found_files, mut counts, mut rows) = (Vec::new(), Vec::new(), Vec::new());
         let mut size = 0;
         let mut truncated = false;
-        for file in files {
+        let mut line = Vec::new();
+        'files: for file in files {
             if cancelled.load(Ordering::Relaxed) {
                 return Err("tool call aborted".into());
             }
@@ -150,56 +248,90 @@ impl Grep {
                 truncated = true;
                 break;
             }
-            let Ok(bytes) = std::fs::read(&file) else { continue };
-            // Binary files are skipped, unless named explicitly, where the search stops at the binary data.
-            let bytes = match bytes.iter().position(|byte| *byte == 0) {
-                Some(_) if !explicit => continue,
-                Some(at) => bytes[..at].to_vec(),
-                None => bytes,
-            };
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)).collect();
-            let lines = if text.ends_with('\n') { &lines[..lines.len() - 1] } else { &lines[..] };
+            let Some(mut reader) = open_text(&file, explicit) else { continue };
             let shown = self.context.display(&file);
-            match mode {
-                "files_with_matches" => {
-                    if lines.iter().any(|line| regex.is_match(line)) {
-                        size += shown.len() + 1;
-                        found_files.push(shown);
+            let (mut index, mut unchecked, mut count) = (0, 0, 0);
+            // Content mode: unprinted lines kept for the context of the next match, the last printed line, and the
+            // context lines still due after a match.
+            let mut before: VecDeque<(usize, String)> = VecDeque::new();
+            let (mut last, mut after): (Option<usize>, usize) = (None, 0);
+            // A read error ends the file with what was found so far.
+            while next_line(&mut *reader, &mut line, MAX_LINE_BYTES).unwrap_or(false) {
+                unchecked += line.len() + 1;
+                if unchecked >= CHECK_BYTES {
+                    unchecked = 0;
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Err("tool call aborted".into());
+                    }
+                    if Instant::now() > deadline {
+                        truncated = true;
+                        break 'files;
                     }
                 }
-                "count" => {
-                    let count: usize = lines.iter().map(|line| regex.find_iter(line).count()).sum();
-                    if count > 0 {
-                        size += shown.len() + 8;
-                        counts.push((shown, count));
-                    }
+                if line.last() == Some(&b'\r') {
+                    line.pop();
                 }
-                _ => {
-                    let matched: Vec<usize> = lines.iter().enumerate().filter(|(_, line)| regex.is_match(line)).map(|(index, _)| index).collect();
-                    if matched.is_empty() {
-                        continue;
+                // Binary data past the sniffed start ends the search of the file there, as in ripgrep.
+                let binary = line.iter().position(|byte| *byte == 0);
+                if let Some(at) = binary {
+                    line.truncate(at);
+                }
+                let text = String::from_utf8_lossy(&line);
+                match mode {
+                    "files_with_matches" => {
+                        if regex.is_match(&text) {
+                            size += shown.len() + 1;
+                            found_files.push(shown);
+                            if found_files.len() > limit {
+                                truncated = true;
+                                break 'files;
+                            }
+                            continue 'files;
+                        }
                     }
-                    let mut last: Option<usize> = None;
-                    for &index in &matched {
-                        let (start, end) = (index.saturating_sub(around), (index + around).min(lines.len() - 1));
-                        let from = last.map_or(start, |last| start.max(last + 1));
-                        if around > 0
-                            && let Some(last) = last
-                            && from > last + 1
-                        {
-                            rows.push(None);
-                        }
-                        if around > 0 && last.is_none() && !rows.is_empty() {
-                            rows.push(None);
-                        }
-                        for at in from..=end {
-                            let text = preview(lines[at]);
+                    "count" => count += regex.find_iter(&text).count(),
+                    _ => {
+                        let mut push = |rows: &mut Vec<Option<Row>>, number: usize, matched: bool, text: String| {
                             size += shown.len() + text.len() + 8;
-                            rows.push(Some(Row { path: shown.clone(), number: at + 1, matched: matched.binary_search(&at).is_ok(), text }));
+                            rows.push(Some(Row { path: shown.clone(), number: number + 1, matched, text }));
+                        };
+                        if regex.is_match(&text) {
+                            let first = before.front().map_or(index, |(at, _)| *at);
+                            if around > 0 && last.map_or(!rows.is_empty(), |last| first > last + 1) {
+                                rows.push(None);
+                            }
+                            for (at, text) in before.drain(..) {
+                                push(&mut rows, at, false, text);
+                            }
+                            push(&mut rows, index, true, preview(&text));
+                            (last, after) = (Some(index), around);
+                        } else if after > 0 {
+                            push(&mut rows, index, false, preview(&text));
+                            (last, after) = (Some(index), after - 1);
+                        } else if around > 0 {
+                            before.push_back((index, preview(&text)));
+                            if before.len() > around {
+                                before.pop_front();
+                            }
                         }
-                        last = Some(end.max(last.unwrap_or(0)));
+                        // Rows past the limit are never shown; one more only marks the result as cut.
+                        if size > MAX_OUTPUT_BYTES || rows.len() > limit {
+                            truncated = true;
+                            break 'files;
+                        }
                     }
+                }
+                if binary.is_some() {
+                    break;
+                }
+                index += 1;
+            }
+            if count > 0 {
+                size += shown.len() + 8;
+                counts.push((shown, count));
+                if counts.len() > limit {
+                    truncated = true;
+                    break;
                 }
             }
         }
@@ -380,4 +512,65 @@ src/a.rs:3:fn helper() {}"));
         assert_eq!(glob.details.unwrap()["paths"], json!(["src/a.rs"]));
         let _ = std::fs::remove_dir_all(root);
     }
+
+    fn text(output: &ToolOutput) -> &str {
+        match &output.content[0] {
+            rainy_protocol::chat::ResultContent::Text { text } => text,
+            _ => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn greps_utf16_late_binary_data_and_context_groups() {
+        let root = std::env::temp_dir().join(format!("rainy-grep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        // PowerShell 5.1 `>` writes UTF-16 LE with a byte order mark; .reg files may be UTF-16 BE.
+        let utf16 = |big: bool, text: &str| {
+            let mut bytes = if big { vec![0xfe, 0xff] } else { vec![0xff, 0xfe] };
+            bytes.extend(text.encode_utf16().flat_map(|unit| if big { unit.to_be_bytes() } else { unit.to_le_bytes() }));
+            bytes
+        };
+        std::fs::write(root.join("a.txt"), utf16(false, "other\r\nneedle 中文\r\n")).unwrap();
+        std::fs::write(root.join("b.reg"), utf16(true, "needle\n")).unwrap();
+        // A UTF-8 byte order mark does not hide the first line from `^`.
+        std::fs::write(root.join("c.txt"), b"\xef\xbb\xbfneedle\n").unwrap();
+        // NUL past the sniffed start ends the file there; earlier matches stay.
+        let mut late = "needle\n".repeat(2).into_bytes();
+        late.extend(std::iter::repeat_n(b'x', SNIFF_BYTES));
+        late.extend(b"\0needle\n");
+        std::fs::write(root.join("d.log"), late).unwrap();
+        std::fs::write(root.join("e.bin"), b"needle\0").unwrap();
+        std::fs::write(root.join("f.txt"), "needle\nx\nx\nx\nneedle\n").unwrap();
+        let grep = Grep::new(context(&root));
+        let flag = AtomicBool::new(false);
+        let params = |mode: &str, context: f64| GrepParams { pattern: "^needle".into(), path: None, glob: None, output_mode: Some(mode.into()), ignore_case: None, context: Some(context), limit: None };
+        let counts = grep.search(params("count", 0.0), &flag).unwrap();
+        assert_eq!(
+            counts.details.unwrap()["counts"],
+            json!([{ "path": "a.txt", "count": 1 }, { "path": "b.reg", "count": 1 }, { "path": "c.txt", "count": 1 }, { "path": "d.log", "count": 2 }, { "path": "f.txt", "count": 2 }])
+        );
+        let content = grep.search(GrepParams { glob: Some("{a,f}.txt".into()), ..params("content", 1.0) }, &flag).unwrap();
+        assert_eq!(text(&content), "a.txt-1-other\na.txt:2:needle 中文\n--\nf.txt:1:needle\nf.txt-2-x\n--\nf.txt-4-x\nf.txt:5:needle");
+        // A named binary file is searched up to its first NUL.
+        let named = grep.search(GrepParams { path: Some("e.bin".into()), ..params("files_with_matches", 0.0) }, &flag).unwrap();
+        assert_eq!(named.details.unwrap()["paths"], json!(["e.bin"]));
+        // The limit stops the search; the result is marked as cut.
+        let limited = grep.search(GrepParams { limit: Some(2.0), ..params("files_with_matches", 0.0) }, &flag).unwrap();
+        assert_eq!(limited.details.unwrap()["truncated"], json!(true));
+        flag.store(true, Ordering::Relaxed);
+        assert!(grep.search(params("content", 0.0), &flag).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn long_lines_are_kept_in_part() {
+        let mut reader = Cursor::new(b"abcdef\r\ngh".to_vec());
+        let mut line = Vec::new();
+        assert!(next_line(&mut reader, &mut line, 4).unwrap());
+        assert_eq!(line, b"abcd");
+        assert!(next_line(&mut reader, &mut line, 4).unwrap());
+        assert_eq!(line, b"gh");
+        assert!(!next_line(&mut reader, &mut line, 4).unwrap());
+    }
 }
+

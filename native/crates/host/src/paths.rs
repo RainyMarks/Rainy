@@ -92,18 +92,20 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// A path's `/`-separated spelling relative to `root`, when it is inside it.
+/// A path's `/`-separated spelling relative to `root`, when it is inside it. Components are compared as the platform
+/// compares them, one by one: lowercasing can change a name's length (İ, the Kelvin sign), so a whole lowercased
+/// spelling does not tell where the rest of the original one starts.
 pub fn relative_to(root: &Path, path: &Path) -> Option<String> {
-    let (root_text, path_text) = (comparable(root), comparable(path));
-    if path_text == root_text {
-        return Some(String::new());
+    let text = |component: Component<'_>| component.as_os_str().to_string_lossy().into_owned();
+    let mut rest = path.components();
+    for part in root.components() {
+        let (left, right) = (text(part), text(rest.next()?));
+        if if cfg!(windows) { left.to_lowercase() != right.to_lowercase() } else { left != right } {
+            return None;
+        }
     }
-    let prefix = format!("{root_text}/");
-    if !path_text.starts_with(&prefix) {
-        return None;
-    }
-    let original = path.to_string_lossy().replace('\\', "/");
-    Some(original[prefix.len()..].trim_end_matches('/').to_owned())
+    // A root spelled `C:` is the drive's root folder too.
+    Some(rest.filter(|component| *component != Component::RootDir).map(text).collect::<Vec<_>>().join("/"))
 }
 
 #[cfg(test)]
@@ -126,5 +128,21 @@ mod tests {
         let sibling = PathBuf::from(format!("{}2", root.display()));
         assert!(contains(root, root) && contains(root, &inside) && !contains(root, &sibling));
         assert_eq!(relative_to(root, &inside.join("a.rs")).as_deref(), Some("src/a.rs"));
+        assert_eq!(relative_to(root, root).as_deref(), Some(""));
+        assert_eq!(relative_to(root, &sibling), None);
+        assert_eq!(relative_to(&inside, root), None);
+    }
+
+    #[test]
+    fn relative_to_survives_names_lowercasing_resizes() {
+        // The Kelvin sign lowercases to a one-byte k, İ to two characters.
+        for name in ["\u{212A}", "İstanbul", "Straße\u{1E9E}"] {
+            let root = PathBuf::from(if cfg!(windows) { format!(r"C:\{name}") } else { format!("/{name}") });
+            assert_eq!(relative_to(&root, &root.join("Sub").join("a.rs")).as_deref(), Some("Sub/a.rs"), "{name}");
+        }
+        if cfg!(windows) {
+            assert_eq!(relative_to(Path::new(r"C:\Work\Proj"), Path::new(r"c:/work/proj/Src/x.rs")).as_deref(), Some("Src/x.rs"));
+            assert_eq!(relative_to(Path::new("C:\\"), Path::new(r"C:\a\b")).as_deref(), Some("a/b"));
+        }
     }
 }

@@ -419,12 +419,13 @@ impl Session {
         Ok(false)
     }
 
-    /// Stop the run; queued messages are discarded.
+    /// Stop the run; queued and steered messages are discarded.
     pub fn abort(&self) {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.queue.clear();
             inner.pending.clear();
+            inner.steering.clear();
             if let Some(run) = &mut inner.run {
                 run.aborted = true;
                 run.cancel.cancel();
@@ -639,15 +640,25 @@ impl Session {
     }
 
     /// Files the agent changed in this chat whose changes the user has neither kept nor undone; a file back to its
-    /// content before the changes is left out.
-    pub fn changes(&self) -> Vec<ChatChange> {
+    /// content before the changes is left out. Files are read and compared off the async threads.
+    pub async fn changes(self: &Arc<Self>) -> Vec<ChatChange> {
+        let session = self.clone();
+        tokio::task::spawn_blocking(move || session.read_changes()).await.unwrap_or_default()
+    }
+
+    fn read_changes(&self) -> Vec<ChatChange> {
+        use std::io::Read as _;
         let lineage = self.lineage();
         let cwd = self.chat().cwd;
         let mut result = Vec::new();
         for group in self.pending_changes() {
             let first = &group.calls[0];
             let before = if first.created { Some(None) } else { self.services.snapshots.original(&lineage, &first.id) };
-            let current = std::fs::read(&group.path).ok();
+            // A file larger than the compared text is read only far enough to tell.
+            let current = std::fs::File::open(&group.path).ok().and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes).ok().map(|_| bytes)
+            });
             let base = match &before {
                 None => None,
                 Some(None) => Some(String::new()),
@@ -793,7 +804,10 @@ impl Session {
             let mut inner = self.inner.lock().unwrap();
             let last = last(&inner);
             let Some(run) = &mut inner.run else { return false };
-            let overflow = !run.aborted && !run.overflow_retried && last.as_ref().is_some_and(|(_, message)| context_overflow(message, resolved.model.context_window));
+            // Only a failed request is compacted and asked again (3.x); a reply that ended normally keeps the chat.
+            let overflow = !run.aborted
+                && !run.overflow_retried
+                && last.as_ref().is_some_and(|(_, message)| message.stop_reason == "error" && context_overflow(message, resolved.model.context_window));
             if overflow {
                 run.overflow_retried = true;
             }
@@ -871,7 +885,10 @@ impl Session {
             inner.running_tools.clear();
             inner.stop_after_step = false;
             inner.refused.clear();
-            inner.run.take()
+            let run = inner.run.take();
+            let (steering, inner) = (std::mem::take(&mut inner.steering), &mut *inner);
+            settle_steering(steering, &mut inner.queue, &mut inner.pending, run.as_ref().is_some_and(|run| run.aborted));
+            run
         };
         let aborted = run.as_ref().is_some_and(|run| run.aborted);
         if let Some(run) = run {
@@ -1514,6 +1531,30 @@ fn context_message(label: &'static str, text: String) -> (Message, Meta) {
     (Message::user(text.clone()), Meta::Context { entry_id: uuid::Uuid::new_v4().to_string(), label, text })
 }
 
+/// What was steered into a run that ended before its next request. A user's message, with the chats it references,
+/// waits under its queue id to be sent like a queued message, unless the run was stopped, which discards it;
+/// instructions found for the ended run are dropped. Nothing steered reaches a later run unasked.
+fn settle_steering(steering: Vec<(Message, Meta)>, queue: &mut Vec<QueuedMessage>, pending: &mut HashMap<String, Vec<(Message, Meta)>>, aborted: bool) {
+    let mut owner: Option<String> = None;
+    for (message, meta) in steering {
+        match &meta {
+            Meta::User { queue_id: Some(id), .. } => {
+                owner = Some(id.clone());
+                if aborted {
+                    queue.retain(|item| item.id != *id);
+                } else if let Some(item) = queue.iter_mut().find(|item| item.id == *id) {
+                    item.mode = "queue".into();
+                }
+            }
+            Meta::Context { label: "reference", .. } => {}
+            _ => owner = None,
+        }
+        if let Some(id) = owner.as_ref().filter(|_| !aborted) {
+            pending.entry(id.clone()).or_default().push((message, meta));
+        }
+    }
+}
+
 struct RunHooks {
     session: Arc<Session>,
     mcp_tools: HashSet<String>,
@@ -1606,5 +1647,22 @@ mod tests {
         let snapshot = reference_snapshot("s", "t", &turns);
         assert_eq!(snapshot["truncated"], true);
         assert_eq!(snapshot["turns"][1]["text"].as_str().unwrap().chars().count(), 4001);
+    }
+
+    #[test]
+    fn steering_left_by_a_run_is_queued_or_discarded() {
+        let user = |id: &str| (Message::user(id), Meta::User { entry_id: format!("e-{id}"), text: id.into(), images: Vec::new(), queue_id: Some(id.into()) });
+        let queued = |id: &str| QueuedMessage { id: id.into(), text: id.into(), mode: "steer".into(), image_count: 0 };
+        let steering = || vec![context_message("instructions", "found".into()), user("a"), context_message("reference", "chat".into()), user("b")];
+        let (mut queue, mut pending) = (vec![queued("q"), queued("a"), queued("b")], HashMap::new());
+        settle_steering(steering(), &mut queue, &mut pending, false);
+        assert_eq!(queue.iter().map(|item| item.mode.as_str()).collect::<Vec<_>>(), ["steer", "queue", "queue"]);
+        assert_eq!(pending["a"].len(), 2);
+        assert_eq!(pending["b"].len(), 1);
+        assert_eq!(pending.len(), 2);
+        let (mut queue, mut pending) = (vec![queued("q"), queued("a"), queued("b")], HashMap::new());
+        settle_steering(steering(), &mut queue, &mut pending, true);
+        assert_eq!(queue.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["q"]);
+        assert!(pending.is_empty());
     }
 }

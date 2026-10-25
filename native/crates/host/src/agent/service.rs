@@ -392,7 +392,7 @@ impl Agent {
             let session = agent.live(&params.session_id).ok_or_else(|| HostError::new("not-found", l("这个操作已不在等待批准。", "This action is no longer waiting for approval.")))?;
             session.approve(&params.tool_call_id, &params.decision, params.reason.as_deref()).map(|()| Value::Null)
         });
-        self.on("chat.changes", |agent, params: SessionRef| async move { Ok(agent.session(&params.session_id).await?.changes()) });
+        self.on("chat.changes", |agent, params: SessionRef| async move { Ok(agent.session(&params.session_id).await?.changes().await) });
         self.on("chat.changeBase", |agent, params: PathParams| async move {
             let (base, current) = agent.session(&params.session_id).await?.change_base(&params.path)?;
             Ok(json!({ "base": base, "current": current }))

@@ -64,10 +64,11 @@ fn normalize_id(id: &str, model: &Model) -> String {
         if combined.len() <= 40 {
             return combined;
         }
+        // `call` is ASCII after cleaning and may be empty.
         let hash = &crate::text::sha256_hex(id)[..8];
-        return format!("{}_{hash}", &call[..call.len().min(40 - hash.len() - 1).max(1)]);
+        return format!("{}_{hash}", &call[..call.len().min(40 - hash.len() - 1)]);
     }
-    if model.provider == "openai" && id.len() > 40 { id[..40].to_owned() } else { id.to_owned() }
+    if model.provider == "openai" { crate::text::truncate_chars(id, 40).to_owned() } else { id.to_owned() }
 }
 
 /// The conversation as Chat Completions messages.
@@ -496,5 +497,16 @@ mod tests {
         assert!(matches!(&output.content[0], AssistantBlock::Thinking { thinking, .. } if thinking == "think"));
         assert!(matches!(&output.content[2], AssistantBlock::ToolCall { arguments, .. } if arguments["path"] == "a.txt"));
         assert!(events.contains(&Event::BlockStarted(0)) && events.contains(&Event::BlockEnded(2)));
+    }
+
+    #[test]
+    fn normalizes_any_tool_call_id() {
+        let openai = model("openai", "https://api.openai.com/v1");
+        let long = format!("|{}", "x".repeat(60));
+        assert!(normalize_id(&long, &openai).starts_with('_'));
+        assert_eq!(normalize_id("call_1|", &openai), "call_1");
+        let wide = "调用".repeat(30);
+        assert_eq!(normalize_id(&wide, &openai).chars().count(), 40);
+        assert_eq!(normalize_id(&wide, &model("other", "http://127.0.0.1:1")), wide);
     }
 }
