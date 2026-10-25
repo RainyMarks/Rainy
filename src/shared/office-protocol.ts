@@ -1,10 +1,14 @@
 /** The desktop bridge for office documents: PDF copies made by the installed Office, and opening files in their own app. */
 
-/** A conversion's PDF, or why there is none; `missing` means neither Microsoft Office nor WPS Office is installed, and
- *  `encrypted` that the file needs a password. */
-export type OfficePdfResult = { pdf: Uint8Array; application: string } | { error: string; missing: boolean; encrypted?: boolean | undefined }
+/** Why a conversion made no PDF (`native/crates/app/src/web/office.rs`); the page explains each in the reader's language. */
+export type OfficeFailureCode = 'missing' | 'password' | 'too-large' | 'timeout' | 'no-output' | 'unsupported' | 'failed'
 
-/** Exposed by the Electron preload as `__RAINY_OFFICE__`; absent in a plain browser. */
+/** A conversion's PDF, or why there is none; `missing` means neither Microsoft Office nor WPS Office is installed, and
+ *  `encrypted` that the file needs a password. `error` is the detail as Office or Windows put it, possibly English. */
+export type OfficePdfResult = { pdf: Uint8Array; application: string }
+  | { code?: OfficeFailureCode | undefined; error: string; missing: boolean; encrypted?: boolean | undefined }
+
+/** Exposed by the viewer page of the desktop (`ViewerApp.tsx`) as `__RAINY_OFFICE__`; absent in a plain browser. */
 export interface OfficeBridge {
   /**
    * @param bytes File contents, read through the Host so files in WSL and on SSH servers convert too.

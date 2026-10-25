@@ -345,7 +345,7 @@ impl EditorArea {
                 cx.spawn(async move |_, cx: &mut AsyncApp| {
                     let result = match converting.await {
                         Ok(converted) => json!({ "pdf": engine.encode(&converted.pdf), "application": converted.application }),
-                        Err(failure) => json!({ "error": failure.error, "missing": failure.missing, "encrypted": failure.encrypted }),
+                        Err(failure) => json!({ "code": failure.code, "error": failure.error, "missing": failure.missing, "encrypted": failure.encrypted }),
                     };
                     cx.update(|cx| respond(result, cx));
                 })

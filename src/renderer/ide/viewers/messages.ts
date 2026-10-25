@@ -72,6 +72,10 @@ const zh = {
   shortcutBroken: '无法读取这个快捷方式。', shortcutCopy: '复制路径', shortcutCopied: '已复制路径',
   toolMore: '更多',
   hexBack: '退出十六进制', fileDamaged: '文件内容无法解析，可能已损坏，或者不是扩展名所表示的格式',
+  previewTooLarge: '文件有 {size}，超过 200 MB，无法在这里预览，请用默认程序打开',
+  officeTimeout: 'Office 在 2 分钟内没有完成转换。可以重试，或用默认程序打开。', officeTooLarge: '文件超过 200 MB，没有交给 Office 转换。',
+  officeNoOutput: 'Office 打开了这个文件，但没有生成 PDF。', officeFailedPlain: 'Office 无法转换此文件。', officeUnsupported: 'Office 不转换这种文件。',
+  officeDetail: '详细信息：{detail}',
 }
 
 const en: typeof zh = {
@@ -145,6 +149,10 @@ const en: typeof zh = {
   shortcutBroken: 'This shortcut cannot be read.', shortcutCopy: 'Copy path', shortcutCopied: 'Path copied',
   toolMore: 'More',
   hexBack: 'Leave hex view', fileDamaged: 'the content cannot be read. The file may be damaged or not in the format its extension says',
+  previewTooLarge: 'the file is {size}, more than 200 MB, too large to preview here. Open it in its default app',
+  officeTimeout: 'Office did not finish converting within 2 minutes. Retry, or open the file in its default app.', officeTooLarge: 'The file is larger than 200 MB and was not handed to Office.',
+  officeNoOutput: 'Office opened the file but wrote no PDF.', officeFailedPlain: 'Office cannot convert this file.', officeUnsupported: 'Office does not convert this kind of file.',
+  officeDetail: 'Details: {detail}',
 }
 
 /** Viewer strings. */
