@@ -295,11 +295,13 @@ impl ChatStore {
         Ok(chat)
     }
 
-    /// A chat's entries in order.
-    pub async fn read(&self, id: &str) -> HostResult<ChatFile> {
+    /// A chat's entries in order. The file, which images can make large, is read and parsed off the async threads.
+    pub async fn read(self: &Arc<Self>, id: &str) -> HostResult<ChatFile> {
         let lock = self.lock(id);
         let _guard = lock.lock().await;
-        self.read_file(id, false)?.ok_or_else(|| not_found(id))
+        let (store, owned) = (self.clone(), id.to_owned());
+        let file = tokio::task::spawn_blocking(move || store.read_file(&owned, false)).await.map_err(|error| HostError::other(error.to_string()))??;
+        file.ok_or_else(|| not_found(id))
     }
 
     fn read_file(&self, id: &str, header_only: bool) -> HostResult<Option<ChatFile>> {

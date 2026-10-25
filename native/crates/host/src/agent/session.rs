@@ -640,15 +640,25 @@ impl Session {
     }
 
     /// Files the agent changed in this chat whose changes the user has neither kept nor undone; a file back to its
-    /// content before the changes is left out.
-    pub fn changes(&self) -> Vec<ChatChange> {
+    /// content before the changes is left out. Files are read and compared off the async threads.
+    pub async fn changes(self: &Arc<Self>) -> Vec<ChatChange> {
+        let session = self.clone();
+        tokio::task::spawn_blocking(move || session.read_changes()).await.unwrap_or_default()
+    }
+
+    fn read_changes(&self) -> Vec<ChatChange> {
+        use std::io::Read as _;
         let lineage = self.lineage();
         let cwd = self.chat().cwd;
         let mut result = Vec::new();
         for group in self.pending_changes() {
             let first = &group.calls[0];
             let before = if first.created { Some(None) } else { self.services.snapshots.original(&lineage, &first.id) };
-            let current = std::fs::read(&group.path).ok();
+            // A file larger than the compared text is read only far enough to tell.
+            let current = std::fs::File::open(&group.path).ok().and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes).ok().map(|_| bytes)
+            });
             let base = match &before {
                 None => None,
                 Some(None) => Some(String::new()),
