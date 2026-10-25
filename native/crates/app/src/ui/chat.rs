@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
 use crate::store::{ChatModel, Store, StoreEvent};
-use crate::ui::transcript::{Expanded, Fork, Toggle, TurnRow, TurnStyle, build_rows, render_turn};
+use crate::ui::transcript::{Expanded, Fork, Toggle, TurnRow, TurnStyle, rebuild_rows, render_turn};
 use crate::ui::{tr, trf};
 
 /// One entry of the composer's suggestion list.
@@ -154,7 +154,7 @@ impl ChatPane {
             }));
         }
         let locale = self.store.read(cx).locale();
-        let rows = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().map(|view| build_rows(view, locale))).unwrap_or_default();
+        let rows = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().map(|view| rebuild_rows(view, locale, &self.rows))).unwrap_or_default();
         let (old, count) = (self.row_count, rows.len());
         self.rows = Rc::new(rows);
         self.row_count = count;
@@ -839,7 +839,12 @@ impl Render for ChatPane {
         });
         let rows = self.rows.clone();
         let expanded = self.expanded.clone();
-        let style = TurnStyle { locale, show_usage, step_detail: self.store.read(cx).prefs.step_detail.clone().into() };
+        let style = TurnStyle {
+            locale,
+            show_usage,
+            step_detail: self.store.read(cx).prefs.step_detail.clone().into(),
+            session: self.session_id(cx).map(SharedString::from),
+        };
         let fork_session = self.session_id(cx);
         let fork_store = self.store.clone();
         let fork: Fork = Rc::new(move |entry, window, cx| {
