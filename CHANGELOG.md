@@ -4,6 +4,18 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.2 · 2026-10-25
+
+A full checkup: Markdown no longer damages files, the image, PDF and hex views are back, and many details are smoother.
+
+- **Markdown no longer damages files**: the first rich edit of a file with Windows line ends (CRLF) appended a second copy of the document, and editing a list item next to blank lines could drop or repeat other items. Saving now changes only the lines you edited and keeps the line ends. When the AI changes an open file the page shows the new text at once, your next edit no longer overwrites it, and Ctrl+Z undoes only your own typing.
+- **Markdown closer to Typora**: code blocks in the light mode follow the color scheme instead of a dark theme's gray text; table borders, selected cells and the / menu's current item are visible. Enter in a table goes to the next row, Ctrl+Enter adds one. A ` ```latex ` block stays code and amounts such as `$5 to $10` are no formula. The / menu inserts images (Ctrl+Shift+I). Previews and exports leave out HTML comments (`<!-- notes -->` used to be printed into PDFs), show `<img style="zoom:50%">`, `<br>` and sub/superscripts, link footnotes and draw Mermaid diagrams. The split view scrolls both sides together; Ctrl+Shift+V toggles the preview, Ctrl+K V the split. The status bar shows the word count, and no meaningless "line 1, column 1" in the rich view or preview.
+- **Images, SVG and hex are back**: images zoom, pan, show pixel colors and a checkerboard behind transparency, and can be added to the chat; AVIF, APNG, CUR and more open. SVG shows the picture with source and split views. Binary files open in a hex view with go-to and copy.
+- **PDF**: text can be selected and copied and links clicked; zooming or resizing keeps your place; Ctrl+wheel and Ctrl+= / Ctrl+- zoom; protected PDFs ask for the password; Extract text keeps line breaks and adds no spaces between Chinese characters. In the light mode pages sit on a gray backdrop and spreadsheet grids and headers are visible. Narrow toolbars fold into a More menu. Office conversion failures are explained in your language.
+- **Chat**: a failed send puts your text and images back; each chat keeps its own draft; long chats load older messages; chat history can be searched, is grouped by project, and archived chats can be reached again. Tool cards show diffs with +/− counts and exit codes, open the file and undo a single change. Enter allows and Esc denies once the approval bar has focus. A new chat can pick its permission mode first.
+- **Interface**: notifications are no longer hidden behind PDF, Markdown and other pages; the title bar turns into icons when narrow and always keeps the window buttons; pane sizes are kept per project; the status bar shows the Git branch and change count; warning text and selected buttons are readable in the light mode; Chinese 。 and ， never start a line. Errors on WSL and SSH are in your language, with the original message below.
+- **Sturdier**: `grep` no longer fills memory on huge files and searches UTF-16 files; Stop works at once on a stuck HTTP MCP tool; an MCP server writing GBK Chinese on stderr stays connected; the reply limit is no longer tiny right after compaction; a damaged `settings.json` or `desktop.json` keeps what is valid and saves the original aside. The Strata engine exits with Rainy; interrupted component downloads start over; an update without a signature is refused; a window left open checks for updates every six hours. Empty `node` folders left after updating from 4.0 are removed.
+
 ## 4.1 · 2026-10-23
 
 No Node.js anywhere, and Strata local inference is back.
