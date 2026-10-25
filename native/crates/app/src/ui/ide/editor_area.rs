@@ -9,7 +9,7 @@ use base64::Engine as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::diff::Diff;
-use gpui_kit::component::input::{Editor, InputEvent};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
@@ -32,9 +32,14 @@ struct Viewer {
     kind: &'static str,
     version: String,
     pane: Entity<WebPane>,
+    /// The editor whose text a Markdown page shows. Reading the file again from disk gives the tab a new editor; a page
+    /// left on the old one would keep the old text, and its next edit would write that over the new file.
+    editor: Option<EntityId>,
     /// The page's own edit, so it is not sent back to it.
     from_page: Option<String>,
     _subscriptions: Vec<Subscription>,
+    /// Changes of `editor`, replaced together with it.
+    _editor_subscriptions: Vec<Subscription>,
 }
 
 /// An image file's decoded bytes, fetched from the Host's `/rainy/ide/raw` route.
@@ -86,12 +91,19 @@ use rainy_carrier::text::percent_encode as encode;
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.observe(&ide, |_, _, cx| cx.notify()),
+            cx.observe(&ide, |this, _, cx| {
+                this.follow_editors(cx);
+                cx.notify();
+            }),
             // Choosing a tab or opening a file brings the files back in place of the map.
             cx.subscribe(&ide, |this, _, event: &crate::store::ide::IdeEvent, cx| {
                 if *event == crate::store::ide::IdeEvent::ActiveChanged && this.map_shown {
                     this.map_shown = false;
                     cx.notify();
+                }
+                // Pages address their project; another project's file under the same key gets a page of its own.
+                if *event == crate::store::ide::IdeEvent::WorkspaceChanged {
+                    this.viewers.clear();
                 }
             }),
         ];
@@ -120,20 +132,59 @@ impl EditorArea {
             format!("{}\\{}", base.trim_end_matches(['\\', '/']), path.replace('/', "\\"))
         });
         let url = viewers::viewer_url(&launch, kind, key, &workspace.workspace_id, file.document.bytes as u64, &version, host_path.as_deref());
-        let editor = file.editor.clone();
+        let editor = file.editor.clone().filter(|_| markdown);
         let pane = viewers::create_pane(url, window, cx);
         let owner = key.to_owned();
-        let mut subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
-        if let (true, Some(editor)) = (markdown, editor) {
-            let owner = key.to_owned();
-            subscriptions.push(cx.subscribe(&editor, move |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.send_text(&owner, cx);
-                }
-            }));
-        }
-        self.viewers.insert(key.to_owned(), Viewer { kind, version, pane: pane.clone(), from_page: None, _subscriptions: subscriptions });
+        let subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
+        let editor_subscriptions = editor.as_ref().map(|editor| self.watch_editor(key, editor, cx)).unwrap_or_default();
+        self.viewers.insert(
+            key.to_owned(),
+            Viewer {
+                kind,
+                version,
+                pane: pane.clone(),
+                editor: editor.as_ref().map(Entity::entity_id),
+                from_page: None,
+                _subscriptions: subscriptions,
+                _editor_subscriptions: editor_subscriptions,
+            },
+        );
         Some(pane)
+    }
+
+    /// Follow a Markdown file's editor: its changes go to the page.
+    fn watch_editor(&mut self, key: &str, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> Vec<Subscription> {
+        let owner = key.to_owned();
+        vec![cx.subscribe(editor, move |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.send_text(&owner, cx);
+            }
+        })]
+    }
+
+    /// Markdown pages follow their file's current editor. Reading a file again from disk (the conflict bar's Reload, or
+    /// an unedited buffer following a change on disk) replaces the editor; the page then gets the new text.
+    fn follow_editors(&mut self, cx: &mut Context<Self>) {
+        let ide = self.ide.read(cx);
+        let replaced: Vec<(String, Option<Entity<EditorState>>)> = self
+            .viewers
+            .iter()
+            .filter(|(_, viewer)| viewer.kind.starts_with("markdown"))
+            .filter_map(|(key, viewer)| {
+                // A tab whose file is not open has nothing to follow; its page goes with the tab.
+                let editor = ide.files.get(key)?.editor.clone();
+                (editor.as_ref().map(Entity::entity_id) != viewer.editor).then(|| (key.clone(), editor))
+            })
+            .collect();
+        for (key, editor) in replaced {
+            let subscriptions = editor.as_ref().map(|editor| self.watch_editor(&key, editor, cx)).unwrap_or_default();
+            if let Some(viewer) = self.viewers.get_mut(&key) {
+                viewer.editor = editor.as_ref().map(Entity::entity_id);
+                viewer._editor_subscriptions = subscriptions;
+                viewer.from_page = None;
+            }
+            self.send_text(&key, cx);
+        }
     }
 
     /// Hand a Markdown page the file's current text, unless the page wrote it itself.
@@ -158,6 +209,10 @@ impl EditorArea {
         match event {
             PaneEvent::Message(text) => match viewers::parse_message(text) {
                 Some(PageRequest::Ready) => {
+                    // A page that (re)loaded has no text yet, whatever it sent before.
+                    if let Some(viewer) = self.viewers.get_mut(key) {
+                        viewer.from_page = None;
+                    }
                     self.send_text(key, cx);
                     if self.pending_export.as_ref().is_some_and(|(pending, _)| pending == key)
                         && let Some((_, format)) = self.pending_export.take()
