@@ -1,6 +1,7 @@
 //! Rainy's updates (3.x used electron-updater 6.8.9 through `updates.ts`): `latest.yml` of the latest GitHub release,
 //! a strictly newer stable version, its installer downloaded into the updater cache and verified by size and SHA-512,
-//! `latest.yml` itself by the release key when the release signs it, then the installer started as 3.x started it.
+//! `latest.yml` itself by the release key (a build with keys refuses a release without its signature), then the
+//! installer started as 3.x started it.
 //! Calls that reach the network or hash files block; run them on a background thread.
 
 use std::cmp::Ordering;
@@ -55,7 +56,7 @@ pub enum UpdateError {
     Invalid(String),
     /// `latest.yml` describes a web installer (`packages`), which Rainy does not publish.
     WebInstaller,
-    /// The release signs `latest.yml`, and this signature is not the release key's.
+    /// The signature of `latest.yml` is missing or not the release key's.
     Signature,
     /// The updater cache could not be used: the path and the system's error.
     Io(String),
@@ -210,7 +211,7 @@ pub fn supported(minimum: Option<&str>, system: Option<&Version>) -> bool {
 }
 
 /// Read the newest release from `source`: the installer to download when it is offered to `current`, or `None`. A
-/// release whose `latest.yml` is signed must carry the signature of a key in `keyring`; a build without keys does not
+/// release's `latest.yml` must carry the signature of a key in `keyring`; a build without keys does not
 /// check signatures.
 pub fn check(source: &Source, current: &Version, keyring: Option<&Keyring>, options: &Options) -> Result<Option<Installer>, UpdateError> {
     let bytes = download::fetch(&source.feed, FEED_LIMIT, options)?;
@@ -228,7 +229,13 @@ pub fn check(source: &Source, current: &Version, keyring: Option<&Keyring>, opti
     match keyring {
         None => log::warn!("Update {}: this build has no release keys, so the signature of latest.yml is not checked", feed.version),
         Some(keyring) => match download::fetch(&source.file_url(&feed.version, SIGNATURE_FILE), SIGNATURE_LIMIT, options) {
-            Err(DownloadError::Status(404)) => log::info!("Update {}: the release has no {SIGNATURE_FILE}; the installer is checked by its SHA-512", feed.version),
+            // Every release since 4.0 signs it, and only newer ones are offered. The installer's SHA-512 comes from the
+            // same unsigned file, so taking a release without the signature would let whoever can replace the release
+            // files replace the installer too, just by leaving the signature out.
+            Err(DownloadError::Status(404)) => {
+                log::warn!("Update {}: the release has no {SIGNATURE_FILE}; the update is refused", feed.version);
+                return Err(UpdateError::Signature);
+            }
             Err(error) => return Err(error.into()),
             Ok(signature) if signature_valid(keyring, &bytes, &signature) => log::info!("Update {}: latest.yml is signed by the release key", feed.version),
             Ok(_) => {
@@ -1169,14 +1176,13 @@ mod tests {
         }
 
         #[test]
-        fn accepts_an_unsigned_release_by_its_sha512() {
+        fn refuses_an_unsigned_release() {
+            // Leaving the signature out must not be a way around it.
             let setup = installer_bytes();
             let server = serve(latest_yml("4.0.1", &setup), None, setup.clone());
             let source = Source::at(&server.url("/feed/latest.yml"));
-            let installer = check(&source, &version("4.0.0"), Some(&Signer::new().keyring()), &options()).unwrap().unwrap();
-            let cache = tempfile::tempdir().unwrap();
-            download(&installer, cache.path(), &options(), &|_, _| {}).unwrap();
-            assert_eq!(paths(&server), ["/feed/latest.yml", "/feed/latest.yml.sig", format!("/feed/{SETUP}").as_str()]);
+            assert_eq!(check(&source, &version("4.0.0"), Some(&Signer::new().keyring()), &options()), Err(UpdateError::Signature));
+            assert_eq!(paths(&server), ["/feed/latest.yml", "/feed/latest.yml.sig"]);
             // A build without keys does not ask for the signature.
             let server = serve(latest_yml("4.0.1", &setup), Some(b"garbage".to_vec()), setup.clone());
             assert!(check(&Source::at(&server.url("/feed/latest.yml")), &version("4.0.0"), None, &options()).unwrap().is_some());
