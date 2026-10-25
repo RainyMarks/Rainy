@@ -33,10 +33,11 @@ export function plainHeading(raw: string): string {
 /**
  * Find the ATX (`## Title`) and setext (`Title` over `===`) headings, including those in block quotes, outside fenced code,
  * math blocks and front matter: the same headings, in the same order, as the rich editor renders.
- * @param markdown Document text with LF line ends.
+ * @param text Document text; CRLF line ends count as one.
  * @returns The headings in document order.
  */
-export function markdownOutline(markdown: string): OutlineHeading[] {
+export function markdownOutline(text: string): OutlineHeading[] {
+  const markdown = text.replace(/\r\n/gu, '\n')
   const { front } = splitFrontMatter(markdown)
   const lines = markdown.split('\n')
   const headings: OutlineHeading[] = []

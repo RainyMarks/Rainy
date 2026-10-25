@@ -1,15 +1,21 @@
 /** ProseMirror plugins of the rich Markdown editor: Typora's shortcuts, find and replace, focus and typewriter modes, and
  *  Ctrl+click on links. Loaded with the editor, outside the viewer chunk. */
-import { commandsCtx, type CmdKey } from '@milkdown/kit/core'
+import { commandsCtx, parserCtx, remarkCtx, remarkStringifyOptionsCtx, serializerCtx, type CmdKey, type Editor } from '@milkdown/kit/core'
+import type { Ctx, SliceType } from '@milkdown/kit/ctx'
 import { toggleLinkCommand } from '@milkdown/kit/component/link-tooltip'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { keymap } from '@milkdown/kit/prose/keymap'
 import { Plugin, PluginKey, TextSelection, type Command, type EditorState, type Transaction } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
-import { codeBlockSchema, createCodeBlockCommand, toggleInlineCodeCommand, wrapInBlockquoteCommand, wrapInBulletListCommand,
+import { codeBlockSchema, createCodeBlockCommand, remarkPreserveEmptyLinePlugin, toggleInlineCodeCommand, wrapInBlockquoteCommand, wrapInBulletListCommand,
   wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
-import { createTable, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
-import { $prose } from '@milkdown/kit/utils'
+import { createTable, remarkGFMPlugin, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
+import { $prose, $remark } from '@milkdown/kit/utils'
+import { conventionalTables, type MarkdownReader } from './markdown-merge.ts'
+import { remarkDollarAmounts } from './markdown-math.ts'
+
+type StringifyOptions = typeof remarkStringifyOptionsCtx extends SliceType<infer T, string> ? T : never
+type Handle = NonNullable<NonNullable<StringifyOptions['handlers']>['text']>
 
 /** A run of document text that matches the search. */
 export interface SearchMatch { readonly from: number; readonly to: number }
@@ -245,4 +251,123 @@ export function linkClickPlugin(open: (href: string) => void): ReturnType<typeof
       },
     },
   }))
+}
+
+/** How Markdown is written back: the common GitHub style, so an edit does not rewrite the rest of the file. */
+export const STRINGIFY = { bullet: '-', bulletOther: '*', bulletOrdered: '.', emphasis: '*', strong: '*', fence: '`', fences: true, rule: '-',
+  listItemIndent: 'one', incrementListMarker: true } as const
+
+/**
+ * Write back the list markers the document itself uses, so an edited list keeps them.
+ * @param markdown Document text.
+ * @returns Overrides of {@link STRINGIFY}.
+ */
+export function documentStyle(markdown: string): { bullet?: '-' | '*' | '+'; bulletOther?: '-' | '*' | '+'; bulletOrdered?: '.' | ')' } {
+  const counts = new Map<string, number>()
+  let fence: string | undefined
+  for (const line of markdown.split('\n')) {
+    const opening = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
+    if (opening !== undefined) {
+      if (fence === undefined) fence = opening
+      else if (opening[0] === fence[0] && opening.length >= fence.length) fence = undefined
+      continue
+    }
+    if (fence !== undefined) continue
+    const marker = /^[ \t>]*(?:([-*+])|\d{1,9}([.)]))[ \t]+\S/u.exec(line)
+    if (marker === null) continue
+    // A `***` or `- - -` line is a rule, not a list.
+    if (marker[1] !== undefined && /^[ \t>]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/u.test(line)) continue
+    const key = marker[1] ?? `ordered${marker[2]!}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const bullets = (['-', '*', '+'] as const).filter(bullet => (counts.get(bullet) ?? 0) > 0).sort((left, right) => counts.get(right)! - counts.get(left)!)
+  const style: ReturnType<typeof documentStyle> = {}
+  const bullet = bullets[0]
+  if (bullet !== undefined && bullet !== '-') { style.bullet = bullet; style.bulletOther = bullets[1] ?? (bullet === '*' ? '-' : '*') }
+  if ((counts.get('ordered)') ?? 0) > (counts.get('ordered.') ?? 0)) style.bulletOrdered = ')'
+  return style
+}
+
+/**
+ * Remove escapes the serializer adds that the file does not need: with single tildes not being strikethrough, a lone `~`
+ * (as in `~/path`) is plain text; `=` only needs one where its line could underline a heading.
+ * @param text Serialized text of one text node.
+ * @returns The text with those escapes removed.
+ */
+export function unneededEscapes(text: string): string {
+  return text.replace(/(?<![~\\])\\~(?!~|\\~)/gu, '~')
+    .replace(/(^|\n)\\=(?=[^\n]*[^=\s])/gu, '$1=')
+}
+
+/** Text nodes keep a lone `~` and a leading `=` as written; the editor's own text handler does the rest. */
+function textHandler(previous: Handle | undefined): Handle {
+  return (node, parent, state, info) => unneededEscapes(previous === undefined ? state.safe((node as { value: string }).value, info) : previous(node, parent, state, info))
+}
+
+/**
+ * A fenced ```latex block stays a code block. Crepe writes every code block whose language is `latex` as `$$` math,
+ * and reads `$$` math as a code block with the language `LaTeX`; a fence written `LaTeX` is read as `latex`, so only
+ * math has that exact spelling.
+ */
+export const latexFences = $remark('rainyLatexFences', () => () => (tree: unknown) => {
+  const visit = (node: { type?: string; lang?: string | null; position?: unknown; children?: unknown[] }): void => {
+    // Crepe's math block conversion makes code nodes without a position.
+    if (node.type === 'code' && node.position !== undefined && node.lang === 'LaTeX') node.lang = 'latex'
+    for (const child of node.children ?? []) visit(child as typeof node)
+  }
+  visit(tree as Parameters<typeof visit>[0])
+})
+
+/** Code blocks write `$$` math only for the language `LaTeX` (see {@link latexFences}). */
+export const codeBlockWriter = codeBlockSchema.extendSchema(previous => (ctx) => {
+  const base = previous(ctx)
+  return {
+    ...base,
+    toMarkdown: {
+      match: base.toMarkdown.match,
+      runner: (state, node) => {
+        if (node.attrs.language === MATH_LANGUAGE) state.addNode('math', undefined, node.content.firstChild?.text ?? '')
+        else base.toMarkdown.runner(state, node)
+      },
+    },
+  }
+})
+
+/** The language of a code block that is a `$$` formula. */
+export const MATH_LANGUAGE = 'LaTeX'
+
+/** Dollar amounts stay text (see markdown-math.ts). */
+export const dollarAmounts = $remark('rainyDollarAmounts', () => remarkDollarAmounts)
+
+/**
+ * The Markdown dialect of the rich editor: how it reads and writes files. Shared with the tests.
+ * @param editor Crepe's editor, before it is created.
+ * @param markdown The document it opens, whose list markers it writes back.
+ * @returns The editor, to configure further.
+ */
+export async function markdownSyntax(editor: Editor, markdown: string): Promise<Editor> {
+  // Two Enters leave an empty paragraph, which Milkdown would write as a `<br />` line; Typora writes nothing.
+  await editor.remove(remarkPreserveEmptyLinePlugin)
+  return editor.config((ctx) => {
+    ctx.update(remarkStringifyOptionsCtx, previous => ({ ...previous, ...STRINGIFY, ...documentStyle(markdown),
+      handlers: { ...previous.handlers, text: textHandler(previous.handlers?.text) } }))
+    // Aligned table columns would turn one edited cell into a change of every row; `H~2~O` is Typora's subscript, not
+    // strikethrough, and was written back as `H~~2~~O`.
+    ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false, singleTilde: false })
+  }).use(latexFences).use(codeBlockWriter).use(dollarAmounts)
+}
+
+/**
+ * @param ctx The editor's context, once created.
+ * @returns Its parser and serializer, as the merge reads them.
+ */
+export function markdownReader(ctx: Ctx): MarkdownReader {
+  return {
+    canonical: text => conventionalTables(ctx.get(serializerCtx)(ctx.get(parserCtx)(text.replace(/\r\n?/gu, '\n')))),
+    ranges: (text) => {
+      const tree = ctx.get(remarkCtx).parse(text) as { children: { position?: { start: { offset?: number }; end: { offset?: number } } }[] }
+      return tree.children.flatMap(({ position }) => position?.start.offset === undefined || position.end.offset === undefined ? []
+        : [[position.start.offset, position.end.offset] as const])
+    },
+  }
 }

@@ -12,7 +12,7 @@ import { usePrefs } from '../../prefs.ts'
 import { toast } from '../../ui/index.ts'
 import { outlinePosition, provideOutline } from '../outline-store.ts'
 import { frontMatterContent, splitFrontMatter, withFrontMatterContent } from './front-matter.ts'
-import { preserveSource } from './markdown-merge.ts'
+import { conventionalTables, mergeEdit } from './markdown-merge.ts'
 import { headingForFragment, markdownOutline } from './markdown-outline.ts'
 import { isMermaid, renderMermaid } from './mermaid.ts'
 import { useViewerT } from './messages.ts'
@@ -31,27 +31,9 @@ interface Rich {
   destroy(): Promise<unknown>
 }
 
-/** How Markdown is written back: the common GitHub style, so an edit does not rewrite the rest of the file. */
-const STRINGIFY = { bullet: '-', bulletOther: '*', emphasis: '*', strong: '*', fence: '`', fences: true, rule: '-', listItemIndent: 'one', incrementListMarker: true } as const
-
-/**
- * Write table delimiter rows as `| --- |`, the usual style, instead of the minimal `| - |` an unaligned table gets;
- * lines inside fenced code are left alone.
- * @param markdown Serialized document.
- * @returns The same document with conventional delimiter rows.
- */
-export function conventionalTables(markdown: string): string {
-  let fence: string | undefined
-  return markdown.split('\n').map((line) => {
-    const opening = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
-    if (opening !== undefined) {
-      if (fence === undefined) fence = opening
-      else if (opening[0] === fence[0] && opening.length >= fence.length) fence = undefined
-      return line
-    }
-    if (fence !== undefined || !/^\|(?:\s*:?-+:?\s*\|)+\s*$/u.test(line)) return line
-    return line.replace(/(\|)\s*(:?)-+(:?)\s*(?=\|)/gu, (_match, pipe: string, left: string, right: string) => `${pipe} ${left}---${right} `)
-  }).join('\n')
+/** @param text Markdown with any line ends. @returns It with LF line ends, as the editor holds it. */
+function lf(text: string): string {
+  return text.replace(/\r\n?/gu, '\n')
 }
 
 /** @param view Editor. @returns The document position of every heading, in document order. */
@@ -166,10 +148,9 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
     let cancelled = false
     let created: Rich | undefined
     void (async () => {
-      const [{ Crepe }, { editorViewCtx, remarkStringifyOptionsCtx }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { remarkGFMPlugin },
-        { uploadConfig }, rich] = await Promise.all([
+      const [{ Crepe }, { editorViewCtx }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig }, rich] = await Promise.all([
         import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
-        import('@milkdown/kit/preset/gfm'), import('@milkdown/kit/plugin/upload'), import('./rich-plugins.ts'),
+        import('@milkdown/kit/plugin/upload'), import('./rich-plugins.ts'),
       ])
       await import('@milkdown/crepe/theme/common/style.css')
       if (cancelled) return
@@ -194,7 +175,7 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
       }
       const crepe = new Crepe({
         root: element,
-        defaultValue: body.current,
+        defaultValue: lf(body.current),
         // Crepe's image block keeps its display size in the alt text, which would replace the author's description; the
         // inline image below writes `![alt](src "title")` back unchanged.
         features: { [Crepe.Feature.ImageBlock]: false },
@@ -235,10 +216,8 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
           },
         },
       })
-      crepe.editor.config((ctx) => {
-        ctx.update(remarkStringifyOptionsCtx, previous => ({ ...previous, ...STRINGIFY }))
-        // Aligned table columns would turn one edited cell into a change of every row.
-        ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false })
+      const syntax = await rich.markdownSyntax(crepe.editor, lf(body.current))
+      syntax.config((ctx) => {
         ctx.update(inlineImageConfig.key, previous => ({ ...previous, proxyDomURL: image, onUpload: save, uploadButton: t('richUpload'),
           uploadPlaceholderText: t('richImageLink'), confirmButton: t('richConfirm') }))
         // Pasted and dropped images are saved beside the document, as Typora does, instead of becoming blob: links.
@@ -264,12 +243,13 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
       let quiet = false
       // The file as loaded and the editor's own serialization of it: edits are merged into the file line by line, so
       // escapes, blank lines and table spacing the editor would write differently survive outside the edited lines.
+      // `source` keeps the file's line ends; the editor and `loaded` have LF.
       let source = body.current
       let loaded = ''
       let started = false
       const push = (written: string): void => {
         if (quiet || !started) return
-        publish(front.current, preserveSource(source, loaded, conventionalTables(written)))
+        publish(front.current, mergeEdit(source, loaded, conventionalTables(written), rich.markdownReader(crepe.editor.ctx)))
       }
       crepe.on((listen) => {
         listen.markdownUpdated((_ctx, written) => { push(written); setRevision(value => value + 1) })
@@ -286,7 +266,10 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         flush: () => { push(crepe.getMarkdown()) },
         replace: (next) => {
           quiet = true
-          try { crepe.editor.action(replaceAll(next)) } finally { quiet = false }
+          // A new editor state: the outside change is not an undo step, so Ctrl+Z cannot bring the old text back.
+          const scroll = stage.current?.scrollTop
+          try { crepe.editor.action(replaceAll(lf(next), true)) } finally { quiet = false }
+          if (stage.current !== null && scroll !== undefined) stage.current.scrollTop = scroll
           source = next
           loaded = conventionalTables(crepe.getMarkdown())
           body.current = next
