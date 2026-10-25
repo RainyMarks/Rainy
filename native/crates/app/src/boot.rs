@@ -581,7 +581,7 @@ fn ssh_host(
         match run(session.env())? {
             Ok(answer) => Ok(answer),
             Err(output) => {
-                if output.stderr.contains("Permission denied") {
+                if ssh::login_refused(&output.stderr) {
                     session.failed();
                 }
                 Err(ssh::failure(&destination, output.code, &output.stderr))
@@ -638,7 +638,7 @@ fn ssh_host(
                 if attempt < 3 && (lower.contains("forwarding") || lower.contains("address already in use")) {
                     continue;
                 }
-                if said.contains("Permission denied") {
+                if ssh::login_refused(&said) {
                     session.failed();
                 }
                 return Err(if error.downcast_ref::<HostStopped>().is_some() { ssh::failure(&destination, None, &said) } else { error });

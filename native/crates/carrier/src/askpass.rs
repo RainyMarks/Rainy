@@ -47,6 +47,9 @@ struct State {
     remembered: HashMap<String, String>,
     /// Questions each run has used an answer for, by token.
     sessions: HashMap<String, HashSet<String>>,
+    /// Runs whose question the user cancelled: `ssh` takes a failed askpass as an empty answer and asks again, up to
+    /// three times, so their later questions are refused without a window.
+    cancelled: HashSet<String>,
 }
 
 /// The askpass server of one application run.
@@ -87,7 +90,9 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         if let Some(owner) = self.owner.upgrade() {
-            owner.state.lock().unwrap().sessions.remove(&self.token);
+            let mut state = owner.state.lock().unwrap();
+            state.sessions.remove(&self.token);
+            state.cancelled.remove(&self.token);
         }
     }
 }
@@ -148,7 +153,10 @@ impl Askpass {
         let kind = if is_host_key_question(prompt) { QuestionKind::HostKey } else { QuestionKind::Secret };
         {
             let mut state = self.state.lock().unwrap();
-            let State { remembered, sessions } = &mut *state;
+            let State { remembered, sessions, cancelled } = &mut *state;
+            if cancelled.contains(token) {
+                return None;
+            }
             let used = sessions.get_mut(token)?;
             if kind == QuestionKind::Secret
                 && !used.contains(prompt)
@@ -163,13 +171,19 @@ impl Askpass {
             }
         }
         let reply = (self.ask)(Question { kind, prompt: prompt.to_owned() });
-        if let Some(answer) = &reply
-            && kind == QuestionKind::Secret
-        {
-            let mut state = self.state.lock().unwrap();
-            state.remembered.insert(prompt.to_owned(), answer.clone());
-            if let Some(used) = state.sessions.get_mut(token) {
-                used.insert(prompt.to_owned());
+        let mut state = self.state.lock().unwrap();
+        match &reply {
+            Some(answer) if kind == QuestionKind::Secret => {
+                state.remembered.insert(prompt.to_owned(), answer.clone());
+                if let Some(used) = state.sessions.get_mut(token) {
+                    used.insert(prompt.to_owned());
+                }
+            }
+            Some(_) => {}
+            None => {
+                if state.sessions.contains_key(token) {
+                    state.cancelled.insert(token.to_owned());
+                }
             }
         }
         reply
@@ -237,5 +251,24 @@ mod tests {
         assert_eq!(ask_once(&server, &first, "Are you sure you want to continue connecting (yes/no/[fingerprint])? "), None);
         let stale = Session { token: "stale".into(), env: Vec::new(), owner: Weak::new() };
         assert_eq!(ask_once(&server, &stale, "Password: "), None);
+    }
+
+    #[test]
+    fn a_cancelled_question_ends_the_run_questions() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        // The user cancels the first question and would answer any later one.
+        let server = Askpass::start(PathBuf::from("Rainy.exe"), Arc::new(move |_: Question| (counter.fetch_add(1, Ordering::SeqCst) > 0).then(|| "pw".to_owned()))).unwrap();
+        let run = server.session();
+        assert_eq!(ask_once(&server, &run, "Password: "), None);
+        // ssh asks again after the empty answer; no window opens for it.
+        assert_eq!(ask_once(&server, &run, "Password: "), None);
+        assert_eq!(ask_once(&server, &run, "Enter passphrase for key: "), None);
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        // The next run asks again.
+        let next = server.session();
+        assert_eq!(ask_once(&server, &next, "Password: ").as_deref(), Some("pw"));
+        drop(run);
+        assert!(server.state.lock().unwrap().cancelled.is_empty());
     }
 }
