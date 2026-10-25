@@ -136,8 +136,9 @@ pub fn remove_retired(install_root: &Path, resources: &Path, signed: &HashSet<St
 
 /// Delete files below `windows-host` that its `runtime.json` does not list (`pruneWindowsHost`): an installer update
 /// overwrites the files it ships but never removes those a newer version dropped. Links are left alone, and a folder is
-/// removed only when this emptied it. `everything`, for the uninstaller, deletes every file but links, then empty
-/// folders and `windows-host` itself. The bytes removed; 0 when the inventory is missing or unreadable.
+/// removed when this emptied it or when it is empty in a folder that holds none of the listed files; an empty folder
+/// beside listed files may be one the package ships and stays. `everything`, for the uninstaller, deletes every file but
+/// links, then empty folders and `windows-host` itself. The bytes removed; 0 when the inventory is missing or unreadable.
 pub fn prune_windows_host(resources: &Path, everything: bool) -> Result<u64> {
     let root = resources.join("windows-host");
     if !fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()) {
@@ -148,7 +149,7 @@ pub fn prune_windows_host(resources: &Path, everything: bool) -> Result<u64> {
         listed.clear();
     }
     let mut removed = 0;
-    if prune(&root, "", &listed, everything, &mut removed)? && everything {
+    if prune(&root, "", &listed, everything, &mut removed)?.may_go(everything) && everything {
         fs::remove_dir(&root).with_context(|| format!("Removing {}", root.display()))?;
     }
     Ok(removed)
@@ -182,9 +183,29 @@ fn key(path: &str) -> String {
     if cfg!(windows) { path.to_lowercase() } else { path.to_owned() }
 }
 
-/// Prune one folder; whether it is now empty and may go: emptied here, or empty while removing everything.
-fn prune(folder: &Path, relative: &str, listed: &HashSet<String>, everything: bool, removed: &mut u64) -> Result<bool> {
-    let (mut empty, mut changed) = (true, false);
+/// What [`prune`] left of a folder.
+struct Pruned {
+    /// Nothing is left in it.
+    empty: bool,
+    /// It holds a listed file, here or deeper: this version ships it.
+    shipped: bool,
+    /// This run removed something from it.
+    changed: bool,
+}
+
+impl Pruned {
+    /// Whether the folder may go: emptied here, empty while removing everything, or empty in a folder this version
+    /// does not ship (the caller decides that last one).
+    fn may_go(&self, everything: bool) -> bool {
+        self.empty && (self.changed || everything)
+    }
+}
+
+/// Prune one folder. A folder found empty stays only where this version ships its parent: packages ship empty
+/// folders, and an earlier version's empty ones would otherwise keep their parents (4.0's `node` and `node_modules`).
+fn prune(folder: &Path, relative: &str, listed: &HashSet<String>, everything: bool, removed: &mut u64) -> Result<Pruned> {
+    let mut pruned = Pruned { empty: true, shipped: false, changed: false };
+    let mut found_empty = Vec::new();
     for entry in fs::read_dir(folder).with_context(|| format!("Reading {}", folder.display()))? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -192,23 +213,41 @@ fn prune(folder: &Path, relative: &str, listed: &HashSet<String>, everything: bo
         let full = entry.path();
         let kind = entry.file_type()?;
         if kind.is_symlink() {
-            empty = false;
+            pruned.empty = false;
         } else if kind.is_dir() {
-            if prune(&full, &path, listed, everything, removed)? {
-                fs::remove_dir(&full).with_context(|| format!("Removing {}", full.display()))?;
-                changed = true;
+            let inner = prune(&full, &path, listed, everything, removed)?;
+            if inner.may_go(everything) {
+                remove_folder(&full)?;
+                pruned.changed = true;
+            } else if inner.empty {
+                found_empty.push(full);
             } else {
-                empty = false;
+                pruned.empty = false;
+                pruned.shipped |= inner.shipped;
             }
         } else if listed.contains(&key(&path)) {
-            empty = false;
+            pruned.empty = false;
+            pruned.shipped = true;
         } else {
             *removed += fs::symlink_metadata(&full)?.len();
             retried(|| fs::remove_file(&full)).with_context(|| format!("Removing {}", full.display()))?;
-            changed = true;
+            pruned.changed = true;
         }
     }
-    Ok(empty && (changed || everything))
+    if pruned.shipped {
+        pruned.empty &= found_empty.is_empty();
+    } else {
+        for full in found_empty {
+            remove_folder(&full)?;
+            pruned.changed = true;
+        }
+    }
+    Ok(pruned)
+}
+
+/// Removes an empty folder, retried while a file just deleted inside is still held open (scanners, the indexer).
+fn remove_folder(full: &Path) -> Result<()> {
+    retried(|| fs::remove_dir(full)).with_context(|| format!("Removing {}", full.display()))
 }
 
 /// A removal tried up to four times, for a file another process holds for a moment.
@@ -275,14 +314,26 @@ mod tests {
     fn prunes_what_the_inventory_does_not_list() {
         let dir = windows_host();
         let resources = dir.path().join("resources");
-        assert_eq!(prune_windows_host(&resources, false).unwrap(), 15);
-        for kept in ["runtime.json", "node/node.exe", "app/dist/host.js", "app/empty/keep.txt"] {
+        let host = resources.join("windows-host");
+        // Empty folders an earlier version shipped (4.0's npm and ripgrep packages), and one this version ships.
+        write(&resources, "windows-host/node/node_modules/npm/index.js", "npm");
+        fs::create_dir_all(host.join("node").join("node_modules").join("npm").join("tap-snapshots")).unwrap();
+        fs::create_dir_all(host.join("old").join("empty").join("deeper")).unwrap();
+        fs::create_dir_all(host.join("app").join("dist").join("shipped-empty")).unwrap();
+        assert_eq!(prune_windows_host(&resources, false).unwrap(), 18);
+        for kept in ["runtime.json", "node/node.exe", "app/dist/host.js", "app/empty/keep.txt", "app/dist/shipped-empty"] {
             assert!(exists(&resources, &format!("windows-host/{kept}")), "{kept}");
         }
-        for gone in ["app/dist/old.js", "pwsh"] {
+        for gone in ["app/dist/old.js", "pwsh", "node/node_modules", "old"] {
             assert!(!exists(&resources, &format!("windows-host/{gone}")), "{gone}");
         }
         assert_eq!(prune_windows_host(&resources, false).unwrap(), 0);
+        assert!(exists(&resources, "windows-host/app/dist/shipped-empty"));
+
+        // What an earlier prune left: empty folders only, which go now.
+        fs::create_dir_all(host.join("node_modules").join("@vscode").join("ripgrep-win32-x64").join("bin")).unwrap();
+        assert_eq!(prune_windows_host(&resources, false).unwrap(), 0);
+        assert!(!exists(&resources, "windows-host/node_modules"));
     }
 
     #[test]
