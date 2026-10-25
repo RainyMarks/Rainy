@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-/** The PDF viewer's text extraction and its error reasons. */
+/** The PDF viewer's text extraction, its error reasons and the place kept across a zoom. */
 import { describe, expect, it } from 'vitest'
 import { describePdfError, PdfJsUnavailableError } from '../../src/renderer/ide/viewers/pdf-errors.ts'
+import { anchoredScroll, captureAnchor, pageIndexAt, type Box } from '../../src/renderer/ide/viewers/pdf-layout.ts'
 import { fixRadicals, joinTextItems, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
 import radicals from '../../native/crates/app/src/web/radicals.in?raw'
 
@@ -82,5 +83,64 @@ describe('error reasons', () => {
   it('falls back to a general reason with the detail shown', () => {
     expect(describePdfError(new Error('Something odd'))).toEqual({ key: 'pdfErrorUnknown', detail: 'Something odd', detailed: true })
     expect(describePdfError('plain text').detail).toBe('plain text')
+  })
+})
+
+describe('place across a zoom', () => {
+  /** Frames as the stage lays them out: 16 px padding, 12 px gaps, centred in a stage `stage` px wide. */
+  function layout(sizes: readonly { width: number; height: number }[], scale: number, stage = 800): Box[] {
+    let top = 16
+    return sizes.map((size) => {
+      const width = size.width * scale
+      const height = size.height * scale
+      const box = { top, left: Math.max(16, (stage - width) / 2), width, height }
+      top += height + 12
+      return box
+    })
+  }
+  const sizes = [{ width: 600, height: 800 }, { width: 800, height: 600 }, { width: 600, height: 800 }, { width: 600, height: 300 }]
+
+  it('finds the page at a coordinate whatever the page sizes', () => {
+    const boxes = layout(sizes, 1)
+    const top = (index: number): number => boxes[index]!.top
+    expect(pageIndexAt(boxes.length, top, 0)).toBe(0)
+    expect(pageIndexAt(boxes.length, top, 16 + 800 + 5)).toBe(0)
+    expect(pageIndexAt(boxes.length, top, 16 + 800 + 12 + 1)).toBe(1)
+    expect(pageIndexAt(boxes.length, top, 1e6)).toBe(3)
+  })
+
+  it('keeps the same spot of the same page under the same point of the view', () => {
+    const before = layout(sizes, 1)
+    const view = { left: 0, top: 16 + 800 + 12 + 150, width: 800, height: 600 }
+    const anchor = captureAnchor(before.length, index => before[index]!, view, { x: 0.5, y: 0 })!
+    expect(anchor).toMatchObject({ index: 1, y: 0.25 })
+    const after = layout(sizes, 2)
+    const scroll = anchoredScroll(anchor, after.length, index => after[index]!, { width: 800, height: 600 })!
+    expect(scroll.top).toBeCloseTo(after[1]!.top + 0.25 * after[1]!.height)
+    const again = captureAnchor(after.length, index => after[index]!, { ...view, ...scroll }, { x: 0.5, y: 0 })!
+    expect(again.index).toBe(1)
+    expect(again.y).toBeCloseTo(0.25)
+    expect(again.x).toBeCloseTo(anchor.x)
+  })
+
+  it('holds a pointer position, and a point in a gap stays in the gap', () => {
+    const before = layout(sizes, 1)
+    const view = { left: 0, top: 1000, width: 800, height: 600 }
+    const at = { x: 0.2, y: 0.4 }
+    const anchor = captureAnchor(before.length, index => before[index]!, view, at)!
+    const after = layout(sizes, 1.5)
+    const scroll = anchoredScroll(anchor, after.length, index => after[index]!, view)!
+    const again = captureAnchor(after.length, index => after[index]!, { ...view, ...scroll }, at)!
+    expect([again.index, again.x, again.y]).toEqual([anchor.index, expect.closeTo(anchor.x), expect.closeTo(anchor.y)])
+    // 6 px into the gap below the first page.
+    const gap = captureAnchor(before.length, index => before[index]!, { ...view, top: 16 + 800 + 6 }, { x: 0.5, y: 0 })!
+    expect(gap).toMatchObject({ index: 0, y: 1, dy: 6 })
+    expect(anchoredScroll(gap, after.length, index => after[index]!, view)!.top).toBeCloseTo(16 + 800 * 1.5 + 6)
+  })
+
+  it('has nothing to hold without pages, or when the page is gone', () => {
+    expect(captureAnchor(0, () => ({ top: 0, left: 0, width: 0, height: 0 }), { left: 0, top: 0, width: 1, height: 1 }, { x: 0, y: 0 })).toBeUndefined()
+    const anchor = { index: 5, x: 0, y: 0, dx: 0, dy: 0, viewX: 0, viewY: 0 }
+    expect(anchoredScroll(anchor, 2, () => ({ top: 0, left: 0, width: 1, height: 1 }), { width: 1, height: 1 })).toBeUndefined()
   })
 })
