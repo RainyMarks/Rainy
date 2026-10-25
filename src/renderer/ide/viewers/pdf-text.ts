@@ -66,3 +66,46 @@ export function joinTextItems(items: Iterable<PdfTextItem>): string {
   }
   return text.replace(/[ \t]+\n/g, '\n').trimEnd()
 }
+
+/** The text layer of one rendered page: pdf.js's `textDivs` and the items they show, index for index. Items with no text
+ *  (a bare line end) have a div that is not in the document. */
+export interface TextLayerRecord {
+  readonly divs: readonly HTMLElement[]
+  readonly items: readonly PdfTextItem[]
+}
+
+/**
+ * What Ctrl+C copies from text layers, in place of the browser's copy of their absolutely placed spans: the selected part of
+ * the items joined as `joinTextItems` does, so a selection copies with the spacing and line ends 提取文本 gives.
+ * @param range The selection.
+ * @param layers Text layers in page order.
+ * @returns The selected text, pages on lines of their own, or `undefined` when the selection holds no text-layer text.
+ */
+export function selectedText(range: Range, layers: readonly TextLayerRecord[]): string | undefined {
+  const parts: string[] = []
+  for (const layer of layers) {
+    let first = -1
+    let last = -1
+    let from = 0
+    let to = 0
+    layer.divs.forEach((div, index) => {
+      const node = div.firstChild
+      if (node === null || node.nodeType !== Node.TEXT_NODE || !div.isConnected || !range.intersectsNode(node)) return
+      if (first < 0) {
+        first = index
+        from = node === range.startContainer ? range.startOffset : 0
+      }
+      last = index
+      to = node === range.endContainer ? range.endOffset : (node as Text).length
+    })
+    if (first < 0) continue
+    const items = layer.items.slice(first, last + 1).map((item, index, all) => {
+      let str = item.str ?? ''
+      if (index === all.length - 1) str = str.slice(0, to)
+      if (index === 0) str = str.slice(from)
+      return { ...item, str }
+    })
+    parts.push(joinTextItems(items))
+  }
+  return parts.length === 0 ? undefined : parts.join('\n')
+}

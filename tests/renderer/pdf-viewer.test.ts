@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-/** The PDF viewer's text extraction, its error reasons and the place kept across a zoom. */
+/** The PDF viewer's text extraction and copy, its error reasons and the place kept across a zoom. */
 import { describe, expect, it } from 'vitest'
 import { describePdfError, PdfJsUnavailableError } from '../../src/renderer/ide/viewers/pdf-errors.ts'
 import { anchoredScroll, captureAnchor, pageIndexAt, type Box } from '../../src/renderer/ide/viewers/pdf-layout.ts'
-import { fixRadicals, joinTextItems, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
+import { fixRadicals, joinTextItems, selectedText, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
 import radicals from '../../native/crates/app/src/web/radicals.in?raw'
 
 /** An upright item at `x`, `y` in a 10 pt font, `width` wide. */
@@ -54,6 +54,43 @@ describe('text of a page', () => {
 
   it('maps radicals, skips marked content and trims line ends', () => {
     expect(joinTextItems([{ str: '第⼆节   ', hasEOL: true }, {}, { str: '⽇期' }])).toBe('第二节\n日期')
+  })
+})
+
+describe('copying a selection of the text layer', () => {
+  /** A text layer of the given items, one span per item with text, as pdf.js 2.16 builds it. */
+  function layer(items: PdfTextItem[]): { divs: HTMLElement[]; items: PdfTextItem[]; root: HTMLElement } {
+    const root = document.createElement('div')
+    const divs = items.map((entry) => {
+      const span = document.createElement('span')
+      span.textContent = entry.str ?? ''
+      if (entry.str !== '') root.append(span)
+      if (entry.hasEOL === true) root.append(document.createElement('br'))
+      return span
+    })
+    document.body.append(root)
+    return { divs, items, root }
+  }
+
+  it('copies the selected parts of the items with their line ends, page after page', () => {
+    const first = layer([item('Hello', 72, 25), item('world', 100, 25, 700, true), item('', 0, 0, 700, true), item('第二行', 72, 30, 680)])
+    const second = layer([item('Next', 72, 20), item('page', 100, 20)])
+    const range = document.createRange()
+    range.setStart(first.divs[0]!.firstChild!, 2)
+    range.setEnd(first.divs[3]!.firstChild!, 2)
+    expect(selectedText(range, [first, second])).toBe('llo world\n\n第二')
+    range.setEnd(second.divs[1]!.firstChild!, 2)
+    expect(selectedText(range, [first, second])).toBe('llo world\n\n第二行\nNext pa')
+  })
+
+  it('leaves a selection outside the text layers to the browser', () => {
+    const page = layer([item('Hello', 72, 25)])
+    const other = document.createElement('p')
+    other.textContent = 'toolbar'
+    document.body.prepend(other)
+    const range = document.createRange()
+    range.selectNodeContents(other)
+    expect(selectedText(range, [page])).toBeUndefined()
   })
 })
 

@@ -118,8 +118,25 @@
 .outlineSlide p { margin: 0 0 4px; user-select: text; }
 
 /* PDF viewer (PdfViewer.tsx). The column of pages is as wide as its widest page, so a zoomed page scrolls to both of its
-   edges instead of losing its left side. Below, the detail under an error and the password prompt. */
+   edges instead of losing its left side; each page is its own stacking context for its layers. The text layer (text
+   transparent over the canvas, for selecting and copying) and the link layer follow pdf.js 2.16's pdf_viewer.css, which
+   is not bundled; a selection is the accent, translucent, on the white paper of either theme. Below, the detail under an
+   error and the password prompt. */
 .pdfPages { width: max-content; min-width: 100%; }
+.pdfPage { isolation: isolate; }
+.textLayer { position: absolute; left: 0; top: 0; z-index: 1; overflow: hidden; line-height: 1; text-align: initial; text-size-adjust: none; forced-color-adjust: none; }
+.textLayer span, .textLayer br { position: absolute; color: transparent; white-space: pre; cursor: text; transform-origin: 0 0; }
+.textLayer ::selection { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 35%, transparent); color: transparent; }
+.textLayer br::selection { background: transparent; }
+.endOfContent { position: absolute; top: 100%; right: 0; bottom: 0; left: 0; z-index: -1; cursor: default; user-select: none; }
+.endOfContent[data-active] { top: 0; }
+.linkLayer { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; transform-origin: 0 0; }
+.linkLayer[data-main-rotation='90'] { transform: rotate(90deg) translateX(-100%); }
+.linkLayer[data-main-rotation='180'] { transform: rotate(180deg) translate(-100%, -100%); }
+.linkLayer[data-main-rotation='270'] { transform: rotate(270deg) translateY(-100%); }
+.linkLayer section { position: absolute; box-sizing: border-box; text-align: initial; pointer-events: auto; transform-origin: 0 0; }
+.linkLayer a { position: absolute; inset: 0; font-size: 1em; cursor: pointer; }
+.linkLayer a:hover { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 18%, transparent); }
 .pdfErrorDetail { max-width: 560px; font-size: 12px; color: var(--rainy-alias-label-tertiary); overflow-wrap: anywhere; user-select: text; }
 .pdfPassword p { margin: 0; }
 .pdfPasswordRow { display: flex; gap: 8px; width: min(320px, 100%); }
