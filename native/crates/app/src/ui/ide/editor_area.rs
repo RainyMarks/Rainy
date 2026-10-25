@@ -26,7 +26,7 @@ use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
 use crate::ui::ide::{AiEditSelection, MarkdownPreview, MarkdownSplit, choose_folder, editor_commands, file_icon};
-use crate::ui::tr;
+use crate::ui::{tr, trf};
 use crate::web::{PaneEvent, WebPane};
 
 /// A file shown in a page: which viewer, for which version of the file, and the text the page sent last.
@@ -405,8 +405,9 @@ impl EditorArea {
                             let _ = cx.update(|_, cx| respond(json!({ "error": error.to_string() }), cx));
                             return;
                         }
-                        Err(error) => {
-                            let _ = cx.update(|_, cx| respond(json!({ "error": error.to_string() }), cx));
+                        // The dialog's thread ended without an answer.
+                        Err(_) => {
+                            let _ = cx.update(|_, cx| respond(json!({ "error": tr(cx, "viewers.exportDialogFailed").to_string() }), cx));
                             return;
                         }
                     };
@@ -422,11 +423,20 @@ impl EditorArea {
                             None => false,
                         });
                         if !matches!(started, Ok(true)) {
-                            let _ = cx.update(|_, cx| respond(json!({ "error": "No window to print in." }), cx));
+                            let _ = cx.update(|_, cx| respond(json!({ "error": tr(cx, "viewers.exportNoWindow").to_string() }), cx));
                             return;
                         }
-                        let made = receiver.recv().await.unwrap_or_else(|_| Err("The PDF was not made.".to_owned()));
-                        let _ = cx.update(|_, _| crate::web::export::close_finished());
+                        let made = receiver.recv().await;
+                        let Ok(made) = cx.update(|_, cx| {
+                            crate::web::export::close_finished();
+                            match made {
+                                Ok(made) => made.map_err(|failure| pdf_failure(&failure, cx)),
+                                // The print callback was dropped without running.
+                                Err(_) => Err(tr(cx, "viewers.exportPdfNotMade").to_string()),
+                            }
+                        }) else {
+                            return;
+                        };
                         made
                     } else {
                         Ok(html.into_bytes())
@@ -888,6 +898,18 @@ impl EditorArea {
 
 fn centered(content: impl IntoElement, theme: &gpui_kit::component::Theme) -> Div {
     div().size_full().flex().items_center().justify_center().text_sm().text_color(theme.muted_foreground).child(content)
+}
+
+/// Why a Markdown export has no PDF, in the interface language; the page puts it after "导出失败：".
+fn pdf_failure(failure: &crate::web::export::PdfFailure, cx: &App) -> String {
+    use crate::web::export::PdfFailure;
+    match failure {
+        PdfFailure::Page(detail) => trf(cx, "viewers.exportPdfPage", &[("error", detail)]),
+        PdfFailure::Control(detail) => trf(cx, "viewers.exportPdfControl", &[("error", detail)]),
+        PdfFailure::Print(detail) => trf(cx, "viewers.exportPdfPrint", &[("error", detail)]),
+        PdfFailure::Empty => tr(cx, "viewers.exportPdfEmpty"),
+    }
+    .to_string()
 }
 
 /// The source line at the top of an editor, 1-based with the fraction scrolled past; `None` before its first layout.
