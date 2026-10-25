@@ -504,8 +504,13 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
                     }
                 }
             }
-            TranscriptEntry::Notice { level, text, .. } => {
-                blocks.push(Block::Notice { level: level.clone().into(), text: text.clone().into() });
+            TranscriptEntry::Notice { level, text, code, .. } => {
+                // A stopped reply already says so right above.
+                let stopped = i18n::text(locale, "chat.stopped");
+                let said = code.as_deref() == Some("stopped") && matches!(blocks.last(), Some(Block::Muted { text }) if text.as_ref() == stopped);
+                if !said {
+                    blocks.push(Block::Notice { level: level.clone().into(), text: text.clone().into() });
+                }
             }
             TranscriptEntry::Compaction { tokens_before, trigger, .. } => {
                 let key = if trigger == "manual" { "chat.compactionManual" } else { "chat.compaction" };
