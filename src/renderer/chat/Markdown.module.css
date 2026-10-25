@@ -129,7 +129,7 @@
   overflow-wrap: anywhere;
 }
 
-/* Project files: highlights, keys, folded sections and footnotes. */
+/* Project files: highlights, keys, folded sections, footnotes and diagrams. */
 .markdown mark {
   padding: 0 2px;
   border-radius: 2px;
@@ -170,4 +170,22 @@
   margin: 0 0 6px;
   font-size: 1em;
   color: var(--rainy-alias-label-secondary);
+}
+
+.diagram {
+  margin: 0 0 12px;
+  overflow-x: auto;
+  text-align: center;
+  color: var(--rainy-alias-label-tertiary);
+}
+.diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.diagramError {
+  margin-bottom: 6px;
+  color: var(--rainy-alias-state-error-primary);
+  white-space: pre-wrap;
+  font-size: 0.9em;
 }

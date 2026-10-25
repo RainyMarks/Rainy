@@ -14,6 +14,7 @@ import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer
 import { PdfViewer } from '../ide/viewers/PdfViewer.tsx'
 import { RichMarkdown } from '../ide/viewers/RichMarkdown.tsx'
 import { saveMarkdownImage } from '../ide/viewers/markdown-assets.ts'
+import { ScrollSync } from '../ide/viewers/scroll-sync.ts'
 import { viewerMessages } from '../ide/viewers/messages.ts'
 import { outlinePosition, outlineTarget } from '../ide/outline-store.ts'
 import { localTarget, resolveDocumentPath } from '../chat/Markdown.tsx'
@@ -36,6 +37,8 @@ type Message =
   | { type: 'ask'; text: string }
   | { type: 'outline'; index: number }
   | { type: 'notice'; tone: 'success' | 'error'; text: string }
+  /** The user scrolled the split preview: the 1-based source line now at its top, possibly fractional. */
+  | { type: 'scroll'; line: number }
 
 declare global {
   interface Window {
@@ -51,6 +54,9 @@ declare global {
       revealHeading(index: number): void
       /** Save the Markdown document as a PDF or a self-contained HTML page. */
       exportDocument(format: 'pdf' | 'html'): void
+      /** Scroll the Markdown preview to the source editor's first visible line: 1-based, possibly fractional. The page
+       *  does not answer with a `scroll` message for the scrolling this causes. */
+      scrollToLine(line: number): void
     }
   }
 }
@@ -77,6 +83,8 @@ let receiveSession: ((sessionId: string | null) => void) | undefined
 let latestSession: string | null = null
 /** The Markdown document this page shows, for exporting it. */
 let shownDocument: { workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string } | undefined
+/** The source editor's scroll position, which the preview follows in split view. */
+const editorScroll = new ScrollSync()
 window.__rainyViewer = {
   setSession(sessionId) {
     latestSession = sessionId
@@ -101,6 +109,9 @@ window.__rainyViewer = {
       .then(({ exportDocument }) => exportDocument({ format, text, path: shown.path, workspaceId: shown.workspaceId, rootId: shown.rootId }))
       .then((saved) => { if (saved !== null) post({ type: 'notice', tone: 'success', text: viewerMessages.t('exportDone', { path: saved }) }) },
         (error: unknown) => { post({ type: 'notice', tone: 'error', text: viewerMessages.t('exportFailed', { error: error instanceof Error ? error.message : String(error) }) }) })
+  },
+  scrollToLine(line) {
+    if (Number.isFinite(line)) editorScroll.editorScrolled(line)
   },
 }
 // The heading at the top of the rich editor, for the outline beside it.
@@ -168,7 +179,12 @@ function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; work
   if (text === undefined) return null
   const directory = path.split('/').slice(0, -1).join('/')
   const base = { workspaceId, rootId, directory }
-  if (!rich) return <MarkdownPreview text={text.text} version={text.version} base={base} />
+  // The preview resolved the path against the document's directory already.
+  if (!rich) {
+    return <MarkdownPreview text={text.text} version={text.version} base={base} sync={editorScroll}
+      openLocal={(target) => { post({ type: 'open-file', path: target.path, rootId, line: target.line }) }}
+      onScrollLine={(line) => { post({ type: 'scroll', line }) }} />
+  }
   return <RichMarkdown path={path} text={text.text} version={text.version} base={base}
     onChange={(value) => { latestText = { text: value, version: text.version }; post({ type: 'change', text: value }) }}
     onSave={() => { post({ type: 'save' }) }}

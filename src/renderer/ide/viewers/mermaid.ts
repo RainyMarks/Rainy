@@ -45,3 +45,41 @@ export function renderMermaid(source: string, dark = isDark()): Promise<string> 
   queue = task.catch(() => undefined)
   return task
 }
+
+const themeListeners = new Set<() => void>()
+let themeObserver: MutationObserver | undefined
+let shownTheme = ''
+
+/** What a diagram's colors and text measurement depend on: the mode, the color scheme, the accent and the font. */
+function themeKey(): string {
+  const body = document.body
+  return [isDark(), body.getAttribute('data-color-scheme'), body.getAttribute('data-accent'),
+    getComputedStyle(body).getPropertyValue('--rainy-font-family')].join('|')
+}
+
+/**
+ * Follow the page's theme, so drawn diagrams can be drawn again in the new colors.
+ * @param listener Called after the dark mode, color scheme, accent or interface font changed.
+ * @returns Unsubscribe.
+ */
+export function onThemeChange(listener: () => void): () => void {
+  themeListeners.add(listener)
+  if (themeObserver === undefined && typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+    shownTheme = themeKey()
+    // `prefs.ts` sets these attributes on every preference change; only a change of their values counts.
+    themeObserver = new MutationObserver(() => {
+      const key = themeKey()
+      if (key === shownTheme) return
+      shownTheme = key
+      for (const notify of [...themeListeners]) notify()
+    })
+    themeObserver.observe(document.body, { attributes: true, attributeFilter: ['data-rainy-dark', 'data-color-scheme', 'data-accent'] })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+  }
+  return () => {
+    themeListeners.delete(listener)
+    if (themeListeners.size > 0) return
+    themeObserver?.disconnect()
+    themeObserver = undefined
+  }
+}
