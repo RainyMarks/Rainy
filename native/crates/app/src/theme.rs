@@ -6,8 +6,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use gpui_kit::component::{Theme, ThemeConfig, ThemeMode};
-use gpui_kit::{App, SharedString, Window, px};
+use gpui_kit::component::button::ButtonCustomVariant;
+use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
+use gpui_kit::{App, Hsla, SharedString, Window, px};
 use rainy_protocol::UiPreferences;
 use serde_json::Value;
 
@@ -114,6 +115,23 @@ pub fn themes_for(scheme: &str, accent: &str) -> (Rc<ThemeConfig>, Rc<ThemeConfi
         Rc::new(serde_json::from_value::<ThemeConfig>(theme).expect("valid theme"))
     };
     (build(&palettes.light, false), build(&palettes.dark, true))
+}
+
+/// Text in the warning color. The theme's amber is a fill color: as text on a light surface it is 2:1, so light mode
+/// darkens it to about 5:1.
+pub fn warning_text(cx: &App) -> Hsla {
+    let warning = cx.theme().warning;
+    if cx.theme().mode.is_dark() { warning } else { Hsla { l: warning.l.min(0.30), ..warning } }
+}
+
+/// A selected ghost button (the side tabs, the pane toggles): GPUI Kit's own selected background is about 1.2:1
+/// against the bar, so a selected one shows the accent color on a tinted background, in both modes.
+pub fn selected_button(cx: &App) -> ButtonCustomVariant {
+    let theme = cx.theme();
+    let dark = theme.mode.is_dark();
+    let foreground = if dark { theme.link } else { theme.primary_active };
+    let tint = |opacity: f32| theme.primary.opacity(if dark { opacity * 1.8 } else { opacity });
+    ButtonCustomVariant::new(cx).color(tint(0.12)).foreground(foreground).hover(tint(0.18)).active(tint(0.24))
 }
 
 /// The first family of a comma-separated font preference, or the default.
