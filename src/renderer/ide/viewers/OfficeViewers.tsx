@@ -1,11 +1,15 @@
 /** Office documents and small Windows files: Word (.docx) rendered in the page, spreadsheets as tables, slides and legacy
  *  Word documents as PDF made by the Office installed on the computer, `~$` lock files and `.lnk` shortcuts. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { encryptedOpenXml } from '../../../shared/office-protocol.ts'
+import { encryptedOpenXml, type OfficeFailureCode } from '../../../shared/office-protocol.ts'
 import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
+import { HttpStatusError } from './byte-source.ts'
 import { officeLockOwner, shortcutFacts } from './file-facts.ts'
+import { loadFailure, type LoadFailure } from './load-errors.ts'
 import { useViewerT } from './messages.ts'
 import { PdfViewer } from './PdfViewer.tsx'
+import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
+import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
 
 /** Largest file read whole into the page for a preview. */
@@ -18,20 +22,27 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** A failure as one line in the reader's language; the original text is its tooltip. */
+function Failed({ template, failure, block = false }: { template: (reason: string) => string; failure: LoadFailure; block?: boolean }): JSX.Element {
+  const text = template(failure.reason)
+  return block ? <div className={`${css.message} ${css.error}`} title={failure.detail}>{text}</div> : <p className={css.error} title={failure.detail}>{text}</p>
+}
+
 /** The whole file from the Host's byte route. */
-function useFileBytes(url: string, size: number): { bytes?: Uint8Array; error?: string } {
-  const [state, setState] = useState<{ bytes?: Uint8Array; error?: string }>({})
+function useFileBytes(url: string, size: number): { bytes?: Uint8Array; error?: LoadFailure } {
+  const t = useViewerT()
+  const [state, setState] = useState<{ bytes?: Uint8Array; error?: LoadFailure }>({})
   useEffect(() => {
     let cancelled = false
     setState({})
-    if (size > MAX_PREVIEW_BYTES) { setState({ error: fileSizeText(size) }); return }
+    if (size > MAX_PREVIEW_BYTES) { setState({ error: { reason: t('previewTooLarge', { size: fileSizeText(size) }), detail: '' } }); return }
     void fetch(url, { cache: 'no-store' }).then(async (response) => {
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) throw new HttpStatusError(response.status)
       const bytes = new Uint8Array(await response.arrayBuffer())
       if (!cancelled) setState({ bytes })
-    }).catch((error: unknown) => { if (!cancelled) setState({ error: message(error) }) })
+    }).catch((error: unknown) => { if (!cancelled) setState({ error: loadFailure(error, t) }) })
     return () => { cancelled = true }
-  }, [url, size])
+  }, [url, size, t])
   return state
 }
 
@@ -43,15 +54,22 @@ export interface DocumentLocation {
   readonly extension: string
 }
 
-function OpenInApp({ location }: { location: DocumentLocation }): JSX.Element | null {
+/** "Open in default app" as a toolbar action, where the desktop can reach the file. */
+function useOpenInApp(location: DocumentLocation): ToolAction | undefined {
   const t = useViewerT()
   const open = window.__RAINY_OFFICE__?.open
-  if (open === undefined || location.hostPath === undefined) return null
+  if (open === undefined || location.hostPath === undefined) return undefined
   const path = location.hostPath
-  return <button type="button" className={css.toolButton} title={t('openInAppTitle')} onClick={() => {
+  return { id: 'open-in-app', label: t('openInApp'), title: t('openInAppTitle'), onSelect: () => {
     void open(path).then((result) => { if (result.error !== undefined) toast(t('openInAppFailed', { error: result.error }), { tone: 'error' }) },
       (error: unknown) => { toast(t('openInAppFailed', { error: message(error) }), { tone: 'error' }) })
-  }}>{t('openInApp')}</button>
+  } }
+}
+
+function OpenInApp({ location }: { location: DocumentLocation }): JSX.Element | null {
+  const action = useOpenInApp(location)
+  if (action === undefined) return null
+  return <button type="button" className={css.toolButton} title={action.title} onClick={action.onSelect}>{action.label}</button>
 }
 
 /** What a password-protected file gets instead of a preview. */
@@ -63,14 +81,19 @@ function Encrypted({ location }: { location: DocumentLocation }): JSX.Element {
   </div></div>
 }
 
-/** Zoom buttons shared by the Word preview. */
-function ZoomTools({ factor, auto, onZoom }: { factor: number; auto: boolean; onZoom: (zoom: number | 'auto') => void }): JSX.Element {
+/** The Word preview's zoom steps: tenths from 25% to 400%. */
+function zoomStep(factor: number, direction: 1 | -1): number {
+  return Math.min(4, Math.max(0.25, Math.round((factor + direction * 0.1) * 10) / 10))
+}
+
+/** Zoom buttons of the Word preview; on a narrow page 自动缩放 moves into the 更多 menu. */
+function ZoomTools({ factor, auto, narrow, onZoom }: { factor: number; auto: boolean; narrow: boolean; onZoom: (zoom: number | 'auto') => void }): JSX.Element {
   const t = useViewerT()
   return <>
-    <button type="button" className={css.toolButton} aria-label={t('zoomOut')} title={t('zoomOut')} onClick={() => { onZoom(Math.max(0.25, Math.round((factor - 0.1) * 10) / 10)) }}>−</button>
+    <button type="button" className={css.toolButton} aria-label={t('zoomOut')} title={t('zoomOut')} onClick={() => { onZoom(zoomStep(factor, -1)) }}>−</button>
     <span>{t('zoomLevel', { percent: Math.round(factor * 100) })}</span>
-    <button type="button" className={css.toolButton} aria-label={t('zoomIn')} title={t('zoomIn')} onClick={() => { onZoom(Math.min(4, Math.round((factor + 0.1) * 10) / 10)) }}>+</button>
-    <button type="button" className={css.toolButton} aria-pressed={auto} onClick={() => { onZoom('auto') }}>{t('zoomAuto')}</button>
+    <button type="button" className={css.toolButton} aria-label={t('zoomIn')} title={t('zoomIn')} onClick={() => { onZoom(zoomStep(factor, 1)) }}>+</button>
+    {!narrow && <button type="button" className={css.toolButton} aria-pressed={auto} onClick={() => { onZoom('auto') }}>{t('zoomAuto')}</button>}
   </>
 }
 
@@ -81,10 +104,17 @@ const WORD_STYLE = `
 .docx-wrapper > section.docx { box-shadow: 0 1px 4px rgb(0 0 0 / 20%); margin-bottom: 16px !important; }
 `
 
-/** A Word document drawn by docx-preview inside a shadow root, so its styles and the workbench's stay apart. */
-function WordPreview({ bytes, onFailed, tools }: { bytes: Uint8Array; onFailed: (error: string) => void; tools: ReactNode }): JSX.Element {
+/** A Word document drawn by docx-preview inside a shadow root, so its styles and the workbench's stay apart.
+ *  `modes` lead the toolbar; `actions` fold into the 更多 menu on a narrow page. */
+function WordPreview({ bytes, onFailed, modes, actions }: {
+  bytes: Uint8Array
+  onFailed: (error: unknown) => void
+  modes: ReactNode
+  actions: readonly (ToolAction | undefined)[]
+}): JSX.Element {
   const t = useViewerT()
-  const stage = useRef<HTMLDivElement>(null)
+  const narrow = useNarrow()
+  const [stage, setStage] = useState<HTMLDivElement | null>(null)
   const host = useRef<HTMLDivElement>(null)
   const [rendered, setRendered] = useState(false)
   const [pageWidth, setPageWidth] = useState(0)
@@ -118,7 +148,7 @@ function WordPreview({ bytes, onFailed, tools }: { bytes: Uint8Array; onFailed: 
       const page = body.querySelector<HTMLElement>('section.docx')
       setPageWidth(page?.offsetWidth ?? 0)
       setRendered(true)
-    }).catch((error: unknown) => { if (!cancelled) onFailed(message(error)) })
+    }).catch((error: unknown) => { if (!cancelled) onFailed(error) })
     return () => {
       cancelled = true
       // docx-preview gives every image and font an object URL and never frees them.
@@ -127,20 +157,34 @@ function WordPreview({ bytes, onFailed, tools }: { bytes: Uint8Array; onFailed: 
   }, [bytes, onFailed])
 
   useLayoutEffect(() => {
-    const element = stage.current
+    const element = stage
     if (element === null) return
     const observer = new ResizeObserver(() => { setWidth(element.clientWidth) })
     observer.observe(element)
     return () => { observer.disconnect() }
-  }, [])
+  }, [stage])
 
-  const factor = zoom === 'auto' ? (pageWidth > 0 ? Math.max(0.25, Math.min(1.25, (width - 40) / pageWidth)) : 1) : zoom
+  const fitted = pageWidth > 0 ? Math.max(0.25, Math.min(1.25, (width - 40) / pageWidth)) : 1
+  const factor = zoom === 'auto' ? fitted : zoom
+  // CSS zoom scales the pages from the stage's top left, so the scroll offsets scale with it to keep the reader's place.
+  const zoomTo = (next: number | 'auto'): void => {
+    const ratio = (next === 'auto' ? fitted : next) / factor
+    if (stage !== null && ratio !== 1) {
+      const top = stage.scrollTop * ratio
+      const left = stage.scrollLeft * ratio
+      requestAnimationFrame(() => { stage.scrollTop = top; stage.scrollLeft = left })
+    }
+    setZoom(next)
+  }
+  useZoomKeys(stage, { zoomIn: () => { zoomTo(zoomStep(factor, 1)) }, zoomOut: () => { zoomTo(zoomStep(factor, -1)) }, reset: () => { zoomTo('auto') } }, rendered)
   return <>
     <div className={css.toolbar}>
-      {tools}
-      <ZoomTools factor={factor} auto={zoom === 'auto'} onZoom={setZoom} />
+      {modes}
+      <ZoomTools factor={factor} auto={zoom === 'auto'} narrow={narrow} onZoom={zoomTo} />
+      <span className={css.grow} />
+      <ToolActions actions={[narrow && { id: 'word-zoom-auto', label: t('zoomAuto'), disabled: zoom === 'auto', onSelect: () => { zoomTo('auto') } }, ...actions]} />
     </div>
-    <div ref={stage} className={`${css.stage} ${css.paperStage}`}>
+    <div ref={setStage} className={`${css.stage} ${css.paperStage}`}>
       {!rendered && <div className={css.message}>{t('loading')}</div>}
       <div ref={host} style={{ zoom: factor }} hidden={!rendered} />
     </div>
@@ -148,7 +192,15 @@ function WordPreview({ bytes, onFailed, tools }: { bytes: Uint8Array; onFailed: 
 }
 
 /** Slides and legacy documents as a PDF made by the installed Office. */
-interface OfficePdfState { pdf?: Uint8Array; application?: string; error?: string; missing?: boolean; encrypted?: boolean; unavailable?: boolean }
+interface OfficePdfState {
+  pdf?: Uint8Array
+  application?: string
+  code?: OfficeFailureCode | undefined
+  error?: string
+  missing?: boolean
+  encrypted?: boolean
+  unavailable?: boolean
+}
 
 function useOfficePdf(bytes: Uint8Array | undefined, extension: string, attempt: number): OfficePdfState {
   const [state, setState] = useState<OfficePdfState>({})
@@ -160,8 +212,8 @@ function useOfficePdf(bytes: Uint8Array | undefined, extension: string, attempt:
     if (bridge === undefined) { setState({ unavailable: true }); return }
     void bridge.toPdf(bytes, extension).then((result) => {
       if (cancelled) return
-      setState('pdf' in result ? { pdf: result.pdf, application: result.application } : { error: result.error, missing: result.missing, encrypted: result.encrypted === true })
-    }, (error: unknown) => { if (!cancelled) setState({ error: message(error) }) })
+      setState('pdf' in result ? { pdf: result.pdf, application: result.application } : { code: result.code, error: result.error, missing: result.missing, encrypted: result.encrypted === true })
+    }, (error: unknown) => { if (!cancelled) setState({ code: 'failed', error: message(error) }) })
     return () => { cancelled = true }
   }, [bytes, extension, attempt])
   return state
@@ -185,13 +237,13 @@ async function slideTexts(bytes: Uint8Array): Promise<string[][]> {
 function SlidesOutline({ bytes }: { bytes: Uint8Array }): JSX.Element {
   const t = useViewerT()
   const [slides, setSlides] = useState<string[][] | undefined>()
-  const [error, setError] = useState('')
+  const [error, setError] = useState<LoadFailure | undefined>()
   useEffect(() => {
     let cancelled = false
-    void slideTexts(bytes).then((value) => { if (!cancelled) setSlides(value) }, (failure: unknown) => { if (!cancelled) setError(message(failure)) })
+    void slideTexts(bytes).then((value) => { if (!cancelled) setSlides(value) }, (failure: unknown) => { if (!cancelled) setError(loadFailure(failure, t)) })
     return () => { cancelled = true }
-  }, [bytes])
-  if (error !== '') return <p className={css.error}>{t('slidesOutlineFailed', { error })}</p>
+  }, [bytes, t])
+  if (error !== undefined) return <Failed template={reason => t('slidesOutlineFailed', { error: reason })} failure={error} />
   if (slides === undefined) return <p>{t('loading')}</p>
   return <div className={css.outline}>
     <p>{t('slidesOutline')}</p>
@@ -202,29 +254,45 @@ function SlidesOutline({ bytes }: { bytes: Uint8Array }): JSX.Element {
   </div>
 }
 
-function OfficePdf({ bytes, location, attempt, onRetry, fallback, tools }: {
+/** Why Office made no PDF, in the reader's language; Office's own words are only the detail. */
+function officeFailure(result: OfficePdfState, t: ReturnType<typeof useViewerT>): string {
+  switch (result.code) {
+    case 'timeout': return t('officeTimeout')
+    case 'too-large': return t('officeTooLarge')
+    case 'no-output': return t('officeNoOutput')
+    case 'unsupported': return t('officeUnsupported')
+    case undefined: return result.error === undefined || result.error === '' ? t('officeFailedPlain') : t('officeFailed', { error: result.error })
+    default: return t('officeFailedPlain')
+  }
+}
+
+function OfficePdf({ bytes, location, attempt, onRetry, fallback, modes }: {
   bytes: Uint8Array
   location: DocumentLocation
   attempt: number
   onRetry: () => void
   fallback?: ReactNode
-  tools?: ReactNode
+  modes?: ReactNode
 }): JSX.Element {
   const t = useViewerT()
   const result = useOfficePdf(bytes, location.extension, attempt)
-  if (result.encrypted === true) return <>{tools !== undefined && <div className={css.toolbar}>{tools}</div>}<Encrypted location={location} /></>
+  const openInApp = useOpenInApp(location)
+  if (result.encrypted === true) return <>{modes !== undefined && <div className={css.toolbar}>{modes}</div>}<Encrypted location={location} /></>
   if (result.pdf !== undefined) {
     return <PdfViewer data={result.pdf} bytes={bytes.length} note={t('officeConvertedBy', { app: result.application ?? 'Office' })}
-      tools={<>{tools}<OpenInApp location={location} /></>} />
+      modes={modes} actions={openInApp === undefined ? [] : [openInApp]} />
   }
   const failed = result.unavailable === true || result.missing === true || result.error !== undefined
+  // With a code the reason is ours, and what Office or Windows said is shown below it.
+  const detail = result.code !== undefined && result.error !== undefined && result.error !== '' ? result.error : undefined
   return <>
-    {tools !== undefined && <div className={css.toolbar}>{tools}</div>}
+    {modes !== undefined && <div className={css.toolbar}>{modes}</div>}
     <div className={css.stage}>
       {!failed ? <div className={css.message}>{t('officeConverting')}</div> : <div className={css.factPage}>
-        <p className={result.error !== undefined && result.missing !== true ? css.error : undefined}>
-          {result.unavailable === true ? t('officeUnavailable') : result.missing === true ? t('officeMissing') : t('officeFailed', { error: result.error ?? '' })}
+        <p className={result.error !== undefined && result.missing !== true ? css.error : undefined} title={detail}>
+          {result.unavailable === true ? t('officeUnavailable') : result.missing === true ? t('officeMissing') : officeFailure(result, t)}
         </p>
+        {result.missing !== true && detail !== undefined && <p className={css.muted}>{t('officeDetail', { detail })}</p>}
         <div className={css.factActions}>
           {result.error !== undefined && result.missing !== true && <button type="button" className={css.toolButton} onClick={onRetry}>{t('officeRetry')}</button>}
           <OpenInApp location={location} />
@@ -246,30 +314,33 @@ export function WordViewer({ url, size, location }: { url: string; size: number;
   const t = useViewerT()
   const file = useFileBytes(url, size)
   const [office, setOffice] = useState(false)
-  const [failure, setFailure] = useState('')
+  const [failure, setFailure] = useState<LoadFailure | undefined>()
   const [attempt, setAttempt] = useState(0)
-  useEffect(() => { setFailure('') }, [url])
+  const openInApp = useOpenInApp(location)
+  useEffect(() => { setFailure(undefined) }, [url])
+  const onFailed = useMemo(() => (error: unknown) => { setFailure(loadFailure(error, t)) }, [t])
   const canConvert = window.__RAINY_OFFICE__ !== undefined
+  // The two modes lead the toolbar in both of them, so switching back is always where it was.
   const modes = canConvert ? <>
     <button type="button" className={css.toolButton} aria-pressed={!office} title={t('docxBuiltInTitle')} onClick={() => { setOffice(false) }}>{t('docxBuiltIn')}</button>
     <button type="button" className={css.toolButton} aria-pressed={office} title={t('docxOfficeTitle')} onClick={() => { setOffice(true) }}>{t('docxOffice')}</button>
     <span className={css.separator} />
   </> : undefined
   let body: JSX.Element
-  if (file.error !== undefined) body = <div className={`${css.message} ${css.error}`}>{t('loadFailed', { error: file.error })}</div>
+  if (file.error !== undefined) body = <Failed block template={reason => t('loadFailed', { error: reason })} failure={file.error} />
   else if (file.bytes === undefined) body = <div className={css.message}>{t('loading')}</div>
   else if (encryptedOpenXml(file.bytes, location.extension)) body = <Encrypted location={location} />
-  else if (office) body = <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }} tools={modes} />
-  else if (failure !== '') {
+  else if (office) body = <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }} modes={modes} />
+  else if (failure !== undefined) {
     body = <div className={css.stage}><div className={css.factPage}>
-      <p className={css.error}>{t('docxFailed', { error: failure })}</p>
+      <Failed template={reason => t('docxFailed', { error: reason })} failure={failure} />
       <div className={css.factActions}>
         {canConvert && <button type="button" className={css.toolButton} onClick={() => { setOffice(true) }}>{t('docxOffice')}</button>}
         <OpenInApp location={location} />
       </div>
     </div></div>
   } else {
-    body = <WordPreview bytes={file.bytes} onFailed={setFailure} tools={<>{modes}<OpenInApp location={location} /><span className={css.grow} /></>} />
+    body = <WordPreview bytes={file.bytes} onFailed={onFailed} modes={modes} actions={[openInApp]} />
   }
   return <div className={css.viewer} data-viewer="word">
     {body}
@@ -290,7 +361,7 @@ export function OfficeViewer({ url, size, location }: { url: string; size: numbe
   const [attempt, setAttempt] = useState(0)
   const slides = ['pptx', 'pptm', 'ppsx', 'ppsm', 'potx'].includes(location.extension)
   return <div className={css.viewer} data-viewer="office">
-    {file.error !== undefined ? <div className={`${css.message} ${css.error}`}>{t('loadFailed', { error: file.error })}</div>
+    {file.error !== undefined ? <Failed block template={reason => t('loadFailed', { error: reason })} failure={file.error} />
       : file.bytes === undefined ? <div className={css.message}>{t('loading')}</div>
         : encryptedOpenXml(file.bytes, location.extension) ? <Encrypted location={location} />
         : <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }}
@@ -362,25 +433,27 @@ function columnName(index: number): string {
 export function SheetViewer({ url, size, location }: { url: string; size: number; location: DocumentLocation }): JSX.Element {
   const t = useViewerT()
   const file = useFileBytes(url, size)
+  const openInApp = useOpenInApp(location)
   const [sheets, setSheets] = useState<SheetGrid[] | undefined>()
-  const [error, setError] = useState('')
+  const [error, setError] = useState<LoadFailure | typeof PROTECTED | undefined>()
   const [active, setActive] = useState(0)
   useEffect(() => {
     let cancelled = false
-    setSheets(undefined); setError(''); setActive(0)
+    setSheets(undefined); setError(undefined); setActive(0)
     if (file.bytes === undefined) return
     if (encryptedOpenXml(file.bytes, location.extension)) { setError(PROTECTED); return }
-    void readSheets(file.bytes, document.documentElement.lang.startsWith('zh') ? 'zh' : 'en').then((value) => { if (!cancelled) setSheets(value) }, (failure: unknown) => { if (!cancelled) setError(/password/iu.test(message(failure)) ? PROTECTED : message(failure)) })
+    void readSheets(file.bytes, document.documentElement.lang.startsWith('zh') ? 'zh' : 'en').then((value) => { if (!cancelled) setSheets(value) },
+      (failure: unknown) => { if (!cancelled) setError(/password/iu.test(message(failure)) ? PROTECTED : loadFailure(failure, t)) })
     return () => { cancelled = true }
-  }, [file.bytes, location.extension])
+  }, [file.bytes, location.extension, t])
   const sheet = sheets?.[active]
   const columns = useMemo(() => Math.min(MAX_SHEET_COLUMNS, Math.max(sheet?.totalColumns ?? 0, ...(sheet?.rows ?? []).map(row => row.length))), [sheet])
-  const failure = file.error ?? (error === '' || error === PROTECTED ? undefined : error)
+  const failure = file.error ?? (error === PROTECTED ? undefined : error)
   if (error === PROTECTED) return <div className={css.viewer} data-viewer="sheet"><Encrypted location={location} /></div>
   return <div className={css.viewer} data-viewer="sheet">
-    <div className={css.toolbar}><span className={css.grow} /><OpenInApp location={location} /></div>
+    {openInApp !== undefined && <div className={css.toolbar}><span className={css.grow} /><ToolActions actions={[openInApp]} /></div>}
     <div className={css.stage}>
-      {failure !== undefined ? <div className={`${css.message} ${css.error}`}>{t('sheetFailed', { error: failure })}</div>
+      {failure !== undefined ? <Failed block template={reason => t('sheetFailed', { error: reason })} failure={failure} />
         : sheet === undefined ? <div className={css.message}>{t('loading')}</div>
           : sheet.rows.length === 0 ? <div className={css.message}>{t('sheetEmpty')}</div>
             : <table className={css.sheet}>
@@ -450,7 +523,7 @@ export function ShortcutViewer({ url, size }: { url: string; size: number }): JS
   return <div className={css.viewer} data-viewer="shortcut">
     <div className={css.stage}><div className={css.factPage}>
       <h3>{t('shortcutTitle')}</h3>
-      {file.error !== undefined ? <p className={css.error}>{t('loadFailed', { error: file.error })}</p>
+      {file.error !== undefined ? <Failed template={reason => t('loadFailed', { error: reason })} failure={file.error} />
         : file.bytes === undefined ? <p>{t('loading')}</p>
           : facts === undefined ? <p className={css.error}>{t('shortcutBroken')}</p>
             : <table className={css.facts}><tbody>{rows.filter((row): row is [string, string] => row[1] !== undefined).map(([label, value]) => (

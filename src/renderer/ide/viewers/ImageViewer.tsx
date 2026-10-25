@@ -1,27 +1,40 @@
 /** Image viewer: fit or zoom, pan, pixel readout and "add to chat". */
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
-import { emit } from '../../app/bus.ts'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { fileSizeText, toast } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
+import { ToolActions } from './ToolActions.tsx'
+import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
 
 const ZOOM_STEPS = [0.05, 0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32] as const
 /** The pixel readout copies every pixel once; larger images show only coordinates. */
 const MAX_READ_PIXELS = 50_000_000
+/** The longest edge the composer sends to the model (`MAX_IMAGE_EDGE` in `native/crates/app/src/ui/composer.rs`); a
+ *  larger image is scaled down here already, which keeps the message to the workbench small. */
+const MAX_ATTACH_EDGE = 1568
+
+/** An image for the AI composer: a PNG of what the viewer shows. */
+export interface ImageAttachment {
+  readonly name: string
+  readonly mime: 'image/png'
+  readonly base64: string
+}
 
 function hex2(value: number): string {
   return value.toString(16).padStart(2, '0').toUpperCase()
 }
 
 /**
- * @param props.url Byte route URL of the image.
- * @param props.name File name, used for the attachment.
+ * @param props.url Byte route URL of the image, or an object URL of SVG text being edited.
+ * @param props.name File name, used for the attachment; the zoom starts over for another file.
  * @param props.bytes File size.
+ * @param props.onAttach Hand the image to the AI composer; without it there is no "add to chat".
  * @returns The viewer.
  */
-export function ImageViewer({ url, name, bytes }: { url: string; name: string; bytes: number }): JSX.Element {
+export function ImageViewer({ url, name, bytes, onAttach }: { url: string; name: string; bytes: number; onAttach?: ((image: ImageAttachment) => void) | undefined }): JSX.Element {
   const t = useViewerT()
-  const stage = useRef<HTMLDivElement>(null)
+  const stage = useRef<HTMLDivElement | null>(null)
+  const [stageElement, setStageElement] = useState<HTMLDivElement | null>(null)
   const image = useRef<HTMLImageElement>(null)
   const pixels = useRef<ImageData | undefined>(undefined)
   const pan = useRef<{ x: number; y: number; left: number; top: number } | undefined>(undefined)
@@ -32,10 +45,14 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
   const [panning, setPanning] = useState(false)
   const [pixel, setPixel] = useState<{ x: number; y: number; rgba: readonly [number, number, number, number] | undefined } | undefined>()
 
+  // A new address of the same file (an edited SVG) keeps the zoom; the size is measured again once it loads.
   useEffect(() => {
-    setNatural(undefined); setFailed(false); setZoom('fit'); setPixel(undefined)
+    setFailed(false)
     pixels.current = undefined
   }, [url])
+  useEffect(() => {
+    setNatural(undefined); setZoom('fit'); setPixel(undefined)
+  }, [name])
 
   useLayoutEffect(() => {
     const element = stage.current
@@ -82,11 +99,7 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
     if (next !== undefined) zoomTo(next, clientX, clientY)
   }
 
-  const onWheel = (event: WheelEvent<HTMLDivElement>): void => {
-    if (!event.ctrlKey && !event.metaKey) return
-    event.preventDefault()
-    step(event.deltaY < 0 ? 1 : -1, event.clientX, event.clientY)
-  }
+  useZoomKeys(stageElement, { zoomIn: (x, y) => { step(1, x, y) }, zoomOut: (x, y) => { step(-1, x, y) }, reset: () => { setZoom('fit') } }, !failed)
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.ctrlKey || event.metaKey || event.altKey) return
     const actions: Record<string, () => void> = { '+': () => { step(1) }, '=': () => { step(1) }, '-': () => { step(-1) },
@@ -129,20 +142,26 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
     setPanning(false)
   }
 
+  // The workbench says when the image is in the composer; this only encodes it.
   const attach = async (): Promise<void> => {
     const source = image.current
-    if (source === null || natural === undefined) return
+    if (source === null || natural === undefined || onAttach === undefined) return
     try {
+      const shrink = Math.min(1, MAX_ATTACH_EDGE / Math.max(natural.width, natural.height))
       const canvas = document.createElement('canvas')
-      canvas.width = natural.width
-      canvas.height = natural.height
-      canvas.getContext('2d')?.drawImage(source, 0, 0)
+      canvas.width = Math.max(1, Math.round(natural.width * shrink))
+      canvas.height = Math.max(1, Math.round(natural.height * shrink))
+      const context = canvas.getContext('2d')
+      if (context === null) throw new Error(t('imageBroken'))
+      context.imageSmoothingQuality = 'high'
+      context.drawImage(source, 0, 0, canvas.width, canvas.height)
       const blob = await new Promise<Blob | null>((resolve) => { canvas.toBlob(resolve, 'image/png') })
-      if (blob === null) throw new Error('PNG encoding failed')
+      if (blob === null) throw new Error(t('imageBroken'))
+      const raw = new Uint8Array(await blob.arrayBuffer())
+      let binary = ''
+      for (let offset = 0; offset < raw.length; offset += 0x8000) binary += String.fromCharCode(...raw.subarray(offset, offset + 0x8000))
       const stem = name.replace(/\.[^.]*$/u, '') || 'image'
-      emit('pane.show', { pane: 'ai' })
-      emit('chat.attach', { files: [new File([blob], `${stem}.png`, { type: 'image/png' })] })
-      toast(t('imageAttached'), { tone: 'success' })
+      onAttach({ name: `${stem}.png`, mime: 'image/png', base64: btoa(binary) })
     } catch (error) {
       toast(t('imageAttachFailed', { error: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
     }
@@ -159,9 +178,11 @@ export function ImageViewer({ url, name, bytes }: { url: string; name: string; b
         <button type="button" className={css.toolButton} aria-pressed={zoom === 'fit'} disabled={failed} onClick={() => { setZoom('fit') }}>{t('zoomFit')}</button>
         <button type="button" className={css.toolButton} title={t('zoomActual')} aria-pressed={zoom === 1} disabled={failed} onClick={() => { zoomTo(1) }}>1:1</button>
         <span className={css.grow} />
-        <button type="button" className={css.toolButton} title={t('imageAttachTitle')} disabled={failed || natural === undefined} onClick={() => { void attach() }}>{t('imageAttach')}</button>
+        {onAttach !== undefined && <ToolActions actions={[
+          { id: 'image-attach', label: t('imageAttach'), title: t('imageAttachTitle'), disabled: failed || natural === undefined, onSelect: () => { void attach() } },
+        ]} />}
       </div>
-      <div ref={stage} className={`${css.stage} ${css.checker}`} tabIndex={0} onWheel={onWheel} onKeyDown={onKeyDown}
+      <div ref={(element) => { stage.current = element; setStageElement(element) }} className={`${css.stage} ${css.checker}`} tabIndex={0} onKeyDown={onKeyDown}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         onPointerLeave={() => { if (pan.current === undefined) setPixel(undefined) }}>
         {failed ? <div className={css.message}>{t('imageBroken')}</div> : (

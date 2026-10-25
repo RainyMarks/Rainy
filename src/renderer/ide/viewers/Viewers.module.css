@@ -1,39 +1,46 @@
 /* File viewers inside the editor area: shared frame, image, media, PDF, office documents, Markdown preview, hex view and decoded text. */
 .viewer { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--rainy-alias-bg-base); color: var(--rainy-alias-label-primary); }
-.rightPane { position: absolute; top: 0; right: 0; bottom: 0; left: 50%; border-left: 1px solid var(--rainy-alias-border-l1); }
-.decoded { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 10px; border-bottom: 1px solid var(--rainy-alias-border-l1); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; color: var(--rainy-alias-label-secondary); }
-.decoded select { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l1); border-radius: var(--rainy-radius-xs); padding: 1px 6px; }
+.rightPane { position: absolute; top: 0; right: 0; bottom: 0; left: 50%; border-left: 1px solid var(--rainy-alias-border-l2); }
+.decoded { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 10px; border-bottom: 1px solid var(--rainy-alias-border-l2); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; color: var(--rainy-alias-label-secondary); }
+.decoded select { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-xs); padding: 1px 6px; }
 .prefix { flex: 1; min-height: 0; margin: 0; padding: 8px 12px; overflow: auto; white-space: pre; font-family: var(--rainy-font-family-code, monospace); font-size: var(--rainy-code-font-size, 13px); }
-.toolbar { flex: none; display: flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 8px; border-bottom: 1px solid var(--rainy-alias-border-l1); font-size: 12px; color: var(--rainy-alias-label-secondary); overflow-x: auto; white-space: nowrap; }
-.toolbar select, .toolbar input { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l1); border-radius: var(--rainy-radius-xs); padding: 2px 6px; }
+.toolbar { flex: none; display: flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 8px; border-bottom: 1px solid var(--rainy-alias-border-l2); font-size: 12px; color: var(--rainy-alias-label-secondary); overflow-x: auto; white-space: nowrap; }
+.toolbar select, .toolbar input { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-xs); padding: 2px 6px; }
 .toolbar input { width: 140px; }
 .toolButton { border: 0; border-radius: var(--rainy-radius-sm); background: transparent; color: inherit; font: inherit; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
-.toolButton:hover, .toolButton[aria-pressed='true'] { background: var(--rainy-alias-button-ghost-active-fill); color: var(--rainy-alias-label-primary); }
+/* A pressed button (the mode or zoom in effect) is drawn in the accent, so it reads differently from a hovered one. */
+.toolButton:hover:not(:disabled) { background: var(--rainy-alias-button-ghost-active-fill); color: var(--rainy-alias-label-primary); }
+.toolButton[aria-pressed='true'] { background: var(--rainy-alias-state-business-tertiary); color: var(--rainy-alias-link); font-weight: 500; }
+.toolButton[aria-pressed='true']:hover:not(:disabled) { background: color-mix(in srgb, var(--rainy-alias-state-business-tertiary) 80%, var(--rainy-alias-link)); color: var(--rainy-alias-link); }
 .toolButton:disabled { opacity: .4; cursor: default; }
 .toolButton:focus-visible { outline: 2px solid var(--rainy-focus-ring-color, var(--rainy-alias-state-business-primary)); outline-offset: -2px; }
-.separator { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--rainy-alias-border-l1); }
+.separator { flex: none; width: 1px; align-self: stretch; margin: 6px 4px; background: var(--rainy-alias-border-l3); }
 .grow { flex: 1; }
 .stage { position: relative; flex: 1; min-height: 0; overflow: auto; }
-.status { flex: none; display: flex; gap: 14px; align-items: center; min-height: 24px; padding: 0 10px; border-top: 1px solid var(--rainy-alias-border-l1); font-size: 12px; color: var(--rainy-alias-label-secondary); white-space: nowrap; overflow: hidden; }
+.status { flex: none; display: flex; gap: 14px; align-items: center; min-height: 24px; padding: 0 10px; border-top: 1px solid var(--rainy-alias-border-l2); font-size: 12px; color: var(--rainy-alias-label-secondary); white-space: nowrap; overflow: hidden; }
 .status code { font-family: var(--rainy-font-family-code, monospace); }
-.notice { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid var(--rainy-alias-border-l1); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; }
+.notice { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid var(--rainy-alias-border-l2); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; }
 .message { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 18px; box-sizing: border-box; text-align: center; color: var(--rainy-alias-label-secondary); }
 .error { color: var(--rainy-alias-state-error-primary); }
 .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--rainy-alias-border-l2); vertical-align: -1px; }
 
-/* Images: centered on a checkerboard, crisp pixels once enlarged. */
+/* Images: centered on a checkerboard, crisp pixels once enlarged. The two squares are fixed steps of the gray ramp, as
+   the surface tokens are all white in light mode. */
 .checker {
-  background-color: var(--rainy-alias-bg-base);
+  --checker-light: var(--rainy-static-gray-00);
+  --checker-dark: var(--rainy-static-gray-150);
+  background-color: var(--checker-light);
   background-image:
-    linear-gradient(45deg, var(--rainy-alias-bg-layer-2) 25%, transparent 25%), linear-gradient(-45deg, var(--rainy-alias-bg-layer-2) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, var(--rainy-alias-bg-layer-2) 75%), linear-gradient(-45deg, transparent 75%, var(--rainy-alias-bg-layer-2) 75%);
+    linear-gradient(45deg, var(--checker-dark) 25%, transparent 25%), linear-gradient(-45deg, var(--checker-dark) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checker-dark) 75%), linear-gradient(-45deg, transparent 75%, var(--checker-dark) 75%);
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
 }
+:global(body[data-rainy-dark]) .checker { --checker-light: var(--rainy-static-gray-850); --checker-dark: var(--rainy-static-gray-750); }
 .imageStage { display: grid; place-items: center; min-width: 100%; min-height: 100%; box-sizing: border-box; padding: 12px; }
 .imageStage[data-pannable] { cursor: grab; }
 .imageStage[data-panning] { cursor: grabbing; }
-.picture { display: block; max-width: none; user-select: none; -webkit-user-drag: none; box-shadow: 0 0 0 1px var(--rainy-alias-border-l1); }
+.picture { display: block; max-width: none; user-select: none; -webkit-user-drag: none; box-shadow: 0 0 0 1px var(--rainy-alias-border-l2); }
 .picture[hidden] { display: none; }
 .picture[data-pixelated] { image-rendering: pixelated; }
 
@@ -41,8 +48,8 @@
 .media { max-width: 100%; max-height: 100%; }
 .mediaStage { display: grid; place-items: center; height: 100%; padding: 16px; box-sizing: border-box; }
 
-/* PDF pages. */
-.pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; background: var(--rainy-alias-bg-layer-1); min-height: 100%; box-sizing: border-box; }
+/* PDF pages: white paper on the document backdrop (gray in light mode, where every surface token is white). */
+.pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; background: var(--rainy-alias-bg-document-preview); min-height: 100%; box-sizing: border-box; }
 .page { position: relative; flex: none; background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / 20%); }
 .page canvas { display: block; width: 100%; height: 100%; }
 
@@ -70,7 +77,7 @@
 .hexByte[data-selected], .hexChar[data-selected] { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 28%, transparent); }
 .hexByte[data-cursor], .hexChar[data-cursor] { box-shadow: inset 0 0 0 1px var(--rainy-alias-state-business-primary); }
 .hexByte[data-pending], .hexChar[data-pending] { color: var(--rainy-alias-label-tertiary); }
-.inspector { flex: none; width: 260px; overflow: auto; border-left: 1px solid var(--rainy-alias-border-l1); padding: 8px 10px; font-size: 12px; box-sizing: border-box; }
+.inspector { flex: none; width: 260px; overflow: auto; border-left: 1px solid var(--rainy-alias-border-l2); padding: 8px 10px; font-size: 12px; box-sizing: border-box; }
 .inspector h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
 .inspector table { width: 100%; border-collapse: collapse; }
 .inspector td { padding: 2px 0; vertical-align: top; }
@@ -79,17 +86,17 @@
 @media (max-width: 720px) { .inspector { display: none; } }
 
 /* Word pages on the same backdrop as PDF pages. */
-.paperStage { background: var(--rainy-alias-bg-layer-1); }
+.paperStage { background: var(--rainy-alias-bg-document-preview); }
 
-/* Spreadsheets: row and column headings stay in view while the cells scroll. */
+/* Spreadsheets: gridlines as visible as Excel's, filled row and column headings that stay in view while the cells scroll. */
 .sheet { border-collapse: separate; border-spacing: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
-.sheet th, .sheet td { border-right: 1px solid var(--rainy-alias-border-l1); border-bottom: 1px solid var(--rainy-alias-border-l1); padding: 3px 8px; white-space: pre; max-width: 420px; overflow: hidden; text-overflow: ellipsis; text-align: left; vertical-align: top; }
+.sheet th, .sheet td { border-right: 1px solid var(--rainy-alias-border-l3); border-bottom: 1px solid var(--rainy-alias-border-l3); padding: 3px 8px; white-space: pre; max-width: 420px; overflow: hidden; text-overflow: ellipsis; text-align: left; vertical-align: top; }
 .sheet td[data-number] { text-align: right; }
 .sheet thead th { position: sticky; top: 0; z-index: 2; }
-.sheet th { background: var(--rainy-alias-bg-layer-1); color: var(--rainy-alias-label-secondary); font-weight: 500; text-align: center; }
+.sheet th { background: var(--rainy-alias-control-fill); color: var(--rainy-alias-label-secondary); font-weight: 500; text-align: center; border-color: color-mix(in srgb, var(--rainy-alias-label-primary) 18%, transparent); }
 .sheet tbody th { position: sticky; left: 0; z-index: 1; min-width: 36px; }
 .sheet thead th:first-child { left: 0; z-index: 3; }
-.sheetTabs { flex: none; display: flex; gap: 2px; padding: 0 6px; border-top: 1px solid var(--rainy-alias-border-l1); overflow-x: auto; }
+.sheetTabs { flex: none; display: flex; gap: 2px; padding: 0 6px; border-top: 1px solid var(--rainy-alias-border-l2); overflow-x: auto; }
 .sheetTab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--rainy-alias-label-secondary); font: inherit; font-size: 12px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
 .sheetTab:hover { color: var(--rainy-alias-label-primary); }
 .sheetTab[aria-selected='true'] { color: var(--rainy-alias-label-primary); border-bottom-color: var(--rainy-alias-state-business-primary); }
@@ -109,3 +116,39 @@
 .outlineSlide { padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--rainy-alias-border-l1); border-radius: var(--rainy-radius-md); background: var(--rainy-alias-bg-layer-1); }
 .outlineSlide h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--rainy-alias-label-secondary); }
 .outlineSlide p { margin: 0 0 4px; user-select: text; }
+
+/* PDF viewer (PdfViewer.tsx). The column of pages is as wide as its widest page, so a zoomed page scrolls to both of its
+   edges instead of losing its left side; each page is its own stacking context for its layers, and the zoom percentage
+   keeps its width as it changes. The text layer (text transparent over the canvas, for selecting and copying) and the
+   link layer follow pdf.js 2.16's pdf_viewer.css, which is not bundled; a selection is the accent, translucent, on the
+   white paper of either theme. Below, the detail under an error and the password prompt. */
+.pdfPages { width: max-content; min-width: 100%; }
+.pdfPage { isolation: isolate; }
+.pdfZoomLevel { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
+.textLayer { position: absolute; left: 0; top: 0; z-index: 1; overflow: hidden; line-height: 1; text-align: initial; text-size-adjust: none; forced-color-adjust: none; }
+.textLayer span, .textLayer br { position: absolute; color: transparent; white-space: pre; cursor: text; transform-origin: 0 0; }
+.textLayer ::selection { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 35%, transparent); color: transparent; }
+.textLayer br::selection { background: transparent; }
+.endOfContent { position: absolute; top: 100%; right: 0; bottom: 0; left: 0; z-index: -1; cursor: default; user-select: none; }
+.endOfContent[data-active] { top: 0; }
+.linkLayer { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; transform-origin: 0 0; }
+.linkLayer[data-main-rotation='90'] { transform: rotate(90deg) translateX(-100%); }
+.linkLayer[data-main-rotation='180'] { transform: rotate(180deg) translate(-100%, -100%); }
+.linkLayer[data-main-rotation='270'] { transform: rotate(270deg) translateY(-100%); }
+.linkLayer section { position: absolute; box-sizing: border-box; text-align: initial; pointer-events: auto; transform-origin: 0 0; }
+.linkLayer a { position: absolute; inset: 0; font-size: 1em; cursor: pointer; }
+.linkLayer a:hover { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 18%, transparent); }
+.pdfErrorDetail { max-width: 560px; font-size: 12px; color: var(--rainy-alias-label-tertiary); overflow-wrap: anywhere; user-select: text; }
+.pdfPassword p { margin: 0; }
+.pdfPasswordRow { display: flex; gap: 8px; width: min(320px, 100%); }
+.pdfPasswordInput {
+  flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-sm);
+  background: var(--rainy-alias-bg-layer-1); color: var(--rainy-alias-label-primary); font: inherit; outline: none;
+}
+.pdfPasswordInput::placeholder { color: var(--rainy-alias-label-dimmed); }
+.pdfPasswordInput:focus { border-color: var(--rainy-alias-state-business-primary); }
+.pdfPasswordInput[aria-invalid='true'] { border-color: var(--rainy-alias-state-error-primary); }
+
+/* Toolbars on a narrow pane: a long label such as the hex view's file type gives way first, and the offset box shrinks. */
+.ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 520px) { .toolbar input { width: 96px; } }

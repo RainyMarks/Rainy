@@ -2,9 +2,9 @@
  * The project map: the project's architecture as boxes and imports, or every file as blocks, with the files the agent
  * is reading or changing highlighted as it works, and an AI explanation of the parts.
  */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent } from 'react'
 import clsx from 'clsx'
-import type { IdeWorkspace } from '../../shared/ide-files-protocol.ts'
+import type { IdeWorkspace, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { mapView, nodeForPath, parentOf, type MapNode, type MapView } from '../../shared/map-graph.ts'
 import type { MapFileKind, ProjectMap } from '../../shared/map-protocol.ts'
 import type { ChatChange } from '../../shared/rpc.ts'
@@ -13,18 +13,20 @@ import { keyFromAbsolute } from '../ide/ide-paths.ts'
 import { Button, IconAction, IconRefreshOutlineRegular, IconSparkleRegular, SegmentedControl, toast } from '../ui/index.ts'
 import type { AiActivity } from './activity.ts'
 import { fileColor } from './colors.ts'
-import { GAP_X, layoutGraph, NODE_HEIGHT, NODE_WIDTH } from './layout.ts'
+import { fitTransform, layoutForPane, MIN_SCALE, NODE_HEIGHT, NODE_WIDTH, type ViewTransform } from './layout.ts'
 import { explainMap, loadMap, useProjectMap } from './map-store.ts'
 import { aiMarks, type AiMark } from './marks.ts'
 import { useMapT, type MapMessageKey } from './messages.ts'
 import { layoutTreemap } from './treemap.ts'
+import { useWorkspaceLookup } from './workspace-lookup.ts'
 import css from './ProjectMap.module.css'
 
 type Translate = ReturnType<typeof useMapT>
 
 /** What the map needs from the window. */
 export interface ProjectMapProps {
-  readonly workspace: IdeWorkspace | null
+  /** The project; the map finds it among the Host's projects. */
+  readonly workspaceId: WorkspaceId
   /** The map is on screen; it loads and follows changes only then. */
   readonly visible: boolean
   /** Files the agent changed in the current chat and the user has not reviewed. */
@@ -150,24 +152,19 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
   const [frame, setFrame] = useState<HTMLDivElement | null>(null)
   const size = useSize(frame)
   const ids = useMemo(() => nodes.map(node => node.id), [nodes])
-  const margin = 40
-  // As many boxes per row as fit the pane at full size, so a narrow pane wraps rather than shrinking the text.
-  const columns = size.width === 0 ? 6 : Math.min(8, Math.max(2, Math.floor((size.width - 2 * margin + GAP_X) / (NODE_WIDTH + GAP_X))))
-  const layout = useMemo(() => layoutGraph(ids, view.edges, columns), [ids, view.edges, columns])
-  const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
+  const layout = useMemo(() => layoutForPane(ids, view.edges, { width: size.width, height: size.height }), [ids, view.edges, size.width, size.height])
+  const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, k: 1 })
   const drag = useRef<{ x: number; y: number; originX: number; originY: number; moved: boolean } | undefined>(undefined)
   const fitView = (): void => {
     if (size.width === 0 || size.height === 0) return
-    const k = Math.min(1.15, (size.width - 2 * margin) / layout.width, (size.height - 2 * margin) / (layout.height + 24))
-    const scale = Math.max(0.2, k)
-    setTransform({ k: scale, x: (size.width - layout.width * scale) / 2, y: Math.max(margin, (size.height - layout.height * scale) / 2) })
+    setTransform(fitTransform(size, layout))
   }
   // A new scope, other boxes or a resized pane show the whole drawing again; a rescan with the same boxes keeps the view.
   const shape = `${ids.join('\n')}:${layout.width}x${layout.height}`
   useEffect(fitView, [shape, size.width, size.height])
   const zoom = (factor: number, centreX = size.width / 2, centreY = size.height / 2): void => {
     setTransform((current) => {
-      const k = Math.min(3, Math.max(0.2, current.k * factor))
+      const k = Math.min(3, Math.max(MIN_SCALE, current.k * factor))
       return { k, x: centreX - ((centreX - current.x) * k) / current.k, y: centreY - ((centreY - current.y) * k) / current.k }
     })
   }
@@ -435,13 +432,55 @@ function ActivityFeed({ workspace, activity, changes, now, onOpenFile, t }: {
 }
 
 /**
+ * Where in the project the map is, the way back, and the view's own controls. The path scrolls sideways when it is
+ * longer than the row, ending at the current directory, so 返回 and the controls stay in reach in a narrow pane.
+ */
+function ScopeBar({ scope, onJump, onBack, children, t }: {
+  scope: string
+  onJump: (scope: string) => void
+  onBack: () => void
+  children: ReactNode
+  t: Translate
+}): JSX.Element {
+  const trail = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const element = trail.current
+    if (element !== null) element.scrollLeft = element.scrollWidth
+  }, [scope])
+  const crumbs = scope === '' ? [] : scope.split('/')
+  return (
+    <nav className={css.crumbs} aria-label={t('mapRoot')}>
+      <div className={css.path}>
+        <button type="button" className={css.crumb} disabled={scope === ''} onClick={() => { onJump('') }}>{t('mapRoot')}</button>
+        {crumbs.length > 0 && (
+          <div ref={trail} className={css.trail} onWheel={(event) => {
+            const element = event.currentTarget
+            if (event.deltaX === 0 && element.scrollWidth > element.clientWidth) element.scrollLeft += event.deltaY
+          }}>
+            {crumbs.map((part, index) => {
+              const path = crumbs.slice(0, index + 1).join('/')
+              return <Fragment key={path}><span className={css.separator} aria-hidden="true">/</span>
+                <button type="button" className={css.crumb} title={path} disabled={path === scope} onClick={() => { onJump(path) }}>{part}</button></Fragment>
+            })}
+          </div>
+        )}
+        {scope !== '' && <Button size="sm" variant="ghost" className={css.up} onClick={onBack}>{t('mapUp')}</Button>}
+      </div>
+      {children}
+    </nav>
+  )
+}
+
+/**
  * The project map.
  * @param props Project, visibility, the agents' changes and activity, and window actions.
  * @returns The map.
  */
-export function ProjectMapView({ workspace, visible, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
+export function ProjectMapView({ workspaceId, visible, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
   const t = useMapT()
   const locale = useLocale()
+  const lookup = useWorkspaceLookup(workspaceId)
+  const workspace = lookup.status === 'ready' ? lookup.workspace : null
   const state = useProjectMap(workspace?.workspaceId ?? null, visible)
   const [mode, setMode] = useState<'architecture' | 'files'>('architecture')
   const [scope, setScope] = useState('')
@@ -468,16 +507,20 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
     }
     return result
   }, [view, marks])
-  if (workspace === null) return <div className={css.root}><div className={css.empty}>{t('mapNoProject')}</div></div>
-  if (map === undefined || view === undefined) {
+  if (workspace === null || map === undefined || view === undefined) {
+    const failure = lookup.status === 'failed' ? { title: t('mapProjectFailed'), message: lookup.message, retry: lookup.retry }
+      : workspace !== null && state.error !== undefined ? { title: t('mapFailed'), message: state.error, retry: () => { loadMap(workspace.workspaceId, true) } }
+        : undefined
     return (
       <div className={css.root} data-project-map>
-        <div className={css.empty} role="status">
-          {state.error === undefined ? t('mapLoading') : <>
-            <span>{t('mapFailed', { message: state.error })}</span>
-            <Button size="sm" variant="outline" onClick={() => { loadMap(workspace.workspaceId, true) }}>{t('mapRetry')}</Button>
-          </>}
-        </div>
+        {failure !== undefined
+          ? <div className={css.empty} role="alert">
+            <span>{failure.title}</span>
+            {/* The Host's or the connection's own words, which may be English: a detail under the message, not the message. */}
+            <span className={css.failureDetail}>{failure.message}</span>
+            <Button size="sm" variant="outline" onClick={failure.retry}>{t('mapRetry')}</Button>
+          </div>
+          : <div className={css.empty} role="status">{t(lookup.status === 'missing' ? 'mapProjectMissing' : 'mapLoading')}</div>}
       </div>
     )
   }
@@ -511,7 +554,6 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
       toast(t('mapExplainFailed', { message: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
     })
   }
-  const crumbs = scope === '' ? [] : scope.split('/')
   return (
     <div className={css.root} data-project-map>
       <header className={css.header}>
@@ -547,19 +589,11 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
       </header>
       <div className={css.body}>
         <section className={css.main}>
-          <nav className={css.crumbs} aria-label={t('mapRoot')}>
-            <button type="button" className={css.crumb} disabled={scope === ''} onClick={() => { jump('') }}>{t('mapRoot')}</button>
-            {crumbs.map((part, index) => {
-              const path = crumbs.slice(0, index + 1).join('/')
-              return <span key={path}><span className={css.muted}> / </span>
-                <button type="button" className={css.crumb} disabled={path === scope} onClick={() => { jump(path) }}>{part}</button></span>
-            })}
-            {scope !== '' && <Button size="sm" variant="ghost" onClick={back}>{t('mapUp')}</Button>}
-            <span className={css.spacer} />
+          <ScopeBar scope={scope} onJump={jump} onBack={back} t={t}>
             {mode === 'architecture' && (
               <label className={css.toggle}><input type="checkbox" checked={all} onChange={(event) => { setAll(event.target.checked) }} />{t('mapShowAll')}</label>
             )}
-          </nav>
+          </ScopeBar>
           {mode === 'architecture'
             ? <Architecture map={map} view={view} nodes={nodes} scope={scope} selected={selected} activity={nodeActivity}
               explanation={explanation?.modules} onSelect={setSelected} onOpen={open} t={t} />
@@ -568,6 +602,7 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
             <span><i className={css.legendCode} />{t('mapLegendCode')}</span>
             <span><i className={css.legendTest} />{t('mapLegendTest')}</span>
             <span><i className={css.legendOther} />{t('mapLegendOther')}</span>
+            {mode === 'architecture' && nodes.some(node => node.outside) && <span><i className={css.legendOutside} />{t('mapLegendOutside')}</span>}
             <span><i className={css.legendReading} />{t('mapLegendReading')}</span>
             <span><i className={css.legendWriting} />{t('mapLegendWriting')}</span>
             <span><i className={css.legendChanged} />{t('mapLegendChanged')}</span>

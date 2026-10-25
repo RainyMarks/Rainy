@@ -33,18 +33,20 @@ pub fn encrypted_open_xml(bytes: &[u8], extension: &str) -> bool {
     OPEN_XML.contains(&extension) && bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
 }
 
-/// Why there is no PDF; `missing` means neither Microsoft Office nor WPS Office is installed, `encrypted` that the file
-/// needs a password.
+/// Why there is no PDF. `code` is what the page explains in the interface language: `missing` (neither Microsoft
+/// Office nor WPS Office is installed), `password`, `too-large`, `timeout`, `no-output` (Office opened the file but
+/// wrote no PDF), `unsupported` or `failed`; `error` is the detail as Office or Windows put it, possibly English.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
+    pub code: &'static str,
     pub error: String,
     pub missing: bool,
     pub encrypted: bool,
 }
 
 impl Failure {
-    fn new(error: impl Into<String>) -> Self {
-        Self { error: error.into(), missing: false, encrypted: false }
+    fn new(code: &'static str, error: impl Into<String>) -> Self {
+        Self { code, error: error.into(), missing: code == "missing", encrypted: code == "password" }
     }
 }
 
@@ -68,6 +70,7 @@ $slides = $env:RAINY_OFFICE_KIND -eq 'slides'
 $candidates = if ($slides) { @(@('PowerPoint.Application', 'POWERPNT', 'Microsoft PowerPoint'), @('KWPP.Application', 'wpp', 'WPS Office')) }
   else { @(@('Word.Application', 'WINWORD', 'Microsoft Word'), @('KWps.Application', 'wps', 'WPS Office')) }
 $failures = @()
+$unwritten = @()
 $found = $false
 $encrypted = $false
 foreach ($candidate in $candidates) {
@@ -89,7 +92,7 @@ foreach ($candidate in $candidates) {
       try { $file.ExportAsFixedFormat($out, 17) } catch { $file.SaveAs([ref]$out, [ref]17) }
     }
     if (Test-Path -LiteralPath $out) { Write-Output ('OK ' + $candidate[2]); exit 0 }
-    $failures += $candidate[2] + ': no PDF was written'
+    $unwritten += $candidate[2]
   } catch {
     if ($_.Exception.HResult -eq -2146822880) { $encrypted = $true }
     $failures += $candidate[2] + ': ' + $_.Exception.Message
@@ -102,6 +105,7 @@ foreach ($candidate in $candidates) {
 }
 if (-not $found) { Write-Output 'MISSING'; exit 3 }
 if ($encrypted) { Write-Output 'PASSWORD'; exit 5 }
+if ($failures.Count -eq 0) { Write-Output ('NOPDF ' + ($unwritten -join ', ')); exit 4 }
 Write-Output ('FAILED ' + ($failures -join ' | '))
 exit 4
 "#;
@@ -111,7 +115,8 @@ fn powershell() -> PathBuf {
     root.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe")
 }
 
-/// Run the script; its last output line, `TIMEOUT` when Office did not finish in time.
+/// Run the script; its last output line, `TIMEOUT` when Office did not finish in time, `FAILED` and the reason when
+/// PowerShell could not start or wrote nothing.
 fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String {
     let script: Vec<u8> = SCRIPT.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(script);
@@ -154,38 +159,25 @@ fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String 
         return "TIMEOUT".to_owned();
     }
     let text = reader.join().unwrap_or_default();
-    text.lines().rev().map(str::trim).find(|line| !line.is_empty()).map_or_else(|| "FAILED no output".to_owned(), str::to_owned)
+    text.lines().rev().map(str::trim).find(|line| !line.is_empty()).map_or_else(|| "FAILED".to_owned(), str::to_owned)
 }
 
 /// Convert one document; the input goes to a private temporary folder that is removed afterwards.
 pub fn convert(bytes: &[u8], extension: &str) -> Result<Converted, Failure> {
-    let Some(kind) = kind(extension) else { return Err(Failure::new(format!(".{extension} files are not converted"))) };
+    let Some(kind) = kind(extension) else { return Err(Failure::new("unsupported", format!(".{extension}"))) };
     if bytes.len() > MAX_BYTES {
-        return Err(Failure::new("The file is too large to convert"));
+        return Err(Failure::new("too-large", format!("{} MB", bytes.len() / (1024 * 1024))));
     }
     // Office would ask for the password in a window nobody sees, or in the user's own PowerPoint.
     if encrypted_open_xml(bytes, extension) {
-        return Err(Failure { encrypted: true, ..Failure::new("The file is protected with a password") });
+        return Err(Failure::new("password", ""));
     }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos());
     let folder = std::env::temp_dir().join(format!("rainy-office-{}-{stamp}", std::process::id()));
-    std::fs::create_dir(&folder).map_err(|error| Failure::new(error.to_string()))?;
+    std::fs::create_dir(&folder).map_err(|error| Failure::new("failed", error.to_string()))?;
     let input = folder.join(format!("document.{extension}"));
     let output = folder.join("document.pdf");
-    let result = std::fs::write(&input, bytes).map_err(|error| Failure::new(error.to_string())).and_then(|()| {
-        let answer = run(&input, &output, kind);
-        match answer.as_str() {
-            "MISSING" => Err(Failure { missing: true, ..Failure::new("Microsoft Office or WPS Office is not installed") }),
-            "PASSWORD" => Err(Failure { encrypted: true, ..Failure::new("The file is protected with a password") }),
-            "TIMEOUT" => Err(Failure::new("Office did not finish converting in time")),
-            _ => match answer.strip_prefix("OK ") {
-                Some(application) => std::fs::read(&output)
-                    .map(|pdf| Converted { pdf, application: application.to_owned() })
-                    .map_err(|error| Failure::new(error.to_string())),
-                None => Err(Failure::new(answer.strip_prefix("FAILED ").unwrap_or(&answer))),
-            },
-        }
-    });
+    let result = std::fs::write(&input, bytes).map_err(|error| Failure::new("failed", error.to_string())).and_then(|()| failure_of(&run(&input, &output, kind), &output));
     // Office may still hold the files for a moment after it quits.
     for _ in 0..5 {
         if std::fs::remove_dir_all(&folder).is_ok() || !folder.exists() {
@@ -194,6 +186,24 @@ pub fn convert(bytes: &[u8], extension: &str) -> Result<Converted, Failure> {
         std::thread::sleep(Duration::from_millis(200));
     }
     result
+}
+
+/// The PDF, or why there is none, from the script's last output line.
+fn failure_of(answer: &str, output: &std::path::Path) -> Result<Converted, Failure> {
+    match answer {
+        "MISSING" => Err(Failure::new("missing", "")),
+        "PASSWORD" => Err(Failure::new("password", "")),
+        "TIMEOUT" => Err(Failure::new("timeout", "")),
+        _ => {
+            if let Some(application) = answer.strip_prefix("OK ") {
+                return std::fs::read(output).map(|pdf| Converted { pdf, application: application.to_owned() }).map_err(|error| Failure::new("no-output", error.to_string()));
+            }
+            if let Some(applications) = answer.strip_prefix("NOPDF") {
+                return Err(Failure::new("no-output", applications.trim()));
+            }
+            Err(Failure::new("failed", answer.strip_prefix("FAILED").unwrap_or(answer).trim()))
+        }
+    }
 }
 
 type Remembered = VecDeque<((String, usize, u64), Arc<Converted>)>;
@@ -238,6 +248,19 @@ mod tests {
         assert!(!encrypted_open_xml(&compound, "ppt"));
         assert!(!encrypted_open_xml(b"PK\x03\x04", "pptx"));
         assert!(convert(&compound, "pptx").unwrap_err().encrypted);
-        assert!(convert(b"x", "txt").is_err());
+        assert_eq!(convert(b"x", "txt").unwrap_err().code, "unsupported");
+    }
+
+    #[test]
+    fn script_answers_become_codes() {
+        let nowhere = std::path::Path::new("missing-rainy-test.pdf");
+        let code = |answer: &str| failure_of(answer, nowhere).unwrap_err();
+        assert!(code("MISSING").missing);
+        assert!(code("PASSWORD").encrypted);
+        assert_eq!(code("TIMEOUT").code, "timeout");
+        assert_eq!((code("NOPDF Microsoft Word").code, code("NOPDF Microsoft Word").error.as_str()), ("no-output", "Microsoft Word"));
+        assert_eq!((code("FAILED").code, code("FAILED").error.as_str()), ("failed", ""));
+        assert_eq!(code("FAILED WPS Office: 0x800A").error, "WPS Office: 0x800A");
+        assert_eq!(code("OK Microsoft Word").code, "no-output");
     }
 }
