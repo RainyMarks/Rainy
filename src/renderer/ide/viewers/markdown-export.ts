@@ -77,6 +77,7 @@ function escapeHtml(text: string): string {
  * @returns The `title:` of the front matter, else the first heading, else the file name.
  */
 export function documentTitle(markdown: string, fallback: string): string {
+  markdown = markdown.replace(/\r\n?/gu, '\n')
   const front = splitFrontMatter(markdown).front
   const titled = /^title:[ \t]*["']?(.+?)["']?[ \t]*$/mu.exec(front)?.[1]
   return titled ?? markdownOutline(markdown)[0]?.text ?? fallback
@@ -117,6 +118,7 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
   /** Language of the page, the interface language by default; the footnote labels are the interface language's. */
   locale?: 'zh' | 'en' | undefined
 }): Promise<string> {
+  text = text.replace(/\r\n?/gu, '\n')
   // Front matter is metadata: it gives the page its title and is not printed, as in Typora's exports.
   const { body } = splitFrontMatter(text)
   // Grammars load once; the page is rendered after all of them arrived.
@@ -168,7 +170,7 @@ export async function embedImage(url: string): Promise<string | undefined> {
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => { resolve(String(reader.result)) }
-    reader.onerror = () => { reject(reader.error ?? new Error('The image could not be read.')) }
+    reader.onerror = () => { reject(reader.error ?? new Error(viewerMessages.t('imageReadFailed'))) }
     reader.readAsDataURL(blob)
   })
 }

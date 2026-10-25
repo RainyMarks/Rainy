@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-/** The exported page of a Markdown file: raw HTML through the allowlist, highlights and dollar amounts. */
+/** The exported page of a Markdown file: raw HTML through the allowlist, CRLF files, highlights and dollar amounts. */
 import { describe, expect, it, vi } from 'vitest'
-import { exportHtml } from '../../src/renderer/ide/viewers/markdown-export.ts'
+import { documentTitle, exportHtml } from '../../src/renderer/ide/viewers/markdown-export.ts'
 
 vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
 vi.mock('../../src/renderer/ide/viewers/mermaid.ts', () => ({
@@ -18,6 +18,16 @@ async function exported(text: string, image = async (_target: string): Promise<s
 }
 
 describe('export of a Markdown file', () => {
+  it('reads a CRLF file: front matter titles the page and is not printed', async () => {
+    const text = '---\r\ntitle: 机密报告\r\nauthor: 张三\r\n---\r\n\r\n# 结果\r\n\r\n正文\r\n'
+    const html = await exportHtml({ text, name: 'report', image: async () => undefined })
+    expect(html).toContain('<title>机密报告</title>')
+    expect(html).not.toContain('author')
+    expect(html).not.toContain('\r')
+    expect(documentTitle(text, 'x')).toBe('机密报告')
+    expect(documentTitle('# 标题\r\n\r\n正文\r\n', 'x')).toBe('标题')
+  })
+
   it('never prints HTML comments', async () => {
     const main = await exported('# 结果\n\n<!-- 内部备注：不要外传 -->\n\n段落 <!-- 行内备注 --> 继续\n\n<!--\n多行\n\n备注\n-->\n\n结尾\n')
     expect(main).not.toMatch(/备注|不要外传|&lt;!--/u)

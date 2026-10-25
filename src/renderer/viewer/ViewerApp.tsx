@@ -164,7 +164,7 @@ async function createBinary(workspaceId: WorkspaceId, rootId: IdeRootId | undefi
       throw error
     }
   }
-  throw new Error('No free image name.')
+  throw new Error(viewerMessages.t('imageNoFreeName'))
 }
 
 /** The Markdown views: the text arrives from the workbench, and rich edits go back to it. */

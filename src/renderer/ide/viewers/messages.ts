@@ -63,6 +63,7 @@ const zh = {
   shortcutTitle: 'Windows 快捷方式', shortcutTarget: '指向', shortcutArguments: '参数', shortcutFolder: '起始位置', shortcutComment: '备注',
   shortcutBroken: '无法读取这个快捷方式。', shortcutCopy: '复制路径', shortcutCopied: '已复制路径',
   footnotes: '脚注', footnoteBack: '返回正文',
+  imageNoFreeName: '这个文件夹里同名的图片太多，找不到可用的文件名', imageReadFailed: '无法读取这张图片',
 }
 
 const en: typeof zh = {
@@ -127,6 +128,7 @@ const en: typeof zh = {
   shortcutTitle: 'Windows shortcut', shortcutTarget: 'Target', shortcutArguments: 'Arguments', shortcutFolder: 'Start in', shortcutComment: 'Comment',
   shortcutBroken: 'This shortcut cannot be read.', shortcutCopy: 'Copy path', shortcutCopied: 'Path copied',
   footnotes: 'Footnotes', footnoteBack: 'Back to the text',
+  imageNoFreeName: 'This folder has too many images of that name; no free name is left', imageReadFailed: 'The image could not be read',
 }
 
 /** Viewer strings. */
