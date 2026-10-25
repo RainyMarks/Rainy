@@ -62,6 +62,7 @@ const zh = {
   lockOpenDocument: '打开“{name}”',
   shortcutTitle: 'Windows 快捷方式', shortcutTarget: '指向', shortcutArguments: '参数', shortcutFolder: '起始位置', shortcutComment: '备注',
   shortcutBroken: '无法读取这个快捷方式。', shortcutCopy: '复制路径', shortcutCopied: '已复制路径',
+  toolMore: '更多',
 }
 
 const en: typeof zh = {
@@ -125,6 +126,7 @@ const en: typeof zh = {
   lockOpenDocument: 'Open “{name}”',
   shortcutTitle: 'Windows shortcut', shortcutTarget: 'Target', shortcutArguments: 'Arguments', shortcutFolder: 'Start in', shortcutComment: 'Comment',
   shortcutBroken: 'This shortcut cannot be read.', shortcutCopy: 'Copy path', shortcutCopied: 'Path copied',
+  toolMore: 'More',
 }
 
 /** Viewer strings. */
