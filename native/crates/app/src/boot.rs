@@ -427,7 +427,7 @@ pub fn download_message(locale: Locale, error: &DownloadError) -> String {
 }
 
 /// A count with its thousands separated, as `toLocaleString` writes it in Chinese and in English.
-fn grouped(count: usize) -> String {
+pub(crate) fn grouped(count: usize) -> String {
     let digits = count.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {

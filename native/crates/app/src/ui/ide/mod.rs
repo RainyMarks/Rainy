@@ -6,6 +6,7 @@ pub mod debug_marks;
 pub mod editor_commands;
 pub mod editor_area;
 pub mod viewers;
+pub mod word_count;
 pub mod file_tree;
 pub mod folder_dialog;
 pub mod outline;
