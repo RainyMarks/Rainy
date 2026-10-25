@@ -594,6 +594,7 @@ export function ProjectMapView({ workspace, visible, changes, activity, openFile
             <span><i className={css.legendCode} />{t('mapLegendCode')}</span>
             <span><i className={css.legendTest} />{t('mapLegendTest')}</span>
             <span><i className={css.legendOther} />{t('mapLegendOther')}</span>
+            {mode === 'architecture' && nodes.some(node => node.outside) && <span><i className={css.legendOutside} />{t('mapLegendOutside')}</span>}
             <span><i className={css.legendReading} />{t('mapLegendReading')}</span>
             <span><i className={css.legendWriting} />{t('mapLegendWriting')}</span>
             <span><i className={css.legendChanged} />{t('mapLegendChanged')}</span>

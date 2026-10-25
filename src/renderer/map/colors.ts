@@ -1,4 +1,7 @@
-/** Colors of the project map: one per language family, defined as CSS variables in ProjectMap.module.css. */
+/**
+ * Colors of the project map, defined as CSS variables in ProjectMap.module.css: code takes the color of its language
+ * family; tests, docs, config and the rest one color per kind, whatever their language.
+ */
 import type { MapFileKind } from '../../shared/map-protocol.ts'
 
 const FAMILY: Record<string, string> = {
@@ -19,6 +22,7 @@ const FAMILY: Record<string, string> = {
  * @returns A CSS color value.
  */
 export function fileColor(language: string, kind: MapFileKind): string {
+  if (kind === 'test') return 'var(--map-test)'
   if (kind === 'doc') return 'var(--map-doc)'
   if (kind === 'config') return 'var(--map-config)'
   if (kind === 'asset' || kind === 'other') return 'var(--map-other)'

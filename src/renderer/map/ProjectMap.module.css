@@ -14,9 +14,15 @@
   --map-doc: color-mix(in srgb, var(--hl-constant) 30%, var(--hl-comment));
   --map-config: color-mix(in srgb, var(--rainy-static-amber-500) 40%, var(--hl-comment));
   --map-other: color-mix(in srgb, var(--hl-comment) 55%, transparent);
+  /* Tests take one color of their own, a yellow green no language family uses, so test folders stand out. */
+  --map-test: color-mix(in srgb, var(--hl-string) 55%, var(--rainy-static-amber-400));
+  /* The agent reading follows the accent; writing now is warm and pulses; a change waiting for review is violet, or
+     pink when the accent itself is violet. Both keep the badge text at 4.4:1 or more in every scheme, light and dark. */
   --map-reading: var(--rainy-alias-link);
   --map-writing: var(--rainy-alias-state-warn-primary);
-  --map-changed: var(--rainy-alias-state-warn-primary);
+  --map-changed: var(--hl-function);
+  /* Amber text: amber-500 is about 2:1 on the white light-mode layers, this is about 5:1. */
+  --map-warn-text: color-mix(in srgb, var(--rainy-static-amber-600) 70%, var(--rainy-static-neutral-1000));
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -25,6 +31,8 @@
   color: var(--rainy-alias-label-primary);
   font-size: 13px;
 }
+:global(body[data-accent='violet']) .root { --map-changed: var(--hl-keyword); }
+:global(body[data-rainy-dark]) .root { --map-warn-text: var(--rainy-alias-state-warn-primary); }
 
 .empty {
   display: flex;
@@ -61,7 +69,7 @@
 }
 
 .stats { color: var(--rainy-alias-label-secondary); font-size: 12.5px; }
-.warning { color: var(--rainy-alias-state-warn-primary); font-size: 12px; }
+.warning { color: var(--map-warn-text); font-size: 12px; }
 .spacer { flex: 1; }
 .modes { min-width: 160px; }
 
@@ -330,13 +338,16 @@
   font-size: 11.5px;
 }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
-.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
-.legendCode { background: var(--map-ts); }
-.legendTest { background: transparent; border: 1.5px dashed var(--map-code); }
-.legendOther { background: var(--map-other); }
+.legend i { display: inline-block; flex: none; box-sizing: border-box; width: 10px; height: 10px; border-radius: 2px; }
+/* Each swatch is drawn the way the map draws what it names: code in its language's color (a few shown), the other
+   kinds in theirs, boxes outside the folder dashed, the agent's marks as outlines and the review badge. */
+.legendCode { background: linear-gradient(90deg, var(--map-ts) 0 25%, var(--map-py) 25% 50%, var(--map-rs) 50% 75%, var(--map-jvm) 75%); }
+.legendTest { background: var(--map-test); }
+.legendOther { background: linear-gradient(90deg, var(--map-doc) 0 34%, var(--map-config) 34% 67%, var(--map-other) 67%); }
+.legendOutside { background: var(--rainy-alias-bg-base); border: 1.5px dashed var(--rainy-alias-label-tertiary); }
 .legendReading { border: 2px solid var(--map-reading); }
 .legendWriting { border: 2px solid var(--map-writing); }
-.legend .legendChanged { background: var(--map-changed); border-radius: 50%; }
+.legend .legendChanged { width: 16px; background: var(--map-changed); border-radius: 5px; }
 
 /* Side panel */
 .side {
@@ -383,7 +394,7 @@
 .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; }
 
 .feedVerb { flex: none; min-width: 52px; color: var(--rainy-alias-label-secondary); font-size: 12px; }
-.feed li[data-live] .feedVerb { color: var(--map-writing); font-weight: 600; }
+.feed li[data-live] .feedVerb { color: var(--map-warn-text); font-weight: 600; }
 .feed li[data-live][data-action='read'] .feedVerb { color: var(--map-reading); }
 
 @media (prefers-reduced-motion: reduce) {
