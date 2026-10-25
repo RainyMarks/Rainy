@@ -693,19 +693,20 @@ impl Ide {
                 });
                 let watched = key.clone();
                 let subscription = cx.subscribe(&editor, move |this: &mut Ide, editor, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        let text = editor.read(cx).value().to_string();
-                        if let Some(file) = this.files.get_mut(&watched) {
-                            let dirty = text != file.saved;
-                            let changed = dirty != file.dirty;
-                            if changed {
-                                file.dirty = dirty;
-                                cx.notify();
-                            }
-                            // Unsaved text is kept in the project state, so it survives a crash or restart.
-                            if dirty || changed {
-                                this.schedule_state_save(cx);
-                            }
+                    if matches!(event, InputEvent::Change)
+                        && let Some(file) = this.files.get_mut(&watched)
+                    {
+                        // Compared in place on every keystroke: lengths first, then chunk by chunk up to the first
+                        // difference, without copying the document.
+                        let dirty = editor.read(cx).text() != file.saved.as_str();
+                        let changed = dirty != file.dirty;
+                        if changed {
+                            file.dirty = dirty;
+                            cx.notify();
+                        }
+                        // Unsaved text is kept in the project state, so it survives a crash or restart.
+                        if dirty || changed {
+                            this.schedule_state_save(cx);
                         }
                     }
                 });
@@ -1097,7 +1098,7 @@ impl Ide {
         if !file.dirty && !overwrite {
             return Task::ready(true);
         }
-        let text = editor.read(cx).value().to_string();
+        let text = editor.read(cx).text().to_string();
         let expected = match (&file.disk_version, overwrite) {
             (Some(disk), true) => disk.clone(),
             _ => file.document.version.clone(),
@@ -1118,7 +1119,7 @@ impl Ide {
                         if shown && let Some(file) = this.files.get_mut(&key) {
                             file.saved = text;
                             file.document = document;
-                            file.dirty = file.editor.as_ref().is_some_and(|editor| editor.read(cx).value() != file.saved.as_str());
+                            file.dirty = file.editor.as_ref().is_some_and(|editor| editor.read(cx).text() != file.saved.as_str());
                             file.conflict = false;
                             file.disk_version = None;
                         }
@@ -1178,7 +1179,7 @@ impl Ide {
     /// Replace the unsaved text of an open file, as a viewer that edits it (rich Markdown) does.
     pub fn set_text(&mut self, key: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.files.get(key).and_then(|file| file.editor.clone()) else { return };
-        if editor.read(cx).value() == text {
+        if editor.read(cx).text() == text {
             return;
         }
         editor.update(cx, |state, cx| state.set_value(text.to_owned(), window, cx));
@@ -1647,7 +1648,7 @@ impl Ide {
             .iter()
             .filter(|(_, file)| file.dirty)
             .filter_map(|(key, file)| {
-                let content = file.editor.as_ref()?.read(cx).value().to_string();
+                let content = file.editor.as_ref()?.read(cx).text().to_string();
                 let mut buffer = Self::stored(key);
                 buffer["content"] = json!(content);
                 buffer["baseVersion"] = json!(file.document.version);
