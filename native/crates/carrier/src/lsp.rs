@@ -230,7 +230,12 @@ async fn dispatch(inner: &Inner, events: &async_channel::Sender<LspIncoming>, an
 pub fn file_uri(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     let normalized = normalized.strip_suffix('/').filter(|rest| !rest.is_empty()).unwrap_or(&normalized);
-    let drive = normalized.len() >= 3 && normalized.as_bytes()[0].is_ascii_alphabetic() && &normalized[1..3] == ":/";
+    let bytes = normalized.as_bytes();
+    // A drive root keeps its slash: `C:\` is `file:///C:/`.
+    if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return format!("file:///{normalized}/");
+    }
+    let drive = bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1..3) == Some(b":/");
     let prefix = if drive {
         "file:///"
     } else if normalized.starts_with("//") {
@@ -318,6 +323,10 @@ mod tests {
         assert_eq!(file_uri("/home/rog/项目/x.py"), "file:///home/rog/%E9%A1%B9%E7%9B%AE/x.py");
         assert_eq!(file_uri("C:\\proj\\"), "file:///C:/proj");
         assert_eq!(file_uri("\\\\server\\share\\x"), "file://server/share/x");
+        assert_eq!(file_uri("D:\\"), "file:///D:/");
+        // Relative or odd paths are encoded, never cut inside a character.
+        assert_eq!(file_uri("a中.py"), "file://a%E4%B8%AD.py");
+        assert_eq!(file_uri("C"), "file://C");
     }
 
     #[test]

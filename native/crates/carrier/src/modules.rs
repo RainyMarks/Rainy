@@ -449,12 +449,18 @@ impl Modules {
         download::check_path(&staging)?;
         fs::create_dir_all(&staging).map_err(|error| io_error(&staging, error))?;
         let swapped = self.swap_in(module, &archive, &staging, cancel);
+        // A file module's verified archive went into the staging folder: it goes back for the next attempt.
+        let moved = staging.join(&module.file);
+        if swapped.is_err() && module.kind == Kind::File && fs::symlink_metadata(&moved).is_ok_and(|metadata| metadata.is_file()) {
+            let _ = download::rename(&moved, &archive);
+        }
         if fs::symlink_metadata(&staging).is_ok() {
             let _ = remove_all(&staging);
         }
         swapped?;
+        // The module is in place; an archive that cannot be removed now only costs space until the next cleanup.
         match fs::remove_file(&archive) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(io_error(&archive, error)),
+            Err(error) if error.kind() != io::ErrorKind::NotFound => log::warn!("The archive of {} was not removed: {}: {error}", module.id, archive.display()),
             _ => {}
         }
         report(Phase::Complete, module.bytes);
@@ -481,7 +487,15 @@ impl Modules {
         if fs::symlink_metadata(&target).is_ok() {
             download::rename(&target, &retired).map_err(|error| io_error(&target, error))?;
         }
-        download::rename(staging, &target).map_err(|error| io_error(staging, error))?;
+        if let Err(error) = download::rename(staging, &target) {
+            // The copy that worked goes back, rather than waiting in `.retired-*` for the next cleanup to delete it.
+            if fs::symlink_metadata(&retired).is_ok()
+                && let Err(restore) = download::rename(&retired, &target)
+            {
+                log::warn!("The earlier copy of {} was not put back: {}: {restore}", module.id, retired.display());
+            }
+            return Err(io_error(staging, error));
+        }
         if fs::symlink_metadata(&retired).is_ok()
             && let Err(error) = remove_all(&retired)
         {
@@ -550,12 +564,13 @@ impl Modules {
     /// `.retired-*` folders, and files in `.downloads` other than pinned archives, pieces and their partial files.
     /// Nothing is removed while an operation runs.
     pub fn clean(&self) -> Result<(), ModuleError> {
+        // Listed only once no operation runs, so nothing it is about to remove is gone already.
+        let Ok((_slot, _)) = self.slot(ModuleError::Busy, false) else { return Ok(()) };
         let names: Vec<String> = match fs::read_dir(&self.root) {
             Ok(entries) => entries.flatten().filter_map(|entry| entry.file_name().into_string().ok()).collect(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(io_error(&self.root, error)),
         };
-        let Ok((_slot, _)) = self.slot(ModuleError::Busy, false) else { return Ok(()) };
         let list = self.list()?;
         let pinned: HashSet<String> = list
             .iter()
@@ -866,6 +881,54 @@ mod tests {
         assert!(!root.join(".staging-php-1").exists());
         assert!(!root.join(".retired-php-2").exists());
         assert!(root.join("php").exists());
+    }
+
+    /// A file held open without sharing, as a virus scanner may hold a file just unpacked.
+    #[cfg(windows)]
+    fn held(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        fs::write(path, b"held").unwrap();
+        fs::OpenOptions::new().read(true).share_mode(0).open(path).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_copy_that_cannot_take_its_place_leaves_the_earlier_one() {
+        let archive = php_archive();
+        let resources = resources(&[entry("php", "php.tar.gz", &archive, 1)]);
+        let user_data = tempfile::tempdir().unwrap();
+        installed_by_3x(user_data.path(), "php", &"0".repeat(64), None);
+        let root = user_data.path().join("modules");
+        fs::write(root.join("php").join("php.exe"), b"old").unwrap();
+        let modules = Modules::new(resources.path(), user_data.path(), |_| {});
+        let path = root.join("php.tar.gz");
+        fs::write(&path, &archive).unwrap();
+        let staging = root.join(".staging-php-test");
+        fs::create_dir_all(&staging).unwrap();
+        let _held = held(&staging.join("scanned.dll"));
+        let module = modules.module("php").unwrap();
+        assert!(matches!(modules.swap_in(&module, &path, &staging, &AtomicBool::new(false)), Err(ModuleError::Download(DownloadError::Io(_)))));
+        assert_eq!(fs::read(root.join("php").join("php.exe")).unwrap(), b"old");
+        assert!(fs::read_dir(&root).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".retired-")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_module_that_was_not_installed_keeps_its_verified_archive() {
+        let archive = vec![7u8; 5000];
+        let resources = resources(&[entry("linux-runtime", "linux-runtime.tar.xz", &archive, 1)]);
+        let user_data = tempfile::tempdir().unwrap();
+        let root = user_data.path().join("modules");
+        let downloads = root.join(DOWNLOADS);
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("linux-runtime.tar.xz"), &archive).unwrap();
+        // The installed copy cannot be moved aside.
+        fs::create_dir_all(root.join("linux-runtime")).unwrap();
+        let _held = held(&root.join("linux-runtime").join("in-use"));
+        let modules = Modules::new(resources.path(), user_data.path(), |_| {});
+        assert!(modules.install("linux-runtime", &|_, _| {}).is_err());
+        assert_eq!(fs::read(downloads.join("linux-runtime.tar.xz")).unwrap(), archive);
+        assert!(fs::read_dir(&root).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".staging-")));
     }
 
     #[test]

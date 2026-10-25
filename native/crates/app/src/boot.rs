@@ -7,13 +7,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use rainy_carrier::askpass::Askpass;
-use rainy_carrier::control::StoppedEarly;
 use rainy_carrier::download::DownloadError;
 use rainy_carrier::modules::{ModuleError, Modules};
 use rainy_carrier::ssh::{self, InstallProgress, ServerRuntime};
 use rainy_carrier::trust::{self, Integrity, Recheck, TrustError, Verified};
 use rainy_carrier::wsl::{self, Installed, RuntimeFiles};
-use rainy_carrier::{ExecutionTarget, HostCommand, HostEvents, HostProcess, credential, launch, maintenance, proxy, targets};
+use rainy_carrier::{ExecutionTarget, HostCommand, HostEvents, HostProcess, HostStopped, credential, launch, maintenance, proxy, targets};
 use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
@@ -502,7 +501,7 @@ pub fn start(
     ask: &AskRuntime<'_>,
     progress: &(dyn Fn(Step) + Sync),
 ) -> Result<Started> {
-    let preferences = targets::read_preferences(&paths.desktop_settings())?;
+    let preferences = targets::recover_preferences(&paths.desktop_settings())?;
     let saved = targets::saved_target(&preferences).unwrap_or_else(|_| ExecutionTarget::windows());
     let prepared = match &saved {
         ExecutionTarget::Windows { .. } => Some((windows_host(paths)?, None)),
@@ -517,14 +516,31 @@ pub fn start(
     };
     let Some((command, prune)) = prepared else {
         progress(i18n::text(saved_locale(&paths.user_data), "native.starting").to_owned().into());
-        let host = HostProcess::start(&windows_host(paths)?, events)?;
+        let host = start_host(&windows_host(paths)?, &events)?;
         let target = ExecutionTarget::windows();
         if let Err(error) = targets::save_target(&paths.desktop_settings(), &target) {
             log::warn!("The execution target was not saved: {error:#}");
         }
         return Ok(Started { target, host, prune: None });
     };
-    Ok(Started { host: HostProcess::start(&command, events)?, target: saved, prune })
+    Ok(Started { host: start_host(&command, &events)?, target: saved, prune })
+}
+
+/// Start a Windows or WSL Host; one that stops before it is ready is explained with the last lines it (or wsl.exe)
+/// wrote, as an SSH Host is with what ssh said.
+fn start_host(command: &HostCommand, events: &Arc<CarrierEvents>) -> Result<HostProcess> {
+    events.clear_recent();
+    HostProcess::start(command, events.clone()).map_err(|error| {
+        if error.downcast_ref::<HostStopped>().is_none() {
+            return error;
+        }
+        let recent = events.recent();
+        let said: Vec<&str> = recent.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        match said.len() {
+            0 => error,
+            count => anyhow!("{error}\n{}", said[count.saturating_sub(5)..].join("\n")),
+        }
+    })
 }
 
 /// Install this version's runtime on the server and start the Host there over SSH (`prepareSsh`, `startSshHost`), with
@@ -565,7 +581,7 @@ fn ssh_host(
         match run(session.env())? {
             Ok(answer) => Ok(answer),
             Err(output) => {
-                if output.stderr.contains("Permission denied") {
+                if ssh::login_refused(&output.stderr) {
                     session.failed();
                 }
                 Err(ssh::failure(&destination, output.code, &output.stderr))
@@ -622,10 +638,10 @@ fn ssh_host(
                 if attempt < 3 && (lower.contains("forwarding") || lower.contains("address already in use")) {
                     continue;
                 }
-                if said.contains("Permission denied") {
+                if ssh::login_refused(&said) {
                     session.failed();
                 }
-                return Err(if error.downcast_ref::<StoppedEarly>().is_some() { ssh::failure(&destination, None, &said) } else { error });
+                return Err(if error.downcast_ref::<HostStopped>().is_some() { ssh::failure(&destination, None, &said) } else { error });
             }
         }
     }
@@ -645,6 +661,7 @@ pub struct CarrierEvents {
 
 impl CarrierEvents {
     pub fn new(paths: &Paths) -> Arc<Self> {
+        rotate_host_log(&paths.log_path());
         let log = std::fs::OpenOptions::new().create(true).append(true).open(paths.log_path()).ok();
         Arc::new(Self { user_data: paths.user_data.clone(), log: Mutex::new(log), recent: Mutex::default(), preview: Mutex::new(None), key: Mutex::new(None), on_exit: Mutex::new(None) })
     }
@@ -661,6 +678,20 @@ impl CarrierEvents {
         use std::io::Write as _;
         if let Some(file) = self.log.lock().unwrap().as_mut() {
             let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// Past this size, `host.log` moves to `host.log.1` when Rainy starts, replacing the one before, as `rainy.log` does;
+/// the Host and every MCP server it runs write there.
+const HOST_LOG_LIMIT: u64 = 4 * 1024 * 1024;
+
+fn rotate_host_log(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() >= HOST_LOG_LIMIT) {
+        let mut older = path.as_os_str().to_owned();
+        older.push(".1");
+        if let Err(error) = std::fs::rename(path, &older) {
+            log::warn!("{} was not moved aside: {error}", path.display());
         }
     }
 }
@@ -805,6 +836,20 @@ mod tests {
         assert_eq!(detail, "下载校验失败，请重试\nWSL 和 SSH 远程开发用的 Linux 运行环境底座有变化，需要联网下载一次，已下载的部分会保留。");
         let step = i18n::format(Locale::Zh, "native.linuxDownloading", &[("done", &megabytes(26_000_000)), ("total", &megabytes(52_717_256))]);
         assert_eq!(step, "正在下载 Linux 运行环境 25 / 50 MB");
+    }
+
+    #[test]
+    fn a_large_host_log_moves_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("host.log");
+        std::fs::write(&log, b"small").unwrap();
+        rotate_host_log(&log);
+        assert!(log.exists());
+        std::fs::write(&log, vec![b'x'; HOST_LOG_LIMIT as usize]).unwrap();
+        std::fs::write(dir.path().join("host.log.1"), b"older").unwrap();
+        rotate_host_log(&log);
+        assert!(!log.exists());
+        assert_eq!(std::fs::metadata(dir.path().join("host.log.1")).unwrap().len(), HOST_LOG_LIMIT);
     }
 
     #[test]

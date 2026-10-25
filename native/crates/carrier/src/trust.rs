@@ -564,7 +564,8 @@ impl Integrity {
     /// when it changed. A failure removes the record, so the next start checks every file before using any.
     pub fn recheck(&self, now: u64, interval: u64) -> Result<Recheck, TrustError> {
         let mut current = self.current.lock().unwrap();
-        if now.saturating_sub(current.checked_at) < interval {
+        // A check recorded in the future (a clock set wrong, then corrected) is due now rather than never.
+        if now.checked_sub(current.checked_at).is_some_and(|since| since < interval) {
             return Ok(Recheck::Skipped);
         }
         let walk = Walk::new(self.root.clone());
@@ -944,6 +945,11 @@ mod tests {
         assert_eq!(integrity.recheck(day, day), Ok(Recheck::Unchanged));
         assert_eq!(read_stamp(&installation.stamp).unwrap().checked_at, day);
         assert_eq!(integrity.recheck(day + 1, day), Ok(Recheck::Skipped));
+        // A start whose clock was ahead recorded a check in the future: once the clock is back, it is due at once.
+        let ahead = installation.ensure(0).unwrap();
+        ahead.current.lock().unwrap().checked_at = 100 * day;
+        assert_eq!(ahead.recheck(day + 2, day), Ok(Recheck::Unchanged));
+        assert_eq!(integrity.recheck(day + 3, day), Ok(Recheck::Skipped));
         // Touched but unchanged: hashed again, and accepted.
         let icon = File::options().write(true).open(installation.path("icon.ico")).unwrap();
         icon.set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();

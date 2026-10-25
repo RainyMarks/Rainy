@@ -201,7 +201,19 @@ pub fn download(url: &str, target: &Path, expected: &Expected, options: &Options
         offset = None;
     }
     let offset = if options.resume { offset.unwrap_or(0) } else { 0 };
-    watched(&options.cancel, |live| receive(url, &partial, offset, expected, options, live, progress))?;
+    match watched(&options.cancel, |live| receive(url, &partial, offset, expected, options, live, progress)) {
+        // A server or proxy that cannot resume, or a partial file of another version of the file under the same name,
+        // would fail every attempt the same way: start over once.
+        Err(DownloadError::InvalidResume | DownloadError::Status(416) | DownloadError::Mismatch) if offset > 0 => {
+            log::info!("{} could not be resumed from byte {offset}; downloading it again", target.display());
+            match fs::remove_file(&partial) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(io_error(&partial, error)),
+                _ => {}
+            }
+            watched(&options.cancel, |live| receive(url, &partial, 0, expected, options, live, progress))?;
+        }
+        result => result?,
+    }
     rename(&partial, target).map_err(|error| io_error(target, error))
 }
 
@@ -971,16 +983,46 @@ mod tests {
         }
 
         #[test]
-        fn refuses_another_content_range() {
+        fn starts_over_after_another_content_range() {
             let data = body(10_000);
             let served = data.clone();
-            let server = Server::start(move |_| Reply::partial(served[1000..].to_vec(), "bytes 1000-9999/10000"));
+            // Resumed from the wrong place, or not resumable at all; a request from the start gets the whole file.
+            let server = Server::start(move |seen| match seen.range.as_deref() {
+                Some("bytes=2000-") => Reply::partial(served[1000..].to_vec(), "bytes 1000-9999/10000"),
+                Some(_) => Reply::status(416),
+                None => Reply::ok(served.clone()),
+            });
             let dir = tempfile::tempdir().unwrap();
-            let target = dir.path().join("file.bin");
+            for kept in [2000, 3000] {
+                let target = dir.path().join(format!("file-{kept}.bin"));
+                fs::write(partial_path(&target), &data[..kept]).unwrap();
+                download(&server.url("/file"), &target, &expected(&data), &options(), &|_, _| {}).unwrap();
+                assert_eq!(fs::read(&target).unwrap(), data);
+                assert!(!partial_path(&target).exists());
+            }
+            let ranges: Vec<Option<String>> = server.seen().into_iter().map(|seen| seen.range).collect();
+            assert_eq!(ranges, [Some("bytes=2000-".to_owned()), None, Some("bytes=3000-".to_owned()), None]);
+            // A server that cannot send the file from the start either fails once more, and nothing is kept.
+            let broken = Server::start(|_| Reply::status(416));
+            let target = dir.path().join("broken.bin");
             fs::write(partial_path(&target), &data[..2000]).unwrap();
-            assert_eq!(download(&server.url("/file"), &target, &expected(&data), &options(), &|_, _| {}), Err(DownloadError::InvalidResume));
-            assert_eq!(fs::read(partial_path(&target)).unwrap(), &data[..2000]);
-            assert!(!target.exists());
+            assert_eq!(download(&broken.url("/file"), &target, &expected(&data), &options(), &|_, _| {}), Err(DownloadError::Status(416)));
+            assert_eq!(broken.seen().len(), 2);
+        }
+
+        #[test]
+        fn starts_over_when_a_resumed_file_is_not_the_expected_one() {
+            // The partial file of an earlier version of the file, which had the same name.
+            let data = body(50_000);
+            let served = data.clone();
+            let server = Server::start(move |seen| Reply::ranged(seen, &served));
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("linux-runtime.tar.xz");
+            fs::write(partial_path(&target), vec![0x5A; 20_000]).unwrap();
+            download(&server.url("/file"), &target, &expected(&data), &options(), &|_, _| {}).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), data);
+            let ranges: Vec<Option<String>> = server.seen().into_iter().map(|seen| seen.range).collect();
+            assert_eq!(ranges, [Some("bytes=20000-".to_owned()), None]);
         }
 
         #[test]

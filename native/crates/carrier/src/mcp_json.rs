@@ -1128,9 +1128,12 @@ const GENERIC_PARTS: &[&str] = &["index", "main", "server", "cli", "dist", "buil
 
 /// `pkg==1.2`, `pkg>=1`: the text up to a version operator whose rest stays on one line.
 fn without_version(word: &str) -> &str {
-    for (at, _) in word.char_indices() {
-        let rest = &word[at..];
-        if ["==", ">=", "<=", "~=", "!="].iter().any(|operator| rest.starts_with(operator)) && !rest[2..].contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
+    // Only an operator after the last line break keeps its rest on one line; looking there alone keeps a long pasted
+    // text from being searched once per operator.
+    let start = word.char_indices().rev().find(|(_, c)| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')).map_or(0, |(at, c)| at + c.len_utf8());
+    for (offset, _) in word[start..].char_indices() {
+        let at = start + offset;
+        if ["==", ">=", "<=", "~=", "!="].iter().any(|operator| word[at..].starts_with(operator)) {
             return &word[..at];
         }
     }
@@ -2013,6 +2016,19 @@ mod tests {
 
     fn field<'a>(server: &'a Value, key: &str) -> &'a Value {
         &server[key]
+    }
+
+    #[test]
+    fn strips_versions_in_one_pass() {
+        assert_eq!(without_version("mcp-server-fetch==1.2"), "mcp-server-fetch");
+        assert_eq!(without_version("pkg>=1\nnext"), "pkg>=1\nnext");
+        assert_eq!(without_version("a==1\npkg~=2"), "a==1\npkg");
+        assert_eq!(without_version("项目==1"), "项目");
+        // Pasted on the interface thread: a long run of operators before a line break takes no time.
+        let long = format!("mcp{}\u{2028}", "=".repeat(400_000));
+        let started = std::time::Instant::now();
+        assert_eq!(without_version(&long), long);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     // client formats

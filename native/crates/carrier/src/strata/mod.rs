@@ -168,6 +168,56 @@ fn hide(command: &mut Command) {
     command.creation_flags(0x0800_0000);
 }
 
+/// Tie a process Rainy started, and those it starts, to Rainy's own: they are in a job that ends them when its one
+/// handle closes, which is when Rainy's process ends, also after a crash. A process outside it (the job could not be
+/// made) is only stopped by a normal quit.
+#[cfg(windows)]
+fn contain(child: &Child) {
+    use std::os::windows::io::AsRawHandle as _;
+
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+    let job = job();
+    // SAFETY: both handles are open: the job's for the life of the process, the child's as long as `child` lives.
+    if job.is_null() || unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
+        log::warn!("A Strata process does not end with Rainy: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// The job of [`contain`], made once; null when it could not be.
+#[cfg(windows)]
+fn job() -> windows_sys::Win32::Foundation::HANDLE {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    static JOB: OnceLock<usize> = OnceLock::new();
+    // SAFETY: the job is created without a name and with a handle child processes do not inherit; the limits are
+    // plain data of the size given. The handle stays open for the life of the process.
+    let job = *JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+        if SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), size) == 0 {
+            CloseHandle(job);
+            return 0;
+        }
+        job as usize
+    });
+    job as windows_sys::Win32::Foundation::HANDLE
+}
+
+#[cfg(not(windows))]
+fn contain(_child: &Child) {}
+
 #[derive(Default)]
 struct Inner {
     initialized: bool,
@@ -257,17 +307,24 @@ impl Manager {
         if inner.initialized {
             return Ok(());
         }
-        inner.initialized = true;
+        // Settings that cannot be read are reported every time rather than replaced by the defaults, which the next
+        // save would write over the user's model paths (3.x kept reporting them too).
         match fs::metadata(self.settings_path()) {
             Ok(info) if info.len() > 65536 => bail!(localized("Strata 设置文件超过 64 KiB。", "The Strata settings file is larger than 64 KiB.")),
             Ok(_) => {
-                let settings: Settings = serde_json::from_str(&fs::read_to_string(self.settings_path())?)?;
+                let path = self.settings_path();
+                let unreadable = |detail: &dyn std::fmt::Display| {
+                    anyhow!(localized(&format!("无法读取 Strata 设置 {}：{detail}", path.display()), &format!("The Strata settings {} cannot be read: {detail}", path.display())))
+                };
+                let text = fs::read_to_string(&path).map_err(|error| unreadable(&error))?;
+                let settings: Settings = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|error| unreadable(&error))?;
                 settings.check()?;
                 inner.settings = settings;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        inner.initialized = true;
         if !inner.settings.model_path.is_empty() {
             match model::resolve(&inner.settings, &self.state_root, false) {
                 Ok(resolved) => {
@@ -347,7 +404,10 @@ impl Manager {
     /// Save edited settings and inspect the selected files; refused while Rainy's server runs.
     pub fn save(&self, requested: Settings) -> Result<Status> {
         let _transaction = self.transaction.lock().unwrap();
-        self.initialize()?;
+        // The card showed why the saved settings could not be read; saving new ones replaces them.
+        if let Err(error) = self.initialize() {
+            log::warn!("Unreadable Strata settings are replaced: {error}");
+        }
         self.assert_open()?;
         if Self::busy(&self.inner.lock().unwrap()) {
             bail!(localized("请先停止 Rainy 启动的 Strata，再修改模型和运行参数。", "Stop the Strata server that Rainy started before changing the model or run settings."));
@@ -457,7 +517,9 @@ impl Manager {
         command.args(args).current_dir(self.runtime_root.join("server")).env_clear().envs(child_environment()).stdin(Stdio::null()).stdout(output.try_clone()?).stderr(output);
         #[cfg(windows)]
         hide(&mut command);
-        let owned = Arc::new(Owned { child: Mutex::new(command.spawn()?) });
+        let child = command.spawn()?;
+        contain(&child);
+        let owned = Arc::new(Owned { child: Mutex::new(child) });
         self.inner.lock().unwrap().owned = Some(owned.clone());
         Ok(owned)
     }
@@ -694,5 +756,43 @@ mod tests {
         let reloaded = Manager::new(dir.join("runtime"), &dir.join("user"), || {});
         assert_eq!(reloaded.status(false).unwrap().settings.port, 18081);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_settings_stay_an_error_until_new_ones_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user").join("strata").join("settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{\"modelPath\": \"D:\\\\models\\\\q.gguf\", broken").unwrap();
+        let manager = Manager::new(dir.path().join("runtime"), &dir.path().join("user"), || {});
+        // Every look reports it; none shows the defaults the next save would write over the user's paths.
+        for _ in 0..2 {
+            assert!(manager.status(false).is_err());
+        }
+        assert!(manager.start().is_err());
+        assert!(fs::read_to_string(&path).unwrap().contains("broken"));
+        let saved = manager.save(Settings { port: 18082, ..Settings::default() }).unwrap();
+        assert_eq!(saved.settings.port, 18082);
+        assert_eq!(manager.status(false).unwrap().settings.port, 18082);
+        // A byte order mark, as Notepad may write, is no damage.
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("\u{feff}{text}")).unwrap();
+        assert_eq!(Manager::new(dir.path().join("runtime"), &dir.path().join("user"), || {}).status(false).unwrap().settings.port, 18082);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn started_processes_end_with_rainy() {
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use std::os::windows::io::AsRawHandle as _;
+        let mut child = Command::new("cmd.exe").args(["/c", "ping -n 30 127.0.0.1 >NUL"]).stdout(Stdio::null()).spawn().unwrap();
+        contain(&child);
+        let mut inside = 0;
+        assert!(!job().is_null());
+        // SAFETY: the child's handle is open while `child` lives, and the job's for the life of the process.
+        assert_ne!(unsafe { IsProcessInJob(child.as_raw_handle(), job(), &mut inside) }, 0);
+        assert_ne!(inside, 0);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

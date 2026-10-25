@@ -329,6 +329,15 @@ pub fn run(
     Ok(RunOutput { code: status.code(), stdout: String::from_utf8_lossy(&stdout).into_owned(), stderr: Vec::from(errors).join("\n") })
 }
 
+/// Whether the server refused the login, in ssh's own words (`user@host: Permission denied (publickey,password).`,
+/// `Permission denied, please try again.`), not a program on the server that could not open a file
+/// (`PermissionError: [Errno 13] Permission denied: '…'`), whose password is right.
+pub fn login_refused(stderr: &str) -> bool {
+    stderr.lines().map(str::trim).any(|line| {
+        line.contains(": Permission denied (") || line.starts_with("Permission denied (") || line.starts_with("Permission denied, please try again")
+    })
+}
+
 /// Why `ssh` failed, from its exit code and standard error, ending with ssh's own words (`sshFailure`).
 pub fn failure(target: &Destination, code: Option<i32>, stderr: &str) -> anyhow::Error {
     let name = name(target);
@@ -342,7 +351,7 @@ pub fn failure(target: &Destination, code: Option<i32>, stderr: &str) -> anyhow:
         )
     } else if has("Host key verification failed") {
         localized(&format!("没有信任 {name} 的主机密钥，已取消连接。"), &format!("The host key of {name} was not trusted, so the connection was cancelled."))
-    } else if has("Permission denied") {
+    } else if login_refused(stderr) {
         localized(
             &format!("{name} 拒绝了登录。请检查用户名、密码或密钥；也可以先在终端里用 ssh 登录一次确认。"),
             &format!("{name} refused the login. Check the user name, password or key, or try logging in once with ssh in a terminal."),
@@ -351,6 +360,10 @@ pub fn failure(target: &Destination, code: Option<i32>, stderr: &str) -> anyhow:
         localized(&format!("找不到主机 {name}。"), &format!("The host {name} cannot be found."))
     } else if ["Connection refused", "timed out", "No route to host", "Network is unreachable", "Connection reset", "Connection closed"].iter().any(|text| has(text)) {
         localized(&format!("无法连接 {name}，请检查网络、地址和端口。"), &format!("Rainy cannot reach {name}. Check the network, address and port."))
+    } else if has("Traceback (most recent call last)") {
+        // The connection worked; Rainy's installer or launcher failed on the server (a full disk, a folder it cannot
+        // write), as its last lines say.
+        localized(&format!("Rainy 在 {name} 上安装或启动远程后端时出错。"), &format!("Rainy failed to install or start its backend on {name}."))
     } else if code == Some(127) || has("python3: not found") || has("python3: command not found") {
         localized(
             &format!("{name} 上没有 python3。Rainy 需要它来安装和启动远程后端，请先在服务器上安装 python3。"),
@@ -368,12 +381,13 @@ pub fn probe(target: &Destination, session: &crate::askpass::Session) -> Result<
     let script = "import platform\nprint(platform.system(), platform.machine())\n";
     let output = run(target, &remote_python(script, &[]), session.env(), None, &mut |_| {}, Some(Duration::from_secs(180)))?;
     if output.code != Some(0) {
-        if output.stderr.contains("Permission denied") {
+        if login_refused(&output.stderr) {
             session.failed();
         }
         return Err(failure(target, output.code, &output.stderr));
     }
-    let mut words = output.stdout.split_whitespace();
+    // The last line: a login script may have printed something first.
+    let mut words = output.stdout.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default().split_whitespace();
     let (system, machine) = (words.next().unwrap_or("?"), words.next().unwrap_or("?"));
     if system != "Linux" || !matches!(machine, "x86_64" | "amd64") {
         let name = name(target);
@@ -434,10 +448,19 @@ fn opening(path: &Path) -> String {
     localized(&format!("无法打开 {}", path.display()), &format!("Opening {}", path.display()))
 }
 
+/// The last `bytes` bytes of `text` or a little fewer, starting at a character.
+fn tail(text: &str, bytes: usize) -> &str {
+    let mut start = text.len().saturating_sub(bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 fn installer_answer(stdout: &str) -> Result<ServerRuntime> {
     let line = stdout.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
     let value: Value = serde_json::from_str(line.trim())
-        .map_err(|_| anyhow!("{}\n{}", localized("服务器返回的安装结果无效。", "The server returned an invalid installation result."), &stdout[stdout.len().saturating_sub(400)..]))?;
+        .map_err(|_| anyhow!("{}\n{}", localized("服务器返回的安装结果无效。", "The server returned an invalid installation result."), tail(stdout, 400)))?;
     if let Some(system) = value.get("unsupported").and_then(Value::as_str) {
         return Ok(ServerRuntime::Unsupported(system.to_owned()));
     }
@@ -631,6 +654,14 @@ mod tests {
         );
         assert_eq!(installer_answer("{\"unsupported\": \"Linux aarch64\"}").unwrap(), ServerRuntime::Unsupported("Linux aarch64".into()));
         assert!(installer_answer("not json").is_err());
+        // What a login script printed after the installer, in Chinese, is quoted without cutting a character.
+        let noise = format!("{{\"host\": \"/h\"}}\n{}", "欢迎使用服务器。".repeat(40));
+        for skip in 0..3 {
+            let error = installer_answer(&noise[..noise.len() - skip * 3]).unwrap_err().to_string();
+            assert!(error.contains("欢迎") && error.len() < 500, "{error}");
+        }
+        assert_eq!(tail("ab中", 2), "");
+        assert_eq!(tail("ab中", 3), "中");
         let target = Destination { destination: "box".into(), port: None };
         assert_eq!(installed_paths(&target, ready, false).unwrap(), "/h/r/rainy-host");
         assert!(installed_paths(&target, ServerRuntime::NeedsArchive { error: None }, true).is_err());
@@ -644,5 +675,14 @@ mod tests {
         assert!(message.starts_with(&crate::locale::localized("box 拒绝了登录。", "box refused the login.")), "{message}");
         assert!(message.ends_with("Permission denied (publickey)."));
         assert!(!message.contains("Permanently added"));
+        crate::locale::set_chinese(true);
+        assert!(login_refused("user@box: Permission denied (publickey,password)."));
+        assert!(login_refused("Permission denied, please try again.\nuser@box: Permission denied (password)."));
+        // A file the installer could not write is no refused login, and says where it failed.
+        let traceback = "Traceback (most recent call last):\n  File \"<string>\", line 1\nPermissionError: [Errno 13] Permission denied: '/home/u/.rainy-agent'";
+        assert!(!login_refused(traceback));
+        let message = failure(&target, Some(1), traceback).to_string();
+        assert!(message.ends_with("PermissionError: [Errno 13] Permission denied: '/home/u/.rainy-agent'"), "{message}");
+        assert!(message.starts_with("Rainy 在 box 上") || message.starts_with("Rainy failed to install"), "{message}");
     }
 }

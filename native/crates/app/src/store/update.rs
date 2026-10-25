@@ -70,6 +70,8 @@ pub struct Updates {
     /// The running check reports its outcome.
     manual: bool,
     scheduled: bool,
+    /// The running check looks past the prepared update.
+    rechecking: bool,
     cancel: Arc<AtomicBool>,
 }
 
@@ -96,6 +98,7 @@ impl Updates {
             running: false,
             manual: false,
             scheduled: false,
+            rechecking: false,
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -137,7 +140,8 @@ enum Installed {
 
 impl Store {
     /// Once, when the workbench is first ready: the automatic check a few seconds later, then every few hours for a
-    /// window left open. A check while another runs or after an update was prepared does nothing.
+    /// window left open. A check while another runs does nothing; one after an update was prepared looks only for a
+    /// release newer than that one, and keeps it offered otherwise.
     pub(super) fn schedule_update_check(&mut self, cx: &mut Context<Self>) {
         if !self.updates.available || self.updates.scheduled {
             return;
@@ -167,12 +171,14 @@ impl Store {
         if matches!(updates.phase, UpdatePhase::Installing { .. }) {
             return;
         }
-        if let Some(prepared) = &updates.prepared {
-            if manual {
-                cx.emit(StoreEvent::Update(UpdateNotice::Ready(prepared.version.to_string())));
-            }
+        if let Some(prepared) = &updates.prepared
+            && manual
+        {
+            cx.emit(StoreEvent::Update(UpdateNotice::Ready(prepared.version.to_string())));
             return;
         }
+        // A window left open with an update prepared still learns of a later release.
+        let baseline = updates.prepared.as_ref().map(|prepared| prepared.version.clone());
         if !updates.available {
             updates.phase = UpdatePhase::Unavailable;
             cx.notify();
@@ -184,7 +190,10 @@ impl Store {
         log::info!("Update check ({}), running {}", if manual { "manual" } else { "automatic" }, updates.current);
         updates.running = true;
         updates.manual = manual;
-        updates.phase = UpdatePhase::Checking;
+        updates.rechecking = baseline.is_some();
+        if baseline.is_none() {
+            updates.phase = UpdatePhase::Checking;
+        }
         cx.notify();
         let (source, cache, current, cancel) = (updates.source.clone(), updates.cache.clone(), updates.current.clone(), updates.cancel.clone());
         let (progress_tx, progress_rx) = async_channel::unbounded::<(String, u8)>();
@@ -199,7 +208,7 @@ impl Store {
             }
         })
         .detach();
-        let work = cx.background_spawn(async move { prepare(&source, cache, &current, &cancel, &progress_tx) });
+        let work = cx.background_spawn(async move { prepare(&source, cache, &current, baseline.as_ref(), &cancel, &progress_tx) });
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             let result = work.await;
             let _ = this.update(cx, |store, cx| store.update_checked(result, cx));
@@ -209,8 +218,21 @@ impl Store {
 
     fn update_checked(&mut self, result: Result<Outcome, (&'static str, UpdateError)>, cx: &mut Context<Self>) {
         let manual = std::mem::take(&mut self.updates.manual);
+        let rechecking = std::mem::take(&mut self.updates.rechecking);
         self.updates.running = false;
         if self.stopping {
+            return;
+        }
+        // Nothing newer than the prepared update, or no answer: it stays offered, without a word.
+        if rechecking
+            && !matches!(result, Ok(Outcome::Prepared(_)))
+            && let Some(prepared) = &self.updates.prepared
+        {
+            if let Err((operation, error)) = &result {
+                log::info!("Update {operation} past {} failed: {error}", prepared.version);
+            }
+            self.updates.phase = UpdatePhase::Ready { version: prepared.version.to_string() };
+            cx.notify();
             return;
         }
         let notice = match result {
@@ -290,20 +312,29 @@ impl Store {
     }
 }
 
-/// Check, then download what is newer; without the network, an installer an earlier start downloaded is offered.
+/// Check, then download what is newer than `current`, or than the prepared update `baseline`; without the network, an
+/// installer an earlier start downloaded is offered. When nothing is newer, the installer of a release now installed
+/// is removed.
 fn prepare(
     source: &Source,
     cache: Option<PathBuf>,
     current: &Version,
+    baseline: Option<&Version>,
     cancel: &Arc<AtomicBool>,
     progress: &async_channel::Sender<(String, u8)>,
 ) -> Result<Outcome, (&'static str, UpdateError)> {
     let options = source.options(cancel.clone());
     let cache = cache.ok_or_else(|| ("check", UpdateError::Io("LOCALAPPDATA is not set".into())))?;
-    let installer = match update::check(source, current, crate::release::keyring(), &options) {
-        Ok(None) => return Ok(Outcome::Current),
+    let installer = match update::check(source, baseline.unwrap_or(current), crate::release::keyring(), &options) {
+        Ok(None) => {
+            if baseline.is_none() {
+                // `pending` forgets the record and installer of a release this version already is.
+                let _ = update::pending(&cache, current, cancel);
+            }
+            return Ok(Outcome::Current);
+        }
         Ok(Some(installer)) => installer,
-        Err(UpdateError::Download(error)) if error != DownloadError::Cancelled => match update::pending(&cache, current, cancel) {
+        Err(UpdateError::Download(error)) if error != DownloadError::Cancelled && baseline.is_none() => match update::pending(&cache, current, cancel) {
             Some(prepared) => {
                 log::info!("Update check failed ({error}); offering {}, downloaded earlier", prepared.version);
                 return Ok(Outcome::Prepared(prepared));

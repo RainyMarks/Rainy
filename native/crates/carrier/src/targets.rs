@@ -65,10 +65,33 @@ impl ExecutionTarget {
 /// Read `desktop.json`; a missing file is empty.
 pub fn read_preferences(path: &Path) -> Result<Map<String, Value>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+        // Notepad may save it with a byte order mark.
+        Ok(bytes) => serde_json::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes))
             .with_context(|| localized(&format!("{} 不是有效的 JSON 对象", path.display()), &format!("{} is not a JSON object", path.display()))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
         Err(error) => Err(error).with_context(|| localized(&format!("无法读取 {}", path.display()), &format!("Reading {}", path.display()))),
+    }
+}
+
+/// `desktop.json` for startup: a file that is not a JSON object (cut short by a crash or a full disk, or edited by
+/// hand) is moved aside to `desktop.json.damaged` and Rainy starts with defaults, rather than refusing every start
+/// until the user finds and deletes it. A file that cannot be read now (held by another program) is still an error.
+pub fn recover_preferences(path: &Path) -> Result<Map<String, Value>> {
+    match std::fs::read(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(error) => return Err(error).with_context(|| format!("Reading {}", path.display())),
+    }
+    let _guard = UPDATES.lock().unwrap();
+    match read_preferences(path) {
+        Ok(preferences) => Ok(preferences),
+        Err(error) => {
+            let mut aside = path.as_os_str().to_owned();
+            aside.push(".damaged");
+            log::warn!("{error:#}; it is moved aside and Rainy starts with default settings");
+            std::fs::rename(path, &aside).with_context(|| format!("Moving {} aside", path.display()))?;
+            Ok(Map::new())
+        }
     }
 }
 
@@ -105,10 +128,18 @@ pub fn edit_preferences(path: &Path, change: impl FnOnce(&mut Map<String, Value>
     let mut text = serde_json::to_string_pretty(&Value::Object(preferences))?;
     text.push('\n');
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path).inspect_err(|_| {
+    // On disk before it takes the name, so a crash or power loss leaves the old file or the new one, never a torn one.
+    let written = std::fs::File::create(&temporary)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
-    })?;
+    }
+    written?;
     Ok(())
 }
 
@@ -227,5 +258,24 @@ mod tests {
         assert_eq!(saved["distro"], "Ubuntu");
         assert_eq!(saved["locale"], "en");
         assert_eq!(saved["pendingProject"], Value::Null);
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(names, ["desktop.json"]);
+    }
+
+    #[test]
+    fn a_damaged_file_does_not_stop_every_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.json");
+        assert!(recover_preferences(&path).unwrap().is_empty());
+        std::fs::write(&path, b"\xEF\xBB\xBF{\"locale\": \"en\"}").unwrap();
+        assert_eq!(recover_preferences(&path).unwrap()["locale"], "en");
+        // What power loss can leave after a rename that was not on disk yet.
+        std::fs::write(&path, vec![0u8; 300]).unwrap();
+        assert!(read_preferences(&path).is_err());
+        assert!(recover_preferences(&path).unwrap().is_empty());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(dir.path().join("desktop.json.damaged")).unwrap(), vec![0u8; 300]);
+        save_locale(&path, "zh").unwrap();
+        assert_eq!(read_preferences(&path).unwrap()["locale"], "zh");
     }
 }

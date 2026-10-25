@@ -64,11 +64,17 @@ fn secrets() -> &'static [(Regex, &'static str)] {
             (r#"(?i)([?&](?:token|key|api[_-]?key|access_token|auth)=)[^&\s"']+"#, "${1}***"),
             (r"(?-u:\b)(Bearer|Basic)\s+[0-9A-Za-z_.~+/=-]{8,}", "${1} ***"),
             (r"(?-u:\b)(sk-(?:ant-)?)[0-9A-Za-z_-]{8,}", "${1}***"),
+            // GitHub and Slack tokens wherever they appear, as MCP servers print them.
+            (r"(?-u:\b)(gh[pousr]_|github_pat_|xox[abpors]-)[0-9A-Za-z_-]{8,}", "${1}***"),
             (
-                r#"(?i)("?(?:api[_-]?key|apikey|authorization|password|passwd|secret|token|x-api-key)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)"#,
+                r#"(?i)("?(?:api[_ -]?key|apikey|authorization|password|passwd|secret|token|x-api-key)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)"#,
                 "${1}***",
             ),
+            // `--api-key VALUE`, `--token VALUE` on a command line.
+            (r#"(?i)(--?(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|secret)\s+)("[^"]*"|'[^']*'|[^\s,;]+)"#, "${1}***"),
             (r"([0-9A-Za-z_]+://[^\s:/@]+:)[^\s@/]+@", "${1}***@"),
+            // A token as the whole user part: `https://<token>@github.com`; short user names such as `git@` stay.
+            (r"([0-9A-Za-z_]+://)[^\s:/@*]{16,}@", "${1}***@"),
         ]
         .into_iter()
         .map(|(pattern, replacement)| (Regex::new(pattern).expect("valid secret pattern"), replacement))
@@ -677,6 +683,24 @@ mod tests {
         assert!(cleaned.contains("?token=***"));
         assert!(cleaned.contains("sk-ant-***"));
         assert!(cleaned.contains("http://me:***@corp"));
+        // What MCP servers print to the Host's log.
+        let text = [
+            "cloning https://ghp_1234567890abcdefABCDEF@github.com/o/r.git",
+            "GITHUB_PERSONAL_ACCESS_TOKEN is github_pat_11AAAAAA0abcdefghijk",
+            "slack xoxb-1234-5678-abcdefgh ready",
+            "npx server --api-key s3cr3tvalue --token \"quoted secret\" --port 3000",
+            "API key: plainvalue",
+            "pushed to ssh://git@github.com/o/r",
+        ]
+        .join("\n");
+        let cleaned = scrub(&text, &alice());
+        for secret in ["1234567890abcdef", "11AAAAAA0abcdefghijk", "1234-5678-abcdefgh", "s3cr3tvalue", "quoted secret", "plainvalue"] {
+            assert!(!cleaned.contains(secret), "{secret} in {cleaned}");
+        }
+        assert!(cleaned.contains("https://ghp_***@github.com/o/r.git"), "{cleaned}");
+        assert_eq!(scrub("https://0123456789abcdef0123@example.com", &alice()), "https://***@example.com");
+        assert!(cleaned.contains("--port 3000"));
+        assert!(cleaned.contains("ssh://git@github.com/o/r"));
     }
 
     #[test]
