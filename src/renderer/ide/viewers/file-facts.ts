@@ -88,3 +88,16 @@ export function shortcutFacts(bytes: Uint8Array): ShortcutFacts | undefined {
   const args = read((flags & 0x20) !== 0)
   return { target: target ?? relative, arguments: args, workingDirectory, description }
 }
+
+/**
+ * The document an Office `~$` owner file belongs to, from the listing of its folder: Office keeps the document's name
+ * after `~$` when it is short, and replaces its first two characters with `~$` otherwise.
+ * @param lock The owner file's name.
+ * @param entries The folder's entries.
+ * @returns The document's name, or `undefined` when it is not in the folder.
+ */
+export function lockedDocumentName(lock: string, entries: readonly { readonly name: string; readonly kind: string }[]): string | undefined {
+  const rest = lock.slice(2)
+  const files = entries.filter(entry => entry.kind === 'file' && entry.name !== lock && !entry.name.startsWith('~$'))
+  return (files.find(entry => entry.name === rest) ?? files.find(entry => entry.name.length === lock.length && entry.name.endsWith(rest)))?.name
+}

@@ -4,9 +4,10 @@
  * text here and receives edits, saves, opened links, attachments and view changes through `window.ipc`.
  */
 import { lazy, Suspense, useEffect, useState } from 'react'
-import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { IdeDirectory, IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { callIde, IdeRequestError } from '../ide/ide-api.ts'
+import { lockedDocumentName } from '../ide/viewers/file-facts.ts'
 import { HexViewer } from '../ide/viewers/HexViewer.tsx'
 import { ImageViewer, type ImageAttachment } from '../ide/viewers/ImageViewer.tsx'
 import { MarkdownPreview } from '../ide/viewers/MarkdownPreview.tsx'
@@ -209,6 +210,23 @@ function SvgView({ url, name, bytes }: { url: string; name: string; bytes: numbe
   return <ImageViewer url={live ?? url} name={name} bytes={text === undefined ? bytes : new Blob([text.text]).size} onAttach={attachImage} />
 }
 
+/** An Office `~$` owner file, with a button for the document it belongs to when that is in the same folder. */
+function OfficeLockView({ url, bytes, workspaceId, rootId, path }: { url: string; bytes: number; workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string }): JSX.Element {
+  const slash = path.lastIndexOf('/')
+  const folder = slash < 0 ? '' : path.slice(0, slash)
+  const lock = path.slice(slash + 1)
+  const [locked, setLocked] = useState<string | undefined>()
+  useEffect(() => {
+    let cancelled = false
+    void callIde({ op: 'files.list', workspaceId, rootId, path: folder }).then((listing) => {
+      if (!cancelled) setLocked(lockedDocumentName(lock, (listing as IdeDirectory).entries))
+    }, () => undefined)
+    return () => { cancelled = true }
+  }, [workspaceId, rootId, folder, lock])
+  return <OfficeLockViewer url={url} size={bytes} document={locked ?? lock.slice(2)}
+    onOpenDocument={locked === undefined ? undefined : () => { post({ type: 'open-file', path: folder === '' ? locked : `${folder}/${locked}`, rootId }) }} />
+}
+
 /** The project map of a workspace, as the 3.x workbench shows it in its center. */
 function MapView({ workspaceId }: { workspaceId: WorkspaceId }): JSX.Element {
   const [sessionId, setSessionId] = useState(latestSession)
@@ -255,7 +273,7 @@ export function ViewerApp(): JSX.Element {
     case 'sheet': content = <SheetViewer url={url} size={bytes} location={documentLocation} />; break
     case 'office': content = <OfficeViewer url={url} size={bytes} location={documentLocation} />; break
     case 'shortcut': content = <ShortcutViewer url={url} size={bytes} />; break
-    case 'office-lock': content = <OfficeLockViewer url={url} size={bytes} document={name.slice(2)} onOpenDocument={undefined} />; break
+    case 'office-lock': content = <OfficeLockView url={url} bytes={bytes} workspaceId={workspaceId} rootId={rootId} path={path} />; break
     case 'markdown': case 'markdown-rich':
       content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} />
       break

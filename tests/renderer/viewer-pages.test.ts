@@ -1,9 +1,21 @@
-/** Viewer page helpers: load failures in the reader's words and the zoom keys. */
+/** Viewer page helpers: the document of an Office lock file, load failures in the reader's words and the zoom keys. */
 import { describe, expect, it } from 'vitest'
 import { FileChangedError, HttpStatusError } from '../../src/renderer/ide/viewers/byte-source.ts'
+import { lockedDocumentName } from '../../src/renderer/ide/viewers/file-facts.ts'
 import { loadFailure } from '../../src/renderer/ide/viewers/load-errors.ts'
 import { viewerMessages } from '../../src/renderer/ide/viewers/messages.ts'
 import { zoomKey } from '../../src/renderer/ide/viewers/zoom-keys.ts'
+
+const file = (name: string): { name: string; kind: string } => ({ name, kind: 'file' })
+
+describe('lockedDocumentName', () => {
+  it('finds a short name kept whole and a long one whose first two characters Office replaced', () => {
+    expect(lockedDocumentName('~$a.docx', [file('~$a.docx'), file('a.docx')])).toBe('a.docx')
+    expect(lockedDocumentName('~$季度汇报材料.pptx', [file('~$季度汇报材料.pptx'), file('第三季度汇报材料.pptx'), file('季度汇报材料.pptx.bak')])).toBe('第三季度汇报材料.pptx')
+    expect(lockedDocumentName('~$cument1.docx', [{ name: 'Document1.docx', kind: 'directory' }, file('~$cument1.docx')])).toBeUndefined()
+    expect(lockedDocumentName('~$port.xlsx', [file('~$port.xlsx')])).toBeUndefined()
+  })
+})
 
 describe('loadFailure', () => {
   const t = viewerMessages.t
