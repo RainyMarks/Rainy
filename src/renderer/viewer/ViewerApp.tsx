@@ -16,6 +16,7 @@ import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer
 import { PdfViewer } from '../ide/viewers/PdfViewer.tsx'
 import { RichMarkdown } from '../ide/viewers/RichMarkdown.tsx'
 import { saveMarkdownImage } from '../ide/viewers/markdown-assets.ts'
+import { ScrollSync } from '../ide/viewers/scroll-sync.ts'
 import { viewerMessages } from '../ide/viewers/messages.ts'
 import { outlinePosition, outlineTarget } from '../ide/outline-store.ts'
 import { localTarget, resolveDocumentPath } from '../chat/Markdown.tsx'
@@ -43,6 +44,8 @@ type Message =
   | { type: 'view'; view: 'hex' | null }
   /** The file changed on disk while this page read it. */
   | { type: 'reload' }
+  /** The user scrolled the split preview: the 1-based source line now at its top, possibly fractional. */
+  | { type: 'scroll'; line: number }
 
 declare global {
   interface Window {
@@ -58,6 +61,9 @@ declare global {
       revealHeading(index: number): void
       /** Save the Markdown document as a PDF or a self-contained HTML page. */
       exportDocument(format: 'pdf' | 'html'): void
+      /** Scroll the Markdown preview to the source editor's first visible line: 1-based, possibly fractional. The page
+       *  does not answer with a `scroll` message for the scrolling this causes. */
+      scrollToLine(line: number): void
     }
   }
 }
@@ -84,6 +90,8 @@ let receiveSession: ((sessionId: string | null) => void) | undefined
 let latestSession: string | null = null
 /** The Markdown document this page shows, for exporting it. */
 let shownDocument: { workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string } | undefined
+/** The source editor's scroll position, which the preview follows in split view. */
+const editorScroll = new ScrollSync()
 window.__rainyViewer = {
   setSession(sessionId) {
     latestSession = sessionId
@@ -108,6 +116,9 @@ window.__rainyViewer = {
       .then(({ exportDocument }) => exportDocument({ format, text, path: shown.path, workspaceId: shown.workspaceId, rootId: shown.rootId }))
       .then((saved) => { if (saved !== null) post({ type: 'notice', tone: 'success', text: viewerMessages.t('exportDone', { path: saved }) }) },
         (error: unknown) => { post({ type: 'notice', tone: 'error', text: viewerMessages.t('exportFailed', { error: error instanceof Error ? error.message : String(error) }) }) })
+  },
+  scrollToLine(line) {
+    if (Number.isFinite(line)) editorScroll.editorScrolled(line)
   },
 }
 // The heading at the top of the rich editor, for the outline beside it.
@@ -160,11 +171,18 @@ async function createBinary(workspaceId: WorkspaceId, rootId: IdeRootId | undefi
       throw error
     }
   }
-  throw new Error('No free image name.')
+  throw new Error(viewerMessages.t('imageNoFreeName'))
 }
 
 /** The Markdown views: the text arrives from the workbench, and rich edits go back to it. */
-function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string }): JSX.Element | null {
+function MarkdownView({ rich, workspaceId, rootId, path, hostPath }: {
+  rich: boolean
+  workspaceId: WorkspaceId
+  rootId: IdeRootId | undefined
+  path: string
+  /** The document on this computer, when the project is a Windows folder. */
+  hostPath: string | undefined
+}): JSX.Element | null {
   const [text, setText] = useState(latestText)
   shownDocument = { workspaceId, rootId, path }
   useEffect(() => {
@@ -174,8 +192,16 @@ function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; work
   }, [])
   if (text === undefined) return null
   const directory = path.split('/').slice(0, -1).join('/')
-  const base = { workspaceId, rootId, directory }
-  if (!rich) return <MarkdownPreview text={text.text} version={text.version} base={base} />
+  // The project folder on this computer: the document's own path without its project-relative part.
+  const suffix = `\\${path.replaceAll('/', '\\')}`
+  const hostRoot = hostPath?.toLowerCase().endsWith(suffix.toLowerCase()) === true ? hostPath.slice(0, -suffix.length) : undefined
+  const base = { workspaceId, rootId, directory, hostRoot }
+  // The preview resolved the path against the document's directory already.
+  if (!rich) {
+    return <MarkdownPreview text={text.text} version={text.version} base={base} sync={editorScroll}
+      openLocal={(target) => { post({ type: 'open-file', path: target.path, rootId, line: target.line }) }}
+      onScrollLine={(line) => { post({ type: 'scroll', line }) }} />
+  }
   return <RichMarkdown path={path} text={text.text} version={text.version} base={base}
     onChange={(value) => { latestText = { text: value, version: text.version }; post({ type: 'change', text: value }) }}
     onSave={() => { post({ type: 'save' }) }}
@@ -275,7 +301,7 @@ export function ViewerApp(): JSX.Element {
     case 'shortcut': content = <ShortcutViewer url={url} size={bytes} />; break
     case 'office-lock': content = <OfficeLockView url={url} bytes={bytes} workspaceId={workspaceId} rootId={rootId} path={path} />; break
     case 'markdown': case 'markdown-rich':
-      content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} />
+      content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} hostPath={hostPath} />
       break
     case 'map': content = <MapView workspaceId={workspaceId} />; break
     default: content = null

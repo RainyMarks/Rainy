@@ -11,10 +11,10 @@ import { resolveDocumentPath } from '../../chat/Markdown.tsx'
 import { usePrefs } from '../../prefs.ts'
 import { toast } from '../../ui/index.ts'
 import { outlinePosition, provideOutline } from '../outline-store.ts'
-import { frontMatterContent, splitFrontMatter, withFrontMatterContent } from './front-matter.ts'
-import { preserveSource } from './markdown-merge.ts'
+import { frontMatterContent, frontMatterIsToml, splitFrontMatter, withFrontMatterContent } from './front-matter.ts'
+import { conventionalTables, mergeEdit } from './markdown-merge.ts'
 import { headingForFragment, markdownOutline } from './markdown-outline.ts'
-import { isMermaid, renderMermaid } from './mermaid.ts'
+import { isMermaid, onThemeChange, renderMermaid } from './mermaid.ts'
 import { useViewerT } from './messages.ts'
 import { RichFindBar, type FindRequest } from './RichFindBar.tsx'
 import type * as RichPlugins from './rich-plugins.ts'
@@ -28,30 +28,12 @@ interface Rich {
   /** Hand the current text to the buffer now; the editor's own notice waits 200 ms and is dropped when it closes. */
   flush(): void
   replace(text: string): void
-  destroy(): Promise<unknown>
+  destroy: () => Promise<unknown>
 }
 
-/** How Markdown is written back: the common GitHub style, so an edit does not rewrite the rest of the file. */
-const STRINGIFY = { bullet: '-', bulletOther: '*', emphasis: '*', strong: '*', fence: '`', fences: true, rule: '-', listItemIndent: 'one', incrementListMarker: true } as const
-
-/**
- * Write table delimiter rows as `| --- |`, the usual style, instead of the minimal `| - |` an unaligned table gets;
- * lines inside fenced code are left alone.
- * @param markdown Serialized document.
- * @returns The same document with conventional delimiter rows.
- */
-export function conventionalTables(markdown: string): string {
-  let fence: string | undefined
-  return markdown.split('\n').map((line) => {
-    const opening = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
-    if (opening !== undefined) {
-      if (fence === undefined) fence = opening
-      else if (opening[0] === fence[0] && opening.length >= fence.length) fence = undefined
-      return line
-    }
-    if (fence !== undefined || !/^\|(?:\s*:?-+:?\s*\|)+\s*$/u.test(line)) return line
-    return line.replace(/(\|)\s*(:?)-+(:?)\s*(?=\|)/gu, (_match, pipe: string, left: string, right: string) => `${pipe} ${left}---${right} `)
-  }).join('\n')
+/** @param text Markdown with any line ends. @returns It with LF line ends, as the editor holds it. */
+function lf(text: string): string {
+  return text.replace(/\r\n?/gu, '\n')
 }
 
 /** @param view Editor. @returns The document position of every heading, in document order. */
@@ -78,7 +60,23 @@ const CONTROL_TIPS: readonly (readonly [string, ViewerKey])[] = [
   ['[data-role="col-drag-handle"] .button-group > button:nth-child(4)', 'richDeleteColumn'],
   ['[data-role="row-drag-handle"] .button-group > button', 'richDeleteRow'],
   ['[data-role="x-line-drag-handle"] .add-button', 'richAddRow'], ['[data-role="y-line-drag-handle"] .add-button', 'richAddColumn'],
+  ['.milkdown-link-edit .button.confirm', 'richConfirm'], ['.milkdown-latex-inline-edit button', 'richConfirm'],
 ]
+
+/** Above this size the rich view stays off: Crepe renders and serializes the whole document on every edit. */
+const RICH_LIMIT = 2 * 1024 * 1024
+
+/**
+ * Crepe's language button reads "Text" for a code block without a language and offers no setting for it.
+ * @param root Editor element.
+ * @param label What to show instead.
+ */
+function labelPlainCode(root: Element, label: string): void {
+  for (const button of root.querySelectorAll('.milkdown-code-block .language-button')) {
+    const text = button.firstChild
+    if (text?.nodeType === Node.TEXT_NODE && text.nodeValue === 'Text') text.nodeValue = label
+  }
+}
 
 /** Give the control under the pointer its tooltip and accessible name, the first time it is pointed at. */
 function labelControl(target: EventTarget | null, t: ReturnType<typeof useViewerT>): void {
@@ -94,10 +92,27 @@ function labelControl(target: EventTarget | null, t: ReturnType<typeof useViewer
   }
 }
 
+type RichProps = Parameters<typeof RichEditor>[0]
+
+/**
+ * The rich view of a document, or a notice to use the source view when the document is too large for it.
+ * @param props See {@link RichEditor}.
+ * @returns The view.
+ */
+export function RichMarkdown(props: RichProps): JSX.Element {
+  const t = useViewerT()
+  // Decided when the view opens: a document that grows past the limit while open keeps its editor.
+  const [large] = useState(() => props.text.length > RICH_LIMIT)
+  if (!large) return <RichEditor {...props} />
+  return <div className={css.viewer} data-viewer="markdown-rich">
+    <div className={css.message}>{t('richTooLarge', { size: `${(props.text.length / 1024 / 1024).toFixed(1)} MB` })}</div>
+  </div>
+}
+
 /**
  * @param props.path File key, for the outline.
  * @param props.text The buffer's text.
- * @param props.base Project, mounted directory and the file's folder, for relative images.
+ * @param props.base Project, mounted directory and the file's folder, for relative and absolute images.
  * @param props.version The observed file version, so a reloaded image is fetched again.
  * @param props.onChange The user edited the document; receives the new Markdown.
  * @param props.onSave Ctrl+S inside the editor.
@@ -105,10 +120,11 @@ function labelControl(target: EventTarget | null, t: ReturnType<typeof useViewer
  * @param props.onOpenLink Ctrl+click on a link that leaves this document.
  * @returns The editor.
  */
-export function RichMarkdown({ path, text, base, version, onChange, onSave, onImage, onOpenLink }: {
+function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOpenLink }: {
   path: string
   text: string
-  base: { workspaceId: string; rootId?: string | undefined; directory: string }
+  /** `hostRoot`: the project folder on this computer, when it is a Windows folder, for images written as `C:\…` paths. */
+  base: { workspaceId: string; rootId?: string | undefined; directory: string; hostRoot?: string | undefined }
   version: string | null
   onChange: (text: string) => void
   onSave: () => void
@@ -166,17 +182,25 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
     let cancelled = false
     let created: Rich | undefined
     void (async () => {
-      const [{ Crepe }, { editorViewCtx, remarkStringifyOptionsCtx }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { remarkGFMPlugin },
-        { uploadConfig }, rich] = await Promise.all([
-        import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
-        import('@milkdown/kit/preset/gfm'), import('@milkdown/kit/plugin/upload'), import('./rich-plugins.ts'),
+      const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig }, { codeBlockConfig }, rich,
+        { codeTheme }] = await Promise.all([
+        import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/preset/commonmark'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
+        import('@milkdown/kit/plugin/upload'), import('@milkdown/kit/component/code-block'), import('./rich-plugins.ts'), import('./code-theme.ts'),
       ])
       await import('@milkdown/crepe/theme/common/style.css')
       if (cancelled) return
       plugins.current = rich
       const image = (url: string): string => {
         const { base: folder, version: revision } = latest.current
-        if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(url)) return url
+        // `C:\…` and `C:/…` are paths, not URL schemes: shown when they lie in the project, as the Host serves only that.
+        const drive = /^[A-Za-z]:[\\/]/u.test(url)
+        if (drive) {
+          const root = folder.hostRoot?.replaceAll('\\', '/').replace(/\/+$/u, '')
+          const target = url.replaceAll('\\', '/')
+          const inside = root !== undefined && target.toLowerCase().startsWith(`${root.toLowerCase()}/`)
+          if (!inside) return url
+          url = `/${target.slice(root.length + 1)}`
+        } else if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(url)) return url
         const resolved = resolveDocumentPath(folder.directory, url)
         return resolved === undefined ? url : ideRawUrl({ workspaceId: folder.workspaceId, rootId: folder.rootId, path: resolved, version: revision ?? undefined })
       }
@@ -192,9 +216,17 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         box.textContent = message
         return box
       }
+      const draw = (content: string, apply: (value: string | HTMLElement) => void): void => {
+        renderMermaid(content).then(apply, (error: unknown) => {
+          apply(failed(latest.current.t('mermaidFailed', { error: error instanceof Error ? error.message : String(error) })))
+        })
+      }
+      /** The diagrams drawn last, by the callback that shows each; drawn again in the new colors when the theme changes. */
+      const diagrams = new Map<(value: string | HTMLElement) => void, string>()
+      const unwatch = onThemeChange(() => { for (const [apply, content] of diagrams) draw(content, apply) })
       const crepe = new Crepe({
         root: element,
-        defaultValue: body.current,
+        defaultValue: lf(body.current),
         // Crepe's image block keeps its display size in the alt text, which would replace the author's description; the
         // inline image below writes `![alt](src "title")` back unchanged.
         features: { [Crepe.Feature.ImageBlock]: false },
@@ -204,14 +236,17 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
           // The selection toolbar's tooltips; Crepe adds the shortcut.
           [Crepe.Feature.Toolbar]: { boldLabel: t('richBold'), italicLabel: t('richItalic'), strikethroughLabel: t('richStrike'),
             codeLabel: t('richInlineCode'), latexLabel: t('richInlineMath'), linkLabel: t('richLink') },
-          [Crepe.Feature.CodeMirror]: { searchPlaceholder: t('richLanguageSearch'), noResultText: t('richNoLanguage'), copyText: t('richCopy'),
+          [Crepe.Feature.Latex]: { inlineEditConfirm: t('richConfirm') },
+          // Rainy's highlight colors in place of Crepe's One Dark, which made code unreadable in the light mode.
+          [Crepe.Feature.CodeMirror]: { theme: codeTheme(t), searchPlaceholder: t('richLanguageSearch'), noResultText: t('richNoLanguage'), copyText: t('richCopy'),
             previewLabel: t('richPreview'), previewToggleText: preview => preview ? t('richEdit') : t('richPreview'), previewLoading: t('mermaidLoading'),
             // Mermaid fences show the diagram; math is drawn by Crepe's LaTeX feature, which wraps this one.
             renderPreview: (language, content, apply) => {
               if (!isMermaid(language) || content.trim() === '') return null
-              renderMermaid(content).then(apply, (error: unknown) => {
-                apply(failed(latest.current.t('mermaidFailed', { error: error instanceof Error ? error.message : String(error) })))
-              })
+              diagrams.delete(apply)
+              diagrams.set(apply, content)
+              if (diagrams.size > 200) diagrams.delete(diagrams.keys().next().value!)
+              draw(content, apply)
               return undefined
             } },
           [Crepe.Feature.BlockEdit]: {
@@ -232,15 +267,23 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
             listGroup: { label: t('richGroupList'), bulletList: { label: t('richBullet') }, orderedList: { label: t('richOrdered') }, taskList: { label: t('richTask') } },
             advancedGroup: { label: t('richGroupAdvanced'), image: { label: t('richImage') }, codeBlock: { label: t('richCode') }, table: { label: t('richTable') },
               math: { label: t('richMath') } },
+            // Crepe offers an image only with its image block, which is off; this one inserts an inline image.
+            buildMenu: (builder) => {
+              builder.getGroup('advanced').addItem('rainy-image', { label: t('richImage'), icon: rich.IMAGE_ICON, onRun: (ctx) => {
+                ctx.get(commandsCtx).call(clearTextInCurrentBlockCommand.key)
+                rich.insertImage(ctx)
+              } })
+            },
           },
         },
       })
-      crepe.editor.config((ctx) => {
-        ctx.update(remarkStringifyOptionsCtx, previous => ({ ...previous, ...STRINGIFY }))
-        // Aligned table columns would turn one edited cell into a change of every row.
-        ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false })
+      const syntax = await rich.markdownSyntax(crepe.editor, lf(body.current))
+      syntax.config((ctx) => {
         ctx.update(inlineImageConfig.key, previous => ({ ...previous, proxyDomURL: image, onUpload: save, uploadButton: t('richUpload'),
-          uploadPlaceholderText: t('richImageLink'), confirmButton: t('richConfirm') }))
+          uploadPlaceholderText: t('richImageLink'), confirmButton: t('richConfirm'), imageIcon: t('richImage') }))
+        // Only `$$` math (the language `LaTeX`) is drawn as a formula; a ```latex fence is code, often a whole document.
+        ctx.update(codeBlockConfig.key, previous => ({ ...previous, renderPreview: (language, content, apply) =>
+          language !== rich.MATH_LANGUAGE && /^latex$/iu.test(language) ? null : previous.renderPreview(language, content, apply) }))
         // Pasted and dropped images are saved beside the document, as Typora does, instead of becoming blob: links.
         ctx.update(uploadConfig.key, previous => ({ ...previous, uploader: async (files, schema) => {
           const nodes: ProseNode[] = []
@@ -255,7 +298,7 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
           }
           return nodes
         } }))
-      }).use(imageInlineComponent).use(rich.typoraKeymap).use(rich.searchPlugin).use(rich.currentBlockPlugin).use(rich.typewriterPlugin)
+      }).use(imageInlineComponent).use(rich.typoraKeymap).use(rich.tableKeys).use(rich.searchPlugin).use(rich.currentBlockPlugin).use(rich.typewriterPlugin)
         .use(rich.linkClickPlugin((href) => {
           if (!href.startsWith('#')) { latest.current.onOpenLink(href); return }
           const index = headingForFragment(markdownOutline(held.current), href.slice(1))
@@ -264,12 +307,13 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
       let quiet = false
       // The file as loaded and the editor's own serialization of it: edits are merged into the file line by line, so
       // escapes, blank lines and table spacing the editor would write differently survive outside the edited lines.
+      // `source` keeps the file's line ends; the editor and `loaded` have LF.
       let source = body.current
       let loaded = ''
       let started = false
       const push = (written: string): void => {
         if (quiet || !started) return
-        publish(front.current, preserveSource(source, loaded, conventionalTables(written)))
+        publish(front.current, mergeEdit(source, loaded, conventionalTables(written), rich.markdownReader(crepe.editor.ctx)))
       }
       crepe.on((listen) => {
         listen.markdownUpdated((_ctx, written) => { push(written); setRevision(value => value + 1) })
@@ -277,7 +321,7 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         listen.blur(() => { push(crepe.getMarkdown()) })
       })
       await crepe.create()
-      if (cancelled) { await crepe.destroy(); return }
+      if (cancelled) { unwatch(); await crepe.destroy(); return }
       loaded = conventionalTables(crepe.getMarkdown())
       started = true
       created = {
@@ -286,7 +330,10 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         flush: () => { push(crepe.getMarkdown()) },
         replace: (next) => {
           quiet = true
-          try { crepe.editor.action(replaceAll(next)) } finally { quiet = false }
+          // A new editor state: the outside change is not an undo step, so Ctrl+Z cannot bring the old text back.
+          const scroll = stage.current?.scrollTop
+          try { crepe.editor.action(replaceAll(lf(next), true)) } finally { quiet = false }
+          if (stage.current !== null && scroll !== undefined) stage.current.scrollTop = scroll
           source = next
           loaded = conventionalTables(crepe.getMarkdown())
           body.current = next
@@ -295,6 +342,11 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         destroy: () => crepe.destroy(),
       }
       editor.current = created
+      labelPlainCode(element, latest.current.t('richPlainText'))
+      const observer = new MutationObserver(() => { labelPlainCode(element, latest.current.t('richPlainText')) })
+      observer.observe(element, { subtree: true, childList: true, characterData: true })
+      const destroy = created.destroy
+      created.destroy = () => { observer.disconnect(); unwatch(); return destroy() }
       setReady(true)
     })().catch((error: unknown) => { if (!cancelled) setFailure(error instanceof Error ? error.message : String(error)) })
     return () => {
@@ -403,8 +455,9 @@ export function RichMarkdown({ path, text, base, version, onChange, onSave, onIm
         }}>
         <div className="rainy-rich" hidden={!ready}>
           {frontMatter !== '' && <div className="rainy-front-matter" data-front-matter>
-            <div className="rainy-front-matter-label" title={t('richFrontMatterTitle')}>{t('richFrontMatter')}</div>
-            <textarea className="rainy-front-matter-text" spellCheck={false} aria-label={t('richFrontMatter')} value={frontMatterContent(frontMatter)}
+            <div className="rainy-front-matter-label" title={t('richFrontMatterTitle')}>{t(frontMatterIsToml(frontMatter) ? 'richFrontMatterToml' : 'richFrontMatter')}</div>
+            <textarea className="rainy-front-matter-text" spellCheck={false} aria-label={t(frontMatterIsToml(frontMatter) ? 'richFrontMatterToml' : 'richFrontMatter')}
+              value={frontMatterContent(frontMatter)}
               onChange={(event) => {
                 const next = withFrontMatterContent(front.current, event.target.value)
                 setFrontMatter(next)

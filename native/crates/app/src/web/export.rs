@@ -31,23 +31,43 @@ pub fn close_finished() {
     }
 }
 
+/// Why no PDF was made. The caller words it for the user; the details are the system's or WebView2's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PdfFailure {
+    /// The page to print could not be written to the temporary folder.
+    Page(String),
+    /// The hidden WebView2 did not start.
+    Control(String),
+    /// WebView2 did not print the page.
+    Print(String),
+    /// WebView2 printed, but its answer held no PDF.
+    Empty,
+}
+
+/// The bytes of the PDF in WebView2's answer to `Page.printToPDF`.
+fn pdf_bytes(answer: &str) -> Result<Vec<u8>, PdfFailure> {
+    let value: Value = serde_json::from_str(answer).map_err(|_| PdfFailure::Empty)?;
+    let data = value["data"].as_str().ok_or(PdfFailure::Empty)?;
+    base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| PdfFailure::Empty)
+}
+
 /// Print `html` to a PDF; `done` runs on the UI thread with the file's bytes.
-pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnOnce(Result<Vec<u8>, String>) + 'static) {
+pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnOnce(Result<Vec<u8>, PdfFailure>) + 'static) {
     let folder = std::env::temp_dir().join(format!("rainy-export-{}-{}", std::process::id(), chrono::Utc::now().timestamp_millis()));
     let page = folder.join("document.html");
     if let Err(error) = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&page, html)) {
-        done(Err(error.to_string()));
+        done(Err(PdfFailure::Page(error.to_string())));
         return;
     }
     let url = format!("file:///{}", page.to_string_lossy().replace('\\', "/"));
     let allowed = url.clone();
-    let done: Rc<RefCell<Option<Box<dyn FnOnce(Result<Vec<u8>, String>)>>>> = Rc::new(RefCell::new(Some(Box::new(done))));
+    let done: Rc<RefCell<Option<Box<dyn FnOnce(Result<Vec<u8>, PdfFailure>)>>>> = Rc::new(RefCell::new(Some(Box::new(done))));
     // The control lives until the PDF is made; then it and the page go.
     let holder: Rc<RefCell<Option<WebView>>> = Rc::default();
     let finish = {
         let (done, holder, folder) = (done.clone(), holder.clone(), folder.clone());
-        Rc::new(move |result: Result<Vec<u8>, String>| {
-            log::info!("Markdown export printed: {}", result.as_ref().map_or_else(|error| error.clone(), |pdf| format!("{} bytes", pdf.len())));
+        Rc::new(move |result: Result<Vec<u8>, PdfFailure>| {
+            log::info!("Markdown export printed: {}", result.as_ref().map_or_else(|failure| format!("{failure:?}"), |pdf| format!("{} bytes", pdf.len())));
             let _ = std::fs::remove_dir_all(&folder);
             if let Some(done) = done.borrow_mut().take() {
                 done(result);
@@ -73,7 +93,7 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
         let view = match created {
             Ok(view) => view,
             Err(error) => {
-                failed(Err(error));
+                failed(Err(PdfFailure::Control(error)));
                 return;
             }
         };
@@ -92,11 +112,7 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
             printer.clone().devtools("Runtime.evaluate", wait, move |_| {
                 let params = r#"{"printBackground":true,"preferCSSPageSize":true,"paperWidth":8.27,"paperHeight":11.69,"generateDocumentOutline":true,"generateTaggedPDF":true}"#;
                 printer.devtools("Page.printToPDF", params, move |result| {
-                    let pdf = result.and_then(|json| {
-                        let value: Value = serde_json::from_str(&json).map_err(|error| error.to_string())?;
-                        let data = value["data"].as_str().ok_or_else(|| "WebView2 returned no PDF.".to_owned())?;
-                        base64::engine::general_purpose::STANDARD.decode(data).map_err(|error| error.to_string())
-                    });
+                    let pdf = result.map_err(PdfFailure::Print).and_then(|answer| pdf_bytes(&answer));
                     finish(pdf.map(super::pdf_text::searchable_pdf));
                 });
             });
@@ -118,5 +134,13 @@ mod tests {
         assert_eq!(file_name("a/b\\c"), "a-b-c");
         assert_eq!(file_name("  ..  "), "document");
         assert_eq!(file_name("notes. "), "notes");
+    }
+
+    #[test]
+    fn reads_the_pdf_from_the_print_answer() {
+        assert_eq!(pdf_bytes(r#"{"data":"JVBERg=="}"#), Ok(b"%PDF".to_vec()));
+        assert_eq!(pdf_bytes(r#"{"stream":"1"}"#), Err(PdfFailure::Empty));
+        assert_eq!(pdf_bytes(r#"{"data":"not base64!"}"#), Err(PdfFailure::Empty));
+        assert_eq!(pdf_bytes("no json"), Err(PdfFailure::Empty));
     }
 }

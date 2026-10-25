@@ -76,6 +76,11 @@ const zh = {
   officeTimeout: 'Office 在 2 分钟内没有完成转换。可以重试，或用默认程序打开。', officeTooLarge: '文件超过 200 MB，没有交给 Office 转换。',
   officeNoOutput: 'Office 打开了这个文件，但没有生成 PDF。', officeFailedPlain: 'Office 无法转换此文件。', officeUnsupported: 'Office 不转换这种文件。',
   officeDetail: '详细信息：{detail}',
+  footnotes: '脚注', footnoteBack: '返回正文',
+  imageNoFreeName: '这个文件夹里同名的图片太多，找不到可用的文件名', imageReadFailed: '无法读取这张图片',
+  codeFold: '折叠', codeUnfold: '展开', codeFolded: '已折叠的代码', codeFoldedLines: '已折叠行', codeUnfoldedLines: '已展开行', codeLinesTo: '至',
+  codeCompletions: '补全', richPlainText: '纯文本', richFrontMatterToml: 'TOML 前言',
+  richTooLarge: '文件有 {size}，所见即所得编辑会很慢，已关闭。请切换到“源码”编辑，或用“预览”查看。',
 }
 
 const en: typeof zh = {
@@ -89,7 +94,7 @@ const en: typeof zh = {
   richCopyLink: 'Copy link', richEditLink: 'Edit link', richRemoveLink: 'Remove link', richAddBlock: 'Insert below', richDragBlock: 'Drag to move, click to select the block',
   richSelectColumn: 'Select column', richSelectRow: 'Select row', richAlignLeft: 'Align left', richAlignCenter: 'Center', richAlignRight: 'Align right',
   richDeleteColumn: 'Delete column', richDeleteRow: 'Delete row', richAddRow: 'Add row', richAddColumn: 'Add column',
-  richFrontMatter: 'Front matter', richFrontMatterTitle: 'Metadata at the start of the document, such as title, tags and date',
+  richFrontMatter: 'YAML front matter', richFrontMatterTitle: 'Metadata at the start of the document, such as title, tags and date',
   richUpload: 'Choose image', richImageFailed: 'The image could not be saved: {error}', richImageTooLarge: 'The image is larger than 25 MB and was not saved',
   mermaidFailed: 'The diagram cannot be drawn: {error}', mermaidLoading: 'Drawing the diagram…',
   findPlaceholder: 'Find', replacePlaceholder: 'Replace with', findCount: '{current} of {total}', findNone: 'No results',
@@ -153,6 +158,11 @@ const en: typeof zh = {
   officeTimeout: 'Office did not finish converting within 2 minutes. Retry, or open the file in its default app.', officeTooLarge: 'The file is larger than 200 MB and was not handed to Office.',
   officeNoOutput: 'Office opened the file but wrote no PDF.', officeFailedPlain: 'Office cannot convert this file.', officeUnsupported: 'Office does not convert this kind of file.',
   officeDetail: 'Details: {detail}',
+  footnotes: 'Footnotes', footnoteBack: 'Back to the text',
+  imageNoFreeName: 'This folder has too many images of that name; no free name is left', imageReadFailed: 'The image could not be read',
+  codeFold: 'Fold line', codeUnfold: 'Unfold line', codeFolded: 'folded code', codeFoldedLines: 'Folded lines', codeUnfoldedLines: 'Unfolded lines', codeLinesTo: 'to',
+  codeCompletions: 'Completions', richPlainText: 'Plain text', richFrontMatterToml: 'TOML front matter',
+  richTooLarge: 'This file is {size}; rich editing would be slow, so it is off. Edit it in Source, or read it in Preview.',
 }
 
 /** Viewer strings. */

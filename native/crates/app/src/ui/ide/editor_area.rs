@@ -2,14 +2,16 @@
 //! editor or a viewer, and what a window without a project or without open files shows.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::diff::Diff;
-use gpui_kit::component::input::{Editor, InputEvent};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
@@ -23,8 +25,8 @@ use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
-use crate::ui::ide::{AiEditSelection, choose_folder, editor_commands, file_icon};
-use crate::ui::tr;
+use crate::ui::ide::{AiEditSelection, MarkdownPreview, MarkdownSplit, choose_folder, editor_commands, file_icon};
+use crate::ui::{tr, trf};
 use crate::web::{PaneEvent, WebPane};
 
 /// A file shown in a page: which viewer, for which version of the file, and the text the page sent last.
@@ -32,10 +34,30 @@ struct Viewer {
     kind: &'static str,
     version: String,
     pane: Entity<WebPane>,
+    /// The editor whose text a Markdown page shows. Reading the file again from disk gives the tab a new editor; a page
+    /// left on the old one would keep the old text, and its next edit would write that over the new file.
+    editor: Option<EntityId>,
     /// The page's own edit, so it is not sent back to it.
     from_page: Option<String>,
+    /// The split view's scrolling, for the preview and its source editor to follow each other.
+    scroll: ScrollSync,
     _subscriptions: Vec<Subscription>,
+    /// Changes and scrolling of `editor`, replaced together with it.
+    _editor_subscriptions: Vec<Subscription>,
 }
+
+/// Where the split view's source editor was last seen, and when the preview last moved it.
+#[derive(Default)]
+struct ScrollSync {
+    /// The editor's top line, 1-based with the fraction of the line scrolled past.
+    line: Option<f64>,
+    /// The editor scrolls to the preview's line a frame or two after the preview reports it; that scroll is not sent
+    /// back, or the preview would be pulled to where the editor stops, such as above its own end.
+    page_at: Option<Instant>,
+}
+
+/// How long after the preview scrolled the editor the editor's own scrolling is taken as that one.
+const PAGE_SCROLL_QUIET: Duration = Duration::from_millis(250);
 
 /// An image file's decoded bytes, fetched from the Host's `/rainy/ide/raw` route, for when its page cannot be shown.
 enum Picture {
@@ -95,12 +117,19 @@ use rainy_carrier::text::percent_encode as encode;
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.observe(&ide, |_, _, cx| cx.notify()),
+            cx.observe(&ide, |this, _, cx| {
+                this.follow_editors(cx);
+                cx.notify();
+            }),
             // Choosing a tab or opening a file brings the files back in place of the map.
             cx.subscribe(&ide, |this, _, event: &crate::store::ide::IdeEvent, cx| {
                 if *event == crate::store::ide::IdeEvent::ActiveChanged && this.map_shown {
                     this.map_shown = false;
                     cx.notify();
+                }
+                // Pages address their project; another project's file under the same key gets a page of its own.
+                if *event == crate::store::ide::IdeEvent::WorkspaceChanged {
+                    this.viewers.clear();
                 }
             }),
         ];
@@ -134,20 +163,67 @@ impl EditorArea {
             format!("{}\\{}", base.trim_end_matches(['\\', '/']), path.replace('/', "\\"))
         });
         let url = viewers::viewer_url(&launch, kind, key, &workspace.workspace_id, file.document.bytes as u64, &version, host_path.as_deref(), back);
-        let editor = file.editor.clone();
+        let editor = file.editor.clone().filter(|_| live);
         let pane = viewers::create_pane(url, window, cx);
         let owner = key.to_owned();
-        let mut subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
-        if let (true, Some(editor)) = (live, editor) {
-            let owner = key.to_owned();
-            subscriptions.push(cx.subscribe(&editor, move |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.send_text(&owner, cx);
-                }
-            }));
-        }
-        self.viewers.insert(key.to_owned(), Viewer { kind, version, pane: pane.clone(), from_page: None, _subscriptions: subscriptions });
+        let subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
+        let editor_subscriptions = editor.as_ref().map(|editor| self.watch_editor(key, kind, editor, cx)).unwrap_or_default();
+        self.viewers.insert(
+            key.to_owned(),
+            Viewer {
+                kind,
+                version,
+                pane: pane.clone(),
+                editor: editor.as_ref().map(Entity::entity_id),
+                from_page: None,
+                scroll: ScrollSync::default(),
+                _subscriptions: subscriptions,
+                _editor_subscriptions: editor_subscriptions,
+            },
+        );
         Some(pane)
+    }
+
+    /// Follow the editor of a Markdown or SVG file: its changes go to the page, and in the split view its scrolling too.
+    fn watch_editor(&mut self, key: &str, kind: &'static str, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> Vec<Subscription> {
+        let owner = key.to_owned();
+        let mut subscriptions = vec![cx.subscribe(editor, move |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.send_text(&owner, cx);
+            }
+        })];
+        // The editor has no scroll event, but it is notified whenever its offset changes (wheel, scroll bar, caret).
+        if kind == "markdown" {
+            let owner = key.to_owned();
+            subscriptions.push(cx.observe(editor, move |this, editor, cx| this.editor_scrolled(&owner, &editor, false, cx)));
+        }
+        subscriptions
+    }
+
+    /// Markdown and SVG pages follow their file's current editor. Reading a file again from disk (the conflict bar's Reload, or
+    /// an unedited buffer following a change on disk) replaces the editor; the page then gets the new text.
+    fn follow_editors(&mut self, cx: &mut Context<Self>) {
+        let ide = self.ide.read(cx);
+        let replaced: Vec<(String, &'static str, Option<Entity<EditorState>>)> = self
+            .viewers
+            .iter()
+            .filter(|(_, viewer)| viewers::shows_text(viewer.kind))
+            .filter_map(|(key, viewer)| {
+                // A tab whose file is not open has nothing to follow; its page goes with the tab.
+                let editor = ide.files.get(key)?.editor.clone();
+                (editor.as_ref().map(Entity::entity_id) != viewer.editor).then(|| (key.clone(), viewer.kind, editor))
+            })
+            .collect();
+        for (key, kind, editor) in replaced {
+            let subscriptions = editor.as_ref().map(|editor| self.watch_editor(&key, kind, editor, cx)).unwrap_or_default();
+            if let Some(viewer) = self.viewers.get_mut(&key) {
+                viewer.editor = editor.as_ref().map(Entity::entity_id);
+                viewer._editor_subscriptions = subscriptions;
+                viewer.from_page = None;
+                viewer.scroll = ScrollSync::default();
+            }
+            self.send_text(&key, cx);
+        }
     }
 
     /// Hand a Markdown or SVG page the file's current text, unless the page wrote it itself.
@@ -167,12 +243,70 @@ impl EditorArea {
         }
     }
 
+    /// Whether a file's tab shows its source editor next to the preview.
+    fn split_shown(&self, key: &str, cx: &App) -> bool {
+        self.ide.read(cx).views.get(key).map(String::as_str) == Some("split") && self.viewers.get(key).is_some_and(|viewer| viewer.kind == "markdown")
+    }
+
+    /// The split view's source editor was notified: when it scrolled, the preview scrolls to its top line, unless the
+    /// preview has just scrolled it there. `force` sends the line even when it did not change, as to a page just loaded.
+    fn editor_scrolled(&mut self, key: &str, editor: &Entity<EditorState>, force: bool, cx: &mut Context<Self>) {
+        if !self.split_shown(key, cx) {
+            return;
+        }
+        let Some(line) = top_line(editor.read(cx)) else { return };
+        let Some(viewer) = self.viewers.get_mut(key) else { return };
+        if viewer.scroll.line == Some(line) && !force {
+            return;
+        }
+        viewer.scroll.line = Some(line);
+        if viewer.scroll.page_at.is_some_and(|at| at.elapsed() < PAGE_SCROLL_QUIET) {
+            return;
+        }
+        if let (Some(script), Some(view)) = (scroll_script(line), viewer.pane.read(cx).view()) {
+            view.execute(&script, |_| {});
+        }
+    }
+
+    /// The user scrolled the split view's preview: the source editor puts the line at the preview's top at its own top.
+    fn page_scrolled(&mut self, key: &str, line: f64, cx: &mut Context<Self>) {
+        if !self.split_shown(key, cx) {
+            return;
+        }
+        let Some(editor) = self.ide.read(cx).files.get(key).and_then(|file| file.editor.clone()) else { return };
+        if let Some(viewer) = self.viewers.get_mut(key) {
+            viewer.scroll.page_at = Some(Instant::now());
+        }
+        editor.update(cx, |state, cx| {
+            let Some(height) = state.line_height().map(f32::from).filter(|height| *height > 0.) else { return };
+            let map = state.display_map();
+            let row = row_at_line(line, map.buffer_line_count(), |index| map.buffer_line_to_display_row_range(index), |index| map.buffer_line_to_display_row(index));
+            let offset = state.scroll_offset();
+            state.set_scroll_offset(point(offset.x, px(-(row as f32) * height)), cx);
+        });
+    }
+
     /// What a page asked for.
     fn on_page(&mut self, key: &str, event: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The preview's scroll position is read here, before the general parser, which does not know it.
+        if let PaneEvent::Message(text) = event
+            && let Some(line) = scroll_message(text)
+        {
+            self.page_scrolled(key, line, cx);
+            return;
+        }
         match event {
             PaneEvent::Message(text) => match viewers::parse_message(text) {
                 Some(PageRequest::Ready) => {
+                    // A page that (re)loaded has no text yet, whatever it sent before.
+                    if let Some(viewer) = self.viewers.get_mut(key) {
+                        viewer.from_page = None;
+                    }
                     self.send_text(key, cx);
+                    // The preview of a split view starts where the editor is.
+                    if let Some(editor) = self.ide.read(cx).files.get(key).and_then(|file| file.editor.clone()) {
+                        self.editor_scrolled(key, &editor, true, cx);
+                    }
                     if self.pending_export.as_ref().is_some_and(|(pending, _)| pending == key)
                         && let Some((_, format)) = self.pending_export.take()
                         && let Some(view) = self.viewers.get(key).and_then(|viewer| viewer.pane.read(cx).view())
@@ -296,8 +430,9 @@ impl EditorArea {
                             let _ = cx.update(|_, cx| respond(json!({ "error": error.to_string() }), cx));
                             return;
                         }
-                        Err(error) => {
-                            let _ = cx.update(|_, cx| respond(json!({ "error": error.to_string() }), cx));
+                        // The dialog's thread ended without an answer.
+                        Err(_) => {
+                            let _ = cx.update(|_, cx| respond(json!({ "error": tr(cx, "viewers.exportDialogFailed").to_string() }), cx));
                             return;
                         }
                     };
@@ -313,11 +448,20 @@ impl EditorArea {
                             None => false,
                         });
                         if !matches!(started, Ok(true)) {
-                            let _ = cx.update(|_, cx| respond(json!({ "error": "No window to print in." }), cx));
+                            let _ = cx.update(|_, cx| respond(json!({ "error": tr(cx, "viewers.exportNoWindow").to_string() }), cx));
                             return;
                         }
-                        let made = receiver.recv().await.unwrap_or_else(|_| Err("The PDF was not made.".to_owned()));
-                        let _ = cx.update(|_, _| crate::web::export::close_finished());
+                        let made = receiver.recv().await;
+                        let Ok(made) = cx.update(|_, cx| {
+                            crate::web::export::close_finished();
+                            match made {
+                                Ok(made) => made.map_err(|failure| pdf_failure(&failure, cx)),
+                                // The print callback was dropped without running.
+                                Err(_) => Err(tr(cx, "viewers.exportPdfNotMade").to_string()),
+                            }
+                        }) else {
+                            return;
+                        };
                         made
                     } else {
                         Ok(html.into_bytes())
@@ -590,7 +734,7 @@ impl EditorArea {
                 Some((kind, split)) => self.render_page(&key, kind, split.then_some(editor).flatten(), window, cx),
                 None => editor.map(|editor| Editor::new(&editor).h_full().bordered(false).into_any_element()).unwrap_or_else(|| div().into_any_element()),
             };
-            return v_flex().size_full().child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
+            return v_flex().size_full().key_context(crate::ui::ide::MARKDOWN_TAB).child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
         }
         if view.as_deref() == Some("hex") {
             return self.render_page(&key, "hex", None, window, cx);
@@ -824,6 +968,79 @@ fn failure(reason: SharedString, detail: Option<SharedString>, theme: &gpui_kit:
         .when_some(detail.filter(|detail| !detail.is_empty()), |this, detail| this.child(div().text_xs().text_color(theme.muted_foreground).child(detail)))
 }
 
+/// Why a Markdown export has no PDF, in the interface language; the page puts it after "导出失败：".
+fn pdf_failure(failure: &crate::web::export::PdfFailure, cx: &App) -> String {
+    use crate::web::export::PdfFailure;
+    match failure {
+        PdfFailure::Page(detail) => trf(cx, "viewers.exportPdfPage", &[("error", detail)]),
+        PdfFailure::Control(detail) => trf(cx, "viewers.exportPdfControl", &[("error", detail)]),
+        PdfFailure::Print(detail) => trf(cx, "viewers.exportPdfPrint", &[("error", detail)]),
+        PdfFailure::Empty => tr(cx, "viewers.exportPdfEmpty"),
+    }
+    .to_string()
+}
+
+/// The source line at the top of an editor, 1-based with the fraction scrolled past; `None` before its first layout.
+fn top_line(state: &EditorState) -> Option<f64> {
+    let height = state.line_height().map(f32::from).filter(|height| *height > 0.)?;
+    let map = state.display_map();
+    // Display rows are all one line high; the offset is negative once scrolled down.
+    let row = f64::from((-f32::from(state.scroll_offset().y) / height).max(0.));
+    line_at_row(row, map.display_row_count(), |row| map.display_row_to_buffer_line(row), |line| map.buffer_line_to_display_row_range(line))
+}
+
+/// The 1-based source line, with its fraction, at display row `row` of `rows` (wrapped lines take several rows, folded
+/// ones none): `line_of` gives a row's 0-based buffer line, `rows_of` a buffer line's rows.
+fn line_at_row(row: f64, rows: usize, line_of: impl Fn(usize) -> usize, rows_of: impl Fn(usize) -> Option<Range<usize>>) -> Option<f64> {
+    if rows == 0 || !row.is_finite() {
+        return None;
+    }
+    let row = row.clamp(0., (rows - 1) as f64 + 0.999);
+    let line = line_of(row.floor() as usize);
+    let fraction = match rows_of(line) {
+        Some(range) if range.end > range.start => ((row - range.start as f64) / range.len() as f64).clamp(0., 0.999),
+        _ => 0.,
+    };
+    // Three decimals are finer than a pixel and keep the script short.
+    Some(((line as f64 + 1. + fraction) * 1000.).round() / 1000.)
+}
+
+/// The display row that puts 1-based source line `line` (with its fraction) at the top of an editor of `lines` buffer
+/// lines; the inverse of `line_at_row`. A folded line has no rows of its own and goes to the row `first_row` gives.
+fn row_at_line(line: f64, lines: usize, rows_of: impl Fn(usize) -> Option<Range<usize>>, first_row: impl Fn(usize) -> usize) -> f64 {
+    if lines == 0 || !line.is_finite() {
+        return 0.;
+    }
+    let line = line.max(1.);
+    // Past the last line is the last line's top; the editor clamps its offset to what it can show.
+    let (index, fraction) = match line.floor() as usize - 1 {
+        index if index < lines => (index, line.fract()),
+        _ => (lines - 1, 0.),
+    };
+    match rows_of(index) {
+        Some(range) => range.start as f64 + fraction * range.len() as f64,
+        None => first_row(index) as f64,
+    }
+}
+
+/// The source line at the top of the preview, from the page's `{"type":"scroll","line":12.5}`.
+fn scroll_message(text: &str) -> Option<f64> {
+    // Every message from the page passes here; only one naming the type is parsed twice.
+    if !text.contains("\"scroll\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(text).ok()?;
+    if value["type"] != "scroll" {
+        return None;
+    }
+    value["line"].as_f64().filter(|line| line.is_finite())
+}
+
+/// The script that scrolls the preview so 1-based source line `line` is at its top; only numbers make one.
+fn scroll_script(line: f64) -> Option<String> {
+    line.is_finite().then(|| format!("window.__rainyViewer&&window.__rainyViewer.scrollToLine&&window.__rainyViewer.scrollToLine({})", line.max(1.)))
+}
+
 /// Close a tab, asking first when it has unsaved edits.
 pub fn close_tab(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut App) {
     if !ide.read(cx).is_dirty(&key) {
@@ -965,6 +1182,14 @@ impl EditorArea {
 }
 
 impl EditorArea {
+    /// Ctrl+Shift+V and Ctrl+K V as in VS Code: show the Markdown tab's preview, or its preview beside the source, and
+    /// its default view again when it already shows that.
+    fn toggle_markdown_view(&mut self, view: &'static str, cx: &mut Context<Self>) {
+        let Some(key) = self.markdown_active(cx) else { return };
+        let shown = self.ide.read(cx).views.get(&key).map(String::as_str) == Some(view);
+        self.ide.update(cx, |ide, cx| ide.set_view(&key, (!shown).then_some(view), cx));
+    }
+
     /// Whether the tab at `index` lies wholly inside the visible part of the tab strip.
     fn tab_shown(&self, index: usize) -> bool {
         let view = self.tabs_scroll.bounds();
@@ -1034,6 +1259,88 @@ impl Render for EditorArea {
             .size_full()
             .bg(theme.background)
             .on_action(cx.listener(|this, _: &AiEditSelection, window, cx| this.open_ai_edit(window, cx)))
+            .on_action(cx.listener(|this, _: &MarkdownPreview, _, cx| this.toggle_markdown_view("preview", cx)))
+            .on_action(cx.listener(|this, _: &MarkdownSplit, _, cx| this.toggle_markdown_view("split", cx)))
             .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    /// Lines 0, 1 and 2 of a buffer whose line 1 wraps onto three rows: rows 0 | 1 2 3 | 4.
+    fn line_of(row: usize) -> usize {
+        match row {
+            0 => 0,
+            1..=3 => 1,
+            _ => 2,
+        }
+    }
+
+    fn rows_of(line: usize) -> Option<Range<usize>> {
+        [0..1, 1..4, 4..5].get(line).cloned()
+    }
+
+    #[test]
+    fn reads_the_top_line_from_the_top_row() {
+        assert_eq!(line_at_row(0., 5, line_of, rows_of), Some(1.));
+        assert_eq!(line_at_row(0.5, 5, line_of, rows_of), Some(1.5));
+        // Two of the wrapped line's three rows scrolled past.
+        assert_eq!(line_at_row(3., 5, line_of, rows_of), Some(2.667));
+        assert_eq!(line_at_row(4., 5, line_of, rows_of), Some(3.));
+        // Beyond the end stays on the last row; before the start on the first.
+        assert_eq!(line_at_row(40., 5, line_of, rows_of), Some(3.999));
+        assert_eq!(line_at_row(-2., 5, line_of, rows_of), Some(1.));
+        assert_eq!(line_at_row(0., 0, line_of, rows_of), None);
+        assert_eq!(line_at_row(f64::NAN, 5, line_of, rows_of), None);
+    }
+
+    #[test]
+    fn finds_the_row_of_a_line() {
+        let first_row = |line: usize| [0, 1, 4][line];
+        assert_eq!(row_at_line(1., 3, rows_of, first_row), 0.);
+        assert_eq!(row_at_line(2.5, 3, rows_of, first_row), 2.5);
+        assert_eq!(row_at_line(3., 3, rows_of, first_row), 4.);
+        // Past the last line is the last line's top, before the first the first.
+        assert_eq!(row_at_line(9.75, 3, rows_of, first_row), 4.);
+        assert_eq!(row_at_line(0.2, 3, rows_of, first_row), 0.);
+        assert_eq!(row_at_line(f64::INFINITY, 3, rows_of, first_row), 0.);
+        assert_eq!(row_at_line(2., 0, rows_of, first_row), 0.);
+        // A folded line has no rows; it goes to the row shown in its place.
+        assert_eq!(row_at_line(2., 3, |line| (line != 1).then(|| rows_of(line)).flatten(), |_| 1), 1.);
+    }
+
+    #[test]
+    fn rows_and_lines_round_trip() {
+        for row in [0., 0.25, 1., 2.5, 3.9, 4.5] {
+            let line = line_at_row(row, 5, line_of, rows_of).expect("a line");
+            assert!((row_at_line(line, 3, rows_of, |line| rows_of(line).map_or(0, |rows| rows.start)) - row).abs() < 0.01, "row {row}");
+        }
+    }
+
+    #[test]
+    fn reads_scroll_messages_only() {
+        assert_eq!(scroll_message(r#"{"type":"scroll","line":12.5}"#), Some(12.5));
+        assert_eq!(scroll_message(r#"{"type":"scroll","line":3}"#), Some(3.));
+        assert_eq!(scroll_message(r#"{"type":"scroll","line":"3"}"#), None);
+        assert_eq!(scroll_message(r#"{"type":"scroll"}"#), None);
+        assert_eq!(scroll_message(r#"{"type":"change","text":"\"scroll\""}"#), None);
+        assert_eq!(scroll_message(r#"{"type":"change","text":"scroll"}"#), None);
+        assert_eq!(scroll_message("\"scroll\" but not JSON"), None);
+    }
+
+    #[test]
+    fn scrolls_the_preview_to_numbers_only() {
+        assert_eq!(
+            scroll_script(12.5).as_deref(),
+            Some("window.__rainyViewer&&window.__rainyViewer.scrollToLine&&window.__rainyViewer.scrollToLine(12.5)")
+        );
+        assert!(scroll_script(40.).is_some_and(|script| script.ends_with("scrollToLine(40)")));
+        assert!(scroll_script(-3.).is_some_and(|script| script.ends_with("scrollToLine(1)")));
+        assert_eq!(scroll_script(f64::NAN), None);
+        assert_eq!(scroll_script(f64::INFINITY), None);
     }
 }

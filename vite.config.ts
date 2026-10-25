@@ -2,6 +2,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'node:path'
+import { codemirrorAlias } from './scripts/codemirror-alias.ts'
 import { thirdPartyNotices } from './scripts/vite-notices.ts'
 
 /**
@@ -30,6 +31,7 @@ export default defineConfig({
   root: resolve(import.meta.dirname, 'src/renderer'),
   base: '/',
   plugins: [react(), katexWoff2Only, thirdPartyNotices('RainyAgent interface: third-party license and notice texts.')],
+  resolve: { alias: codemirrorAlias() },
   build: {
     outDir: resolve(import.meta.dirname, 'dist/renderer'),
     emptyOutDir: true,

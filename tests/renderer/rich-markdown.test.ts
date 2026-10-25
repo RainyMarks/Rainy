@@ -1,6 +1,6 @@
 /** How the rich Markdown editor writes tables back. */
 import { describe, expect, it } from 'vitest'
-import { conventionalTables } from '../../src/renderer/ide/viewers/RichMarkdown.tsx'
+import { conventionalTables } from '../../src/renderer/ide/viewers/markdown-merge.ts'
 import { preserveSource } from '../../src/renderer/ide/viewers/markdown-merge.ts'
 
 describe('conventionalTables', () => {
