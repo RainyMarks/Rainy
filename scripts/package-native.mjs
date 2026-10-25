@@ -214,7 +214,13 @@ async function toolchain(work, owner) {
   return { makensis: join(folders[0], 'makensis.exe'), plugins }
 }
 
-/** The registry crates `root` links: its normal dependencies, transitively, in `cargo metadata --filter-platform` output. */
+/** A crate copied into `native/vendor/` and used through `[patch.crates-io]`: a path package outside the workspace. */
+const isVendored = item => !item.source && /[\\/]vendor[\\/][^\\/]+[\\/]Cargo\.toml$/u.test(item.manifest_path ?? '')
+
+/**
+ * The registry crates `root` links, and the vendored copies of registry crates: its normal dependencies, transitively,
+ * in `cargo metadata --filter-platform` output.
+ */
 export function linkedCrates(metadata, rootName = 'rainy') {
   const packages = new Map(metadata.packages.map(item => [item.id, item]))
   const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]))
@@ -230,8 +236,8 @@ export function linkedCrates(metadata, rootName = 'rainy') {
       if (dependency.dep_kinds.some(kind => kind.kind === null)) queue.push(dependency.pkg)
     }
   }
-  const crates = [...seen].map(id => packages.get(id)).filter(item => item.source)
-  for (const crate of crates) {
+  const crates = [...seen].map(id => packages.get(id)).filter(item => item.source || isVendored(item))
+  for (const crate of crates.filter(item => item.source)) {
     if (!crate.source.startsWith('registry+')) throw new Error(`${crate.name} ${crate.version} comes from ${crate.source}; only registry crates are listed`)
   }
   return crates.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
@@ -312,7 +318,7 @@ async function notices() {
     `RainyAgent.exe and the Host (\`rainy-host.exe\`, and \`rainy-host\` in the Linux runtime for WSL and SSH) are built from the Rust `
       + `workspace in \`native/\` for ${target} and ${LINUX_TARGET} and link the crates below, as \`native/Cargo.lock\` locks them. `
       + 'Each is used under the license its Cargo.toml declares; their license and notice files follow.', '',
-    '| Crate | Version | License |', '| --- | --- | --- |', ...crates.map(crate => `| ${crate.name} | ${crate.version} | ${cell(license(crate))} |`), '',
+    '| Crate | Version | License |', '| --- | --- | --- |', ...crates.map(crate => `| ${crate.name} | ${crate.version}${isVendored(crate) ? ' (changed by Rainy, see native/vendor/' + basename(dirname(crate.manifest_path)) + '/RAINY.md)' : ''} | ${cell(license(crate))} |`), '',
     '## WebView2Loader.dll', '',
     '`WebView2Loader.dll` is the Microsoft Edge WebView2 loader of the Microsoft WebView2 SDK, as the `webview2-com-sys` crate carries '
       + 'it. Microsoft licenses it under these terms:', '', fenced(loader), '',

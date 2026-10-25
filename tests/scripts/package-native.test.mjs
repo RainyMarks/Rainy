@@ -131,6 +131,11 @@ test('lists the registry crates the executable links, not build or dev dependenc
     ] },
   }
   assert.deepEqual(linkedCrates(metadata).map(item => item.name), ['itoa', 'serde'])
+  // A registry crate copied into native/vendor and patched in is listed; a workspace crate is not.
+  metadata.packages.push({ ...crate('gpui-pre', null), manifest_path: 'C:\\r\\native\\vendor\\gpui-pre\\Cargo.toml' })
+  metadata.resolve.nodes[1].deps.push(normal('gpui-pre'))
+  metadata.resolve.nodes.push({ id: 'gpui-pre', deps: [] })
+  assert.deepEqual(linkedCrates(metadata).map(item => item.name), ['gpui-pre', 'itoa', 'serde'])
   metadata.packages.push(crate('gitdep', 'git+https://example.com/x'))
   metadata.resolve.nodes[2].deps.push(normal('gitdep'))
   metadata.resolve.nodes.push({ id: 'gitdep', deps: [] })
