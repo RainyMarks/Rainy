@@ -1,6 +1,6 @@
 //! The status bar's part about the active file: cursor line and column, encoding and line endings, and the word count of
-//! a Markdown file. The position is left out while a Markdown file shows only its rich view or its preview, where the
-//! source editor's cursor is hidden.
+//! a Markdown file. The position is left out while a page stands in for the source editor (the rich Markdown view, a
+//! preview, an SVG picture), where the editor's cursor is hidden.
 
 use std::time::Duration;
 
@@ -63,7 +63,10 @@ impl CursorStatus {
         let ide = self.ide.read(cx);
         let active = ide.active.as_ref().and_then(|key| ide.files.get(key).map(|file| (key, file)));
         let markdown = active.is_some_and(|(_, file)| viewers::preview_kind(&file.document.path) == Some("markdown"));
-        let source_shown = !markdown || active.is_some_and(|(key, _)| matches!(ide.views.get(key).map(String::as_str), Some("source" | "split")));
+        // A page in place of the editor (rich Markdown, a preview, an SVG picture) hides its cursor; a split shows both.
+        let source_shown = active.is_none_or(|(key, file)| {
+            viewers::page_view(&file.document.path, file.document.read_only_reason.as_deref(), ide.views.get(key).map(String::as_str)).is_none_or(|(_, split)| split)
+        });
         if source_shown != self.source_shown {
             self.source_shown = source_shown;
             cx.notify();
