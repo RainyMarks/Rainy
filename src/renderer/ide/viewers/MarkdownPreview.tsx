@@ -87,7 +87,8 @@ export function MarkdownPreview({ text, base, version, sync, onScrollLine }: {
     sourceLines: true,
     revision: `${version ?? 'unsaved'}-${reloads}`,
     openLocal: (target) => { emit('editor.open', { path: target.path, workspaceId: base.workspaceId, rootId: base.rootId, line: target.line }) },
-  }), [base.workspaceId, base.rootId, base.directory, version, reloads])
+    file: { footnoteLabel: t('footnotes'), footnoteBackLabel: t('footnoteBack') },
+  }), [base.workspaceId, base.rootId, base.directory, version, reloads, t])
 
   useEffect(() => sync?.subscribe((line) => {
     const element = stage.current

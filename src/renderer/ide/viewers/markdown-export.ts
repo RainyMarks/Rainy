@@ -4,13 +4,12 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
 import { grammarFor, highlightLines, loadGrammar } from '../../ui/highlight.ts'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
-import { markdownUrl, resolveDocumentPath } from '../../chat/Markdown.tsx'
+import { documentUrl, resolveDocumentPath } from '../../chat/Markdown.tsx'
 import { getPrefs } from '../../prefs.ts'
 import { splitFrontMatter } from './front-matter.ts'
+import { DOCUMENT_REMARK_PLUGINS, rehypeSafeHtml } from './markdown-html.ts'
 import { markdownOutline } from './markdown-outline.ts'
 import { isMermaid, renderMermaid } from './mermaid.ts'
 import { viewerMessages } from './messages.ts'
@@ -45,6 +44,10 @@ math[display="block"] { margin: 1em 0; }
 @media screen { math[display="block"] { overflow-x: auto; } }
 .mermaid-diagram { margin: 1em 0; text-align: center; } .mermaid-diagram svg { max-width: 100%; height: auto; }
 .footnotes { font-size: 0.9em; color: #59636e; border-top: 1px solid #d0d7de; margin-top: 2em; }
+.footnotes > h2 { font-size: 1em; margin: 1em 0 0.5em; padding: 0; border: 0; color: inherit; }
+mark { background: rgba(247, 173, 49, 0.38); color: inherit; padding: 0 2px; border-radius: 2px; }
+kbd { font: 0.85em "Cascadia Code", Consolas, monospace; padding: 1px 5px; border: 1px solid #d0d7de; border-bottom-width: 2px; border-radius: 4px; background: #f6f8fa; }
+details { margin: 0 0 1em; padding: 6px 12px; border: 1px solid #d0d7de; border-radius: 6px; } summary { cursor: pointer; font-weight: 600; }
 .hljs-comment, .hljs-quote { color: #6e7781; font-style: italic; }
 .hljs-keyword, .hljs-selector-tag, .hljs-type, .hljs-doctag { color: #cf222e; }
 .hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: #0a3069; }
@@ -107,11 +110,11 @@ function codeComponent(diagrams: string[]): Components['code'] {
  * @param options.image Bytes of an image the document refers to, as a data URL, or `undefined` to keep its link.
  * @returns A complete HTML document.
  */
-export async function exportHtml({ text, name, image, locale = 'zh' }: {
+export async function exportHtml({ text, name, image, locale = getPrefs().locale }: {
   text: string
   name: string
   image: (target: string) => Promise<string | undefined>
-  /** Language of the footnote heading and the page. */
+  /** Language of the page, the interface language by default; the footnote labels are the interface language's. */
   locale?: 'zh' | 'en' | undefined
 }): Promise<string> {
   // Front matter is metadata: it gives the page its title and is not printed, as in Typora's exports.
@@ -121,11 +124,12 @@ export async function exportHtml({ text, name, image, locale = 'zh' }: {
   await Promise.all([...new Set(fences)].filter((value): value is string => value !== undefined).map(loadGrammar))
   const diagrams: string[] = []
   const markup = renderToStaticMarkup(createElement(ReactMarkdown, {
-    remarkPlugins: [remarkGfm, remarkMath],
-    rehypePlugins: [[rehypeKatex, { output: 'mathml', throwOnError: false }]],
-    remarkRehypeOptions: locale === 'zh' ? { footnoteLabel: '脚注', footnoteBackLabel: '返回正文' } : {},
+    // The preview's reading of the file (markdown-html.ts): its allowlisted HTML, highlights, no dollar amounts as math.
+    remarkPlugins: DOCUMENT_REMARK_PLUGINS,
+    rehypePlugins: [rehypeSafeHtml, [rehypeKatex, { output: 'mathml', throwOnError: false }]],
+    remarkRehypeOptions: { footnoteLabel: viewerMessages.t('footnotes'), footnoteBackLabel: viewerMessages.t('footnoteBack'), footnoteLabelProperties: {} },
     components: { code: codeComponent(diagrams) },
-    urlTransform: markdownUrl,
+    urlTransform: documentUrl,
   }, body))
   const page = new DOMParser().parseFromString(`<main>${markup}</main>`, 'text/html')
   for (const [index, source] of diagrams.entries()) {

@@ -128,3 +128,46 @@
 .localImage {
   overflow-wrap: anywhere;
 }
+
+/* Project files: highlights, keys, folded sections and footnotes. */
+.markdown mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--rainy-alias-state-warn-secondary) 38%, transparent);
+  color: inherit;
+}
+
+.markdown kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--rainy-alias-border-l3);
+  border-bottom-width: 2px;
+  border-radius: var(--rainy-radius-xs);
+  background: var(--rainy-alias-markdown-inline-code);
+  font-family: var(--rainy-font-family-code);
+  font-size: 0.85em;
+}
+
+.markdown details {
+  margin: 0 0 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--rainy-alias-border-l2);
+  border-radius: var(--rainy-radius-xs);
+}
+.markdown summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.markdown details[open] > summary { margin-bottom: 8px; }
+
+.markdown section[data-footnotes] {
+  margin-top: 24px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rainy-alias-border-l2);
+  color: var(--rainy-alias-label-secondary);
+  font-size: 0.9em;
+}
+.markdown section[data-footnotes] > h2 {
+  margin: 0 0 6px;
+  font-size: 1em;
+  color: var(--rainy-alias-label-secondary);
+}

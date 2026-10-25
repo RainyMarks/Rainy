@@ -1,4 +1,5 @@
-/** Markdown of assistant replies and file previews: GFM, math, highlighted code blocks, local links and guarded images. */
+/** Markdown of assistant replies and file previews: GFM, math, highlighted code blocks, local links and guarded images;
+ *  file previews also show the allowlisted HTML of {@link rehypeSafeHtml}. */
 import { Children, isValidElement, memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -8,6 +9,8 @@ import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { emit } from '../app/bus.ts'
 import { CodeToolbar, highlightLines, Tooltip, useHighlightRevision, writeClipboard } from '../ui/index.ts'
 import cardCss from '../ui/CodeCard.module.css'
+import { ANCHOR_PREFIX, DOCUMENT_REMARK_PLUGINS, isDataImage, rehypeSafeHtml } from '../ide/viewers/markdown-html.ts'
+import { remarkDollarAmounts } from '../ide/viewers/markdown-math.ts'
 import { mayContainMath, useMathPlugin } from './math.ts'
 import { useChatT } from './messages.ts'
 import css from './Markdown.module.css'
@@ -20,7 +23,13 @@ function textOf(node: ReactNode): string {
 }
 
 /** A fenced code block with copy, wrap, and the "open in editor" / "compare with current file" actions. */
-export function CodeBlock({ code, language, actions = true }: { code: string; language: string | undefined; actions?: boolean }): JSX.Element {
+export function CodeBlock({ code, language, actions = true, line }: {
+  code: string
+  language: string | undefined
+  actions?: boolean
+  /** Source line, for scroll sync. */
+  line?: number | undefined
+}): JSX.Element {
   const t = useChatT()
   const [copied, setCopied] = useState(false)
   const [wrapped, setWrapped] = useState(false)
@@ -34,7 +43,7 @@ export function CodeBlock({ code, language, actions = true }: { code: string; la
     })
   }, [code])
   return (
-    <div className={clsx(cardCss.card, css.code)} data-code-wrap={wrapped}>
+    <div className={clsx(cardCss.card, css.code)} data-code-wrap={wrapped} data-line={line}>
       <CodeToolbar lang={language} labels={{ codeLabel: t('code'), wrapLabel: t('wrap'), unwrapLabel: t('unwrap') }}
         copyLabel={t('copy')} copiedLabel={t('copied')} copied={copied} wrapped={wrapped} onCopy={onCopy} onWrap={() => { setWrapped(value => !value) }}
         actions={actions ? <>
@@ -86,6 +95,18 @@ export function markdownUrl(url: string): string {
 }
 
 /**
+ * {@link markdownUrl} for project files, which may also embed images as data URLs: they load nothing from anywhere.
+ * @param url Link or image target as written.
+ * @param key Attribute that holds it.
+ * @param node Element that holds it.
+ * @returns The target to render.
+ */
+export function documentUrl(url: string, key: string, node: { tagName: string }): string {
+  if (key === 'src' && node.tagName === 'img' && isDataImage(url)) return url
+  return markdownUrl(url)
+}
+
+/**
  * Resolve a link or image target written in a document against the document's directory.
  * @param directory Project-relative directory of the document, `''` for the root.
  * @param target Target as written; a leading `/` means the project root.
@@ -127,11 +148,9 @@ function hastText(node: HastNode): string {
   return node.type === 'text' ? node.value ?? '' : (node.children ?? []).map(hastText).join('')
 }
 
-/** Heading ids get this prefix so document text can never name a global of the page. */
-const ANCHOR_PREFIX = 'md-'
-
 /**
  * Rehype plugin: prefixed heading ids for in-document links, and the source line of every top-level block for scroll sync.
+ * A heading that already has an id keeps it: an HTML heading's own (prefixed) id, the footnote heading's.
  * @param lines Whether to add `data-line`.
  * @returns The plugin.
  */
@@ -142,7 +161,7 @@ function rehypeAnchors(lines: boolean) {
       for (const child of node.children ?? []) {
         if (child.type !== 'element') continue
         child.properties ??= {}
-        if (/^h[1-6]$/u.test(child.tagName ?? '')) {
+        if (/^h[1-6]$/u.test(child.tagName ?? '') && (typeof child.properties.id !== 'string' || child.properties.id === '')) {
           const base = slugify(hastText(child)) || 'section'
           const count = used.get(base) ?? 0
           used.set(base, count + 1)
@@ -160,8 +179,17 @@ function scrollToAnchor(from: HTMLElement, fragment: string): void {
   let id = fragment
   try { id = decodeURIComponent(fragment) } catch (_malformedEscape) { /* Keep the literal fragment. */ }
   const root = from.closest('[data-markdown-root]')
-  const target = root?.querySelector(`#${CSS.escape(ANCHOR_PREFIX + id.toLowerCase())}`) ?? root?.querySelector(`#${CSS.escape(ANCHOR_PREFIX + slugify(id))}`)
+  if (root === null) return
+  // Headings and HTML anchors carry the prefix; footnotes and their references keep remark's `user-content-` ids.
+  const target = [ANCHOR_PREFIX + id, ANCHOR_PREFIX + id.toLowerCase(), ANCHOR_PREFIX + slugify(id), id]
+    .map(candidate => root.querySelector(`#${CSS.escape(candidate)}`)).find(element => element !== null)
   target?.scrollIntoView({ block: 'start' })
+}
+
+/** @returns The source line rehypeAnchors gave a top-level block. */
+function sourceLine(node: { properties?: Record<string, unknown> } | undefined): number | undefined {
+  const line = node?.properties?.dataLine
+  return typeof line === 'number' ? line : undefined
 }
 
 /** A web image is never fetched: it could report the reader to a third party or carry data out of a prompt-injected reply. */
@@ -194,6 +222,18 @@ export interface MarkdownOptions {
   readonly sourceLines?: boolean | undefined
   /** Changes when the document should reload the project images it shows. */
   readonly revision?: string | undefined
+  /** Set for a file of the project rather than a reply. */
+  readonly file?: MarkdownFileOptions | undefined
+}
+
+/** How a project file renders: its allowlisted HTML, `==highlights==`, single tildes as text and the fences it draws. */
+export interface MarkdownFileOptions {
+  /** Heading of the footnotes. */
+  readonly footnoteLabel: string
+  /** Label of the links from a footnote back to the text. */
+  readonly footnoteBackLabel: string
+  /** Draw a fenced block, such as a Mermaid diagram; `undefined` keeps the code block. */
+  readonly fence?: ((code: string, language: string | undefined, line: number | undefined) => ReactNode) | undefined
 }
 
 const defaultOpen = (target: { path: string; line?: number | undefined }): void => { emit('editor.open', target) }
@@ -201,42 +241,54 @@ const defaultOpen = (target: { path: string; line?: number | undefined }): void 
 function markdownComponents(options: MarkdownOptions): Components {
   const open = options.openLocal ?? defaultOpen
   const base = options.base
-  const resolve = (path: string): string => base === undefined ? path : resolveDocumentPath(base.directory, path) ?? path
   return {
-    pre({ children }) {
+    pre({ children, node }) {
+      const line = sourceLine(node)
       const child = Children.toArray(children)[0]
       if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
         const language = /language-([\w+#.-]+)/.exec(child.props.className ?? '')?.[1]
-        return <CodeBlock code={textOf(child.props.children).replace(/\n$/, '')} language={language} actions={options.codeActions !== false} />
+        const code = textOf(child.props.children).replace(/\n$/, '')
+        const drawn = options.file?.fence?.(code, language, line)
+        if (drawn !== undefined) return drawn
+        return <CodeBlock code={code} language={language} actions={options.codeActions !== false} line={line} />
       }
-      return <pre>{children}</pre>
+      return <pre data-line={line}>{children}</pre>
     },
-    a({ href, children }) {
+    // Ids, titles and the footnote attributes pass through; the HTML allowlist and remark are their only sources.
+    a({ href, children, node: _node, ...rest }) {
       // A target the filter blanked would open the workbench address in the browser.
-      if (href === undefined || href === '') return <span>{children}</span>
+      if (href === undefined || href === '') return <span id={rest.id} title={rest.title}>{children}</span>
       if (href.startsWith('#')) {
-        return <a href={href} onClick={(event) => { event.preventDefault(); scrollToAnchor(event.currentTarget, href.slice(1)) }}>{children}</a>
+        return <a {...rest} href={href} onClick={(event) => { event.preventDefault(); scrollToAnchor(event.currentTarget, href.slice(1)) }}>{children}</a>
       }
       const target = localTarget(href)
       if (target !== undefined) {
-        return <a href={href} onClick={(event) => { event.preventDefault(); open({ ...target, path: resolve(target.path) }) }}>{children}</a>
+        return <a {...rest} href={href} onClick={(event) => {
+          event.preventDefault()
+          // A document's link that leaves its project opens nothing, as in the rich editor.
+          const path = base === undefined ? target.path : resolveDocumentPath(base.directory, target.path)
+          if (path !== undefined) open({ ...target, path })
+        }}>{children}</a>
       }
-      return <a href={href} target="_blank" rel="noreferrer">{children}</a>
+      return <a {...rest} href={href} target="_blank" rel="noreferrer">{children}</a>
     },
-    img({ src, alt }) {
+    // An HTML image keeps its sanitized size and style: Typora writes `<img src="a.png" style="zoom:50%">`.
+    img({ src, alt, title, width, height, style, node }) {
       if (typeof src !== 'string' || src === '') return <span>{alt}</span>
+      const shown = { title, width, height, style, 'data-line': sourceLine(node) }
+      if (isDataImage(src)) return <img className={css.image} src={src} alt={alt ?? ''} {...shown} />
       if (/^[a-z][a-z\d+.-]*:/iu.test(src) && !/^[A-Za-z]:[\\/]/u.test(src)) return <RemoteImage src={src} alt={alt} />
       const path = base === undefined ? undefined : resolveDocumentPath(base.directory, src)
       if (base === undefined || path === undefined || /^[A-Za-z]:\//u.test(path) || path.startsWith('//')) return <LocalImageLink path={src} alt={alt} open={open} />
-      return <img className={css.image} src={ideRawUrl({ workspaceId: base.workspaceId, rootId: base.rootId, path, version: options.revision })} alt={alt ?? ''} loading="lazy" />
+      return <img className={css.image} src={ideRawUrl({ workspaceId: base.workspaceId, rootId: base.rootId, path, version: options.revision })} alt={alt ?? ''} loading="lazy" {...shown} />
     },
-    table({ children }) {
-      return <div className={css.tableScroll}><table>{children}</table></div>
+    table({ children, align, width, node }) {
+      return <div className={css.tableScroll} data-line={sourceLine(node)}><table align={align} width={width}>{children}</table></div>
     },
   }
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath]
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkDollarAmounts]
 const CHAT_OPTIONS: MarkdownOptions = { codeActions: true }
 
 /** Markdown with explicit link, image and code-block behavior; memoized because previews re-render while typing. */
@@ -248,10 +300,16 @@ export const MarkdownDocument = memo(function MarkdownDocument({ text, className
   const components = useMemo(() => markdownComponents(options), [options])
   // Math renders as plain text for the moment KaTeX takes to load the first time.
   const katex = useMathPlugin(text)
-  const rehypePlugins = useMemo(() => [...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true)], [katex, options.sourceLines])
+  const file = options.file
+  const rehypePlugins = useMemo(() => [
+    ...(file === undefined ? [] : [rehypeSafeHtml]), ...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true),
+  ], [katex, file, options.sourceLines])
+  const remarkRehypeOptions = useMemo(() => file === undefined ? undefined
+    : { footnoteLabel: file.footnoteLabel, footnoteBackLabel: file.footnoteBackLabel, footnoteLabelProperties: {} }, [file])
   return (
     <div className={clsx(css.markdown, className)} data-markdown-root>
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={components} urlTransform={markdownUrl}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={file === undefined ? REMARK_PLUGINS : DOCUMENT_REMARK_PLUGINS} rehypePlugins={rehypePlugins}
+        remarkRehypeOptions={remarkRehypeOptions} components={components} urlTransform={file === undefined ? markdownUrl : documentUrl}>{text}</ReactMarkdown>
     </div>
   )
 })
