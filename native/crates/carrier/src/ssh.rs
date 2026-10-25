@@ -425,10 +425,19 @@ pub enum ServerRuntime {
     Unsupported(String),
 }
 
+/// The last `bytes` bytes of `text` or a little fewer, starting at a character.
+fn tail(text: &str, bytes: usize) -> &str {
+    let mut start = text.len().saturating_sub(bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 fn installer_answer(stdout: &str) -> Result<ServerRuntime> {
     let line = stdout.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
     let value: Value = serde_json::from_str(line.trim())
-        .map_err(|_| anyhow!("{}\n{}", localized("服务器返回的安装结果无效。", "The server returned an invalid installation result."), &stdout[stdout.len().saturating_sub(400)..]))?;
+        .map_err(|_| anyhow!("{}\n{}", localized("服务器返回的安装结果无效。", "The server returned an invalid installation result."), tail(stdout, 400)))?;
     if let Some(system) = value.get("unsupported").and_then(Value::as_str) {
         return Ok(ServerRuntime::Unsupported(system.to_owned()));
     }
@@ -622,6 +631,14 @@ mod tests {
         );
         assert_eq!(installer_answer("{\"unsupported\": \"Linux aarch64\"}").unwrap(), ServerRuntime::Unsupported("Linux aarch64".into()));
         assert!(installer_answer("not json").is_err());
+        // What a login script printed after the installer, in Chinese, is quoted without cutting a character.
+        let noise = format!("{{\"host\": \"/h\"}}\n{}", "欢迎使用服务器。".repeat(40));
+        for skip in 0..3 {
+            let error = installer_answer(&noise[..noise.len() - skip * 3]).unwrap_err().to_string();
+            assert!(error.contains("欢迎") && error.len() < 500, "{error}");
+        }
+        assert_eq!(tail("ab中", 2), "");
+        assert_eq!(tail("ab中", 3), "中");
         let target = Destination { destination: "box".into(), port: None };
         assert_eq!(installed_paths(&target, ready, false).unwrap(), "/h/r/rainy-host");
         assert!(installed_paths(&target, ServerRuntime::NeedsArchive { error: None }, true).is_err());
