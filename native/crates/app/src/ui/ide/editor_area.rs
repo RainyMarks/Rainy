@@ -25,7 +25,7 @@ use crate::store::Store;
 use crate::store::ide::{Ide, file_name, split_key};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
-use crate::ui::ide::{AiEditSelection, choose_folder, editor_commands, file_icon};
+use crate::ui::ide::{AiEditSelection, MarkdownPreview, MarkdownSplit, choose_folder, editor_commands, file_icon};
 use crate::ui::tr;
 use crate::web::{PaneEvent, WebPane};
 
@@ -686,7 +686,7 @@ impl EditorArea {
                 Some((kind, split)) => self.render_page(&key, kind, split.then_some(editor).flatten(), window, cx),
                 None => editor.map(|editor| Editor::new(&editor).h_full().bordered(false).into_any_element()).unwrap_or_else(|| div().into_any_element()),
             };
-            return v_flex().size_full().child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
+            return v_flex().size_full().key_context(crate::ui::ide::MARKDOWN_TAB).child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
         }
         if let Some(editor) = file.editor.clone() {
             let conflict = file.conflict;
@@ -1092,6 +1092,14 @@ impl EditorArea {
 }
 
 impl EditorArea {
+    /// Ctrl+Shift+V and Ctrl+K V as in VS Code: show the Markdown tab's preview, or its preview beside the source, and
+    /// its default view again when it already shows that.
+    fn toggle_markdown_view(&mut self, view: &'static str, cx: &mut Context<Self>) {
+        let Some(key) = self.markdown_active(cx) else { return };
+        let shown = self.ide.read(cx).views.get(&key).map(String::as_str) == Some(view);
+        self.ide.update(cx, |ide, cx| ide.set_view(&key, (!shown).then_some(view), cx));
+    }
+
     /// Whether the tab at `index` lies wholly inside the visible part of the tab strip.
     fn tab_shown(&self, index: usize) -> bool {
         let view = self.tabs_scroll.bounds();
@@ -1161,6 +1169,8 @@ impl Render for EditorArea {
             .size_full()
             .bg(theme.background)
             .on_action(cx.listener(|this, _: &AiEditSelection, window, cx| this.open_ai_edit(window, cx)))
+            .on_action(cx.listener(|this, _: &MarkdownPreview, _, cx| this.toggle_markdown_view("preview", cx)))
+            .on_action(cx.listener(|this, _: &MarkdownSplit, _, cx| this.toggle_markdown_view("split", cx)))
             .child(body)
     }
 }
