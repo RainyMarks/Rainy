@@ -36,10 +36,13 @@ fn convert(value: &mut Value, schema: &Value) {
         }
         Value::String(text) if !kinds.contains(&"string") => {
             let trimmed = text.trim();
-            if (kinds.contains(&"integer") || kinds.contains(&"number")) && let Ok(number) = trimmed.parse::<i64>() {
+            let numeric = kinds.contains(&"integer") || kinds.contains(&"number");
+            let float = trimmed.parse::<f64>().ok().filter(|number| number.is_finite());
+            if numeric && let Ok(number) = trimmed.parse::<i64>() {
                 *value = Value::from(number);
-            } else if kinds.contains(&"number") && let Ok(number) = trimmed.parse::<f64>() && number.is_finite() {
-                *value = serde_json::Number::from_f64(number).map_or(Value::Null, Value::Number);
+            } else if numeric && let Some(number) = float.filter(|number| kinds.contains(&"number") || number.fract() == 0.0) {
+                // "10.0" and "1e3" are whole numbers, which an integer accepts, as JavaScript's Number() reads them.
+                *value = if number.fract() == 0.0 && number.abs() < 9.0e15 { Value::from(number as i64) } else { serde_json::Number::from_f64(number).map_or(Value::Null, Value::Number) };
             } else if kinds.contains(&"boolean") && matches!(trimmed, "true" | "false") {
                 *value = Value::Bool(trimmed == "true");
             }
@@ -154,5 +157,17 @@ mod tests {
         assert_eq!(validate("read", &schema, &args).unwrap(), json!({ "path": "a" }));
         let error = validate("read", &schema, &json!({ "offset": "x" }).as_object().unwrap().clone()).unwrap_err();
         assert!(error.contains("/path: Expected required property") && error.contains("/offset: Expected number"));
+    }
+
+    #[test]
+    fn whole_numbers_spelled_as_floats_are_integers() {
+        let schema = json!({ "type": "object", "properties": { "count": { "type": "integer" }, "ratio": { "type": "number" } } });
+        let args = json!({ "count": "10.0", "ratio": " 2.5 " }).as_object().unwrap().clone();
+        assert_eq!(validate("t", &schema, &args).unwrap(), json!({ "count": 10, "ratio": 2.5 }));
+        let args = json!({ "count": "1e3", "ratio": "4" }).as_object().unwrap().clone();
+        assert_eq!(validate("t", &schema, &args).unwrap(), json!({ "count": 1000, "ratio": 4 }));
+        for bad in ["2.5", "inf", "ten", ""] {
+            assert!(validate("t", &schema, &json!({ "count": bad }).as_object().unwrap().clone()).is_err(), "{bad}");
+        }
     }
 }
