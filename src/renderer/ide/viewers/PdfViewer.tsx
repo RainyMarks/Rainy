@@ -2,13 +2,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
+import { joinTextItems, type PdfTextItem } from './pdf-text.ts'
 import css from './Viewers.module.css'
 
 /** The parts of the pdf.js 2.16 API this viewer uses. */
 interface PdfPage {
   getViewport(options: { scale: number }): { width: number; height: number }
   render(options: { canvasContext: CanvasRenderingContext2D; viewport: unknown }): { promise: Promise<void>; cancel(): void }
-  getTextContent(): Promise<{ items: readonly { str?: string }[] }>
+  getTextContent(): Promise<{ items: readonly PdfTextItem[] }>
   cleanup(): void
 }
 interface PdfDocument { numPages: number; getPage(page: number): Promise<PdfPage>; destroy(): Promise<void> }
@@ -165,7 +166,7 @@ export function PdfViewer({ url, data, bytes, tools, note }: {
       const texts: string[] = []
       for (const number of pages) {
         const content = await (await pdf.getPage(number)).getTextContent()
-        texts.push(`--- ${number} ---\n${content.items.map(item => item.str ?? '').join(' ')}`)
+        texts.push(`--- ${number} ---\n${joinTextItems(content.items)}`)
       }
       const text = texts.join('\n\n')
       if (await writeClipboard(text, { quiet: true })) toast(t('pdfTextCopied', { count: text.length }), { tone: 'success' })
