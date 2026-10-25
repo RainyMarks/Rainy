@@ -61,17 +61,26 @@ pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
     let session = store.read(cx).selected.clone();
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
-        let session = match session {
-            Some(id) => Some(id),
-            None => store.update(cx, |store, cx| store.create_chat(workspace, cx)).await,
-        };
-        let Some(session) = session else { return };
-        let call = store.read_with(cx, |store, _| store.call("chat.send", serde_json::json!({ "sessionId": session, "text": text, "mode": "queue" })));
-        if let Err(error) = call.await {
+        let failed = |error: rainy_protocol::RpcError, cx: &mut gpui_kit::AsyncApp| {
             let _ = handle.update(cx, |_, window, cx| {
                 use gpui_kit::component::WindowExt as _;
-                window.push_notification(gpui_kit::component::notification::Notification::error(error.message), cx)
+                let text = trf(cx, "chat.sendFailed", &[("message", &error_text(cx, &error))]);
+                window.push_notification(gpui_kit::component::notification::Notification::error(text), cx)
             });
+        };
+        let session = match session {
+            Some(id) => id,
+            None => match store.update(cx, |store, cx| store.create_chat(workspace, cx)).await {
+                Ok(id) => {
+                    store.update(cx, |store, cx| store.select(Some(id.clone()), cx));
+                    id
+                }
+                Err(error) => return failed(error, cx),
+            },
+        };
+        let call = store.read_with(cx, |store, _| store.call("chat.send", serde_json::json!({ "sessionId": session, "text": text, "mode": "queue" })));
+        if let Err(error) = call.await {
+            failed(error, cx);
         }
     })
     .detach();

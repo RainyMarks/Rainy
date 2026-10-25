@@ -63,6 +63,35 @@ pub fn image_mime(path: &Path) -> Option<&'static str> {
     }
 }
 
+/// Why an image was not attached; the composer words it in the interface language.
+#[derive(Debug)]
+pub enum ImageError {
+    /// Larger than `MAX_IMAGE_BYTES`.
+    TooLarge,
+    /// Not an image the decoder reads.
+    Unreadable,
+    /// The file could not be read.
+    Read(std::io::Error),
+}
+
+/// An image file's bytes, refused before reading when it is too large.
+pub fn read_image(path: &Path) -> Result<Vec<u8>, ImageError> {
+    if std::fs::metadata(path).map_err(ImageError::Read)?.len() > MAX_IMAGE_BYTES as u64 {
+        return Err(ImageError::TooLarge);
+    }
+    std::fs::read(path).map_err(ImageError::Read)
+}
+
+/// An image to attach: its model input, and the bytes of that input for the composer's thumbnail.
+pub fn prepare_image(bytes: &[u8], mime: &str) -> Result<(ImageContent, Vec<u8>), ImageError> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(ImageError::TooLarge);
+    }
+    let content = encode_image(bytes, mime).map_err(|_| ImageError::Unreadable)?;
+    let shown = base64::engine::general_purpose::STANDARD.decode(&content.data).map_err(|_| ImageError::Unreadable)?;
+    Ok((content, shown))
+}
+
 /// Model input for an image: sent as it is when small enough, else scaled to `MAX_IMAGE_EDGE` and sent as JPEG.
 pub fn encode_image(bytes: &[u8], mime: &str) -> Result<ImageContent> {
     if bytes.len() > MAX_IMAGE_BYTES {
@@ -136,5 +165,17 @@ mod tests {
         let mut bytes = Vec::new();
         large.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
         assert_eq!(encode_image(&bytes, "image/png").unwrap().mime_type, "image/jpeg");
+    }
+
+    #[test]
+    fn prepared_images_keep_their_thumbnail() {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(4, 3, image::Rgb([1, 2, 3])).write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let (content, shown) = prepare_image(&png, "image/png").unwrap();
+        assert_eq!(content.mime_type, "image/png");
+        assert_eq!(shown, png);
+        assert!(matches!(prepare_image(b"not an image", "image/png"), Err(ImageError::Unreadable)));
+        assert!(matches!(prepare_image(&vec![0; MAX_IMAGE_BYTES + 1], "image/png"), Err(ImageError::TooLarge)));
+        assert!(matches!(read_image(Path::new("Z:/no/such/image.png")), Err(ImageError::Read(_))));
     }
 }

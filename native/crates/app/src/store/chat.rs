@@ -223,6 +223,15 @@ mod tests {
     }
 
     #[test]
+    fn a_full_window_has_older_entries() {
+        let mut long = snapshot();
+        long.entries = (0..INITIAL_ENTRIES).map(|index| assistant(&format!("a{index}"), "答")).collect();
+        assert!(ChatView::new(long.clone(), false).truncated);
+        assert!(!ChatView::new(long, true).truncated);
+        assert!(!ChatView::new(snapshot(), false).truncated);
+    }
+
+    #[test]
     fn groups_turns() {
         let entries = vec![assistant("a0", "前言"), snapshot().entries[0].clone(), assistant("a1", "答")];
         let turns = group_turns(&entries);

@@ -42,6 +42,12 @@ pub struct ChatModel {
     pub id: String,
     pub view: Option<ChatView>,
     pub error: Option<SharedString>,
+    /// The whole chat was asked for; later reloads (after a reconnect) keep loading all of it.
+    pub whole: bool,
+    /// A load of the whole chat is under way.
+    pub loading_whole: bool,
+    /// Bumped each time a load replaces `view`, so views can tell a new snapshot from an update of the old one.
+    pub loaded: u64,
     load: u64,
 }
 
@@ -111,6 +117,8 @@ pub struct Store {
     pub summaries: Vec<SessionSummary>,
     pub chats: HashMap<String, Entity<ChatModel>>,
     pub selected: Option<String>,
+    /// The permission mode picked for the next new chat; `None` starts it in the default from Settings.
+    pub pending_permission: Option<String>,
     /// Explorer's "Open with Rainy" and the file types Rainy is offered for.
     pub shell: shell::Shell,
     /// Rainy's own updates.
@@ -184,6 +192,7 @@ impl Store {
                 summaries: Vec::new(),
                 chats: HashMap::new(),
                 selected: None,
+                pending_permission: None,
                 shell,
                 updates,
                 diagnostics: diagnostics::Diagnostics::default(),
@@ -523,36 +532,50 @@ impl Store {
         if let Some(chat) = self.chats.get(id) {
             return chat.clone();
         }
-        let chat = cx.new(|_| ChatModel { id: id.to_owned(), view: None, error: None, load: 0 });
+        let chat = cx.new(|_| ChatModel { id: id.to_owned(), view: None, error: None, whole: false, loading_whole: false, loaded: 0, load: 0 });
         self.chats.insert(id.to_owned(), chat.clone());
         self.load_chat(id, false, cx);
         chat
     }
 
-    /// Load (or reload) a chat; a newer load replaces an older one that finishes later.
+    /// Load (or reload) a chat, its last `INITIAL_ENTRIES` entries or, once asked for, all of them; a newer load
+    /// replaces an older one that finishes later.
     pub fn load_chat(&mut self, id: &str, whole: bool, cx: &mut Context<Self>) {
         let (Some(rpc), Some(chat)) = (self.rpc.clone(), self.chats.get(id).cloned()) else { return };
-        let load = chat.update(cx, |chat, _| {
+        let (load, whole) = chat.update(cx, |chat, cx| {
             chat.load += 1;
-            chat.load
+            chat.whole |= whole;
+            chat.loading_whole = chat.whole;
+            cx.notify();
+            (chat.load, chat.whole)
         });
         let mut params = json!({ "sessionId": id });
         if !whole {
             params["limit"] = json!(INITIAL_ENTRIES);
         }
         let request = rpc.request::<SessionSnapshot>("sessions.get", params);
+        let locale = self.locale();
         cx.spawn(async move |_, cx: &mut AsyncApp| {
             let result = request.await;
             chat.update(cx, |chat, cx| {
                 if chat.load != load {
                     return;
                 }
+                chat.loading_whole = false;
                 match result {
                     Ok(snapshot) => {
                         chat.view = Some(ChatView::new(snapshot, whole));
+                        chat.loaded += 1;
                         chat.error = None;
                     }
-                    Err(error) => chat.error = Some(error.message.into()),
+                    Err(error) => {
+                        // A failed whole load leaves the window shown and can be asked for again.
+                        let key = if whole && chat.view.is_some() { "chat.loadOlderFailed" } else { "chat.chatLoadFailed" };
+                        if chat.view.is_some() {
+                            chat.whole = false;
+                        }
+                        chat.error = Some(crate::i18n::format(locale, key, &[("message", &crate::i18n::error_text(locale, &error))]).into());
+                    }
                 }
                 cx.notify();
             });
@@ -641,20 +664,26 @@ impl Store {
         .detach();
     }
 
-    /// Start a chat in a project, or outside any project, and select it; resolves with its id.
-    pub fn create_chat(&mut self, workspace_id: Option<String>, cx: &mut Context<Self>) -> Task<Option<String>> {
-        let request = self.call("sessions.create", json!({ "workspaceId": workspace_id }));
+    /// Start a chat in a project, or outside any project, in the mode picked for it (`pending_permission`, used up
+    /// once the chat exists); resolves with its id. The caller selects it.
+    pub fn create_chat(&mut self, workspace_id: Option<String>, cx: &mut Context<Self>) -> Task<Result<String, RpcError>> {
+        let mut params = json!({ "workspaceId": workspace_id });
+        if let Some(mode) = &self.pending_permission {
+            params["permission"] = json!(mode);
+        }
+        let request = self.call("sessions.create", params);
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let summary = serde_json::from_value::<SessionSummary>(request.await.ok()?).ok()?;
+            let summary = serde_json::from_value::<SessionSummary>(request.await?)
+                .map_err(|error| RpcError { code: "invalid-response".into(), message: error.to_string(), data: None })?;
             let id = summary.id.clone();
-            this.update(cx, |store, cx| {
+            let _ = this.update(cx, |store, cx| {
+                store.pending_permission = None;
                 let mut next: Vec<SessionSummary> = store.summaries.iter().filter(|s| s.id != summary.id).cloned().collect();
                 next.push(summary);
                 store.set_summaries(next, cx);
-                store.select(Some(id.clone()), cx);
-            })
-            .ok()?;
-            Some(id)
+                cx.notify();
+            });
+            Ok(id)
         })
     }
 }
