@@ -1,4 +1,22 @@
-/** Geometry of the PDF viewer: the reader's place in the document, which a change of zoom keeps. */
+/** Geometry of the PDF viewer: how sharp a page canvas may be, and the reader's place in the document, which a change of
+ *  zoom keeps. */
+
+/** pdf.js's own `maxCanvasPixels` (16 MP): larger canvases can fail to allocate or exhaust GPU memory. */
+export const MAX_CANVAS_PIXELS = 16_777_216
+
+/**
+ * @param width CSS width of the page.
+ * @param height CSS height of the page.
+ * @param ratio `devicePixelRatio`.
+ * @param max Most device pixels one canvas may have.
+ * @returns Device pixels per CSS pixel to render at: `ratio`, or less when the canvas would exceed `max`, in which case
+ *   CSS scales the canvas up and the page is a little softer.
+ */
+export function canvasPixelRatio(width: number, height: number, ratio: number, max = MAX_CANVAS_PIXELS): number {
+  const area = width * height
+  if (!(area > 0) || area * ratio * ratio <= max) return ratio
+  return Math.sqrt(max / area)
+}
 
 /** A page frame, in the content coordinates of the scrolling stage. */
 export interface Box {

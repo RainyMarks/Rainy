@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-/** The PDF viewer's text extraction and copy, its error reasons and the place kept across a zoom. */
+/** The PDF viewer's text extraction and copy, its error reasons, the canvas size cap and the place kept across a zoom. */
 import { describe, expect, it } from 'vitest'
 import { describePdfError, PdfJsUnavailableError } from '../../src/renderer/ide/viewers/pdf-errors.ts'
-import { anchoredScroll, captureAnchor, pageIndexAt, type Box } from '../../src/renderer/ide/viewers/pdf-layout.ts'
+import { anchoredScroll, canvasPixelRatio, captureAnchor, MAX_CANVAS_PIXELS, pageIndexAt, type Box } from '../../src/renderer/ide/viewers/pdf-layout.ts'
 import { fixRadicals, joinTextItems, selectedText, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
 import radicals from '../../native/crates/app/src/web/radicals.in?raw'
 
@@ -120,6 +120,23 @@ describe('error reasons', () => {
   it('falls back to a general reason with the detail shown', () => {
     expect(describePdfError(new Error('Something odd'))).toEqual({ key: 'pdfErrorUnknown', detail: 'Something odd', detailed: true })
     expect(describePdfError('plain text').detail).toBe('plain text')
+  })
+})
+
+describe('canvas size', () => {
+  it('renders at the device pixel ratio while the canvas stays under 16 MP', () => {
+    expect(canvasPixelRatio(992, 1403, 2.25)).toBe(2.25)
+    expect(canvasPixelRatio(0, 0, 2.25)).toBe(2.25)
+  })
+
+  it('lowers the ratio of a larger canvas to the cap', () => {
+    // An A4 page at 300% on a 225% screen would be about 63 MP.
+    const width = 595 * 4 / 3 * 3
+    const height = 842 * 4 / 3 * 3
+    const ratio = canvasPixelRatio(width, height, 2.25)
+    expect(ratio).toBeLessThan(2.25)
+    expect(Math.floor(width * ratio) * Math.floor(height * ratio)).toBeLessThanOrEqual(MAX_CANVAS_PIXELS)
+    expect(width * height * ratio * ratio).toBeCloseTo(MAX_CANVAS_PIXELS, -2)
   })
 })
 

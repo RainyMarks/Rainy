@@ -4,7 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { Button, fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
 import { describePdfError, PdfJsUnavailableError } from './pdf-errors.ts'
-import { anchoredScroll, captureAnchor, pageIndexAt, type Anchor, type Box } from './pdf-layout.ts'
+import { anchoredScroll, canvasPixelRatio, captureAnchor, pageIndexAt, type Anchor, type Box } from './pdf-layout.ts'
 import { fixRadicals, joinTextItems, selectedText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
@@ -26,6 +26,8 @@ interface PdfPage {
   render(options: { canvasContext: CanvasRenderingContext2D; viewport: PdfViewport }): PdfTask
   getTextContent(): Promise<PdfTextContent>
   getAnnotations(): Promise<PdfAnnotation[]>
+  /** Frees what the page parsed for rendering once no render of it runs; the next render parses it again. */
+  cleanup(): boolean
 }
 interface PdfDocument {
   readonly numPages: number
@@ -190,6 +192,8 @@ function PdfPageView({ context, number, size, scale, root }: {
   /** What the frame shows, and the scale it was made for. The canvas stays while another zoom renders, stretched by CSS,
    *  so the page does not flash blank. */
   const shown = useRef<{ canvas?: HTMLCanvasElement | undefined; text?: HTMLElement | undefined; links?: HTMLElement | undefined; scale?: number | undefined }>({})
+  /** Whether pdf.js holds resources it parsed to render this page, which `cleanup()` gives back. */
+  const parsed = useRef(false)
 
   const dropLayers = (): void => {
     shown.current.text?.remove()
@@ -197,7 +201,7 @@ function PdfPageView({ context, number, size, scale, root }: {
     shown.current = { canvas: shown.current.canvas, scale: shown.current.scale }
     context.layers.delete(number)
   }
-  /** A page far from the view keeps only its empty frame: its canvas pixels and layers go. */
+  /** A page far from the view keeps only its empty frame: canvas pixels, layers and pdf.js's parsed resources go. */
   const release = (): void => {
     dropLayers()
     const canvas = shown.current.canvas
@@ -207,6 +211,10 @@ function PdfPageView({ context, number, size, scale, root }: {
       canvas.height = 0
     }
     shown.current = {}
+    if (parsed.current) {
+      parsed.current = false
+      void context.document.getPage(number).then((page) => { page.cleanup() }).catch(() => undefined)
+    }
   }
   const latestRelease = useRef(release)
   latestRelease.current = release
@@ -230,14 +238,15 @@ function PdfPageView({ context, number, size, scale, root }: {
     const fresh = document.createElement('canvas')
     // Text and links are placed for one zoom; at another they would sit beside the words until the new ones are ready.
     if (shown.current.scale !== scale) dropLayers()
+    parsed.current = true
     void context.document.getPage(number).then(async (page) => {
       if (cancelled) return
       const base = page.getViewport({ scale: 1 })
       setOwn(previous => previous?.width === base.width && previous.height === base.height ? previous : { width: base.width, height: base.height })
       const viewport = page.getViewport({ scale })
-      const pixels = page.getViewport({ scale: scale * (window.devicePixelRatio || 1) })
-      fresh.width = Math.ceil(pixels.width)
-      fresh.height = Math.ceil(pixels.height)
+      const pixels = page.getViewport({ scale: scale * canvasPixelRatio(viewport.width, viewport.height, window.devicePixelRatio || 1) })
+      fresh.width = Math.max(1, Math.floor(pixels.width))
+      fresh.height = Math.max(1, Math.floor(pixels.height))
       const canvasContext = fresh.getContext('2d', { alpha: false })
       if (canvasContext === null) return
       const text = page.getTextContent().catch(() => undefined)
