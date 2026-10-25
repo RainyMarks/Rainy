@@ -46,6 +46,14 @@ pub fn launch_paths(argv: &[OsString], cwd: &Path) -> Vec<PathBuf> {
         if text.chars().all(js_whitespace) || text.contains('\0') {
             continue;
         }
+        // Explorer's `"%V"` for a drive root is `"D:\"`, whose `\"` the command line reads as a quote: `D:"`. No
+        // Windows path holds a quote, so a trailing one was that backslash.
+        if cfg!(windows)
+            && let Some(stripped) = argument.to_str().and_then(|text| text.strip_suffix('"'))
+        {
+            paths.push(resolve(cwd, Path::new(&format!("{stripped}\\"))));
+            continue;
+        }
         paths.push(resolve(cwd, Path::new(argument)));
     }
     paths
@@ -193,6 +201,9 @@ mod tests {
         assert_eq!(paths(&["Rainy.exe", "--", "--user-data-dir", "x"], r"C:\Work"), [r"C:\Work\--user-data-dir", r"C:\Work\x"]);
         assert!(paths(&["Rainy.exe", "", "  ", "\u{3000}\u{feff}", "a\0b"], r"C:\Work").is_empty());
         assert_eq!(paths(&["Rainy.exe", "\u{85}"], r"C:\Work"), ["C:\\Work\\\u{85}"]);
+        // "Open with Rainy" on the empty part of a drive root: Explorer runs `Rainy.exe "D:\"`, which arrives as `D:"`.
+        assert_eq!(paths(&["Rainy.exe", "D:\""], r"C:\Work"), [r"D:\"]);
+        assert_eq!(paths(&["Rainy.exe", "D:\\项目\""], r"C:\Work"), [r"D:\项目"]);
     }
 
     #[test]
