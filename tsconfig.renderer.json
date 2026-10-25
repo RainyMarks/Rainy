@@ -13,7 +13,14 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    // Crepe's own CodeMirror, for the rich editor's code theme; the build resolves them in scripts/codemirror-alias.ts.
+    "paths": {
+      "@codemirror/language": ["./node_modules/.pnpm/node_modules/@codemirror/language"],
+      "@codemirror/state": ["./node_modules/.pnpm/node_modules/@codemirror/state"],
+      "@codemirror/view": ["./node_modules/.pnpm/node_modules/@codemirror/view"],
+      "@lezer/highlight": ["./node_modules/.pnpm/node_modules/@lezer/highlight"]
+    }
   },
   "include": ["src/renderer", "src/shared/rpc.ts", "src/shared/brand.ts", "src/shared/config.ts", "src/shared/*-protocol.ts", "tests/renderer"]
 }

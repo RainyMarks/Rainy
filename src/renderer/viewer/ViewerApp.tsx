@@ -168,7 +168,14 @@ async function createBinary(workspaceId: WorkspaceId, rootId: IdeRootId | undefi
 }
 
 /** The Markdown views: the text arrives from the workbench, and rich edits go back to it. */
-function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string }): JSX.Element | null {
+function MarkdownView({ rich, workspaceId, rootId, path, hostPath }: {
+  rich: boolean
+  workspaceId: WorkspaceId
+  rootId: IdeRootId | undefined
+  path: string
+  /** The document on this computer, when the project is a Windows folder. */
+  hostPath: string | undefined
+}): JSX.Element | null {
   const [text, setText] = useState(latestText)
   shownDocument = { workspaceId, rootId, path }
   useEffect(() => {
@@ -178,7 +185,10 @@ function MarkdownView({ rich, workspaceId, rootId, path }: { rich: boolean; work
   }, [])
   if (text === undefined) return null
   const directory = path.split('/').slice(0, -1).join('/')
-  const base = { workspaceId, rootId, directory }
+  // The project folder on this computer: the document's own path without its project-relative part.
+  const suffix = `\\${path.replaceAll('/', '\\')}`
+  const hostRoot = hostPath?.toLowerCase().endsWith(suffix.toLowerCase()) === true ? hostPath.slice(0, -suffix.length) : undefined
+  const base = { workspaceId, rootId, directory, hostRoot }
   // The preview resolved the path against the document's directory already.
   if (!rich) {
     return <MarkdownPreview text={text.text} version={text.version} base={base} sync={editorScroll}
@@ -244,7 +254,7 @@ export function ViewerApp(): JSX.Element {
     case 'shortcut': content = <ShortcutViewer url={url} size={bytes} />; break
     case 'office-lock': content = <OfficeLockViewer url={url} size={bytes} document={name.slice(2)} onOpenDocument={undefined} />; break
     case 'markdown': case 'markdown-rich':
-      content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} />
+      content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} hostPath={hostPath} />
       break
     case 'map': content = <MapView workspaceId={workspaceId} />; break
     default: content = null

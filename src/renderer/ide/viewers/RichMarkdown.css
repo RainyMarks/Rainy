@@ -3,15 +3,21 @@
  *
  * Two surfaces of our own: blocks in the text (code, formulas, table headers, front matter) and panels that float over
  * it (toolbar, / menu, link and formula popups, table buttons). In the light mode every Rainy layer is white, so blocks
- * take the scheme's lightest gray and panels a border and shadow; otherwise both would vanish into the page. */
+ * take the scheme's lightest gray and panels a border and shadow; otherwise both would vanish into the page. Lines
+ * (table borders, heading rules) and selections are mixed from the text and accent colors, so they show in every scheme:
+ * the border tokens are nearly transparent. */
 .rainy-rich {
   --rainy-rich-block: var(--rainy-static-gray-50);
+  --rainy-rich-line: color-mix(in srgb, var(--rainy-alias-label-secondary) 28%, transparent);
+  --rainy-rich-selected: color-mix(in srgb, var(--rainy-alias-state-business-primary) 18%, transparent);
   --rainy-rich-panel: var(--rainy-alias-bg-base);
   --rainy-rich-panel-border: var(--rainy-alias-border-l3);
   --rainy-rich-panel-shadow: 0 6px 20px rgb(0 0 0 / 14%), 0 1px 3px rgb(0 0 0 / 10%);
 }
 body[data-rainy-dark] .rainy-rich {
-  --rainy-rich-block: var(--rainy-alias-bg-layer-1);
+  /* The dark layers differ from the page by a few levels only. */
+  --rainy-rich-block: color-mix(in srgb, var(--rainy-alias-label-primary) 8%, var(--rainy-alias-bg-base));
+  --rainy-rich-selected: color-mix(in srgb, var(--rainy-alias-state-business-primary) 30%, transparent);
   --rainy-rich-panel: var(--rainy-alias-bg-layer-3);
   --rainy-rich-panel-shadow: 0 8px 24px rgb(0 0 0 / 50%), 0 1px 3px rgb(0 0 0 / 40%);
 }
@@ -32,8 +38,9 @@ body[data-rainy-dark] .rainy-rich {
   --crepe-color-on-inverse: var(--rainy-alias-bg-base);
   --crepe-color-inline-code: var(--rainy-alias-state-error-primary);
   --crepe-color-error: var(--rainy-alias-state-error-primary);
-  --crepe-color-hover: var(--rainy-alias-interactive-bg-hover);
-  --crepe-color-selected: var(--rainy-alias-interactive-bg-active);
+  /* Selected table cells, a block chosen with its handle and the highlighted / menu item. */
+  --crepe-color-hover: color-mix(in srgb, var(--rainy-alias-state-business-primary) 10%, transparent);
+  --crepe-color-selected: var(--rainy-rich-selected);
   --crepe-color-inline-area: var(--rainy-rich-block);
   --crepe-color-diff-added: var(--rainy-alias-file-diff-added-marker);
   --crepe-color-diff-removed: var(--rainy-alias-file-diff-deleted-marker);
@@ -73,18 +80,30 @@ body[data-rainy-dark] .rainy-rich {
 /* The / menu fits the window: a short preview pane cut its top off. Its height comes from the room the menu found. */
 .rainy-rich .milkdown .milkdown-slash-menu .menu-groups { max-height: min(420px, calc(var(--rainy-menu-room, 480px) - 64px)); }
 
-/* Code blocks in Rainy's code font and size; CodeMirror's own theme asks for the browser's monospace. */
+/* Code blocks in Rainy's code font and size; CodeMirror's own theme asks for the browser's monospace. The token classes
+ * come from code-theme.ts and take the highlight palette of code fences elsewhere (theme/highlight.css). */
 .rainy-rich .milkdown .milkdown-code-block .cm-editor :is(.cm-content, .cm-gutters, .cm-line) {
   font-family: var(--crepe-font-code); font-size: var(--rainy-code-font-size, 13px);
 }
 .rainy-rich .milkdown .milkdown-code-block .cm-gutters { color: var(--rainy-alias-label-tertiary); border-right: none; }
 .rainy-rich .milkdown .milkdown-code-block :is(.cm-activeLineGutter, .cm-activeLine) { background: var(--rainy-alias-interactive-bg-hover); }
+.rainy-rich .milkdown-code-block :is(.tok-comment, .tok-meta) { color: var(--hl-comment); font-style: italic; }
+.rainy-rich .milkdown-code-block :is(.tok-keyword, .tok-typeName, .tok-namespace, .tok-macroName, .tok-heading) { color: var(--hl-keyword); }
+.rainy-rich .milkdown-code-block :is(.tok-string, .tok-string2, .tok-inserted) { color: var(--hl-string); }
+.rainy-rich .milkdown-code-block :is(.tok-number, .tok-bool, .tok-atom, .tok-literal, .tok-variableName2, .tok-labelName) { color: var(--hl-constant); }
+.rainy-rich .milkdown-code-block :is(.tok-className, .tok-definition) { color: var(--hl-function); }
+.rainy-rich .milkdown-code-block .tok-propertyName { color: var(--hl-parameter); }
+.rainy-rich .milkdown-code-block :is(.tok-operator, .tok-punctuation) { color: var(--hl-punctuation); }
+.rainy-rich .milkdown-code-block :is(.tok-link, .tok-url) { color: var(--hl-link); text-decoration: underline; }
+.rainy-rich .milkdown-code-block :is(.tok-deleted, .tok-invalid) { color: var(--rainy-alias-state-error-primary); }
+.rainy-rich .milkdown-code-block .tok-emphasis { font-style: italic; }
+.rainy-rich .milkdown-code-block .tok-strong { font-weight: 600; }
 .rainy-rich .milkdown .ProseMirror ::selection { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 30%, transparent); }
 
 /* Typography close to Typora's GitHub theme: bold headings of moderate size, the first two underlined, roomy paragraphs. */
 .rainy-rich .milkdown .ProseMirror :is(h1, h2, h3, h4, h5, h6) { font-weight: 600; line-height: 1.35; margin-top: 1.1em; padding: 0; scroll-margin-top: 16px; }
-.rainy-rich .milkdown .ProseMirror h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rainy-alias-border-l1); }
-.rainy-rich .milkdown .ProseMirror h2 { font-size: 1.55em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rainy-alias-border-l1); }
+.rainy-rich .milkdown .ProseMirror h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rainy-rich-line); }
+.rainy-rich .milkdown .ProseMirror h2 { font-size: 1.55em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rainy-rich-line); }
 .rainy-rich .milkdown .ProseMirror h3 { font-size: 1.3em; }
 .rainy-rich .milkdown .ProseMirror h4 { font-size: 1.12em; }
 .rainy-rich .milkdown .ProseMirror h5 { font-size: 1em; }
@@ -100,7 +119,7 @@ body[data-rainy-dark] .rainy-rich {
 .rainy-rich .milkdown .ProseMirror img { border-radius: 3px; }
 .rainy-rich .milkdown .ProseMirror table { border-collapse: collapse; }
 .rainy-rich .milkdown .milkdown-table-block th,
-.rainy-rich .milkdown .milkdown-table-block td { border: 1px solid var(--rainy-alias-border-l1); }
+.rainy-rich .milkdown .milkdown-table-block td { border: 1px solid var(--rainy-rich-line); }
 .rainy-rich .milkdown .milkdown-table-block th { background: var(--rainy-rich-block); font-weight: 600; }
 
 /* Formulas and diagrams show only their rendering until the cursor or a click goes into them, as in Typora. The source
@@ -119,7 +138,7 @@ body[data-rainy-dark] .rainy-rich {
 .rainy-front-matter-label { font-size: 12px; color: var(--rainy-alias-label-tertiary, var(--rainy-alias-label-secondary)); margin-bottom: 4px; }
 .rainy-front-matter-text {
   display: block; width: 100%; box-sizing: border-box; field-sizing: content; min-height: 2.5em; resize: none;
-  padding: 8px 10px; border: 1px solid var(--rainy-alias-border-l1); border-radius: 4px;
+  padding: 8px 10px; border: 1px solid var(--rainy-rich-line); border-radius: 4px;
   background: var(--rainy-rich-block); color: var(--rainy-alias-label-secondary);
   font: 13px/1.6 var(--rainy-font-family-code); outline: none;
 }
@@ -128,17 +147,19 @@ body[data-rainy-dark] .rainy-rich {
 @media (max-width: 560px) { .rainy-front-matter { padding: 0 20px 0 80px; } }
 
 /* Find and replace. */
-.rainy-search-match { background: color-mix(in srgb, var(--rainy-alias-state-warning-primary, #e5a50a) 32%, transparent); border-radius: 2px; }
-.rainy-search-current { background: color-mix(in srgb, var(--rainy-alias-state-warning-primary, #e5a50a) 70%, transparent); outline: 1px solid var(--rainy-alias-state-warning-primary, #e5a50a); }
+.rainy-search-match { background: color-mix(in srgb, var(--rainy-alias-state-warn-primary, #e5a50a) 32%, transparent); border-radius: 2px; }
+.rainy-search-current { background: color-mix(in srgb, var(--rainy-alias-state-warn-primary, #e5a50a) 70%, transparent); outline: 1px solid var(--rainy-alias-state-warn-primary, #e5a50a); }
+/* A strip above the document that pushes it down, so it covers no text; above Crepe's toolbar, block handle and language
+ * list (up to 999), below the page's menus. */
 .rainy-find {
-  position: absolute; top: 8px; right: 18px; z-index: 5; display: flex; align-items: flex-start; gap: 2px;
+  position: relative; z-index: 1000; flex: none; align-self: flex-end; margin: 6px 18px 4px; display: flex; align-items: flex-start; gap: 2px;
   padding: 4px; border: 1px solid var(--rainy-alias-border-l2); border-radius: 6px;
   background: var(--rainy-alias-bg-layer-1); box-shadow: 0 4px 14px rgb(0 0 0 / 18%);
 }
 .rainy-find-fields { display: flex; flex-direction: column; gap: 4px; }
 .rainy-find-row { display: flex; align-items: center; gap: 2px; }
 .rainy-find-input {
-  width: 200px; height: 26px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--rainy-alias-border-l1); border-radius: 4px;
+  width: 200px; height: 26px; box-sizing: border-box; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--rainy-alias-label-secondary) 35%, transparent); border-radius: 4px;
   background: var(--rainy-alias-bg-base); color: var(--rainy-alias-label-primary); font: inherit; font-size: 13px; outline: none;
 }
 .rainy-find-input:focus { border-color: var(--rainy-alias-state-business-primary); }
@@ -152,12 +173,13 @@ body[data-rainy-dark] .rainy-rich {
 .rainy-find-button:disabled { opacity: 0.5; cursor: default; }
 
 /* Focus mode: everything but the block being written fades. */
-[data-focus-mode='true'] .rainy-rich .milkdown .ProseMirror > :not(.rainy-current-block) { opacity: 0.3; transition: opacity 0.2s; }
-[data-focus-mode='true'] .rainy-rich .milkdown .ProseMirror > .rainy-current-block { transition: opacity 0.2s; }
-[data-focus-mode='true'] .rainy-rich .milkdown .ProseMirror:not(.ProseMirror-focused) > * { opacity: 1; }
+/* Only the document's own editor: an inline formula's popup holds a ProseMirror of its own. */
+[data-focus-mode='true'] .rainy-rich .milkdown > .ProseMirror > :not(.rainy-current-block) { opacity: 0.3; transition: opacity 0.2s; }
+[data-focus-mode='true'] .rainy-rich .milkdown > .ProseMirror > .rainy-current-block { transition: opacity 0.2s; }
+[data-focus-mode='true'] .rainy-rich .milkdown > .ProseMirror:not(.ProseMirror-focused) > * { opacity: 1; }
 
 /* Typewriter mode: room above the first line, so it too can sit in the middle. */
-[data-typewriter='true'] .rainy-rich .milkdown .ProseMirror { padding-top: 40vh; }
+[data-typewriter='true'] .rainy-rich .milkdown > .ProseMirror { padding-top: 40vh; }
 
 /* A heading reached from the outline or a #link flashes once. */
 .rainy-heading-flash { animation: rainy-heading-flash 1.2s ease-out; }
@@ -167,5 +189,5 @@ body[data-rainy-dark] .rainy-rich {
 }
 @media (prefers-reduced-motion: reduce) {
   .rainy-heading-flash { animation: none; }
-  [data-focus-mode='true'] .rainy-rich .milkdown .ProseMirror > * { transition: none; }
+  [data-focus-mode='true'] .rainy-rich .milkdown > .ProseMirror > * { transition: none; }
 }

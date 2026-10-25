@@ -64,6 +64,9 @@ const zh = {
   shortcutBroken: '无法读取这个快捷方式。', shortcutCopy: '复制路径', shortcutCopied: '已复制路径',
   footnotes: '脚注', footnoteBack: '返回正文',
   imageNoFreeName: '这个文件夹里同名的图片太多，找不到可用的文件名', imageReadFailed: '无法读取这张图片',
+  codeFold: '折叠', codeUnfold: '展开', codeFolded: '已折叠的代码', codeFoldedLines: '已折叠行', codeUnfoldedLines: '已展开行', codeLinesTo: '至',
+  codeCompletions: '补全', richPlainText: '纯文本', richFrontMatterToml: 'TOML 前言',
+  richTooLarge: '文件有 {size}，所见即所得编辑会很慢，已关闭。请切换到“源码”编辑，或用“预览”查看。',
 }
 
 const en: typeof zh = {
@@ -77,7 +80,7 @@ const en: typeof zh = {
   richCopyLink: 'Copy link', richEditLink: 'Edit link', richRemoveLink: 'Remove link', richAddBlock: 'Insert below', richDragBlock: 'Drag to move, click to select the block',
   richSelectColumn: 'Select column', richSelectRow: 'Select row', richAlignLeft: 'Align left', richAlignCenter: 'Center', richAlignRight: 'Align right',
   richDeleteColumn: 'Delete column', richDeleteRow: 'Delete row', richAddRow: 'Add row', richAddColumn: 'Add column',
-  richFrontMatter: 'Front matter', richFrontMatterTitle: 'Metadata at the start of the document, such as title, tags and date',
+  richFrontMatter: 'YAML front matter', richFrontMatterTitle: 'Metadata at the start of the document, such as title, tags and date',
   richUpload: 'Choose image', richImageFailed: 'The image could not be saved: {error}', richImageTooLarge: 'The image is larger than 25 MB and was not saved',
   mermaidFailed: 'The diagram cannot be drawn: {error}', mermaidLoading: 'Drawing the diagram…',
   findPlaceholder: 'Find', replacePlaceholder: 'Replace with', findCount: '{current} of {total}', findNone: 'No results',
@@ -129,6 +132,9 @@ const en: typeof zh = {
   shortcutBroken: 'This shortcut cannot be read.', shortcutCopy: 'Copy path', shortcutCopied: 'Path copied',
   footnotes: 'Footnotes', footnoteBack: 'Back to the text',
   imageNoFreeName: 'This folder has too many images of that name; no free name is left', imageReadFailed: 'The image could not be read',
+  codeFold: 'Fold line', codeUnfold: 'Unfold line', codeFolded: 'folded code', codeFoldedLines: 'Folded lines', codeUnfoldedLines: 'Unfolded lines', codeLinesTo: 'to',
+  codeCompletions: 'Completions', richPlainText: 'Plain text', richFrontMatterToml: 'TOML front matter',
+  richTooLarge: 'This file is {size}; rich editing would be slow, so it is off. Edit it in Source, or read it in Preview.',
 }
 
 /** Viewer strings. */

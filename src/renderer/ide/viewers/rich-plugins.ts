@@ -1,6 +1,6 @@
 /** ProseMirror plugins of the rich Markdown editor: Typora's shortcuts, find and replace, focus and typewriter modes, and
  *  Ctrl+click on links. Loaded with the editor, outside the viewer chunk. */
-import { commandsCtx, parserCtx, remarkCtx, remarkStringifyOptionsCtx, serializerCtx, type CmdKey, type Editor } from '@milkdown/kit/core'
+import { commandsCtx, editorViewCtx, parserCtx, remarkCtx, remarkStringifyOptionsCtx, serializerCtx, type CmdKey, type Editor } from '@milkdown/kit/core'
 import type { Ctx, SliceType } from '@milkdown/kit/ctx'
 import { toggleLinkCommand } from '@milkdown/kit/component/link-tooltip'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
@@ -9,8 +9,8 @@ import { Plugin, PluginKey, TextSelection, type Command, type EditorState, type 
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { codeBlockSchema, createCodeBlockCommand, remarkPreserveEmptyLinePlugin, toggleInlineCodeCommand, wrapInBlockquoteCommand, wrapInBulletListCommand,
   wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
-import { createTable, remarkGFMPlugin, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
-import { $prose, $remark } from '@milkdown/kit/utils'
+import { addRowAfterCommand, createTable, remarkGFMPlugin, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
+import { $prose, $remark, $useKeymap } from '@milkdown/kit/utils'
 import { conventionalTables, type MarkdownReader } from './markdown-merge.ts'
 import { remarkDollarAmounts } from './markdown-math.ts'
 
@@ -199,6 +199,68 @@ export const typoraKeymap = $prose((ctx) => {
     'Mod-Shift-`': call(toggleInlineCodeCommand.key),
     'Mod-k': call(toggleLinkCommand.key),
   })
+})
+
+/**
+ * The cell holding the cursor: its table's position and its row and column.
+ * @param state Editor state.
+ * @returns `undefined` outside a table.
+ */
+function tableCell(state: EditorState): { table: number; node: ProseNode; row: number; column: number } | undefined {
+  const { $head } = state.selection
+  for (let depth = $head.depth; depth > 2; depth--) {
+    if (!['table_cell', 'table_header'].includes($head.node(depth).type.name)) continue
+    if ($head.node(depth - 2).type.name !== 'table') return undefined
+    return { table: $head.before(depth - 2), node: $head.node(depth - 2), row: $head.index(depth - 2), column: $head.index(depth - 1) }
+  }
+  return undefined
+}
+
+/** @returns A transaction that puts the cursor at the end of cell (`row`, `column`) of the table at `table`, if it exists. */
+function enterCell(state: EditorState, table: number, row: number, column: number): Transaction | undefined {
+  const node = state.doc.nodeAt(table)
+  if (node === null || row >= node.childCount || column >= node.child(row).childCount) return undefined
+  let position = table + 1
+  for (let index = 0; index < row; index++) position += node.child(index).nodeSize
+  position += 1
+  for (let index = 0; index < column; index++) position += node.child(row).child(index).nodeSize
+  const end = position + node.child(row).child(column).nodeSize - 1
+  return state.tr.setSelection(TextSelection.near(state.doc.resolve(end), -1)).scrollIntoView()
+}
+
+/**
+ * Typora's Enter in tables: Enter goes to the cell below (a new row after the last), Ctrl+Enter adds a row below and
+ * goes there. Milkdown's own Enter leaves the table.
+ */
+export const tableKeys = $useKeymap('rainyTable', {
+  NextRow: {
+    shortcuts: 'Enter',
+    priority: 200,
+    command: ctx => (state, dispatch) => {
+      const cell = tableCell(state)
+      if (cell === undefined) return false
+      if (dispatch === undefined) return true
+      if (cell.row + 1 >= cell.node.childCount && !ctx.get(commandsCtx).call(addRowAfterCommand.key)) return false
+      const view = ctx.get(editorViewCtx)
+      const moved = enterCell(view.state, cell.table, cell.row + 1, cell.column)
+      if (moved !== undefined) view.dispatch(moved)
+      return true
+    },
+  },
+  AddRow: {
+    shortcuts: 'Mod-Enter',
+    priority: 200,
+    command: ctx => (state, dispatch) => {
+      const cell = tableCell(state)
+      if (cell === undefined) return false
+      if (dispatch === undefined) return true
+      if (!ctx.get(commandsCtx).call(addRowAfterCommand.key)) return false
+      const view = ctx.get(editorViewCtx)
+      const moved = enterCell(view.state, cell.table, cell.row + 1, cell.column)
+      if (moved !== undefined) view.dispatch(moved)
+      return true
+    },
+  },
 })
 
 /** Marks the top-level block holding the cursor; focus mode fades the others. */
