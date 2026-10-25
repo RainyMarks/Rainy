@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
-/** The PDF viewer's text extraction. */
+/** The PDF viewer's text extraction and its error reasons. */
 import { describe, expect, it } from 'vitest'
+import { describePdfError, PdfJsUnavailableError } from '../../src/renderer/ide/viewers/pdf-errors.ts'
 import { fixRadicals, joinTextItems, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
 import radicals from '../../native/crates/app/src/web/radicals.in?raw'
 
@@ -52,5 +53,34 @@ describe('text of a page', () => {
 
   it('maps radicals, skips marked content and trims line ends', () => {
     expect(joinTextItems([{ str: '第⼆节   ', hasEOL: true }, {}, { str: '⽇期' }])).toBe('第二节\n日期')
+  })
+})
+
+describe('error reasons', () => {
+  const named = (name: string, message: string, extra: Record<string, unknown> = {}): unknown => Object.assign(new Error(message), { name }, extra)
+
+  it('chooses a reason by the name pdf.js gives its errors and keeps the message as the detail', () => {
+    expect(describePdfError(named('InvalidPDFException', 'Invalid PDF structure.'))).toEqual({ key: 'pdfErrorInvalid', detail: 'Invalid PDF structure.', detailed: false })
+    expect(describePdfError(named('MissingPDFException', 'Missing PDF "x".')).key).toBe('pdfErrorMissing')
+    expect(describePdfError(named('PasswordException', 'No password given', { code: 1 })).key).toBe('pdfErrorPassword')
+    expect(describePdfError(named('FormatError', 'Bad FCHECK in flate stream')).key).toBe('pdfErrorDamaged')
+    expect(describePdfError(named('UnknownErrorException', 'Bad XRef entry'))).toMatchObject({ key: 'pdfErrorDamaged', detailed: true })
+    expect(describePdfError(new PdfJsUnavailableError('pdf.js is unavailable')).key).toBe('pdfErrorLibrary')
+    expect(describePdfError(new Error('Setting up fake worker failed: "Failed to fetch".')).key).toBe('pdfErrorLibrary')
+    expect(describePdfError(new TypeError('Failed to fetch')).key).toBe('pdfErrorNetwork')
+  })
+
+  it('tells the HTTP answers of the byte route apart', () => {
+    const response = (status: number): unknown => named('UnexpectedResponseException', `Unexpected server response (${status}) while retrieving PDF "x".`, { status })
+    expect(describePdfError(response(404)).key).toBe('pdfErrorMissing')
+    expect(describePdfError(response(409)).key).toBe('pdfErrorChanged')
+    expect(describePdfError(response(503)).key).toBe('pdfErrorBusy')
+    expect(describePdfError(response(0)).key).toBe('pdfErrorNetwork')
+    expect(describePdfError(response(500))).toMatchObject({ key: 'pdfErrorHttp', vars: { status: 500 } })
+  })
+
+  it('falls back to a general reason with the detail shown', () => {
+    expect(describePdfError(new Error('Something odd'))).toEqual({ key: 'pdfErrorUnknown', detail: 'Something odd', detailed: true })
+    expect(describePdfError('plain text').detail).toBe('plain text')
   })
 })

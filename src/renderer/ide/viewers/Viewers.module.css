@@ -116,3 +116,15 @@
 .outlineSlide { padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--rainy-alias-border-l1); border-radius: var(--rainy-radius-md); background: var(--rainy-alias-bg-layer-1); }
 .outlineSlide h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--rainy-alias-label-secondary); }
 .outlineSlide p { margin: 0 0 4px; user-select: text; }
+
+/* PDF viewer (PdfViewer.tsx): the detail under an error, and the password prompt. */
+.pdfErrorDetail { max-width: 560px; font-size: 12px; color: var(--rainy-alias-label-tertiary); overflow-wrap: anywhere; user-select: text; }
+.pdfPassword p { margin: 0; }
+.pdfPasswordRow { display: flex; gap: 8px; width: min(320px, 100%); }
+.pdfPasswordInput {
+  flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-sm);
+  background: var(--rainy-alias-bg-layer-1); color: var(--rainy-alias-label-primary); font: inherit; outline: none;
+}
+.pdfPasswordInput::placeholder { color: var(--rainy-alias-label-dimmed); }
+.pdfPasswordInput:focus { border-color: var(--rainy-alias-state-business-primary); }
+.pdfPasswordInput[aria-invalid='true'] { border-color: var(--rainy-alias-state-error-primary); }

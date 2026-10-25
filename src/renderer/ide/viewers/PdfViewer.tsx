@@ -1,7 +1,9 @@
-/** PDF viewer on the bundled pdf.js 2.16 build (`resources/pdfjs`): pages render on demand, and their text can be extracted. */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
+/** PDF viewer on the bundled pdf.js 2.16 build (`resources/pdfjs`): pages render on demand, a password-protected file asks
+ *  for its password, and the text can be extracted. */
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Button, fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
+import { describePdfError, PdfJsUnavailableError } from './pdf-errors.ts'
 import { joinTextItems, type PdfTextItem } from './pdf-text.ts'
 import css from './Viewers.module.css'
 
@@ -12,10 +14,18 @@ interface PdfPage {
   getTextContent(): Promise<{ items: readonly PdfTextItem[] }>
   cleanup(): void
 }
-interface PdfDocument { numPages: number; getPage(page: number): Promise<PdfPage>; destroy(): Promise<void> }
+interface PdfDocument { numPages: number; getPage(page: number): Promise<PdfPage> }
+interface PdfLoadingTask {
+  readonly promise: Promise<PdfDocument>
+  /** Stops loading, or closes the document once it is open. */
+  destroy(): Promise<void>
+  /** Called instead of failing when the file needs a password, and again with `INCORRECT_PASSWORD` after a wrong one. */
+  onPassword: ((update: (password: string) => void, reason: number) => void) | null
+}
 interface PdfJs {
   GlobalWorkerOptions: { workerSrc: string }
-  getDocument(options: Record<string, unknown>): { promise: Promise<PdfDocument>; destroy(): Promise<void> }
+  getDocument(options: Record<string, unknown>): PdfLoadingTask
+  readonly PasswordResponses: { readonly NEED_PASSWORD: number; readonly INCORRECT_PASSWORD: number }
 }
 
 const PDFJS_ROOT = '/rainy/pdfjs/'
@@ -33,11 +43,11 @@ function loadPdfJs(): Promise<PdfJs> {
     const script = document.createElement('script')
     script.src = `${PDFJS_ROOT}pdf.min.js`
     script.onload = () => {
-      if (global.pdfjsLib === undefined) { reject(new Error('pdf.js did not load')); return }
+      if (global.pdfjsLib === undefined) { reject(new PdfJsUnavailableError('pdf.js did not load')); return }
       global.pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_ROOT}pdf.worker.min.js`
       resolve(global.pdfjsLib)
     }
-    script.onerror = () => { reject(new Error('pdf.js is unavailable')) }
+    script.onerror = () => { reject(new PdfJsUnavailableError('pdf.js is unavailable')) }
     document.head.append(script)
   }).catch((error: unknown) => { loading = undefined; throw error })
   return loading
@@ -96,6 +106,37 @@ function PdfPageView({ document: pdf, number, size, scale, root }: {
   )
 }
 
+/** The password prompt of a protected PDF. The password goes from the input straight to pdf.js: it is never kept in
+ *  state, stored or logged, and the input is emptied as it is handed over. */
+function PdfPassword({ incorrect, onSubmit }: { incorrect: boolean; onSubmit: (password: string) => void }): JSX.Element {
+  const t = useViewerT()
+  const input = useRef<HTMLInputElement>(null)
+  const hint = useId()
+  const submit = (): void => {
+    const field = input.current
+    if (field === null) return
+    if (field.value === '') { field.focus(); return }
+    const password = field.value
+    field.value = ''
+    onSubmit(password)
+  }
+  return (
+    <div className={`${css.message} ${css.pdfPassword}`}>
+      <p id={hint} className={incorrect ? css.error : undefined} role={incorrect ? 'alert' : undefined}>{t(incorrect ? 'pdfPasswordWrong' : 'pdfPasswordNeeded')}</p>
+      <div className={css.pdfPasswordRow}>
+        <input ref={input} type="password" className={css.pdfPasswordInput} autoFocus autoComplete="off" spellCheck={false}
+          aria-label={t('pdfPasswordLabel')} placeholder={t('pdfPasswordLabel')} aria-describedby={hint} aria-invalid={incorrect || undefined}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || isComposingKey(event.nativeEvent)) return
+            event.preventDefault()
+            submit()
+          }} />
+        <Button variant="primary" size="sm" onClick={submit}>{t('pdfPasswordOpen')}</Button>
+      </div>
+    </div>
+  )
+}
+
 /**
  * @param props.url Byte route URL of the PDF.
  * @param props.data The PDF itself, for a copy made from another format; it takes the place of `url`.
@@ -118,27 +159,40 @@ export function PdfViewer({ url, data, bytes, tools, note }: {
   const [zoom, setZoom] = useState<number | 'auto'>('auto')
   const [width, setWidth] = useState(800)
   const [page, setPage] = useState(1)
-  const [error, setError] = useState('')
+  const [failure, setFailure] = useState<{ error: unknown } | undefined>()
+  const [password, setPassword] = useState<{ submit: (password: string) => void; incorrect: boolean; attempt: number } | undefined>()
   const [extracting, setExtracting] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    let opened: PdfDocument | undefined
-    setPdf(undefined); setError(''); setPage(1)
+    let task: PdfLoadingTask | undefined
+    setPdf(undefined); setFailure(undefined); setPassword(undefined); setPage(1)
     void loadPdfJs().then(async (library) => {
+      if (cancelled) return
       // isEvalSupported stays off: pdf.js before 4.2.67 can run script from a crafted font otherwise (CVE-2024-4367).
       // pdf.js hands `data` to its worker, which detaches the buffer, so it gets a copy.
-      const task = library.getDocument({ ...data === undefined ? { url } : { data: data.slice() }, isEvalSupported: false, enableXfa: false, cMapUrl: `${PDFJS_ROOT}cmaps/`, cMapPacked: true,
+      const opening = library.getDocument({ ...data === undefined ? { url } : { data: data.slice() }, isEvalSupported: false, enableXfa: false, cMapUrl: `${PDFJS_ROOT}cmaps/`, cMapPacked: true,
         standardFontDataUrl: `${PDFJS_ROOT}standard_fonts/` })
-      const document = await task.promise
-      if (cancelled) { void document.destroy(); return }
-      opened = document
+      task = opening
+      let attempt = 0
+      opening.onPassword = (update, reason) => {
+        if (cancelled) return
+        attempt += 1
+        setPassword({ submit: (value) => { setPassword(undefined); update(value) }, incorrect: reason === library.PasswordResponses.INCORRECT_PASSWORD, attempt })
+      }
+      const document = await opening.promise
+      if (cancelled) return
       const first = (await document.getPage(1)).getViewport({ scale: 1 })
       if (cancelled) return
       setSize({ width: first.width, height: first.height })
       setPdf(document)
-    }).catch((failure: unknown) => { if (!cancelled) setError(failure instanceof Error ? failure.message : String(failure)) })
-    return () => { cancelled = true; void opened?.destroy() }
+    }).catch((error: unknown) => {
+      if (cancelled) return
+      setPassword(undefined)
+      setFailure({ error })
+    })
+    // Destroying the loading task also closes the document it opened.
+    return () => { cancelled = true; void task?.destroy().catch(() => undefined) }
   }, [url, data])
 
   useEffect(() => {
@@ -171,11 +225,13 @@ export function PdfViewer({ url, data, bytes, tools, note }: {
       const text = texts.join('\n\n')
       if (await writeClipboard(text, { quiet: true })) toast(t('pdfTextCopied', { count: text.length }), { tone: 'success' })
       else toast(t('copyFailed'), { tone: 'error' })
-    } catch (failure) {
-      toast(t('pdfFailed', { error: failure instanceof Error ? failure.message : String(failure) }), { tone: 'error' })
+    } catch (error) {
+      const problem = describePdfError(error)
+      toast(t('pdfTextFailed', { error: t(problem.key, problem.vars) }), { tone: 'error' })
     } finally { setExtracting(false) }
   }
 
+  const problem = failure === undefined ? undefined : describePdfError(failure.error)
   return (
     <div className={css.viewer} data-viewer="pdf">
       <div className={css.toolbar}>
@@ -190,7 +246,12 @@ export function PdfViewer({ url, data, bytes, tools, note }: {
         {tools}
       </div>
       <div ref={stage} className={css.stage} onScroll={onScroll}>
-        {error !== '' ? <div className={`${css.message} ${css.error}`}>{t('pdfFailed', { error })}</div>
+        {problem !== undefined ? (
+          <div className={css.message}>
+            <span className={css.error} title={problem.detail}>{t('pdfFailed', { error: t(problem.key, problem.vars) })}</span>
+            {problem.detailed && <span className={css.pdfErrorDetail}>{problem.detail}</span>}
+          </div>
+        ) : password !== undefined ? <PdfPassword key={password.attempt} incorrect={password.incorrect} onSubmit={password.submit} />
           : pdf === undefined ? <div className={css.message}>{t('loading')}</div>
             : <div className={css.pages}>{pages.map(number => (
               <PdfPageView key={number} document={pdf} number={number} size={size} scale={scale} root={stage.current} />
