@@ -33,6 +33,6 @@ pub mod wsl;
 #[cfg(test)]
 mod test_server;
 
-pub use control::{HostCommand, HostEvents, HostProcess, HostReady};
+pub use control::{HostCommand, HostEvents, HostProcess, HostReady, HostStopped};
 pub use rpc::{ConnectionState, RpcClient, RpcEvent};
 pub use targets::ExecutionTarget;

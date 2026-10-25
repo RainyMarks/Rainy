@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
+use crate::locale::localized;
+
 /// How long the Host may take to report readiness.
 const START_DEADLINE: Duration = Duration::from_secs(90);
 /// How long a control request waits for its answer.
@@ -40,6 +42,19 @@ pub struct HostCommand {
     /// An SSH Host must listen on the forwarded port.
     pub expected_port: Option<u16>,
 }
+
+/// The Host ended before it reported readiness: its exit code, when it had one. The caller can add what it said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostStopped(pub Option<i32>);
+
+impl std::fmt::Display for HostStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = self.0.map_or_else(|| "?".to_owned(), |code| code.to_string());
+        f.write_str(&localized(&format!("执行后端在就绪前退出了（退出代码 {code}）。"), &format!("The execution Host stopped before it was ready (exit code {code}).")))
+    }
+}
+
+impl std::error::Error for HostStopped {}
 
 /// Verified loopback readiness.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +99,7 @@ pub struct HostProcess {
 
 /// Validate the `ready` message, as `parseReady` in `transport.ts` does.
 pub fn parse_ready(value: &Value) -> Result<HostReady> {
-    let mismatch = || anyhow!("Host protocol does not match this application.");
+    let mismatch = || anyhow!(localized("执行后端与此版本的 Rainy 不匹配。", "The execution Host does not match this version of Rainy."));
     if value.get("protocol").and_then(Value::as_u64) != Some(1) {
         return Err(mismatch());
     }
@@ -95,7 +110,7 @@ pub fn parse_ready(value: &Value) -> Result<HostReady> {
     if !absolute || home.contains('\0') {
         return Err(mismatch());
     }
-    let invalid = || anyhow!("Host returned an invalid application URL.");
+    let invalid = || anyhow!(localized("执行后端返回的地址无效。", "The execution Host returned an invalid address."));
     let rest = url.strip_prefix("http://127.0.0.1:").ok_or_else(invalid)?;
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     let after = &rest[digits.len()..];
@@ -141,7 +156,7 @@ impl HostProcess {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             process.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = process.spawn().with_context(|| format!("Starting {}", command.program.display()))?;
+        let mut child = process.spawn().with_context(|| localized(&format!("无法启动 {}", command.program.display()), &format!("Starting {}", command.program.display())))?;
         let stdin = Arc::new(Mutex::new(child.stdin.take()));
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -177,10 +192,11 @@ impl HostProcess {
                 Ok(result) => break result,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     let code = child.lock().unwrap().wait().ok().and_then(|status| status.code());
-                    break Err(anyhow!("The execution Host stopped ({}).", code.map_or("?".into(), |c| c.to_string())));
+                    break Err(HostStopped(code).into());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) if left.is_zero() => {
-                    break Err(anyhow!("The execution Host did not start before its deadline."));
+                    let seconds = START_DEADLINE.as_secs();
+                    break Err(anyhow!(localized(&format!("执行后端在 {seconds} 秒内没有就绪。"), &format!("The execution Host was not ready within {seconds} s."))));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -189,7 +205,7 @@ impl HostProcess {
             if let Some(port) = command.expected_port
                 && ready.port != port
             {
-                bail!("The remote Host did not use the forwarded port.");
+                bail!(localized("远程执行后端没有使用转发的端口。", "The remote execution Host did not use the forwarded port."));
             }
             if command.wait_for_loopback {
                 wait_for_loopback(ready.port, deadline)?;
@@ -314,7 +330,7 @@ fn read_control(
         };
         let Ok(message) = serde_json::from_str::<Value>(body) else {
             if !announced {
-                let _ = ready.send(Err(anyhow!("Invalid Host control message.")));
+                let _ = ready.send(Err(anyhow!(localized("执行后端发来的控制消息无效。", "The execution Host sent an invalid control message."))));
             }
             continue;
         };
@@ -371,7 +387,7 @@ fn wait_for_loopback(port: u16, deadline: Instant) -> Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(100));
             }
-            Err(error) => return Err(error).context("The Host is not reachable on this machine's loopback address."),
+            Err(error) => return Err(error).context(localized("无法通过本机回环地址连接执行后端。", "The execution Host is not reachable on this computer's loopback address.")),
         }
     }
 }

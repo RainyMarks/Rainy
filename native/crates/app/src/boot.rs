@@ -12,7 +12,7 @@ use rainy_carrier::modules::{ModuleError, Modules};
 use rainy_carrier::ssh::{self, InstallProgress, ServerRuntime};
 use rainy_carrier::trust::{self, Integrity, Recheck, TrustError, Verified};
 use rainy_carrier::wsl::{self, Installed, RuntimeFiles};
-use rainy_carrier::{ExecutionTarget, HostCommand, HostEvents, HostProcess, credential, launch, maintenance, proxy, targets};
+use rainy_carrier::{ExecutionTarget, HostCommand, HostEvents, HostProcess, HostStopped, credential, launch, maintenance, proxy, targets};
 use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
@@ -516,14 +516,31 @@ pub fn start(
     };
     let Some((command, prune)) = prepared else {
         progress(i18n::text(saved_locale(&paths.user_data), "native.starting").to_owned().into());
-        let host = HostProcess::start(&windows_host(paths)?, events)?;
+        let host = start_host(&windows_host(paths)?, &events)?;
         let target = ExecutionTarget::windows();
         if let Err(error) = targets::save_target(&paths.desktop_settings(), &target) {
             log::warn!("The execution target was not saved: {error:#}");
         }
         return Ok(Started { target, host, prune: None });
     };
-    Ok(Started { host: HostProcess::start(&command, events)?, target: saved, prune })
+    Ok(Started { host: start_host(&command, &events)?, target: saved, prune })
+}
+
+/// Start a Windows or WSL Host; one that stops before it is ready is explained with the last lines it (or wsl.exe)
+/// wrote, as an SSH Host is with what ssh said.
+fn start_host(command: &HostCommand, events: &Arc<CarrierEvents>) -> Result<HostProcess> {
+    events.clear_recent();
+    HostProcess::start(command, events.clone()).map_err(|error| {
+        if error.downcast_ref::<HostStopped>().is_none() {
+            return error;
+        }
+        let recent = events.recent();
+        let said: Vec<&str> = recent.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        match said.len() {
+            0 => error,
+            count => anyhow!("{error}\n{}", said[count.saturating_sub(5)..].join("\n")),
+        }
+    })
 }
 
 /// Install this version's runtime on the server and start the Host there over SSH (`prepareSsh`, `startSshHost`), with
@@ -624,7 +641,7 @@ fn ssh_host(
                 if said.contains("Permission denied") {
                     session.failed();
                 }
-                return Err(if format!("{error:#}").contains("The execution Host stopped") { ssh::failure(&destination, None, &said) } else { error });
+                return Err(if error.downcast_ref::<HostStopped>().is_some() { ssh::failure(&destination, None, &said) } else { error });
             }
         }
     }
