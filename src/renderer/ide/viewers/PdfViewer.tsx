@@ -6,6 +6,7 @@ import { useViewerT } from './messages.ts'
 import { describePdfError, PdfJsUnavailableError } from './pdf-errors.ts'
 import { anchoredScroll, canvasPixelRatio, captureAnchor, pageIndexAt, type Anchor, type Box } from './pdf-layout.ts'
 import { fixRadicals, joinTextItems, selectedText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
+import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
 
@@ -358,18 +359,23 @@ function PdfPassword({ incorrect, onSubmit }: { incorrect: boolean; onSubmit: (p
  * @param props.url Byte route URL of the PDF.
  * @param props.data The PDF itself, for a copy made from another format; it takes the place of `url`.
  * @param props.bytes File size shown in the status bar.
- * @param props.tools Extra toolbar items, after the text button.
+ * @param props.modes Toolbar items before the zoom controls, such as a choice between previews.
+ * @param props.actions Secondary actions after 提取文本, folded with it into 更多 on a narrow page.
+ * @param props.tools Extra toolbar items at the end.
  * @param props.note Status bar text before the size.
  * @returns The viewer.
  */
-export function PdfViewer({ url, data, bytes, tools, note }: {
+export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
   url?: string | undefined
   data?: Uint8Array | undefined
   bytes: number
+  modes?: ReactNode
+  actions?: readonly ToolAction[] | undefined
   tools?: ReactNode
   note?: string | undefined
 }): JSX.Element {
   const t = useViewerT()
+  const narrow = useNarrow()
   const stage = useRef<HTMLDivElement>(null)
   const frames = useRef<HTMLDivElement>(null)
   const [opened, setOpened] = useState<{ library: PdfJs; document: PdfDocument } | undefined>()
@@ -557,17 +563,25 @@ export function PdfViewer({ url, data, bytes, tools, note }: {
   }
 
   const problem = failure === undefined ? undefined : describePdfError(failure.error)
+  const pageText = t('pdfPage', { page, pages: count })
   return (
     <div className={css.viewer} data-viewer="pdf">
       <div className={css.toolbar}>
+        {modes !== undefined && <>{modes}<span className={css.separator} /></>}
         <button type="button" className={css.toolButton} aria-label={t('zoomOut')} title={t('zoomOut')} onClick={() => { step(-1) }}>−</button>
-        <span>{t('zoomLevel', { percent: Math.round(factor * 100) })}</span>
+        <span className={css.pdfZoomLevel}>{t('zoomLevel', { percent: Math.round(factor * 100) })}</span>
         <button type="button" className={css.toolButton} aria-label={t('zoomIn')} title={t('zoomIn')} onClick={() => { step(1) }}>+</button>
-        <button type="button" className={css.toolButton} aria-pressed={zoom === 'auto'} onClick={() => { zoomTo('auto') }}>{t('zoomAuto')}</button>
-        <span className={css.separator} />
-        {opened !== undefined && <span>{t('pdfPage', { page, pages: count })}</span>}
+        {!narrow && <button type="button" className={css.toolButton} aria-pressed={zoom === 'auto'} onClick={() => { zoomTo('auto') }}>{t('zoomAuto')}</button>}
+        {opened !== undefined && <>
+          {!narrow && <span className={css.separator} />}
+          <span title={pageText}>{narrow ? t('pdfPageShort', { page, pages: count }) : pageText}</span>
+        </>}
         <span className={css.grow} />
-        <button type="button" className={css.toolButton} title={t('pdfTextTitle')} disabled={opened === undefined || extracting} onClick={() => { void extract() }}>{t('pdfText')}</button>
+        <ToolActions actions={[
+          narrow && { id: 'pdf-zoom-auto', label: t('zoomAuto'), disabled: zoom === 'auto', onSelect: () => { zoomTo('auto') } },
+          { id: 'pdf-text', label: t('pdfText'), title: t('pdfTextTitle'), disabled: opened === undefined || extracting, onSelect: () => { void extract() } },
+          ...actions ?? [],
+        ]} />
         {tools}
       </div>
       <div ref={stage} className={css.stage} onScroll={onScroll}>

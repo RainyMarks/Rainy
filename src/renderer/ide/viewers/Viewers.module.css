@@ -118,12 +118,13 @@
 .outlineSlide p { margin: 0 0 4px; user-select: text; }
 
 /* PDF viewer (PdfViewer.tsx). The column of pages is as wide as its widest page, so a zoomed page scrolls to both of its
-   edges instead of losing its left side; each page is its own stacking context for its layers. The text layer (text
-   transparent over the canvas, for selecting and copying) and the link layer follow pdf.js 2.16's pdf_viewer.css, which
-   is not bundled; a selection is the accent, translucent, on the white paper of either theme. Below, the detail under an
-   error and the password prompt. */
+   edges instead of losing its left side; each page is its own stacking context for its layers, and the zoom percentage
+   keeps its width as it changes. The text layer (text transparent over the canvas, for selecting and copying) and the
+   link layer follow pdf.js 2.16's pdf_viewer.css, which is not bundled; a selection is the accent, translucent, on the
+   white paper of either theme. Below, the detail under an error and the password prompt. */
 .pdfPages { width: max-content; min-width: 100%; }
 .pdfPage { isolation: isolate; }
+.pdfZoomLevel { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
 .textLayer { position: absolute; left: 0; top: 0; z-index: 1; overflow: hidden; line-height: 1; text-align: initial; text-size-adjust: none; forced-color-adjust: none; }
 .textLayer span, .textLayer br { position: absolute; color: transparent; white-space: pre; cursor: text; transform-origin: 0 0; }
 .textLayer ::selection { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 35%, transparent); color: transparent; }
