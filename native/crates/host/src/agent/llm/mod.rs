@@ -28,7 +28,7 @@ use crate::settings::ModelSetup;
 
 /// No stream event for this long fails the request.
 pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// Upper bound for one model request.
+/// Upper bound for one model request to answer with its headers.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 /// Retries of a request that failed before its reply started.
 const MAX_RETRIES: u32 = 2;
@@ -601,28 +601,41 @@ impl Llm {
     }
 
     async fn attempt(&self, client: &reqwest::Client, http: &HttpRequest) -> Result<reqwest::Response, Failure> {
-        let mut builder = client.post(&http.url).timeout(REQUEST_TIMEOUT).header("user-agent", &self.user_agent).header("content-type", "application/json");
+        let mut builder = client.post(&http.url).header("user-agent", &self.user_agent).header("content-type", "application/json");
         for (name, value) in &http.headers {
             builder = builder.header(name, value);
         }
-        let response = builder.body(http.body.to_string()).send().await.map_err(|error| Failure { message: transport_error(&error), retry: true, delay: None })?;
+        // The timeout ends with the response's headers, as the SDKs' does; a long stream after them is bounded by the
+        // idle timeout between its events only.
+        let response = match tokio::time::timeout(REQUEST_TIMEOUT, builder.body(http.body.to_string()).send()).await {
+            Ok(sent) => sent.map_err(|error| Failure { message: transport_error(&error), retry: true, delay: None })?,
+            Err(_) => return Err(Failure { message: "Request timed out".into(), retry: true, delay: None }),
+        };
         let status = response.status();
         if status.is_success() {
             return Ok(response);
         }
         let headers = response.headers().clone();
         let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_owned);
-        let delay = header("retry-after-ms").and_then(|value| value.parse::<f64>().ok()).map(|ms| Duration::from_secs_f64(ms.max(0.0) / 1000.0)).or_else(|| {
-            header("retry-after").and_then(|value| value.parse::<f64>().ok()).map(|seconds| Duration::from_secs_f64(seconds.max(0.0)))
-        });
+        let delay = retry_delay(header("retry-after-ms").as_deref(), header("retry-after").as_deref());
         let retry = match header("x-should-retry").as_deref() {
             Some("true") => true,
             Some("false") => false,
             _ => matches!(status.as_u16(), 408 | 409 | 429) || status.is_server_error(),
         };
-        let text = response.text().await.unwrap_or_default();
+        let text = tokio::time::timeout(STREAM_IDLE_TIMEOUT, response.text()).await.ok().and_then(Result::ok).unwrap_or_default();
         Err(Failure { message: http_error(status.as_u16(), &text), retry, delay })
     }
+}
+
+/// The wait a failed response asks for in `retry-after-ms` or `retry-after` (seconds). A value that is no number of
+/// seconds a `Duration` holds, such as `NaN`, `inf` or `1e30`, is ignored like one that does not parse.
+fn retry_delay(milliseconds: Option<&str>, seconds: Option<&str>) -> Option<Duration> {
+    let parse = |value: Option<&str>, scale: f64| {
+        let value = value?.trim().parse::<f64>().ok().filter(|value| value.is_finite())?;
+        Duration::try_from_secs_f64(value.max(0.0) / scale).ok()
+    };
+    parse(milliseconds, 1000.0).or_else(|| parse(seconds, 1.0))
 }
 
 fn jitter() -> f64 {
@@ -796,6 +809,17 @@ mod tests {
         assert_eq!(http_error(429, r#"{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}"#), "429 Rate limit reached (rate_limit_error)");
         assert_eq!(http_error(400, ""), "400 status code (no body)");
         assert_eq!(http_error(502, "<html>bad gateway</html>"), "502 <html>bad gateway</html>");
+    }
+
+    #[test]
+    fn ignores_retry_delays_no_duration_holds() {
+        assert_eq!(retry_delay(Some("1500"), Some("9")), Some(Duration::from_millis(1500)));
+        assert_eq!(retry_delay(None, Some(" 2 ")), Some(Duration::from_secs(2)));
+        assert_eq!(retry_delay(Some("-5"), None), Some(Duration::ZERO));
+        for value in ["inf", "-inf", "NaN", "1e30", "soon"] {
+            assert_eq!(retry_delay(Some(value), Some(value)), None, "{value}");
+        }
+        assert_eq!(retry_delay(Some("inf"), Some("3")), Some(Duration::from_secs(3)));
     }
 
     #[test]
