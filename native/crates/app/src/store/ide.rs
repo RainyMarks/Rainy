@@ -1153,8 +1153,65 @@ impl Ide {
 
     /// Read a file again from disk, dropping unsaved edits.
     pub fn reload(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.files.remove(key);
-        self.open(key.to_owned(), false, window, cx);
+        self.read_again(key, true, window, cx);
+    }
+
+    /// Read an open file again; the new text comes in a new editor. The tab keeps its editor until then, so it goes on
+    /// showing the file and edits made meanwhile (typed, or sent by a rich Markdown page) still land in a buffer. Unless
+    /// `discard`, such an edit wins: the file is then in conflict with the disk instead of replaced.
+    fn read_again(&mut self, key: &str, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.files.contains_key(key) {
+            return;
+        }
+        self.read_count += 1;
+        let read = self.read_count;
+        self.reads.insert(key.to_owned(), read);
+        let mut params = self.location(key);
+        params.insert("op".into(), json!("files.read"));
+        let request = self.request::<IdeFileDocument>(Value::Object(params), cx);
+        let key = key.to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                // As in `open_task`: a newer read, or a project switch, makes this one stale.
+                if this.reads.get(&key) != Some(&read) {
+                    return;
+                }
+                this.reads.remove(&key);
+                // A tab closed meanwhile stays closed.
+                let Some(file) = this.files.get_mut(&key) else { return };
+                if !discard {
+                    if file.dirty {
+                        if let Ok(document) = &result
+                            && document.version != file.document.version
+                        {
+                            file.conflict = true;
+                            file.disk_version = Some(document.version.clone());
+                        }
+                        cx.notify();
+                        return;
+                    }
+                    // Changed and changed back: the editor, its cursor and its undo history stay.
+                    if result.as_ref().is_ok_and(|document| document.version == file.document.version) {
+                        return;
+                    }
+                }
+                this.files.remove(&key);
+                match result {
+                    Ok(document) => this.accept_document(key, document, window, cx),
+                    Err(error) => {
+                        this.tabs.retain(|tab| *tab != key);
+                        if this.active.as_deref() == Some(key.as_str()) {
+                            this.active = this.tabs.last().cloned();
+                            cx.emit(IdeEvent::ActiveChanged);
+                        }
+                        this.error = Some(ide_error(error));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// Choose how a tab shows its file; `None` is the default for the file type.
@@ -1515,10 +1572,10 @@ impl Ide {
                     cx.notify();
                     changed
                 });
-                // An unedited buffer follows the file on disk.
+                // An unedited buffer follows the file on disk, unless it is edited before the new text arrives.
                 let (Ok(changed), Some(window), Some(ide)) = (changed, window, this.upgrade()) else { return };
                 for key in changed {
-                    let _ = window.update(cx, |_, window, cx| ide.update(cx, |ide, cx| ide.reload(&key, window, cx)));
+                    let _ = window.update(cx, |_, window, cx| ide.update(cx, |ide, cx| ide.read_again(&key, false, window, cx)));
                 }
             })
             .detach();
