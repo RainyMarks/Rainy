@@ -20,6 +20,8 @@ use crate::store::ide::Ide;
 
 /// How long after the workbench is ready the automatic check runs.
 const CHECK_DELAY: Duration = Duration::from_secs(10);
+/// How often a window left open checks again.
+const RECHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// How long saving the drafts may take before the user is asked (3.x `rainy:flush-workbench`).
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(65);
 /// How long a component operation may take to stop at its next chunk.
@@ -134,7 +136,8 @@ enum Installed {
 }
 
 impl Store {
-    /// Once, when the workbench is first ready: the automatic check a few seconds later.
+    /// Once, when the workbench is first ready: the automatic check a few seconds later, then every few hours for a
+    /// window left open. A check while another runs or after an update was prepared does nothing.
     pub(super) fn schedule_update_check(&mut self, cx: &mut Context<Self>) {
         if !self.updates.available || self.updates.scheduled {
             return;
@@ -142,7 +145,9 @@ impl Store {
         self.updates.scheduled = true;
         let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             cx.background_executor().timer(CHECK_DELAY).await;
-            let _ = this.update(cx, |store, cx| store.check_updates(false, cx));
+            while this.update(cx, |store, cx| store.check_updates(false, cx)).is_ok() {
+                cx.background_executor().timer(RECHECK_INTERVAL).await;
+            }
         });
         self._tasks.push(task);
     }
