@@ -10,8 +10,29 @@ export const GAP_X = 36
 const GAP_Y = 76
 /** Boxes per row before a layer wraps, when the caller gives no width. */
 const ROW_LIMIT = 6
+/** Most boxes per row however wide the pane is. */
+const MAX_COLUMNS = 8
 /** Space between the layered graph and the row of parts without imports. */
 const ISOLATED_GAP = 56
+/** Room kept around a fitted drawing, in pane pixels, and below it for the zoom buttons. */
+const FIT_MARGIN = 40
+const FIT_BOTTOM = 24
+/** Smallest zoom, and the largest a fitted drawing grows to. */
+export const MIN_SCALE = 0.2
+const MAX_FIT_SCALE = 1.15
+
+/** A width and a height. */
+export interface Size {
+  readonly width: number
+  readonly height: number
+}
+
+/** Pan and zoom of the drawing: pane position of its origin and its scale. */
+export interface ViewTransform {
+  readonly x: number
+  readonly y: number
+  readonly k: number
+}
 
 /** A placed box. */
 export interface PlacedNode {
@@ -156,4 +177,41 @@ export function layoutGraph(ids: readonly string[], edges: readonly { readonly f
     return { from: edge.from, to: edge.to, weight: edge.weight, path, upward }
   })
   return { nodes, edges: placed, width, height, ...(isolatedTop === undefined || isolatedStart === 0 ? {} : { isolatedTop }) }
+}
+
+/** The scale at which the drawing just fits the pane, before the zoom limits. */
+function fitScale(pane: Size, drawing: Size): number {
+  return Math.min((pane.width - 2 * FIT_MARGIN) / drawing.width, (pane.height - 2 * FIT_MARGIN) / (drawing.height + FIT_BOTTOM))
+}
+
+/**
+ * Lay out boxes and imports for a pane, with as many boxes per row (one to eight) as let the whole drawing fit at the
+ * largest scale: a narrow pane gets one or two columns instead of a wide drawing shrunk until its text is unreadable,
+ * a wide and short pane gets long rows.
+ * @param ids Box ids in their preferred order.
+ * @param edges Imports between boxes.
+ * @param pane Size of the pane the drawing is fitted to; a pane not measured yet gets the default rows.
+ * @returns Positions and edge paths.
+ */
+export function layoutForPane(ids: readonly string[], edges: readonly { readonly from: string; readonly to: string; readonly weight: number }[], pane: Size): GraphLayout {
+  if (pane.width <= 0 || pane.height <= 0) return layoutGraph(ids, edges)
+  let best = layoutGraph(ids, edges, 1)
+  let bestScale = fitScale(pane, best)
+  for (let columns = 2; columns <= Math.min(MAX_COLUMNS, ids.length); columns++) {
+    const layout = layoutGraph(ids, edges, columns)
+    const scale = fitScale(pane, layout)
+    if (scale > bestScale) { best = layout; bestScale = scale }
+  }
+  return best
+}
+
+/**
+ * Fit the whole drawing into the pane, centred, never smaller than the smallest zoom nor much larger than full size.
+ * @param pane Pane size.
+ * @param drawing Drawing size, in SVG units.
+ * @returns The transform that shows it.
+ */
+export function fitTransform(pane: Size, drawing: Size): ViewTransform {
+  const k = Math.max(MIN_SCALE, Math.min(MAX_FIT_SCALE, fitScale(pane, drawing)))
+  return { k, x: (pane.width - drawing.width * k) / 2, y: Math.max(FIT_MARGIN, (pane.height - drawing.height * k) / 2) }
 }

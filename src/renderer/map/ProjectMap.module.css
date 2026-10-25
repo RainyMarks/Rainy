@@ -112,35 +112,65 @@
   min-height: 0;
 }
 
+/* The path takes what the row leaves and scrolls sideways inside it; 返回 and the toggle keep their size, and the
+   toggle wraps to a second line before the path gets narrower than a few names. */
 .crumbs {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
+  gap: 2px 12px;
   min-height: 36px;
-  padding: 0 12px;
+  padding: 2px 12px;
   border-bottom: 1px solid var(--rainy-alias-border-l1);
-  white-space: nowrap;
+  box-sizing: border-box;
 }
 
+.path {
+  display: flex;
+  flex: 1 1 180px;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.trail {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.separator { flex: none; padding: 0 1px; color: var(--rainy-alias-label-tertiary); font-size: 12px; }
+
 .crumb {
+  flex: none;
+  max-width: 16em;
   padding: 2px 6px;
+  overflow: hidden;
   border: none;
   border-radius: var(--rainy-radius-sm);
   background: transparent;
   color: var(--rainy-alias-link);
   font: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 .crumb:hover:not(:disabled) { background: var(--rainy-alias-interactive-bg-hover); }
 .crumb:disabled { color: var(--rainy-alias-label-primary); font-weight: 600; cursor: default; }
+.up { flex: none; margin-left: 4px; }
 
 .toggle {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
+  margin-left: auto;
   color: var(--rainy-alias-label-secondary);
   font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -362,4 +392,15 @@
 
 @media (max-width: 1100px) {
   .body { grid-template-columns: minmax(0, 1fr) 240px; }
+}
+
+/* A narrow pane has no room beside the map: the side panel goes under it at a limited height, and the stack and the
+   summary are capped so the header cannot squeeze the map away. */
+@media (max-width: 719px) {
+  .header { padding: 10px 12px 8px; }
+  .stack { max-height: 50px; overflow-y: auto; }
+  .summary { max-height: calc(3 * 1.6em); overflow-y: auto; }
+  .body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .side { max-height: min(34vh, 280px); border-top: 1px solid var(--rainy-alias-border-l1); border-left: none; }
+  .legend { gap: 2px 10px; padding: 4px 12px 6px; }
 }
