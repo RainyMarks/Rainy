@@ -427,9 +427,14 @@ pub fn context_overflow(message: &AssistantMessage, context_window: u64) -> bool
     (message.stop_reason == "stop" && input > context_window as f64) || (message.stop_reason == "length" && message.usage.output == 0.0 && input >= context_window as f64 * 0.99)
 }
 
+/// Tokens of the window always left free when an output cap is fitted to it (pi-ai `CONTEXT_SAFETY_TOKENS`).
+const CONTEXT_SAFETY_TOKENS: u64 = 4096;
+
 /// Rough tokens of a conversation (pi-ai `estimateContextTokens`): what the provider counted for the last reply, plus
-/// four characters a token for what came after it.
-pub fn context_tokens(messages: &[Message]) -> u64 {
+/// four characters a token for what came after it. A reply older than a message before it, such as the summary of a
+/// compaction, was counted for a longer conversation and is passed over (pi-ai `getLastAssistantUsageInfo`). Also
+/// whether a provider's count was used.
+pub fn context_tokens(messages: &[Message]) -> (u64, bool) {
     let chars = |message: &Message| -> usize {
         match message {
             Message::User { content: UserContent::Text(text), .. } => text.chars().count(),
@@ -446,23 +451,49 @@ pub fn context_tokens(messages: &[Message]) -> u64 {
                 .sum(),
         }
     };
-    let counted = messages.iter().enumerate().rev().find_map(|(index, message)| match message {
-        Message::Assistant(reply) if reply.stop_reason != "error" && reply.stop_reason != "aborted" => {
+    let mut counted = None;
+    let mut newest = f64::NEG_INFINITY;
+    for (index, message) in messages.iter().enumerate() {
+        if let Message::Assistant(reply) = message
+            && reply.timestamp >= newest
+            && reply.stop_reason != "error"
+            && reply.stop_reason != "aborted"
+        {
             let total = reply.usage.input + reply.usage.output + reply.usage.cache_read + reply.usage.cache_write;
-            (total > 0.0).then_some((index, total as u64))
+            if total > 0.0 {
+                counted = Some((index, total as u64));
+            }
         }
-        _ => None,
-    });
+        newest = newest.max(message.timestamp());
+    }
     let (from, base) = counted.map_or((0, 0), |(index, total)| (index + 1, total));
-    base + messages[from..].iter().map(|message| chars(message).div_ceil(4) as u64).sum::<u64>()
+    (base + messages[from..].iter().map(|message| chars(message).div_ceil(4) as u64).sum::<u64>(), counted.is_some())
+}
+
+/// What a request's prompt takes of the window: the conversation, and the system prompt unless a provider's count
+/// already holds it.
+fn prompt_tokens(request: &Request<'_>) -> u64 {
+    match context_tokens(request.messages) {
+        (tokens, true) => tokens,
+        (tokens, false) => tokens + (request.system.chars().count() as u64).div_ceil(4),
+    }
+}
+
+/// An output cap within what the window leaves after the prompt and a safety margin (pi-ai `clampMaxTokensToContext`);
+/// a model without a known window is not limited.
+pub fn clamp_to_context(model: &Model, request: &Request<'_>, tokens: u64) -> u64 {
+    if model.context_window == 0 {
+        return tokens.max(1);
+    }
+    tokens.min(model.context_window.saturating_sub(prompt_tokens(request) + CONTEXT_SAFETY_TOKENS).max(1))
 }
 
 /// The output cap of a request: the asked cap within the model's budget, and within what the window leaves.
 pub fn max_tokens(model: &Model, request: &Request<'_>) -> u64 {
-    let used = context_tokens(request.messages) + (request.system.chars().count() as u64).div_ceil(4);
     match request.max_tokens {
-        None => model.max_tokens.min(model.context_window.saturating_sub(used + 4096).max(1)),
-        Some(cap) => cap.min(model.max_tokens).min(model.context_window.saturating_sub(used).max(1)),
+        None => clamp_to_context(model, request, model.max_tokens),
+        Some(cap) if model.context_window == 0 => cap.min(model.max_tokens),
+        Some(cap) => cap.min(model.max_tokens).min(model.context_window.saturating_sub(prompt_tokens(request)).max(1)),
     }
 }
 
@@ -765,6 +796,49 @@ mod tests {
         assert_eq!(http_error(429, r#"{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}"#), "429 Rate limit reached (rate_limit_error)");
         assert_eq!(http_error(400, ""), "400 status code (no body)");
         assert_eq!(http_error(502, "<html>bad gateway</html>"), "502 <html>bad gateway</html>");
+    }
+
+    #[test]
+    fn fits_the_output_cap_after_a_compaction() {
+        let model = Model {
+            api: Api::Completions,
+            id: "m".into(),
+            provider: "p".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            reasoning: false,
+            images: false,
+            context_window: 32_000,
+            max_tokens: 8000,
+            levels: LevelMap::default(),
+            cost: Cost::default(),
+            claude: None,
+            max_tokens_field: None,
+            thinking_format: None,
+        };
+        let reply = |timestamp: f64, input: u64| {
+            let mut reply = empty_reply(&model);
+            reply.stop_reason = "stop".into();
+            reply.timestamp = timestamp;
+            reply.usage = usage(input, 0, 0, 0, None);
+            reply.content = vec![AssistantBlock::Text { text: "ok".into(), text_signature: None, rest: Map::new() }];
+            Message::Assistant(reply)
+        };
+        let user = |timestamp: f64, text: &str| Message::User { content: UserContent::Text(text.into()), timestamp };
+        let system = "s".repeat(4000);
+        // The provider's count already holds the system prompt.
+        let before = [user(1.0, "hi"), reply(2.0, 20_000), user(3.0, "next")];
+        assert_eq!(context_tokens(&before), (20_001, true));
+        assert_eq!(max_tokens(&model, &Request::new(&system, &before, &[])), 32_000 - 20_001 - 4096);
+        // A compaction summary, newer than the kept reply after it, makes that reply's count stale.
+        let after = [user(10.0, "summary"), reply(2.0, 31_000), user(11.0, "next")];
+        assert_eq!(context_tokens(&after), (2 + 1 + 1, false));
+        assert_eq!(max_tokens(&model, &Request::new(&system, &after, &[])), 8000);
+        // A reply after the summary counts again.
+        let later = [user(10.0, "summary"), reply(12.0, 5000), user(13.0, "next")];
+        assert_eq!(context_tokens(&later), (5001, true));
+        // A model without a known window is not limited.
+        let unknown = Model { context_window: 0, ..model.clone() };
+        assert_eq!(max_tokens(&unknown, &Request::new(&system, &after, &[])), 8000);
     }
 
     #[test]

@@ -252,8 +252,7 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
                 if ceiling <= budget {
                     budget = budget.min(ceiling.saturating_sub(MIN_ANSWER_TOKENS));
                 }
-                let used = super::context_tokens(request.messages) + (request.system.chars().count() as u64).div_ceil(4);
-                max_tokens = ceiling.min(model.context_window.saturating_sub(used + 4096).max(1));
+                max_tokens = super::clamp_to_context(model, request, ceiling);
                 body.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": budget.min(max_tokens.saturating_sub(1024)), "display": "summarized" }));
                 betas.push(INTERLEAVED_THINKING);
             }
