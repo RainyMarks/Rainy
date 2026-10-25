@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::credentials::{CredentialFiles, Keys, Seal};
 use crate::error::{HostError, HostResult};
 use crate::locale::l;
-use crate::store::{read_json, write_json};
+use crate::store::write_json;
 
 /// Longest global prompt, in characters.
 pub const GLOBAL_PROMPT_MAX_CHARS: usize = 4000;
@@ -287,6 +287,36 @@ fn parse_file(raw: Value) -> io::Result<SettingsData> {
     Ok(data)
 }
 
+/// What can be kept of a `settings.json` that [`parse_file`] refuses (edited by hand, or written by another version):
+/// every part that is valid on its own, so one bad model or server does not take the others, or the Host, down.
+fn salvage(raw: Option<Value>) -> SettingsData {
+    let Some(Value::Object(raw)) = raw else { return SettingsData::default() };
+    let field = |name: &str| raw.get(name).cloned().unwrap_or(Value::Null);
+    let each = |name: &str| match field(name) {
+        Value::Array(items) => items,
+        _ => Vec::new(),
+    };
+    let mut data = SettingsData {
+        models: each("models").into_iter().filter_map(|item| serde_json::from_value(item).ok()).filter(|model| check_model(model).is_ok()).collect(),
+        selected: serde_json::from_value(field("selected")).unwrap_or_default(),
+        global_prompt: serde_json::from_value::<String>(field("globalPrompt"))
+            .ok()
+            .filter(|prompt| prompt.chars().count() <= GLOBAL_PROMPT_MAX_CHARS)
+            .unwrap_or_default(),
+        mcp_servers: each("mcpServers").into_iter().filter_map(|item| serde_json::from_value(item).ok()).filter(|server| check_server(server).is_ok()).collect(),
+        ui: serde_json::from_value(field("ui")).unwrap_or_default(),
+        workbench: serde_json::from_value(field("workbench")).unwrap_or_default(),
+        security: serde_json::from_value(field("security")).unwrap_or_default(),
+        proxy: serde_json::from_value(field("proxy")).unwrap_or_default(),
+        ..SettingsData::default()
+    };
+    data.ui.retain(|key, value| valid_pref(key, value));
+    if check_data(&data).is_err() {
+        data.security = None;
+    }
+    if check_data(&data).is_err() { SettingsData::default() } else { data }
+}
+
 /// Credential name of a provider: the DeepSeek preset uses `DEEPSEEK_API_KEY`, both Claude presets share
 /// `ANTHROPIC_API_KEY`, every other provider has its own name. An environment variable of that name overrides it.
 pub fn credential_name(provider: &str) -> String {
@@ -323,8 +353,27 @@ impl Settings {
         let file = home.join("settings.json");
         let mut credentials = CredentialFiles::new(home, seal);
         let keys = credentials.read()?;
-        let data = match read_json::<Value>(&file)? {
-            Some(raw) => parse_file(raw)?,
+        let bytes = match std::fs::read(&file) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let data = match bytes {
+            Some(bytes) => {
+                let raw = serde_json::from_slice::<Value>(&bytes);
+                match raw.as_ref().map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("settings.json: {error}"))).and_then(|raw| parse_file(raw.clone())) {
+                    Ok(data) => data,
+                    Err(error) => {
+                        // The file as it was stays beside the one written now, for the user to look at.
+                        let kept = home.join(format!("settings.json.damaged-{}", crate::text::now_ms()));
+                        std::fs::write(&kept, &bytes)?;
+                        let data = salvage(raw.ok());
+                        log::warn!("{error}; kept what is valid and the file as it was in {}", kept.display());
+                        write_json(&file, &data)?;
+                        data
+                    }
+                }
+            }
             None => {
                 let data = SettingsData::default();
                 write_json(&file, &data)?;
@@ -503,6 +552,30 @@ mod tests {
         assert_eq!(saved["ui"], json!({"locale": "en", "uiFontSize": 15, "theme": "dark"}));
         assert_eq!(saved["models"][0]["baseURL"], "https://api.deepseek.com");
         assert!(settings.set_prefs(Map::from_iter([("uiFontSize".to_owned(), json!(30))])).is_err());
+    }
+
+    #[test]
+    fn keeps_what_is_valid_of_a_damaged_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = r#"{"provider":"rainy-deepseek","baseURL":"https://api.deepseek.com","model":"deepseek-v4","contextWindow":1000000,"local":false}"#;
+        let text = format!(
+            r#"{{"version":1,"models":[{good},{{"provider":"bad","baseURL":"nope","model":"","contextWindow":1,"local":false}}],"selected":{{"provider":"rainy-deepseek","model":"deepseek-v4"}},"globalPrompt":"始终用中文","mcpServers":[{{"name":"no command","enabled":true,"transport":"stdio","tools":[]}}],"ui":{{"locale":"en"}}}}"#
+        );
+        std::fs::write(dir.path().join("settings.json"), &text).unwrap();
+        let settings = Settings::load(dir.path(), None).unwrap();
+        let data = settings.get();
+        assert_eq!(data.models.len(), 1);
+        assert_eq!(data.global_prompt, "始终用中文");
+        assert!(data.mcp_servers.is_empty());
+        assert_eq!(settings.prefs()["locale"], "en");
+        let kept: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|entry| entry.ok()).filter(|entry| entry.file_name().to_string_lossy().starts_with("settings.json.damaged-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(kept[0].path()).unwrap(), text);
+
+        // Not JSON at all: defaults, and the text kept.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), "{ \"models\": [ ,").unwrap();
+        assert_eq!(Settings::load(dir.path(), None).unwrap().get(), SettingsData::default());
     }
 
     #[test]
