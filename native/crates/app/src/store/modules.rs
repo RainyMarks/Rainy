@@ -82,7 +82,17 @@ impl Store {
     /// Delete an installed module.
     pub fn remove_module(&mut self, id: &'static str, cx: &mut Context<Self>) {
         let manager = self.modules.manager.clone();
-        self.run_module(id, cx, move || manager.remove(id));
+        // The engine Rainy started runs from the module's folder, which cannot be removed while it does (3.x stopped
+        // it first too).
+        let strata = if id == "strata" { self.strata.manager.clone() } else { None };
+        self.run_module(id, cx, move || {
+            if let Some(strata) = strata
+                && let Err(error) = strata.stop()
+            {
+                log::warn!("Strata was not stopped before its removal: {error:#}");
+            }
+            manager.remove(id)
+        });
     }
 
     /// Stop the running download; what was downloaded is kept for the next attempt.
@@ -108,6 +118,9 @@ impl Store {
                     store.modules.state = State { phase: Phase::Error, module: Some(id.to_owned()), error: Some(error), ..State::default() };
                 }
                 store.refresh_modules(cx);
+                if id == "strata" {
+                    store.refresh_strata(false, cx);
+                }
                 cx.notify();
             });
         })
