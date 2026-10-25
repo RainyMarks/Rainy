@@ -126,6 +126,70 @@ pub struct ChatStore {
     index_lock: Mutex<()>,
 }
 
+/// An entry as stored. 3.x wrote what pi-ai held, which a provider could leave in shapes entries do not take: a
+/// tool call's arguments as `null` or another JSON value, and counts the provider did not send as `null` (NaN in
+/// JavaScript). Such an entry is brought into shape rather than skipped, so no history is lost; `None` when it is
+/// still no entry.
+fn parse_entry(entry: &Value) -> Option<TranscriptEntry> {
+    if let Ok(parsed) = serde_json::from_value(entry.clone()) {
+        return Some(parsed);
+    }
+    let mut entry = entry.clone();
+    repair_entry(&mut entry);
+    serde_json::from_value(entry).ok()
+}
+
+fn repair_entry(entry: &mut Value) {
+    /// Fields that must be numbers or strings: `null` (or another JSON value) becomes the field's empty value.
+    fn fill(object: Option<&mut Value>, numbers: &[&str], strings: &[&str]) {
+        let Some(Value::Object(object)) = object else { return };
+        for key in numbers {
+            if object.get(*key).is_some_and(|value| !value.is_number()) {
+                object.insert((*key).into(), json!(0));
+            }
+        }
+        for key in strings {
+            if object.get(*key).is_some_and(|value| !value.is_string()) {
+                object.insert((*key).into(), json!(""));
+            }
+        }
+    }
+    fill(Some(entry), &["ts", "tokensBefore", "requests"], &[]);
+    if entry["kind"] == "turn" {
+        fill(Some(entry), &["durationMs"], &["provider", "model"]);
+    }
+    fill(entry.pointer_mut("/usage"), &["input", "output", "cacheRead", "cacheWrite"], &[]);
+    fill(entry.pointer_mut("/message"), &["timestamp"], &["api", "provider", "model", "stopReason"]);
+    fill(entry.pointer_mut("/message/usage"), &["input", "output", "cacheRead", "cacheWrite"], &[]);
+    for block in entry.pointer_mut("/message/content").and_then(Value::as_array_mut).into_iter().flatten() {
+        match block["type"].as_str() {
+            Some("text") => fill(Some(block), &[], &["text"]),
+            Some("thinking") => fill(Some(block), &[], &["thinking"]),
+            Some("toolCall") => {
+                fill(Some(block), &[], &["id", "name"]);
+                // Arguments sent as a JSON text are read; anything else that is no object becomes no arguments.
+                let arguments = match &block["arguments"] {
+                    Value::Object(_) => None,
+                    Value::String(text) => Some(serde_json::from_str::<Value>(text).ok().filter(Value::is_object).unwrap_or_else(|| json!({}))),
+                    _ => Some(json!({})),
+                };
+                if let (Some(arguments), Some(block)) = (arguments, block.as_object_mut()) {
+                    block.insert("arguments".into(), arguments);
+                }
+            }
+            _ => {}
+        }
+    }
+    for part in entry.pointer_mut("/content").and_then(Value::as_array_mut).into_iter().flatten() {
+        if part["type"] == "text" {
+            fill(Some(part), &[], &["text"]);
+        }
+    }
+    if entry["kind"] == "toolResult" && !entry["isError"].is_boolean() {
+        entry["isError"] = json!(false);
+    }
+}
+
 fn modified_ms(path: &Path) -> f64 {
     std::fs::metadata(path).and_then(|info| info.modified()).ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |elapsed| elapsed.as_millis() as f64)
 }
@@ -284,9 +348,9 @@ impl ChatStore {
                     };
                     patch.apply(&mut chat);
                 }
-                Some("entry") if !header_only => match serde_json::from_value::<TranscriptEntry>(record["entry"].clone()) {
-                    Ok(entry) => entries.push(entry),
-                    Err(_) => damaged += 1,
+                Some("entry") if !header_only => match parse_entry(&record["entry"]) {
+                    Some(entry) => entries.push(entry),
+                    None => damaged += 1,
                 },
                 Some("review") if !header_only => kept.extend(record["kept"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned)),
                 _ => {}
@@ -465,5 +529,31 @@ mod tests {
         fresh.delete(&chat.id).await.unwrap();
         assert!(fresh.get(&chat.id).is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_entries_pi_ai_left_in_odd_shapes() {
+        let reply = json!({
+            "kind": "assistant", "id": "a1", "ts": 1,
+            "message": {
+                "role": "assistant", "api": "openai-completions", "provider": "p", "model": "m", "stopReason": "toolUse", "timestamp": 1,
+                "usage": { "input": null, "output": 5, "cacheRead": null, "cacheWrite": 0, "totalTokens": null },
+                "content": [
+                    { "type": "text", "text": "x" },
+                    { "type": "toolCall", "id": "c1", "name": "read", "arguments": null },
+                    { "type": "toolCall", "id": "c2", "name": "read", "arguments": "{\"path\":\"a\"}" },
+                    { "type": "toolCall", "id": "c3", "name": "read", "arguments": [1] },
+                ],
+            },
+        });
+        let Some(TranscriptEntry::Assistant { message, .. }) = parse_entry(&reply) else { panic!("the reply was dropped") };
+        assert_eq!((message.usage.input, message.usage.output), (0.0, 5.0));
+        let arguments: Vec<Value> = message.content.iter().filter_map(|block| if let rainy_protocol::chat::AssistantBlock::ToolCall { arguments, .. } = block { Some(Value::Object(arguments.clone())) } else { None }).collect();
+        assert_eq!(arguments, [json!({}), json!({ "path": "a" }), json!({})]);
+        let turn = json!({ "kind": "turn", "id": "t1", "ts": 2, "durationMs": null, "usage": { "input": 1, "output": null, "cacheRead": 0, "cacheWrite": 0 }, "provider": "p", "model": "m", "requests": 1 });
+        assert!(matches!(parse_entry(&turn), Some(TranscriptEntry::Turn { .. })));
+        let result = json!({ "kind": "toolResult", "id": "r1", "ts": 3, "toolCallId": "c1", "toolName": "read", "content": [{ "type": "text", "text": null }], "isError": null });
+        assert!(matches!(parse_entry(&result), Some(TranscriptEntry::ToolResult { is_error: false, .. })));
+        assert!(parse_entry(&json!({ "kind": "unknown", "id": "x" })).is_none());
     }
 }
