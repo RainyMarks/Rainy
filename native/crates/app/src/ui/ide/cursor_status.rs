@@ -8,7 +8,7 @@ use gpui_kit::*;
 
 use crate::store::ide::{Ide, IdeEvent};
 use crate::ui::ide::viewers;
-use crate::ui::trf;
+use crate::ui::{tr, trf};
 
 pub struct CursorStatus {
     ide: Entity<Ide>,
@@ -64,10 +64,10 @@ impl Render for CursorStatus {
         let document = ide.active.as_ref().and_then(|key| ide.files.get(key)).map(|file| (file.document.bom, file.document.eol.clone()));
         let (bom, eol) = document.unwrap_or((false, "lf".into()));
         let encoding = if bom { "UTF-8 BOM" } else { "UTF-8" };
-        let eol = match eol.as_str() {
-            "crlf" => "CRLF",
-            "mixed" => "Mixed",
-            _ => "LF",
+        let eol: SharedString = match eol.as_str() {
+            "crlf" => "CRLF".into(),
+            "mixed" => tr(cx, "ide.ideStatusEolMixed"),
+            _ => "LF".into(),
         };
         h_flex()
             .gap_3()
