@@ -1,10 +1,13 @@
-//! General: language, chat preferences, system integration, diagnostics export and version (`GeneralSection.tsx`).
+//! General: language, chat preferences, the Markdown editor, system integration, diagnostics export and version
+//! (`GeneralSection.tsx`).
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Sizable as _, v_flex};
 use gpui_kit::*;
 use rainy_carrier::shell::Change;
+use rainy_protocol::UiPreferences;
 use serde_json::json;
 
 use super::{group, heading, row, segmented, set_prefs};
@@ -55,8 +58,46 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                 }),
             ),
         ]))
+        .child(markdown(&prefs, cx))
         .child(system_integration(store, cx))
         .child(about(store, cx))
+}
+
+/// The Markdown editor: where pasted images go (read by the editor page), and Typora's focus and typewriter modes.
+fn markdown(prefs: &UiPreferences, cx: &App) -> AnyElement {
+    let folders = [("assets", "settings.imageFolderAssets"), ("named", "settings.imageFolderNamed"), ("same", "settings.imageFolderSame")];
+    let current = prefs.markdown_images.clone();
+    let label = folders.iter().find(|(id, _)| *id == current).map_or("settings.imageFolderAssets", |(_, key)| *key);
+    let items: Vec<(&'static str, SharedString)> = folders.iter().map(|(id, key)| (*id, tr(cx, key))).collect();
+    let picker = Button::new("markdown-images").outline().small().label(tr(cx, label)).dropdown_caret(true).dropdown_menu(move |mut menu, _, _| {
+        for (id, text) in &items {
+            let id = *id;
+            menu = menu.item(PopupMenuItem::new(text.clone()).checked(current == id).on_click(move |_, window, cx| {
+                set_prefs(json!({ "markdownImages": id }), window, cx);
+            }));
+        }
+        menu
+    });
+    group(cx, Some("settings.groupMarkdown"), vec![
+        row(cx, tr(cx, "settings.imageFolderTitle"), Some(tr(cx, "settings.imageFolderDescription")), picker),
+        row(
+            cx,
+            tr(cx, "settings.focusModeTitle"),
+            Some(tr(cx, "settings.focusModeDescription")),
+            Switch::new("markdown-focus").checked(prefs.markdown_focus).on_click(|checked: &bool, window, cx| {
+                set_prefs(json!({ "markdownFocus": *checked }), window, cx);
+            }),
+        ),
+        row(
+            cx,
+            tr(cx, "settings.typewriterTitle"),
+            Some(tr(cx, "settings.typewriterDescription")),
+            Switch::new("markdown-typewriter").checked(prefs.markdown_typewriter).on_click(|checked: &bool, window, cx| {
+                set_prefs(json!({ "markdownTypewriter": *checked }), window, cx);
+            }),
+        ),
+    ])
+    .into_any_element()
 }
 
 /// Exporting diagnostics; the version, and checking for updates next to it (3.x had it in the Help menu): the

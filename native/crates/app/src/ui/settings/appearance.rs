@@ -1,7 +1,7 @@
-//! Appearance: color mode, color scheme, accent, motion and fonts (`AppearanceSection.tsx`).
+//! Appearance: color mode, color scheme, accent and fonts (`AppearanceSection.tsx`; 3.x's rain effects have no
+//! counterpart here, so their switch is gone while the stored `rainEffects` stays).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -146,14 +146,6 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                 })),
             ),
         ]))
-        .child(group(cx, Some("settings.groupMotion"), vec![row(
-            cx,
-            t("rainEffectsTitle"),
-            Some(t("rainEffectsDescription")),
-            Switch::new("rain-effects").checked(prefs.rain_effects).on_click(|checked: &bool, window, cx| {
-                set_prefs(json!({ "rainEffects": *checked }), window, cx);
-            }),
-        )]))
         .child(group(
             cx,
             Some("settings.groupFonts"),

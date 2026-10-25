@@ -31,6 +31,13 @@ pub struct UiPreferences {
     pub markdown_focus: bool,
     #[serde(default)]
     pub markdown_typewriter: bool,
+    /// Where images pasted into a Markdown document are saved: `assets`, `named` (`<name>.assets`) or `same`.
+    #[serde(default = "default_markdown_images")]
+    pub markdown_images: String,
+}
+
+fn default_markdown_images() -> String {
+    "assets".into()
 }
 
 impl Default for UiPreferences {
@@ -54,6 +61,7 @@ impl Default for UiPreferences {
             web_search: true,
             markdown_focus: false,
             markdown_typewriter: false,
+            markdown_images: default_markdown_images(),
         }
     }
 }
