@@ -6,10 +6,10 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import { grammarFor, highlightLines, loadGrammar } from '../../ui/highlight.ts'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
-import { documentUrl, resolveDocumentPath } from '../../chat/Markdown.tsx'
+import { documentUrl, rehypeAnchors, resolveDocumentPath } from '../../chat/Markdown.tsx'
 import { getPrefs } from '../../prefs.ts'
 import { splitFrontMatter } from './front-matter.ts'
-import { DOCUMENT_REMARK_PLUGINS, rehypeSafeHtml } from './markdown-html.ts'
+import { DOCUMENT_REMARK_PLUGINS, rehypeSafeHtml, rehypeToc } from './markdown-html.ts'
 import { markdownOutline } from './markdown-outline.ts'
 import { isMermaid, renderMermaid } from './mermaid.ts'
 import { viewerMessages } from './messages.ts'
@@ -45,6 +45,8 @@ math[display="block"] { margin: 1em 0; }
 .mermaid-diagram { margin: 1em 0; text-align: center; } .mermaid-diagram svg { max-width: 100%; height: auto; }
 .footnotes { font-size: 0.9em; color: #59636e; border-top: 1px solid #d0d7de; margin-top: 2em; }
 .footnotes > h2 { font-size: 1em; margin: 1em 0 0.5em; padding: 0; border: 0; color: inherit; }
+.md-toc { margin: 0 0 1em; } .md-toc ul { margin: 0; padding-left: 1.5em; list-style: none; } .md-toc > ul { padding-left: 0; }
+.md-toc li + li, .md-toc li > ul { margin-top: 0.15em; }
 mark { background: rgba(247, 173, 49, 0.38); color: inherit; padding: 0 2px; border-radius: 2px; }
 kbd { font: 0.85em "Cascadia Code", Consolas, monospace; padding: 1px 5px; border: 1px solid #d0d7de; border-bottom-width: 2px; border-radius: 4px; background: #f6f8fa; }
 details { margin: 0 0 1em; padding: 6px 12px; border: 1px solid #d0d7de; border-radius: 6px; } summary { cursor: pointer; font-weight: 600; }
@@ -128,7 +130,8 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
   const markup = renderToStaticMarkup(createElement(ReactMarkdown, {
     // The preview's reading of the file (markdown-html.ts): its allowlisted HTML, highlights, no dollar amounts as math.
     remarkPlugins: DOCUMENT_REMARK_PLUGINS,
-    rehypePlugins: [rehypeSafeHtml, [rehypeKatex, { output: 'mathml', throwOnError: false }]],
+    // Headings get the preview's ids, which the links of a `[TOC]` point to in the page and the PDF.
+    rehypePlugins: [rehypeSafeHtml, [rehypeKatex, { output: 'mathml', throwOnError: false }], rehypeAnchors(false), rehypeToc(viewerMessages.t('toc'))],
     remarkRehypeOptions: { footnoteLabel: viewerMessages.t('footnotes'), footnoteBackLabel: viewerMessages.t('footnoteBack'), footnoteLabelProperties: {} },
     components: { code: codeComponent(diagrams) },
     urlTransform: documentUrl,

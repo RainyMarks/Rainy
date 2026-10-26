@@ -91,4 +91,14 @@ describe('export of a Markdown file', () => {
     expect(main).toContain('返回正文')
     expect(main).not.toContain('Footnotes')
   })
+
+  it('prints [TOC] as links to the headings of the page', async () => {
+    const page = new DOMParser().parseFromString(await exported('[TOC]\n\n# 概述\n\n## 背景\n\n# 结论\n'), 'text/html')
+    const toc = page.querySelector('nav.md-toc')!
+    expect(toc.getAttribute('aria-label')).toBe('目录')
+    const links = [...toc.querySelectorAll('a')].map(link => link.getAttribute('href')!)
+    expect(links).toEqual(['#md-概述', '#md-背景', '#md-结论'])
+    for (const link of links) expect(page.getElementById(link.slice(1))?.tagName).toMatch(/^H[12]$/u)
+    expect(toc.querySelector('li > ul > li > a')?.textContent).toBe('背景')
+  })
 })

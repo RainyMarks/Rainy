@@ -365,8 +365,104 @@ export function remarkMark() {
   return (tree: Node): void => { highlight(tree) }
 }
 
+/** A paragraph that is only this, as written (not `\[TOC]`), is Typora's table of contents. */
+export const TOC_SOURCE = /^\[toc\]$/iu
+
+/** Class of the element that holds a table of contents. */
+export const TOC_CLASS = 'md-toc'
+
+/**
+ * Remark plugin: a paragraph of only `[TOC]`, at the top level or in a quote, becomes a `toc` node, drawn as a `<nav>` that {@link rehypeToc} fills (the
+ * rich editor has its own node for it). A `[TOC]` that a definition makes a link stays a link.
+ * @returns The transformer; it needs the parsed text as the file, as `processor.runSync(tree, text)` gives it.
+ */
+export function remarkToc() {
+  return (tree: Node, file: { value?: unknown }): void => {
+    const text = typeof file.value === 'string' ? file.value : String(file.value ?? '')
+    const visit = (node: Node): void => {
+      const children = node.children
+      if (children === undefined) return
+      for (let index = 0; index < children.length; index++) {
+        const child = children[index]!
+        // Only a block of its own: a list item cannot start with one in the rich editor.
+        if (child.type !== 'paragraph' || (node.type !== 'root' && node.type !== 'blockquote')) { visit(child); continue }
+        const start = child.position?.start.offset
+        const end = child.position?.end.offset
+        if (start === undefined || end === undefined || child.children?.length !== 1 || child.children[0]!.type !== 'text') continue
+        const source = text.slice(start, end).trim()
+        if (!TOC_SOURCE.test(source)) continue
+        children[index] = { type: 'toc', value: source, position: child.position, data: { hName: 'nav', hProperties: { className: [TOC_CLASS] } } }
+      }
+    }
+    visit(tree)
+  }
+}
+
+/** A heading of a table of contents with the deeper headings that follow it. */
+export interface TocEntry<T> { readonly heading: T; readonly children: TocEntry<T>[] }
+
+/**
+ * Nest headings as Typora's table of contents does: each heading holds the following ones of a deeper level, so a
+ * document that starts at `##` or skips a level still gets one list per level it uses.
+ * @param headings Headings in document order.
+ * @returns The top entries.
+ */
+export function nestHeadings<T extends { readonly level: number }>(headings: readonly T[]): TocEntry<T>[] {
+  const top: TocEntry<T>[] = []
+  const open: TocEntry<T>[] = []
+  for (const heading of headings) {
+    while (open.length > 0 && open.at(-1)!.heading.level >= heading.level) open.pop()
+    const entry: TocEntry<T> = { heading, children: [] }
+    ;(open.at(-1)?.children ?? top).push(entry)
+    open.push(entry)
+  }
+  return top
+}
+
+function hastText(node: Node): string {
+  return node.type === 'text' ? node.value ?? '' : (node.children ?? []).map(hastText).join('')
+}
+
+/**
+ * Rehype plugin, after the one that gives headings their ids: every `[TOC]` becomes a nested list of links to the
+ * document's headings (not the footnotes' heading).
+ * @param label Accessible name of the list.
+ * @returns The plugin.
+ */
+export function rehypeToc(label: string) {
+  return () => (tree: Node): void => {
+    const headings: { level: number; id: string; text: string }[] = []
+    const tocs: Node[] = []
+    const visit = (node: Node, footnotes: boolean): void => {
+      for (const child of node.children ?? []) {
+        if (child.type !== 'element') continue
+        const classes = child.properties?.className
+        if (child.tagName === 'nav' && Array.isArray(classes) && classes.includes(TOC_CLASS)) { tocs.push(child); continue }
+        const inside = footnotes || child.properties?.dataFootnotes !== undefined
+        const level = /^h([1-6])$/u.exec(child.tagName ?? '')?.[1]
+        const id = child.properties?.id
+        if (level !== undefined && !inside && typeof id === 'string' && id !== '') headings.push({ level: Number(level), id, text: hastText(child).trim() })
+        visit(child, inside)
+      }
+    }
+    visit(tree, false)
+    const list = (entries: readonly TocEntry<{ id: string; text: string }>[]): Node => ({
+      type: 'element', tagName: 'ul', properties: {}, children: entries.map(({ heading, children }) => ({
+        type: 'element', tagName: 'li', properties: {}, children: [
+          { type: 'element', tagName: 'a', properties: { href: `#${heading.id}` }, children: [{ type: 'text', value: heading.text }] },
+          ...children.length > 0 ? [list(children)] : [],
+        ],
+      })),
+    })
+    for (const toc of tocs) {
+      toc.properties = { ...toc.properties, ariaLabel: label }
+      toc.children = headings.length === 0 ? [] : [list(nestHeadings(headings))]
+    }
+  }
+}
+
 type Plugins = NonNullable<Options['remarkPlugins']>
 
 /** How Markdown files are read, in the preview and in exports: GFM without single-tilde strikethrough (`H~2~O` stays
- *  text, as the rich editor writes it), math without dollar amounts, and highlights. */
-export const DOCUMENT_REMARK_PLUGINS: Plugins = [[remarkGfm, { singleTilde: false }], remarkMath, remarkDollarAmounts, remarkMark]
+ *  text, as the rich editor writes it), math without dollar amounts, highlights and `[TOC]`. */
+export const DOCUMENT_REMARK_PLUGINS: Plugins = [[remarkGfm, { singleTilde: false }], remarkMath, remarkDollarAmounts, remarkMark, remarkToc]
