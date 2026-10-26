@@ -7,13 +7,13 @@
 ### 会动手的 AI 工作台，为办公、科研和编码而生
 
 能读写文件、执行命令、自己检查成果的 AI 智能体，<br>
-连同编辑器、Office 文档预览和 SSH 远程开发，装进一个 67 MB 的 Windows 应用。
+连同编辑器、Office 文档预览和 SSH 远程开发，装进一个 52 MB 的 Windows 应用。
 
 <br>
 
 [![下载 Windows 版](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.1-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
+[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.2-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -106,7 +106,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 ### 编辑器与调试：真编辑器，AI 内置
 
 - 边写边给建议，按 Tab 接受；选中代码按 Ctrl+K 描述改法，新旧对比后再决定保留。
-- 基于 CodeMirror 6：补全、悬停提示、转到定义、重命名、诊断、差异对比、未保存内容恢复。
+- 原生编辑器，语言服务由 ty、TypeScript 原生编译器和 clangd 提供：补全、悬停提示、转到定义、重命名、诊断、差异对比、未保存内容恢复。
 - 运行和调试 Python、JavaScript/TypeScript、C/C++，运行 PHP。
 - 全项目搜索替换（替换前逐处预览）、命令面板、Git 面板，提交说明可以让 AI 来写。
 
@@ -133,7 +133,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 | **三种执行环境** | 默认 Windows 原生；需要 Linux 时切到 WSL2 或一台 SSH 服务器。 |
 | **项目记忆** | 开启后在空闲时整理项目要点，新对话开始时自动带上。 |
 | **上下文管理** | 实时显示上下文占用，快满时自动压缩；Claude 的提示词缓存保留一小时。 |
-| **轻量** | 安装包 67 MB；PHP 和 Linux 运行环境都在用到时才下载。 |
+| **轻量** | 安装包 52 MB；PHP 和 Linux 运行环境都在用到时才下载。 |
 | **适配任意屏幕** | 高缩放（如 225%）和小屏幕上自动适配，换显示器或改缩放后自动调整。 |
 | **细节** | 空白页飘着细雨，点一下泛起涟漪；可在 **设置 → 外观** 关闭。 |
 
@@ -196,9 +196,9 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 - **发行包可验证**：安装文件首次启动时按签名清单逐个校验。
 
 <a id="whats-new"></a>
-## 4.1 新变化
+## 4.2 新变化
 
-**彻底不再需要 Node.js。** 负责对话、工具、文件和终端的后台在 Windows、WSL 和 SSH 服务器上都换成了 Rust 程序，编辑器的语言服务也改用原生程序（Python 用 ty，JavaScript 和 TypeScript 用 TypeScript 7 原生编译器）。**Strata 本地推理回来了**，在“设置 → 模型”中；每个 MCP 服务器都列出它的工具，可逐个开关。你的对话、设置和密钥原样沿用。[查看完整更新日志 →](CHANGELOG.zh.md)
+**Markdown 写什么存什么。** 所见即所得模式只改动你编辑过的行，CRLF 换行、引用式链接和不加转义的 `$` 都原样保留；支持 Typora 的 `[TOC]` 和 `==高亮==`，预览和导出能画 Mermaid 图，不再印出 HTML 注释。**看图、SVG 和十六进制视图回来了**；PDF 可以选中复制、原位缩放；对话各有草稿，可以搜索和归档，每张工具卡片都显示改动差异。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档

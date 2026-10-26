@@ -7,13 +7,13 @@
 ### The AI workbench that gets things done, for office work, research and code
 
 An agent that edits your files, runs commands and checks its own work,<br>
-with an editor, Office previews and SSH remote development, in one 67 MB Windows app.
+with an editor, Office previews and SSH remote development, in one 52 MB Windows app.
 
 <br>
 
 [![Download for Windows](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=Download%20for%20Windows&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![Changelog](https://img.shields.io/badge/Changelog-4.1-0f172a?style=for-the-badge)](CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/Changelog-4.2-0f172a?style=for-the-badge)](CHANGELOG.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -106,7 +106,7 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 ### Editor and debugger: a real editor with AI built in
 
 - Suggestions as you type (Tab accepts); select code, press Ctrl+K and describe the change, then compare and keep it.
-- CodeMirror 6 with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work.
+- A native editor with completion, hover, go to definition, rename, diagnostics, diffs and recovery of unsaved work, backed by ty, TypeScript's native compiler and clangd.
 - Run and debug Python, JavaScript/TypeScript and C/C++; run PHP.
 - Project-wide search and replace with a preview of every change, a command palette, and Git with AI-written commit messages.
 
@@ -133,7 +133,7 @@ See what a project is made of, how its parts import each other and which stack i
 | **Three execution environments** | Native Windows by default; switch to WSL2 or an SSH server when a project needs Linux. |
 | **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
 | **Context management** | Shows how full the context is and compacts it automatically before it runs out; Claude's prompt cache lasts an hour. |
-| **Light** | A 67 MB installer; PHP and the Linux runtime download only when needed. |
+| **Light** | A 52 MB installer; PHP and the Linux runtime download only when needed. |
 | **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
 | **Details** | A light rain falls behind empty views and ripples where you click; turn it off in **Settings → Appearance**. |
 
@@ -196,9 +196,9 @@ The selected Windows, WSL or SSH environment must reach the model service. Throu
 - **Verifiable releases**: on first start the installed files are checked one by one against a signed manifest.
 
 <a id="whats-new"></a>
-## What's new in 4.1
+## What's new in 4.2
 
-**No Node.js anywhere.** The backend that runs your chats, tools, files and terminals is now a Rust program on Windows, in WSL and on SSH servers, and the editor's language services are native too (ty for Python, TypeScript 7's native compiler for JavaScript and TypeScript). **Strata local inference is back** in Settings → Models, and every MCP server lists its tools with a switch per tool. Your chats, settings and keys carry over. [Read the full changelog →](CHANGELOG.md)
+**Markdown saves what you wrote.** Rich edits change only the lines you touched and keep CRLF line ends, reference links and unescaped `$`; Typora's `[TOC]` and `==highlight==` work, and previews and exports draw Mermaid and leave out HTML comments. **Images, SVG and the hex view are back**, PDFs can be selected, copied and zoomed in place, and chats keep their drafts, can be searched and archived, and show diffs on every tool card. [Read the full changelog →](CHANGELOG.md)
 
 <a id="docs"></a>
 ## Documentation
