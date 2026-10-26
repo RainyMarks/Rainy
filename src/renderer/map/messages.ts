@@ -2,8 +2,6 @@
 import { defineMessages } from '../i18n.ts'
 
 const zh = {
-  mapTitle: '项目地图',
-  mapClose: '关闭项目地图',
   mapProjectMissing: 'Rainy 里已经没有这个项目了，它可能已从项目列表中移除。重新打开项目文件夹后，再查看它的地图。',
   mapProjectFailed: '打不开这个项目：读取项目列表失败。',
   mapLoading: '正在读取项目结构…',
@@ -27,10 +25,8 @@ const zh = {
   mapShowAll: '显示测试、文档和资源',
   mapEmptyScope: '这里没有可以画成架构的代码文件。切换到“文件”视图可以看到全部文件。',
   mapIsolated: '没有引用关系的部分',
-  mapOutside: '外部：{name}',
   mapLoose: '{name} 目录下的文件',
   mapRootLoose: '根目录文件',
-  mapFilesCount: '{count} 个文件',
   mapLinesCount: '{count} 行',
   mapNodeStats: '{files} 个文件 · {lines} 行',
   mapOpen: '进入',
@@ -81,8 +77,6 @@ const zh = {
 }
 
 const en: Readonly<Record<keyof typeof zh, string>> = {
-  mapTitle: 'Project map',
-  mapClose: 'Close the project map',
   mapProjectMissing: 'Rainy no longer knows this project; it may have been removed from the project list. Open the project folder again to see its map.',
   mapProjectFailed: 'Could not open the project: the project list did not load.',
   mapLoading: 'Reading the project…',
@@ -106,10 +100,8 @@ const en: Readonly<Record<keyof typeof zh, string>> = {
   mapShowAll: 'Show tests, docs and assets',
   mapEmptyScope: 'There is no code here to draw as an architecture. The Files view shows every file.',
   mapIsolated: 'Parts without imports',
-  mapOutside: 'Outside: {name}',
   mapLoose: 'Files in {name}',
   mapRootLoose: 'Top-level files',
-  mapFilesCount: '{count} files',
   mapLinesCount: '{count} lines',
   mapNodeStats: '{files} files · {lines} lines',
   mapOpen: 'Open',
