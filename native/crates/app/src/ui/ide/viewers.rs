@@ -124,7 +124,8 @@ pub fn shortcut_action(shortcut: Shortcut, kind: &str) -> Option<Box<dyn Action>
         (false, false, Some('P'), _) | (false, true, Some('P'), _) => Box::new(QuickOpen),
         (true, false, Some('P'), _) => Box::new(CommandPalette),
         (true, false, Some('F'), _) => Box::new(FindInFiles),
-        (true, false, Some('H'), _) => Box::new(ReplaceInFiles),
+        // The rich editor keeps Typora's Ctrl+Shift+H, highlight.
+        (true, false, Some('H'), _) if kind != "markdown-rich" => Box::new(ReplaceInFiles),
         (true, false, Some('E'), _) => Box::new(ShowExplorer),
         (true, false, Some('G'), _) => Box::new(ShowSourceControl),
         (false, false, Some('O'), _) | (false, true, Some('O'), _) => Box::new(OpenFolder),
@@ -267,6 +268,9 @@ mod tests {
         assert_eq!(name("markdown"), Some("rainy::MarkdownPreview"));
         assert_eq!(name("pdf"), None);
         assert_eq!(name("map"), None);
+        let highlight = Shortcut { key: u32::from(b'H'), ..paste_plain };
+        assert!(shortcut_action(highlight, "markdown-rich").is_none());
+        assert_eq!(shortcut_action(highlight, "pdf").map(|action| action.name()), Some("rainy::ReplaceInFiles"));
         // Ctrl+V itself stays with every page.
         assert!(shortcut_action(Shortcut { shift: false, ..paste_plain }, "markdown-rich").is_none());
     }
