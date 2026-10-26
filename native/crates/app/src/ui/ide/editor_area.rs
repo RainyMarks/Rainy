@@ -164,7 +164,7 @@ impl EditorArea {
         });
         let url = viewers::viewer_url(&launch, kind, key, &workspace.workspace_id, file.document.bytes as u64, &version, host_path.as_deref(), back);
         let editor = file.editor.clone().filter(|_| live);
-        let pane = viewers::create_pane(url, window, cx);
+        let pane = viewers::create_pane(url, kind, window, cx);
         let owner = key.to_owned();
         let subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
         let editor_subscriptions = editor.as_ref().map(|editor| self.watch_editor(key, kind, editor, cx)).unwrap_or_default();
@@ -359,7 +359,7 @@ impl EditorArea {
                 Some(PageRequest::OpenKey(_) | PageRequest::Ask(_)) | None => {}
             },
             PaneEvent::Shortcut(shortcut) => {
-                if let Some(action) = viewers::shortcut_action(*shortcut) {
+                if let Some(action) = viewers::shortcut_action(*shortcut, self.viewers.get(key).map_or("", |viewer| viewer.kind)) {
                     crate::web::reclaim_focus(window);
                     window.dispatch_action(action, cx);
                 }
@@ -1076,7 +1076,7 @@ impl EditorArea {
         self.map_shown = !self.map_shown || self.map.as_ref().is_none_or(|(id, _)| *id != workspace.workspace_id);
         if self.map_shown && self.map.as_ref().is_none_or(|(id, _)| *id != workspace.workspace_id) {
             let Some(launch) = Store::global(cx).read(cx).launch_url() else { return };
-            let pane = viewers::create_pane(viewers::map_url(&launch, &workspace.workspace_id), window, cx);
+            let pane = viewers::create_pane(viewers::map_url(&launch, &workspace.workspace_id), "map", window, cx);
             cx.subscribe_in(&pane, window, |this, _, event: &PaneEvent, window, cx| this.on_map(event, window, cx)).detach();
             self.map = Some((workspace.workspace_id.clone(), pane));
         }
@@ -1098,7 +1098,7 @@ impl EditorArea {
                 _ => {}
             },
             PaneEvent::Shortcut(shortcut) => {
-                if let Some(action) = viewers::shortcut_action(*shortcut) {
+                if let Some(action) = viewers::shortcut_action(*shortcut, "map") {
                     crate::web::reclaim_focus(window);
                     window.dispatch_action(action, cx);
                 }

@@ -95,8 +95,8 @@ pub fn viewer_url(launch: &str, viewer: &str, key: &str, workspace_id: &str, byt
     format!("{launch}&next={}", encode(&page))
 }
 
-/// Combinations the workbench keeps while a page has the keyboard, and the action each one runs.
-pub fn shortcut_action(shortcut: Shortcut) -> Option<Box<dyn Action>> {
+/// Combinations the workbench keeps while a page of `kind` has the keyboard, and the action each one runs.
+pub fn shortcut_action(shortcut: Shortcut, kind: &str) -> Option<Box<dyn Action>> {
     use crate::ui::ide::*;
     const VK_OEM_COMMA: u32 = 0xBC;
     const VK_OEM_3: u32 = 0xC0;
@@ -104,12 +104,15 @@ pub fn shortcut_action(shortcut: Shortcut) -> Option<Box<dyn Action>> {
     const VK_F1: u32 = 0x70;
     const VK_F8: u32 = 0x77;
     const VK_F9: u32 = 0x78;
+    const VK_V: u32 = 0x56;
     // Typora's keys for the rich editor: F8 focus mode, F9 typewriter mode, Ctrl+/ source.
     match (shortcut.ctrl, shortcut.shift, shortcut.alt, shortcut.key) {
         (false, false, false, VK_F1) => return Some(Box::new(CommandPalette)),
         (false, false, false, VK_F8) => return Some(Box::new(MarkdownFocus)),
         (false, false, false, VK_F9) => return Some(Box::new(MarkdownTypewriter)),
         (true, false, false, VK_OEM_2) => return Some(Box::new(MarkdownSource)),
+        // The preview, as in the source editor; other pages keep Ctrl+Shift+V for pasting plain text.
+        (true, true, false, VK_V) if kind.starts_with("markdown") => return Some(Box::new(MarkdownPreview)),
         _ => {}
     }
     if !shortcut.ctrl {
@@ -230,7 +233,7 @@ pub fn resolve_script(id: u64, result: &Value) -> String {
 }
 
 /// A pane for one file view.
-pub fn create_pane(url: String, window: &mut Window, cx: &mut App) -> Entity<WebPane> {
+pub fn create_pane(url: String, kind: &'static str, window: &mut Window, cx: &mut App) -> Entity<WebPane> {
     let store = Store::global(cx);
     let folder = store.read(cx).paths.user_data.join("WebView2");
     let background = crate::web::background(gpui_kit::component::ActiveTheme::theme(cx).background);
@@ -244,7 +247,7 @@ pub fn create_pane(url: String, window: &mut Window, cx: &mut App) -> Entity<Web
             // The viewer page and the files it loads come from the Host; anything else opens in the browser instead.
             allow: Some(Box::new(|url| url.starts_with("http://127.0.0.1:") || url.starts_with("about:") || url.starts_with("blob:") || url.starts_with("data:"))),
             on_new_window: None,
-            on_shortcut: Some(Box::new(|shortcut| shortcut_action(shortcut).is_some())),
+            on_shortcut: Some(Box::new(move |shortcut| shortcut_action(shortcut, kind).is_some())),
         };
         WebPane::new(url, options, window, cx)
     })
@@ -255,6 +258,18 @@ mod tests {
     use ::core::prelude::v1::test;
 
     use super::*;
+
+    #[test]
+    fn markdown_pages_keep_the_preview_key() {
+        let paste_plain = Shortcut { key: 0x56, ctrl: true, shift: true, alt: false };
+        let name = |kind: &str| shortcut_action(paste_plain, kind).map(|action| action.name());
+        assert_eq!(name("markdown-rich"), Some("rainy::MarkdownPreview"));
+        assert_eq!(name("markdown"), Some("rainy::MarkdownPreview"));
+        assert_eq!(name("pdf"), None);
+        assert_eq!(name("map"), None);
+        // Ctrl+V itself stays with every page.
+        assert!(shortcut_action(Shortcut { shift: false, ..paste_plain }, "markdown-rich").is_none());
+    }
 
     #[test]
     fn views_of_files() {
