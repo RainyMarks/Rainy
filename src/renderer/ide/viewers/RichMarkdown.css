@@ -191,3 +191,39 @@ body[data-rainy-dark] .rainy-rich {
   .rainy-heading-flash { animation: none; }
   [data-focus-mode='true'] .rainy-rich .milkdown > .ProseMirror > * { transition: none; }
 }
+
+/* Typora's ==highlight==, in the preview's color (chat/Markdown.module.css). */
+.rainy-rich .milkdown .ProseMirror mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--rainy-alias-state-warn-secondary) 38%, transparent);
+  color: inherit;
+}
+
+/* [TOC]: the headings as nested links on the block surface; a click on an entry scrolls, beside them selects the block. */
+.rainy-rich .milkdown .ProseMirror .rainy-toc {
+  margin: 8px 0 16px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: var(--rainy-rich-block);
+  line-height: 1.6;
+  cursor: default;
+}
+.rainy-rich .milkdown .ProseMirror .rainy-toc.ProseMirror-selectednode { outline: 2px solid var(--rainy-rich-selected); }
+.rainy-rich .milkdown .ProseMirror .rainy-toc-title { margin-bottom: 4px; font-size: 0.85em; font-weight: 600; color: var(--rainy-alias-label-secondary); }
+.rainy-rich .milkdown .ProseMirror .rainy-toc-empty { font-size: 0.9em; color: var(--rainy-alias-label-tertiary); }
+.rainy-rich .milkdown .ProseMirror .rainy-toc ul { margin: 0; padding-left: 1.4em; list-style: none; }
+.rainy-rich .milkdown .ProseMirror .rainy-toc > ul { padding-left: 0; }
+.rainy-rich .milkdown .ProseMirror .rainy-toc li { margin: 0; padding: 0; }
+.rainy-rich .milkdown .ProseMirror .rainy-toc a { color: var(--rainy-alias-state-business-primary); text-decoration: none; cursor: pointer; }
+.rainy-rich .milkdown .ProseMirror .rainy-toc a:hover { text-decoration: underline; }
+
+/* A link reference definition, `[ref]: url`, shown as written: it is read-only here and edited in the source view. */
+.rainy-rich .milkdown .ProseMirror .rainy-link-definition {
+  margin: 2px 0;
+  font-family: var(--rainy-font-family-code);
+  font-size: 0.85em;
+  color: var(--rainy-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+.rainy-rich .milkdown .ProseMirror .rainy-link-definition.ProseMirror-selectednode { outline: 2px solid var(--rainy-rich-selected); border-radius: 2px; }

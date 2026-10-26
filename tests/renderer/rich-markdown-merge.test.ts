@@ -157,7 +157,9 @@ describe('an edited line', () => {
     ['keeps ordered markers with parentheses', '1) one EDITME\n2) two\n', '1) one EDITED\n2) two\n'],
     ['keeps star bullets', '* one EDITME\n* two\n', '* one EDITED\n* two\n'],
     ['keeps an underlined heading', 'Title EDITME\n=====\n\nBody\n', 'Title EDITED\n=====\n\nBody\n'],
-    ['keeps dollar amounts as text', '价格 $5 到 $10 EDITME\n', '价格 \\$5 到 \\$10 EDITED\n'],
+    ['keeps dollar amounts as text, unescaped', '价格 $5 到 $10 EDITME\n', '价格 $5 到 $10 EDITED\n'],
+    ['keeps reference links and their definitions', '[a][1] and [b] EDITME\n\n[1]: http://a\n[b]: http://b\n', '[a][1] and [b] EDITED\n\n[1]: http://a\n[b]: http://b\n'],
+    ['keeps [TOC]', '[TOC]\n\n# A EDITME\n', '[TOC]\n\n# A EDITED\n'],
   ]
   for (const [name, text, expected] of cases) {
     it(name, async () => { expect((await save(text, type('EDITME', 'EDITED'))).saved).toBe(expected) })
