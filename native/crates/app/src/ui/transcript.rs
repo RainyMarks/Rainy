@@ -638,6 +638,20 @@ fn readable(color: Hsla, cx: &App) -> Hsla {
     if cx.theme().mode.is_dark() { color } else { Hsla { l: color.l.min(0.32), ..color } }
 }
 
+/// Rainy's mark beside a thinking block; it breathes while the model is still thinking. Reduced motion holds it still.
+fn thinking_mark(key: &SharedString, live: bool) -> AnyElement {
+    let mark = img("brand/rainy-mark.svg").size(px(14.)).flex_shrink_0();
+    if !live {
+        return mark.into_any_element();
+    }
+    mark.with_animation(
+        ElementId::Name(format!("think-mark-{key}").into()),
+        Animation::new(Duration::from_millis(1400)).repeat().with_easing(pulsating_between(0.35, 1.)),
+        |mark, delta| mark.opacity(delta),
+    )
+    .into_any_element()
+}
+
 fn render_thinking(
     key: &SharedString, text: &SharedString, redacted: bool, live: bool, duration_ms: Option<f64>,
     open: bool, row: usize, toggle: &Toggle, locale: Locale, cx: &App,
@@ -666,9 +680,8 @@ fn render_thinking(
                 .cursor_pointer()
                 .hover(|style| style.text_color(cx.theme().foreground))
                 .on_click(move |_, window, cx| toggle(key_for_click.clone(), row, window, cx))
-                .child(Icon::new(IconName::Bot).xsmall())
+                .child(thinking_mark(key, live))
                 .child(label)
-                .when(live, |this| this.child(Spinner::new().xsmall()))
                 .child(chevron(open)),
         )
         .when(open, |this| {

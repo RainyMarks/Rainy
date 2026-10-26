@@ -1,6 +1,7 @@
 # Drive one window of a process by posting messages to it; nothing goes through the global mouse or keyboard,
 # so other windows on the desktop never receive input. Steps are separated by ';;':
 #   click:X,Y        left click at window-relative physical pixels (rclick: right click)
+#   drag:X1,Y1,X2,Y2 press the left button at X1,Y1, move to X2,Y2 with it held and release there
 #   wheel:X,Y,N      turn the mouse wheel N notches at X,Y (negative scrolls down)
 #   type:TEXT        type text (Unicode, as WM_CHAR)
 #   typefile:PATH    type the contents of a UTF-8 file
@@ -115,6 +116,18 @@ public static class Drive {
     if (right) { PostMessage(h, 0x0204, (IntPtr)2, pos); PostMessage(h, 0x0205, IntPtr.Zero, pos); }
     else { PostMessage(h, 0x0201, (IntPtr)1, pos); PostMessage(h, 0x0202, IntPtr.Zero, pos); }
   }
+  // Press the left button at the start, move in steps with it held (MK_LBUTTON), release at the end.
+  public static void Drag(IntPtr h, int x1, int y1, int x2, int y2) {
+    const int steps = 8;
+    for (int i = 0; i <= steps; i++) {
+      POINT p; p.X = x1 + (x2 - x1) * i / steps; p.Y = y1 + (y2 - y1) * i / steps; ScreenToClient(h, ref p);
+      IntPtr pos = (IntPtr)((p.Y << 16) | (p.X & 0xFFFF));
+      if (i == 0) { PostMessage(h, 0x0200, IntPtr.Zero, pos); PostMessage(h, 0x0201, (IntPtr)1, pos); }
+      else PostMessage(h, 0x0200, (IntPtr)1, pos);
+      System.Threading.Thread.Sleep(30);
+      if (i == steps) PostMessage(h, 0x0202, IntPtr.Zero, pos);
+    }
+  }
 }
 "@
 [Drive]::SetProcessDPIAware() | Out-Null
@@ -129,6 +142,7 @@ foreach ($step in ($Steps -split ';;')) {
   $r = New-Object Drive+RECT; [Drive]::GetWindowRect($h, [ref]$r) | Out-Null
   switch ($kind) {
     'click' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $false); Start-Sleep -Milliseconds 200 }
+    'drag' { $x1, $y1, $x2, $y2 = $arg -split ','; [Drive]::Drag($h, $r.Left + [int]$x1, $r.Top + [int]$y1, $r.Left + [int]$x2, $r.Top + [int]$y2); Start-Sleep -Milliseconds 200 }
     'wheel' { $x, $y, $n = $arg -split ','; [Drive]::Wheel($h, $r.Left + [int]$x, $r.Top + [int]$y, [int]$n); Start-Sleep -Milliseconds 150 }
     'rclick' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $true); Start-Sleep -Milliseconds 200 }
     'type' { [Drive]::Type($h, $arg); Start-Sleep -Milliseconds 150 }
