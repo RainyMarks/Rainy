@@ -1,18 +1,20 @@
-/** ProseMirror plugins of the rich Markdown editor: Typora's shortcuts, find and replace, focus and typewriter modes, and
- *  Ctrl+click on links. Loaded with the editor, outside the viewer chunk. */
-import { commandsCtx, editorViewCtx, parserCtx, remarkCtx, remarkStringifyOptionsCtx, serializerCtx, type CmdKey, type Editor } from '@milkdown/kit/core'
+/** ProseMirror plugins of the rich Markdown editor: Typora's shortcuts, find and replace, focus and typewriter modes,
+ *  Ctrl+click on links, and the Markdown dialect (with rich-syntax.ts). Loaded with the editor, outside the viewer chunk. */
+import { commandsCtx, editorViewCtx, remarkCtx, remarkStringifyOptionsCtx, serializerCtx, type CmdKey, type Editor } from '@milkdown/kit/core'
 import type { Ctx, SliceType } from '@milkdown/kit/ctx'
 import { toggleLinkCommand } from '@milkdown/kit/component/link-tooltip'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { keymap } from '@milkdown/kit/prose/keymap'
 import { Plugin, PluginKey, TextSelection, type Command, type EditorState, type Transaction } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
-import { codeBlockSchema, createCodeBlockCommand, remarkPreserveEmptyLinePlugin, toggleInlineCodeCommand, wrapInBlockquoteCommand, wrapInBulletListCommand,
+import { codeBlockSchema, createCodeBlockCommand, remarkInlineLinkPlugin, remarkPreserveEmptyLinePlugin, toggleInlineCodeCommand, wrapInBlockquoteCommand, wrapInBulletListCommand,
   wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
 import { addRowAfterCommand, createTable, remarkGFMPlugin, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
 import { $prose, $remark, $useKeymap } from '@milkdown/kit/utils'
 import { conventionalTables, type MarkdownReader } from './markdown-merge.ts'
 import { remarkDollarAmounts } from './markdown-math.ts'
+import { definitionSchema, dollarEscapesPlugin, highlightInputRule, highlightKeymap, highlights, highlightSchema, joinDefinitions, markHandler,
+  readMarkdown, referenceImages, referenceKeeper, referenceLinks, references, tocKeymap, tocParagraphs, tocSchema, toggleHighlightCommand } from './rich-syntax.ts'
 
 type StringifyOptions = typeof remarkStringifyOptionsCtx extends SliceType<infer T, string> ? T : never
 type Handle = NonNullable<NonNullable<StringifyOptions['handlers']>['text']>
@@ -189,6 +191,19 @@ export function insertImage(ctx: Ctx): boolean {
   return true
 }
 
+/** The / menu's table of contents icon, in the style of Crepe's others. */
+export const TOC_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M3 7h2V5H3zm0 6h2v-2H3zm0 6h2v-2H3zm4-12h14V5H7zm2 6h12v-2H9zm2 6h10v-2H11z"/></svg>'
+
+/**
+ * Insert a `[TOC]` after the block holding the cursor, or in place of an empty paragraph.
+ * @param ctx Editor context.
+ * @returns Whether it was inserted.
+ */
+export function insertToc(ctx: Ctx): boolean {
+  const view = ctx.get(editorViewCtx)
+  return insertBlock(view.state, view.dispatch, tocSchema.type(ctx).create())
+}
+
 /** Typora's paragraph and format shortcuts, on top of Milkdown's own (Ctrl+B, Ctrl+I, Tab in lists…). */
 export const typoraKeymap = $prose((ctx) => {
   const call = <T,>(key: CmdKey<T>, payload?: T): Command => () => ctx.get(commandsCtx).call(key, payload)
@@ -333,6 +348,9 @@ export function linkClickPlugin(open: (href: string) => void): ReturnType<typeof
   }))
 }
 
+// The highlight button and the table of contents' node view, for RichMarkdown.tsx.
+export { HIGHLIGHT_ICON, highlightKeymap, highlightSchema, tocPlugin, toggleHighlightCommand } from './rich-syntax.ts'
+
 /** How Markdown is written back: the common GitHub style, so an edit does not rewrite the rest of the file. */
 export const STRINGIFY = { bullet: '-', bulletOther: '*', bulletOrdered: '.', emphasis: '*', strong: '*', fence: '`', fences: true, rule: '-',
   listItemIndent: 'one', incrementListMarker: true } as const
@@ -435,13 +453,19 @@ export const dollarAmounts = $remark('rainyDollarAmounts', () => remarkDollarAmo
 export async function markdownSyntax(editor: Editor, markdown: string): Promise<Editor> {
   // Two Enters leave an empty paragraph, which Milkdown would write as a `<br />` line; Typora writes nothing.
   await editor.remove(remarkPreserveEmptyLinePlugin)
+  // Reference links keep their form and definitions (rich-syntax.ts) instead of becoming inline links.
+  await editor.remove(remarkInlineLinkPlugin)
   return editor.config((ctx) => {
     ctx.update(remarkStringifyOptionsCtx, previous => ({ ...previous, ...STRINGIFY, ...documentStyle(markdown),
-      handlers: { ...previous.handlers, text: textHandler(previous.handlers?.text) } }))
+      join: [...previous.join ?? [], joinDefinitions],
+      handlers: { ...previous.handlers, text: textHandler(previous.handlers?.text), mark: markHandler as unknown as Handle,
+        toc: ((node: { value: string }) => node.value) as unknown as Handle } }))
     // Aligned table columns would turn one edited cell into a change of every row; `H~2~O` is Typora's subscript, not
     // strikethrough, and was written back as `H~~2~~O`.
     ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false, singleTilde: false })
-  }).use(latexFences).use(codeBlockWriter).use(dollarAmounts)
+  }).use(latexFences).use(codeBlockWriter).use(dollarAmounts).use(highlights).use(tocParagraphs).use(references).use(referenceLinks)
+    .use(referenceImages).use(definitionSchema).use(referenceKeeper).use(tocSchema).use(tocKeymap).use(highlightSchema).use(highlightInputRule)
+    .use(toggleHighlightCommand).use(highlightKeymap).use(dollarEscapesPlugin)
 }
 
 /**
@@ -450,7 +474,7 @@ export async function markdownSyntax(editor: Editor, markdown: string): Promise<
  */
 export function markdownReader(ctx: Ctx): MarkdownReader {
   return {
-    canonical: text => conventionalTables(ctx.get(serializerCtx)(ctx.get(parserCtx)(text.replace(/\r\n?/gu, '\n')))),
+    canonical: text => conventionalTables(ctx.get(serializerCtx)(readMarkdown(ctx, text.replace(/\r\n?/gu, '\n')))),
     ranges: (text) => {
       const tree = ctx.get(remarkCtx).parse(text) as { children: { position?: { start: { offset?: number }; end: { offset?: number } } }[] }
       return tree.children.flatMap(({ position }) => position?.start.offset === undefined || position.end.offset === undefined ? []

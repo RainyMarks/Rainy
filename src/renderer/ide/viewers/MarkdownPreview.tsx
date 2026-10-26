@@ -134,6 +134,7 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
     file: {
       footnoteLabel: t('footnotes'),
       footnoteBackLabel: t('footnoteBack'),
+      tocLabel: t('toc'),
       fence: (code, language, line) => isMermaid(language) ? <MermaidDiagram source={code} line={line} /> : undefined,
     },
   }), [base.workspaceId, base.rootId, base.directory, version, reloads, t])

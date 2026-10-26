@@ -3,6 +3,7 @@
  *  pasted and dropped images are saved next to the document, and Typora's shortcuts, find and replace, outline, focus and
  *  typewriter modes, Mermaid diagrams and Ctrl+click on links work as they do there. */
 import { useEffect, useRef, useState } from 'react'
+import type { Ctx } from '@milkdown/kit/ctx'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
@@ -182,10 +183,10 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
     let cancelled = false
     let created: Rich | undefined
     void (async () => {
-      const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig }, { codeBlockConfig }, rich,
-        { codeTheme }] = await Promise.all([
+      const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand, isMarkSelectedCommand }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig },
+        { codeBlockConfig }, { keymapRef }, rich, { codeTheme }] = await Promise.all([
         import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/preset/commonmark'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
-        import('@milkdown/kit/plugin/upload'), import('@milkdown/kit/component/code-block'), import('./rich-plugins.ts'), import('./code-theme.ts'),
+        import('@milkdown/kit/plugin/upload'), import('@milkdown/kit/component/code-block'), import('@milkdown/crepe/feature/toolbar'), import('./rich-plugins.ts'), import('./code-theme.ts'),
       ])
       await import('@milkdown/crepe/theme/common/style.css')
       if (cancelled) return
@@ -235,7 +236,14 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
           [Crepe.Feature.LinkTooltip]: { inputPlaceholder: t('richLinkPlaceholder') },
           // The selection toolbar's tooltips; Crepe adds the shortcut.
           [Crepe.Feature.Toolbar]: { boldLabel: t('richBold'), italicLabel: t('richItalic'), strikethroughLabel: t('richStrike'),
-            codeLabel: t('richInlineCode'), latexLabel: t('richInlineMath'), linkLabel: t('richLink') },
+            codeLabel: t('richInlineCode'), latexLabel: t('richInlineMath'), linkLabel: t('richLink'),
+            // Typora's ==highlight==, after strikethrough; its tooltip shows Ctrl+Shift+H from the keymap.
+            buildToolbar: (builder) => {
+              builder.getGroup('formatting').addItem('highlight', { icon: rich.HIGHLIGHT_ICON, label: t('richHighlight'),
+                keymap: keymapRef(rich.highlightKeymap.key, 'ToggleHighlight'),
+                active: ctx => ctx.get(commandsCtx).call(isMarkSelectedCommand.key, rich.highlightSchema.type(ctx)),
+                onRun: (ctx) => { ctx.get(commandsCtx).call(rich.toggleHighlightCommand.key) } })
+            } },
           [Crepe.Feature.Latex]: { inlineEditConfirm: t('richConfirm') },
           // Rainy's highlight colors in place of Crepe's One Dark, which made code unreadable in the light mode.
           [Crepe.Feature.CodeMirror]: { theme: codeTheme(t), searchPlaceholder: t('richLanguageSearch'), noResultText: t('richNoLanguage'), copyText: t('richCopy'),
@@ -272,6 +280,9 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
               builder.getGroup('advanced').addItem('rainy-image', { label: t('richImage'), icon: rich.IMAGE_ICON, onRun: (ctx) => {
                 ctx.get(commandsCtx).call(clearTextInCurrentBlockCommand.key)
                 rich.insertImage(ctx)
+              } }).addItem('rainy-toc', { label: t('toc'), icon: rich.TOC_ICON, onRun: (ctx: Ctx) => {
+                ctx.get(commandsCtx).call(clearTextInCurrentBlockCommand.key)
+                rich.insertToc(ctx)
               } })
             },
           },
@@ -299,6 +310,8 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
           return nodes
         } }))
       }).use(imageInlineComponent).use(rich.typoraKeymap).use(rich.tableKeys).use(rich.searchPlugin).use(rich.currentBlockPlugin).use(rich.typewriterPlugin)
+        // `[TOC]` lists the headings; an entry scrolls to its heading as the outline does.
+        .use(rich.tocPlugin({ label: t('toc'), empty: t('tocEmpty'), reveal: (index) => { latestReveal.current(index) } }))
         .use(rich.linkClickPlugin((href) => {
           if (!href.startsWith('#')) { latest.current.onOpenLink(href); return }
           const index = headingForFragment(markdownOutline(held.current), href.slice(1))

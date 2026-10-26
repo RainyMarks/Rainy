@@ -9,7 +9,7 @@ import { ideRawUrl } from '../../shared/ide-preview.ts'
 import { emit } from '../app/bus.ts'
 import { CodeToolbar, highlightLines, Tooltip, useHighlightRevision, writeClipboard } from '../ui/index.ts'
 import cardCss from '../ui/CodeCard.module.css'
-import { ANCHOR_PREFIX, DOCUMENT_REMARK_PLUGINS, isDataImage, rehypeSafeHtml } from '../ide/viewers/markdown-html.ts'
+import { ANCHOR_PREFIX, DOCUMENT_REMARK_PLUGINS, isDataImage, rehypeSafeHtml, rehypeToc } from '../ide/viewers/markdown-html.ts'
 import { remarkDollarAmounts } from '../ide/viewers/markdown-math.ts'
 import { mayContainMath, useMathPlugin } from './math.ts'
 import { useChatT } from './messages.ts'
@@ -154,7 +154,7 @@ function hastText(node: HastNode): string {
  * @param lines Whether to add `data-line`.
  * @returns The plugin.
  */
-function rehypeAnchors(lines: boolean) {
+export function rehypeAnchors(lines: boolean) {
   return () => (tree: HastNode): void => {
     const used = new Map<string, number>()
     const visit = (node: HastNode, top: boolean): void => {
@@ -226,12 +226,14 @@ export interface MarkdownOptions {
   readonly file?: MarkdownFileOptions | undefined
 }
 
-/** How a project file renders: its allowlisted HTML, `==highlights==`, single tildes as text and the fences it draws. */
+/** How a project file renders: its allowlisted HTML, `==highlights==`, `[TOC]`, single tildes as text and the fences it draws. */
 export interface MarkdownFileOptions {
   /** Heading of the footnotes. */
   readonly footnoteLabel: string
   /** Label of the links from a footnote back to the text. */
   readonly footnoteBackLabel: string
+  /** Accessible name of a `[TOC]`. */
+  readonly tocLabel?: string | undefined
   /** Draw a fenced block, such as a Mermaid diagram; `undefined` keeps the code block. */
   readonly fence?: ((code: string, language: string | undefined, line: number | undefined) => ReactNode) | undefined
 }
@@ -303,6 +305,8 @@ export const MarkdownDocument = memo(function MarkdownDocument({ text, className
   const file = options.file
   const rehypePlugins = useMemo(() => [
     ...(file === undefined ? [] : [rehypeSafeHtml]), ...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true),
+    // A `[TOC]` lists the headings with the ids just given.
+    ...(file === undefined ? [] : [rehypeToc(file.tocLabel ?? '')]),
   ], [katex, file, options.sourceLines])
   const remarkRehypeOptions = useMemo(() => file === undefined ? undefined
     : { footnoteLabel: file.footnoteLabel, footnoteBackLabel: file.footnoteBackLabel, footnoteLabelProperties: {} }, [file])

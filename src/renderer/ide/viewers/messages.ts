@@ -80,6 +80,7 @@ const zh = {
   imageNoFreeName: '这个文件夹里同名的图片太多，找不到可用的文件名', imageReadFailed: '无法读取这张图片',
   codeFold: '折叠', codeUnfold: '展开', codeFolded: '已折叠的代码', codeFoldedLines: '已折叠行', codeUnfoldedLines: '已展开行', codeLinesTo: '至',
   codeCompletions: '补全', richPlainText: '纯文本', richFrontMatterToml: 'TOML 前言',
+  richHighlight: '高亮', toc: '目录', tocEmpty: '文档中还没有标题',
   richTooLarge: '文件有 {size}，所见即所得编辑会很慢，已关闭。请切换到“源码”编辑，或用“预览”查看。',
 }
 
@@ -162,6 +163,7 @@ const en: typeof zh = {
   imageNoFreeName: 'This folder has too many images of that name; no free name is left', imageReadFailed: 'The image could not be read',
   codeFold: 'Fold line', codeUnfold: 'Unfold line', codeFolded: 'folded code', codeFoldedLines: 'Folded lines', codeUnfoldedLines: 'Unfolded lines', codeLinesTo: 'to',
   codeCompletions: 'Completions', richPlainText: 'Plain text', richFrontMatterToml: 'TOML front matter',
+  richHighlight: 'Highlight', toc: 'Contents', tocEmpty: 'The document has no headings yet',
   richTooLarge: 'This file is {size}; rich editing would be slow, so it is off. Edit it in Source, or read it in Preview.',
 }
 

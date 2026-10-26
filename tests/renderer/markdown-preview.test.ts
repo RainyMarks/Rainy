@@ -140,6 +140,19 @@ describe('Markdown of a file preview', () => {
     await act(async () => { for (const link of links) link.click() })
     expect(scrolledTo.mock.calls.map(call => call[0])).toEqual(['md-第一章-概述', 'md-附录A'])
   })
+
+  it('draws [TOC] as nested links to the headings, without the footnotes', async () => {
+    const host = await document_('[TOC]\n\n# 第一章\n\n## 小节 *一*\n\n# 第一章\n\n正文[^1]\n\n\\[TOC]\n\n[^1]: 注。\n', { file: { ...FILE.file!, tocLabel: '目录' } })
+    const toc = host.querySelector('nav.md-toc')!
+    expect(toc.getAttribute('aria-label')).toBe('目录')
+    expect([...toc.querySelectorAll(':scope > ul > li > a')].map(link => [link.textContent, link.getAttribute('href')]))
+      .toEqual([['第一章', '#md-第一章'], ['第一章', '#md-第一章-1']])
+    expect(toc.querySelector(':scope > ul > li > ul > li > a')?.textContent).toBe('小节 一')
+    expect(host.querySelectorAll('nav.md-toc')).toHaveLength(1)
+    expect(host.textContent).toContain('[TOC]')
+    await act(async () => { toc.querySelectorAll<HTMLAnchorElement>('a')[2]!.click() })
+    expect(scrolledTo.mock.calls.map(call => call[0])).toEqual(['md-第一章-1'])
+  })
 })
 
 describe('MarkdownPreview', () => {
