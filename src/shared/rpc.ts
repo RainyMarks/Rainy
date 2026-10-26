@@ -60,6 +60,8 @@ export interface ModelSetup {
   thinking?: ThinkingLevel | undefined
   thinkingFormat?: 'openai' | 'deepseek' | 'qwen' | undefined
   maxTokensField?: 'max_tokens' | 'max_completion_tokens' | undefined
+  /** Whether requests may carry images; `models.status` reports the value in effect. */
+  images?: boolean | undefined
 }
 /** Model form submitted by Settings; `apiKey` is stored separately and never echoed. */
 export type ModelSetupInput = ModelSetup & {

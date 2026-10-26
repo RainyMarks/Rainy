@@ -40,6 +40,9 @@ pub struct ModelSetup {
     pub thinking_format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens_field: Option<String>,
+    /// Whether requests may carry images; unset, only a model of the Claude catalog takes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
 }
 
 /// The model a chat or future chats use; the page reads the same type.

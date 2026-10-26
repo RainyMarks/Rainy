@@ -442,6 +442,7 @@ mod tests {
             thinking: Some("high".into()),
             thinking_format: None,
             max_tokens_field: None,
+            images: None,
         };
         Model::from_setup(&setup, 64_000)
     }

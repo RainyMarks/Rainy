@@ -26,12 +26,16 @@ fn preset(provider: &str, base_url: &str, model: &str, context_window: u64, max_
         thinking: Some(thinking.into()),
         thinking_format: thinking_format.map(str::to_owned),
         max_tokens_field: None,
+        images: None,
     }
 }
 
-/// Official DeepSeek API with Rainy's context default.
+/// Official DeepSeek API with Rainy's context default; it takes images, which Settings can turn off.
 pub fn deepseek_flash() -> ModelSetup {
-    preset("rainy-deepseek", "https://api.deepseek.com", "deepseek-flash", 1_000_000, 393_216, "openai-responses", "max", Some("deepseek"))
+    ModelSetup {
+        images: Some(true),
+        ..preset("rainy-deepseek", "https://api.deepseek.com", "deepseek-flash", 1_000_000, 393_216, "openai-responses", "max", Some("deepseek"))
+    }
 }
 
 /// The presets Settings → Models offers.
@@ -49,6 +53,11 @@ pub fn presets() -> Vec<(&'static str, ModelSetup)> {
 fn credential_shared(left: &str, right: &str) -> bool {
     let claude = ["rainy-claude", "rainy-claude-haiku"];
     claude.contains(&left) && claude.contains(&right)
+}
+
+/// A profile as `models.status` shows it: with the image setting in effect, so a form shows what requests do.
+fn with_images(setup: &ModelSetup) -> ModelSetup {
+    ModelSetup { images: Some(Model::from_setup(setup, 0).images), ..setup.clone() }
 }
 
 /// The levels a profile accepts, in escalation order.
@@ -156,6 +165,11 @@ fn parse_setup(input: &Value) -> HostResult<SetupInput> {
     if input.get("maxTokensField").is_some_and(|value| !value.is_null()) && !max_tokens_field.as_deref().is_some_and(|field| ["max_tokens", "max_completion_tokens"].contains(&field)) {
         return Err(invalid("输出参数格式无效。", "The output limit field is invalid."));
     }
+    let images = match input.get("images") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(images)) => Some(*images),
+        Some(_) => return Err(invalid("图片输入设置无效。", "The image input setting is invalid.")),
+    };
     let previous_provider = string(input, "previousProvider").filter(|provider| provider_id(provider)).map(str::to_owned);
     Ok(SetupInput {
         setup: ModelSetup {
@@ -169,6 +183,7 @@ fn parse_setup(input: &Value) -> HostResult<SetupInput> {
             thinking,
             thinking_format,
             max_tokens_field,
+            images,
         },
         api_key: connection.api_key,
         previous_provider,
@@ -215,13 +230,14 @@ impl Models {
         let credentials: Vec<String> = providers.into_iter().filter(|provider| self.settings.api_key(provider).is_some_and(|key| key != LOCAL_NO_KEY)).collect();
         let levels: serde_json::Map<String, Value> =
             data.models.iter().map(|model| (model.provider.clone(), json!(thinking_levels(model).iter().map(|level| level.as_str()).collect::<Vec<_>>()))).collect();
+        let models: Vec<ModelSetup> = data.models.iter().map(with_images).collect();
         let mut status = json!({
-            "models": data.models,
+            "models": models,
             "credentials": credentials,
             "keysEncrypted": self.settings.keys_sealed(),
             "selected": data.selected,
             "thinkingLevels": levels,
-            "presets": presets.iter().map(|(name, model)| json!({ "name": name, "model": model })).collect::<Vec<_>>(),
+            "presets": presets.iter().map(|(name, model)| json!({ "name": name, "model": with_images(model) })).collect::<Vec<_>>(),
             "globalPrompt": { "text": data.global_prompt, "maxChars": GLOBAL_PROMPT_MAX_CHARS },
         });
         if let Some(message) = self.settings.unreadable_keys_message() {
@@ -543,5 +559,31 @@ mod tests {
         assert_eq!((input.setup.base_url.as_str(), input.setup.model.as_str(), input.setup.api.as_deref()), ("https://api.example.com/v1", "m", Some("openai-responses")));
         assert!(parse_setup(&json!({ "provider": "x", "baseURL": "https://u:p@h", "model": "m", "contextWindow": 128000, "local": false })).is_err());
         assert!(parse_setup(&json!({ "provider": "x", "baseURL": "https://h", "model": "m", "contextWindow": 8192, "maxTokens": 8000, "local": false })).is_err());
+    }
+
+    #[test]
+    fn image_input_follows_the_profile() {
+        let presets = presets();
+        let (deepseek, opus) = (&presets[0].1, &presets[1].1);
+        // Unset keeps the 3.x rule: only the Claude catalog takes images. The DeepSeek preset says so itself.
+        assert!(Model::from_setup(opus, 0).images && opus.images.is_none());
+        assert_eq!((deepseek.images, Model::from_setup(deepseek, 0).images), (Some(true), true));
+        let text_only = ModelSetup { images: Some(false), ..opus.clone() };
+        assert!(!Model::from_setup(&text_only, 0).images);
+        let plain = ModelSetup { images: None, ..deepseek.clone() };
+        assert_eq!((with_images(&plain).images, with_images(opus).images), (Some(false), Some(true)));
+        // Forms carry a bool or nothing; an old file without the field reads as unset.
+        let form = json!({ "provider": "my-ai", "baseURL": "https://h", "model": "m", "contextWindow": 128000, "local": false, "images": true });
+        assert_eq!(parse_setup(&form).unwrap().setup.images, Some(true));
+        let with = |images: Value| {
+            let mut form = form.clone();
+            form["images"] = images;
+            parse_setup(&form).map(|input| input.setup.images)
+        };
+        assert_eq!(with(Value::Null).ok(), Some(None));
+        assert!(with(json!("yes")).is_err());
+        let old: ModelSetup = serde_json::from_value(json!({ "provider": "p", "baseURL": "https://h", "model": "m", "contextWindow": 1000, "local": false })).unwrap();
+        assert_eq!(old.images, None);
+        assert!(serde_json::to_value(&old).unwrap().get("images").is_none());
     }
 }

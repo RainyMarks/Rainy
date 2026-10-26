@@ -34,6 +34,10 @@ pub struct ModelSetup {
     /// `max_tokens` or `max_completion_tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens_field: Option<String>,
+    /// Whether requests may carry images. `models.status` always reports the value in effect; a saved profile
+    /// without it takes images only for a model of the Claude catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
 }
 
 /// A built-in preset offered by Settings → Models.

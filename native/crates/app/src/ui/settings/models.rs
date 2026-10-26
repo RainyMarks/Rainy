@@ -7,6 +7,7 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{ModelSetup, ModelsStatus};
@@ -47,6 +48,8 @@ pub struct ModelsPage {
     thinking: String,
     thinking_format: &'static str,
     output_field: &'static str,
+    /// Whether the model takes images; the form always sends it, so a saved profile says it outright.
+    images: bool,
     show_compatibility: bool,
     /// The saved model the form edits (`provider/model`).
     editing: Option<String>,
@@ -92,6 +95,7 @@ impl ModelsPage {
             thinking: "off".into(),
             thinking_format: "openai",
             output_field: "max_tokens",
+            images: false,
             show_compatibility: false,
             editing: None,
             draft_preset: None,
@@ -148,6 +152,8 @@ impl ModelsPage {
         self.thinking = model.thinking.clone().unwrap_or_else(|| "off".into());
         self.thinking_format = THINKING_FORMATS.iter().copied().find(|value| Some(*value) == model.thinking_format.as_deref()).unwrap_or("openai");
         self.output_field = OUTPUT_FIELDS.iter().copied().find(|value| Some(*value) == model.max_tokens_field.as_deref()).unwrap_or("max_tokens");
+        // The Host reports the setting in effect for saved models and presets; a new model starts without images.
+        self.images = model.images.unwrap_or(false);
         self.editing = editing;
         self.draft_preset = preset;
         self.outcome = None;
@@ -168,6 +174,7 @@ impl ModelsPage {
             thinking: Some("off".into()),
             thinking_format: None,
             max_tokens_field: None,
+            images: None,
         };
         self.load(&empty, None, None, window, cx);
     }
@@ -204,6 +211,7 @@ impl ModelsPage {
         value["contextWindow"] = json!(context);
         value["local"] = json!(self.local);
         value["thinking"] = json!(self.thinking);
+        value["images"] = json!(self.images);
         if let Some(output) = output {
             value["maxTokens"] = json!(output);
         }
@@ -520,6 +528,21 @@ impl ModelsPage {
             .child(self.field(tr(cx, "settings.settingsBaseUrl"), &self.base_url, cx))
             .child(h_flex().gap_3().flex_wrap().child(self.field(tr(cx, "settings.settingsContext"), &self.context, cx)).child(self.field(tr(cx, "settings.settingsOutput"), &self.output, cx)))
             .child(self.field(tr(cx, key_label), &self.api_key, cx))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(Switch::new("model-images").checked(self.images).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.images = *checked;
+                        cx.notify();
+                    })))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .child(div().text_sm().child(tr(cx, "settings.modelImages")))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.modelImagesHint"))),
+                    ),
+            )
             .child(
                 div()
                     .id("compatibility")
