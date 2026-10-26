@@ -116,7 +116,7 @@ MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对�
 
 构建需要 Windows Node `^22.19 || >=24`（只用于构建脚本和预览页面，不进入安装包）、仓库锁定的 pnpm、Git、Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig（`RAINY_ZIG` 指定其目录，用于构建 Linux Host），以及所选 WSL2 中的 Python 3.12+ 和 HTTPS 访问。环境介质的签名验证需要 GnuPG，可通过 `RAINY_GPG` 指定 `gpg.exe`。开发工具按 `toolpacks/ide-tools.sources.json` 固定的版本和 SHA-256 校验。
 
-日常开发在仓库根目录运行 `pnpm run build`（只构建外壳与 Host 时用 `pnpm run build:host`），输出 `dist/host.js` 和 `dist/renderer/`（含编辑器分块与 `THIRD_PARTY_NOTICES.txt`），以及 4.0 不再打包的 3.x Electron 外壳 `dist/main.cjs`、`dist/preload.cjs`、`dist/setup/`。`pnpm run dev` 构建后以 `tmp/dev-home` 为数据目录直接启动 Host 并打印工作台地址，`--no-build`、`--home <目录>`、`--port <端口>` 可调整，Ctrl+C 通过控制行停止 Host。界面在 `native/`：`cargo build -p rainy --offline` 构建调试版，`bash native/scripts/run-ui.sh` 以 `tmp/ui-data` 为数据目录启动它（Host 取自 `tmp/dev-resources/windows-host`，见 [GPUI 重写说明](gpui-rewrite.zh.md)），`cargo test -p rainy -p rainy-carrier --offline` 运行它的测试。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 中的 node:test 测试。开发和测试时可用环境变量 `RAINY_SSH_CONFIG` 让 ssh 读取另一份配置文件。
+日常开发在仓库根目录运行 `pnpm run build`，把预览页面构建到 `dist/renderer/`（含 `THIRD_PARTY_NOTICES.txt`）。界面和 Host 在 `native/`：`cargo build -p rainy -p rainy-host` 构建调试版；把构建出的 `rainy-host.exe` 复制到 `tmp/dev-resources/windows-host/` 后，`bash native/scripts/run-ui.sh` 以 `tmp/ui-data` 为数据目录启动界面（见 [GPUI 重写说明](gpui-rewrite.zh.md)）；`cargo test -p rainy -p rainy-carrier -p rainy-host -p rainy-protocol` 运行 Rust 测试。`pnpm run test` 运行 Vitest，`pnpm run test:node` 运行 `tests/scripts` 中的 node:test 测试。开发和测试时可用环境变量 `RAINY_SSH_CONFIG` 让 ssh 读取另一份配置文件。
 
 从仓库根目录运行：
 
