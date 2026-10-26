@@ -16,8 +16,4 @@ overrides:
 # Install scripts are denied unless listed here.
 allowBuilds:
   esbuild: true
-  '@google/genai': false
-  protobufjs: false
-  electron-winstaller: false
-  msgpackr-extract: false
 
