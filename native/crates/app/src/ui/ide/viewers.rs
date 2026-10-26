@@ -152,23 +152,17 @@ pub enum PageRequest {
     Outline(i64),
     /// Something to tell the user, such as where an export went.
     Notice { error: bool, text: String },
-    /// An image for the AI composer, as the page encoded it.
-    Attach { name: String, mime: &'static str, bytes: Vec<u8> },
+    /// An image for the AI composer, as the page encoded it; the composer reads its type from the bytes.
+    Attach { name: String, bytes: Vec<u8> },
     /// Show the tab in another view (`hex`), or in its default one.
     View(Option<String>),
     /// The file changed on disk while the page read it; read it again.
     Reload,
 }
 
-/// The image types the composer accepts from a page.
-fn attach_mime(mime: &str) -> Option<&'static str> {
-    Some(match mime {
-        "image/png" => "image/png",
-        "image/jpeg" => "image/jpeg",
-        "image/webp" => "image/webp",
-        "image/gif" => "image/gif",
-        _ => return None,
-    })
+/// Whether the composer accepts an image of this type from a page.
+fn attach_mime(mime: &str) -> bool {
+    matches!(mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif")
 }
 
 pub fn parse_message(text: &str) -> Option<PageRequest> {
@@ -190,8 +184,11 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
         "notice" => PageRequest::Notice { error: value["tone"] == "error", text: value["text"].as_str()?.to_owned() },
         "attach" => {
             use base64::Engine as _;
+            if !attach_mime(value["mime"].as_str()?) {
+                return None;
+            }
             let bytes = base64::engine::general_purpose::STANDARD.decode(value["base64"].as_str()?).ok()?;
-            PageRequest::Attach { name: value["name"].as_str()?.to_owned(), mime: attach_mime(value["mime"].as_str()?)?, bytes }
+            PageRequest::Attach { name: value["name"].as_str()?.to_owned(), bytes }
         }
         "view" => match &value["view"] {
             Value::Null => PageRequest::View(None),
@@ -297,7 +294,7 @@ mod tests {
         assert!(parse_message(r#"{"type":"view","view":"source"}"#).is_none());
         assert!(matches!(parse_message(r#"{"type":"reload"}"#), Some(PageRequest::Reload)));
         let attach = parse_message(r#"{"type":"attach","name":"a.png","mime":"image/png","base64":"AAEC"}"#);
-        assert!(matches!(attach, Some(PageRequest::Attach { mime: "image/png", bytes, .. }) if bytes == [0, 1, 2]));
+        assert!(matches!(attach, Some(PageRequest::Attach { bytes, .. }) if bytes == [0, 1, 2]));
         assert!(parse_message(r#"{"type":"attach","name":"a.svg","mime":"image/svg+xml","base64":"AAEC"}"#).is_none());
         assert!(viewer_url("http://127.0.0.1:1/launch?t=x", "hex", "a.bin", "w", 3, "v1", None, true).contains(&encode("&back=1")));
     }

@@ -660,13 +660,8 @@ impl ChatPane {
                     })
                 });
                 if let Some(image) = image {
-                    let mime = match image.format {
-                        ImageFormat::Jpeg => "image/jpeg",
-                        ImageFormat::Gif => "image/gif",
-                        ImageFormat::Webp => "image/webp",
-                        _ => "image/png",
-                    };
-                    self.attach_image(tr(cx, "chat.clipboardImage").to_string(), NewImage::Bytes(image.bytes.clone()), mime, None, window, cx);
+                    // Windows hands over a screenshot as a BMP; `encode_image` types and converts it.
+                    self.attach_image(tr(cx, "chat.clipboardImage").to_string(), NewImage::Bytes(image.bytes.clone()), None, window, cx);
                     cx.stop_propagation();
                 }
             }
@@ -675,20 +670,20 @@ impl ChatPane {
     }
 
     /// Encode an image a viewer page sent, then attach it; `added` is said once it is attached.
-    pub fn attach_bytes(&mut self, name: String, bytes: Vec<u8>, mime: &'static str, added: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.attach_image(name, NewImage::Bytes(bytes), mime, added, window, cx);
+    pub fn attach_bytes(&mut self, name: String, bytes: Vec<u8>, added: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.attach_image(name, NewImage::Bytes(bytes), added, window, cx);
     }
 
     /// Read and encode an image off the interface thread, then attach it to the draft it was added to; `added` is said
     /// once it is attached.
-    fn attach_image(&mut self, name: String, image: NewImage, mime: &'static str, added: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn attach_image(&mut self, name: String, image: NewImage, added: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.draft_key.clone();
         let prepared = cx.background_spawn(async move {
             let bytes = match image {
                 NewImage::Bytes(bytes) => bytes,
                 NewImage::File(path) => crate::ui::composer::read_image(&path)?,
             };
-            let (content, shown) = crate::ui::composer::prepare_image(&bytes, mime)?;
+            let (content, shown) = crate::ui::composer::prepare_image(&bytes)?;
             let preview = Arc::new(Image::from_bytes(image_format(&content.mime_type), shown));
             Ok::<_, ImageError>(Attachment { content, preview })
         });
@@ -728,8 +723,8 @@ impl ChatPane {
         let mut references = Vec::new();
         for path in paths {
             let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            if let Some(mime) = crate::ui::composer::image_mime(&path) {
-                self.attach_image(name, NewImage::File(path), mime, None, window, cx);
+            if crate::ui::composer::is_image_file(&path) {
+                self.attach_image(name, NewImage::File(path), None, window, cx);
                 continue;
             }
             match crate::ui::composer::host_path(&path, target.as_ref()) {

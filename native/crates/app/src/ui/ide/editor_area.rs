@@ -70,7 +70,7 @@ enum Picture {
 /// What the editor area asks of the window around it.
 pub enum EditorAreaEvent {
     /// Add an image a page made to the AI composer.
-    AttachImage { name: String, mime: &'static str, bytes: Vec<u8> },
+    AttachImage { name: String, bytes: Vec<u8> },
 }
 
 impl EventEmitter<EditorAreaEvent> for EditorArea {}
@@ -345,7 +345,7 @@ impl EditorArea {
                     });
                 }
                 Some(PageRequest::Call { id, name, params }) => self.answer(key, id, &name, &params, window, cx),
-                Some(PageRequest::Attach { name, mime, bytes }) => cx.emit(EditorAreaEvent::AttachImage { name, mime, bytes }),
+                Some(PageRequest::Attach { name, bytes }) => cx.emit(EditorAreaEvent::AttachImage { name, bytes }),
                 Some(PageRequest::View(view)) => {
                     let key = key.to_owned();
                     self.ide.update(cx, |ide, cx| ide.set_view(&key, view.as_deref(), cx));
