@@ -52,10 +52,12 @@ impl ExecutionTarget {
 
     fn validate(self) -> Result<Self> {
         match &self {
-            Self::Windows { id, .. } if id != "windows-local" => bail!("Invalid Windows target"),
-            Self::Wsl { distro, .. } if distro.is_empty() || distro.len() > 256 => bail!("Invalid WSL distribution"),
+            Self::Windows { id, .. } if id != "windows-local" => bail!(localized("保存的 Windows 执行环境无效。", "The saved Windows execution environment is not valid.")),
+            Self::Wsl { distro, .. } if distro.is_empty() || distro.len() > 256 => {
+                bail!(localized("保存的 WSL 发行版名称无效。", "The saved WSL distribution name is not valid."))
+            }
             Self::Ssh { id, destination, .. } if !id.starts_with("ssh:") || destination.is_empty() || destination.len() > 255 => {
-                bail!("Invalid SSH target")
+                bail!(localized("保存的 SSH 主机无效。", "The saved SSH host is not valid."))
             }
             _ => Ok(self),
         }
@@ -80,7 +82,7 @@ pub fn recover_preferences(path: &Path) -> Result<Map<String, Value>> {
     match std::fs::read(path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(error) => return Err(error).with_context(|| format!("Reading {}", path.display())),
+        Err(error) => return Err(error).with_context(|| localized(&format!("无法读取 {}", path.display()), &format!("Reading {}", path.display()))),
     }
     let _guard = UPDATES.lock().unwrap();
     match read_preferences(path) {
@@ -89,7 +91,8 @@ pub fn recover_preferences(path: &Path) -> Result<Map<String, Value>> {
             let mut aside = path.as_os_str().to_owned();
             aside.push(".damaged");
             log::warn!("{error:#}; it is moved aside and Rainy starts with default settings");
-            std::fs::rename(path, &aside).with_context(|| format!("Moving {} aside", path.display()))?;
+            std::fs::rename(path, &aside)
+                .with_context(|| localized(&format!("无法把损坏的 {} 移到一旁", path.display()), &format!("Moving the damaged {} aside", path.display())))?;
             Ok(Map::new())
         }
     }

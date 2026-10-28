@@ -94,7 +94,7 @@ pub fn target(destination: &Destination) -> ExecutionTarget {
 pub fn destination_of(target: &ExecutionTarget) -> Result<Destination> {
     match target {
         ExecutionTarget::Ssh { destination, port, .. } => parse_destination(destination, port.map(u32::from)),
-        _ => bail!("The selected execution target is not an SSH host"),
+        _ => bail!(localized("所选执行环境不是 SSH 主机。", "The selected execution environment is not an SSH host.")),
     }
 }
 
