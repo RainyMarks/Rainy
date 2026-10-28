@@ -227,10 +227,20 @@ struct Inner {
     progress: Option<String>,
     error: Option<String>,
     health: Option<Health>,
+    /// Counts what Rainy itself learned about the server (started, stopped, exited, settings saved), so an answer of the
+    /// port asked before that is not taken over it.
+    generation: u64,
     owned: Option<Arc<Owned>>,
     cancel: Option<Arc<AtomicBool>>,
     worker: Option<JoinHandle<()>>,
     closed: bool,
+}
+
+impl Inner {
+    fn set_health(&mut self, health: Option<Health>) {
+        self.health = health;
+        self.generation += 1;
+    }
 }
 
 /// The one owner of Rainy's Strata engine.
@@ -371,17 +381,26 @@ impl Manager {
     /// The public state; `refresh` asks the port's server (up to 3 s, so call it off the interface thread).
     pub fn status(&self, refresh: bool) -> Result<Status> {
         self.initialize()?;
-        let phase_now = self.inner.lock().unwrap().phase;
+        let (phase_now, generation, port) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.phase, inner.generation, inner.settings.port)
+        };
         if refresh && !matches!(phase_now, Some(Phase::Preparing | Phase::Stopping)) {
-            let observed = health::read(self.port()).ok();
-            self.inner.lock().unwrap().health = observed;
+            let observed = health::read(port).ok();
+            let mut inner = self.inner.lock().unwrap();
+            // A start, stop or save while the port was asked knows better than its answer.
+            if inner.generation == generation {
+                inner.health = observed;
+            }
         }
         let profiles = model::discover_profiles(self.profile_settings.as_deref());
         let runtime = self.runtime();
         let inner = self.inner.lock().unwrap();
         let owned = inner.owned.is_some();
         let unconfigured = if inner.settings.model_path.is_empty() { Phase::Unconfigured } else { Phase::Stopped };
-        let phase = if !owned && inner.health.is_some() { Phase::External } else { inner.phase.unwrap_or(unconfigured) };
+        // While Rainy stops its own server, the answer it has is still that server's, not another one's.
+        let external = !owned && inner.health.is_some() && inner.phase != Some(Phase::Stopping);
+        let phase = if external { Phase::External } else { inner.phase.unwrap_or(unconfigured) };
         Ok(Status {
             phase,
             settings: inner.settings.clone(),
@@ -424,7 +443,7 @@ impl Manager {
             inner.phase = Some(if next.model_path.is_empty() { Phase::Unconfigured } else { Phase::Stopped });
             inner.settings = next;
             inner.model = resolved;
-            inner.health = None;
+            inner.set_health(None);
         }
         self.status(true)
     }
@@ -470,7 +489,7 @@ impl Manager {
             if health.model != selected.model.model {
                 bail!(localized("所选端口已有另一个 Strata 模型；请更换端口，现有服务保持不变。", "Another Strata model is already using the selected port. Choose a different port; the running server is left unchanged."));
             }
-            self.inner.lock().unwrap().health = Some(health);
+            self.inner.lock().unwrap().set_health(Some(health));
             return self.status(false);
         }
         self.resident_budget()?;
@@ -490,7 +509,7 @@ impl Manager {
                     owned.stop();
                 }
                 let mut inner = this.inner.lock().unwrap();
-                inner.health = None;
+                inner.set_health(None);
                 inner.progress = None;
                 if cancel.load(Ordering::SeqCst) {
                     inner.phase = Some(Phase::Stopped);
@@ -626,7 +645,7 @@ impl Manager {
                 }
                 {
                     let mut inner = self.inner.lock().unwrap();
-                    inner.health = Some(health);
+                    inner.set_health(Some(health));
                     inner.phase = Some(Phase::Running);
                     inner.progress = None;
                 }
@@ -653,7 +672,7 @@ impl Manager {
                 return;
             }
             inner.owned = None;
-            inner.health = None;
+            inner.set_health(None);
             inner.phase = Some(Phase::Error);
             inner.error = Some(localized("Strata 服务已退出。模型文件和设置已保留。", "The Strata server exited. Model files and settings are kept."));
         }
@@ -684,7 +703,7 @@ impl Manager {
         let mut inner = self.inner.lock().unwrap();
         inner.owned = None;
         inner.cancel = None;
-        inner.health = None;
+        inner.set_health(None);
         inner.progress = None;
         inner.phase = Some(if inner.settings.model_path.is_empty() { Phase::Unconfigured } else { Phase::Stopped });
     }
@@ -778,6 +797,64 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         fs::write(&path, format!("\u{feff}{text}")).unwrap();
         assert_eq!(Manager::new(dir.path().join("runtime"), &dir.path().join("user"), || {}).status(false).unwrap().settings.port, 18082);
+    }
+
+    /// A manager whose settings name a model and `port`, without reading a settings file.
+    fn configured(dir: &Path, port: u16, phase: Phase) -> Arc<Manager> {
+        let manager = Manager::new(dir.join("runtime"), &dir.join("user"), || {});
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.initialized = true;
+            inner.settings.model_path = r"D:\models\qwen.gguf".into();
+            inner.settings.port = port;
+            inner.phase = Some(phase);
+        }
+        manager
+    }
+
+    #[test]
+    fn a_status_check_that_races_a_stop_does_not_undo_it() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Rainy's server answers the check slowly, and has stopped by the time the answer arrives.
+        let server = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0u8; 1024]);
+            std::thread::sleep(Duration::from_millis(600));
+            let body = r#"{"status":"ok","service":"strata","model":"qwen","max_context":32768,"loaded":true,"api_key":false}"#;
+            let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let manager = configured(dir.path(), port, Phase::Running);
+        let checking = {
+            let manager = manager.clone();
+            std::thread::spawn(move || manager.status(true).map(|status| status.phase))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        // What a stop records once the server it started has exited.
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.set_health(None);
+            inner.phase = Some(Phase::Stopped);
+        }
+        checking.join().unwrap().unwrap();
+        server.join().unwrap();
+        let status = manager.status(false).unwrap();
+        assert_eq!(status.phase, Phase::Stopped);
+        assert_eq!(status.server, None);
+    }
+
+    #[test]
+    fn rainys_own_server_reads_as_stopping_not_as_another_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = configured(dir.path(), 18083, Phase::Stopping);
+        let health = Health { base_url: "http://127.0.0.1:18083/v1".into(), model: "qwen".into(), context_window: 32768, loaded: true, authentication_required: false };
+        manager.inner.lock().unwrap().health = Some(health);
+        assert_eq!(manager.status(false).unwrap().phase, Phase::Stopping);
+        // A server answering while nothing of Rainy's runs is another one.
+        manager.inner.lock().unwrap().phase = Some(Phase::Stopped);
+        assert_eq!(manager.status(false).unwrap().phase, Phase::External);
     }
 
     #[cfg(windows)]
