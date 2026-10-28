@@ -1034,7 +1034,8 @@ impl ChatPane {
     /// Host uses. None when the model has a single level.
     fn thinking_state(&self, cx: &App) -> Option<ThinkingState> {
         let current = self.current_model(cx)?;
-        let levels = self.store.read(cx).models.as_ref()?.thinking_levels.get(&current.provider).cloned().unwrap_or_default();
+        let reasoning = self.store.read(cx).models.as_ref()?.model(&current.provider)?.reasoning();
+        let levels: Vec<String> = reasoning.levels().map(|level| level.as_str().to_owned()).collect();
         if levels.len() < 2 {
             return None;
         }

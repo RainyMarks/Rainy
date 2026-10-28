@@ -60,24 +60,16 @@ fn with_images(setup: &ModelSetup) -> ModelSetup {
     ModelSetup { images: Some(Model::from_setup(setup, 0).images), ..setup.clone() }
 }
 
-/// The levels a profile accepts, in escalation order.
+/// The levels a profile's model offers, weakest first (`rainy_protocol::reasoning`); none for a model without
+/// reasoning control.
 pub fn thinking_levels(setup: &ModelSetup) -> Vec<Level> {
-    if setup.api.as_deref() == Some("anthropic-messages")
-        && let Some(claude) = llm::catalog::claude(&setup.model)
-    {
-        return Level::ALL.into_iter().filter(|level| claude.levels.offers(level.as_str())).collect();
-    }
-    if setup.thinking.is_none() { vec![Level::Off] } else { Level::ALL.to_vec() }
+    llm::reasoning_of(setup).levels().collect()
 }
 
-/// The level a request uses; a model that cannot turn reasoning off thinks a little instead.
+/// The level a request uses: the one asked for, else the profile's, else the provider's default, moved to the nearest
+/// the model offers (a model that cannot turn reasoning off thinks a little instead). None for a model without levels.
 pub fn effective_thinking(setup: &ModelSetup, requested: Option<&str>) -> Option<Level> {
-    let requested = Level::parse(requested.or(setup.thinking.as_deref())?)?;
-    let levels = thinking_levels(setup);
-    if levels.contains(&requested) {
-        return Some(requested);
-    }
-    if requested == Level::Off && levels.contains(&Level::Low) { Some(Level::Low) } else { levels.last().copied() }
+    llm::reasoning_of(setup).choose(requested.or(setup.thinking.as_deref()))
 }
 
 /// A model resolved for one request.
@@ -228,15 +220,13 @@ impl Models {
         }
         // Presets count too: a preset that shares a stored key saves without one.
         let credentials: Vec<String> = providers.into_iter().filter(|provider| self.settings.api_key(provider).is_some_and(|key| key != LOCAL_NO_KEY)).collect();
-        let levels: serde_json::Map<String, Value> =
-            data.models.iter().map(|model| (model.provider.clone(), json!(thinking_levels(model).iter().map(|level| level.as_str()).collect::<Vec<_>>()))).collect();
         let models: Vec<ModelSetup> = data.models.iter().map(with_images).collect();
+        // The interface reads each model's levels from its profile with the same table (`ModelSetup::reasoning`).
         let mut status = json!({
             "models": models,
             "credentials": credentials,
             "keysEncrypted": self.settings.keys_sealed(),
             "selected": data.selected,
-            "thinkingLevels": levels,
             "presets": presets.iter().map(|(name, model)| json!({ "name": name, "model": with_images(model) })).collect::<Vec<_>>(),
             "globalPrompt": { "text": data.global_prompt, "maxChars": GLOBAL_PROMPT_MAX_CHARS },
         });
@@ -540,16 +530,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_levels_like_3x() {
+    fn resolves_levels_per_model() {
         let presets = presets();
-        let opus = &presets[1].1;
+        let (deepseek, opus) = (&presets[0].1, &presets[1].1);
         // Claude Opus 5.5 cannot turn reasoning off; it thinks a little instead.
-        assert_eq!(thinking_levels(opus), vec![Level::Low, Level::High, Level::Max]);
+        assert_eq!(thinking_levels(opus), vec![Level::Low, Level::Medium, Level::High, Level::XHigh, Level::Max]);
         assert_eq!(effective_thinking(opus, Some("off")), Some(Level::Low));
-        let mut plain = presets[0].1.clone();
-        plain.thinking = None;
-        assert_eq!(effective_thinking(&plain, Some("high")), Some(Level::Off));
-        assert_eq!(thinking_levels(&presets[0].1), Level::ALL.to_vec());
+        assert_eq!(effective_thinking(opus, None), Some(Level::High));
+        assert_eq!(thinking_levels(deepseek), vec![Level::Off, Level::Low, Level::High, Level::Max]);
+        // DeepSeek has no medium; it maps medium to high itself.
+        assert_eq!(effective_thinking(deepseek, Some("medium")), Some(Level::High));
+        // Without a level anywhere, the provider's default.
+        let unset = ModelSetup { thinking: None, ..deepseek.clone() };
+        assert_eq!(effective_thinking(&unset, None), Some(Level::High));
+        // A model the table does not know reasons only when its profile has a level.
+        let house = ModelSetup { model: "house-model".into(), base_url: "https://llm.example.com/v1".into(), ..unset };
+        assert_eq!((thinking_levels(&house), effective_thinking(&house, Some("high"))), (Vec::new(), None));
+        let reasoning = ModelSetup { thinking: Some("max".into()), ..house };
+        assert_eq!(effective_thinking(&reasoning, None), Some(Level::High));
+    }
+
+    #[test]
+    fn saves_finer_levels_where_older_versions_read_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Arc::new(Settings::load(dir.path(), None).unwrap());
+        let network = Arc::new(Network::new(false, None));
+        let models = Models::new(settings.clone(), network.clone(), Arc::new(Llm::new(network, "test")));
+        let form = json!({ "provider": "my-ai", "baseURL": "https://api.openai.com/v1", "model": "gpt-5.5", "contextWindow": 400000, "local": false, "apiKey": "k", "thinking": "medium" });
+        models.configure(&form).unwrap();
+        models.select(&ModelSelection { provider: "my-ai".into(), model: "gpt-5.5".into(), thinking: Some("xhigh".into()) }).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap()).unwrap();
+        // 3.x and 4.0–4.2 read `thinking`; this version reads `thinkingLevel` first.
+        assert_eq!((&saved["models"][0]["thinking"], &saved["models"][0]["thinkingLevel"]), (&json!("high"), &json!("medium")));
+        assert_eq!((&saved["selected"]["thinking"], &saved["selected"]["thinkingLevel"]), (&json!("high"), &json!("xhigh")));
+        assert_eq!(models.resolve(None).unwrap().thinking, Some(Level::XHigh));
+        // A level the model lacks moves to the nearest it offers: GPT-5.5 stops at xhigh.
+        models.select(&ModelSelection { provider: "my-ai".into(), model: "gpt-5.5".into(), thinking: Some("max".into()) }).unwrap();
+        assert_eq!(settings.get().selected.unwrap().thinking.as_deref(), Some("xhigh"));
+        assert!(parse_setup(&json!({ "provider": "x", "baseURL": "https://h", "model": "m", "contextWindow": 128000, "local": false, "thinking": "ultra" })).is_err());
     }
 
     #[test]

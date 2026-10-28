@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use rainy_protocol::reasoning;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -21,28 +22,86 @@ pub const LOCAL_NO_KEY: &str = "rainy-local-no-key";
 /// Remembered approvals per project are capped, so a runaway model cannot grow the file without bound.
 const MAX_RULES: usize = 200;
 
+/// A saved model profile. `thinking` names any reasoning level and is stored as `thinking` with the nearest name 3.x
+/// and 4.0–4.2 read, plus `thinkingLevel` with the level itself when that differs (`rainy_protocol::reasoning`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(from = "StoredModel", into = "StoredModel")]
 pub struct ModelSetup {
     pub provider: String,
-    #[serde(rename = "baseURL")]
     pub base_url: String,
     pub model: String,
     pub context_window: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
     pub local: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens_field: Option<String>,
     /// Whether requests may carry images; unset, only a model of the Claude catalog takes them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredModel {
+    provider: String,
+    #[serde(rename = "baseURL")]
+    base_url: String,
+    model: String,
+    context_window: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u64>,
+    local: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_tokens_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    images: Option<bool>,
+}
+
+impl From<StoredModel> for ModelSetup {
+    fn from(stored: StoredModel) -> Self {
+        Self {
+            provider: stored.provider,
+            base_url: stored.base_url,
+            model: stored.model,
+            context_window: stored.context_window,
+            max_tokens: stored.max_tokens,
+            local: stored.local,
+            api: stored.api,
+            thinking: reasoning::read_level(stored.thinking, stored.thinking_level),
+            thinking_format: stored.thinking_format,
+            max_tokens_field: stored.max_tokens_field,
+            images: stored.images,
+        }
+    }
+}
+
+impl From<ModelSetup> for StoredModel {
+    fn from(setup: ModelSetup) -> Self {
+        let (thinking, thinking_level) = reasoning::store_level(setup.thinking.as_deref());
+        Self {
+            provider: setup.provider,
+            base_url: setup.base_url,
+            model: setup.model,
+            context_window: setup.context_window,
+            max_tokens: setup.max_tokens,
+            local: setup.local,
+            api: setup.api,
+            thinking,
+            thinking_level,
+            thinking_format: setup.thinking_format,
+            max_tokens_field: setup.max_tokens_field,
+            images: setup.images,
+        }
+    }
 }
 
 /// The model a chat or future chats use; the page reads the same type.
@@ -232,7 +291,7 @@ pub fn check_model(model: &ModelSetup) -> HostResult<()> {
         && model.context_window >= 4096
         && model.max_tokens.is_none_or(|tokens| tokens > 0)
         && model.api.as_deref().is_none_or(|api| ["openai-completions", "openai-responses", "anthropic-messages"].contains(&api))
-        && model.thinking.as_deref().is_none_or(|level| ["off", "low", "high", "max"].contains(&level))
+        && model.thinking.as_deref().is_none_or(|level| reasoning::Level::parse(level).is_some())
         && model.thinking_format.as_deref().is_none_or(|format| ["openai", "deepseek", "qwen"].contains(&format))
         && model.max_tokens_field.as_deref().is_none_or(|field| ["max_tokens", "max_completion_tokens"].contains(&field));
     if ok { Ok(()) } else { Err(HostError::invalid(l("模型设置无效。", "The model settings are not valid."))) }
@@ -555,6 +614,24 @@ mod tests {
         assert_eq!(saved["ui"], json!({"locale": "en", "uiFontSize": 15, "theme": "dark"}));
         assert_eq!(saved["models"][0]["baseURL"], "https://api.deepseek.com");
         assert!(settings.set_prefs(Map::from_iter([("uiFontSize".to_owned(), json!(30))])).is_err());
+    }
+
+    #[test]
+    fn stores_finer_levels_beside_the_names_older_versions_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = r#"{"provider":"my-ai","baseURL":"https://api.openai.com/v1","model":"gpt-5.5","contextWindow":400000,"local":false,"thinking":"high","thinkingLevel":"medium"}"#;
+        let text = format!(r#"{{"version":1,"models":[{model}],"selected":{{"provider":"my-ai","model":"gpt-5.5","thinking":"high","thinkingLevel":"xhigh"}},"globalPrompt":"","mcpServers":[],"ui":{{}}}}"#);
+        std::fs::write(dir.path().join("settings.json"), text).unwrap();
+        let settings = Settings::load(dir.path(), None).unwrap();
+        let data = settings.get();
+        assert_eq!(data.models[0].thinking.as_deref(), Some("medium"));
+        assert_eq!(data.selected.as_ref().and_then(|selected| selected.thinking.as_deref()), Some("xhigh"));
+        settings.set_prefs(Map::from_iter([("theme".to_owned(), json!("dark"))])).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["models"][0], serde_json::from_str::<Value>(model).unwrap());
+        // Every level is valid; a name no version knows is not.
+        assert!(check_model(&ModelSetup { thinking: Some("minimal".into()), ..data.models[0].clone() }).is_ok());
+        assert!(check_model(&ModelSetup { thinking: Some("ultra".into()), ..data.models[0].clone() }).is_err());
     }
 
     #[test]

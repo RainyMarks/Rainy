@@ -7,13 +7,12 @@ use rainy_protocol::chat::{AssistantBlock, AssistantMessage, ResultContent};
 use serde_json::{Map, Value, json};
 
 use super::json::parse_arguments;
-use super::{Event, HttpRequest, Level, Message, Model, Part, Reader, Request, UserContent, preview_arguments, replay, usage};
+use super::{Control, Event, HttpRequest, Level, Message, Model, Part, Reader, Request, UserContent, Wire, preview_arguments, replay, usage};
 
-/// What a server is, by its provider id and address (pi-ai `detectCompat`).
+/// What a server is, by its provider id and address (pi-ai `detectCompat`); where it takes the reasoning level is the
+/// model's `reasoning.control`.
 struct Compat {
     store: bool,
-    reasoning_effort: bool,
-    thinking_format: String,
     /// DeepSeek wants `reasoning_content` on every assistant message of a reasoning model.
     reasoning_on_assistant: bool,
     openrouter: bool,
@@ -35,24 +34,7 @@ fn compat(model: &Model) -> Compat {
     let grok = provider == "xai" || url.contains("api.x.ai");
     let opencode = provider == "opencode" || url.contains("opencode.ai");
     let nonstandard = nvidia || cerebras || grok || together || url.contains("chutes.ai") || deepseek || zai || moonshot || opencode || cloudflare || gateway || ling;
-    let detected = if deepseek {
-        "deepseek"
-    } else if zai {
-        "zai"
-    } else if together {
-        "together"
-    } else if openrouter {
-        "openrouter"
-    } else {
-        "openai"
-    };
-    Compat {
-        store: !nonstandard,
-        reasoning_effort: !grok && !zai && !moonshot && !together && !gateway && !nvidia && !ling,
-        thinking_format: model.thinking_format.clone().unwrap_or_else(|| detected.into()),
-        reasoning_on_assistant: deepseek,
-        openrouter,
-    }
+    Compat { store: !nonstandard, reasoning_on_assistant: deepseek, openrouter }
 }
 
 /// A Responses API tool call id (`call|item`) in the form Chat Completions accepts.
@@ -166,7 +148,7 @@ fn assistant(model: &Model, reply: &AssistantMessage, compat: &Compat) -> Option
     if has_calls {
         message.insert("tool_calls".into(), Value::Array(calls));
     }
-    if compat.reasoning_on_assistant && model.reasoning && !message.contains_key("reasoning_content") {
+    if compat.reasoning_on_assistant && model.reasoning.reasons() && !message.contains_key("reasoning_content") {
         message.insert("reasoning_content".into(), json!(""));
     }
     (!text.is_empty() || has_calls).then_some(Value::Object(message))
@@ -204,8 +186,8 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     if request.no_tool_calls && !request.tools.is_empty() {
         body.insert("tool_choice".into(), json!("none"));
     }
-    if model.reasoning {
-        thinking(model, request.reasoning.filter(|level| *level != Level::Off), &compat, &mut body);
+    if let Some((_, wire)) = model.level(request.reasoning) {
+        reasoning(model, wire, &mut body);
     }
     let mut headers = Vec::new();
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
@@ -220,52 +202,74 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     (HttpRequest { url, headers, body: Value::Object(body) }, Box::new(CompletionsReader::default()))
 }
 
-/// Reasoning parameters in the server's dialect.
-fn thinking(model: &Model, effort: Option<Level>, compat: &Compat, body: &mut Map<String, Value>) {
-    let named = |level: Level| json!(model.levels.name(level.as_str()).unwrap_or(level.as_str()));
-    let off = model.levels.name("off").map(str::to_owned);
-    match compat.thinking_format.as_str() {
-        "deepseek" => {
-            if effort.is_some() {
-                body.insert("thinking".into(), json!({ "type": "enabled" }));
-            } else if model.levels.has_off() {
-                body.insert("thinking".into(), json!({ "type": "disabled" }));
-            }
-            if let Some(level) = effort.filter(|_| compat.reasoning_effort) {
-                body.insert("reasoning_effort".into(), named(level));
+/// The reasoning parameters of one level, where the model's server takes them (`docs/reasoning-models.md`).
+fn reasoning(model: &Model, wire: Wire, body: &mut Map<String, Value>) {
+    let on = wire != Wire::Off;
+    let effort = match wire {
+        Wire::Effort(name) => Some(name),
+        _ => None,
+    };
+    match model.reasoning.control {
+        Control::None | Control::Claude { .. } => {}
+        Control::Effort => {
+            // `none` turns reasoning off; a level the model names no grade for turns it on at the server's own amount.
+            let value = match wire {
+                Wire::Off => Some("none"),
+                Wire::Effort(name) => Some(name),
+                Wire::On => Some("high"),
+                Wire::Budget(_) => None,
+            };
+            if let Some(value) = value {
+                body.insert("reasoning_effort".into(), json!(value));
             }
         }
-        "qwen" => {
-            body.insert("enable_thinking".into(), json!(effort.is_some()));
-            if let Some(level) = effort.filter(|_| compat.reasoning_effort) {
-                body.insert("reasoning_effort".into(), named(level));
+        Control::Thinking { keep } => {
+            let mut thinking = json!({ "type": if on { "enabled" } else { "disabled" } });
+            if keep && on {
+                thinking["clear_thinking"] = json!(false);
+            }
+            body.insert("thinking".into(), thinking);
+            if let Some(effort) = effort {
+                body.insert("reasoning_effort".into(), json!(effort));
             }
         }
-        "zai" => {
-            body.insert("thinking".into(), if effort.is_some() { json!({ "type": "enabled", "clear_thinking": false }) } else { json!({ "type": "disabled" }) });
-        }
-        "together" => {
-            body.insert("reasoning".into(), json!({ "enabled": effort.is_some() }));
-        }
-        "openrouter" => match effort {
-            Some(level) => {
-                body.insert("reasoning".into(), json!({ "effort": named(level) }));
+        Control::DashScope => {
+            // A model that always thinks takes no switch.
+            if model.reasoning.wire(Level::Off).is_some() {
+                body.insert("enable_thinking".into(), json!(on));
             }
-            None if model.levels.has_off() => {
-                body.insert("reasoning".into(), json!({ "effort": off.unwrap_or_else(|| "none".into()) }));
-            }
-            None => {}
-        },
-        _ => match effort {
-            Some(level) if compat.reasoning_effort => {
-                body.insert("reasoning_effort".into(), named(level));
-            }
-            None if compat.reasoning_effort => {
-                if let Some(Some(off)) = model.levels.entry("off") {
-                    body.insert("reasoning_effort".into(), json!(off));
+            match wire {
+                Wire::Effort(name) => {
+                    body.insert("reasoning_effort".into(), json!(name));
                 }
+                Wire::Budget(tokens) => {
+                    body.insert("thinking_budget".into(), json!(tokens));
+                }
+                Wire::Off | Wire::On => {}
             }
-            _ => {}
+        }
+        Control::Template => {
+            body.insert("chat_template_kwargs".into(), json!({ "enable_thinking": on }));
+            if let Some(effort) = effort {
+                body.insert("reasoning_effort".into(), json!(effort));
+            }
+        }
+        Control::OpenRouter => {
+            let reasoning = match wire {
+                Wire::Off => json!({ "effort": "none" }),
+                Wire::On => json!({ "enabled": true }),
+                Wire::Effort(name) => json!({ "effort": name }),
+                Wire::Budget(tokens) => json!({ "max_tokens": tokens }),
+            };
+            body.insert("reasoning".into(), reasoning);
+        }
+        Control::Together => match effort {
+            Some(effort) => {
+                body.insert("reasoning_effort".into(), json!(effort));
+            }
+            None => {
+                body.insert("reasoning".into(), json!({ "enabled": on }));
+            }
         },
     }
 }
@@ -429,24 +433,16 @@ impl Reader for CompletionsReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::llm::{Api, LevelMap, ToolSpec};
+    use crate::agent::llm::test_support::{body_for, reasoning_fields, setup};
+    use crate::agent::llm::{Api, ToolSpec};
+    use crate::settings::ModelSetup;
 
     fn model(provider: &str, url: &str) -> Model {
-        Model {
-            api: Api::Completions,
-            id: "m".into(),
-            provider: provider.into(),
-            base_url: url.into(),
-            reasoning: true,
-            images: false,
-            context_window: 128_000,
-            max_tokens: 8000,
-            levels: LevelMap::EFFORTS,
-            cost: Default::default(),
-            claude: None,
-            max_tokens_field: Some("max_tokens".into()),
-            thinking_format: None,
-        }
+        Model::from_setup(&ModelSetup { provider: provider.into(), ..setup(Api::Completions, url, "deepseek-flash") }, 8000)
+    }
+
+    fn fields(base_url: &str, id: &str, level: Option<Level>) -> Value {
+        reasoning_fields(&body_for(&Model::from_setup(&setup(Api::Completions, base_url, id), 8000), level))
     }
 
     #[test]
@@ -464,14 +460,85 @@ mod tests {
         let (http, _) = super::request(&model, &request, Some("k"), "ua");
         let body = &http.body;
         assert_eq!(http.url, "https://api.deepseek.com/chat/completions");
-        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
-        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(reasoning_fields(body), json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "high" }));
         assert!(body.get("store").is_none());
         assert_eq!(body["messages"][0], json!({ "role": "system", "content": "sys" }));
         assert_eq!(body["messages"][2]["reasoning_content"], "plan");
         assert_eq!(body["messages"][2]["tool_calls"][0]["function"]["arguments"], r#"{"path":"a"}"#);
         // The unanswered call gets a failed result.
         assert_eq!(body["messages"][3]["content"], "No result provided");
+    }
+
+    #[test]
+    fn sends_each_family_its_own_reasoning_fields() {
+        use Level::{High, Low, Max, Medium, Minimal, Off, XHigh};
+        let dashscope = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        let cases: &[(&str, &str, Option<Level>, Value)] = &[
+            // DeepSeek: a switch and low, high or max; medium asks for high, as DeepSeek maps it.
+            ("https://api.deepseek.com", "deepseek-flash", Some(Off), json!({ "thinking": { "type": "disabled" } })),
+            ("https://api.deepseek.com", "deepseek-v4-pro", Some(Medium), json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "high" })),
+            ("https://api.deepseek.com", "deepseek-v4-pro", Some(Max), json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "max" })),
+            // OpenAI: `none` turns reasoning off where a model allows it; GPT-5.5 stops at xhigh.
+            ("https://api.openai.com/v1", "gpt-5.5", Some(Off), json!({ "reasoning_effort": "none" })),
+            ("https://api.openai.com/v1", "gpt-5.5", Some(Max), json!({ "reasoning_effort": "xhigh" })),
+            ("https://api.openai.com/v1", "gpt-6.1-sol", Some(Off), json!({ "reasoning_effort": "low" })),
+            ("https://api.openai.com/v1", "gpt-5-mini", Some(Minimal), json!({ "reasoning_effort": "minimal" })),
+            ("https://api.openai.com/v1", "gpt-4.1", Some(High), json!({})),
+            // Gemini and xAI take OpenAI's field with their own names; no level asks for the weakest.
+            ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.1-pro-preview", None, json!({ "reasoning_effort": "low" })),
+            ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", Some(Off), json!({ "reasoning_effort": "none" })),
+            ("https://api.x.ai/v1", "grok-4.7", Some(XHigh), json!({ "reasoning_effort": "xhigh" })),
+            ("https://api.x.ai/v1", "grok-4.20-0309-reasoning", Some(High), json!({})),
+            // Zhipu GLM keeps earlier reasoning; GLM-5.3 always thinks.
+            ("https://open.bigmodel.cn/api/paas/v4", "glm-5.2", Some(Max), json!({ "thinking": { "type": "enabled", "clear_thinking": false }, "reasoning_effort": "max" })),
+            ("https://open.bigmodel.cn/api/paas/v4", "glm-5.2", Some(Off), json!({ "thinking": { "type": "disabled" } })),
+            ("https://api.z.ai/api/paas/v4", "glm-5.3", Some(Off), json!({ "thinking": { "type": "enabled", "clear_thinking": false }, "reasoning_effort": "low" })),
+            ("https://api.z.ai/api/paas/v4", "glm-4.7", Some(High), json!({ "thinking": { "type": "enabled", "clear_thinking": false } })),
+            // Moonshot: Kimi K3 grades with `reasoning_effort`, K2.6 only switches.
+            ("https://api.moonshot.cn/v1", "kimi-k3.1-pro", Some(High), json!({ "reasoning_effort": "high" })),
+            ("https://api.moonshot.cn/v1", "kimi-k2.6", Some(Off), json!({ "thinking": { "type": "disabled" } })),
+            // DashScope: `enable_thinking`, with Qwen3.8's names or a budget; a model that always thinks takes no switch.
+            (dashscope, "qwen3.8-max", Some(High), json!({ "enable_thinking": true, "reasoning_effort": "xhigh" })),
+            (dashscope, "qwen3.8-max", Some(Off), json!({ "enable_thinking": false })),
+            (dashscope, "qwen3.6-plus", Some(Low), json!({ "enable_thinking": true, "thinking_budget": 4096 })),
+            (dashscope, "qwen3.6-plus", Some(High), json!({ "enable_thinking": true })),
+            (dashscope, "qwen3.7-max-preview", Some(Medium), json!({ "thinking_budget": 16384 })),
+            (dashscope, "deepseek-v4.1-flash", Some(Low), json!({ "enable_thinking": true, "reasoning_effort": "low" })),
+            // OpenRouter's own object, with budgets for models graded by them.
+            ("https://openrouter.ai/api/v1", "openai/gpt-5.5", Some(High), json!({ "reasoning": { "effort": "high" } })),
+            ("https://openrouter.ai/api/v1", "openai/gpt-5.5", Some(Off), json!({ "reasoning": { "effort": "none" } })),
+            ("https://openrouter.ai/api/v1", "qwen/qwen3.6-plus", Some(Medium), json!({ "reasoning": { "max_tokens": 16384 } })),
+            // Together switches hybrid models; gpt-oss is graded.
+            ("https://api.together.xyz/v1", "deepseek-ai/DeepSeek-V4-Pro-0813", Some(Max), json!({ "reasoning": { "enabled": true } })),
+            ("https://api.together.xyz/v1", "deepseek-ai/DeepSeek-V4-Pro-0813", Some(Off), json!({ "reasoning": { "enabled": false } })),
+            ("https://api.together.xyz/v1", "openai/gpt-oss-120b", Some(Low), json!({ "reasoning_effort": "low" })),
+            ("https://integrate.api.nvidia.com/v1", "nvidia/nemotron-3-super-120b-a12b", Some(Off), json!({ "chat_template_kwargs": { "enable_thinking": false } })),
+            ("https://api.cerebras.ai/v1", "qwen-3.8-27b", Some(XHigh), json!({ "reasoning_effort": "high" })),
+            ("https://api.mistral.ai/v1", "mistral-small-latest", Some(Low), json!({ "reasoning_effort": "high" })),
+        ];
+        for (url, id, level, expected) in cases {
+            assert_eq!(fields(url, id, *level), *expected, "{id} at {level:?}");
+        }
+    }
+
+    #[test]
+    fn local_servers_take_the_format_the_profile_names() {
+        let local = |id: &str, format: Option<&str>| {
+            let setup = ModelSetup { local: true, thinking_format: format.map(str::to_owned), ..setup(Api::Completions, "http://127.0.0.1:8080/v1", id) };
+            Model::from_setup(&setup, 8000)
+        };
+        let fields = |model: &Model, level: Level| reasoning_fields(&body_for(model, Some(level)));
+        // llama.cpp, Ollama and Strata read `reasoning_effort`; Qwen3.8 keeps its own names, Qwen3.6 only switches.
+        assert_eq!(fields(&local("Qwen3.8-27B", Some("openai")), Level::XHigh), json!({ "reasoning_effort": "xhigh" }));
+        assert_eq!(fields(&local("Qwen3.8-27B", Some("openai")), Level::Off), json!({ "reasoning_effort": "none" }));
+        assert_eq!(fields(&local("qwen3.6-35b-a3b", None), Level::Medium), json!({ "reasoning_effort": "high" }));
+        // vLLM and SGLang switch Qwen through the chat template.
+        assert_eq!(fields(&local("qwen3.6-35b-a3b", Some("qwen")), Level::Off), json!({ "chat_template_kwargs": { "enable_thinking": false } }));
+        assert_eq!(fields(&local("Qwen3.8-27B", Some("qwen")), Level::Low), json!({ "chat_template_kwargs": { "enable_thinking": true }, "reasoning_effort": "low" }));
+        // A model the table does not know follows its profile: OpenAI's names up to high, or nothing.
+        assert_eq!(fields(&local("house-model", Some("openai")), Level::Max), json!({ "reasoning_effort": "high" }));
+        let plain = Model::from_setup(&ModelSetup { thinking: None, local: true, ..setup(Api::Completions, "http://127.0.0.1:8080/v1", "house-model") }, 8000);
+        assert_eq!(fields(&plain, Level::High), json!({}));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use rainy_protocol::chat::{AssistantBlock, AssistantMessage, ResultContent};
 use serde_json::{Map, Value, json};
 
 use super::json::parse_arguments;
-use super::{Event, HttpRequest, Level, Message, Model, Part, Reader, Request, UserContent, preview_arguments, replay, usage};
+use super::{Event, HttpRequest, Message, Model, Part, Reader, Request, UserContent, Wire, preview_arguments, replay, usage};
 
 /// Providers whose tool call ids carry the Responses item id (`call|item`).
 const ITEM_ID_PROVIDERS: &[&str] = &["openai", "openai-codex", "opencode"];
@@ -75,7 +75,7 @@ fn tool_output(model: &Model, content: &[ResultContent]) -> Value {
 fn input(model: &Model, request: &Request<'_>) -> Vec<Value> {
     let mut items = Vec::new();
     if !request.system.is_empty() {
-        items.push(json!({ "role": if model.reasoning { "developer" } else { "system" }, "content": request.system }));
+        items.push(json!({ "role": if model.reasoning.reasons() { "developer" } else { "system" }, "content": request.system }));
     }
     for (index, message) in replay(request.messages, model, &|id, source| normalize_id(id, model, source)).iter().enumerate() {
         match message {
@@ -159,17 +159,20 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
             body.insert("tool_choice".into(), json!("none"));
         }
     }
-    if model.reasoning {
-        match request.reasoning.filter(|level| *level != Level::Off) {
-            Some(level) => {
-                body.insert("reasoning".into(), json!({ "effort": model.levels.name(level.as_str()).unwrap_or(level.as_str()), "summary": "auto" }));
-                body.insert("include".into(), json!(["reasoning.encrypted_content"]));
-            }
-            None if model.levels.has_off() => {
-                body.insert("reasoning".into(), json!({ "effort": model.levels.name("off").unwrap_or("none") }));
-            }
-            None => {}
+    match model.level(request.reasoning).map(|(_, wire)| wire) {
+        Some(Wire::Off) => {
+            body.insert("reasoning".into(), json!({ "effort": "none" }));
         }
+        Some(wire) => {
+            // A level without a grade (a budget the API has no field for, or plain on) leaves the server's own amount.
+            let mut reasoning = json!({ "summary": "auto" });
+            if let Wire::Effort(name) = wire {
+                reasoning["effort"] = json!(name);
+            }
+            body.insert("reasoning".into(), reasoning);
+            body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+        }
+        None => {}
     }
     let mut headers = Vec::new();
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
@@ -426,24 +429,35 @@ impl Reader for ResponsesReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::llm::{Api, LevelMap};
+    use crate::agent::llm::test_support::{body_for, reasoning_fields, setup};
+    use crate::agent::llm::{Api, Level};
+    use crate::settings::ModelSetup;
 
     fn model() -> Model {
-        Model {
-            api: Api::Responses,
-            id: "gpt".into(),
-            provider: "openai".into(),
-            base_url: "https://api.openai.com/v1".into(),
-            reasoning: true,
-            images: true,
-            context_window: 400_000,
-            max_tokens: 32_000,
-            levels: LevelMap::EFFORTS,
-            cost: Default::default(),
-            claude: None,
-            max_tokens_field: None,
-            thinking_format: None,
-        }
+        let setup = ModelSetup { provider: "openai".into(), images: Some(true), ..setup(Api::Responses, "https://api.openai.com/v1", "gpt-5.5") };
+        Model::from_setup(&setup, 32_000)
+    }
+
+    #[test]
+    fn sends_the_effort_each_model_takes() {
+        use Level::{High, Max, Off, XHigh};
+        let fields = |base_url: &str, id: &str, level: Option<Level>| reasoning_fields(&body_for(&Model::from_setup(&setup(Api::Responses, base_url, id), 8000), level));
+        let on = |effort: &str| json!({ "reasoning": { "effort": effort, "summary": "auto" }, "include": ["reasoning.encrypted_content"] });
+        assert_eq!(fields("https://api.openai.com/v1", "gpt-5.5", Some(Off)), json!({ "reasoning": { "effort": "none" } }));
+        assert_eq!(fields("https://api.openai.com/v1", "gpt-5.5", Some(Max)), on("xhigh"));
+        assert_eq!(fields("https://api.openai.com/v1", "gpt-6.1-sol", Some(Max)), on("max"));
+        // GPT-6 Astra cannot turn reasoning off: a request without reasoning thinks a little.
+        assert_eq!(fields("https://api.openai.com/v1", "gpt-6-astra", None), on("low"));
+        assert_eq!(fields("https://api.openai.com/v1", "gpt-5-pro", Some(Off)), on("high"));
+        assert_eq!(fields("https://api.openai.com/v1", "gpt-4o", Some(High)), json!({}));
+        assert_eq!(fields("https://api.deepseek.com", "deepseek-flash", Some(XHigh)), on("max"));
+        assert_eq!(fields("https://api.deepseek.com", "deepseek-flash", Some(Off)), json!({ "reasoning": { "effort": "none" } }));
+        assert_eq!(fields("https://api.x.ai/v1", "grok-4.3", Some(Off)), json!({ "reasoning": { "effort": "none" } }));
+        assert_eq!(fields("https://api.moonshot.ai/v1", "kimi-k3", None), on("low"));
+        // Qwen3.5 has no named grades and the Responses API no budget: on leaves DashScope's own amount.
+        let dashscope = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        assert_eq!(fields(dashscope, "qwen3.5-plus", Some(High)), json!({ "reasoning": { "summary": "auto" }, "include": ["reasoning.encrypted_content"] }));
+        assert_eq!(fields(dashscope, "qwen3.8-max", Some(High)), on("xhigh"));
     }
 
     #[test]

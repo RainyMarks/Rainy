@@ -332,7 +332,7 @@ impl ModelsPage {
             let default = status.selected.as_ref().is_some_and(|selected| key_of(&selected.provider, &selected.model) == key);
             let kind = tr(cx, if model.local { "settings.settingsLocalModel" } else { "settings.settingsApiModel" });
             let detail = trf(cx, "settings.modelContext", &[("kind", &kind), ("context", &(model.context_window as u64))]);
-            let levels = status.thinking_levels.get(&model.provider).cloned().unwrap_or_else(|| THINKING.iter().map(|s| (*s).to_owned()).collect());
+            let levels: Vec<String> = model.reasoning().levels().map(|level| level.as_str().to_owned()).collect();
             let current_thinking = status.selected.as_ref().and_then(|s| s.thinking.clone()).or_else(|| model.thinking.clone()).unwrap_or_else(|| "off".into());
             let (select_model, edit_model, remove_model) = (model.clone(), model.clone(), model.clone());
             let edit_key = key.clone();
@@ -484,7 +484,8 @@ impl ModelsPage {
             _ => tr(cx, "settings.settingsAddModel"),
         };
         let levels: Vec<(String, SharedString)> = status
-            .and_then(|status| status.thinking_levels.get(&provider).cloned())
+            .and_then(|status| status.model(&provider))
+            .map(|model| model.reasoning().levels().map(|level| level.as_str().to_owned()).collect::<Vec<_>>())
             .unwrap_or_else(|| THINKING.iter().map(|s| (*s).to_owned()).collect())
             .into_iter()
             .map(|level| {

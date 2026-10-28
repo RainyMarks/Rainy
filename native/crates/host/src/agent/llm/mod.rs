@@ -37,97 +37,20 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 /// Error bodies are cut to this many characters.
 const MAX_ERROR_BODY_CHARS: usize = 4000;
 
-/// The wire protocol of a model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Api {
-    Completions,
-    Responses,
-    Anthropic,
-}
+/// The wire protocol of a model, and Rainy's reasoning levels with what each model offers (shared with the interface).
+pub use rainy_protocol::reasoning::{Api, Control, Level, Reasoning, Wire};
 
-impl Api {
-    pub fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "openai-completions" => Self::Completions,
-            "openai-responses" => Self::Responses,
-            "anthropic-messages" => Self::Anthropic,
-            _ => return None,
-        })
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Completions => "openai-completions",
-            Self::Responses => "openai-responses",
-            Self::Anthropic => "anthropic-messages",
-        }
-    }
-}
-
-/// Rainy's reasoning levels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Level {
-    Off,
-    Low,
-    High,
-    Max,
-}
-
-impl Level {
-    pub const ALL: [Level; 4] = [Level::Off, Level::Low, Level::High, Level::Max];
-
-    pub fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "off" => Self::Off,
-            "low" => Self::Low,
-            "high" => Self::High,
-            "max" => Self::Max,
-            _ => return None,
-        })
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::High => "high",
-            Self::Max => "max",
-        }
-    }
-}
-
-/// How a model names each reasoning level on the wire (pi-ai `thinkingLevelMap`): a level it does not list keeps its
-/// own name, one listed as `None` is not offered.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct LevelMap(pub &'static [(&'static str, Option<&'static str>)]);
-
-impl LevelMap {
-    /// The OpenAI-style reasoning efforts of a model Rainy describes itself.
-    pub const EFFORTS: LevelMap =
-        LevelMap(&[("off", Some("none")), ("minimal", None), ("low", Some("low")), ("medium", None), ("high", Some("high")), ("xhigh", None), ("max", Some("max"))]);
-
-    fn entry(&self, level: &str) -> Option<Option<&'static str>> {
-        self.0.iter().find(|(name, _)| *name == level).map(|(_, value)| *value)
-    }
-
-    /// Whether the model offers a level.
-    pub fn offers(&self, level: &str) -> bool {
-        self.entry(level) != Some(None)
-    }
-
-    /// The level's wire name, or `None` when it is not offered.
-    pub fn name<'a>(&self, level: &'a str) -> Option<&'a str> {
-        match self.entry(level) {
-            Some(Some(name)) => Some(name),
-            Some(None) => None,
-            None => Some(level),
-        }
-    }
-
-    /// Whether `off` is a level of its own (it is unless the map refuses it).
-    pub fn has_off(&self) -> bool {
-        self.entry("off") != Some(None)
-    }
+/// What a saved profile's model offers for reasoning.
+pub fn reasoning_of(setup: &ModelSetup) -> Reasoning {
+    rainy_protocol::reasoning::reasoning(&rainy_protocol::reasoning::Profile {
+        api: Api::of(setup.api.as_deref(), setup.local),
+        base_url: &setup.base_url,
+        provider: &setup.provider,
+        model: &setup.model,
+        thinking_format: setup.thinking_format.as_deref(),
+        local: setup.local,
+        reasoning: setup.thinking.is_some(),
+    })
 }
 
 /// Dollars per million tokens.
@@ -146,60 +69,41 @@ pub struct Model {
     pub id: String,
     pub provider: String,
     pub base_url: String,
-    pub reasoning: bool,
     pub images: bool,
     pub context_window: u64,
     /// The output budget of a request.
     pub max_tokens: u64,
-    pub levels: LevelMap,
+    /// The reasoning levels the model offers and where a request carries them.
+    pub reasoning: Reasoning,
     pub cost: Cost,
-    /// Claude's request options, for a model of the Anthropic catalog.
-    pub claude: Option<catalog::ClaudeOptions>,
     /// `max_tokens` or `max_completion_tokens` (Chat Completions).
     pub max_tokens_field: Option<String>,
-    /// `openai`, `deepseek` or `qwen` (Chat Completions).
-    pub thinking_format: Option<String>,
 }
 
 impl Model {
     /// The model a saved profile streams; its output budget comes from the profile.
     pub fn from_setup(setup: &ModelSetup, output_tokens: u64) -> Self {
-        let api = setup.api.as_deref().and_then(Api::parse).unwrap_or(if setup.local { Api::Completions } else { Api::Responses });
-        if api == Api::Anthropic
-            && let Some(claude) = catalog::claude(&setup.model)
-        {
-            return Model {
-                api,
-                id: setup.model.clone(),
-                provider: setup.provider.clone(),
-                base_url: setup.base_url.clone(),
-                reasoning: claude.reasoning,
-                images: setup.images.unwrap_or(true),
-                context_window: setup.context_window,
-                max_tokens: output_tokens,
-                levels: claude.levels.clone(),
-                cost: claude.cost,
-                claude: Some(claude.options),
-                max_tokens_field: None,
-                thinking_format: None,
-            };
-        }
-        let reasoning = setup.thinking.is_some();
+        let api = Api::of(setup.api.as_deref(), setup.local);
+        let price = (api == Api::Anthropic).then(|| catalog::claude_price(&setup.model)).flatten();
         Model {
             api,
             id: setup.model.clone(),
             provider: setup.provider.clone(),
             base_url: setup.base_url.clone(),
-            reasoning,
-            images: setup.images.unwrap_or(false),
+            images: setup.images.unwrap_or(price.is_some()),
             context_window: setup.context_window,
             max_tokens: output_tokens,
-            levels: if reasoning { LevelMap::EFFORTS } else { LevelMap::default() },
-            cost: Cost::default(),
-            claude: None,
+            reasoning: reasoning_of(setup),
+            cost: price.unwrap_or_default(),
             max_tokens_field: (api == Api::Completions).then(|| setup.max_tokens_field.clone().unwrap_or_else(|| "max_tokens".into())),
-            thinking_format: setup.thinking_format.clone(),
         }
+    }
+
+    /// The level a request for `requested` sends with its wire form: `None` and off ask for no reasoning, which a
+    /// model that cannot turn it off answers with its weakest level. Nothing for a model without levels.
+    pub fn level(&self, requested: Option<Level>) -> Option<(Level, Wire)> {
+        let level = self.reasoning.resolve(requested.unwrap_or(Level::Off))?;
+        Some((level, self.reasoning.wire(level)?))
     }
 
     /// Whether the model behind a local address, which serves one request at a time.
@@ -271,7 +175,7 @@ pub struct Request<'a> {
     pub system: &'a str,
     pub messages: &'a [Message],
     pub tools: &'a [ToolSpec],
-    /// The reasoning level; `None` and `Off` request no reasoning.
+    /// The reasoning level; `None` and `Off` request no reasoning ([`Model::level`]).
     pub reasoning: Option<Level>,
     /// Output cap below the model's budget.
     pub max_tokens: Option<u64>,
@@ -800,6 +704,47 @@ fn without_images(parts: &[Part], placeholder: &str) -> Vec<Part> {
     result
 }
 
+/// Request bodies for the protocols' tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// An API model's profile with a reasoning level.
+    pub fn setup(api: Api, base_url: &str, model: &str) -> ModelSetup {
+        ModelSetup {
+            provider: "p".into(),
+            base_url: base_url.into(),
+            model: model.into(),
+            context_window: 128_000,
+            max_tokens: Some(8000),
+            local: false,
+            api: Some(api.as_str().into()),
+            thinking: Some("high".into()),
+            thinking_format: None,
+            max_tokens_field: None,
+            images: None,
+        }
+    }
+
+    /// The body of a one-message request at a reasoning level.
+    pub fn body_for(model: &Model, level: Option<Level>) -> Value {
+        let messages = [Message::user("hi")];
+        let request = Request { reasoning: level, ..Request::new("sys", &messages, &[]) };
+        let http = match model.api {
+            Api::Completions => completions::request(model, &request, None, "ua").0,
+            Api::Responses => responses::request(model, &request, None, "ua").0,
+            Api::Anthropic => anthropic::request(model, &request, None, &mut empty_reply(model)).0,
+        };
+        http.body
+    }
+
+    /// The reasoning fields of a request body.
+    pub fn reasoning_fields(body: &Value) -> Value {
+        let keys = ["reasoning_effort", "thinking", "enable_thinking", "thinking_budget", "chat_template_kwargs", "reasoning", "include", "output_config"];
+        Value::Object(keys.iter().filter_map(|key| body.get(*key).map(|value| ((*key).to_owned(), value.clone()))).collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,15 +774,12 @@ mod tests {
             id: "m".into(),
             provider: "p".into(),
             base_url: "http://127.0.0.1:1".into(),
-            reasoning: false,
             images: false,
             context_window: 32_000,
             max_tokens: 8000,
-            levels: LevelMap::default(),
+            reasoning: Reasoning::NONE,
             cost: Cost::default(),
-            claude: None,
             max_tokens_field: None,
-            thinking_format: None,
         };
         let reply = |timestamp: f64, input: u64| {
             let mut reply = empty_reply(&model);
