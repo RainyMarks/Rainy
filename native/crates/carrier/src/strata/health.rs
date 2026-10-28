@@ -5,9 +5,10 @@ use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 
+use crate::http;
 use crate::locale::localized;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -45,31 +46,8 @@ fn request(port: u16, method: &str, path: &str, body: &str, timeout: Duration) -
     stream.write_all(head.as_bytes())?;
     let mut answer = Vec::new();
     stream.take((MAX_BODY + 8192) as u64).read_to_end(&mut answer)?;
-    let split = answer.windows(4).position(|window| window == b"\r\n\r\n").context("The Strata server sent an incomplete answer")?;
-    let head = String::from_utf8_lossy(&answer[..split]).into_owned();
-    let status = head.split_whitespace().nth(1).and_then(|code| code.parse::<u16>().ok()).context("The Strata server sent an invalid answer")?;
-    let mut body = answer[split + 4..].to_vec();
-    if head.lines().any(|line| line.to_ascii_lowercase().starts_with("transfer-encoding:") && line.to_ascii_lowercase().contains("chunked")) {
-        body = dechunk(&body)?;
-    }
-    Ok((status, body))
-}
-
-fn dechunk(mut data: &[u8]) -> Result<Vec<u8>> {
-    let mut body = Vec::new();
-    loop {
-        let line = data.windows(2).position(|window| window == b"\r\n").context("Invalid chunked answer")?;
-        let size = usize::from_str_radix(String::from_utf8_lossy(&data[..line]).split(';').next().unwrap_or("").trim(), 16)?;
-        data = &data[line + 2..];
-        if size == 0 {
-            return Ok(body);
-        }
-        if data.len() < size || body.len() + size > MAX_BODY {
-            bail!("Invalid chunked answer");
-        }
-        body.extend_from_slice(&data[..size]);
-        data = data.get(size + 2..).unwrap_or_default();
-    }
+    let response = http::parse(&answer, || localized("这个端口上的服务返回了无效的 HTTP 回答。", "The service on this port sent an invalid HTTP answer."))?;
+    Ok((response.status, response.body))
 }
 
 /// The server's public state, also when it is not loaded or needs a key.
