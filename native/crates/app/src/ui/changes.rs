@@ -1,5 +1,5 @@
-//! The files the agent changed in the current chat, above the composer (`ChangesBar.tsx`): review each in the
-//! editor, keep it, or undo it.
+//! The files the agent changed in the current chat (`ChangesBar.tsx`): review each in the editor, keep it, or undo
+//! it. A bar above the composer, or the changes panel of Agent mode (`docked`), which lists them all.
 
 use std::time::Duration;
 
@@ -25,6 +25,8 @@ pub struct ChangesBar {
     session: Option<String>,
     changes: Vec<ChatChange>,
     open: bool,
+    /// Shown as the changes panel of Agent mode, where the composer leaves it out.
+    docked: bool,
     pending: bool,
     refresh: Option<Task<()>>,
     scroll: ScrollHandle,
@@ -47,9 +49,35 @@ impl ChangesBar {
             _ => {}
         })];
         let session = store.read(cx).selected.clone();
-        let mut bar = Self { store, session, changes: Vec::new(), open: false, pending: false, refresh: None, scroll: ScrollHandle::new(), _subscriptions: subscriptions };
+        let mut bar = Self {
+            store,
+            session,
+            changes: Vec::new(),
+            open: false,
+            docked: false,
+            pending: false,
+            refresh: None,
+            scroll: ScrollHandle::new(),
+            _subscriptions: subscriptions,
+        };
         bar.load(cx);
         bar
+    }
+
+    pub fn docked(&self) -> bool {
+        self.docked
+    }
+
+    pub fn set_docked(&mut self, docked: bool, cx: &mut Context<Self>) {
+        if self.docked != docked {
+            self.docked = docked;
+            cx.notify();
+        }
+    }
+
+    /// How many files the chat changed and nobody kept or undid yet.
+    pub fn count(&self) -> usize {
+        self.changes.len()
     }
 
     /// Read the list a moment after the last change event; edits come in bursts.
@@ -166,6 +194,7 @@ impl ChangesBar {
                     let base = value["base"].as_str().unwrap_or_default().to_owned();
                     let current = value["current"].as_str().unwrap_or_default().to_owned();
                     ide.update(cx, |ide, cx| ide.show_review(key, base, current, window, cx));
+                    crate::ui::agent::reveal_editor(cx);
                 }
                 Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
             });
@@ -194,19 +223,17 @@ impl ChangesBar {
     }
 }
 
-impl Render for ChangesBar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.changes.is_empty() {
-            return div().into_any_element();
-        }
+impl ChangesBar {
+    /// The count and lines changed (a click opens or closes the bar's list), Keep all and Undo all.
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme().clone();
         let busy = self.busy(cx);
         let added: u64 = self.changes.iter().map(|change| change.added).sum();
         let removed: u64 = self.changes.iter().map(|change| change.removed).sum();
         let undoable = self.changes.iter().any(|change| change.undoable);
-        let auto_keep = self.store.read(cx).prefs.auto_keep_changes;
         let all = self.changes.clone();
-        let header = h_flex()
+        let docked = self.docked;
+        h_flex()
             .gap_2()
             .items_center()
             .child(
@@ -216,18 +243,20 @@ impl Render for ChangesBar {
                     .min_w_0()
                     .gap_1p5()
                     .items_center()
-                    .cursor_pointer()
-                    .child(Icon::new(if self.open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(theme.muted_foreground))
+                    .when(!docked, |this| {
+                        this.cursor_pointer()
+                            .child(Icon::new(if self.open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(theme.muted_foreground))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open = !this.open;
+                                if this.open {
+                                    this.load(cx);
+                                }
+                                cx.notify();
+                            }))
+                    })
                     .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(trf(cx, "review.changesTitle", &[("count", &self.changes.len())])))
                     .child(div().flex_shrink_0().text_xs().text_color(theme.success).child(format!("+{added}")))
-                    .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}")))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open = !this.open;
-                        if this.open {
-                            this.load(cx);
-                        }
-                        cx.notify();
-                    })),
+                    .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}"))),
             )
             .child(Button::new("changes-keep-all").outline().xsmall().label(tr(cx, "review.changesKeepAll")).disabled(self.pending).on_click(cx.listener(
                 move |this, _, window, cx| this.keep(all.clone(), window, cx),
@@ -240,60 +269,114 @@ impl Render for ChangesBar {
                     .disabled(self.pending || busy || !undoable)
                     .when(busy, |this| this.tooltip(tr(cx, "review.changesBusy")))
                     .on_click(cx.listener(|this, _, window, cx| this.confirm_undo_all(window, cx))),
-            );
-        let rows: Vec<AnyElement> = if self.open {
-            self.changes
-                .iter()
-                .enumerate()
-                .map(|(index, change)| {
-                    let display = change.display.replace('\\', "/");
-                    let (directory, name) = display.rsplit_once('/').map_or((String::new(), display.clone()), |(d, n)| (d.to_owned(), n.to_owned()));
-                    let reviewable = change.comparable && !change.deleted;
-                    let (reviewed, kept, undone) = (change.clone(), change.clone(), change.clone());
-                    h_flex()
-                        .id(("change", index))
-                        .h(px(28.))
-                        .flex_shrink_0()
-                        .gap_1p5()
-                        .items_center()
-                        .text_sm()
-                        .child(Icon::new(file_icon(&name)).small())
-                        // The name gives way before the buttons do, so a long one never pushes them out of a narrow pane.
-                        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
-                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
-                        .when(change.created, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.success).child(tr(cx, "review.changesCreated"))))
-                        .when(change.deleted, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(tr(cx, "review.changesDeleted"))))
-                        .child(if change.comparable {
-                            h_flex()
-                                .flex_shrink_0()
-                                .gap_1()
-                                .text_xs()
-                                .child(div().text_color(theme.success).child(format!("+{}", change.added)))
-                                .child(div().text_color(theme.danger).child(format!("−{}", change.removed)))
-                                .into_any_element()
-                        } else {
-                            div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child("…").into_any_element()
-                        })
-                        .child(Button::new(("change-review", index)).ghost().xsmall().label(tr(cx, "review.changesReview")).disabled(!reviewable).on_click(cx.listener(
-                            move |this, _, window, cx| this.review(reviewed.clone(), window, cx),
-                        )))
-                        .child(Button::new(("change-keep", index)).ghost().xsmall().label(tr(cx, "review.changesKeep")).disabled(self.pending).on_click(cx.listener(
-                            move |this, _, window, cx| this.keep(vec![kept.clone()], window, cx),
-                        )))
-                        .child(
-                            Button::new(("change-undo", index))
-                                .ghost()
-                                .xsmall()
-                                .label(tr(cx, "review.changesUndo"))
-                                .disabled(self.pending || busy || !change.undoable)
-                                .on_click(cx.listener(move |this, _, window, cx| this.undo(vec![undone.clone()], window, cx))),
-                        )
-                        .into_any_element()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+            )
+    }
+
+    /// One row per file: its name and folder, what happened to it, and review, keep and undo.
+    fn render_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let busy = self.busy(cx);
+        self.changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let display = change.display.replace('\\', "/");
+                let (directory, name) = display.rsplit_once('/').map_or((String::new(), display.clone()), |(d, n)| (d.to_owned(), n.to_owned()));
+                let reviewable = change.comparable && !change.deleted;
+                let (reviewed, kept, undone) = (change.clone(), change.clone(), change.clone());
+                h_flex()
+                    .id(("change", index))
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .gap_1p5()
+                    .items_center()
+                    .text_sm()
+                    .child(Icon::new(file_icon(&name)).small())
+                    // The name gives way before the buttons do, so a long one never pushes them out of a narrow pane.
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
+                    .when(change.created, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.success).child(tr(cx, "review.changesCreated"))))
+                    .when(change.deleted, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(tr(cx, "review.changesDeleted"))))
+                    .child(if change.comparable {
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap_1()
+                            .text_xs()
+                            .child(div().text_color(theme.success).child(format!("+{}", change.added)))
+                            .child(div().text_color(theme.danger).child(format!("−{}", change.removed)))
+                            .into_any_element()
+                    } else {
+                        div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child("…").into_any_element()
+                    })
+                    .child(Button::new(("change-review", index)).ghost().xsmall().label(tr(cx, "review.changesReview")).disabled(!reviewable).on_click(cx.listener(
+                        move |this, _, window, cx| this.review(reviewed.clone(), window, cx),
+                    )))
+                    .child(Button::new(("change-keep", index)).ghost().xsmall().label(tr(cx, "review.changesKeep")).disabled(self.pending).on_click(cx.listener(
+                        move |this, _, window, cx| this.keep(vec![kept.clone()], window, cx),
+                    )))
+                    .child(
+                        Button::new(("change-undo", index))
+                            .ghost()
+                            .xsmall()
+                            .label(tr(cx, "review.changesUndo"))
+                            .disabled(self.pending || busy || !change.undoable)
+                            .on_click(cx.listener(move |this, _, window, cx| this.undo(vec![undone.clone()], window, cx))),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    /// The changes panel of Agent mode: the whole list, scrolling in the panel's height.
+    fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        if self.changes.is_empty() {
+            let key = if self.session.is_some() { "agent.changesNone" } else { "agent.changesNoChat" };
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .p_6()
+                .gap_2()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(gpui_kit::assets::IconName::GitCompare).large())
+                .child(div().text_center().child(tr(cx, key)))
+                .into_any_element();
+        }
+        let auto_keep = self.store.read(cx).prefs.auto_keep_changes;
+        let header = self.render_header(cx);
+        let rows = self.render_rows(cx);
+        v_flex()
+            .size_full()
+            .child(div().flex_shrink_0().px_3().py_2().border_b_1().border_color(theme.border).child(header))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(v_flex().id("changes-list").size_full().px_3().py_1().overflow_y_scroll().track_scroll(&self.scroll).children(rows))
+                    .vertical_scrollbar(&self.scroll),
+            )
+            .when(auto_keep, |this| {
+                this.child(div().flex_shrink_0().px_3().py_2().border_t_1().border_color(theme.border).text_xs().text_color(theme.muted_foreground).child(tr(cx, "review.changesAutoKeep")))
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for ChangesBar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.docked {
+            return self.render_panel(cx);
+        }
+        if self.changes.is_empty() {
+            return div().into_any_element();
+        }
+        let theme = cx.theme().clone();
+        let auto_keep = self.store.read(cx).prefs.auto_keep_changes;
+        let header = self.render_header(cx);
+        let rows = if self.open { self.render_rows(cx) } else { Vec::new() };
         v_flex()
             .flex_shrink_0()
             .mx_3()

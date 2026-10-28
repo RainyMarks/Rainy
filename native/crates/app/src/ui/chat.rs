@@ -1,5 +1,7 @@
 //! The AI pane: the selected chat's transcript, its approvals and queue, and the composer
-//! (`ChatPane.tsx`, `Composer.tsx`, `ApprovalBar.tsx`, `ModelPicker.tsx`, `PermissionPicker.tsx`).
+//! (`ChatPane.tsx`, `Composer.tsx`, `ApprovalBar.tsx`, `ModelPicker.tsx`, `PermissionPicker.tsx`). In Agent mode the
+//! same pane is the middle of the window (`wide`): the transcript in a centred column, the composer below it with the
+//! permission, model and context under it, and a new chat's composer in the middle under a greeting.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -115,6 +117,8 @@ pub struct ChatPane {
     thinking_drag: Option<usize>,
     background_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
+    /// Drawn as the middle of Agent mode rather than as the IDE's side pane.
+    wide: bool,
     _subscriptions: Vec<Subscription>,
     chat_subscription: Option<Subscription>,
 }
@@ -214,12 +218,32 @@ impl ChatPane {
             thinking_drag: None,
             background_scroll: ScrollHandle::new(),
             queue_scroll: ScrollHandle::new(),
+            wide: false,
             _subscriptions: subscriptions,
             chat_subscription: None,
         };
         pane.follow_selected(window, cx);
         pane.read_default_permission(cx);
         pane
+    }
+
+    /// Draw the pane as the middle of Agent mode, or as the IDE's AI pane.
+    pub fn set_wide(&mut self, wide: bool, cx: &mut Context<Self>) {
+        if self.wide != wide {
+            self.wide = wide;
+            // Rows wrap at another width.
+            self.list.remeasure();
+            cx.notify();
+        }
+    }
+
+    pub fn focus_composer(&self, window: &mut Window, cx: &mut App) {
+        self.composer.update(cx, |state, cx| state.focus(window, cx));
+    }
+
+    /// The files the chat changed, which Agent mode shows in its changes panel.
+    pub fn changes(&self) -> Entity<crate::ui::changes::ChangesBar> {
+        self.changes.clone()
     }
 
     /// Show the chat the store has selected, with the composer's text and images for it.
@@ -441,6 +465,7 @@ impl ChatPane {
         if session.is_none() {
             self.creating = true;
         }
+        let since = self.store.read(cx).selections;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let session = match session {
@@ -450,8 +475,12 @@ impl ChatPane {
                     let _ = this.update(cx, |this, cx| {
                         this.creating = false;
                         cx.notify();
-                        if let Ok(id) = &created {
-                            // A composer still on the new chat now belongs to the chat made for its message.
+                        // The chat made for the message is shown only while the user still waits for it on the new
+                        // chat; one who went to another chat meanwhile stays there and finds it in the list.
+                        if let Ok(id) = &created
+                            && this.store.read(cx).selections == since
+                        {
+                            // The composer, still on the new chat, now belongs to the chat made for its message.
                             if this.draft_key.is_none() {
                                 this.draft_key = Some(id.clone());
                             }
@@ -1182,6 +1211,158 @@ impl ChatPane {
                     })),
             )
     }
+
+    /// A new chat, or one with nothing in it yet; not a chat being created for the message just sent.
+    fn is_blank(&self, cx: &App) -> bool {
+        match &self.chat {
+            None => !self.creating_here(),
+            Some(chat) => chat.read(cx).view.as_ref().is_some_and(|view| view.snapshot.entries.is_empty() && view.snapshot.streaming.is_none() && !view.busy()),
+        }
+    }
+
+    /// Agent mode's new chat: a greeting and the project above the composer, in the middle of the window.
+    fn render_greeting(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let ide = crate::store::ide::Ide::global(cx).read(cx);
+        let (project, path): (SharedString, SharedString) = match &ide.workspace {
+            Some(workspace) => (workspace.title.clone().into(), workspace.path.clone().into()),
+            None => (tr(cx, "agent.chooseProject"), tr(cx, "native.projects")),
+        };
+        let project = crate::ui::agent::with_project_menu(
+            Button::new("greeting-project").ghost().small().icon(Icon::new(IconName::FolderOpen)).label(project).dropdown_caret(true).tooltip(path),
+            cx,
+        );
+        let suggestions = (!self.suggestions.is_empty() && self.trigger.is_some()).then(|| self.render_suggestions(cx));
+        let composer = self.render_composer_wide(locale, cx);
+        let footer = self.render_composer_footer(locale, cx);
+        v_flex()
+            .id("greeting")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .items_center()
+            .justify_center()
+            .px_4()
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(px(crate::ui::agent::COLUMN))
+                    .px_1()
+                    .child(
+                        v_flex()
+                            .items_center()
+                            .gap_2()
+                            .pb_4()
+                            .child(img("brand/rainy-mark.svg").size(px(36.)))
+                            .child(div().text_2xl().font_semibold().text_center().child(tr(cx, "agent.greeting")))
+                            .child(project),
+                    )
+                    .children(suggestions)
+                    .child(composer)
+                    .child(footer),
+            )
+    }
+
+    /// Agent mode's composer: images inside it above the text, attach at the bottom left and send or stop at the
+    /// bottom right; the pickers are under it (`render_composer_footer`).
+    fn render_composer_wide(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let busy = self.busy(cx);
+        let creating = self.creating_here();
+        let session = self.session_id(cx);
+        let attachments = (!self.attachments.is_empty()).then(|| self.render_attachments(cx));
+        let theme = cx.theme();
+        v_flex()
+            .id("composer")
+            .flex_shrink_0()
+            .mx_3()
+            .px_3()
+            .pt_3()
+            .pb_2()
+            .gap_2()
+            .rounded(theme.radius_lg * 1.25)
+            .border_1()
+            .border_color(theme.input)
+            .bg(theme.popover)
+            .shadow_sm()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.border_color(cx.theme().ring))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.attach_paths(paths.paths().to_vec(), window, cx)))
+            .children(attachments)
+            .child(Textarea::new(&self.composer).appearance(false))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Button::new("attach-image")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Plus)
+                            .tooltip(tr(cx, "agent.attach"))
+                            .on_click(cx.listener(|this, _, window, cx| this.choose_images(window, cx))),
+                    )
+                    .child(div().flex_1())
+                    .child(if busy {
+                        Button::new("stop")
+                            .small()
+                            .icon(IconName::Square)
+                            .tooltip(i18n::text(locale, "chat.stop"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(session) = session.clone() {
+                                    this.call("chat.abort", json!({ "sessionId": session }), window, cx);
+                                }
+                            }))
+                    } else {
+                        Button::new("send")
+                            .primary()
+                            .small()
+                            .icon(IconName::ArrowUp)
+                            .loading(creating)
+                            .tooltip(i18n::text(locale, if creating { "chat.creating" } else { "chat.send" }))
+                            .on_click(cx.listener(|this, _, window, cx| this.send(false, window, cx)))
+                    }),
+            )
+    }
+
+    /// Under Agent mode's composer: the permission mode on the left; the model, its reasoning and how full the
+    /// context is on the right. The model gives way in a narrow window; the ring never leaves it.
+    fn render_composer_footer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
+        let model_picker = self.model_picker(locale, cx);
+        let thinking_picker = self.thinking_picker(locale, cx);
+        let permission_picker = self.permission_picker(locale, cx);
+        let ring = context.map(|context| {
+            let fraction = if context.input_limit > 0.0 { (context.tokens / context.input_limit) as f32 } else { 0. };
+            let tip = trf(cx, "agent.contextUsage", &[
+                ("percent", &(fraction * 100.).round()),
+                ("used", &crate::ui::format_tokens(context.tokens)),
+                ("limit", &crate::ui::format_tokens(context.input_limit)),
+            ]);
+            let theme = cx.theme();
+            let color = if fraction >= 0.9 {
+                theme.danger
+            } else if fraction >= 0.75 {
+                crate::theme::warning_text(cx)
+            } else {
+                theme.muted_foreground
+            };
+            div()
+                .id("context-usage")
+                .flex_shrink_0()
+                .p_1()
+                .child(crate::ui::agent::usage_ring(fraction, color, theme.muted_foreground.opacity(0.3)))
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+        });
+        h_flex()
+            .flex_shrink_0()
+            .mx_3()
+            .mt_1()
+            .mb_2()
+            .gap_1()
+            .items_center()
+            .child(div().flex_shrink_0().child(permission_picker))
+            .child(div().flex_1())
+            .child(h_flex().min_w_0().overflow_hidden().gap_1().child(model_picker).children(thinking_picker))
+            .children(ring)
+    }
 }
 
 /// The text of a message that did not go out, in front of what was typed since.
@@ -1384,9 +1565,15 @@ impl Render for ChatPane {
                 })
                 .detach();
         });
-        let body = if rows.is_empty() {
+        let wide = self.wide;
+        // Agent mode greets a new chat with the composer in the middle of the window.
+        let greeting = wide && failed.is_none() && rows.is_empty() && self.is_blank(cx);
+        let body = if greeting {
+            self.render_greeting(locale, cx).into_any_element()
+        } else if rows.is_empty() {
             match failed {
                 Some(error) => div().flex_1().p_4().text_sm().text_color(cx.theme().danger).child(error).into_any_element(),
+                None if wide => div().flex_1().into_any_element(),
                 None => self.render_empty(cx).into_any_element(),
             }
         } else {
@@ -1397,12 +1584,14 @@ impl Render for ChatPane {
             let older = self.older.clone().filter(|_| header > 0).map(|older| (older, tr(cx, "chat.loadOlder")));
             let pane = cx.weak_entity();
             let transcript = list(self.list.clone(), move |index, _, cx| {
-                if index < header
+                let row = if index < header
                     && let Some((older, label)) = &older
                 {
-                    return render_older(older, label.clone(), pane.clone(), cx);
-                }
-                render_turn(&rows[index - header], index, &expanded, &toggle, &fork, &style, cx)
+                    render_older(older, label.clone(), pane.clone(), cx)
+                } else {
+                    render_turn(&rows[index - header], index, &expanded, &toggle, &fork, &style, cx)
+                };
+                if wide { centered(row) } else { row }
             })
             .size_full()
             .py_2();
@@ -1432,43 +1621,63 @@ impl Render for ChatPane {
                 .into_any_element()
         };
         let session = self.session_id(cx).unwrap_or_default();
-        let theme = cx.theme();
+        // The changes panel of Agent mode shows them instead.
+        let changes = (!self.changes.read(cx).docked()).then(|| self.changes.clone());
         // Everything below the transcript keeps its height (each list in it scrolls past a cap); the transcript
-        // gives way, so nothing overlaps or pushes the composer out of the pane.
+        // gives way, so nothing overlaps or pushes the composer out of the pane. In Agent mode it lines up with the
+        // transcript's column.
+        let below = (!greeting).then(|| {
+            v_flex()
+                .w_full()
+                .flex_shrink_0()
+                .when(wide, |this| this.max_w(px(crate::ui::agent::COLUMN)).px_1())
+                .when_some(approval, |this, approval| this.child(self.render_approval(&approval, approval_focused, locale, cx)))
+                .when(!queue.is_empty(), |this| this.child(self.render_queue(&session, &queue, locale, cx)))
+                .when_some(retry, |this, retry| {
+                    let seconds = ((retry.at - now_ms()) / 1000.0).ceil().max(0.0);
+                    let retried = session.clone();
+                    this.child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .mx_3()
+                            .mb_2()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().min_w_0().text_xs().text_color(crate::theme::warning_text(cx)).child(trf(cx, "chat.retryWaiting", &[
+                                ("seconds", &seconds),
+                                ("attempt", &retry.attempt),
+                                ("max", &retry.max),
+                            ])))
+                            .child(Button::new("retry-now").outline().xsmall().label(tr(cx, "chat.retryNow")).on_click(cx.listener(move |this, _, window, cx| {
+                                this.call("chat.retry", json!({ "sessionId": retried }), window, cx);
+                            }))),
+                    )
+                })
+                // A run that ended in an error can ask the model again.
+                .when_some(run_error, |this, error| this.child(self.render_run_error(&session, error, cx)))
+                .when(!background.is_empty(), |this| this.child(self.render_background(&session, &background, cx)))
+                .children(changes)
+                .when(!self.suggestions.is_empty() && self.trigger.is_some(), |this| this.child(self.render_suggestions(cx)))
+                .map(|this| {
+                    if wide {
+                        this.child(self.render_composer_wide(locale, cx)).child(self.render_composer_footer(locale, cx))
+                    } else {
+                        this.child(self.render_composer(locale, cx))
+                    }
+                })
+        });
         v_flex()
             .size_full()
-            .bg(theme.background)
-            .child(self.render_header(cx))
+            .bg(cx.theme().background)
+            .when(!wide, |this| this.child(self.render_header(cx)))
             .child(body)
-            .when_some(approval, |this, approval| this.child(self.render_approval(&approval, approval_focused, locale, cx)))
-            .when(!queue.is_empty(), |this| this.child(self.render_queue(&session, &queue, locale, cx)))
-            .when_some(retry, |this, retry| {
-                let seconds = ((retry.at - now_ms()) / 1000.0).ceil().max(0.0);
-                let retried = session.clone();
-                this.child(
-                    h_flex()
-                        .flex_shrink_0()
-                        .mx_3()
-                        .mb_2()
-                        .gap_2()
-                        .items_center()
-                        .child(div().flex_1().min_w_0().text_xs().text_color(crate::theme::warning_text(cx)).child(trf(cx, "chat.retryWaiting", &[
-                            ("seconds", &seconds),
-                            ("attempt", &retry.attempt),
-                            ("max", &retry.max),
-                        ])))
-                        .child(Button::new("retry-now").outline().xsmall().label(tr(cx, "chat.retryNow")).on_click(cx.listener(move |this, _, window, cx| {
-                            this.call("chat.retry", json!({ "sessionId": retried }), window, cx);
-                        }))),
-                )
-            })
-            // A run that ended in an error can ask the model again.
-            .when_some(run_error, |this, error| this.child(self.render_run_error(&session, error, cx)))
-            .when(!background.is_empty(), |this| this.child(self.render_background(&session, &background, cx)))
-            .child(self.changes.clone())
-            .when(!self.suggestions.is_empty() && self.trigger.is_some(), |this| this.child(self.render_suggestions(cx)))
-            .child(self.render_composer(locale, cx))
+            .when_some(below, |this, below| this.child(h_flex().w_full().flex_shrink_0().justify_center().child(below)))
     }
+}
+
+/// A row of the transcript in Agent mode's column, centred in a wider window.
+fn centered(row: AnyElement) -> AnyElement {
+    h_flex().w_full().justify_center().child(div().w_full().max_w(px(crate::ui::agent::COLUMN)).child(row)).into_any_element()
 }
 
 /// The row above the turns that loads the chat's older messages.

@@ -117,6 +117,9 @@ pub struct Store {
     pub summaries: Vec<SessionSummary>,
     pub chats: HashMap<String, Entity<ChatModel>>,
     pub selected: Option<String>,
+    /// Counts the changes of `selected`, so work that finishes later (a chat created for a message) can tell whether
+    /// the user moved on meanwhile.
+    pub selections: u64,
     /// The permission mode picked for the next new chat; `None` starts it in the default from Settings.
     pub pending_permission: Option<String>,
     /// Explorer's "Open with Rainy" and the file types Rainy is offered for.
@@ -192,6 +195,7 @@ impl Store {
                 summaries: Vec::new(),
                 chats: HashMap::new(),
                 selected: None,
+                selections: 0,
                 pending_permission: None,
                 shell,
                 updates,
@@ -502,6 +506,7 @@ impl Store {
                     self.chats.remove(&id);
                     if self.selected.as_deref() == Some(id.as_str()) {
                         self.selected = None;
+                        self.selections += 1;
                         cx.emit(StoreEvent::SelectionChanged);
                     }
                     cx.emit(StoreEvent::SummariesChanged);
@@ -595,6 +600,9 @@ impl Store {
         if let Some(id) = &id {
             self.chat(id, cx);
         }
+        if self.selected != id {
+            self.selections += 1;
+        }
         self.selected = id;
         cx.emit(StoreEvent::SelectionChanged);
         cx.notify();
@@ -673,7 +681,8 @@ impl Store {
     }
 
     /// Start a chat in a project, or outside any project, in the mode picked for it (`pending_permission`, used up
-    /// once the chat exists); resolves with its id. The caller selects it.
+    /// once the chat exists); resolves with its id. The caller selects it, unless `selections` moved on meanwhile: a
+    /// user who went to another chat stays there.
     pub fn create_chat(&mut self, workspace_id: Option<String>, cx: &mut Context<Self>) -> Task<Result<String, RpcError>> {
         let mut params = json!({ "workspaceId": workspace_id });
         if let Some(mode) = &self.pending_permission {

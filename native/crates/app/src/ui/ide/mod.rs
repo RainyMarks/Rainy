@@ -78,6 +78,11 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-v", MarkdownPreview, Some(MARKDOWN_TAB)),
         KeyBinding::new("ctrl-k v", MarkdownSplit, Some(MARKDOWN_TAB)),
         KeyBinding::new("ctrl-k", NoAction, Some("MarkdownTab > Input")),
+        // The layouts (`ui::agent`), and the new chat and sidebar keys of chat apps and VS Code; a terminal keeps Ctrl+N
+        // and Ctrl+B for the program in it (readline, tmux).
+        KeyBinding::new("ctrl-shift-m", crate::ui::agent::ToggleMode, None),
+        KeyBinding::new("ctrl-n", NewChat, Some("Workbench && !Terminal")),
+        KeyBinding::new("ctrl-b", crate::ui::agent::ToggleSidebar, Some("Workbench && !Terminal")),
     ]
 }
 
@@ -181,6 +186,18 @@ mod tests {
         assert_eq!(resolve("ctrl-k v", &markdown), (vec!["rainy::MarkdownSplit"], false));
         // The tab's toolbar has the keys too.
         assert_eq!(resolve("ctrl-k v", &["Root", "MarkdownTab"]), (vec!["rainy::MarkdownSplit"], false));
+    }
+
+    #[test]
+    fn chat_keys_leave_the_terminal_its_own() {
+        let composer = ["Root", "Workbench", "Input mode=textarea"];
+        let terminal = ["Root", "Workbench", "Terminal"];
+        assert_eq!(resolve("ctrl-n", &composer), (vec!["rainy::NewChat"], false));
+        assert_eq!(resolve("ctrl-b", &["Root", "Workbench", "Input mode=editor"]), (vec!["rainy::ToggleSidebar"], false));
+        assert_eq!(resolve("ctrl-n", &terminal), (vec![], false));
+        assert_eq!(resolve("ctrl-b", &terminal), (vec![], false));
+        assert_eq!(resolve("ctrl-shift-m", &terminal), (vec!["rainy::ToggleMode"], false));
+        assert_eq!(resolve("ctrl-alt-n", &terminal), (vec!["rainy::NewChat"], false));
     }
 
     #[test]

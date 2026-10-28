@@ -11,6 +11,7 @@ use serde_json::json;
 
 use crate::store::Store;
 use crate::store::ide::Ide;
+use crate::ui::agent::{AgentMode, IdeMode, Mode, ToggleSidebar};
 use crate::ui::ide::{
     AttachFolder, CheckUpdates, CompareWithSaved, ExportHtml, ExportPdf, FindReferences, FocusEditor, FormatDocument, GitRefresh, GoToLine, MarkdownFocus,
     MarkdownSource, MarkdownTypewriter, RenameSymbol, SaveAll, SearchHistory, SendSelection, ShowOutline, ShowProblems, ToggleAgent, ToggleFiles,
@@ -65,6 +66,8 @@ fn commands(cx: &App) -> Vec<Command> {
     let php = ide.run_target(ide.active.as_deref()).is_some_and(|(configuration, _)| configuration["language"] == "php");
     let prefs_now = Store::global(cx).read(cx).prefs.clone();
     let locale = if crate::ui::locale(cx) == crate::i18n::Locale::Zh { "en" } else { "zh" };
+    let mode = cx.try_global::<crate::ui::workbench::WorkbenchHandle>().and_then(|handle| handle.0.upgrade()).map(|workbench| workbench.read(cx).mode());
+    let agent = mode == Some(Mode::Agent);
     let entry = |category: &str, label: SharedString, keys: &'static str, enabled: bool, run: Run| Command {
         category: tr(cx, &format!("app.{category}")),
         label,
@@ -94,10 +97,13 @@ fn commands(cx: &App) -> Vec<Command> {
         entry("catEdit", tr(cx, "ide.ideRenameSymbol"), "F2", code, action(RenameSymbol)),
         entry("catEdit", tr(cx, "app.cmdSearch"), "Ctrl+Shift+F", workspace, action(FindInFiles)),
         entry("catEdit", tr(cx, "app.cmdReplace"), "Ctrl+Shift+H", workspace, action(ReplaceInFiles)),
+        entry("catView", tr(cx, "agent.switchToAgent"), "Ctrl+Shift+M", mode == Some(Mode::Ide), action(AgentMode)),
+        entry("catView", tr(cx, "agent.switchToIde"), "Ctrl+Shift+M", agent, action(IdeMode)),
+        entry("catView", tr(cx, "agent.toggleSidebar"), "Ctrl+B", agent, action(ToggleSidebar)),
         entry("catView", tr(cx, "app.cmdPalette"), "Ctrl+Shift+P", true, action(CommandPalette)),
         entry("catView", tr(cx, "app.cmdExplorer"), "Ctrl+Shift+E", true, action(ShowExplorer)),
         entry("catView", tr(cx, "app.cmdSourceControl"), "Ctrl+Shift+G", workspace, action(ShowSourceControl)),
-        entry("catView", tr(cx, "ide.ideToggleFiles"), "", true, action(ToggleFiles)),
+        entry("catView", tr(cx, "ide.ideToggleFiles"), if agent { "" } else { "Ctrl+B" }, true, action(ToggleFiles)),
         entry("catView", tr(cx, "ide.ideToggleBottom"), "Ctrl+`", workspace, action(ToggleTerminal)),
         entry("catView", tr(cx, "ide.ideToggleAgent"), "", true, action(ToggleAgent)),
         entry("catView", tr(cx, "ide.ideFocusEditor"), "", editing, action(FocusEditor)),
@@ -108,7 +114,7 @@ fn commands(cx: &App) -> Vec<Command> {
         entry("catRun", tr(cx, "ide.ideStop"), "Shift+F5", workspace, action(StopRun)),
         entry("catRun", tr(cx, "ide.ideToggleBreakpoint"), "F9", editing, action(ToggleBreakpoint)),
         entry("catRun", tr(cx, "ide.ideRunProfiles"), "", workspace, action(RunProfiles)),
-        entry("catAi", tr(cx, "app.cmdNewChat"), "Ctrl+Alt+N", true, action(NewChat)),
+        entry("catAi", tr(cx, "app.cmdNewChat"), "Ctrl+N", true, action(NewChat)),
         entry("catAi", tr(cx, "app.cmdHistory"), "Ctrl+Alt+K", true, action(SearchHistory)),
         entry("catAi", tr(cx, "app.cmdAiEdit"), "Ctrl+K", code, action(AiEditSelection)),
         entry("catAi", tr(cx, "ide.ideSendSelection"), "", selection, action(SendSelection)),
