@@ -1217,6 +1217,7 @@ impl Workbench {
         if fit.sidebar.is_some() {
             self.sidebar_peek = false;
         }
+        // Over the conversation only: a page in the panel is a window of its own, which nothing GPUI draws can cover.
         let peek = self.sidebar_peek.then(|| {
             let theme = cx.theme();
             let backdrop = theme.background.opacity(0.4);
@@ -1230,8 +1231,9 @@ impl Workbench {
                         .id("sidebar-backdrop")
                         .absolute()
                         .top_0()
+                        .bottom_0()
                         .left_0()
-                        .size_full()
+                        .right(px(fit.panel.unwrap_or(0.)))
                         .bg(backdrop)
                         .occlude()
                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {

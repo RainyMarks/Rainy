@@ -675,7 +675,7 @@ mod tests {
         ];
         let chats = newest_first(list.iter());
         let titles = HashMap::from([("w1".to_owned(), "One".to_owned()), ("w2".to_owned(), "Two".to_owned())]);
-        let ids = |section: &Section<'_>| section.chats.iter().map(|chat| chat.id.as_str()).collect::<Vec<_>>();
+        let ids = |section: &Section<'_>| section.chats.iter().map(|chat| chat.id.clone()).collect::<Vec<_>>();
         let shown = sections(&chats, &titles, Some("w2"));
         let kinds: Vec<&SectionKind> = shown.iter().map(|section| &section.kind).collect();
         assert_eq!(kinds, [

@@ -80,7 +80,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k", NoAction, Some("MarkdownTab > Input")),
         // The layouts (`ui::agent`), and the new chat and sidebar keys of chat apps and VS Code; a terminal keeps Ctrl+N
         // and Ctrl+B for the program in it (readline, tmux).
-        KeyBinding::new("ctrl-shift-m", crate::ui::agent::ToggleMode, None),
+        KeyBinding::new("ctrl-shift-a", crate::ui::agent::ToggleMode, None),
         KeyBinding::new("ctrl-n", NewChat, Some("Workbench && !Terminal")),
         KeyBinding::new("ctrl-b", crate::ui::agent::ToggleSidebar, Some("Workbench && !Terminal")),
     ]
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(resolve("ctrl-b", &["Root", "Workbench", "Input mode=editor"]), (vec!["rainy::ToggleSidebar"], false));
         assert_eq!(resolve("ctrl-n", &terminal), (vec![], false));
         assert_eq!(resolve("ctrl-b", &terminal), (vec![], false));
-        assert_eq!(resolve("ctrl-shift-m", &terminal), (vec!["rainy::ToggleMode"], false));
+        assert_eq!(resolve("ctrl-shift-a", &terminal), (vec!["rainy::ToggleMode"], false));
         assert_eq!(resolve("ctrl-alt-n", &terminal), (vec!["rainy::NewChat"], false));
     }
 
