@@ -84,18 +84,12 @@ pub fn canonical_directory(path: &str) -> HostResult<PathBuf> {
 pub struct Projects {
     file: PathBuf,
     projects: Mutex<Vec<Project>>,
-    listeners: Mutex<Vec<Box<dyn Fn(&Project) + Send + Sync>>>,
 }
 
 impl Projects {
     pub fn load(file: PathBuf) -> std::io::Result<Self> {
         let projects = read_json::<File>(&file)?.map(|file| file.projects).unwrap_or_default();
-        Ok(Self { file, projects: Mutex::new(projects), listeners: Mutex::default() })
-    }
-
-    /// Called with each project after it changed.
-    pub fn on_change(&self, listener: impl Fn(&Project) + Send + Sync + 'static) {
-        self.listeners.lock().unwrap().push(Box::new(listener));
+        Ok(Self { file, projects: Mutex::new(projects) })
     }
 
     /// Projects, most recently opened first.
@@ -109,25 +103,8 @@ impl Projects {
         self.projects.lock().unwrap().iter().find(|project| project.id == id).cloned()
     }
 
-    /// The project whose primary folder is `cwd`.
-    pub fn by_path(&self, cwd: &Path) -> Option<Project> {
-        self.projects.lock().unwrap().iter().find(|project| same_path(Path::new(&project.path), cwd)).cloned()
-    }
-
-    /// The innermost project with `path` in one of its folders.
-    pub fn containing(&self, path: &Path) -> Option<Project> {
-        let projects = self.projects.lock().unwrap();
-        let mut found: Vec<&Project> = projects.iter().filter(|project| project.roots().iter().any(|root| contains(Path::new(&root.path), path))).collect();
-        found.sort_by_key(|project| std::cmp::Reverse(project.path.len()));
-        found.first().map(|project| (*project).clone())
-    }
-
-    fn save(&self, projects: &[Project], changed: &Project) -> HostResult<()> {
-        write_json(&self.file, &File { version: 1, projects: projects.to_vec() })?;
-        for listener in self.listeners.lock().unwrap().iter() {
-            listener(changed);
-        }
-        Ok(())
+    fn save(&self, projects: &[Project]) -> HostResult<()> {
+        Ok(write_json(&self.file, &File { version: 1, projects: projects.to_vec() })?)
     }
 
     /// Register a folder as a project, or mark the project that has it as primary folder as opened now.
@@ -153,7 +130,7 @@ impl Projects {
             }
         };
         let project = projects[index].clone();
-        self.save(&projects, &project)?;
+        self.save(&projects)?;
         Ok(project)
     }
 
@@ -181,7 +158,7 @@ impl Projects {
         let (root_id, title) = imported.unwrap_or_else(|| (uuid::Uuid::new_v4().to_string(), folder_name(&canonical)));
         projects[index].attached.push(Attached { root_id, path: canonical.display().to_string(), title });
         let project = projects[index].clone();
-        self.save(&projects, &project)?;
+        self.save(&projects)?;
         Ok(project)
     }
 
@@ -196,7 +173,7 @@ impl Projects {
         projects[index].attached.retain(|root| root.root_id != root_id);
         let project = projects[index].clone();
         if project.attached.len() != before {
-            self.save(&projects, &project)?;
+            self.save(&projects)?;
         }
         Ok(project)
     }
@@ -210,7 +187,7 @@ impl Projects {
         let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
         projects[index].title = trimmed.to_owned();
         let project = projects[index].clone();
-        self.save(&projects, &project)?;
+        self.save(&projects)?;
         Ok(project)
     }
 
@@ -218,8 +195,7 @@ impl Projects {
     pub fn remove(&self, id: &str) -> HostResult<()> {
         let mut projects = self.projects.lock().unwrap();
         projects.retain(|project| project.id != id);
-        write_json(&self.file, &File { version: 1, projects: projects.clone() })?;
-        Ok(())
+        self.save(&projects)
     }
 
     /// One folder of a project, checked to still resolve to itself right before a file or process operation.

@@ -505,12 +505,6 @@ impl Settings {
         })
     }
 
-    /// Providers whose real key is available; the local-model placeholder does not count.
-    pub fn providers_with_keys(&self) -> Vec<String> {
-        let providers: Vec<String> = self.get().models.into_iter().map(|model| model.provider).collect();
-        providers.into_iter().filter(|provider| self.api_key(provider).is_some_and(|key| key != LOCAL_NO_KEY)).collect()
-    }
-
     /// Store (`Some`) or remove a provider's API key.
     pub fn set_api_key(&self, provider: &str, key: Option<&str>) -> HostResult<()> {
         let mut inner = self.inner.lock().unwrap();

@@ -70,7 +70,8 @@ impl McpImportMessage {
     }
 
     /// The value of one variable.
-    pub fn var(&self, name: &str) -> Option<&str> {
+    #[cfg(test)]
+    fn var(&self, name: &str) -> Option<&str> {
         self.vars.iter().find(|(var, _)| *var == name).map(|(_, value)| value.as_str())
     }
 }

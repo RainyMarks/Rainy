@@ -75,11 +75,6 @@ impl Ide {
         ide
     }
 
-    /// The selected project, while it is still registered.
-    pub fn selection(&self) -> Option<String> {
-        self.state.selection()
-    }
-
     /// One request of the `ide` method.
     pub async fn handle(self: &Arc<Self>, host: &Arc<Host>, request: Value) -> HostResult<Value> {
         if request.to_string().len() > MAX_REQUEST_BYTES {

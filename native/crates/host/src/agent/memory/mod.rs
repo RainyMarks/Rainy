@@ -121,7 +121,7 @@ impl ProjectMemory {
 
     async fn project_of(&self, workspace_id: &str) -> HostResult<String> {
         let project = self.deps.projects.get(workspace_id).ok_or_else(|| HostError::new("workspace-not-found", l("工作区不存在。", "This workspace does not exist.")))?;
-        self.deps.registry.get_or_register(&project.id, &project.path, &project.title, None).await
+        self.deps.registry.get_or_register(&project.id, &project.path, &project.title).await
     }
 
     fn model_for(&self, session_id: &str) -> Option<Resolved> {
