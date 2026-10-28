@@ -26,6 +26,7 @@ pub mod tarball;
 pub mod targets;
 pub mod text;
 pub mod trust;
+pub mod unzip;
 pub mod update;
 pub mod window_state;
 pub mod wsl;

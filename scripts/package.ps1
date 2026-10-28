@@ -1,6 +1,6 @@
 ﻿<# Build the Windows installer and the offline release directory from a checkout with restored release inputs. #>
 # Saved as UTF-8 with a BOM so Windows PowerShell 5.1 reads the Chinese offline file names below correctly.
-param([string]$Distribution = 'Ubuntu', [string]$ComponentSource, [string]$StrataArchive)
+param([string]$Distribution = 'Ubuntu', [string]$ComponentSource)
 $ErrorActionPreference = 'Stop'
 $rainyApp = Split-Path $PSScriptRoot -Parent
 # The native application (native/Cargo.toml) gives the release its version; the viewer page (package.json) carries the same one.
@@ -47,11 +47,10 @@ try {
     $stageScript = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $PSScriptRoot 'stage-linux.py')).Trim(); Check-Exit
     $runtimeDir = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $rainyApp 'runtime')).Trim(); Check-Exit
     & wsl.exe -d $Distribution --exec python3 $stageScript --output $runtimeDir; Check-Exit
-    # Strata, PHP, the Linux runtime base and the offline Ubuntu packages ship as downloadable components; their pieces go to the resources release.
+    # PHP, the Linux runtime base and the offline Ubuntu packages ship as downloadable components; their pieces go to the resources release.
     $rainyPieces = Join-Path $rainyApp "release/resources-$rainyVersion"
     foreach ($rainyModule in @('php', 'linux-runtime', 'linux-dev-packages')) { Remove-Item -LiteralPath (Join-Path $rainyPieces $rainyModule) -Recurse -Force -ErrorAction SilentlyContinue }
-    $rainyStrata = if ($StrataArchive) { [IO.Path]::GetFullPath($StrataArchive) } else { Join-Path $rainyOffline 'build-inputs/strata-runtime.tar.gz' }
-    & node (Join-Path $PSScriptRoot 'prepare-optional-modules.mjs') --version $rainyVersion --pieces $rainyPieces --strata-archive $rainyStrata; Check-Exit
+    & node (Join-Path $PSScriptRoot 'prepare-optional-modules.mjs') --version $rainyVersion --pieces $rainyPieces; Check-Exit
     # RainyAgent.exe carries the public release keys the resources are signed with; package-native.mjs stages, signs and
     # builds the NSIS installer, latest.yml and latest.yml.sig in release/.
     $env:RAINY_RELEASE_PUBLIC_KEYS = Join-Path $rainyApp 'runtime\release-public-keys.json'

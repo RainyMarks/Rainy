@@ -1,141 +1,150 @@
-//! The Strata local model card in Settings → Models (3.x `strata-controller.ts` and the `rainy:strata-*` handlers): the
-//! engine manager of the optional `strata` module, its status, and the user's explicit operations. Nothing starts a
-//! model unless the user asks.
+//! Strata in Settings → Tools: Rainy's Strata manager and its status. Nothing is downloaded, started or removed unless
+//! the user asks; an update to Strata's newest release installs by itself when no model runs.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::*;
-use rainy_carrier::strata::{Connection, Manager, Settings, Status};
+use rainy_carrier::strata::{Choice, Connection, Manager, Settings, Status};
 use serde_json::{Value, json};
 
 use super::Store;
 
-/// The card's state.
+/// The tool's state.
 #[derive(Default)]
 pub struct Strata {
     pub manager: Option<Arc<Manager>>,
     pub status: Option<Status>,
-    /// Reading the status.
-    pub loading: bool,
-    /// The operation in progress: `save`, `start`, `stop` or `connect`.
-    pub pending: Option<&'static str>,
-    /// Why the status could not be read.
-    pub error: Option<String>,
+    /// Connecting the loaded server as the default model.
+    pub connecting: bool,
 }
 
 impl Store {
-    /// The modules were read: create the engine manager over the `strata` module's folder.
+    /// The installed resources were accepted: create the manager and look at the port and the disk.
     pub(super) fn strata_ready(&mut self, cx: &mut Context<Self>) {
         if self.strata.manager.is_some() {
             return;
         }
-        let root = match self.modules.manager.path("strata") {
-            Ok(root) => root,
-            Err(error) => {
-                // The card says why instead of waiting for a manager that never comes.
-                self.strata.error = Some(crate::boot::module_message(self.locale(), &error));
-                cx.notify();
-                return;
-            }
-        };
-        let (changed_tx, changed) = async_channel::unbounded::<()>();
-        let manager = Manager::new(root, &self.paths.user_data, move || {
+        // One pending notice is enough: the status is read when it is handled, so a burst of progress is one repaint.
+        let (changed_tx, changed) = async_channel::bounded::<()>(1);
+        let manager = Manager::new(&self.paths.user_data, move || {
             let _ = changed_tx.try_send(());
         });
-        self.strata.manager = Some(manager);
+        manager.watch();
+        self.strata.status = Some(manager.status());
+        self.strata.manager = Some(manager.clone());
+        let reader = manager.clone();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             while changed.recv().await.is_ok() {
-                if this.update(cx, |store, cx| store.refresh_strata(false, cx)).is_err() {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                let status = reader.status();
+                if this
+                    .update(cx, |store, cx| {
+                        store.strata.status = Some(status);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
         })
         .detach();
+        cx.background_spawn(async move { manager.refresh() }).detach();
     }
 
-    /// Read the status; `probe` also asks the server on the port.
-    pub fn refresh_strata(&mut self, probe: bool, cx: &mut Context<Self>) {
+    /// Look at the port and the disk again, and read the catalog when it is not known yet.
+    pub fn refresh_strata(&mut self, cx: &mut Context<Self>) {
         let Some(manager) = self.strata.manager.clone() else { return };
-        self.strata.loading = true;
-        cx.notify();
-        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let status = cx.background_spawn(async move { manager.status(probe) }).await;
-            let _ = this.update(cx, |store, cx| {
-                store.strata.loading = false;
-                match status {
-                    Ok(status) => {
-                        store.strata.status = Some(status);
-                        store.strata.error = None;
-                    }
-                    Err(error) => store.strata.error = Some(error.to_string()),
-                }
-                cx.notify();
-            });
+        cx.background_spawn(async move {
+            manager.refresh();
+            if manager.status().installed.is_some() && manager.status().catalog.is_none() {
+                manager.load_catalog();
+            }
         })
         .detach();
     }
 
-    /// Run one operation off the interface thread; the new status replaces the shown one, and failures come back to the
-    /// caller to show.
-    fn strata_operation(&mut self, name: &'static str, cx: &mut Context<Self>, run: impl FnOnce(Arc<Manager>) -> anyhow::Result<Status> + Send + 'static) -> Task<Result<Status, String>> {
+    /// Run one request of the manager off the interface thread; a refusal comes back to show.
+    pub fn strata_do(&mut self, cx: &mut Context<Self>, run: impl FnOnce(&Arc<Manager>) -> anyhow::Result<()> + Send + 'static) -> Task<Result<(), String>> {
         let Some(manager) = self.strata.manager.clone() else { return Task::ready(Err(String::new())) };
-        if self.strata.pending.is_some() {
-            return Task::ready(Err(String::new()));
-        }
-        self.strata.pending = Some(name);
-        cx.notify();
-        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let result = cx.background_spawn(async move { run(manager) }).await.map_err(|error| error.to_string());
-            let _ = this.update(cx, |store, cx| {
-                store.strata.pending = None;
-                if let Ok(status) = &result {
-                    store.strata.status = Some(status.clone());
-                }
-                cx.notify();
-            });
-            result
+        cx.background_spawn(async move { run(&manager).map_err(|error| format!("{error:#}")) })
+    }
+
+    pub fn install_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| manager.install())
+    }
+
+    pub fn update_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| manager.update())
+    }
+
+    pub fn check_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| manager.check_update())
+    }
+
+    pub fn uninstall_strata(&mut self, models: bool, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, move |manager| manager.uninstall(models))
+    }
+
+    pub fn save_strata(&mut self, settings: Settings, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, move |manager| manager.save(settings).map(|_| ()))
+    }
+
+    pub fn download_strata_model(&mut self, choice: Choice, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, move |manager| manager.download(choice))
+    }
+
+    pub fn remove_strata_model(&mut self, choice: Choice, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, move |manager| manager.remove_model(choice))
+    }
+
+    pub fn cancel_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| {
+            manager.cancel();
+            Ok(())
         })
     }
 
-    pub fn save_strata(&mut self, settings: Settings, cx: &mut Context<Self>) -> Task<Result<Status, String>> {
-        self.strata_operation("save", cx, move |manager| manager.save(settings))
+    pub fn start_strata(&mut self, choice: Choice, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, move |manager| manager.start(choice))
     }
 
-    pub fn start_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<Status, String>> {
-        self.strata_operation("start", cx, |manager| manager.start())
+    pub fn stop_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| manager.stop())
     }
 
-    pub fn stop_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<Status, String>> {
-        self.strata_operation("stop", cx, |manager| manager.stop())
+    pub fn load_strata_catalog(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| {
+            manager.load_catalog();
+            Ok(())
+        })
+    }
+
+    pub fn remove_strata_legacy(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| manager.remove_legacy())
     }
 
     /// Have the selected Host check the loaded server and save it as the default model (`models.connectStrata`).
     pub fn connect_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<Value, String>> {
         let Some(manager) = self.strata.manager.clone() else { return Task::ready(Err(String::new())) };
-        if self.strata.pending.is_some() {
+        if self.strata.connecting {
             return Task::ready(Err(String::new()));
         }
-        self.strata.pending = Some("connect");
+        self.strata.connecting = true;
         cx.notify();
         let locale = self.locale();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let connection: Result<Connection, String> = cx.background_spawn(async move { manager.connection() }).await.map_err(|error| error.to_string());
-            let call = match connection {
-                Ok(connection) => this.update(cx, |store, _| store.call("models.connectStrata", json!({ "baseURL": connection.base_url }))).ok(),
-                Err(error) => {
-                    let _ = this.update(cx, |store, cx| {
-                        store.strata.pending = None;
-                        cx.notify();
-                    });
-                    return Err(error);
-                }
-            };
-            let result = match call {
-                Some(call) => call.await.map_err(|error| crate::i18n::error_text(locale, &error)),
-                None => Err(String::new()),
+            let connection: Result<Connection, String> = cx.background_spawn(async move { manager.connection() }).await.map_err(|error| format!("{error:#}"));
+            let result = match connection {
+                Ok(connection) => match this.update(cx, |store, _| store.call("models.connectStrata", json!({ "baseURL": connection.base_url }))) {
+                    Ok(call) => call.await.map_err(|error| crate::i18n::error_text(locale, &error)),
+                    Err(_) => Err(String::new()),
+                },
+                Err(error) => Err(error),
             };
             let _ = this.update(cx, |store, cx| {
-                store.strata.pending = None;
+                store.strata.connecting = false;
                 cx.notify();
             });
             result

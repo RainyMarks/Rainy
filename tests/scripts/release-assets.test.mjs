@@ -147,7 +147,7 @@ test('PowerShell reassembles binary and Unicode files and rejects a modified or 
   await assert.rejects(invoke(join(f.root, 'ps-missing')))
 })
 
-test('build bootstrap extracts the offline Ubuntu packages, Strata and Windows resources and prepares the existing builder layout', async t => {
+test('build bootstrap extracts the offline Ubuntu packages and Windows resources and prepares the existing builder layout', async t => {
   const f = await fixture(t)
   const ide = join(f.root, 'ide')
   const basic = join(f.root, 'basic')
@@ -159,10 +159,9 @@ test('build bootstrap extracts the offline Ubuntu packages, Strata and Windows r
   await writeFile(join(basic, 'pwsh/pwsh.exe'), 'portable shell')
   await mkdir(join(f.source, 'build-inputs'))
   await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/ide-resources.tar.gz'), gzip: true }, ['manifest.json', 'system-packages'])
-  await tar.c({ cwd: ide, file: join(f.source, 'build-inputs/strata-runtime.tar.gz'), gzip: true }, ['manifest.json'])
   await tar.c({ cwd: basic, file: join(f.source, 'environment-components/windows-basic.tar.gz'), gzip: true }, ['pwsh'])
   await f.put('environment/media-verification.json', '{}\n')
-  const files = ['build-inputs/ide-resources.tar.gz', 'build-inputs/strata-runtime.tar.gz', 'environment-components/windows-basic.tar.gz', 'environment/media-verification.json']
+  const files = ['build-inputs/ide-resources.tar.gz', 'environment-components/windows-basic.tar.gz', 'environment/media-verification.json']
     .map(path => ({ path, category: path.startsWith('build-inputs/') ? 'build-input' : 'offline' }))
   const manifest = await packReleaseAssets({ sourceRoot: f.source, outputDirectory: join(f.root, 'build-parts'), files, releaseVersion: '1.0.0', baseUrl })
   const app = join(f.root, 'app')
@@ -173,7 +172,7 @@ test('build bootstrap extracts the offline Ubuntu packages, Strata and Windows r
   assert.equal(await readFile(join(app, 'resources/ide/system-packages/manifest.json'), 'utf8'), '{"packages":[]}\n')
   // prepare-ide-tools.py writes the IDE manifest; the archive's copy is not taken.
   assert.equal(existsSync(join(app, 'resources/ide/manifest.json')), false)
-  assert.equal(await readFile(join(app, 'resources/strata-runtime/manifest.json'), 'utf8'), '{"fixture":true}\n')
+  assert.equal(existsSync(join(app, 'resources/strata-runtime')), false)
   assert.equal(await readFile(join(app, 'runtime/environment/media-verification.json'), 'utf8'), '{}\n')
   await bootstrapReleaseInputs({ appDirectory: app, manifest, inputsDirectory: f.source })
 })

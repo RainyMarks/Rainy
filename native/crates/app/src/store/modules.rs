@@ -1,4 +1,4 @@
-//! Optional components in Settings → Runtime (3.x `OptionalModules.tsx` and the `rainy:modules-*` handlers): which
+//! Optional components in Settings → Tools (3.x `OptionalModules.tsx` and the `rainy:modules-*` handlers): which
 //! modules this version offers, whether they are installed, and their download, cancellation and removal.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use rainy_carrier::modules::{ModuleError, Modules, Phase, State, Status};
 use super::Store;
 
 /// The modules Settings offers.
-pub const OFFERED: [&str; 2] = ["strata", "php"];
+pub const OFFERED: [&str; 1] = ["php"];
 
 /// The modules as the settings page shows them.
 pub struct OptionalModules {
@@ -49,8 +49,6 @@ impl Store {
         self.modules.state = state;
         if complete {
             self.refresh_modules(cx);
-            // The engine may have been installed or removed.
-            self.refresh_strata(false, cx);
         }
         cx.notify();
     }
@@ -82,17 +80,7 @@ impl Store {
     /// Delete an installed module.
     pub fn remove_module(&mut self, id: &'static str, cx: &mut Context<Self>) {
         let manager = self.modules.manager.clone();
-        // The engine Rainy started runs from the module's folder, which cannot be removed while it does (3.x stopped
-        // it first too).
-        let strata = if id == "strata" { self.strata.manager.clone() } else { None };
-        self.run_module(id, cx, move || {
-            if let Some(strata) = strata
-                && let Err(error) = strata.stop()
-            {
-                log::warn!("Strata was not stopped before its removal: {error:#}");
-            }
-            manager.remove(id)
-        });
+        self.run_module(id, cx, move || manager.remove(id));
     }
 
     /// Stop the running download; what was downloaded is kept for the next attempt.
@@ -118,9 +106,6 @@ impl Store {
                     store.modules.state = State { phase: Phase::Error, module: Some(id.to_owned()), error: Some(error), ..State::default() };
                 }
                 store.refresh_modules(cx);
-                if id == "strata" {
-                    store.refresh_strata(false, cx);
-                }
                 cx.notify();
             });
         })

@@ -48,7 +48,8 @@ try {
   await mkdir(join(target, 'dist'), { recursive: true })
   for (const name of ['LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md']) await cp(join(app, name), join(target, name))
   await cp(join(app, 'dist/renderer'), join(target, 'dist/renderer'), { recursive: true, filter: file => !file.endsWith('.map') })
-  // Strata is an optional module the carrier downloads, and the Linux IDE tools belong to the Linux runtime.
+  // The Linux IDE tools belong to the Linux runtime; a Strata runtime an earlier bootstrap left (Rainy up to 4.2 bundled
+  // one) is not packaged: Rainy now downloads Strata's own release when asked.
   const skipped = [join(app, 'resources/strata-runtime'), join(app, 'resources/ide')].map(path => resolve(path))
   await cp(join(app, 'resources'), join(target, 'resources'), { recursive: true, dereference: true,
     filter: file => !file.endsWith('.map') && !skipped.includes(resolve(file)) })

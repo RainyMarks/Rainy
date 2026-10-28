@@ -25,18 +25,13 @@ async function unpackedBytes(archive) {
 }
 
 /**
- * Write the signed-resource descriptor for Strata, PHP, the Linux runtime base and the offline Ubuntu development packages.
- * Strata keeps the archive already published as a build input; the others receive pieces for this release.
- * @param {{appDirectory:string,releaseVersion:string,pieces:string,output:string,strataArchive:string}} options Locations and identity.
+ * Write the signed-resource descriptor for PHP, the Linux runtime base and the offline Ubuntu development packages, each
+ * published in pieces of this release. (Strata is no longer one: Rainy downloads Strata's own release when asked.)
+ * @param {{appDirectory:string,releaseVersion:string,pieces:string,output:string}} options Locations and identity.
  * @returns {Promise<{modules:object[],uploads:string[]}>} Descriptor entries and the piece files to upload.
  */
 export async function prepareOptionalModules(options) {
   const app = resolve(options.appDirectory)
-  const inputs = JSON.parse(await readFile(join(app, 'toolpacks/build-inputs.v1.json'), 'utf8'))
-  const strata = inputs.files.find(entry => entry.path === 'build-inputs/strata-runtime.tar.gz')
-  if (!strata) throw new Error('The Strata build input is not pinned')
-  const local = await digest(options.strataArchive)
-  if (local.bytes !== strata.bytes || local.sha256 !== strata.sha256) throw new Error('The local Strata archive differs from the pinned build input')
   const baseUrl = `https://github.com/RainyMarks/Rainy/releases/download/v${options.releaseVersion}-resources/`
   const scratch = await mkdtemp(join(tmpdir(), 'rainy-modules-'))
   const uploads = []
@@ -62,8 +57,6 @@ export async function prepareOptionalModules(options) {
     }
     await mkdir(options.pieces, { recursive: true })
     const modules = [
-      { id: 'strata', kind: 'directory', file: 'strata-runtime.tar.gz', bytes: strata.bytes, sha256: strata.sha256,
-        unpackedBytes: await unpackedBytes(options.strataArchive), baseUrl: strata.baseUrl ?? inputs.baseUrl, pieces: strata.pieces },
       { id: 'php', kind: 'directory', ...await published('php', scratch, 'php.tar.gz'), unpackedBytes: await unpackedBytes(join(scratch, 'php.tar.gz')) },
       { id: 'linux-runtime', kind: 'file', ...await published('linux-runtime', join(app, 'runtime'), 'linux-runtime.tar.xz'),
         unpackedBytes: linuxMetadata.unpackedBytes },
@@ -79,12 +72,12 @@ export async function prepareOptionalModules(options) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const args = process.argv.slice(2)
   const values = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, index) => [args[index * 2], args[index * 2 + 1]]))
-  for (const name of Object.keys(values)) if (!['--version', '--pieces', '--strata-archive', '--output'].includes(name)) throw new Error(`Unknown option: ${name}`)
-  if (args.length % 2 || !values['--version'] || !values['--pieces'] || !values['--strata-archive']) {
-    throw new Error('Usage: prepare-optional-modules.mjs --version VERSION --pieces DIR --strata-archive FILE [--output FILE]')
+  for (const name of Object.keys(values)) if (!['--version', '--pieces', '--output'].includes(name)) throw new Error(`Unknown option: ${name}`)
+  if (args.length % 2 || !values['--version'] || !values['--pieces']) {
+    throw new Error('Usage: prepare-optional-modules.mjs --version VERSION --pieces DIR [--output FILE]')
   }
   const app = resolve(import.meta.dirname, '..')
   const result = await prepareOptionalModules({ appDirectory: app, releaseVersion: values['--version'], pieces: resolve(values['--pieces']),
-    strataArchive: resolve(values['--strata-archive']), output: resolve(values['--output'] ?? join(app, 'runtime/optional-modules.json')) })
+    output: resolve(values['--output'] ?? join(app, 'runtime/optional-modules.json')) })
   console.log(JSON.stringify({ modules: result.modules.map(module => `${module.id} ${module.bytes}`), uploads: result.uploads }, null, 2))
 }

@@ -18,19 +18,6 @@
       ]
     },
     {
-      "path": "build-inputs/strata-runtime.tar.gz",
-      "category": "build-input",
-      "bytes": 558773087,
-      "sha256": "fb38c7b88e423b33b87bfb58a13046927127319ca8a11c9d6384d234a977ffc1",
-      "pieces": [
-        {
-          "file": "rainy-7797adb04e2e76b51019.001",
-          "bytes": 558773087,
-          "sha256": "fb38c7b88e423b33b87bfb58a13046927127319ca8a11c9d6384d234a977ffc1"
-        }
-      ]
-    },
-    {
       "path": "environment-components/linux-basic.json",
       "category": "offline",
       "bytes": 342,
