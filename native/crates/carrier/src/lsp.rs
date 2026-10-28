@@ -96,11 +96,6 @@ impl LspClient {
         (Self { inner }, receiver)
     }
 
-    /// Whether the connection has ended.
-    pub fn is_closed(&self) -> bool {
-        self.inner.closed.load(Ordering::SeqCst)
-    }
-
     /// Send a request; resolves with its result, or the error message, after at most [`REQUEST_TIMEOUT`].
     pub fn request(&self, method: &str, params: Value) -> impl Future<Output = Result<Value>> + Send + 'static + use<> {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);

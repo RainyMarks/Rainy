@@ -6,6 +6,7 @@ pub mod control;
 pub mod credential;
 pub mod diagnostics;
 pub mod download;
+mod http;
 #[cfg(windows)]
 pub mod instance;
 pub mod keyring;

@@ -94,7 +94,7 @@ pub fn target(destination: &Destination) -> ExecutionTarget {
 pub fn destination_of(target: &ExecutionTarget) -> Result<Destination> {
     match target {
         ExecutionTarget::Ssh { destination, port, .. } => parse_destination(destination, port.map(u32::from)),
-        _ => bail!("The selected execution target is not an SSH host"),
+        _ => bail!(localized("所选执行环境不是 SSH 主机。", "The selected execution environment is not an SSH host.")),
     }
 }
 
@@ -212,13 +212,42 @@ pub fn executable() -> Result<PathBuf> {
 
 /// Arguments of one `ssh` run; keep-alives notice a dropped connection within a minute (`sshArguments`).
 pub fn arguments(target: &Destination, remote: &[String], forward: Option<u16>) -> Vec<String> {
-    let mut args: Vec<String> = ["-T", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"].map(str::to_owned).to_vec();
+    with_options(target, remote, forward, configured_remote_command(target))
+}
+
+/// `-F` and `-p` as every run of `target` passes them.
+fn config_options(target: &Destination) -> Vec<String> {
+    let mut args = Vec::new();
     if let Some(config) = std::env::var_os("RAINY_SSH_CONFIG") {
         args.extend(["-F".to_owned(), config.to_string_lossy().into_owned()]);
     }
     if let Some(port) = target.port {
         args.extend(["-p".to_owned(), port.to_string()]);
     }
+    args
+}
+
+/// Whether the user's config gives `target` a `RemoteCommand` (a `tmux attach`, say), next to which ssh refuses the
+/// command Rainy passes: "Cannot execute command-line and remote command." `ssh -G` prints the options in effect
+/// without connecting. Runs then override it with `none`, and only then, so a client too old to know `none` is never
+/// handed it.
+fn configured_remote_command(target: &Destination) -> bool {
+    let mut args = vec!["-G".to_owned()];
+    args.extend(config_options(target));
+    args.extend(["--".to_owned(), target.destination.clone()]);
+    let Ok(mut command) = ssh_command(&args, &[]) else { return false };
+    command
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).lines().any(|line| line.to_ascii_lowercase().starts_with("remotecommand ")))
+}
+
+fn with_options(target: &Destination, remote: &[String], forward: Option<u16>, clear_remote_command: bool) -> Vec<String> {
+    let mut args: Vec<String> = ["-T", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"].map(str::to_owned).to_vec();
+    if clear_remote_command {
+        args.extend(["-o".to_owned(), "RemoteCommand=none".to_owned()]);
+    }
+    args.extend(config_options(target));
     if let Some(port) = forward {
         args.extend(["-L".to_owned(), format!("127.0.0.1:{port}:127.0.0.1:{port}"), "-o".to_owned(), "ExitOnForwardFailure=yes".to_owned()]);
     }
@@ -637,10 +666,28 @@ mod tests {
         assert!(!LOADER[1..LOADER.len() - 1].contains(['\'', '\\', '$', '!']));
         let engine = base64::engine::general_purpose::STANDARD;
         assert_eq!(engine.decode(&words[4]).unwrap(), b"a b");
-        let args = arguments(&Destination { destination: "box".into(), port: Some(2200) }, &words, Some(5000));
+        let target = Destination { destination: "box".into(), port: Some(2200) };
+        let args = with_options(&target, &words, Some(5000), false);
         assert!(args.windows(2).any(|pair| pair == ["-p", "2200"]));
         assert!(args.windows(2).any(|pair| pair == ["-L", "127.0.0.1:5000:127.0.0.1:5000"]));
         assert_eq!(args.iter().position(|arg| arg == "--").map(|at| &args[at + 1]), Some(&"box".to_owned()));
+        assert!(!args.iter().any(|arg| arg.starts_with("RemoteCommand")));
+        // A RemoteCommand of the user's config is overridden before the destination.
+        let args = with_options(&target, &words, None, true);
+        let at = args.windows(2).position(|pair| pair == ["-o", "RemoteCommand=none"]).unwrap();
+        assert!(at < args.iter().position(|arg| arg == "--").unwrap());
+    }
+
+    /// A host whose config entry has a `RemoteCommand` still runs Rainy's commands. Run with `--ignored` and
+    /// `RAINY_SSH_CONFIG` naming a config whose alias `RAINY_TEST_SSH_HOST` has one, such as the throwaway sshd's.
+    #[test]
+    #[ignore = "needs an SSH server"]
+    fn runs_on_a_host_whose_config_has_a_remote_command() {
+        let host = std::env::var("RAINY_TEST_SSH_HOST").unwrap();
+        let target = Destination { destination: host, port: None };
+        assert!(configured_remote_command(&target));
+        let output = run(&target, &remote_python("import sys\nprint('ok', sys.stdin.isatty())\n", &[]), &[], None, &mut |_| {}, Some(Duration::from_secs(60))).unwrap();
+        assert_eq!((output.code, output.stdout.trim()), (Some(0), "ok False"), "{}", output.stderr);
     }
 
     #[test]

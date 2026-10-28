@@ -10,6 +10,7 @@ use super::context::{Item, tool_pairs_balanced};
 use super::llm::{self, Message, Request, ToolSpec};
 use super::models::{Models, Resolved};
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 
 /// A compaction shares the previous request's prompt cache only when that request started less than this long ago:
 /// 90 % of the hour Rainy asks Claude to keep its cache.
@@ -158,7 +159,7 @@ pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<Transc
         let llm_request = Request { reasoning: request.resolved.thinking, session_id: Some(request.session_id), unmark_last_user: true, ..Request::new(request.system, &conversation, request.tools) };
         let reply = ask(&request, &llm_request).await;
         if reply.stop_reason == "aborted" {
-            return Err(HostError::other(reply.error_message.unwrap_or_else(|| "Compaction was stopped.".into())));
+            return Err(HostError::other(reply.error_message.unwrap_or_else(|| l("压缩已停止。", "Compaction was stopped."))));
         }
         let usage = usage_of(&reply);
         let summary = text_of(&reply);
@@ -196,11 +197,11 @@ pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<Transc
     };
     let reply = ask(&request, &llm_request).await;
     if reply.stop_reason == "error" || reply.stop_reason == "aborted" {
-        return Err(HostError::other(reply.error_message.unwrap_or_else(|| "Compaction request failed.".into())));
+        return Err(HostError::other(reply.error_message.unwrap_or_else(|| l("压缩请求失败。", "The compaction request failed."))));
     }
     let summary = text_of(&reply);
     if summary.is_empty() {
-        return Err(HostError::other("Compaction returned an empty checkpoint."));
+        return Err(HostError::other(l("模型返回的压缩摘要为空。", "The model returned an empty compaction summary.")));
     }
     let usage = usage_of(&reply);
     let usage = match spent {

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::paths::relative_path;
 use crate::projects::Projects;
 use crate::store::{read_json, write_json};
@@ -139,12 +140,12 @@ impl StateStore {
 
     fn current(&self, workspace_id: &str) -> HostResult<Value> {
         if self.projects.get(workspace_id).is_none() {
-            return Err(HostError::new("workspace-not-found", "The selected workspace is no longer registered."));
+            return Err(crate::projects::missing());
         }
         if let Some(record) = self.records.lock().unwrap().get(workspace_id) {
             return Ok(record.clone());
         }
-        let unreadable = || HostError::new("io-error", "The saved IDE state of this project has an unsupported format; it was left unchanged.");
+        let unreadable = || HostError::new("io-error", l("这个项目保存的编辑器状态格式不受支持，文件保持原样。", "The saved IDE state of this project has an unsupported format; it was left unchanged."));
         let record = match read_json::<Value>(&self.directory.join(file_name(workspace_id))) {
             Ok(Some(record)) if record["version"] == 1 && record["revision"].is_u64() && check_data(&record["data"]).is_ok() => record,
             Ok(Some(_)) | Err(_) => return Err(unreadable()),
@@ -166,7 +167,7 @@ impl StateStore {
     pub fn set_selection(&self, workspace_id: Option<&str>) -> HostResult<Value> {
         let _guard = self.writes.lock().unwrap();
         if workspace_id.is_some_and(|id| self.projects.get(id).is_none()) {
-            return Err(HostError::new("workspace-not-found", "The selected workspace is no longer registered."));
+            return Err(crate::projects::missing());
         }
         let next = json!({ "version": 1, "workspaceId": workspace_id });
         write_json(&self.directory.join("selection.json"), &next)?;
@@ -184,11 +185,12 @@ impl StateStore {
             || data["buffers"].as_array().into_iter().flatten().any(|buffer| buffer["content"].as_str().map_or(0, str::len) > MAX_BUFFER_BYTES)
             || data.to_string().len() > MAX_STATE_BYTES;
         if too_large {
-            return Err(HostError::new("state-too-large", "The workspace recovery snapshot exceeds the configured storage budget."));
+            return Err(HostError::new("state-too-large", l("项目的恢复快照超过了存储上限。", "The workspace recovery snapshot exceeds the configured storage budget.")));
         }
         let current = self.current(workspace_id)?;
         if current["revision"].as_u64() != Some(base) {
-            return Err(HostError::new("revision-conflict", "The workspace IDE state was saved by another client. Recover the current snapshot before replacing it.").with("currentState", current));
+            let message = l("项目的编辑器状态已被另一个窗口保存。请先恢复当前快照，再覆盖它。", "The workspace IDE state was saved by another client. Recover the current snapshot before replacing it.");
+            return Err(HostError::new("revision-conflict", message).with("currentState", current));
         }
         let next = json!({ "version": 1, "revision": base + 1, "data": data });
         write_json(&self.directory.join(file_name(workspace_id)), &next)?;
