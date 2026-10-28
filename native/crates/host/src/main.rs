@@ -262,7 +262,7 @@ fn register(host: &Arc<Host>) {
         rpc.register("ide", move |params| {
             let host = host.clone();
             async move {
-                let ide = host.ide.get().cloned().ok_or_else(|| HostError::other("The IDE is not ready."))?;
+                let ide = host.ide.get().cloned().ok_or_else(|| HostError::other(locale::l("编辑器服务尚未就绪。", "The editor services are not ready.")))?;
                 ide.handle(&host, params).await
             }
         });

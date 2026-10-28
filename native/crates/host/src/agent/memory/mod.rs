@@ -255,7 +255,7 @@ impl ProjectMemory {
     /// Save a corrected note.
     pub async fn edit(&self, workspace_id: &str, id: &str, text: &str, expected_revision: u64) -> HostResult<Value> {
         if uuid::Uuid::parse_str(id).is_err() || text.is_empty() || text.chars().count() > store::MAX_NOTE_LENGTH {
-            return Err(HostError::invalid("Invalid project memory edit."));
+            return Err(HostError::invalid(l("项目记忆条目不能为空，也不能过长。", "A project memory note cannot be empty or too long.")));
         }
         let project = self.project_of(workspace_id).await?;
         self.cancel(&project);

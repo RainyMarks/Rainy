@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::store::{read_json, write_json};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,7 +68,10 @@ impl Registry {
             return Err(HostError::invalid("Invalid project identity."));
         }
         if catalog.projects.iter().any(|project| project.project_id == workspace_id) {
-            return Err(HostError::other("A project with this identity already exists on another target; select it explicitly."));
+            return Err(HostError::other(l(
+                "另一个执行环境中已有同一标识的项目（例如同一台服务器的两个 SSH 别名），项目记忆和运行环境选择在这里不可用。",
+                "A project with this identity already exists on another execution target (such as two SSH aliases of one server), so project memory and interpreter choices are unavailable here.",
+            )));
         }
         let binding = Binding { target_id: self.target.clone(), workspace_id: workspace_id.to_owned(), path: path.to_owned() };
         catalog.projects.push(ProjectRecord { project_id: workspace_id.to_owned(), title: title.to_owned(), active_target_id: self.target.clone(), bindings: vec![binding] });

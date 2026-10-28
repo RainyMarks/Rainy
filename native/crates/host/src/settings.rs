@@ -269,13 +269,13 @@ fn check_data(data: &SettingsData) -> HostResult<()> {
         check_server(server)?;
     }
     if data.global_prompt.chars().count() > GLOBAL_PROMPT_MAX_CHARS {
-        return Err(HostError::invalid("The global prompt is too long."));
+        return Err(HostError::invalid(l("全局提示词太长。", "The global prompt is too long.")));
     }
     if let Some(rules) = data.security.as_ref().and_then(|security| security.rules.as_ref()) {
         for rule in rules.values() {
             let fits = |list: &Vec<String>, max: usize| list.len() <= MAX_RULES && list.iter().all(|item| (1..=max).contains(&item.chars().count()));
             if !fits(&rule.commands, 200) || !fits(&rule.tools, 128) {
-                return Err(HostError::invalid("A remembered approval is not valid."));
+                return Err(HostError::invalid(l("一条记住的批准规则无效。", "A remembered approval is not valid.")));
             }
         }
     }

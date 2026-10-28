@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 use crate::Host;
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 
 /// Largest `ide` request, escaped file text and recovery buffers included.
 const MAX_REQUEST_BYTES: usize = 40 * 1024 * 1024;
@@ -78,7 +79,7 @@ impl Ide {
     /// One request of the `ide` method.
     pub async fn handle(self: &Arc<Self>, host: &Arc<Host>, request: Value) -> HostResult<Value> {
         if request.to_string().len() > MAX_REQUEST_BYTES {
-            return Err(HostError::new("too-large", "The IDE request exceeds its configured byte limit"));
+            return Err(HostError::new("too-large", l("请求内容超过了大小上限。", "The IDE request exceeds its configured byte limit.")));
         }
         let op = request["op"].as_str().ok_or_else(|| HostError::invalid("The IDE operation is missing"))?.to_owned();
         if op == "workspaces.remove" {

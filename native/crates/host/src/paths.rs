@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 
 /// Resolve links to a canonical path, without Windows' `\\?\` prefix. On Windows, a volume the mount manager does not
 /// know (forensic image mounters such as 火眼, RAM disks, some virtual drives) has no final path name even though the
@@ -48,7 +49,7 @@ pub fn relative_path(path: &str, allow_root: bool) -> HostResult<&str> {
         || path.starts_with('/')
         || path.split('/').any(|part| part.is_empty() || part == "." || part == "..");
     if bad {
-        return Err(HostError::new("invalid-path", "IDE paths must be slash-separated paths inside the selected workspace."));
+        return Err(HostError::new("invalid-path", l("路径必须是所选项目内以 / 分隔的相对路径。", "IDE paths must be slash-separated paths inside the selected workspace.")));
     }
     Ok(path)
 }

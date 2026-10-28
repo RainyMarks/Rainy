@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::settings::ModelSelection;
 use crate::store::{create_private_dir, read_json, write_atomic, write_json};
 
@@ -106,8 +107,13 @@ fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-fn not_found(id: &str) -> HostError {
-    HostError::new("not-found", format!("Chat {id} not found"))
+fn not_found() -> HostError {
+    HostError::new("not-found", l("对话不存在。", "This chat does not exist."))
+}
+
+/// A chat file this version cannot read; it is left as it is.
+fn unreadable(id: &str, detail: &str) -> HostError {
+    HostError::other(l(&format!("无法读取对话文件 {id}.jsonl：{detail}"), &format!("The chat file {id}.jsonl cannot be read: {detail}")))
 }
 
 struct State {
@@ -301,7 +307,7 @@ impl ChatStore {
         let _guard = lock.lock().await;
         let (store, owned) = (self.clone(), id.to_owned());
         let file = tokio::task::spawn_blocking(move || store.read_file(&owned, false)).await.map_err(|error| HostError::other(error.to_string()))??;
-        file.ok_or_else(|| not_found(id))
+        file.ok_or_else(not_found)
     }
 
     fn read_file(&self, id: &str, header_only: bool) -> HostResult<Option<ChatFile>> {
@@ -315,9 +321,9 @@ impl ChatStore {
             Err(error) => return Err(error.into()),
         };
         let mut lines = text.split('\n');
-        let header: Value = serde_json::from_str(lines.next().unwrap_or_default()).map_err(|error| HostError::other(format!("Chat {id} has no header: {error}")))?;
+        let header: Value = serde_json::from_str(lines.next().unwrap_or_default()).map_err(|error| unreadable(id, &error.to_string()))?;
         if header["type"] != "header" || header["version"] != CHAT_FORMAT_VERSION || !header["id"].is_string() {
-            return Err(HostError::other(format!("Chat {id} has an unknown header")));
+            return Err(unreadable(id, &l("文件头的格式未知。", "its header has an unknown format.")));
         }
         let mut chat = StoredChat {
             id: header["id"].as_str().unwrap_or(id).to_owned(),
@@ -387,7 +393,7 @@ impl ChatStore {
     }
 
     fn require(&self, id: &str) -> HostResult<()> {
-        if self.state.lock().unwrap().chats.contains_key(id) { Ok(()) } else { Err(not_found(id)) }
+        if self.state.lock().unwrap().chats.contains_key(id) { Ok(()) } else { Err(not_found()) }
     }
 
     /// Append entries.
@@ -432,7 +438,7 @@ impl ChatStore {
             let _guard = lock.lock().await;
             self.append_lines(id, &format!("{line}\n"))?;
             let mut state = self.state.lock().unwrap();
-            let chat = state.chats.get_mut(id).ok_or_else(|| not_found(id))?;
+            let chat = state.chats.get_mut(id).ok_or_else(not_found)?;
             patch.apply(chat);
             chat.clone()
         };
@@ -453,7 +459,7 @@ impl ChatStore {
             }
             self.schedule_index();
         }
-        self.get(id).ok_or_else(|| not_found(id))
+        self.get(id).ok_or_else(not_found)
     }
 
     /// Delete a chat file.

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::paths::{contains, realpath, same_path};
 use crate::store::{read_json, write_json};
 use crate::text::now_ms;
@@ -72,11 +73,12 @@ fn folder_name(path: &Path) -> String {
 /// The canonical form of a folder the user chose.
 pub fn canonical_directory(path: &str) -> HostResult<PathBuf> {
     if !crate::paths::fully_qualified(path) {
-        return Err(HostError::new("invalid-path", "Choose an absolute directory path."));
+        return Err(HostError::new("invalid-path", l("请选择一个绝对路径的文件夹。", "Choose an absolute directory path.")));
     }
-    let canonical = realpath(Path::new(path)).map_err(|_| HostError::new("not-directory", "Choose an existing directory."))?;
+    let not_directory = || HostError::new("not-directory", l("请选择一个已存在的文件夹。", "Choose an existing directory."));
+    let canonical = realpath(Path::new(path)).map_err(|_| not_directory())?;
     if !canonical.is_dir() {
-        return Err(HostError::new("not-directory", "Choose an existing directory."));
+        return Err(not_directory());
     }
     Ok(canonical)
 }
@@ -150,10 +152,10 @@ impl Projects {
             return Ok(projects[index].clone());
         }
         if roots.iter().any(|root| contains(Path::new(&root.path), &canonical) || contains(&canonical, Path::new(&root.path))) {
-            return Err(HostError::new("root-overlap", "The directory overlaps an existing project folder."));
+            return Err(HostError::new("root-overlap", l("这个文件夹与项目中已有的文件夹重叠。", "The directory overlaps an existing project folder.")));
         }
         if roots.len() >= MAX_ROOTS {
-            return Err(HostError::new("too-large", "The project has reached its directory limit."));
+            return Err(HostError::new("too-large", l("这个项目的文件夹数量已达上限。", "The project has reached its directory limit.")));
         }
         let (root_id, title) = imported.unwrap_or_else(|| (uuid::Uuid::new_v4().to_string(), folder_name(&canonical)));
         projects[index].attached.push(Attached { root_id, path: canonical.display().to_string(), title });
@@ -165,7 +167,7 @@ impl Projects {
     /// Take an attached folder out of a project; its files and chats are untouched.
     pub fn detach(&self, id: &str, root_id: &str) -> HostResult<Project> {
         if root_id == PRIMARY {
-            return Err(HostError::invalid("The primary project directory cannot be removed."));
+            return Err(HostError::invalid(l("不能移除项目的主文件夹。", "The primary project directory cannot be removed.")));
         }
         let mut projects = self.projects.lock().unwrap();
         let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
@@ -181,7 +183,7 @@ impl Projects {
     pub fn rename(&self, id: &str, title: &str) -> HostResult<Project> {
         let trimmed = title.trim();
         if trimmed.is_empty() || trimmed.chars().count() > 200 {
-            return Err(HostError::invalid("Project titles must be 1–200 characters."));
+            return Err(HostError::invalid(l("项目名称需为 1–200 个字符。", "Project titles must be 1–200 characters.")));
         }
         let mut projects = self.projects.lock().unwrap();
         let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
@@ -206,15 +208,15 @@ impl Projects {
             .roots()
             .into_iter()
             .find(|root| root.root_id == root_id)
-            .ok_or_else(|| HostError::new("workspace-not-found", "This directory is no longer attached to the project."))?;
+            .ok_or_else(|| HostError::new("workspace-not-found", l("这个文件夹已不在项目中。", "This directory is no longer attached to the project.")))?;
         match realpath(Path::new(&root.path)) {
             Ok(canonical) if same_path(&canonical, Path::new(&root.path)) && canonical.is_dir() => Ok(root),
-            Ok(_) => Err(HostError::new("workspace-unavailable", "The project directory is unavailable or now resolves to another location.")),
-            Err(_) => Err(HostError::new("workspace-unavailable", "The project directory is unavailable.")),
+            Ok(_) => Err(HostError::new("workspace-unavailable", l("项目文件夹不可用，或已指向别的位置。", "The project directory is unavailable or now resolves to another location."))),
+            Err(_) => Err(HostError::new("workspace-unavailable", l("项目文件夹不可用。", "The project directory is unavailable."))),
         }
     }
 }
 
-fn missing() -> HostError {
-    HostError::new("workspace-not-found", "The selected project is no longer registered.")
+pub fn missing() -> HostError {
+    HostError::new("workspace-not-found", l("所选项目已不在项目列表中。", "The selected project is no longer registered."))
 }
