@@ -335,10 +335,7 @@ impl EditorArea {
                 }
                 Some(PageRequest::OpenUrl(url)) => crate::ui::open_link(&url, window, cx),
                 Some(PageRequest::OpenFile { path, root, line }) => {
-                    let key = match root {
-                        Some(root) => format!("\0{root}/{path}"),
-                        None => path,
-                    };
+                    let key = crate::store::ide::root_key(root.as_deref(), &path);
                     self.ide.update(cx, |ide, cx| match line {
                         Some(line) => ide.reveal(key, (line as u32).saturating_sub(1), 0, window, cx),
                         None => ide.open(key, true, window, cx),

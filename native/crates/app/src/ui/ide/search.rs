@@ -366,7 +366,7 @@ impl SearchView {
 
 /// The editor key of a result file.
 fn key_of(file: &TextSearchFile) -> String {
-    if file.root_id == "primary" || file.root_id.is_empty() { file.path.clone() } else { format!("\0{}/{}", file.root_id, file.path) }
+    crate::store::ide::root_key(Some(&file.root_id), &file.path)
 }
 
 impl Render for SearchView {

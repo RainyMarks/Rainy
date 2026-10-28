@@ -27,7 +27,15 @@ const POLL: Duration = Duration::from_secs(10);
 /// A root-qualified file key.
 pub fn file_key(path: &str, root: Option<&WorkspaceRoot>) -> String {
     match root {
-        Some(root) if !root.primary => format!("{PREFIX}{}/{path}", root.root_id),
+        Some(root) if !root.primary => root_key(Some(&root.root_id), path),
+        _ => path.to_owned(),
+    }
+}
+
+/// The key of a path under the root the Host names by id: none, empty or `primary` is the primary root.
+pub fn root_key(root: Option<&str>, path: &str) -> String {
+    match root {
+        Some(root) if !root.is_empty() && root != "primary" => format!("{PREFIX}{root}/{path}"),
         _ => path.to_owned(),
     }
 }
@@ -47,20 +55,14 @@ pub fn split_key(key: &str) -> (Option<&str>, &str) {
 pub fn child_key(directory: &str, name: &str) -> String {
     let (root, path) = split_key(directory);
     let path = if path.is_empty() { name.to_owned() } else { format!("{path}/{name}") };
-    match root {
-        Some(root) => format!("{PREFIX}{root}/{path}"),
-        None => path,
-    }
+    root_key(root, &path)
 }
 
 /// The key of the directory holding a key.
 pub fn parent_key(key: &str) -> String {
     let (root, path) = split_key(key);
     let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-    match root {
-        Some(root) => format!("{PREFIX}{root}/{parent}"),
-        None => parent.to_owned(),
-    }
+    root_key(root, parent)
 }
 
 /// The file name of a key.

@@ -20,7 +20,8 @@ impl Locale {
 
 type Table = HashMap<String, String>;
 
-/// Strings that Electron main used to show and the page never had: `(key, Chinese, English)`.
+/// Strings of what 3.x's Electron main process showed (startup, targets, SSH, downloads, updates, quitting) and of
+/// the MCP JSON import, whose keys the carrier hands over: `(key, Chinese, English)`.
 const NATIVE: &[(&str, &str, &str)] = &[
     ("native.starting", "正在启动执行后端…", "Starting the execution backend…"),
     ("native.quit", "退出", "Quit"),
@@ -32,7 +33,6 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.projectMap", "项目地图", "Project map"),
     ("native.noFormatter", "这个文件没有可用的格式化程序", "No formatter is available for this file"),
     ("native.noReferences", "没有找到引用", "No references found"),
-    ("native.checkUpdates", "检查更新", "Check for updates"),
     ("native.unsavedRoot", "先保存或关闭这个文件夹里有改动的文件，再把它移出项目", "Save or close the modified files in this folder before removing it from the project"),
     ("native.cut", "剪切", "Cut"),
     ("native.copy", "复制", "Copy"),
@@ -137,7 +137,7 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "The tool installation was cancelled. Verified staged files will be reused when you retry.",
     ),
     ("native.downloadIo", "文件读写失败：{detail}", "A file could not be read or written: {detail}"),
-    // src/main/update-messages.ts
+    // Updates (`store/update.rs`)
     ("native.updateTitle", "Rainy 更新", "Rainy updates"),
     ("native.updateCurrent", "已是最新版本：", "You are up to date:"),
     ("native.updateUnavailable", "自动更新仅用于已安装的发行版。", "Automatic updates require an installed release."),
@@ -170,15 +170,15 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "环境组件的操作未能及时停止，安装程序没有启动。",
         "An environment component operation did not stop in time, so the installer was not started.",
     ),
-    // The saved shutdown in src/main/main.ts
+    // Quitting with drafts that could not be saved
     ("native.draftsUnsaved", "草稿尚未保存", "Your drafts have not been saved."),
     ("native.draftsUnsavedDetail", "保存失败，窗口和草稿已保留。", "Saving failed. The window and your drafts are kept."),
     ("native.retrySaveQuit", "重试保存并退出", "Retry saving and quit"),
     ("native.dontQuit", "取消退出", "Do not quit"),
-    // The diagnostics export in src/main/main.ts
+    // The diagnostics export (`store/diagnostics.rs`)
     ("native.diagnosticsSaveTitle", "导出诊断信息", "Export diagnostics"),
     ("native.diagnosticsSaving", "无法保存 {path}", "Could not save {path}"),
-    // Settings → Skills & MCP → Import JSON, from the 3.9.2 src/renderer/settings/messages.ts
+    // Settings → Skills & MCP → Import JSON (`carrier/src/mcp_json.rs` names the keys)
     ("native.mcpImport", "从 JSON 导入", "Import JSON"),
     ("native.mcpImportTitle", "从 JSON 导入 MCP 服务器", "Import MCP servers from JSON"),
     (
