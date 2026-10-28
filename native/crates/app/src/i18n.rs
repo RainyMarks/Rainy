@@ -166,6 +166,11 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.updateSignature", "更新信息的签名无效", "The signature of the update information is not valid."),
     ("native.updateLaunchFailed", "无法启动安装程序：{detail}", "The installer could not be started: {detail}"),
     (
+        "native.updateNoFolder",
+        "找不到存放更新的文件夹：这次登录没有设置 LOCALAPPDATA 环境变量。",
+        "There is no folder to keep updates in: LOCALAPPDATA is not set for this session.",
+    ),
+    (
         "native.updateCleanupFailed",
         "环境组件的操作未能及时停止，安装程序没有启动。",
         "An environment component operation did not stop in time, so the installer was not started.",

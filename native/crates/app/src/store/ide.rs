@@ -1574,10 +1574,7 @@ impl Ide {
                     let changed: Vec<String> = changes
                         .into_iter()
                         .filter_map(|change| {
-                            let key = match &root {
-                                Some(root) => format!("{PREFIX}{root}/{}", change.path),
-                                None => change.path.clone(),
-                            };
+                            let key = root_key(root.as_deref(), &change.path);
                             let file = this.files.get_mut(&key)?;
                             if change.version.as_deref() == Some(file.document.version.as_str()) {
                                 return None;

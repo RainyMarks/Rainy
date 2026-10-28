@@ -71,20 +71,14 @@ fn main() {
         let prefs = store.read(cx).prefs.clone();
         theme::apply(&prefs, None, cx);
 
-        // The Host stops with the application; restart and quit end here without closing the window first.
+        // Closing the window and restarting stop the Host and Strata off the interface thread before they quit
+        // (`Store::quit`, `Store::restart`); any other quit stops what is still running here. An install stops at its
+        // next chunk; waiting for it keeps the module folders whole.
         let quitting = store.clone();
         cx.on_app_quit(move |cx| {
             placement::save(cx);
-            let (modules, strata) = quitting.update(cx, |store, _| {
-                store.shutdown();
-                (store.modules.manager.clone(), store.strata_manager())
-            });
-            // An install stops at its next chunk; waiting for it keeps the module folders whole.
-            modules.wait_idle(std::time::Duration::from_secs(10));
-            // The model server Rainy started does not outlive it; a server it did not start is left running.
-            if let Some(strata) = strata {
-                strata.close();
-            }
+            let shutdown = quitting.update(cx, |store, _| store.shutdown());
+            shutdown.finish();
             async {}
         })
         .detach();
@@ -95,6 +89,13 @@ fn main() {
         let opened = gpui_kit::open_window(options, cx, |window, cx| {
             window.set_window_title("Rainy");
             placement::track(&user_data, window, cx);
+            // The close button, Alt+F4 and the taskbar quit gracefully: the window goes at once and Rainy exits once
+            // the editor state is stored and the Host has stopped.
+            let closing = store.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                closing.update(cx, |store, cx| store.quit(cx));
+                false
+            });
             cx.new(|cx| Workbench::new(store.clone(), window, cx))
         });
         let window = match opened {
