@@ -482,3 +482,29 @@ export function markdownReader(ctx: Ctx): MarkdownReader {
     },
   }
 }
+
+/**
+ * Show text that changed outside the editor (the source view, the disk, the agent) with the least change: what both
+ * documents share keeps its nodes, so the caret, code blocks and diagrams stay where they are. The change is no undo
+ * step: Ctrl+Z cannot bring the old text back, and earlier edits stay undoable where they still apply.
+ * @param ctx The editor's context, once created.
+ * @param markdown The new text, LF line ends.
+ */
+export function replaceDocument(ctx: Ctx, markdown: string): void {
+  const view = ctx.get(editorViewCtx)
+  const next = readMarkdown(ctx, markdown)
+  const current = view.state.doc
+  const start = current.content.findDiffStart(next.content)
+  if (start === null) return
+  let { a: endA, b: endB } = current.content.findDiffEnd(next.content) ?? { a: current.content.size, b: next.content.size }
+  // Both ends may stop inside the same repeated text; the replaced stretch then starts where the shared prefix ends.
+  const overlap = start - Math.min(endA, endB)
+  if (overlap > 0) { endA += overlap; endB += overlap }
+  const transaction = view.state.tr.replace(start, endA, next.slice(start, endB)).setMeta('addToHistory', false)
+  // A slice that does not fit where it goes as it is would be adjusted; then the document is replaced whole.
+  if (!transaction.doc.eq(next)) {
+    view.dispatch(view.state.tr.replaceWith(0, current.content.size, next.content).setMeta('addToHistory', false))
+    return
+  }
+  view.dispatch(transaction)
+}

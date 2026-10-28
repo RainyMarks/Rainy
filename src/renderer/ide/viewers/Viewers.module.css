@@ -1,8 +1,6 @@
-/* File viewers inside the editor area: shared frame, image, media, PDF, office documents, Markdown preview, hex view and decoded text. */
+/* File viewers inside the editor area: shared frame, image, media, PDF, office documents, Markdown preview, hex view and its text view. */
 .viewer { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--rainy-alias-bg-base); color: var(--rainy-alias-label-primary); }
-.decoded { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 10px; border-bottom: 1px solid var(--rainy-alias-border-l2); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; color: var(--rainy-alias-label-secondary); }
-.decoded select { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-xs); padding: 1px 6px; }
-.prefix { flex: 1; min-height: 0; margin: 0; padding: 8px 12px; overflow: auto; white-space: pre; font-family: var(--rainy-font-family-code, monospace); font-size: var(--rainy-code-font-size, 13px); }
+.textView { flex: 1; min-height: 0; margin: 0; padding: 8px 12px; overflow: auto; white-space: pre; tab-size: 4; user-select: text; font-family: var(--rainy-font-family-code, monospace); font-size: var(--rainy-code-font-size, 13px); }
 .toolbar { flex: none; display: flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 8px; border-bottom: 1px solid var(--rainy-alias-border-l2); font-size: 12px; color: var(--rainy-alias-label-secondary); overflow-x: auto; white-space: nowrap; }
 .toolbar select, .toolbar input { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-xs); padding: 2px 6px; }
 .toolbar input { width: 140px; }
@@ -137,6 +135,10 @@
 .linkLayer section { position: absolute; box-sizing: border-box; text-align: initial; pointer-events: auto; transform-origin: 0 0; }
 .linkLayer a { position: absolute; inset: 0; font-size: 1em; cursor: pointer; }
 .linkLayer a:hover { background: color-mix(in srgb, var(--rainy-alias-state-business-primary) 18%, transparent); }
+/* Find marks sit between the canvas and the text layer, which keeps the pointer and the selection. */
+.findLayer { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.findMatch { position: absolute; border-radius: 2px; mix-blend-mode: multiply; background: color-mix(in srgb, var(--rainy-alias-state-warn-primary) 40%, transparent); }
+.findMatch[data-current] { background: color-mix(in srgb, var(--rainy-alias-state-warn-primary) 80%, transparent); outline: 2px solid var(--rainy-alias-state-warn-primary); }
 .pdfErrorDetail { max-width: 560px; font-size: 12px; color: var(--rainy-alias-label-tertiary); overflow-wrap: anywhere; user-select: text; }
 .pdfPassword p { margin: 0; }
 .pdfPasswordRow { display: flex; gap: 8px; width: min(320px, 100%); }

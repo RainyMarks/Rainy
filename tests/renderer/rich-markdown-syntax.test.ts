@@ -269,6 +269,29 @@ describe('==highlight==', () => {
     await crepe.destroy()
   })
 
+  it('reads back around bold, links and code', async () => {
+    const text = '==**粗体**== 与 ==一段 [链接](https://example.com) 和 `x`==\n\nEDITME\n'
+    const { saved, doc } = await save(text, type('EDITME', 'EDITED'))
+    expect(saved).toBe(text.replace('EDITME', 'EDITED'))
+    const highlighted: string[] = []
+    doc.descendants((node) => {
+      if (node.isText && node.marks.some(mark => mark.type.name === 'highlight')) highlighted.push(node.text!, ...node.marks.map(mark => mark.type.name))
+      return true
+    })
+    expect(highlighted).toEqual(expect.arrayContaining(['粗体', 'strong', '链接', 'link', 'x', 'inlineCode']))
+    // Highlighting bold text writes both marks; a reload reads the highlight again.
+    const { saved: marked, written, reread } = await save('一个 **重点** 词\n', (crepe) => {
+      const at = find(crepe, '重点')
+      view(crepe).dispatch(view(crepe).state.tr.setSelection(TextSelection.create(view(crepe).state.doc, at, at + 2)))
+      press(view(crepe).dom, 'H', { ctrlKey: true, shiftKey: true, keyCode: 72 })
+    })
+    expect(marked).toMatch(/^一个 (?:==\*\*重点\*\*==|\*\*==重点==\*\*) 词\n$/u)
+    expect(reread).toBe(written)
+    const crepe = await open(marked)
+    expect(view(crepe).dom.querySelector('mark strong, strong mark')?.textContent).toBe('重点')
+    await crepe.destroy()
+  })
+
   it('leaves setext underlines, comparisons and code alone', async () => {
     const text = 'Title\n=====\n\na == b 与 `x == y` 和 a===b EDITME\n\n```js\nif (a == b) {}\n```\n'
     const { saved, doc } = await save(text, type('EDITME', 'EDITED'))

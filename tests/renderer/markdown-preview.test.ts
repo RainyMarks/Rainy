@@ -117,6 +117,13 @@ describe('Markdown of a file preview', () => {
     expect(host.querySelectorAll('.math-inline, .katex')).toHaveLength(1)
   })
 
+  it('reads highlights around bold, links and code, never across a code span', async () => {
+    const host = await document_('==**粗**== 与 ==a [链](x.md) `c`== 但 `==` 不算\n')
+    const marks = [...host.querySelectorAll('mark')]
+    expect(marks.map(mark => mark.innerHTML.replace(/ [a-z-]+="[^"]*"/gu, ''))).toEqual(['<strong>粗</strong>', 'a <a>链</a> <code>c</code>'])
+    expect(host.querySelector('p > code:last-of-type')?.textContent).toBe('==')
+  })
+
   it('labels footnotes in Chinese and scrolls between a reference and its note', async () => {
     const host = await document_('正文[^1]。\n\n[^1]: 注释。\n')
     const section = host.querySelector('section[data-footnotes]')!

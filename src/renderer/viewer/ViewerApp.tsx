@@ -40,12 +40,14 @@ type Message =
   | { type: 'outline'; index: number }
   | { type: 'notice'; tone: 'success' | 'error'; text: string }
   | ({ type: 'attach' } & ImageAttachment)
-  /** Show the tab as hex, or in its default view again. */
-  | { type: 'view'; view: 'hex' | null }
+  /** Show the tab as hex or, for a document too large for the rich view, its source; or its default view again. */
+  | { type: 'view'; view: 'hex' | 'source' | null }
   /** The file changed on disk while this page read it. */
   | { type: 'reload' }
   /** The user scrolled the split preview: the 1-based source line now at its top, possibly fractional. */
   | { type: 'scroll'; line: number }
+  /** A workbench key sequence pressed in the page, whose second key the window never sees. */
+  | { type: 'chord'; keys: 'ctrl-k v' }
 
 declare global {
   interface Window {
@@ -173,6 +175,36 @@ async function createBinary(workspaceId: WorkspaceId, rootId: IdeRootId | undefi
   throw new Error(viewerMessages.t('imageNoFreeName'))
 }
 
+/** How long after Ctrl+K the V of Ctrl+K V may follow, as GPUI waits for the rest of a key sequence. */
+const CHORD_MS = 1500
+
+/**
+ * VS Code's Ctrl+K V in the preview: the workbench shows the source beside it, or the preview alone again. The window
+ * sees Ctrl+K but never the V, which only this page receives, so the page reports the sequence. The rich view keeps
+ * Ctrl+K for links, as Typora does.
+ */
+function usePreviewChord(enabled: boolean): void {
+  useEffect(() => {
+    if (!enabled) return
+    let armed = 0
+    const keydown = (event: KeyboardEvent): void => {
+      if (event.isComposing || ['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) return
+      const key = event.key.toLowerCase()
+      const plain = !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
+      if (armed !== 0 && Date.now() - armed < CHORD_MS && plain && key === 'v') {
+        armed = 0
+        event.preventDefault()
+        post({ type: 'chord', keys: 'ctrl-k v' })
+        return
+      }
+      armed = event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && key === 'k' ? Date.now() : 0
+      if (armed !== 0) event.preventDefault()
+    }
+    window.addEventListener('keydown', keydown)
+    return () => { window.removeEventListener('keydown', keydown) }
+  }, [enabled])
+}
+
 /** The Markdown views: the text arrives from the workbench, and rich edits go back to it. */
 function MarkdownView({ rich, workspaceId, rootId, path, hostPath }: {
   rich: boolean
@@ -184,6 +216,7 @@ function MarkdownView({ rich, workspaceId, rootId, path, hostPath }: {
 }): JSX.Element | null {
   const [text, setText] = useState(latestText)
   shownDocument = { workspaceId, rootId, path }
+  usePreviewChord(!rich)
   useEffect(() => {
     receiveText = (value, version) => { setText({ text: value, version }) }
     post({ type: 'ready' })
@@ -204,6 +237,7 @@ function MarkdownView({ rich, workspaceId, rootId, path, hostPath }: {
   return <RichMarkdown path={path} text={text.text} version={text.version} base={base}
     onChange={(value) => { latestText = { text: value, version: text.version }; post({ type: 'change', text: value }) }}
     onSave={() => { post({ type: 'save' }) }}
+    onSource={() => { post({ type: 'view', view: 'source' }) }}
     onImage={file => saveMarkdownImage((folder, name, bytes) => createBinary(workspaceId, rootId, folder, name, bytes), path, file, getPrefs().markdownImages)}
     onOpenLink={(href) => {
       if (/^(?:https?|mailto):/iu.test(href)) { post({ type: 'open-url', url: href }); return }
