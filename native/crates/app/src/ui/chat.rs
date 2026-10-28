@@ -84,7 +84,11 @@ pub struct ChatPane {
     active_suggestion: usize,
     suggestions_scroll: ScrollHandle,
     completion_seq: u64,
+    /// The `completion_seq` whose files the list shows; an older one while a newer query is under way.
+    shown_seq: u64,
     completion_task: Option<Task<()>>,
+    /// Tab or Enter came while the list showed an older query's files: the first of the new ones goes in.
+    accept_shown: bool,
     /// When Esc was pressed last while the chat ran; a second Esc soon after stops it.
     last_escape: Option<std::time::Instant>,
     /// Redraws a thinking timer.
@@ -149,12 +153,12 @@ impl ChatPane {
                 InputEvent::PressEnter { secondary, .. } => {
                     // Enter takes the highlighted suggestion while the list is open.
                     if !this.suggestions.is_empty() && this.trigger.is_some() {
-                        this.accept_suggestion(this.active_suggestion, window, cx);
+                        this.take_suggestion(true, window, cx);
                     } else {
                         this.send(*secondary, window, cx);
                     }
                 }
-                InputEvent::Change => this.update_trigger(cx),
+                InputEvent::Change => this.update_trigger(window, cx),
                 _ => {}
             }),
             // Keys the text area would otherwise take: the suggestion list's arrows, Esc, pasted images.
@@ -192,7 +196,9 @@ impl ChatPane {
             active_suggestion: 0,
             suggestions_scroll: ScrollHandle::new(),
             completion_seq: 0,
+            shown_seq: 0,
             completion_task: None,
+            accept_shown: false,
             last_escape: None,
             ticker: None,
             changes,
@@ -504,7 +510,7 @@ impl ChatPane {
     }
 
     /// Work out what the text before the caret asks to complete, and fetch suggestions for it.
-    fn update_trigger(&mut self, cx: &mut Context<Self>) {
+    fn update_trigger(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.composer.read(cx);
         let text = state.value().to_string();
         let caret = state.cursor().min(text.len());
@@ -513,6 +519,7 @@ impl ChatPane {
             return;
         }
         self.trigger = trigger.clone();
+        self.accept_shown = false;
         self.active_suggestion = 0;
         self.suggestions_scroll.scroll_to_item(0);
         match trigger {
@@ -537,13 +544,14 @@ impl ChatPane {
                 }
                 params["workspaceId"] = json!(crate::store::ide::Ide::global(cx).read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone()));
                 let call = self.store.read(cx).call("chat.complete", params);
-                self.completion_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                self.completion_task = Some(cx.spawn_in(window, async move |this: WeakEntity<Self>, cx: &mut AsyncWindowContext| {
                     cx.background_executor().timer(std::time::Duration::from_millis(80)).await;
                     let Ok(items) = call.await else { return };
-                    let _ = this.update(cx, |this, cx| {
+                    let _ = this.update_in(cx, |this, window, cx| {
                         if this.completion_seq != seq {
                             return;
                         }
+                        this.shown_seq = seq;
                         this.suggestions = items
                             .as_array()
                             .into_iter()
@@ -559,6 +567,9 @@ impl ChatPane {
                             .collect();
                         this.active_suggestion = 0;
                         this.suggestions_scroll.scroll_to_item(0);
+                        if std::mem::take(&mut this.accept_shown) && !this.suggestions.is_empty() {
+                            this.accept_suggestion(0, false, window, cx);
+                        }
                         cx.notify();
                     });
                 }));
@@ -567,11 +578,32 @@ impl ChatPane {
         cx.notify();
     }
 
-    /// Put a suggestion into the text: a command runs, a reference replaces what was typed after `@`.
-    fn accept_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Tab (`run` false) or Enter on the open list. While it still shows what an earlier `@` query found, the first
+    /// file of the query typed goes in once it arrives, never one of the earlier files.
+    fn take_suggestion(&mut self, run: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let reference = matches!(self.trigger, Some(crate::ui::composer::Trigger::Reference { .. }));
+        if reference && self.shown_seq != self.completion_seq {
+            self.accept_shown = true;
+        } else {
+            self.accept_suggestion(self.active_suggestion, run, window, cx);
+        }
+    }
+
+    /// Put a suggestion into the text: a command is written out by Tab and runs on Enter (`run`), a reference
+    /// replaces what was typed after `@`.
+    fn accept_suggestion(&mut self, index: usize, run: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(suggestion) = self.suggestions.get(index).cloned() else { return };
         match suggestion {
-            Suggestion::Command { name, .. } => self.run_command(name, window, cx),
+            Suggestion::Command { name, .. } if run => self.run_command(name, window, cx),
+            Suggestion::Command { name, .. } => {
+                let text = format!("/{name}");
+                let character = text.chars().count() as u32;
+                self.composer.update(cx, |state, cx| {
+                    state.set_value(text, window, cx);
+                    state.set_cursor_position(gpui_kit::component::input::Position { line: 0, character }, window, cx);
+                });
+                self.update_trigger(window, cx);
+            }
             Suggestion::Completion { kind, insert, .. } => {
                 let Some(crate::ui::composer::Trigger::Reference { start, .. }) = self.trigger.clone() else { return };
                 let state = self.composer.read(cx);
@@ -592,7 +624,7 @@ impl ChatPane {
                     self.trigger = None;
                     self.suggestions.clear();
                 }
-                self.update_trigger(cx);
+                self.update_trigger(window, cx);
             }
         }
     }
@@ -630,7 +662,7 @@ impl ChatPane {
                 cx.notify();
             }
             "tab" if open && !modifiers.modified() => {
-                self.accept_suggestion(self.active_suggestion, window, cx);
+                self.take_suggestion(false, window, cx);
                 cx.stop_propagation();
             }
             "escape" if open => {
@@ -801,7 +833,7 @@ impl ChatPane {
                             .when_some(detail, |this, detail| {
                                 this.child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(detail))
                             })
-                            .on_click(cx.listener(move |this, _, window, cx| this.accept_suggestion(index, window, cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.accept_suggestion(index, true, window, cx)))
                     })),
             )
             .vertical_scrollbar(&self.suggestions_scroll)

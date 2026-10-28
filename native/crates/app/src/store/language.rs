@@ -19,8 +19,8 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::*;
 use lsp_types::{
-    CompletionContext, CompletionItem, CompletionResponse, CompletionTriggerKind, GotoDefinitionResponse, Hover,
-    InlineCompletionContext, InlineCompletionItem, InlineCompletionResponse, LocationLink, Position,
+    CompletionContext, CompletionItem, CompletionResponse, CompletionTextEdit, CompletionTriggerKind, GotoDefinitionResponse, Hover,
+    InlineCompletionContext, InlineCompletionItem, InlineCompletionResponse, LocationLink, Position, TextEdit,
 };
 use rainy_carrier::lsp::{self, Answer, LspClient, LspIncoming, file_uri, uri_key, uri_path};
 use serde_json::{Value, json};
@@ -679,6 +679,22 @@ fn matches(word: &str, item: &CompletionItem) -> Option<u8> {
     word.chars().all(|ch| rest.any(|other| other == ch)).then_some(1)
 }
 
+/// A completion that replaces the word typed before the cursor, `start..end`. The editor puts an item's `insertText`
+/// at the cursor beside that word (`pri` became `priPRIMARYLANGID`), where servers mean it to take the word's place
+/// as its label does; Python's automatic imports come that way.
+fn replacing_word(mut item: CompletionItem, start: Position, end: Position) -> CompletionItem {
+    if item.text_edit.is_some() {
+        return item;
+    }
+    match item.insert_text.take() {
+        // The label already goes in over the word.
+        Some(text) if text == item.label => {}
+        Some(text) => item.text_edit = Some(CompletionTextEdit::Edit(TextEdit::new(lsp_types::Range::new(start, end), text))),
+        None => {}
+    }
+    item
+}
+
 /// What an editor asks its file's server and the Host.
 struct Provider {
     key: String,
@@ -706,6 +722,7 @@ impl CompletionProvider for Provider {
         };
         let position = utf16_position(text, offset);
         let word = word_before(text, offset);
+        let word_start = Position::new(position.line, position.character.saturating_sub(word.encode_utf16().count() as u32));
         let request = client.request(
             "textDocument/completion",
             json!({ "textDocument": { "uri": uri }, "position": position, "context": context }),
@@ -724,7 +741,8 @@ impl CompletionProvider for Provider {
                     left.sort_text.as_deref().unwrap_or(&left.label).cmp(right.sort_text.as_deref().unwrap_or(&right.label))
                 })
             });
-            Ok(CompletionResponse::Array(ranked.into_iter().take(MAX_COMPLETIONS).map(|(_, item)| item).collect()))
+            let items = ranked.into_iter().take(MAX_COMPLETIONS).map(|(_, item)| replacing_word(item, word_start, position));
+            Ok(CompletionResponse::Array(items.collect()))
         })
     }
 
@@ -920,6 +938,24 @@ mod tests {
         assert_eq!(matches("pnt", &item("print")), Some(1));
         assert_eq!(matches("xyz", &item("print")), None);
         assert_eq!(word_before(&Rope::from("  foo.ba"), 8), "ba");
+    }
+
+    #[test]
+    fn completions_replace_the_typed_word() {
+        let (start, end) = (Position::new(3, 4), Position::new(3, 7));
+        let item = |label: &str, insert: Option<&str>| CompletionItem { label: label.into(), insert_text: insert.map(Into::into), ..Default::default() };
+        // Text of its own takes the word's place instead of going in beside it.
+        let replaced = replacing_word(item("PRIMARYLANGID", Some("PRIMARYLANGID_X")), start, end);
+        assert_eq!(replaced.text_edit, Some(CompletionTextEdit::Edit(TextEdit::new(lsp_types::Range::new(start, end), "PRIMARYLANGID_X".into()))));
+        assert_eq!(replaced.insert_text, None);
+        // The same text as the label goes in as the label does.
+        let same = replacing_word(item("print", Some("print")), start, end);
+        assert_eq!((same.insert_text, same.text_edit), (None, None));
+        // A server's own edit and a bare label are left as they are.
+        assert_eq!(replacing_word(item("print", None), start, end), item("print", None));
+        let edit = CompletionTextEdit::Edit(TextEdit::new(lsp_types::Range::new(end, end), "x".into()));
+        let edited = CompletionItem { text_edit: Some(edit.clone()), ..item("x", Some("y")) };
+        assert_eq!(replacing_word(edited.clone(), start, end), edited);
     }
 
     #[test]

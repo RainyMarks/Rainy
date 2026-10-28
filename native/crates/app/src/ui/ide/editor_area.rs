@@ -11,7 +11,7 @@ use base64::Engine as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::diff::Diff;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{Editor, EditorMode, EditorState, Enter, IndentInline, InputEvent, InputModeKind as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
@@ -1180,6 +1180,22 @@ impl EditorArea {
         )
     }
 
+    /// Tab while the active editor lists completions takes the highlighted one, as Enter does; the editor alone would
+    /// indent under the open list. A suggestion shown at the cursor goes first, as Tab always took it: the list can
+    /// open after it, when the language server answers late.
+    fn tab_into_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ide = self.ide.read(cx);
+        let editor = ide.active.as_ref().and_then(|key| ide.files.get(key)).and_then(|file| file.editor.as_ref());
+        let listing = editor.is_some_and(|editor| {
+            let editor = editor.read(cx);
+            editor.completion_menu_state().open && !EditorMode::has_inline_completion(editor) && editor.focus_handle(cx).is_focused(window)
+        });
+        if listing {
+            cx.stop_propagation();
+            window.dispatch_action(Box::new(Enter { secondary: false, shift: false }), cx);
+        }
+    }
+
     /// Open Ctrl+K on the active file's editor.
     fn open_ai_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ide = self.ide.read(cx);
@@ -1283,6 +1299,7 @@ impl Render for EditorArea {
         div()
             .size_full()
             .bg(theme.background)
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| this.tab_into_completion(window, cx)))
             .on_action(cx.listener(|this, _: &AiEditSelection, window, cx| this.open_ai_edit(window, cx)))
             .on_action(cx.listener(|this, _: &MarkdownPreview, _, cx| this.toggle_markdown_view("preview", cx)))
             .on_action(cx.listener(|this, _: &MarkdownSplit, _, cx| this.toggle_markdown_view("split", cx)))
