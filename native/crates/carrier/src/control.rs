@@ -95,6 +95,8 @@ pub struct HostProcess {
     pending: Pending,
     ready: HostReady,
     exited: Arc<Mutex<Option<Option<i32>>>>,
+    /// The distribution and Linux path of a Host in WSL, which outlives `wsl.exe` when it does not stop by itself.
+    wsl: Option<(String, String)>,
 }
 
 /// Validate the `ready` message, as `parseReady` in `transport.ts` does.
@@ -221,7 +223,7 @@ impl HostProcess {
             }
         };
 
-        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone() };
+        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone(), wsl: crate::wsl::host_of(command) };
         // Report the exit once, from a thread that only polls the child.
         let child_ref = child;
         thread::Builder::new().name("host-exit".into()).spawn(move || {
@@ -282,6 +284,11 @@ impl HostProcess {
                 return;
             }
             thread::sleep(Duration::from_millis(100));
+        }
+        if let Some((distro, host)) = &self.wsl
+            && let Err(error) = crate::wsl::force_stop(distro, host, self.ready.pid)
+        {
+            log::warn!("The WSL Host did not stop: {error:#}");
         }
         let mut child = self.child.lock().unwrap();
         #[cfg(windows)]
