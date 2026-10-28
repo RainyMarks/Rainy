@@ -144,7 +144,6 @@ if (window.ipc !== undefined) {
       if (typeof result.error === 'string') throw new Error(result.error)
       return typeof result.path === 'string' ? { path: result.path } : null
     },
-    showInFolder: async (path) => { await request('open-external', { path, reveal: true }) },
   }
 }
 

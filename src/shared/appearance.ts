@@ -1,4 +1,5 @@
-/** Appearance choices shared by the Host, which stores and validates them, and the renderer, which applies them. */
+/** Appearance choices the Host stores and validates and the viewer pages apply; `native/crates/app/src/theme.rs` applies
+ *  them to the native interface. */
 
 /** Color schemes of Settings → Appearance; each replaces the gray ramp in `src/renderer/theme/schemes.css`. */
 export const COLOR_SCHEMES = ['graphite', 'slate', 'midnight', 'sand', 'forest', 'rose', 'black'] as const
@@ -25,7 +26,7 @@ export function effectiveAccent(scheme: ColorScheme, accent: Accent): Exclude<Ac
 }
 
 /** Longest stored font setting, in characters. */
-export const FONT_SETTING_MAX = 160
+const FONT_SETTING_MAX = 160
 /** Most families one font setting may list. */
 const FONT_FAMILIES_MAX = 4
 /** Letters of any script, digits, spaces and the few marks real family names use; no quotes, commas or semicolons. */
@@ -38,20 +39,12 @@ const GENERIC_FAMILIES = new Set(['serif', 'sans-serif', 'monospace', 'cursive',
  * @param value A font setting: empty for the default, or family names separated by commas, each optionally quoted.
  * @returns The family names, or `undefined` when the setting is not valid.
  */
-export function fontFamilies(value: string): string[] | undefined {
+function fontFamilies(value: string): string[] | undefined {
   if (value.length > FONT_SETTING_MAX) return undefined
   if (value.trim() === '') return []
   const names = value.split(',').map(name => name.trim().replace(/^(['"])(.*)\1$/u, '$2').trim())
   if (names.length > FONT_FAMILIES_MAX || names.some(name => !FONT_NAME.test(name))) return undefined
   return names
-}
-
-/**
- * @param value A font setting as typed.
- * @returns The setting as stored (names joined by ", ", quotes dropped), or `undefined` when it is not valid.
- */
-export function normalizeFont(value: string): string | undefined {
-  return fontFamilies(value)?.join(', ')
 }
 
 /**

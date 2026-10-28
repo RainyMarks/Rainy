@@ -7,7 +7,6 @@ import type { Ctx } from '@milkdown/kit/ctx'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
-import { on } from '../../app/bus.ts'
 import { resolveDocumentPath } from '../../chat/Markdown.tsx'
 import { usePrefs } from '../../prefs.ts'
 import { toast } from '../../ui/index.ts'
@@ -431,12 +430,6 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
     window.addEventListener('blur', released)
     return () => { window.removeEventListener('keydown', held); window.removeEventListener('keyup', held); window.removeEventListener('blur', released) }
   }, [])
-
-  // Find and Replace from the Edit menu and the command palette.
-  useEffect(() => on('markdown.find', (event) => {
-    if (event.path === path) setFind({ replace: event.replace, seed: selectedText(), at: Date.now() })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [path])
 
   return <div className={css.viewer} data-viewer="markdown-rich">
     {failure !== '' ? <div className={`${css.message} ${css.error}`}>{t('richFailed', { error: failure })}</div> : <>

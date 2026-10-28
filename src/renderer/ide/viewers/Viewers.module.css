@@ -1,6 +1,5 @@
 /* File viewers inside the editor area: shared frame, image, media, PDF, office documents, Markdown preview, hex view and decoded text. */
 .viewer { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--rainy-alias-bg-base); color: var(--rainy-alias-label-primary); }
-.rightPane { position: absolute; top: 0; right: 0; bottom: 0; left: 50%; border-left: 1px solid var(--rainy-alias-border-l2); }
 .decoded { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 10px; border-bottom: 1px solid var(--rainy-alias-border-l2); background: var(--rainy-specific-sidebar-fill, var(--rainy-alias-bg-layer-1)); font-size: 12px; color: var(--rainy-alias-label-secondary); }
 .decoded select { font: inherit; color: var(--rainy-alias-label-primary); background: var(--rainy-alias-bg-base); border: 1px solid var(--rainy-alias-border-l3); border-radius: var(--rainy-radius-xs); padding: 1px 6px; }
 .prefix { flex: 1; min-height: 0; margin: 0; padding: 8px 12px; overflow: auto; white-space: pre; font-family: var(--rainy-font-family-code, monospace); font-size: var(--rainy-code-font-size, 13px); }

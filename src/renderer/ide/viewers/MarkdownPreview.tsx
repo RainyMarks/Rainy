@@ -74,7 +74,7 @@ function MermaidDiagram({ source, line }: { source: string; line: number | undef
     return (
       <div data-line={line}>
         <div className={markdownCss.diagramError} role="alert">{t('mermaidFailed', { error: drawn.error })}</div>
-        <CodeBlock code={source} language="mermaid" actions={false} />
+        <CodeBlock code={source} language="mermaid" />
       </div>
     )
   }
@@ -127,7 +127,6 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
 
   const options = useMemo<MarkdownOptions>(() => ({
     base,
-    codeActions: false,
     sourceLines: true,
     revision: `${version ?? 'unsaved'}-${reloads}`,
     openLocal: (target) => { latest.current.openLocal(target) },

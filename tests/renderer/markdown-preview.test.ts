@@ -4,7 +4,7 @@
 import { act, createElement, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Markdown, MarkdownDocument, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
+import { MarkdownDocument, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
 import { MarkdownPreview } from '../../src/renderer/ide/viewers/MarkdownPreview.tsx'
 import { onThemeChange } from '../../src/renderer/ide/viewers/mermaid.ts'
 import { ScrollSync } from '../../src/renderer/ide/viewers/scroll-sync.ts'
@@ -46,7 +46,7 @@ async function mount(element: ReactElement): Promise<HTMLElement> {
 }
 
 const FILE: MarkdownOptions = {
-  base: { workspaceId: 'w', directory: 'docs' }, sourceLines: true, codeActions: false,
+  base: { workspaceId: 'w', directory: 'docs' }, sourceLines: true, openLocal: () => undefined,
   file: { footnoteLabel: '脚注', footnoteBackLabel: '返回正文' },
 }
 
@@ -102,11 +102,6 @@ describe('HTML in a file preview', () => {
     expect([...host.querySelectorAll('img')].map(image => image.getAttribute('src'))).toEqual(['data:image/png;base64,AAAA', 'data:image/png;base64,BBBB'])
     expect(host.querySelector('img')?.getAttribute('width')).toBe('20')
     expect(host.querySelector('a')).toBeNull()
-  })
-
-  it('leaves assistant replies as they were: HTML shows as text', async () => {
-    const host = await mount(createElement(Markdown, { text: '一 <b>二</b>\n' }))
-    expect(host.textContent).toContain('<b>二</b>')
   })
 })
 

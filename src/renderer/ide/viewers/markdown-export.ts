@@ -186,16 +186,14 @@ export async function embedImage(url: string): Promise<string | undefined> {
  * @param options.path Project-relative path of the document.
  * @param options.workspaceId Its project.
  * @param options.rootId Its mounted folder; omitted for the primary one.
- * @param options.hostDirectory Its folder on the Host, where the save dialog starts.
  * @returns The saved file, or `null` when the user cancelled.
  */
-export async function exportDocument({ format, text, path, workspaceId, rootId, hostDirectory }: {
+export async function exportDocument({ format, text, path, workspaceId, rootId }: {
   format: 'pdf' | 'html'
   text: string
   path: string
   workspaceId: string
   rootId?: string | undefined
-  hostDirectory?: string | undefined
 }): Promise<string | null> {
   const name = (path.split('/').at(-1) ?? path).replace(/\.[^.]+$/u, '')
   const directory = path.split('/').slice(0, -1).join('/')
@@ -206,7 +204,7 @@ export async function exportDocument({ format, text, path, workspaceId, rootId, 
     return resolved === undefined ? undefined : embedImage(ideRawUrl({ workspaceId, rootId, path: resolved }))
   } })
   const bridge = window.__RAINY_EXPORT__
-  if (bridge !== undefined) return (await bridge.save({ format, html, name, directory: hostDirectory }))?.path ?? null
+  if (bridge !== undefined) return (await bridge.save({ format, html, name }))?.path ?? null
   if (format === 'pdf') throw new Error(viewerMessages.t('exportPdfDesktop'))
   const link = document.createElement('a')
   link.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
