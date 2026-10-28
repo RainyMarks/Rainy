@@ -65,6 +65,14 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 <a id="features"></a>
 ## Features
 
+<a id="agent-mode"></a>
+### Agent mode: the conversation first, the code when you need it
+
+- Rainy opens in **Agent mode**: the conversation with the AI fills the middle of the window, with the message box below it and the permission mode, the model and the context use under the box. A new chat greets you in the middle of the window and names the project it starts in.
+- The chats are on the left: **New chat** (Ctrl+N), **Search** (Ctrl+Alt+K), the current project, then the pinned chats and the chats of each project under headers that fold. A spinner marks a chat at work and a dot one waiting for your approval; right-click a chat or use its **···** to rename, pin, archive or delete it. **Ctrl+B** shows or hides the sidebar.
+- The buttons at the right of the title bar open the **Files** (the file tree and the editor), the **Terminal** and the chat's **Changes** in a panel on the right; a file you open from a tool card or a change you review opens the files panel by itself. In a narrow window the sidebar and the panel make room first, so the conversation stays readable.
+- The two buttons at the left of the title bar switch between Agent mode and **IDE mode** (the classic layout with the files, the editor and the AI pane side by side) at any time, as does **Ctrl+Shift+A**. Nothing is interrupted: the selected chat, its draft, running work, open files and terminals stay as they are, and this computer remembers your choice.
+
 ### An AI agent: let it work, keep the final say
 
 - **Real work**: reads, searches and edits project files, runs commands, searches the web and reads pages through DeepSeek, and remembers the project across chats.
@@ -141,10 +149,10 @@ See what a project is made of, how its parts import each other and which stack i
 ## Quick start
 
 1. Download and install [the latest Windows x64 installer](https://github.com/RainyMarks/Rainy/releases/latest). No activation code is required.
-2. Open Rainy and select **Open folder** in the title bar (once a project is open, that button shows its name and opens the project menu).
-3. Connect a model in **Settings → Models** (see [Connect a model](#connect-a-model)), then ask in the AI pane on the right.
+2. Open Rainy, select **Choose a project** in the sidebar, then **Open folder** (once a project is open, that button shows its name and opens the project menu; in IDE mode it is in the middle of the title bar).
+3. Connect a model in **Settings → Models** (see [Connect a model](#connect-a-model)), then ask in the message box in the middle of the window (the AI pane on the right in IDE mode).
 
-To work on a Linux server, make sure `ssh` logs in from a terminal, pick the host under **Settings → Runtime → SSH remote development**, select **Switch to this host**, then open a project with **Browse folders on current host** in the project menu of the title bar. See the [desktop guide](docs/desktop.md#ssh-remote-development).
+To work on a Linux server, make sure `ssh` logs in from a terminal, pick the host under **Settings → Runtime → SSH remote development**, select **Switch to this host**, then open a project with **Browse folders on current host** in the project menu (the project button of the sidebar; in IDE mode, in the title bar). See the [desktop guide](docs/desktop.md#ssh-remote-development).
 
 Rainy downloads stable updates in the background and then offers **Later** or **Restart and install**.
 
