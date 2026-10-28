@@ -983,8 +983,8 @@
    "diagnosticsSaved": "诊断信息已保存到 {path}",
    "diagnosticsDescription": "把版本、日志和崩溃记录打包成 zip，便于反馈问题。不包含 API 密钥、对话和设置，日志里的令牌和密码会被隐去，也不会自动上传。",
    "strataTitle": "Strata 本地大模型",
-   "modulesTitle": "PHP",
-   "modulesNote": "不随安装包提供，下载后可离线使用，不用了可以卸载。",
+   "modulesTitle": "编程工具与运行时",
+   "modulesNote": "编辑器的补全、检查、格式化和调试工具，以及 PHP。不随安装包提供，下载后可离线使用，不用了可以卸载。",
    "modulePhp": "PHP 8.5",
    "modulePhpHint": "在 Windows 原生环境运行 PHP 文件时需要",
    "modulesDownload": "下载（{size}）",
@@ -1309,7 +1309,11 @@
    "strataStepWorking": "正在准备模型…",
    "strataDownloadTitle": "下载模型？",
    "strataDownloadConfirm": "{model} 大约 {size}，会保存到 {folder}（{free}）。下载可以随时取消，下次从断点继续。",
-   "strataDownloadShort": "这个位置的剩余空间可能不够，请先在“下载设置”里换一个更大的硬盘。"
+   "strataDownloadShort": "这个位置的剩余空间可能不够，请先在“下载设置”里换一个更大的硬盘。",
+   "moduleIdePython": "Python 编程工具",
+   "moduleIdePythonHint": "ruff 格式化、ty 补全与检查、debugpy 调试",
+   "moduleIdeWeb": "JavaScript/TypeScript 编程工具",
+   "moduleIdeWebHint": "TypeScript 补全、检查与格式化，js-debug 调试"
   },
   "en": {
    "title": "Settings",
@@ -1442,8 +1446,8 @@
    "diagnosticsSaved": "Diagnostics saved to {path}",
    "diagnosticsDescription": "Pack versions, logs and crash records into a zip to attach to a report. API keys, chats and settings are left out, tokens and passwords in logs are hidden, and nothing is uploaded.",
    "strataTitle": "Strata local models",
-   "modulesTitle": "PHP",
-   "modulesNote": "Not part of the installer; it works offline once downloaded and can be removed again.",
+   "modulesTitle": "Developer tools",
+   "modulesNote": "The editor's completion, checking, formatting and debugging tools, and PHP. Not part of the installer; they work offline once downloaded and can be removed again.",
    "modulePhp": "PHP 8.5",
    "modulePhpHint": "needed to run PHP files in the Windows native environment",
    "modulesDownload": "Download ({size})",
@@ -1768,7 +1772,11 @@
    "strataStepWorking": "Getting the model ready…",
    "strataDownloadTitle": "Download the model?",
    "strataDownloadConfirm": "{model} is about {size} and goes to {folder} ({free}). You can cancel at any time; the download continues where it stopped next time.",
-   "strataDownloadShort": "This folder's drive may not have enough room. Choose a bigger drive under Downloads first."
+   "strataDownloadShort": "This folder's drive may not have enough room. Choose a bigger drive under Downloads first.",
+   "moduleIdePython": "Python tools",
+   "moduleIdePythonHint": "Ruff formatting, ty completion and checks, debugpy debugging",
+   "moduleIdeWeb": "JavaScript and TypeScript tools",
+   "moduleIdeWebHint": "TypeScript completion, checks and formatting, js-debug debugging"
   }
  },
  "viewers": {

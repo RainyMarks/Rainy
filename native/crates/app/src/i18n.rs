@@ -40,6 +40,7 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.selectAll", "全选", "Select all"),
     ("native.languageStarting", "{language} 语言服务启动中", "{language} language service starting"),
     ("native.languageFailed", "{language} 语言服务不可用", "{language} language service unavailable"),
+    ("native.languageToolsMissing", "{language}：点这里到“设置 → 工具”下载编程工具", "{language}: click to download its tools in Settings → Tools"),
     ("native.switchConfirm", "切换到 {target} 后 Rainy 会重新启动。已有对话保留在原来的执行环境。", "Rainy restarts in {target}. Existing chats stay in their execution environment."),
     ("native.switch", "切换", "Switch"),
     ("native.busyBeforeSwitch", "执行环境里还有任务在运行，请先结束再切换。", "Tasks are still running in this execution environment. Finish them before you switch."),

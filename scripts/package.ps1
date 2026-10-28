@@ -47,9 +47,9 @@ try {
     $stageScript = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $PSScriptRoot 'stage-linux.py')).Trim(); Check-Exit
     $runtimeDir = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $rainyApp 'runtime')).Trim(); Check-Exit
     & wsl.exe -d $Distribution --exec python3 $stageScript --output $runtimeDir; Check-Exit
-    # PHP, the Linux runtime base and the offline Ubuntu packages ship as downloadable components; their pieces go to the resources release.
+    # The editor's Windows tools, PHP, the Linux runtime base and the offline Ubuntu packages ship as downloadable components; their pieces go to the resources release.
     $rainyPieces = Join-Path $rainyApp "release/resources-$rainyVersion"
-    foreach ($rainyModule in @('php', 'linux-runtime', 'linux-dev-packages')) { Remove-Item -LiteralPath (Join-Path $rainyPieces $rainyModule) -Recurse -Force -ErrorAction SilentlyContinue }
+    foreach ($rainyModule in @('ide-python', 'ide-web', 'php', 'linux-runtime', 'linux-dev-packages')) { Remove-Item -LiteralPath (Join-Path $rainyPieces $rainyModule) -Recurse -Force -ErrorAction SilentlyContinue }
     & node (Join-Path $PSScriptRoot 'prepare-optional-modules.mjs') --version $rainyVersion --pieces $rainyPieces; Check-Exit
     # RainyAgent.exe carries the public release keys the resources are signed with; package-native.mjs stages, signs and
     # builds the NSIS installer, latest.yml and latest.yml.sig in release/.

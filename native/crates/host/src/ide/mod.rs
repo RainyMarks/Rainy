@@ -53,7 +53,7 @@ impl Ide {
         let state = Arc::new(state::StateStore::open(host.env.home.join("ide"), host.projects.clone()));
         let tools = tools::Tools::new(&host.env.resources);
         let executing = hints.clone();
-        let execution = execution::Execution::new(host.runtime.clone(), tools.root.clone(), host.env.pwsh_path.clone(), move |workspace_id| executing.notify(workspace_id, "execution"));
+        let execution = execution::Execution::new(host.runtime.clone(), tools.clone(), host.env.pwsh_path.clone(), move |workspace_id| executing.notify(workspace_id, "execution"));
         let probe = execution.clone();
         host.activity.add(move || probe.has_activity());
         let languages = language::Languages::new(tools.clone(), files.clone(), host.runtime.clone(), state.clone(), host.activity.clone());

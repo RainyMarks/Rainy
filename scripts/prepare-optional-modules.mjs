@@ -25,8 +25,9 @@ async function unpackedBytes(archive) {
 }
 
 /**
- * Write the signed-resource descriptor for PHP, the Linux runtime base and the offline Ubuntu development packages, each
- * published in pieces of this release. (Strata is no longer one: Rainy downloads Strata's own release when asked.)
+ * Write the signed-resource descriptor for the editor's Windows tools (ide-python: Ruff, ty and debugpy; ide-web:
+ * TypeScript and js-debug), PHP, the Linux runtime base and the offline Ubuntu development packages, each published in
+ * pieces of this release. (Strata is no longer one: Rainy downloads Strata's own release when asked.)
  * @param {{appDirectory:string,releaseVersion:string,pieces:string,output:string}} options Locations and identity.
  * @returns {Promise<{modules:object[],uploads:string[]}>} Descriptor entries and the piece files to upload.
  */
@@ -36,6 +37,16 @@ export async function prepareOptionalModules(options) {
   const scratch = await mkdtemp(join(tmpdir(), 'rainy-modules-'))
   const uploads = []
   try {
+    // The Windows IDE tools of prepare-ide-tools.py, split by language; each keeps the licenses and the manifest.
+    const tools = join(app, 'runtime/ide-windows')
+    const toolManifest = JSON.parse(await readFile(join(tools, 'manifest.json'), 'utf8'))
+    if (toolManifest.version !== 2 || toolManifest.platform !== 'win32-x64') throw new Error('runtime/ide-windows holds no Windows IDE tools')
+    const licenses = (await readdir(join(tools, 'licenses'))).sort()
+    const pythonLicenses = licenses.filter(name => /^(ruff|ty)-/u.test(name)).map(name => `licenses/${name}`)
+    const webLicenses = licenses.filter(name => !/^(ruff|ty)-/u.test(name)).map(name => `licenses/${name}`)
+    const toolArchive = (name, entries) => tar.c({ cwd: tools, file: join(scratch, name), gzip: true, portable: true, mtime: new Date(0) }, entries)
+    await toolArchive('ide-python.tar.gz', ['bin', 'python', ...pythonLicenses, 'manifest.json'])
+    await toolArchive('ide-web.tar.gz', ['typescript', 'js-debug', ...webLicenses, 'manifest.json'])
     const php = join(app, 'runtime/component-stage/windows-basic/php')
     const names = (await readdir(php)).filter(name => name !== 'dev').sort()
     await tar.c({ cwd: php, file: join(scratch, 'php.tar.gz'), gzip: true, portable: true, mtime: new Date(0) }, names)
@@ -57,6 +68,10 @@ export async function prepareOptionalModules(options) {
     }
     await mkdir(options.pieces, { recursive: true })
     const modules = [
+      { id: 'ide-python', kind: 'directory', ...await published('ide-python', scratch, 'ide-python.tar.gz'),
+        unpackedBytes: await unpackedBytes(join(scratch, 'ide-python.tar.gz')) },
+      { id: 'ide-web', kind: 'directory', ...await published('ide-web', scratch, 'ide-web.tar.gz'),
+        unpackedBytes: await unpackedBytes(join(scratch, 'ide-web.tar.gz')) },
       { id: 'php', kind: 'directory', ...await published('php', scratch, 'php.tar.gz'), unpackedBytes: await unpackedBytes(join(scratch, 'php.tar.gz')) },
       { id: 'linux-runtime', kind: 'file', ...await published('linux-runtime', join(app, 'runtime'), 'linux-runtime.tar.xz'),
         unpackedBytes: linuxMetadata.unpackedBytes },

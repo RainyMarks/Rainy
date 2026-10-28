@@ -1,5 +1,6 @@
 //! Tools: the third-party tools Rainy can add. None comes with Rainy; each is downloaded when the user asks and can be
-//! removed again: Strata for local models, and the optional components (PHP).
+//! removed again: Strata for local models, and the optional components (the editor's Python and JavaScript/TypeScript
+//! tools, PHP).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::progress::Progress;
@@ -66,7 +67,11 @@ impl ToolsPage {
     fn render_module(&self, status: &Status, state: &State, running: bool, busy: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let Some(id) = OFFERED.into_iter().find(|offered| *offered == status.id) else { return div().into_any_element() };
-        let (name, hint) = ("settings.modulePhp", "settings.modulePhpHint");
+        let (name, hint) = match id {
+            "ide-python" => ("settings.moduleIdePython", "settings.moduleIdePythonHint"),
+            "ide-web" => ("settings.moduleIdeWeb", "settings.moduleIdeWebHint"),
+            _ => ("settings.modulePhp", "settings.modulePhpHint"),
+        };
         let active = running && state.module.as_deref() == Some(status.id.as_str());
         let percentage = if state.total_bytes > 0 { state.completed_bytes.saturating_mul(100) / state.total_bytes } else { 0 };
         let line = if active && state.phase == Phase::Installing {

@@ -236,6 +236,20 @@ impl LanguageServers {
         cx.notify();
     }
 
+    /// Tools were downloaded: servers that failed for want of them start again for their open files.
+    pub fn retry_missing_tools(&mut self, cx: &mut Context<Self>) {
+        let waiting: Vec<String> = self.phases.iter().filter(|(_, phase)| matches!(phase, ServerPhase::Failed(reason) if reason.as_ref() == "tools-missing")).map(|(server, _)| server.clone()).collect();
+        for server in &waiting {
+            self.phases.remove(server);
+            self.retry_at.remove(server);
+        }
+        let keys: Vec<String> = self.documents.iter().filter(|(_, document)| document.server.as_ref().is_some_and(|(name, _)| waiting.contains(name))).map(|(key, _)| key.clone()).collect();
+        for key in keys {
+            self.open_document(&key, cx);
+        }
+        cx.notify();
+    }
+
     /// Tell the server a file was saved.
     pub fn saved(&mut self, key: &str) {
         let Some(document) = self.documents.get(key) else { return };

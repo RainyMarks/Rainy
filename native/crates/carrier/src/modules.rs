@@ -23,7 +23,7 @@ use crate::tarball::{self, TarError};
 /// The descriptor, in the resources folder.
 pub const DESCRIPTOR_FILE: &str = "optional-modules.json";
 /// Every module a descriptor may pin.
-pub const IDS: [&str; 3] = ["php", "linux-runtime", "linux-dev-packages"];
+pub const IDS: [&str; 5] = ["ide-python", "ide-web", "php", "linux-runtime", "linux-dev-packages"];
 const MARKER: &str = ".rainy-module.json";
 const DOWNLOADS: &str = ".downloads";
 /// JavaScript's `Number.MAX_SAFE_INTEGER`, the largest size the 3.x schema accepts.

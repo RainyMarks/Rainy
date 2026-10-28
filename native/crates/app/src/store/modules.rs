@@ -9,7 +9,8 @@ use rainy_carrier::modules::{ModuleError, Modules, Phase, State, Status};
 use super::Store;
 
 /// The modules Settings offers.
-pub const OFFERED: [&str; 1] = ["php"];
+/// The editor's Python tools, its JavaScript and TypeScript tools, and PHP.
+pub const OFFERED: [&str; 3] = ["ide-python", "ide-web", "php"];
 
 /// The modules as the settings page shows them.
 pub struct OptionalModules {
@@ -46,9 +47,14 @@ impl Store {
     /// A module operation published its state.
     pub(super) fn module_state(&mut self, state: State, cx: &mut Context<Self>) {
         let complete = state.phase == Phase::Complete;
+        let tools = state.module.as_deref().is_some_and(|id| id.starts_with("ide-"));
         self.modules.state = state;
         if complete {
             self.refresh_modules(cx);
+            // The editor's tools are looked up when needed: files waiting for them get their language service now.
+            if tools {
+                super::language::LanguageServers::global(cx).update(cx, |servers, cx| servers.retry_missing_tools(cx));
+            }
         }
         cx.notify();
     }

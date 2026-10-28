@@ -128,6 +128,10 @@ pub fn windows_host(paths: &Paths) -> Result<HostCommand> {
     }
     let data = |name: &str| paths.user_data.join(name).display().to_string();
     let php = paths.user_data.join("modules").join("php").join("php.exe");
+    // The editor's tools are downloads of their own (Settings → Tools); the Host looks in their folders when it needs one.
+    let ide_tools = std::env::join_paths(["ide-python", "ide-web"].map(|id| paths.user_data.join("modules").join(id)))
+        .map(|joined| joined.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut env = shared_env(&ExecutionTarget::windows());
     env.extend(
         [
@@ -135,6 +139,7 @@ pub fn windows_host(paths: &Paths) -> Result<HostCommand> {
             ("RAINY_HOME", data("native-home")),
             ("RAINY_TOOLCHAIN_ROOT", data("env")),
             ("RAINY_BUILTIN_PHP", php.display().to_string()),
+            ("RAINY_IDE_TOOLS", ide_tools),
             // Model requests follow the Windows system proxy, which the Host asks this process for.
             ("RAINY_CARRIER_PROXY", "1".to_owned()),
         ]
