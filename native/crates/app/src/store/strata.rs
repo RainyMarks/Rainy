@@ -150,9 +150,4 @@ impl Store {
             result
         })
     }
-
-    /// Stop the engine Rainy started, for quitting.
-    pub fn strata_manager(&self) -> Option<Arc<Manager>> {
-        self.strata.manager.clone()
-    }
 }

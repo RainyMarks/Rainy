@@ -33,20 +33,3 @@ export function aiMarks(workspace: IdeWorkspace | null, changes: readonly ChatCh
   }
   return marks
 }
-
-/**
- * The directories holding marked files, so a collapsed folder still shows that something inside is marked.
- * @param marks File marks.
- * @returns Directory keys.
- */
-export function markedDirectories(marks: ReadonlyMap<string, AiMark>): ReadonlySet<string> {
-  const directories = new Set<string>()
-  for (const key of marks.keys()) {
-    let slash = key.indexOf('/')
-    while (slash > 0) {
-      directories.add(key.slice(0, slash))
-      slash = key.indexOf('/', slash + 1)
-    }
-  }
-  return directories
-}

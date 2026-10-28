@@ -19,7 +19,7 @@ it('rejects requests sent on a lost connection with the described message', asyn
   const socket = sockets[0]!
   socket.readyState = FakeSocket.OPEN
   socket.dispatchEvent(new Event('open'))
-  const request = host.call('app.info')
+  const request = host.call('prefs.get')
   socket.dispatchEvent(new Event('close'))
   await expect(request).rejects.toMatchObject({ code: 'disconnected', message: '与 RainyAgent 的连接已断开，这次操作没有完成。' })
 })

@@ -334,33 +334,44 @@ export function rehypeSafeHtml() {
 /** `==text==`: the text does not start or end with a space and holds no `==`. */
 const MARK = /==(?![\s=])((?:[^=]|=(?!=))*?[^\s=])==/gu
 
+/** Stands for a formatted run (bold, code, a link…) among the text of one parent, so a highlight may hold it whole. */
+const RUN = '\u{F8FF}'
+
 function highlight(node: Node): void {
   const children = node.children
   if (children === undefined) return
-  for (let index = 0; index < children.length; index++) {
-    const child = children[index]!
-    if (child.type !== 'text') { highlight(child); continue }
-    const value = child.value ?? ''
-    if (!value.includes('==')) continue
-    const parts: Node[] = []
-    let last = 0
-    for (const match of value.matchAll(MARK)) {
-      if (match.index > last) parts.push({ type: 'text', value: value.slice(last, match.index) })
-      parts.push({ type: 'mark', data: { hName: 'mark' }, children: [{ type: 'text', value: match[1]! }] })
-      last = match.index + match[0].length
-    }
-    if (parts.length === 0) continue
-    if (last < value.length) parts.push({ type: 'text', value: value.slice(last) })
-    children.splice(index, 1, ...parts)
-    index += parts.length - 1
+  for (const child of children) if (child.type !== 'text') highlight(child)
+  if (!children.some(child => child.type === 'text' && child.value?.includes('==') === true)) return
+  // The parent's text with each formatted run as one character, so the highlights the rich editor writes around other
+  // formatting, `==**x**==` and `==a [b](c) d==`, read back; a highlight never splits a run.
+  let flat = ''
+  const runs: Node[] = []
+  for (const child of children) {
+    if (child.type !== 'text') { flat += RUN; runs.push(child); continue }
+    if (child.value?.includes(RUN) === true) return
+    flat += child.value ?? ''
   }
+  let next = 0
+  /** The nodes of `flat` from `from` to `to`: text as text, each run as itself. */
+  const nodes = (from: number, to: number): Node[] => {
+    const out: Node[] = []
+    for (const piece of flat.slice(from, to).split(RUN).flatMap((text, index) => index === 0 ? [text] : [RUN, text])) {
+      if (piece === RUN) out.push(runs[next++]!)
+      else if (piece !== '') out.push({ type: 'text', value: piece })
+    }
+    return out
+  }
+  const parts: Node[] = []
+  let last = 0
+  for (const match of flat.matchAll(MARK)) {
+    parts.push(...nodes(last, match.index))
+    parts.push({ type: 'mark', data: { hName: 'mark' }, children: nodes(match.index + 2, match.index + match[0].length - 2) })
+    last = match.index + match[0].length
+  }
+  if (last === 0) return
+  parts.push(...nodes(last, flat.length))
+  node.children = parts
 }
-
-/**
- * Remark plugin: Typora's `==highlight==` becomes `<mark>`. Only text is searched, so code and math keep their `==`, and a
- * highlight does not run across other formatting.
- * @returns The transformer.
- */
 export function remarkMark() {
   return (tree: Node): void => { highlight(tree) }
 }

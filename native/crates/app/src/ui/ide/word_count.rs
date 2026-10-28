@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+use crate::ui::ide::outline::{front_matter_lines, pattern as regex};
+
 /// Counts the status bar shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WordCount {
@@ -14,21 +16,6 @@ pub struct WordCount {
     pub characters: usize,
     /// Minutes a reader needs: 300 CJK characters or 200 other words a minute, at least one for any text.
     pub minutes: usize,
-}
-
-fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
-    cell.get_or_init(|| Regex::new(pattern).expect("a valid pattern"))
-}
-
-/// The lines of front matter at the start, if any (`splitFrontMatter`).
-fn front_matter_lines(lines: &[&str]) -> usize {
-    let opening = lines.first().map(|line| line.trim_end_matches([' ', '\t']));
-    let closing: &[&str] = match opening {
-        Some("---") => &["---", "..."],
-        Some("+++") => &["+++"],
-        _ => return 0,
-    };
-    lines.iter().skip(1).position(|line| closing.contains(&line.trim_end_matches([' ', '\t']))).map_or(0, |at| at + 2)
 }
 
 /// The text without Markdown syntax, link targets, HTML tags and front matter (`readableText`).

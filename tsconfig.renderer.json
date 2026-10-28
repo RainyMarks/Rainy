@@ -22,5 +22,5 @@
       "@lezer/highlight": ["./node_modules/.pnpm/node_modules/@lezer/highlight"]
     }
   },
-  "include": ["src/renderer", "src/shared/rpc.ts", "src/shared/brand.ts", "src/shared/config.ts", "src/shared/*-protocol.ts", "tests/renderer"]
+  "include": ["src/renderer", "src/shared", "tests/renderer"]
 }

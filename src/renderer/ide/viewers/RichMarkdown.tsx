@@ -7,13 +7,12 @@ import type { Ctx } from '@milkdown/kit/ctx'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
-import { on } from '../../app/bus.ts'
 import { resolveDocumentPath } from '../../chat/Markdown.tsx'
 import { usePrefs } from '../../prefs.ts'
-import { toast } from '../../ui/index.ts'
+import { Button, toast } from '../../ui/index.ts'
 import { outlinePosition, provideOutline } from '../outline-store.ts'
 import { frontMatterContent, frontMatterIsToml, splitFrontMatter, withFrontMatterContent } from './front-matter.ts'
-import { conventionalTables, mergeEdit } from './markdown-merge.ts'
+import { conventionalTables, mergeEdit, rebaseEdit } from './markdown-merge.ts'
 import { headingForFragment, markdownOutline } from './markdown-outline.ts'
 import { isMermaid, onThemeChange, renderMermaid } from './mermaid.ts'
 import { useViewerT } from './messages.ts'
@@ -28,6 +27,8 @@ interface Rich {
   getMarkdown(): string
   /** Hand the current text to the buffer now; the editor's own notice waits 200 ms and is dropped when it closes. */
   flush(): void
+  /** @returns The body with the edits the editor has not handed to the buffer yet, or `undefined` when there are none. */
+  pending(): string | undefined
   replace(text: string): void
   destroy: () => Promise<unknown>
 }
@@ -98,15 +99,19 @@ type RichProps = Parameters<typeof RichEditor>[0]
 /**
  * The rich view of a document, or a notice to use the source view when the document is too large for it.
  * @param props See {@link RichEditor}.
+ * @param props.onSource Show the tab's source view instead.
  * @returns The view.
  */
-export function RichMarkdown(props: RichProps): JSX.Element {
+export function RichMarkdown({ onSource, ...props }: RichProps & { onSource: () => void }): JSX.Element {
   const t = useViewerT()
   // Decided when the view opens: a document that grows past the limit while open keeps its editor.
   const [large] = useState(() => props.text.length > RICH_LIMIT)
   if (!large) return <RichEditor {...props} />
   return <div className={css.viewer} data-viewer="markdown-rich">
-    <div className={css.message}>{t('richTooLarge', { size: `${(props.text.length / 1024 / 1024).toFixed(1)} MB` })}</div>
+    <div className={css.message}>
+      <p>{t('richTooLarge', { size: `${(props.text.length / 1024 / 1024).toFixed(1)} MB` })}</p>
+      <Button variant="primary" size="sm" onClick={onSource}>{t('richOpenSource')}</Button>
+    </div>
   </div>
 }
 
@@ -183,9 +188,9 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
     let cancelled = false
     let created: Rich | undefined
     void (async () => {
-      const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand, isMarkSelectedCommand }, { replaceAll }, { imageInlineComponent, inlineImageConfig }, { uploadConfig },
+      const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand, isMarkSelectedCommand }, { imageInlineComponent, inlineImageConfig }, { uploadConfig },
         { codeBlockConfig }, { keymapRef }, rich, { codeTheme }] = await Promise.all([
-        import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/preset/commonmark'), import('@milkdown/kit/utils'), import('@milkdown/kit/component/image-inline'),
+        import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/preset/commonmark'), import('@milkdown/kit/component/image-inline'),
         import('@milkdown/kit/plugin/upload'), import('@milkdown/kit/component/code-block'), import('@milkdown/crepe/feature/toolbar'), import('./rich-plugins.ts'), import('./code-theme.ts'),
       ])
       await import('@milkdown/crepe/theme/common/style.css')
@@ -341,11 +346,15 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
         view: crepe.editor.ctx.get(editorViewCtx),
         getMarkdown: () => crepe.getMarkdown(),
         flush: () => { push(crepe.getMarkdown()) },
+        pending: () => {
+          if (quiet || !started) return undefined
+          const merged = mergeEdit(source, loaded, conventionalTables(crepe.getMarkdown()), rich.markdownReader(crepe.editor.ctx))
+          return merged === body.current ? undefined : merged
+        },
         replace: (next) => {
           quiet = true
-          // A new editor state: the outside change is not an undo step, so Ctrl+Z cannot bring the old text back.
           const scroll = stage.current?.scrollTop
-          try { crepe.editor.action(replaceAll(lf(next), true)) } finally { quiet = false }
+          try { rich.replaceDocument(crepe.editor.ctx, lf(next)) } finally { quiet = false }
           if (stage.current !== null && scroll !== undefined) stage.current.scrollTop = scroll
           source = next
           loaded = conventionalTables(crepe.getMarkdown())
@@ -374,12 +383,20 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
   }, [])
 
   // Text changed elsewhere (the source view, a reload, the agent): show it unless it is what the editor itself wrote.
+  // Keystrokes of the last 200 ms are not in the buffer yet; they are carried over onto the new text when they changed
+  // other lines than it did, and handed to the buffer with it.
   useEffect(() => {
     if (!ready || text === held.current) return
     const next = splitFrontMatter(text)
     if (next.front !== front.current) { front.current = next.front; setFrontMatter(next.front) }
-    if (next.body !== body.current) editor.current?.replace(next.body)
+    const typed = editor.current?.pending()
+    const kept = typed === undefined ? undefined : rebaseEdit(body.current, typed, next.body)
+    if (typed !== undefined && kept === undefined) toast(t('richTypingReplaced'), { tone: 'error' })
+    const shown = kept ?? next.body
+    if (shown !== body.current || typed !== undefined) editor.current?.replace(shown)
     held.current = text
+    if (kept !== undefined) publish(next.front, kept)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, ready])
 
   /** @returns The selected text when it fits on one line, to search for. */
@@ -431,12 +448,6 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
     window.addEventListener('blur', released)
     return () => { window.removeEventListener('keydown', held); window.removeEventListener('keyup', held); window.removeEventListener('blur', released) }
   }, [])
-
-  // Find and Replace from the Edit menu and the command palette.
-  useEffect(() => on('markdown.find', (event) => {
-    if (event.path === path) setFind({ replace: event.replace, seed: selectedText(), at: Date.now() })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [path])
 
   return <div className={css.viewer} data-viewer="markdown-rich">
     {failure !== '' ? <div className={`${css.message} ${css.error}`}>{t('richFailed', { error: failure })}</div> : <>

@@ -10,26 +10,15 @@
    * after them cover what the bundled ones lack. */
   --rainy-font-family: var(--rainy-ui-font,) 'Hanken Grotesk Variable', 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
     'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --rainy-font-family-display: var(--rainy-ui-font,) 'Hanken Grotesk Variable', 'Segoe UI Variable Display', var(--rainy-font-family);
-  --rainy-font-family-brand: 'Montserrat', var(--rainy-font-family);
   --rainy-font-family-code: var(--rainy-code-font,) 'Geist Mono Variable', 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --rainy-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --rainy-transition-duration: 0.2s;
-  --rainy-transition-duration-fast: 0.1s;
-  --rainy-transition-duration-slow: 0.3s;
   --rainy-radius-xs: 3px;
   --rainy-radius-sm: 4px;
   --rainy-radius-md: 6px;
   --rainy-radius-lg: 8px;
-  --rainy-radius-xl: 8px;
-  --rainy-radius-panel: 10px;
 }
 
-body {
-  --rainy-alias-settings-card-fill: var(--rainy-alias-bg-layer-2);
-  --rainy-alias-settings-card-stroke: var(--rainy-alias-border-l4);
-}
 
 [data-rainy-automatic-focus]:focus,
 [data-rainy-automatic-focus]:focus:focus-visible {

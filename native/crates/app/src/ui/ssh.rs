@@ -16,10 +16,22 @@ use rainy_carrier::askpass::QuestionKind;
 use crate::store::{AskpassRequest, Store};
 use crate::ui::{tr, trf};
 
-/// Show one question; the answer goes back to `ssh`, and closing the dialog any other way cancels it.
+/// Show one question; the answer goes back to `ssh`, and closing the dialog any other way cancels it. The dialog closes
+/// by itself when the `ssh` run that asked has ended.
 pub fn ask(request: AskpassRequest, window: &mut Window, cx: &mut App) {
     // The dialog owns the reply: dropping the dialog without an answer drops the sender, which `ssh` reads as a cancel.
     let reply = Rc::new(RefCell::new(Some(request.reply)));
+    let (pending, open) = (reply.clone(), request.question.open.clone());
+    window
+        .spawn(cx, async move |cx| {
+            while pending.borrow().is_some() {
+                cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+                if !open.load(std::sync::atomic::Ordering::SeqCst) && pending.borrow_mut().take().is_some() {
+                    let _ = cx.update(|window, cx| window.close_dialog(cx));
+                }
+            }
+        })
+        .detach();
     let send = move |answer: Option<String>| {
         if let Some(reply) = reply.borrow_mut().take() {
             let _ = reply.send(answer);

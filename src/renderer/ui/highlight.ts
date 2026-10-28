@@ -3,7 +3,7 @@
  * the main bundle; until they arrive the code shows as plain text, then components using {@link useHighlightRevision}
  * highlight it.
  */
-import { useSyncExternalStore, type CSSProperties } from 'react'
+import { useSyncExternalStore } from 'react'
 import type { HLJSApi, LanguageFn } from 'highlight.js'
 
 type GrammarModule = { default: LanguageFn }
@@ -95,8 +95,6 @@ export interface HighlightSpan {
   text: string
   /** highlight.js token classes (`hljs-keyword` …); styled by `theme/highlight.css`. */
   className?: string | undefined
-  /** Inline style, used by ANSI terminal output. */
-  style?: CSSProperties | undefined
 }
 
 /**
@@ -117,17 +115,6 @@ export function grammarFor(lang: string | undefined): string | undefined {
  */
 export function supportsHighlighting(lang: string | undefined): boolean {
   return grammarFor(lang) !== undefined
-}
-
-/**
- * Pick a language from a file name.
- * @param path File path in either separator spelling.
- * @returns The grammar name, or `undefined`.
- */
-export function languageForPath(path: string): string | undefined {
-  const name = path.split(/[\\/]/).pop() ?? path
-  const dot = name.lastIndexOf('.')
-  return dot <= 0 ? undefined : grammarFor(name.slice(dot + 1))
 }
 
 const ENTITIES: Readonly<Record<string, string>> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#x27;': "'", '&#39;': "'" }

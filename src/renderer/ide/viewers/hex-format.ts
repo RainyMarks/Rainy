@@ -103,3 +103,34 @@ function firstCharacter(bytes: Uint8Array): string {
     return '—'
   }
 }
+
+/** Encodings the hex view reads a file as text in, as 3.x offered them; the page decodes with `TextDecoder`. */
+export const TEXT_ENCODINGS = ['utf-8', 'gb18030', 'big5', 'shift_jis', 'euc-kr', 'utf-16le', 'utf-16be', 'windows-1252'] as const
+export type TextEncoding = (typeof TEXT_ENCODINGS)[number]
+
+/**
+ * The encoding a file most likely uses: a byte order mark says so; else UTF-8 when its start is valid UTF-8 (a sequence
+ * cut at the end does not count), else GB18030, the encoding of Chinese Windows.
+ * @param head The first bytes of the file.
+ * @returns One of {@link TEXT_ENCODINGS}.
+ */
+export function guessEncoding(head: Uint8Array): TextEncoding {
+  if (head[0] === 0xff && head[1] === 0xfe) return 'utf-16le'
+  if (head[0] === 0xfe && head[1] === 0xff) return 'utf-16be'
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(head, { stream: true })
+    return 'utf-8'
+  } catch (_invalidSequence) {
+    return 'gb18030'
+  }
+}
+
+/**
+ * @param bytes The start of a file, or all of it.
+ * @param encoding One of {@link TEXT_ENCODINGS}.
+ * @param complete Whether `bytes` ends where the file ends; otherwise a character cut at the end is left out.
+ * @returns The text; bytes the encoding does not map show as U+FFFD, and a byte order mark is dropped.
+ */
+export function decodeText(bytes: Uint8Array, encoding: TextEncoding, complete: boolean): string {
+  return new TextDecoder(encoding).decode(bytes, { stream: !complete })
+}

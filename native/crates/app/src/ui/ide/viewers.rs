@@ -136,6 +136,30 @@ pub fn shortcut_action(shortcut: Shortcut, kind: &str) -> Option<Box<dyn Action>
     })
 }
 
+/// Key sequences a page reports instead of a single key, because the second key reaches only the page: the preview's
+/// Ctrl+K V (VS Code's preview to the side). The rich editor keeps Ctrl+K for a link, as Typora does.
+pub fn chord_action(keys: &str, kind: &str) -> Option<Box<dyn Action>> {
+    match keys {
+        "ctrl-k v" if kind == "markdown" => Some(Box::new(crate::ui::ide::MarkdownSplit)),
+        _ => None,
+    }
+}
+
+/// Open a link a page asked for: web links in the browser, `mailto:` in the mail program, and project paths in the
+/// editor (`ui::open_link`).
+pub fn open_page_link(url: &str, window: &mut Window, cx: &mut App) {
+    if is_mail_link(url) {
+        cx.open_url(url);
+    } else {
+        crate::ui::open_link(url, window, cx);
+    }
+}
+
+/// A `mailto:` link with an address and nothing that could run a command line.
+fn is_mail_link(url: &str) -> bool {
+    url.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailto:")) && url.len() > 7 && !url.chars().any(|c| c.is_control() || c == '"')
+}
+
 /// What the viewer page asks the workbench to do.
 pub enum PageRequest {
     Ready,
@@ -154,10 +178,13 @@ pub enum PageRequest {
     Notice { error: bool, text: String },
     /// An image for the AI composer, as the page encoded it; the composer reads its type from the bytes.
     Attach { name: String, bytes: Vec<u8> },
-    /// Show the tab in another view (`hex`), or in its default one.
+    /// Show the tab in another view (`hex`, or `source` for a document too large for the rich view), or in its default
+    /// one.
     View(Option<String>),
     /// The file changed on disk while the page read it; read it again.
     Reload,
+    /// A key sequence pressed in the page ([`chord_action`]), such as `ctrl-k v`.
+    Chord(String),
 }
 
 /// Whether the composer accepts an image of this type from a page.
@@ -192,10 +219,11 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
         }
         "view" => match &value["view"] {
             Value::Null => PageRequest::View(None),
-            Value::String(view) if view == "hex" => PageRequest::View(Some(view.clone())),
+            Value::String(view) if view == "hex" || view == "source" => PageRequest::View(Some(view.clone())),
             _ => return None,
         },
         "reload" => PageRequest::Reload,
+        "chord" => PageRequest::Chord(value["keys"].as_str()?.to_owned()),
         _ => return None,
     })
 }
@@ -288,10 +316,33 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_reports_ctrl_k_v() {
+        assert!(matches!(parse_message(r#"{"type":"chord","keys":"ctrl-k v"}"#), Some(PageRequest::Chord(keys)) if keys == "ctrl-k v"));
+        assert!(parse_message(r#"{"type":"chord"}"#).is_none());
+        assert_eq!(chord_action("ctrl-k v", "markdown").map(|action| action.name()), Some("rainy::MarkdownSplit"));
+        // The rich editor keeps Ctrl+K for links; other pages have no such keys.
+        assert!(chord_action("ctrl-k v", "markdown-rich").is_none());
+        assert!(chord_action("ctrl-k v", "pdf").is_none());
+        assert!(chord_action("ctrl-k x", "markdown").is_none());
+    }
+
+    #[test]
+    fn mail_links_open_in_the_mail_program() {
+        assert!(is_mail_link("mailto:someone@example.com"));
+        assert!(is_mail_link("MAILTO:someone@example.com?subject=Hi"));
+        assert!(!is_mail_link("mailto:"));
+        assert!(!is_mail_link("mailto:a@b.c\" /c calc"));
+        assert!(!is_mail_link("https://example.com"));
+        assert!(!is_mail_link("邮件:x"));
+    }
+
+    #[test]
     fn page_messages() {
         assert!(matches!(parse_message(r#"{"type":"view","view":"hex"}"#), Some(PageRequest::View(Some(view))) if view == "hex"));
         assert!(matches!(parse_message(r#"{"type":"view","view":null}"#), Some(PageRequest::View(None))));
-        assert!(parse_message(r#"{"type":"view","view":"source"}"#).is_none());
+        // A document too large for the rich view asks for its source.
+        assert!(matches!(parse_message(r#"{"type":"view","view":"source"}"#), Some(PageRequest::View(Some(view))) if view == "source"));
+        assert!(parse_message(r#"{"type":"view","view":"split"}"#).is_none());
         assert!(matches!(parse_message(r#"{"type":"reload"}"#), Some(PageRequest::Reload)));
         let attach = parse_message(r#"{"type":"attach","name":"a.png","mime":"image/png","base64":"AAEC"}"#);
         assert!(matches!(attach, Some(PageRequest::Attach { bytes, .. }) if bytes == [0, 1, 2]));
