@@ -51,9 +51,10 @@ impl Store {
         self.modules.state = state;
         if complete {
             self.refresh_modules(cx);
-            // The editor's tools are looked up when needed: files waiting for them get their language service now.
+            // The editor's tools are looked up when needed: files waiting for them get their language service now. After
+            // this update of the store: opening a document reads it.
             if tools {
-                super::language::LanguageServers::global(cx).update(cx, |servers, cx| servers.retry_missing_tools(cx));
+                cx.defer(|cx| super::language::LanguageServers::global(cx).update(cx, |servers, cx| servers.retry_missing_tools(cx)));
             }
         }
         cx.notify();
