@@ -2,7 +2,7 @@
 
 [English](desktop.md) | 中文
 
-Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编程。界面是原生程序（Rust + GPUI，`native/`），文档预览嵌入系统自带的 WebView2；自 4.1 起 Host 也是 Rust 程序，Rainy 不再附带 Node.js。核心安装包包含 Windows Host。Strata 引擎、Windows PHP 和 Linux 运行环境底座是可选组件，首次用到时下载。模型权重由用户自行提供。智能体运行在 Host 中，内置 `read`、`write`、`edit`、`grep`、`glob`、所选平台的 Shell（`pwsh` 或 `bash`）、`task` 以及联网和浏览器工具，另加用户启用的 MCP 工具。项目可以在 Windows 原生环境、WSL2 发行版，或通过 SSH 连接的 x86_64 Linux 服务器上运行。
+Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编程。界面是原生程序（Rust + GPUI，`native/`），文档预览嵌入系统自带的 WebView2；自 4.1 起 Host 也是 Rust 程序，Rainy 不再附带 Node.js。核心安装包包含 Windows Host。编辑器的编程工具、Windows PHP 和 Linux 运行环境底座是可选组件，用到时下载；Strata 本地大模型及其模型也在“设置 → 工具”中按需下载。智能体运行在 Host 中，内置 `read`、`write`、`edit`、`grep`、`glob`、所选平台的 Shell（`pwsh` 或 `bash`）、`task` 以及联网和浏览器工具，另加用户启用的 MCP 工具。项目可以在 Windows 原生环境、WSL2 发行版，或通过 SSH 连接的 x86_64 Linux 服务器上运行。
 
 [中文安装与配置指南](desktop-setup.zh-CN.md)负责产品流程、配置参考和源码构建说明。[验收记录](validation.md)区分模拟服务与真实 API 调用，并记录尚未完成的验收项。[第三方说明](../THIRD_PARTY_NOTICES.md)介绍打包的依赖及其许可。
 
@@ -19,6 +19,12 @@ Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编
 - [Strata 本地推理](#strata-local-inference)回到“设置 → 模型”。
 - “设置 → Skills 与 MCP”中每个 MCP 服务器都列出它的工具，可逐个开关。
 
+## 4.3 的变化
+
+- 新的“设置 → 工具”页：Rainy 默认不带任何第三方工具，需要哪个就下载哪个，不用了随时卸载。
+- Windows 上编辑器的编程工具改为两个可选组件：Python 工具（`ide-python`：Ruff、ty、debugpy，约 26 MB）和 JavaScript / TypeScript 工具（`ide-web`：TypeScript 7、js-debug，约 11 MB）。Linux 运行环境仍自带这些工具。
+- [Strata 本地推理](#strata-local-inference)移到“设置 → 工具”，改为下载 Strata 官方最新版并跟随更新，按这台电脑推荐模型。Rainy 不再提供 Strata 0.1.39 运行时组件。
+
 ## 离线安装与恢复
 
 [发行页面](https://github.com/RainyMarks/Rainy/releases)提供核心安装程序。每个版本的 `v<版本>-resources` 发行存放该版本的 PHP 组件和 Linux 运行环境分片。[1.0.0 资源存档](https://github.com/RainyMarks/Rainy/releases/tag/v1.0.0-resources)仍存放 Strata 归档、`environment/` WSL 安装介质和 `environment-components/` 运行环境归档。核心可直接在 Windows 原生启动，无需 WSL 或科学计算库。源码打包按[输入清单](../toolpacks/build-inputs.v1.json)把固定版本的输入恢复至 `release/offline-<版本>`。
@@ -29,9 +35,9 @@ Rainy 3.0 不再包含 CTF 工具目录。旧版本下载的工具留在原安�
 
 ## 可选组件
 
-核心安装包不含 Strata 引擎、Windows PHP、Linux 运行环境底座（`linux-runtime.tar.xz`）和 Ubuntu 离线开发软件包。签名的载体资源 `optional-modules.json` 固定每个组件的归档，应用在需要时从 GitHub 发行分片下载到 `%APPDATA%\RainyAgent\modules\<id>`。每个分片和组装后的归档都校验 SHA-256，中断的下载通过 HTTP Range 续传，取消后保留已下载的分片供下次使用。
+核心安装包不含编辑器的编程工具、Windows PHP、Linux 运行环境底座（`linux-runtime.tar.xz`）和 Ubuntu 离线开发软件包。签名的载体资源 `optional-modules.json` 固定每个组件的归档，应用在需要时从 GitHub 发行分片下载到 `%APPDATA%\RainyAgent\modules\<id>`。每个分片和组装后的归档都校验 SHA-256，中断的下载通过 HTTP Range 续传，取消后保留已下载的分片供下次使用。
 
-“设置 → 运行环境 → 可选组件”可下载和删除 Strata 引擎（约 560 MB）及 PHP。Strata 引擎就是已作为 1.0.0 构建输入 `build-inputs/strata-runtime.tar.gz` 发布的归档；[Strata 本地推理](#strata-local-inference)说明其内容和用法。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。
+“设置 → 工具”可下载和删除 Python 编程工具（`ide-python`，约 26 MB）、JavaScript / TypeScript 编程工具（`ide-web`，约 11 MB）和 PHP。Host 在每次需要时才查找这些工具，所以下载完立即可用，删除后会提示缺少：状态栏说明某种语言缺哪个下载并可点开“工具”页，格式化和调试给出同样的提示。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。Strata 不是这里的组件，见 [Strata 本地推理](#strata-local-inference)。
 
 WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB，解开后约 90 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 11 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的开发工具是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
 
@@ -66,7 +72,7 @@ WSL 和 SSH 启动在 Host 报告就绪后，还会等待 Windows 侧 loopback T
 
 窗口立即显示启动页并报告每个准备步骤。窗口按上次关闭时保存的大小、位置和最大化状态重新打开；首次启动或保存位置所在的显示器已断开时，默认大小在主显示器居中，主显示器较小时最大化。之前启动已记录的 WSL 目标会跳过环境检查窗口：启动只用一次 WSL 调用映射载体路径并解包 Host，该目标不可用时才打开检查。每次启动都会把各阶段耗时追加到 `host.log`。
 
-原生窗口控制与单行顶部工具栏共用区域。顶部空白处支持拖动和双击最大化，编辑和缩放快捷键仍可使用。统一设置分别提供模型、上下文、项目记忆、Skills、MCP 和运行环境。运行环境页可选择执行目标、检查已有解释器、导入发行包认可的离线组件、下载可选组件及管理 SSH 主机。
+原生窗口控制与单行顶部工具栏共用区域。顶部空白处支持拖动和双击最大化，编辑和缩放快捷键仍可使用。统一设置分别提供模型、上下文、项目记忆、Skills、MCP 和运行环境。运行环境页可选择执行目标、检查已有解释器、导入发行包认可的离线组件及管理 SSH 主机。
 
 新工作区显示左侧文件树和主编辑区，需要时通过顶栏按钮展开 AI 对话和底部面板；“视图 → 专注编辑”收起两者。已有工作区保留保存的面板开关与宽度。文件操作只有一行，编辑器操作与已开标签共用一行。空间不足时文件栏可覆盖编辑器显示。文件标签与对话分别保存状态。主页和“关于”署名为 `Developed by RainyMarks`。推理运行时英文显示“Thinking...”，中文显示“思考中”并带已用秒数，完成后显示“已思考 12s”；计时控件使用对应的本地化文字。回答输出时对话自动跟随；用滚轮、键盘或滚动条向上翻会立即停止跟随（平滑滚动途中也不会被拉回），点“查看最新输出”或滚回底部即恢复。输入法选字时按回车或 Esc 不会发送、重命名或取消。空白页面（未打开项目、未打开文件、新对话）飘着强调色的细雨，点击背景会泛起涟漪；“设置 → 外观 → 动效”可以关闭，Windows 开启“减少动态效果”时雨保持静止。Rainy 标志使用强调色，鼠标指向时三道雨线落下，当前对话运行时顶栏标志一直下雨。推理块显示雨云图标，模型思考时云下的雨滴依次落下。
 
@@ -111,7 +117,7 @@ Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”
 
 运行按钮按当前文件后缀对应的语言运行该文件。旁边的菜单可为该文件改选其他语言（工作区会记住），或固定运行另一个入口程序的已保存配置；保存当前文件的配置不会将其固定。运行配置按工作区保留入口、参数、解释器或编译器、工作目录及 CMake 选项。Python 支持文件、模块和已有虚拟环境；JavaScript、TypeScript 使用目标环境中已安装的 Node.js（Rainy 不附带）；PHP 支持直接运行脚本；C/C++ 支持单文件及 CMake 构建，失败时停止启动。debugpy、js-debug、Windows CodeLLDB 与 Linux GDB DAP 调试由工作区启动的程序；界面提供断点、单步、调用栈、变量、监视和停止。不提供外部进程附加或 PHP 调试。
 
-运行环境检测检查项目虚拟环境、Conda 注册记录、常见 Python 目录、PATH 和已导入组件，不向这些已有环境安装软件包。所选解释器通过每个进程的环境配置项目工具、终端、运行及语言服务。可执行文件就绪和库能力分别显示：能运行 Python 不代表具备 PyTorch 或 CUDA。另一执行平台的解释器会被拒绝。“设置 → 运行环境 → 可选组件”为 Windows 原生目标下载 PHP 8.5 及 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展。下载前，在 Windows 原生目标运行 PHP 文件会提示下载位置；也可在运行配置中选择已安装的 `php.exe`。已安装的环境组件或项目选定的 PHP 优先。WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。
+运行环境检测检查项目虚拟环境、Conda 注册记录、常见 Python 目录、PATH 和已导入组件，不向这些已有环境安装软件包。所选解释器通过每个进程的环境配置项目工具、终端、运行及语言服务。可执行文件就绪和库能力分别显示：能运行 Python 不代表具备 PyTorch 或 CUDA。另一执行平台的解释器会被拒绝。“设置 → 工具”为 Windows 原生目标下载 PHP 8.5 及 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展。下载前，在 Windows 原生目标运行 PHP 文件会提示下载位置；也可在运行配置中选择已安装的 `php.exe`。已安装的环境组件或项目选定的 PHP 优先。WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。
 
 离线组件提供隔离的 Python 3.12、Node 24、Windows PHP、原生 C/C++ 工具，以及独立 CPU 或 CUDA 科学计算环境。科学组件包含 NumPy、SciPy、pandas、scikit-learn、图像处理、Jupyter 和常用深度学习库，并配套 PyTorch 2.11、torchvision 0.26 与 torchaudio 2.11。导入先核对发行目录、归档及逐文件清单，再选择按摘要存放的代际。已有用户环境和全局 PATH 保持不变。CUDA 需要兼容的 NVIDIA 驱动。Ubuntu 26.04 amd64 开发工具向导在点击安装时下载经过校验的 C/C++、GDB、CMake、clangd 和 PHP 软件包（约 165 MB，即发行资源中的 `linux-dev-packages` 组件），安装后删除下载的文件；安装时禁用下载。
 
@@ -120,15 +126,15 @@ Markdown 的所见即所得视图按 Typora 的习惯设计。侧栏“大纲”
 <a id="strata-local-inference"></a>
 ## Strata 本地推理
 
-Strata 引擎是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14，以及所需服务、准备脚本和 CUDA 运行依赖。引擎缺失时，“模型 → Strata 本地模型”显示“下载”按钮；“运行环境 → 可选组件”也列出该引擎。用户无需另装 Strata 或 Python。推理引擎面向 Windows x64、NVIDIA CUDA 13 和 580 或更新驱动，内含 `sm75`、`sm86`、`sm89`、`sm120` 目标。本包不提供 AMD 或 Linux 推理引擎。[运行时来源清单](../toolpacks/strata-runtime.sources.json)固定输入与许可。
+Strata（[Niko1221/Strata](https://github.com/Niko1221/Strata)，MIT 许可）在“设置 → 工具 → Strata 本地大模型”中按需下载，Rainy 不附带它。点击“下载”后，Rainy 读取 Strata 最新发行版的安装清单，下载其中的 Strata Terminal，按清单的 SHA-256 和 GitHub 给出的摘要校验，再用 Strata 签名的更新源确认，然后由 `strata update` 为这台电脑的显卡安装推理引擎。之后启动约 45 秒时和每 6 小时检查一次更新源，没有模型运行时自动更新（可关闭），也可手动“检查更新”。
 
-用户提供受支持的 Qwen3.8 Flash Next 主模型 GGUF 及全部分片，以及配套 MTP GGUF 或已准备 MTP 目录。运行时不分发主模型/MTP 权重或派生的 dense/expert 文件。在“模型 → Strata 本地模型”中选择主模型、MTP 来源或兼容 profile，然后保存。MTP 路径留空时尝试从主模型附近检测匹配文件；API 服务仍然需要 MTP。只有明确点击启动后，才在本机准备所需模型文件并加载服务，不下载权重。准备和启动均可取消。
+模型列表来自 Strata 自己的目录（与 Strata 应用相同的管理服务）：每个模型的每个尺寸都标出下载大小、需要的内存和在这台电脑上“放得下 / 会变慢 / 放不下”，并显示 Strata 按这台电脑的内存和显存推荐的尺寸。下载显示进度，可以取消，下次继续；来源可选 Hugging Face 或 ModelScope；默认放在空间最大的非系统盘的 `Strata-data` 文件夹，也可另选。下载完成的尺寸可“启动”和“删除”。
 
-卡片提供引擎上下文长度、loopback 端口、KV 缓存、保留显存和常驻 RAM 预算。设置私有保存在载体应用数据目录中的 `strata/settings.json`，选中的模型文件留在安装目录之外。只能停止该管理器启动的进程；已有外部服务单独标识，不会被卡片结束。每次请求的推理和输出上限继续由普通模型配置管理。
+启动通过 `strata launch` 加载模型，上下文长度默认由 Strata 按模型和这台电脑决定，也可固定；端口默认 8080。“连接并设为默认模型”先让当前 Host 验证实际已加载的模型和上下文，再保存本地端点。只能停止 Rainy 自己启动的服务；别处启动的 Strata 服务单独标识。即使项目 Host 使用 WSL，Strata 仍在 Windows 运行；若 WSL NAT 无法访问 Windows loopback，请为 Strata 选择 Windows 执行环境。SSH 服务器上的 Host 无法访问这台电脑上的 Strata。
 
-“连接并设为默认”先让当前 Host 验证实际已加载模型与窗口，再保存本地端点。即使项目 Host 使用 WSL，Strata 仍在 Windows 运行。若 WSL NAT 无法访问 Windows loopback，请为 Strata 选择 Windows 执行环境；应用不修改网络设置，也不替换成云端模型。SSH 服务器上的 Host 无法访问这台电脑上的 Strata。
+Strata 的所有文件都在 `%APPDATA%\RainyAgent\tools\strata`（模型除外），每个 Strata 进程都使用这里的文件夹和一个可写、纯英文路径的临时目录，不继承凭据类环境变量和外部 Python 设置，并随 Rainy 退出一起结束。“卸载”删除这个文件夹，并可选择同时删除下载的模型。4.1–4.2 下载的旧 Strata 组件（`modules\strata`）和缓存可在卡片中一键删除。
 
-当前 Strata 验证覆盖引擎运行时迁移、Python 导入以及模拟服务的健康检查与聊天衔接（4.1 用模拟 Strata 服务检查了卡片，从 Windows 和 WSL Host 连接），尚不能说明真实 GPU 推理、吞吐量或跨硬件兼容性。[验收记录](validation.md)负责具体被测产物和剩余项目。
+本版用真实的 RTX 5090 笔记本显卡验证了下载、校验、引擎安装、模型下载、启动、连接对话和停止；其他显卡和 AMD 显卡尚未实测。[验收记录](validation.md)记录具体被测产物和剩余项目。
 
 ## 模型体验
 

@@ -686,15 +686,13 @@ impl StrataCard {
         // Context and port apply to the next start.
         let contexts: Vec<u32> = catalog.map(|catalog| catalog.contexts.clone()).unwrap_or_default();
         let current = status.settings.context;
-        let recommended = catalog.and_then(|catalog| catalog.recommendation.as_ref()).map(|recommendation| recommendation.context);
+        // Automatic leaves the length to Strata, which picks it for each model and computer; the recommendation's
+        // length belongs to the recommended model only.
+        let automatic = tr(cx, "settings.strataContextAutoPlain");
         let label: SharedString = match current {
             Some(context) => context_text(u64::from(context)).into(),
-            None => match recommended {
-                Some(context) => trf(cx, "settings.strataContextAuto", &[("context", &context_text(u64::from(context)))]),
-                None => tr(cx, "settings.strataContextAutoPlain"),
-            },
+            None => automatic.clone(),
         };
-        let automatic = tr(cx, "settings.strataContextAutoPlain");
         let entity = cx.entity().downgrade();
         let locked = matches!(server.phase, Phase::Starting | Phase::Running | Phase::Stopping);
         let picker = Button::new("strata-context").outline().xsmall().label(label).disabled(locked || contexts.is_empty()).dropdown_menu(move |mut menu, _, _| {
