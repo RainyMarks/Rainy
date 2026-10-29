@@ -207,6 +207,8 @@ impl StrataCard {
             .map(|catalog| catalog.installed().into_iter().map(|(family, size)| (format!("{} {}", family.title, size.model), size.download_gb)).collect())
             .unwrap_or_default();
         let total: f64 = models.iter().map(|(_, gb)| gb).sum();
+        // Before the model list is read the models are not known by name; the uninstall reads the list itself.
+        let unknown = status.catalog.is_none();
         let store = self.store.clone();
         let remove_models = std::rc::Rc::new(std::cell::Cell::new(false));
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -219,9 +221,14 @@ impl StrataCard {
                     v_flex()
                         .gap_3()
                         .child(div().text_sm().child(tr(cx, "settings.strataUninstallBody")))
-                        .when(!models.is_empty(), |this| {
+                        .when(unknown || !models.is_empty(), |this| {
                             let names = models.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>().join("、");
-                            this.child(Checkbox::new("strata-uninstall-models").checked(checked).label(trf(cx, "settings.strataUninstallModels", &[("models", &names), ("size", &gb_text(total))])).on_click(
+                            let label = if unknown {
+                                tr(cx, "settings.strataUninstallModelsUnknown")
+                            } else {
+                                trf(cx, "settings.strataUninstallModels", &[("models", &names), ("size", &gb_text(total))])
+                            };
+                            this.child(Checkbox::new("strata-uninstall-models").checked(checked).label(label).on_click(
                                 move |checked: &bool, window, cx| {
                                     toggle.set(*checked);
                                     window.refresh();
