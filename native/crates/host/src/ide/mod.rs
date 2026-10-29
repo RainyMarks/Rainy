@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 use crate::Host;
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 
 /// Largest `ide` request, escaped file text and recovery buffers included.
 const MAX_REQUEST_BYTES: usize = 40 * 1024 * 1024;
@@ -53,7 +54,7 @@ impl Ide {
         let state = Arc::new(state::StateStore::open(host.env.home.join("ide"), host.projects.clone()));
         let tools = tools::Tools::new(&host.env.resources);
         let executing = hints.clone();
-        let execution = execution::Execution::new(host.runtime.clone(), tools.root.clone(), host.env.pwsh_path.clone(), move |workspace_id| executing.notify(workspace_id, "execution"));
+        let execution = execution::Execution::new(host.runtime.clone(), tools.clone(), host.env.pwsh_path.clone(), move |workspace_id| executing.notify(workspace_id, "execution"));
         let probe = execution.clone();
         host.activity.add(move || probe.has_activity());
         let languages = language::Languages::new(tools.clone(), files.clone(), host.runtime.clone(), state.clone(), host.activity.clone());
@@ -75,15 +76,10 @@ impl Ide {
         ide
     }
 
-    /// The selected project, while it is still registered.
-    pub fn selection(&self) -> Option<String> {
-        self.state.selection()
-    }
-
     /// One request of the `ide` method.
     pub async fn handle(self: &Arc<Self>, host: &Arc<Host>, request: Value) -> HostResult<Value> {
         if request.to_string().len() > MAX_REQUEST_BYTES {
-            return Err(HostError::new("too-large", "The IDE request exceeds its configured byte limit"));
+            return Err(HostError::new("too-large", l("请求内容超过了大小上限。", "The IDE request exceeds its configured byte limit.")));
         }
         let op = request["op"].as_str().ok_or_else(|| HostError::invalid("The IDE operation is missing"))?.to_owned();
         if op == "workspaces.remove" {

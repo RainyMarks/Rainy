@@ -1,5 +1,29 @@
 # Rainy 验收记录
 
+## 4.3.0（2026-10-29）
+
+被测产物为 `Rainy-4.3.0-windows-x64-setup.exe`（26,757,557 字节，SHA-256 `e5b150ae3a0f8d398f568e118cf105bd88fa82fccfad48860280239d2847e8e9`），构建自提交 `b67d59544d`。安装包含 479 个文件、67,008,542 字节（4.2.2 为 924 个文件、162,817,048 字节）。Linux 运行环境底座内容与 4.1、4.2 相同（内容标识 `ceb190296cbf…`），本版 xz 分片 SHA-256 `8836b6b9b66327887d88d97bdd84e11b1a593c0c7961528f7af5c0df42218548`；PHP 与 `linux-dev-packages` 分片和 4.2.2 相同。新增可选组件 `ide-python`（26,030,330 字节，SHA-256 `48ced82e…`）和 `ide-web`（11,090,238 字节，SHA-256 `4e71c9d5…`），上传后 GitHub 给出的摘要与本地一致。
+
+### 改动
+
+- **设置 → 工具**：Strata、编辑器的 Python 工具和 JavaScript / TypeScript 工具、PHP 都在这一页下载和卸载；安装包不再带 Ruff、ty、debugpy、TypeScript 和 js-debug。
+- **Strata**：下载 Strata 官方最新版（0.2.7 时为 Control 0.1.53、引擎 0.1.52 CUDA 13），模型目录、推荐、下载、启动、连接和停止都经 Strata 自己的工具完成；所有 Strata 进程使用 `tools\strata` 内的文件夹和可写的纯英文临时目录。不再提供 0.1.39 运行时组件。
+- **Tab 补全与编辑器**：AI 提示去掉重复的缩进、单词和光标后已有的括号；补全列表打开时 Tab 选中当前项；`insertText` 替换已输入的单词，`additionalTextEdits`（ty 的自动导入）一起写入；折行后 Enter 保持缩进（gpui-base 0.8.0 改为仓库内副本 `native/vendor/gpui-base`）。对话框 Tab 只补全 `/命令`，`@` 补全等新结果。
+- 以及 fix/core、fix/front 两轮清理和修复（见更新日志）。
+
+### 检查
+
+- **测试**：Vitest 142 项、`rainy` 88 项、`rainy-carrier` 259 项（5 项需真实环境，跳过）、`rainy-host` 98 项、`rainy-protocol` 8 项、脚本测试 36 项、两套类型检查，均通过；构建无警告。CI 在提交 `d89304e081` 上通过。
+- **Strata 真机实测**（RTX 5090 笔记本显卡，24 GB 显存，63 GB 内存，调试版，独立配置目录）：下载 Strata 0.2.7 并通过签名更新源确认，安装引擎；模型目录读出 9 类 25 个尺寸，推荐 Qwen3.8-Flash-Next IQ3_S；下载 Qwen3.6-35B-A3B UD-Q4_K_XL（22.85 GB）；启动后 `/health` 报告已加载、上下文 32K；“连接并设为默认模型”后对话正常（约 3 秒出答复）；“停止”后 Strata 进程全部退出、显存释放。实测中发现上下文选择框的“自动（128K）”取自推荐模型，已改为“自动”。“卸载”勾选“同时删除已下载的模型”后删除了 `tools\strata` 和 23 GB 的模型；实测还发现模型列表读出之前对话框没有这个选项，已改为始终提供，复测时在列表读出前卸载同样删除干净。
+- **Tab 补全实测**（调试版 + 假补全模型 + 真实 ty）：灰色提示去掉重复部分；提示和补全列表同时出现时 Tab 接受提示；只有列表时 Tab 选中 `print`；`PRI` 选 `PRIMARYLANGID` 得到 `PRIMARYLANGID`；`OrderedDi` 选自动导入项后第一行加上 `from collections import OrderedDict`，一次 Ctrl+Z 同时撤销；三段折行的长行末尾按 Enter 保持 4 格缩进；对话框 `/n` + Tab 得到 `/new`，快速输入 `@sha` + Tab 得到 `@shapes.py`，选中文件夹后立即 Tab 得到其中的文件。
+- **安装包 QA（QA 身份）**：最终安装包 0 项失败，46 项通过（前两次构建也各 46 项通过）；安装大小 65,439 KB（体积下限从 100,000 KB 调为 50,000 KB）。
+- **打包版实测**：用 4.2.2 安装包内容覆盖为 4.3.0 后启动，完整校验通过，清理 4.2 留下的 98 MiB 旧运行文件（含旧的编程工具）；界面版本 4.3.0；打开 Python 文件时状态栏提示下载编程工具，点击打开“设置 → 工具”；从 `v4.3.0-resources` 下载 Python 工具和 JavaScript / TypeScript 工具后 ty 从组件目录启动。首轮实测中下载完成时界面崩溃（在 Store 更新中读取 Store），修复后重建安装包并复测通过。JavaScript 工具第一次下载遇到一次 WinHTTP 12152 网络错误，界面给出提示，重试成功。打包版实测使用提交 `24b835203c` 的安装包，与最终安装包只差 Strata 卸载对话框这一处。
+
+### 验收范围
+
+- Strata 只在一台 NVIDIA 显卡的电脑上实测；其他 NVIDIA 显卡、AMD 显卡和无独显电脑未实测。单独“删除”某个模型的按钮没有在界面里实测。
+- TypeScript 7 的语言服务在 Rainy 中不提供自动导入补全，`additionalTextEdits` 只用 ty 验证。
+
 ## 4.2.2（2026-10-27）
 
 被测产物为 `Rainy-4.2.2-windows-x64-setup.exe`（52,072,138 字节，SHA-256 `32b15a835047114be305771a43d2fd51f01e46ee249416772817db04abc60006`），构建自提交 `6d27b1c94a`。安装包含 924 个文件、162,817,048 字节。Linux 运行环境底座内容与 4.1、4.2 相同（内容标识 `ceb190296cbf…`），本版 xz 分片 SHA-256 `e68c8b3c5f2622c6b04d048385d4b15eaaf1aaa27a9d1277d073a043e017bbb5`；PHP 与 `linux-dev-packages` 分片和 4.2.0 相同。

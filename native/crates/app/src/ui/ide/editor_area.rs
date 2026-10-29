@@ -11,7 +11,7 @@ use base64::Engine as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::diff::Diff;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{Editor, EditorMode, EditorState, Enter, IndentInline, InputEvent, InputModeKind as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
@@ -333,12 +333,9 @@ impl EditorArea {
                     let key = key.to_owned();
                     self.ide.update(cx, |ide, cx| ide.save(Some(key), false, window, cx));
                 }
-                Some(PageRequest::OpenUrl(url)) => crate::ui::open_link(&url, window, cx),
+                Some(PageRequest::OpenUrl(url)) => viewers::open_page_link(&url, window, cx),
                 Some(PageRequest::OpenFile { path, root, line }) => {
-                    let key = match root {
-                        Some(root) => format!("\0{root}/{path}"),
-                        None => path,
-                    };
+                    let key = crate::store::ide::root_key(root.as_deref(), &path);
                     self.ide.update(cx, |ide, cx| match line {
                         Some(line) => ide.reveal(key, (line as u32).saturating_sub(1), 0, window, cx),
                         None => ide.open(key, true, window, cx),
@@ -356,16 +353,34 @@ impl EditorArea {
                         self.ide.update(cx, |ide, cx| ide.reload(&key, window, cx));
                     }
                 }
+                Some(PageRequest::Chord(keys)) => {
+                    if let Some(action) = viewers::chord_action(&keys, self.viewers.get(key).map_or("", |viewer| viewer.kind)) {
+                        self.run_page_action(action, window, cx);
+                    }
+                }
                 Some(PageRequest::OpenKey(_) | PageRequest::Ask(_)) | None => {}
             },
             PaneEvent::Shortcut(shortcut) => {
                 if let Some(action) = viewers::shortcut_action(*shortcut, self.viewers.get(key).map_or("", |viewer| viewer.kind)) {
-                    crate::web::reclaim_focus(window);
-                    window.dispatch_action(action, cx);
+                    self.run_page_action(action, window, cx);
                 }
             }
-            PaneEvent::NewWindow(url) => crate::ui::open_link(url, window, cx),
+            PaneEvent::NewWindow(url) => viewers::open_page_link(url, window, cx),
             PaneEvent::Ready | PaneEvent::Failed(_) => cx.notify(),
+        }
+    }
+
+    /// Run a workbench key pressed in a page. The keyboard comes back to the window; the Markdown view keys are this
+    /// area's own and run here, since GPUI's focus may be anywhere while a page had the keyboard and a dispatched action
+    /// would not reach the area.
+    fn run_page_action(&mut self, action: Box<dyn Action>, window: &mut Window, cx: &mut Context<Self>) {
+        crate::web::reclaim_focus(window);
+        if action.as_any().is::<MarkdownPreview>() {
+            self.toggle_markdown_view("preview", cx);
+        } else if action.as_any().is::<MarkdownSplit>() {
+            self.toggle_markdown_view("split", cx);
+        } else {
+            window.dispatch_action(action, cx);
         }
     }
 
@@ -726,50 +741,33 @@ impl EditorArea {
             Some("svg") => Some(&viewers::SVG_VIEWS),
             _ => None,
         };
+        // Edited text whose file changed on disk: reload it or keep the edits, over every view of the file.
+        let conflicted = file.editor.is_some() && file.conflict;
         if let Some(views) = text_views {
             let editor = file.editor.clone();
             let shown = viewers::page_view(&file.document.path, None, view.as_deref());
+            let conflict = conflicted.then(|| self.render_conflict(&key, cx));
             let toolbar = self.render_views(&key, view.as_deref(), views, cx);
             let body = match shown {
                 Some((kind, split)) => self.render_page(&key, kind, split.then_some(editor).flatten(), window, cx),
                 None => editor.map(|editor| Editor::new(&editor).h_full().bordered(false).into_any_element()).unwrap_or_else(|| div().into_any_element()),
             };
-            return v_flex().size_full().key_context(crate::ui::ide::MARKDOWN_TAB).child(toolbar).child(div().flex_1().min_h_0().child(body)).into_any_element();
+            return v_flex()
+                .size_full()
+                .key_context(crate::ui::ide::MARKDOWN_TAB)
+                .child(toolbar)
+                .children(conflict)
+                .child(div().flex_1().min_h_0().child(body))
+                .into_any_element();
         }
         if view.as_deref() == Some("hex") {
             return self.render_page(&key, "hex", None, window, cx);
         }
         if let Some(editor) = file.editor.clone() {
-            let conflict = file.conflict;
-            let handle = self.ide.clone();
-            let (reloaded, kept) = (key.clone(), key.clone());
-            let (reload, keep) = (handle.clone(), handle);
+            let conflict = conflicted.then(|| self.render_conflict(&key, cx));
             return v_flex()
                 .size_full()
-                .when(conflict, |this| {
-                    this.child(
-                        h_flex()
-                            .flex_shrink_0()
-                            .px_3()
-                            .py_1p5()
-                            .gap_2()
-                            .items_center()
-                            .text_sm()
-                            .bg(theme.warning.opacity(0.12))
-                            .border_b_1()
-                            .border_color(theme.warning.opacity(0.4))
-                            .child(Icon::new(IconName::TriangleAlert).small().text_color(theme.warning))
-                            .child(div().flex_1().child(tr(cx, "ide.ideExternal")))
-                            .child(Button::new("conflict-reload").outline().xsmall().label(tr(cx, "ide.ideReload")).on_click(move |_, window, cx| {
-                                let key = reloaded.clone();
-                                reload.update(cx, |ide, cx| ide.reload(&key, window, cx));
-                            }))
-                            .child(Button::new("conflict-keep").primary().xsmall().label(tr(cx, "native.keepMine")).on_click(move |_, window, cx| {
-                                let key = kept.clone();
-                                keep.update(cx, |ide, cx| ide.save(Some(key), true, window, cx));
-                            })),
-                    )
-                })
+                .children(conflict)
                 .child(div().flex_1().min_h_0().child(Editor::new(&editor).h_full().bordered(false).context_menu(editor_commands::context_menu)))
                 .children(self.ai_edit.clone().filter(|edit| edit.read(cx).key == key))
                 .into_any_element();
@@ -837,6 +835,33 @@ impl EditorArea {
                         .children(preview.text.lines().map(|line| div().child(line.to_owned())).collect::<Vec<_>>()),
                 )
             })
+            .into_any_element()
+    }
+
+    /// The bar over a file whose edits conflict with a change on disk: read the file again, or save the edits over it.
+    fn render_conflict(&self, key: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let (reload, keep) = (self.ide.clone(), self.ide.clone());
+        let (reloaded, kept) = (key.to_owned(), key.to_owned());
+        h_flex()
+            .flex_shrink_0()
+            .px_3()
+            .py_1p5()
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .bg(theme.warning.opacity(0.12))
+            .border_b_1()
+            .border_color(theme.warning.opacity(0.4))
+            .child(Icon::new(IconName::TriangleAlert).small().text_color(theme.warning))
+            .child(div().flex_1().min_w_0().child(tr(cx, "ide.ideExternal")))
+            .child(Button::new("conflict-reload").outline().xsmall().label(tr(cx, "ide.ideReload")).on_click(move |_, window, cx| {
+                reload.update(cx, |ide, cx| ide.reload(&reloaded, window, cx));
+            }))
+            .child(Button::new("conflict-keep").primary().xsmall().label(tr(cx, "native.keepMine")).on_click(move |_, window, cx| {
+                let key = kept.clone();
+                keep.update(cx, |ide, cx| ide.save(Some(key), true, window, cx));
+            }))
             .into_any_element()
     }
 
@@ -1094,7 +1119,7 @@ impl EditorArea {
                     cx.notify();
                 }
                 Some(PageRequest::Ask(text)) => crate::ui::ask_ai(text, window, cx),
-                Some(PageRequest::OpenUrl(url)) => crate::ui::open_link(&url, window, cx),
+                Some(PageRequest::OpenUrl(url)) => viewers::open_page_link(&url, window, cx),
                 _ => {}
             },
             PaneEvent::Shortcut(shortcut) => {
@@ -1103,7 +1128,7 @@ impl EditorArea {
                     window.dispatch_action(action, cx);
                 }
             }
-            PaneEvent::NewWindow(url) => crate::ui::open_link(url, window, cx),
+            PaneEvent::NewWindow(url) => viewers::open_page_link(url, window, cx),
             PaneEvent::Ready | PaneEvent::Failed(_) => cx.notify(),
         }
     }
@@ -1153,6 +1178,22 @@ impl EditorArea {
                 .child(div().flex_1().min_h_0().relative().child(div().absolute().inset_0().child(WebPane::area(pane))))
                 .into_any_element(),
         )
+    }
+
+    /// Tab while the active editor lists completions takes the highlighted one, as Enter does; the editor alone would
+    /// indent under the open list. A suggestion shown at the cursor goes first, as Tab always took it: the list can
+    /// open after it, when the language server answers late.
+    fn tab_into_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ide = self.ide.read(cx);
+        let editor = ide.active.as_ref().and_then(|key| ide.files.get(key)).and_then(|file| file.editor.as_ref());
+        let listing = editor.is_some_and(|editor| {
+            let editor = editor.read(cx);
+            editor.completion_menu_state().open && !EditorMode::has_inline_completion(editor) && editor.focus_handle(cx).is_focused(window)
+        });
+        if listing {
+            cx.stop_propagation();
+            window.dispatch_action(Box::new(Enter { secondary: false, shift: false }), cx);
+        }
     }
 
     /// Open Ctrl+K on the active file's editor.
@@ -1258,6 +1299,7 @@ impl Render for EditorArea {
         div()
             .size_full()
             .bg(theme.background)
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| this.tab_into_completion(window, cx)))
             .on_action(cx.listener(|this, _: &AiEditSelection, window, cx| this.open_ai_edit(window, cx)))
             .on_action(cx.listener(|this, _: &MarkdownPreview, _, cx| this.toggle_markdown_view("preview", cx)))
             .on_action(cx.listener(|this, _: &MarkdownSplit, _, cx| this.toggle_markdown_view("split", cx)))

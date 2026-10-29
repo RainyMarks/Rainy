@@ -3,7 +3,6 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { brandString } from '../../src/shared/brand.ts'
 import type { IdeWorkspace, WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
 import type { HostMethod } from '../../src/shared/rpc.ts'
 import { mapMessages } from '../../src/renderer/map/messages.ts'
@@ -14,9 +13,9 @@ import { host } from './ide-host-mock.ts'
 vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const id = brandString<WorkspaceId>('workspace-a')
+const id = 'workspace-a' as WorkspaceId
 const project: IdeWorkspace = { workspaceId: id, path: 'C:\\work\\a', title: 'a' }
-const other: IdeWorkspace = { workspaceId: brandString<WorkspaceId>('workspace-b'), path: 'C:\\work\\b', title: 'b' }
+const other: IdeWorkspace = { workspaceId: 'workspace-b' as WorkspaceId, path: 'C:\\work\\b', title: 'b' }
 const pending = (): Promise<never> => new Promise(() => undefined)
 /** Lets the Host mock's answers travel through `callIde` and into state. */
 const settle = async (): Promise<void> => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) }) }

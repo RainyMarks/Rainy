@@ -4,7 +4,7 @@ members = ["crates/protocol", "crates/carrier", "crates/app", "crates/host"]
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "4.2.2"
+version = "4.3.0"
 edition = "2024"
 publish = false
 license-file = "../LICENSE"
@@ -22,9 +22,11 @@ futures = "0.3"
 log = "0.4"
 
 # gpui-pre 0.3.9 with Chinese line breaking: closing punctuation never starts a line, opening punctuation never ends
-# one (vendor/gpui-pre/RAINY.md). Replace the copy together with gpui-kit.
+# one (vendor/gpui-pre/RAINY.md); gpui-base 0.8.0 with editor fixes (vendor/gpui-base/RAINY.md). Replace both copies
+# together with gpui-kit.
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
+gpui-base = { path = "vendor/gpui-base" }
 
 [profile.release]
 opt-level = 3

@@ -592,7 +592,6 @@ dependencies = [
  "axum-core",
  "base64 0.22.1",
  "bytes",
- "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
@@ -606,8 +605,6 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
- "serde_path_to_error",
- "serde_urlencoded",
  "sha1 0.10.7",
  "sync_wrapper",
  "tokio",
@@ -2263,8 +2260,6 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5cd7de73d5b2d3d18b94a928abf343922091fa77bc472f77b7d2e7e8b1823a7"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -5189,7 +5184,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rainy"
-version = "4.2.2"
+version = "4.3.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5219,7 +5214,7 @@ dependencies = [
 
 [[package]]
 name = "rainy-carrier"
-version = "4.2.2"
+version = "4.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5247,7 +5242,7 @@ dependencies = [
 
 [[package]]
 name = "rainy-host"
-version = "4.2.2"
+version = "4.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5281,7 +5276,7 @@ dependencies = [
 
 [[package]]
 name = "rainy-protocol"
-version = "4.2.2"
+version = "4.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6155,17 +6150,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_path_to_error"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
-dependencies = [
- "itoa",
- "serde",
- "serde_core",
 ]
 
 [[package]]

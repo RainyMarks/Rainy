@@ -1,7 +1,7 @@
-/** Hex view helpers restored from 3.x: format detection, hex text forms and byte paging. */
+/** Hex view helpers restored from 3.x: format detection, hex text forms, byte paging and the text view's encodings. */
 import { describe, expect, it } from 'vitest'
 import { ByteSource, CHUNK_BYTES, FileChangedError } from '../../src/renderer/ide/viewers/byte-source.ts'
-import { formatBytes, formatOffset, inspectBytes, parseOffset } from '../../src/renderer/ide/viewers/hex-format.ts'
+import { decodeText, formatBytes, formatOffset, guessEncoding, inspectBytes, parseOffset } from '../../src/renderer/ide/viewers/hex-format.ts'
 import { detectSignature } from '../../src/renderer/ide/viewers/signature.ts'
 
 const bytes = (...values: (number | string)[]): Uint8Array => {
@@ -128,5 +128,27 @@ describe('ByteSource', () => {
     const source = new ByteSource('/raw', fileBytes.length, 8, fake(() => `"v${version++}"`))
     await source.read(0, 1)
     await expect(source.read(CHUNK_BYTES, 1)).rejects.toBeInstanceOf(FileChangedError)
+  })
+})
+
+describe('text view', () => {
+  // 中文 in GBK; 中 in UTF-8 cut after its second byte.
+  const gbk = Uint8Array.from([0xd6, 0xd0, 0xce, 0xc4])
+  const cut = Uint8Array.from([0x61, 0xe4, 0xb8])
+
+  it('guesses the encoding from a byte order mark, valid UTF-8 or else GB18030', () => {
+    expect(guessEncoding(Uint8Array.from([0xff, 0xfe, 0x2d, 0x4e]))).toBe('utf-16le')
+    expect(guessEncoding(Uint8Array.from([0xfe, 0xff, 0x4e, 0x2d]))).toBe('utf-16be')
+    expect(guessEncoding(new TextEncoder().encode('中文 text'))).toBe('utf-8')
+    // A character cut where the read stops is still UTF-8.
+    expect(guessEncoding(cut)).toBe('utf-8')
+    expect(guessEncoding(gbk)).toBe('gb18030')
+  })
+
+  it('decodes in the chosen encoding and leaves out a character cut at the end of a partial read', () => {
+    expect(decodeText(gbk, 'gb18030', true)).toBe('中文')
+    expect(decodeText(Uint8Array.from([0xff, 0xfe, 0x2d, 0x4e]), 'utf-16le', true)).toBe('中')
+    expect(decodeText(cut, 'utf-8', false)).toBe('a')
+    expect(decodeText(cut, 'utf-8', true)).toBe('a' + String.fromCharCode(0xfffd))
   })
 })

@@ -1,13 +1,16 @@
 //! The main window's place on the screen (`initialPlacement`, the geometry tracking, `fitDisplay` and `afterMove` in 3.x
 //! `main.ts`): it opens where it was while a display still shows that place, else at the default; its normal bounds and
 //! maximized state go to `window-state.json` when it closes and when Rainy quits; after a display change it is moved
-//! back into the work area of its display, and after the user moves it, only when no display shows its top edge.
+//! back into the work area of its display, and after the user moves it, only when no display shows its top edge. The
+//! layout it shows (Agent or IDE mode and the Agent mode panes) is kept beside it in `layout.json`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::*;
 use rainy_carrier::window_state::{self, Rect, WindowState};
+
+use crate::ui::agent::{self, Mode};
 use raw_window_handle::RawWindowHandle;
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
@@ -292,6 +295,61 @@ fn buttons_down() -> bool {
     unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON)) < 0 || GetAsyncKeyState(i32::from(VK_RBUTTON)) < 0 }
 }
 
+/// What the window shows across launches, beside its place: the layout, whether the Agent sidebar is open, and the
+/// widths dragged in Agent mode (a panel width of 0 follows the window). One record per machine, `layout.json` in the
+/// user data folder; `window-state.json` keeps exactly the 3.x shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    pub mode: Mode,
+    pub sidebar: bool,
+    pub sidebar_width: f32,
+    pub panel_width: f32,
+}
+
+pub const LAYOUT_FILE: &str = "layout.json";
+
+impl Default for Layout {
+    /// A first start opens in Agent mode with the sidebar.
+    fn default() -> Self {
+        Self { mode: Mode::Agent, sidebar: true, sidebar_width: agent::SIDEBAR, panel_width: 0. }
+    }
+}
+
+/// The saved layout; a missing or unreadable record, or a field of it, keeps the default.
+pub fn read_layout(user_data: &Path) -> Layout {
+    std::fs::read_to_string(user_data.join(LAYOUT_FILE)).map(|text| parse_layout(&text)).unwrap_or_default()
+}
+
+fn parse_layout(text: &str) -> Layout {
+    let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    let width = |key: &str| value[key].as_f64().map(|width| width as f32).filter(|width| width.is_finite() && *width >= 0.);
+    let default = Layout::default();
+    Layout {
+        mode: value["mode"].as_str().and_then(Mode::from_id).unwrap_or(default.mode),
+        sidebar: value["sidebar"].as_bool().unwrap_or(default.sidebar),
+        sidebar_width: width("sidebarWidth").map_or(default.sidebar_width, |width| width.clamp(agent::SIDEBAR_MIN, agent::SIDEBAR_MAX)),
+        panel_width: width("panelWidth").unwrap_or(default.panel_width),
+    }
+}
+
+/// Write the layout through a temporary file in the same folder, so a crash leaves the old record or the new one.
+pub fn write_layout(user_data: &Path, layout: &Layout) -> anyhow::Result<()> {
+    let text = serde_json::json!({
+        "version": 1,
+        "mode": layout.mode.id(),
+        "sidebar": layout.sidebar,
+        "sidebarWidth": layout.sidebar_width.round(),
+        "panelWidth": layout.panel_width.round(),
+    })
+    .to_string()
+        + "\n";
+    let path = user_data.join(LAYOUT_FILE);
+    let temporary = user_data.join(format!(".layout-{}.tmp", std::process::id()));
+    let written = std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, &path));
+    let _ = std::fs::remove_file(&temporary);
+    Ok(written?)
+}
+
 /// A move of the window's client area to logical bounds at the window's scale, decided inside `window.update`.
 struct Placing {
     hwnd: HWND,
@@ -393,6 +451,21 @@ mod tests {
         // need not be the display GPUI had it on.
         let right = rect(1920, 0, 1920, 1040);
         assert_eq!(pulled_back(rect(1300, 1050, 1300, 870), &[primary, right]), Some(rect(620, 170, 1300, 870)));
+    }
+
+    #[test]
+    fn keeps_the_layout_and_reads_a_damaged_record_as_the_default() {
+        let folder = tempfile::tempdir().unwrap();
+        assert_eq!(read_layout(folder.path()), Layout::default());
+        let layout = Layout { mode: Mode::Ide, sidebar: false, sidebar_width: 300., panel_width: 512. };
+        write_layout(folder.path(), &layout).unwrap();
+        assert_eq!(read_layout(folder.path()), layout);
+        let names: Vec<_> = std::fs::read_dir(folder.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(names, [LAYOUT_FILE]);
+        // Each field on its own: an unknown mode or a bad width keeps that field's default.
+        let parsed = parse_layout(r#"{"mode":"editor","sidebar":false,"sidebarWidth":9000,"panelWidth":-3}"#);
+        assert_eq!(parsed, Layout { mode: Mode::Agent, sidebar: false, sidebar_width: agent::SIDEBAR_MAX, panel_width: 0. });
+        assert_eq!(parse_layout("not json"), Layout::default());
     }
 
     #[test]

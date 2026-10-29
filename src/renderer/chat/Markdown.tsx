@@ -1,17 +1,13 @@
-/** Markdown of assistant replies and file previews: GFM, math, highlighted code blocks, local links and guarded images;
- *  file previews also show the allowlisted HTML of {@link rehypeSafeHtml}. */
+/** Markdown of project files, as the preview shows them: GFM, math, highlighted code blocks, local links, guarded images
+ *  and the allowlisted HTML of {@link rehypeSafeHtml}. 3.x drew chat replies with it too, hence its folder. */
 import { Children, isValidElement, memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
 import clsx from 'clsx'
 import { ideRawUrl } from '../../shared/ide-preview.ts'
-import { emit } from '../app/bus.ts'
-import { CodeToolbar, highlightLines, Tooltip, useHighlightRevision, writeClipboard } from '../ui/index.ts'
+import { CodeToolbar, highlightLines, useHighlightRevision, writeClipboard } from '../ui/index.ts'
 import cardCss from '../ui/CodeCard.module.css'
 import { ANCHOR_PREFIX, DOCUMENT_REMARK_PLUGINS, isDataImage, rehypeSafeHtml, rehypeToc } from '../ide/viewers/markdown-html.ts'
-import { remarkDollarAmounts } from '../ide/viewers/markdown-math.ts'
-import { mayContainMath, useMathPlugin } from './math.ts'
+import { useMathPlugin } from './math.ts'
 import { useChatT } from './messages.ts'
 import css from './Markdown.module.css'
 
@@ -22,11 +18,10 @@ function textOf(node: ReactNode): string {
   return ''
 }
 
-/** A fenced code block with copy, wrap, and the "open in editor" / "compare with current file" actions. */
-export function CodeBlock({ code, language, actions = true, line }: {
+/** A fenced code block with copy and wrap. */
+export function CodeBlock({ code, language, line }: {
   code: string
   language: string | undefined
-  actions?: boolean
   /** Source line, for scroll sync. */
   line?: number | undefined
 }): JSX.Element {
@@ -45,15 +40,7 @@ export function CodeBlock({ code, language, actions = true, line }: {
   return (
     <div className={clsx(cardCss.card, css.code)} data-code-wrap={wrapped} data-line={line}>
       <CodeToolbar lang={language} labels={{ codeLabel: t('code'), wrapLabel: t('wrap'), unwrapLabel: t('unwrap') }}
-        copyLabel={t('copy')} copiedLabel={t('copied')} copied={copied} wrapped={wrapped} onCopy={onCopy} onWrap={() => { setWrapped(value => !value) }}
-        actions={actions ? <>
-          <Tooltip label={t('openInEditor')} side="top" portal>
-            <button type="button" className={css.action} onClick={() => { emit('editor.snippet', { code, language, compare: false }) }}>{t('openInEditor')}</button>
-          </Tooltip>
-          <Tooltip label={t('compareWithFile')} side="top" portal>
-            <button type="button" className={css.action} onClick={() => { emit('editor.snippet', { code, language, compare: true }) }}>{t('compareWithFile')}</button>
-          </Tooltip>
-        </> : undefined} />
+        copyLabel={t('copy')} copiedLabel={t('copied')} copied={copied} wrapped={wrapped} onCopy={onCopy} onWrap={() => { setWrapped(value => !value) }} />
       <pre className={css.pre}><code>
         {lines === undefined ? code : lines.map((line, index) => (
           <span key={index} className={css.line}>
@@ -214,16 +201,13 @@ function LocalImageLink({ path, alt, open }: { path: string; alt: string | undef
 export interface MarkdownOptions {
   /** Project and directory of the document; relative images show project files only when it is set. */
   readonly base?: { readonly workspaceId: string; readonly rootId?: string | undefined; readonly directory: string } | undefined
-  /** Open a local file; the default asks the editor through the workbench bus. */
-  readonly openLocal?: ((target: { path: string; line?: number | undefined }) => void) | undefined
-  /** "Open in editor" and "compare" on code blocks. */
-  readonly codeActions?: boolean | undefined
+  /** Open a project file that a link names. */
+  readonly openLocal: (target: { path: string; line?: number | undefined }) => void
   /** `data-line` on top-level blocks, for scroll sync with the source. */
   readonly sourceLines?: boolean | undefined
   /** Changes when the document should reload the project images it shows. */
   readonly revision?: string | undefined
-  /** Set for a file of the project rather than a reply. */
-  readonly file?: MarkdownFileOptions | undefined
+  readonly file: MarkdownFileOptions
 }
 
 /** How a project file renders: its allowlisted HTML, `==highlights==`, `[TOC]`, single tildes as text and the fences it draws. */
@@ -238,10 +222,8 @@ export interface MarkdownFileOptions {
   readonly fence?: ((code: string, language: string | undefined, line: number | undefined) => ReactNode) | undefined
 }
 
-const defaultOpen = (target: { path: string; line?: number | undefined }): void => { emit('editor.open', target) }
-
 function markdownComponents(options: MarkdownOptions): Components {
-  const open = options.openLocal ?? defaultOpen
+  const open = options.openLocal
   const base = options.base
   return {
     pre({ children, node }) {
@@ -250,9 +232,9 @@ function markdownComponents(options: MarkdownOptions): Components {
       if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
         const language = /language-([\w+#.-]+)/.exec(child.props.className ?? '')?.[1]
         const code = textOf(child.props.children).replace(/\n$/, '')
-        const drawn = options.file?.fence?.(code, language, line)
+        const drawn = options.file.fence?.(code, language, line)
         if (drawn !== undefined) return drawn
-        return <CodeBlock code={code} language={language} actions={options.codeActions !== false} line={line} />
+        return <CodeBlock code={code} language={language} line={line} />
       }
       return <pre data-line={line}>{children}</pre>
     },
@@ -290,10 +272,7 @@ function markdownComponents(options: MarkdownOptions): Components {
   }
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkDollarAmounts]
-const CHAT_OPTIONS: MarkdownOptions = { codeActions: true }
-
-/** Markdown with explicit link, image and code-block behavior; memoized because previews re-render while typing. */
+/** A project file's Markdown with explicit link, image and code-block behavior; memoized because previews re-render while typing. */
 export const MarkdownDocument = memo(function MarkdownDocument({ text, className, options }: {
   text: string
   className?: string | undefined
@@ -304,89 +283,15 @@ export const MarkdownDocument = memo(function MarkdownDocument({ text, className
   const katex = useMathPlugin(text)
   const file = options.file
   const rehypePlugins = useMemo(() => [
-    ...(file === undefined ? [] : [rehypeSafeHtml]), ...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true),
+    rehypeSafeHtml, ...(katex === undefined ? [] : [katex]), rehypeAnchors(options.sourceLines === true),
     // A `[TOC]` lists the headings with the ids just given.
-    ...(file === undefined ? [] : [rehypeToc(file.tocLabel ?? '')]),
+    rehypeToc(file.tocLabel ?? ''),
   ], [katex, file, options.sourceLines])
-  const remarkRehypeOptions = useMemo(() => file === undefined ? undefined
-    : { footnoteLabel: file.footnoteLabel, footnoteBackLabel: file.footnoteBackLabel, footnoteLabelProperties: {} }, [file])
+  const remarkRehypeOptions = useMemo(() => ({ footnoteLabel: file.footnoteLabel, footnoteBackLabel: file.footnoteBackLabel, footnoteLabelProperties: {} }), [file])
   return (
     <div className={clsx(css.markdown, className)} data-markdown-root>
-      <ReactMarkdown remarkPlugins={file === undefined ? REMARK_PLUGINS : DOCUMENT_REMARK_PLUGINS} rehypePlugins={rehypePlugins}
-        remarkRehypeOptions={remarkRehypeOptions} components={components} urlTransform={file === undefined ? markdownUrl : documentUrl}>{text}</ReactMarkdown>
-    </div>
-  )
-})
-
-/** Rendered assistant markdown; memoized because transcripts re-render while streaming. */
-export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string | undefined }): ReactElement {
-  return <MarkdownDocument text={text} className={className} options={CHAT_OPTIONS} />
-})
-
-/** Link reference and footnote definitions apply to the whole document, so text holding one is not split. */
-const DEFINITION = /^ {0,3}\[[^\]\n]+\]:/mu
-const FENCE = /^ {0,3}(`{3,}|~{3,})/u
-/** A line after a blank one that may continue the block before it: indented content, list items. */
-const CONTINUATION = /^(?:[ \t]|[*+-](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$))/u
-
-/**
- * Split Markdown into top-level blocks that render the same alone as together: at blank lines outside code fences and
- * math blocks, before a line that cannot continue the block above it.
- * @param text Markdown source.
- * @returns The blocks; joined, they give back the text.
- */
-export function markdownBlocks(text: string): string[] {
-  if (DEFINITION.test(text)) return [text]
-  const lines = text.split('\n')
-  const blocks: string[] = []
-  let start = 0
-  let fence: string | undefined
-  let math = false
-  let blank = false
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!
-    if (fence !== undefined) {
-      const close = FENCE.exec(line)
-      if (close !== null && close[1]![0] === fence[0] && close[1]!.length >= fence.length && line.trim() === close[1]) fence = undefined
-      continue
-    }
-    if (math) {
-      if (line.trim() === '$$') math = false
-      continue
-    }
-    if (line.trim() === '') { blank = true; continue }
-    if (blank && index > start && !CONTINUATION.test(line)) {
-      blocks.push(lines.slice(start, index).join('\n'))
-      start = index
-    }
-    blank = false
-    const open = FENCE.exec(line)
-    if (open !== null) fence = open[1]!
-    else if (line.trim() === '$$') math = true
-  }
-  blocks.push(lines.slice(start).join('\n'))
-  return blocks
-}
-
-const CHAT_COMPONENTS = markdownComponents(CHAT_OPTIONS)
-const STREAMING_REHYPE = [rehypeAnchors(false)]
-
-/** One block of a streaming reply; a finished block keeps its rendering while the reply grows below it. */
-const MarkdownBlock = memo(function MarkdownBlock({ text, katex }: { text: string; katex: ReturnType<typeof useMathPlugin> }): ReactElement {
-  const rehypePlugins = useMemo(() => katex === undefined || !mayContainMath(text) ? STREAMING_REHYPE : [katex, ...STREAMING_REHYPE], [katex, text])
-  return <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={CHAT_COMPONENTS} urlTransform={markdownUrl}>{text}</ReactMarkdown>
-})
-
-/**
- * A reply while it streams: only its last block is parsed again on each update, instead of the whole text. The finished
- * reply is rendered whole by {@link Markdown}.
- */
-export const StreamingMarkdown = memo(function StreamingMarkdown({ text, className }: { text: string; className?: string | undefined }): ReactElement {
-  const katex = useMathPlugin(text)
-  const blocks = useMemo(() => markdownBlocks(text), [text])
-  return (
-    <div className={clsx(css.markdown, className)} data-markdown-root>
-      {blocks.map((block, index) => <MarkdownBlock key={index} text={block} katex={katex} />)}
+      <ReactMarkdown remarkPlugins={DOCUMENT_REMARK_PLUGINS} rehypePlugins={rehypePlugins}
+        remarkRehypeOptions={remarkRehypeOptions} components={components} urlTransform={documentUrl}>{text}</ReactMarkdown>
     </div>
   )
 })

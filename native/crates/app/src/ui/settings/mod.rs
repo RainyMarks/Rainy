@@ -8,8 +8,9 @@ mod models;
 mod models_extra;
 mod runtime;
 mod security;
-mod strata;
 mod shortcuts;
+mod strata;
+mod tools;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
@@ -26,6 +27,7 @@ pub enum Section {
     General,
     Appearance,
     Models,
+    Tools,
     Extensions,
     Runtime,
     Memory,
@@ -33,10 +35,11 @@ pub enum Section {
     Shortcuts,
 }
 
-const SECTIONS: [(Section, &str); 7] = [
+const SECTIONS: [(Section, &str); 8] = [
     (Section::General, "settings.navGeneral"),
     (Section::Appearance, "settings.navAppearance"),
     (Section::Models, "settings.navModels"),
+    (Section::Tools, "settings.navTools"),
     (Section::Extensions, "settings.navExtensions"),
     (Section::Runtime, "settings.navRuntime"),
     (Section::Memory, "settings.navMemory"),
@@ -46,11 +49,15 @@ const SECTIONS: [(Section, &str); 7] = [
 /// Asks the workbench to close the settings window.
 pub struct CloseSettings;
 
+/// Asks the settings window to show another section.
+pub struct ShowSection(pub Section);
+
 pub struct SettingsView {
     store: Entity<Store>,
     section: Section,
     models: Entity<models::ModelsPage>,
     extensions: Option<Entity<extensions::ExtensionsPage>>,
+    tools: Option<Entity<tools::ToolsPage>>,
     runtime: Option<Entity<runtime::RuntimePage>>,
     memory: Option<Entity<memory::MemoryPage>>,
     security: Option<Entity<security::SecurityPage>>,
@@ -65,8 +72,14 @@ impl SettingsView {
         let models = cx.new(|cx| models::ModelsPage::new(store.clone(), window, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
-        Self { store, section, models, extensions: None, runtime: None, memory: None, security: None, focus, _subscriptions: subscriptions }
+        let subscriptions = vec![
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe(&models, |this, _, ShowSection(section), cx| {
+                this.section = *section;
+                cx.notify();
+            }),
+        ];
+        Self { store, section, models, tools: None, extensions: None, runtime: None, memory: None, security: None, focus, _subscriptions: subscriptions }
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -141,6 +154,10 @@ impl Render for SettingsView {
             Section::Appearance => appearance::render(&self.store, window, cx).into_any_element(),
             Section::Models => self.models.clone().into_any_element(),
             // Pages that read the Host are made when first shown and kept while the window is open.
+            Section::Tools => {
+                let store = self.store.clone();
+                self.tools.get_or_insert_with(|| cx.new(|cx| tools::ToolsPage::new(store, window, cx))).clone().into_any_element()
+            }
             Section::Extensions => {
                 let store = self.store.clone();
                 self.extensions.get_or_insert_with(|| cx.new(|cx| extensions::ExtensionsPage::new(store, window, cx))).clone().into_any_element()

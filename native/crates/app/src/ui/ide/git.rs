@@ -68,11 +68,6 @@ fn kind_letter(kind: &str) -> &'static str {
     }
 }
 
-/// The editor key of a repository file.
-fn key_of(root_id: &str, path: &str) -> String {
-    if root_id == "primary" || root_id.is_empty() { path.to_owned() } else { format!("\0{root_id}/{path}") }
-}
-
 impl GitView {
     pub fn new(ide: Entity<Ide>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = Store::global(cx);
@@ -332,7 +327,7 @@ impl GitView {
             "deleted" | "conflicted" => theme.danger,
             _ => crate::theme::warning_text(cx),
         };
-        let key = key_of(root_id, &change.path);
+        let key = crate::store::ide::root_key(Some(root_id), &change.path);
         let id = SharedString::from(format!("git-{}-{}-{index}", if section == Section::Staged { "s" } else { "u" }, root_id));
         let (open_key, show_key) = (key.clone(), key);
         let (ide_open, ide_show) = (self.ide.clone(), self.ide.clone());

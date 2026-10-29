@@ -153,7 +153,7 @@ async fn start() -> Result<()> {
     // A project the registry refuses (the same folder recorded for another target, as with two SSH aliases of one
     // server) stays usable here; only its cross-target identity is missing.
     for project in host.projects.list() {
-        if let Err(error) = host.registry.get_or_register(&project.id, &project.path, &project.title, None).await {
+        if let Err(error) = host.registry.get_or_register(&project.id, &project.path, &project.title).await {
             log::warn!("Project {} is not registered for this execution target: {}", project.path, error.message);
         }
     }
@@ -205,39 +205,13 @@ fn preview_access(host: &Arc<Host>) -> Option<agent::tools::browser::Preview> {
     }))
 }
 
-/// Answer one carrier command.
+/// Answer one carrier command: `inspect-activity` is the only one besides `stop`.
 fn serve_command(host: &Arc<Host>, command: control::Command) {
-    let Some(id) = command.get("id").and_then(Value::as_str).map(str::to_owned) else { return };
-    match command.get("type").and_then(Value::as_str) {
-        Some("inspect-activity") => {
-            let mode = command.get("mode").and_then(Value::as_str).unwrap_or("observe");
-            control::send(json!({ "type": "activity", "id": id, "active": host.activity.inspect(mode) }));
-        }
-        Some("inspect-project") => {
-            let host = host.clone();
-            let requested = command.get("workspaceId").and_then(Value::as_str).map(str::to_owned);
-            tokio::spawn(async move {
-                let answer = inspect_project(&host, requested).await;
-                control::send(match answer {
-                    Ok(project) => json!({ "type": "project", "id": id, "project": project }),
-                    Err(code) => json!({ "type": "project", "id": id, "error": code }),
-                });
-            });
-        }
-        _ => {}
+    let Some(id) = command.get("id").and_then(Value::as_str) else { return };
+    if command.get("type").and_then(Value::as_str) == Some("inspect-activity") {
+        let mode = command.get("mode").and_then(Value::as_str).unwrap_or("observe");
+        control::send(json!({ "type": "activity", "id": id, "active": host.activity.inspect(mode) }));
     }
-}
-
-async fn inspect_project(host: &Host, requested: Option<String>) -> Result<Value, &'static str> {
-    let Some(id) = requested.or_else(|| selected_workspace(host)) else { return Ok(Value::Null) };
-    let project = host.projects.get(&id).ok_or("workspace-unavailable")?;
-    let project_id = host.registry.get_or_register(&project.id, &project.path, &project.title, None).await.map_err(|_| "project-unavailable")?;
-    Ok(json!({ "projectId": project_id, "workspaceId": project.id, "roots": project.roots() }))
-}
-
-/// The project selected last in the editor.
-fn selected_workspace(host: &Host) -> Option<String> {
-    host.ide.get().and_then(|ide| ide.selection())
 }
 
 async fn stop(host: &Arc<Host>) {
@@ -288,7 +262,7 @@ fn register(host: &Arc<Host>) {
         rpc.register("ide", move |params| {
             let host = host.clone();
             async move {
-                let ide = host.ide.get().cloned().ok_or_else(|| HostError::other("The IDE is not ready."))?;
+                let ide = host.ide.get().cloned().ok_or_else(|| HostError::other(locale::l("编辑器服务尚未就绪。", "The editor services are not ready.")))?;
                 ide.handle(&host, params).await
             }
         });

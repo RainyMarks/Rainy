@@ -1,7 +1,7 @@
 {
   "name": "rainy-agent",
   "productName": "Rainy",
-  "version": "4.2.2",
+  "version": "4.3.0",
   "private": true,
   "type": "module",
   "description": "Rainy: the viewer page and release scripts beside the native app in native/",
@@ -27,7 +27,6 @@
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
     "@vitejs/plugin-react": "4.7.0",
-    "anser": "2.3.5",
     "clsx": "2.1.1",
     "diff": "9.0.0",
     "docx-preview": "0.4.1",

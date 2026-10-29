@@ -1,7 +1,7 @@
 /**
  * Build the viewer page (`dist/renderer`) the Host serves to the native workbench's panes: documents, media, Markdown
  * and the project map. With `--release`, first write the release public keys (`runtime/release-public-keys.json`, which
- * the native build embeds) and refuse missing or changed release resources (the Linux IDE tools and the Strata engine).
+ * the native build embeds) and refuse missing or changed release resources (the Linux IDE tools).
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   }
   if (release) await node('scripts/release-signing-key.mjs')
   // Release inputs are restored by bootstrap-release-inputs.mjs; a development checkout may not have them.
-  for (const [directory, script] of [['resources/ide', 'scripts/verify-ide-resources.mjs'], ['resources/strata-runtime', 'scripts/verify-strata-runtime.mjs']] as const) {
+  for (const [directory, script] of [['resources/ide', 'scripts/verify-ide-resources.mjs']] as const) {
     if (release || existsSync(resolve(root, directory))) await node(script)
     else console.log(`Skipped ${script}: ${directory} is not prepared.`)
   }

@@ -1,8 +1,10 @@
-/** Hex view of a file of any size: virtual rows over range reads, selection, offsets, inspector and copy formats. */
+/** Hex view of a file of any size: virtual rows over range reads, selection, offsets, inspector and copy formats; and
+ *  the file read as text in an encoding the editor does not open, as 3.x's 以文本打开 did. */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
 import { ByteSource, FileChangedError } from './byte-source.ts'
-import { asciiByte, formatBytes, formatOffset, hexByte, HEX_ROW_BYTES, inspectBytes, parseOffset, type CopyFormat } from './hex-format.ts'
+import { asciiByte, decodeText, formatBytes, formatOffset, guessEncoding, hexByte, HEX_ROW_BYTES, inspectBytes, parseOffset, TEXT_ENCODINGS,
+  type CopyFormat, type TextEncoding } from './hex-format.ts'
 import { loadFailure, type LoadFailure } from './load-errors.ts'
 import { useViewerT } from './messages.ts'
 import { detectSignature, type FileSignature } from './signature.ts'
@@ -13,6 +15,12 @@ const ROW_HEIGHT = 20
 const MAX_SPACER = 8_000_000
 const MAX_COPY = 1024 * 1024
 const COLUMNS = Array.from({ length: HEX_ROW_BYTES }, (_unused, index) => index)
+/** The most the text view decodes; a larger file shows its beginning. */
+const TEXT_LIMIT = 4 * 1024 * 1024
+const ENCODING_NAMES: Readonly<Record<TextEncoding, string>> = {
+  'utf-8': 'UTF-8', gb18030: 'GB18030 (GBK)', big5: 'Big5', shift_jis: 'Shift_JIS', 'euc-kr': 'EUC-KR', 'utf-16le': 'UTF-16 LE', 'utf-16be': 'UTF-16 BE',
+  'windows-1252': 'Windows-1252',
+}
 
 interface Selection { readonly anchor: number; readonly focus: number }
 
@@ -42,6 +50,10 @@ export function HexViewer({ url, size, onChanged, onBack }: {
   const [littleEndian, setLittleEndian] = useState(true)
   const [signature, setSignature] = useState<FileSignature | null | undefined>()
   const [error, setError] = useState<LoadFailure | undefined>()
+  /** The encoding the file's start suggests, offered first. */
+  const [guess, setGuess] = useState<TextEncoding>('utf-8')
+  /** The file shown as text in an encoding instead of as bytes, once decoded. */
+  const [text, setText] = useState<{ encoding: TextEncoding; value?: string | undefined } | undefined>()
 
   const fail = (failure: unknown): void => {
     if (failure instanceof FileChangedError) { onChanged(); return }
@@ -52,7 +64,9 @@ export function HexViewer({ url, size, onChanged, onBack }: {
     setSelection(undefined); setSignature(undefined); setError(undefined)
     let cancelled = false
     void source.read(0, 4096).then((head) => {
-      if (!cancelled) setSignature(detectSignature(head) ?? null)
+      if (cancelled) return
+      setSignature(detectSignature(head) ?? null)
+      setGuess(guessEncoding(head))
     }).catch((failure: unknown) => { if (!cancelled) fail(failure) })
     return () => { cancelled = true }
   }, [source])
@@ -64,6 +78,19 @@ export function HexViewer({ url, size, onChanged, onBack }: {
     observer.observe(element)
     return () => { observer.disconnect() }
   }, [])
+
+  useEffect(() => {
+    if (text === undefined || text.value !== undefined) return
+    let cancelled = false
+    const encoding = text.encoding
+    void source.read(0, Math.min(size, TEXT_LIMIT)).then((bytes) => {
+      if (!cancelled) setText({ encoding, value: decodeText(bytes, encoding, size <= TEXT_LIMIT) })
+    }, (failure: unknown) => { if (!cancelled) fail(failure) })
+    return () => { cancelled = true }
+  // `fail` is a new function on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, size, text])
+  const encodings = [guess, ...TEXT_ENCODINGS.filter(encoding => encoding !== guess)]
 
   const rows = Math.max(1, Math.ceil(size / HEX_ROW_BYTES))
   const total = rows * ROW_HEIGHT
@@ -185,6 +212,25 @@ export function HexViewer({ url, size, onChanged, onBack }: {
   const offsetDigits = formatOffset(0, size).length
   const cursorOffset = selection?.focus
 
+  if (text !== undefined) {
+    return (
+      <div className={css.viewer} data-viewer="hex-text">
+        <div className={css.toolbar}>
+          <button type="button" className={css.toolButton} onClick={() => { setText(undefined) }}>{t('hexTextBack')}</button>
+          <span className={css.separator} />
+          <select aria-label={t('hexTextEncoding')} title={t('hexTextEncoding')} value={text.encoding}
+            onChange={(event) => { setText({ encoding: event.target.value as TextEncoding }) }}>
+            {encodings.map(encoding => <option key={encoding} value={encoding}>{ENCODING_NAMES[encoding]}</option>)}
+          </select>
+          {size > TEXT_LIMIT && <span>{t('hexTextTruncated', { size: fileSizeText(TEXT_LIMIT), total: fileSizeText(size) })}</span>}
+        </div>
+        {error !== undefined && <div className={`${css.notice} ${css.error}`} role="alert" title={error.detail}>{t('loadFailed', { error: error.reason })}</div>}
+        {text.value === undefined ? <div className={css.message}>{t('loading')}</div>
+          : <pre className={css.textView} tabIndex={0} aria-readonly="true">{text.value}</pre>}
+      </div>
+    )
+  }
+
   return (
     <div className={css.viewer} data-viewer="hex">
       <div className={css.toolbar}>
@@ -202,6 +248,11 @@ export function HexViewer({ url, size, onChanged, onBack }: {
           <option value="python">{t('hexCopyPython')}</option>
           <option value="c">{t('hexCopyC')}</option>
           <option value="base64">{t('hexCopyBase64')}</option>
+        </select>
+        <select aria-label={t('hexOpenText')} title={t('hexOpenTextTitle')} value=""
+          onChange={(event) => { if (event.target.value !== '') setText({ encoding: event.target.value as TextEncoding }) }}>
+          <option value="">{t('hexOpenText')}</option>
+          {encodings.map(encoding => <option key={encoding} value={encoding}>{ENCODING_NAMES[encoding]}</option>)}
         </select>
       </div>
       {error !== undefined && <div className={`${css.notice} ${css.error}`} role="alert" title={error.detail}>{t('loadFailed', { error: error.reason })}</div>}

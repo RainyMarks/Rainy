@@ -3,8 +3,9 @@
  *
  *   rainy-host.exe     the Rust Host (native/target/release, from native/scripts/build-hosts.sh)
  *   app/dist/renderer  the viewer page (scripts/build.ts)
- *   app/resources      the resources, with the Windows IDE tools (runtime/ide-windows, from
- *                      `prepare-ide-tools.py --platform win32-x64`) in place of the Linux ones
+ *   app/resources      the resources, without IDE tools: the Windows ones (runtime/ide-windows, from
+ *                      `prepare-ide-tools.py --platform win32-x64`) are the optional modules ide-python and ide-web
+ *                      (prepare-optional-modules.mjs), the Linux ones belong to the Linux runtime
  *   app/LICENSE…       the license files
  *   runtime.json       the file inventory
  *
@@ -20,7 +21,6 @@ import { fileURLToPath } from 'node:url'
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const host = join(app, 'native/target/release/rainy-host.exe')
-const tools = join(app, 'runtime/ide-windows')
 const destination = join(app, 'runtime/windows-host')
 
 async function digest(path) {
@@ -37,9 +37,6 @@ async function required(path, hint) {
 }
 await required(host, 'run native/scripts/build-hosts.sh')
 await required(join(app, 'dist/renderer/index.html'), 'run pnpm run build:release')
-await required(join(tools, 'manifest.json'), 'run python scripts/prepare-ide-tools.py --platform win32-x64')
-const toolManifest = JSON.parse(await readFile(join(tools, 'manifest.json'), 'utf8'))
-if (toolManifest.version !== 2 || toolManifest.platform !== 'win32-x64') throw new Error('runtime/ide-windows holds no Windows IDE tools')
 
 const staging = await mkdtemp(join(app, 'runtime/windows-host-pending-'))
 try {
@@ -48,11 +45,11 @@ try {
   await mkdir(join(target, 'dist'), { recursive: true })
   for (const name of ['LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md']) await cp(join(app, name), join(target, name))
   await cp(join(app, 'dist/renderer'), join(target, 'dist/renderer'), { recursive: true, filter: file => !file.endsWith('.map') })
-  // Strata is an optional module the carrier downloads, and the Linux IDE tools belong to the Linux runtime.
+  // The Linux IDE tools belong to the Linux runtime; a Strata runtime an earlier bootstrap left (Rainy up to 4.2 bundled
+  // one) is not packaged: Rainy now downloads Strata's own release when asked.
   const skipped = [join(app, 'resources/strata-runtime'), join(app, 'resources/ide')].map(path => resolve(path))
   await cp(join(app, 'resources'), join(target, 'resources'), { recursive: true, dereference: true,
     filter: file => !file.endsWith('.map') && !skipped.includes(resolve(file)) })
-  await cp(tools, join(target, 'resources/ide'), { recursive: true })
 
   const files = []
   async function inventory(directory) {

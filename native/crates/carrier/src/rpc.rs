@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use async_tungstenite::tungstenite::client::IntoClientRequest as _;
 use async_tungstenite::tungstenite::http::HeaderValue;
 use async_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -24,6 +24,7 @@ use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use smol::net::TcpStream;
 
 use crate::control::HostReady;
+use crate::http;
 use crate::locale::localized;
 
 /// Whether the interface is connected to the Host.
@@ -131,14 +132,8 @@ impl RpcClient {
     }
 }
 
-struct Response {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
 /// A minimal HTTP/1.1 GET over loopback; the Host answers with `Connection: close` semantics when asked.
-async fn http_get(port: u16, path: &str, cookie: Option<&str>) -> Result<Response> {
+async fn http_get(port: u16, path: &str, cookie: Option<&str>) -> Result<http::Response> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     let mut request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
     if let Some(cookie) = cookie {
@@ -148,43 +143,15 @@ async fn http_get(port: u16, path: &str, cookie: Option<&str>) -> Result<Respons
     stream.write_all(request.as_bytes()).await?;
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await?;
-    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| anyhow!("Malformed HTTP response"))?;
-    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
-    let mut lines = head.split("\r\n");
-    let status = lines.next().and_then(|line| line.split_whitespace().nth(1)).and_then(|code| code.parse().ok()).context("HTTP status")?;
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|line| line.split_once(':').map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())))
-        .collect();
-    let mut body = raw[split + 4..].to_vec();
-    if headers.iter().any(|(name, value)| name == "transfer-encoding" && value.eq_ignore_ascii_case("chunked")) {
-        body = dechunk(&body)?;
-    }
-    Ok(Response { status, headers, body })
-}
-
-fn dechunk(mut data: &[u8]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    loop {
-        let end = data.windows(2).position(|w| w == b"\r\n").ok_or_else(|| anyhow!("Malformed chunk"))?;
-        let size_text = std::str::from_utf8(&data[..end])?.split(';').next().unwrap_or("0").trim();
-        let size = usize::from_str_radix(size_text, 16)?;
-        data = &data[end + 2..];
-        if size == 0 {
-            return Ok(out);
-        }
-        if data.len() < size + 2 {
-            bail!("Truncated chunk");
-        }
-        out.extend_from_slice(&data[..size]);
-        data = &data[size + 2..];
-    }
+    http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
 }
 
 /// Exchange the launch token for the session cookie (`name=value`).
 async fn session_cookie(inner: &Inner) -> Result<String> {
     let response = http_get(inner.port, &inner.launch_path, None).await?;
     if response.status != 302 {
-        bail!("The Host refused the launch token ({}).", response.status);
+        let status = response.status;
+        bail!(localized(&format!("执行后端拒绝了启动令牌（HTTP {status}）。"), &format!("The execution Host refused the launch token (HTTP {status}).")));
     }
     response
         .headers
@@ -192,7 +159,7 @@ async fn session_cookie(inner: &Inner) -> Result<String> {
         .find(|(name, _)| name == "set-cookie")
         .and_then(|(_, value)| value.split(';').next())
         .map(str::to_owned)
-        .ok_or_else(|| anyhow!("The Host did not set a session cookie."))
+        .ok_or_else(|| anyhow!(localized("执行后端没有设置会话 Cookie。", "The execution Host did not set a session cookie.")))
 }
 
 pub(crate) type Socket = async_tungstenite::WebSocketStream<TcpStream>;
@@ -318,16 +285,5 @@ async fn dispatch(inner: &Inner, events: &async_channel::Sender<RpcEvent>, sent:
             }
         }
         None => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_chunked_bodies() {
-        assert_eq!(dechunk(b"3\r\nabc\r\n2;x=1\r\nde\r\n0\r\n\r\n").unwrap(), b"abcde");
-        assert!(dechunk(b"5\r\nab").is_err());
     }
 }

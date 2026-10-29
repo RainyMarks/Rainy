@@ -15,7 +15,6 @@ tmp/
 
 # Generated or downloaded resources
 /resources/ide/
-/resources/strata-runtime/
 /toolpacks/stage/
 /toolpacks/stage-*/
 /toolpacks/cache/

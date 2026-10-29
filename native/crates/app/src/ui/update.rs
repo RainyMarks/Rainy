@@ -8,8 +8,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
-use raw_window_handle::RawWindowHandle;
-use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::UI::Shell::{ITaskbarList3, TBPF_INDETERMINATE, TBPF_NOPROGRESS, TBPF_NORMAL, TaskbarList};
 
@@ -133,7 +131,7 @@ pub fn taskbar(window: &Window, phase: &UpdatePhase) {
         if taskbar.1 == wanted {
             return;
         }
-        let Some(hwnd) = hwnd(window) else { return };
+        let Some(hwnd) = crate::web::hwnd(window) else { return };
         if taskbar.0.is_none() {
             // SAFETY: COM is initialized on the window's thread (GPUI's OleInitialize); the object stays on this thread.
             let created = unsafe { CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER).and_then(|list| list.HrInit().map(|()| list)) };
@@ -160,11 +158,4 @@ pub fn taskbar(window: &Window, phase: &UpdatePhase) {
         }
         taskbar.1 = wanted;
     });
-}
-
-fn hwnd(window: &Window) -> Option<HWND> {
-    match raw_window_handle::HasWindowHandle::window_handle(window).ok()?.as_raw() {
-        RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut _)),
-        _ => None,
-    }
 }

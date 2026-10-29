@@ -39,7 +39,6 @@ test('a release needs every input of its own version', () => {
     linux: { version },
     exe: { fileVersion: version, productVersion: version },
     modules: { modules: [
-      { id: 'strata', baseUrl: 'https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.0-resources/' },
       { id: 'php', baseUrl: `https://github.com/RainyMarks/Rainy/releases/download/v${version}-resources/` },
     ] },
   })
@@ -52,6 +51,9 @@ test('a release needs every input of its own version', () => {
   assert.match(problems.join('\n'), /downloads php from .*v3\.9\.1-resources/u)
   assert.equal(releaseMismatches('4.0.0', { ...inputs('4.0.0'), host: { version: 2 }, linux: {} }).length, 2)
   assert.equal(releaseMismatches('4.0.0', { ...inputs('4.0.0'), exe: { fileVersion: '4.0.0' } }).length, 1)
+  // No module keeps an older release's files any more (4.2 let Strata download from v1.0.0-resources).
+  const old = { id: 'strata', baseUrl: 'https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.0-resources/' }
+  assert.match(releaseMismatches('4.0.0', { ...inputs('4.0.0'), modules: { modules: [old] } }).join('\n'), /downloads strata from/u)
 })
 
 test('finds the raw release keys an executable carries', () => {

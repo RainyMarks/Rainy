@@ -1,6 +1,7 @@
 //! The GPUI interface.
 
 pub mod actions;
+pub mod agent;
 pub mod attention;
 pub mod changes;
 pub mod composer;
@@ -58,7 +59,7 @@ pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::ui::ide::ShowChat), cx);
     let store = Store::global(cx);
     let workspace = crate::store::ide::Ide::global(cx).read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
-    let session = store.read(cx).selected.clone();
+    let (session, since) = (store.read(cx).selected.clone(), store.read(cx).selections);
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
         let failed = |error: rainy_protocol::RpcError, cx: &mut gpui_kit::AsyncApp| {
@@ -72,7 +73,11 @@ pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
             Some(id) => id,
             None => match store.update(cx, |store, cx| store.create_chat(workspace, cx)).await {
                 Ok(id) => {
-                    store.update(cx, |store, cx| store.select(Some(id.clone()), cx));
+                    store.update(cx, |store, cx| {
+                        if store.selections == since {
+                            store.select(Some(id.clone()), cx);
+                        }
+                    });
                     id
                 }
                 Err(error) => return failed(error, cx),
@@ -115,6 +120,7 @@ pub fn open_link(url: &str, window: &mut Window, cx: &mut App) {
         Some(line) => ide.reveal(key, line.saturating_sub(1), 0, window, cx),
         None => ide.open(key, true, window, cx),
     });
+    crate::ui::agent::reveal_editor(cx);
 }
 
 /// `12s`, `3m 4s` or `1h 2m` (`formatDuration` in `Transcript.tsx`).

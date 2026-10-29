@@ -252,7 +252,7 @@ pub fn dos_time(time: NaiveDateTime) -> (u16, u16) {
 }
 
 fn too_large() -> io::Error {
-    io::Error::other("The diagnostics are too large for a zip file.")
+    io::Error::other(localized("诊断信息太大，无法放进一个 zip 文件。", "The diagnostics are too large for a zip file."))
 }
 
 /// A size or offset that fits the 32-bit fields; all ones would mean ZIP64.
@@ -401,10 +401,10 @@ mod platform {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     use super::WindowsVersion;
+    use crate::locale::localized;
+    use crate::text::wide;
 
     const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
-
-    use crate::text::wide;
 
     fn until_nul(units: &[u16]) -> String {
         let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
@@ -524,7 +524,7 @@ mod platform {
                 shown
             })?
             .join()
-            .map_err(|_| io::Error::other("Explorer could not be asked to show the file"))?
+            .map_err(|_| io::Error::other(localized("无法让资源管理器显示这个文件。", "Explorer could not be asked to show the file.")))?
     }
 
     fn show_in_folder(path: &Path) -> io::Result<()> {

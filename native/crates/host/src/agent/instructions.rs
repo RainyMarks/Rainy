@@ -7,6 +7,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::locale::l;
+
 /// File names read in each directory, in this order.
 pub const FILES: [&str; 4] = ["AGENTS.md", "CLAUDE.md", "AGENTS.local.md", "CLAUDE.local.md"];
 /// Total bytes of instructions one chat may carry.
@@ -34,12 +36,16 @@ pub fn project_root(cwd: &Path) -> PathBuf {
     }
 }
 
+fn unreadable(path: &Path, error: &std::io::Error) -> String {
+    l(&format!("无法读取说明文件 {}：{error}", path.display()), &format!("The instructions file {} cannot be read: {error}", path.display()))
+}
+
 fn read_if_file(path: &Path) -> Result<Option<String>, String> {
     match std::fs::metadata(path) {
-        Ok(info) if info.is_file() => std::fs::read(path).map(|bytes| Some(String::from_utf8_lossy(&bytes).into_owned())).map_err(|error| error.to_string()),
+        Ok(info) if info.is_file() => std::fs::read(path).map(|bytes| Some(String::from_utf8_lossy(&bytes).into_owned())).map_err(|error| unreadable(path, &error)),
         Ok(_) => Ok(None),
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(None),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(unreadable(path, &error)),
     }
 }
 
@@ -85,9 +91,10 @@ pub fn load_baseline(home: &Path, cwd: &Path) -> Result<Vec<File>, String> {
     let bytes: usize = files.iter().map(|file| file.content.len()).sum();
     if bytes > BUDGET_BYTES {
         let names: Vec<&str> = files.iter().map(|file| file.display.as_str()).collect();
-        return Err(format!(
-            "Workspace instructions exceed the {BUDGET_BYTES}-byte budget: {}. Shorten these files; requests with omitted required instructions are refused.",
-            names.join(", ")
+        let names = names.join(", ");
+        return Err(l(
+            &format!("项目说明文件超过 {BUDGET_BYTES} 字节的上限：{names}。请精简这些文件；缺少必需说明的请求会被拒绝。"),
+            &format!("The workspace instructions exceed the {BUDGET_BYTES}-byte budget: {names}. Shorten these files; requests with omitted required instructions are refused."),
         ));
     }
     Ok(files)

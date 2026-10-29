@@ -3,12 +3,14 @@
  *  the lines it did not touch keep the file's spelling and line ends. */
 import './standards-mode.ts'
 import { describe, expect, it } from 'vitest'
+import { TextSelection } from '@milkdown/kit/prose/state'
+import { undo } from '@milkdown/kit/prose/history'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { imageInlineComponent } from '@milkdown/kit/component/image-inline'
-import { conventionalTables, mergeEdit } from '../../src/renderer/ide/viewers/markdown-merge.ts'
+import { conventionalTables, mergeEdit, rebaseEdit } from '../../src/renderer/ide/viewers/markdown-merge.ts'
 import { splitFrontMatter } from '../../src/renderer/ide/viewers/front-matter.ts'
-import { markdownReader, markdownSyntax } from '../../src/renderer/ide/viewers/rich-plugins.ts'
+import { markdownReader, markdownSyntax, replaceDocument } from '../../src/renderer/ide/viewers/rich-plugins.ts'
 
 
 const lf = (text: string): string => text.replace(/\r\n?/gu, '\n')
@@ -181,5 +183,46 @@ describe('an edited line', () => {
       view.dispatch(view.state.tr.split(view.state.selection.from))
     })
     expect(saved).not.toContain('<br')
+  })
+})
+
+describe('an outside change while keystrokes wait to be handed over', () => {
+  const base = '# 标题\n\n第一段\n\n第二段\n\n第三段\n'
+
+  it('keeps the keystrokes when the change is elsewhere', () => {
+    const mine = base.replace('第一段', '第一段，刚输入')
+    const theirs = base.replace('第三段', '第三段（外部修改）')
+    expect(rebaseEdit(base, mine, theirs)).toBe('# 标题\n\n第一段，刚输入\n\n第二段\n\n第三段（外部修改）\n')
+    expect(rebaseEdit(base, base, theirs)).toBe(theirs)
+    expect(rebaseEdit(base, mine, base)).toBe(mine)
+    expect(rebaseEdit(base, mine, mine)).toBe(mine)
+  })
+
+  it('gives up when both changed the same or neighbouring lines', () => {
+    const mine = base.replace('第二段', '第二段，刚输入')
+    expect(rebaseEdit(base, mine, base.replace('第二段', '第二段（外部修改）'))).toBeUndefined()
+    // A line added right after the edited one leaves no unchanged line between them.
+    expect(rebaseEdit(base, mine, base.replace('第二段\n', '第二段\n新的一行\n'))).toBeUndefined()
+  })
+
+  it('keeps added lines and CRLF line ends', () => {
+    const crlf = base.replaceAll('\n', '\r\n')
+    const mine = crlf.replace('第一段\r\n', '第一段\r\n\r\n新段落\r\n')
+    const theirs = crlf.replace('第三段', '第三段！')
+    expect(rebaseEdit(crlf, mine, theirs)).toBe(mine.replace('第三段', '第三段！'))
+  })
+
+  it('shows the change without moving the caret or making it undoable', async () => {
+    const crepe = await open('第一段\n\n第二段\n')
+    const view = crepe.editor.ctx.get(editorViewCtx)
+    const at = textBlocks(crepe)[0]! + 3
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)).insertText('写'))
+    replaceDocument(crepe.editor.ctx, '第一段写\n\n第二段（外部修改）\n')
+    expect(crepe.getMarkdown()).toBe('第一段写\n\n第二段（外部修改）\n')
+    // The caret stays after what was typed.
+    expect(view.state.selection.from).toBe(at + 1)
+    undo(view.state, view.dispatch)
+    expect(crepe.getMarkdown()).toBe('第一段\n\n第二段（外部修改）\n')
+    await crepe.destroy()
   })
 })

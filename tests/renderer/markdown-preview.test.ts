@@ -4,7 +4,7 @@
 import { act, createElement, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Markdown, MarkdownDocument, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
+import { MarkdownDocument, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
 import { MarkdownPreview } from '../../src/renderer/ide/viewers/MarkdownPreview.tsx'
 import { onThemeChange } from '../../src/renderer/ide/viewers/mermaid.ts'
 import { ScrollSync } from '../../src/renderer/ide/viewers/scroll-sync.ts'
@@ -46,7 +46,7 @@ async function mount(element: ReactElement): Promise<HTMLElement> {
 }
 
 const FILE: MarkdownOptions = {
-  base: { workspaceId: 'w', directory: 'docs' }, sourceLines: true, codeActions: false,
+  base: { workspaceId: 'w', directory: 'docs' }, sourceLines: true, openLocal: () => undefined,
   file: { footnoteLabel: '脚注', footnoteBackLabel: '返回正文' },
 }
 
@@ -103,11 +103,6 @@ describe('HTML in a file preview', () => {
     expect(host.querySelector('img')?.getAttribute('width')).toBe('20')
     expect(host.querySelector('a')).toBeNull()
   })
-
-  it('leaves assistant replies as they were: HTML shows as text', async () => {
-    const host = await mount(createElement(Markdown, { text: '一 <b>二</b>\n' }))
-    expect(host.textContent).toContain('<b>二</b>')
-  })
 })
 
 describe('Markdown of a file preview', () => {
@@ -120,6 +115,13 @@ describe('Markdown of a file preview', () => {
     expect(host.textContent).toContain('H~2~O')
     expect(host.querySelector('del')?.textContent).toBe('删除')
     expect(host.querySelectorAll('.math-inline, .katex')).toHaveLength(1)
+  })
+
+  it('reads highlights around bold, links and code, never across a code span', async () => {
+    const host = await document_('==**粗**== 与 ==a [链](x.md) `c`== 但 `==` 不算\n')
+    const marks = [...host.querySelectorAll('mark')]
+    expect(marks.map(mark => mark.innerHTML.replace(/ [a-z-]+="[^"]*"/gu, ''))).toEqual(['<strong>粗</strong>', 'a <a>链</a> <code>c</code>'])
+    expect(host.querySelector('p > code:last-of-type')?.textContent).toBe('==')
   })
 
   it('labels footnotes in Chinese and scrolls between a reference and its note', async () => {

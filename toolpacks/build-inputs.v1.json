@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "releaseVersion": "4.2.2",
+  "releaseVersion": "4.3.0",
   "baseUrl": "https://github.com/RainyMarks/RainyAgent/releases/download/v1.0.0-resources/",
   "partBytes": 1073741824,
   "files": [
@@ -14,19 +14,6 @@
           "file": "rainy-8cf707563b7026fc0a55.001",
           "bytes": 192209252,
           "sha256": "61ea6c3a7476c0a8cac2b62f02c9069ce74ee3d9261ce6beaeeb4bfbe64303aa"
-        }
-      ]
-    },
-    {
-      "path": "build-inputs/strata-runtime.tar.gz",
-      "category": "build-input",
-      "bytes": 558773087,
-      "sha256": "fb38c7b88e423b33b87bfb58a13046927127319ca8a11c9d6384d234a977ffc1",
-      "pieces": [
-        {
-          "file": "rainy-7797adb04e2e76b51019.001",
-          "bytes": 558773087,
-          "sha256": "fb38c7b88e423b33b87bfb58a13046927127319ca8a11c9d6384d234a977ffc1"
         }
       ]
     },

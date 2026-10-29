@@ -151,8 +151,3 @@ host.on('session.state', ({ sessionId, status }) => {
 export function useAiActivity(): AiActivityState {
   return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener) } }, () => snapshot)
 }
-
-/** @returns The agents' running and recent tool calls now, without subscribing. */
-export function getAiActivity(): AiActivityState {
-  return snapshot
-}

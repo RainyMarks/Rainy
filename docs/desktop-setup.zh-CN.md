@@ -4,9 +4,9 @@
 
 ## 安装与使用
 
-使用 Windows x64，新安装默认原生执行，无需先安装 WSL。核心安装包包含 Windows Host；Strata 引擎、Windows PHP 和 Linux 运行环境底座是按需下载的可选组件；Rainy 不附带 Node.js。完整离线目录另含 WSL 安装介质、Ubuntu 26.04.1 镜像，以及 Windows/Linux 基础、科学计算 CPU/CUDA 和 Windows C/C++ 组件。已有 Python、Conda、项目虚拟环境或 WSL 可直接检测并复用，不向它们安装软件包。也可连接自行管理的推理服务。
+使用 Windows x64，新安装默认原生执行，无需先安装 WSL。核心安装包包含 Windows Host；编辑器的编程工具、Windows PHP 和 Linux 运行环境底座是按需下载的可选组件，Strata 本地大模型在“设置 → 工具”中按需下载；Rainy 不附带 Node.js。完整离线目录另含 WSL 安装介质、Ubuntu 26.04.1 镜像，以及 Windows/Linux 基础、科学计算 CPU/CUDA 和 Windows C/C++ 组件。已有 Python、Conda、项目虚拟环境或 WSL 可直接检测并复用，不向它们安装软件包。也可连接自行管理的推理服务。
 
-1. 运行 `Rainy-4.2.2-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
+1. 运行 `Rainy-4.3.0-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
 2. 从旧版本升级时，旧版下载的 CTF 工具留在原安装位置（安装目录的 `tools` 文件夹或 `%APPDATA%\RainyAgent\native-tools`），Rainy 3.0 不再管理它们；不再需要时可自行删除这些文件夹。
 3. 从桌面 Rainy 快捷方式启动，无需设备码、激活码或授权管理器。已有保存的 WSL 目标继续保留；新安装先使用 Windows。运行环境页可以选择已有 WSL，或点击准备环境并选择外置 `environment/` 目录创建专用 Ubuntu。需要系统组件时明确请求管理员确认；若提示重启，保存其他工作、自行重启后再次打开应用。首次启动会校验全部发行资源，之后启动直接打开；已记录的 WSL 目标跳过环境检查窗口。
 4. Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 11 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。下载失败时可选择“重试”“改用 Windows 原生运行”（记录为执行目标，与在设置中切换相同）或“退出”。
@@ -31,9 +31,9 @@ WSL 系统组件安装、管理员确认和 Windows 重启续装按具体发行�
 
 Host 重启后恢复活动工作区，未保存缓冲区按工作区恢复；外部修改与保存版本冲突会保留草稿并要求比较处理。选中代码后可发送到右侧 AI，路径、范围与文本会进入普通用户消息。
 
-在“设置 → 运行环境”检查解释器与库能力，手动选择已有解释器，或从 `environment-components/` 选择匹配目标的 JSON 导入离线组件。Python/Node/PHP 基础、CPU 科学计算、CUDA 科学计算和 Windows C/C++ 分别提供；选中的环境会用于该项目的 Agent 命令、终端、运行及语言服务。科学组件使用配套的 PyTorch、torchvision、torchaudio，CUDA 实算还需要兼容驱动。同一页的“可选组件”可下载或删除 PHP 8.5：组件保存在 `%APPDATA%\RainyAgent\modules\<id>`，从 GitHub 发行分片下载，逐片及整体校验 SHA-256，支持断点续传，取消后保留已下载的分片。WSL 的“准备 Ubuntu 开发工具”仅在 Ubuntu 26.04 amd64 明确安装经过校验的 C/C++、GDB、CMake、clangd 与 PHP 软件包，安装时不访问软件源。
+在“设置 → 运行环境”检查解释器与库能力，手动选择已有解释器，或从 `environment-components/` 选择匹配目标的 JSON 导入离线组件。Python/Node/PHP 基础、CPU 科学计算、CUDA 科学计算和 Windows C/C++ 分别提供；选中的环境会用于该项目的 Agent 命令、终端、运行及语言服务。科学组件使用配套的 PyTorch、torchvision、torchaudio，CUDA 实算还需要兼容驱动。“设置 → 工具”可下载或删除 PHP 8.5：组件保存在 `%APPDATA%\RainyAgent\modules\<id>`，从 GitHub 发行分片下载，逐片及整体校验 SHA-256，支持断点续传，取消后保留已下载的分片。WSL 的“准备 Ubuntu 开发工具”仅在 Ubuntu 26.04 amd64 明确安装经过校验的 C/C++、GDB、CMake、clangd 与 PHP 软件包，安装时不访问软件源。
 
-运行按钮默认按当前文件后缀选择语言；需要时点击旁边的“运行方式”为该文件改选 Python、JavaScript、TypeScript、PHP、C 或 C++，之后会记住。在 Windows 原生环境运行 PHP 前，请在“设置 → 运行环境 → 可选组件”下载 PHP 8.5（含 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展），或在运行配置中选择已安装的 `php.exe`；未下载时运行 PHP 文件会提示下载位置。已安装的环境组件或项目选定的 PHP 优先；WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。也可在运行配置中保存当前文件或 Python 模块、参数、工作目录和可选的目标平台绝对解释器路径。支持 Windows 原生、WSL 和 SSH 的 Python、Node、TypeScript、PHP 运行，以及 C/C++ 单文件和 CMake 构建；默认 Debug 构建，失败时停止启动。运行与调试前保存全部修改，失败则中止。Python、JavaScript/TypeScript、C/C++ 调试提供断点、单步、调用栈、变量和监视；PHP 仅运行。此版本只调试由工作区启动的程序。
+运行按钮默认按当前文件后缀选择语言；需要时点击旁边的“运行方式”为该文件改选 Python、JavaScript、TypeScript、PHP、C 或 C++，之后会记住。在 Windows 原生环境运行 PHP 前，请在“设置 → 工具”下载 PHP 8.5（含 json、openssl、mbstring、pdo_sqlite、curl、zip 扩展），或在运行配置中选择已安装的 `php.exe`；未下载时运行 PHP 文件会提示下载位置。已安装的环境组件或项目选定的 PHP 优先；WSL 和 SSH 目标使用该 Linux 系统中安装的 PHP。也可在运行配置中保存当前文件或 Python 模块、参数、工作目录和可选的目标平台绝对解释器路径。支持 Windows 原生、WSL 和 SSH 的 Python、Node、TypeScript、PHP 运行，以及 C/C++ 单文件和 CMake 构建；默认 Debug 构建，失败时停止启动。运行与调试前保存全部修改，失败则中止。Python、JavaScript/TypeScript、C/C++ 调试提供断点、单步、调用栈、变量和监视；PHP 仅运行。此版本只调试由工作区启动的程序。
 
 ## SSH 远程开发
 
@@ -62,17 +62,17 @@ SSH 远程开发让智能体、终端、运行调试和语言服务在 Linux 服
 
 ## Strata 本地模型
 
-Strata 引擎不随安装包附带，是约 560 MB 的可选组件，包含 Niko1221/Strata 0.1.39、Python 3.12.14 以及服务、准备脚本和 CUDA 运行依赖；下载后不需要预装 Strata、创建 Python 环境或手工运行转换命令。推理引擎面向 Windows x64 与 NVIDIA CUDA 13，要求 580 或更新的 NVIDIA 驱动，提供 `sm75`、`sm86`、`sm89`、`sm120` 目标；本包不提供 AMD 或 Linux 推理引擎。安装程序不安装显卡驱动。
+Strata（[Niko1221/Strata](https://github.com/Niko1221/Strata)）不随安装包附带，在“设置 → 工具 → Strata 本地大模型”中按需下载，下载后不需要另装 Strata 或 Python。
 
-1. 准备受支持的 Qwen3.8 Flash Next 主模型 GGUF 及全部分片，并准备与主模型匹配的 MTP GGUF 或已准备 MTP 目录。发行包不含主模型、MTP 权重或派生 dense/expert 文件；不要只保留一个不完整分片。
-2. 打开“设置 → 模型 → Strata 本地模型”。引擎尚未下载时点击“下载”，也可在“设置 → 运行环境 → 可选组件”下载。选择主 GGUF 的首片、模型目录或兼容 Strata profile。选择配套 MTP 文件或目录；留空仅表示自动检测模型附近的匹配文件，不表示关闭 MTP。
-3. 设置引擎上下文长度和本地端口后保存。高级运行设置提供 KV 缓存、保留显存和常驻 RAM 预算。设置写入载体应用数据目录中的私有 `strata/settings.json`，不把开发者机器路径作为默认值，也不移动用户模型权重。
-4. 点击“启动本地模型”。首次启动按所选主模型和 MTP 文件在本机离线准备运行数据，再加载服务；过程中可点击“取消准备或启动”。缺失分片、MTP 不匹配或运行组件缺失时按错误提示处理，不会下载模型或切换到云端。
-5. 状态就绪后点击“连接并设为默认”。当前 Host 验证实际模型及上下文，保存为本地 Chat Completions 配置；推理档位和请求输出上限继续在上方普通模型配置中调整。仅本应用启动的进程可被停止，已有外部服务不会被终止。
+1. 点击“下载”。Rainy 下载 Strata 官方最新版本，校验安装清单、GitHub 摘要和 Strata 的签名更新源，再按这台电脑的显卡安装推理引擎。卡片显示 Strata 和引擎的版本；“检查更新”立即检查，打开“自动更新”后没有模型运行时自动更新。
+2. 在模型列表中选择尺寸。每个尺寸标出下载大小、需要的内存和在这台电脑上“放得下 / 会变慢 / 放不下”，推荐框显示 Strata 按这台电脑的内存和显存挑选的尺寸。下载前可在“下载设置”中选择存放文件夹（默认空间最大的非系统盘上的 `Strata-data`）和来源（Hugging Face 或 ModelScope）。下载可取消，下次继续。
+3. 下载完成后点击“启动”。上下文长度默认由 Strata 按模型和这台电脑决定，也可固定；端口默认 8080。加载大模型通常需要 1～3 分钟，期间可取消。
+4. 状态变为“运行中”后点击“连接并设为默认模型”。当前 Host 验证实际模型及上下文，保存为本地 Chat Completions 配置；推理档位和请求输出上限继续在“设置 → 模型”中调整。只能停止 Rainy 自己启动的服务，别处启动的服务不会被终止。
+5. 不再需要时点击“卸载”，可选择同时删除下载的模型。4.1–4.2 留下的旧 Strata 组件可在卡片中一键删除。
 
-Strata 服务在 Windows loopback 上运行。WSL Host 只有在能访问该地址时才可连接；NAT 导致不可达时，在“运行环境”中切换到 Windows 后使用 Strata。SSH 服务器上的 Host 无法使用本机的 Strata。应用不修改防火墙或 WSL 网络配置。
+Strata 的文件放在 `%APPDATA%\RainyAgent\tools\strata`（模型除外）。每个 Strata 进程都使用这里的文件夹和一个可写、纯英文路径的临时目录，所以中文用户名或临时目录不可用时也能启动；Rainy 退出时一并结束。
 
-Strata 运行时已进行独立路径迁移、Python 导入和模拟健康/聊天接口检查，4.1 另用模拟 Strata 服务检查了卡片在 Windows 和 WSL Host 下的连接；真实 GPU 推理和性能尚未在本次发行验收中确认。具体产物、结果与剩余限制见[验收记录](validation.md)，运行时可导入不等于模型推理已通过。
+Strata 服务在 Windows loopback 上运行。WSL Host 只有在能访问该地址时才可连接；NAT 导致不可达时，在“运行环境”中切换到 Windows 后使用 Strata。SSH 服务器上的 Host 无法使用本机的 Strata。应用不修改防火墙或 WSL 网络配置。具体产物、结果与剩余限制见[验收记录](validation.md)。
 
 ## 模型设置
 
@@ -123,16 +123,16 @@ MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对�
 ```powershell
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.2.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.3.0/environment-components
 ```
 
-[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、Strata、WSL 和运行环境输入；其中 `build-inputs/strata-runtime.tar.gz` 会展开到 `resources/strata-runtime`，供源码检出直接运行时使用，安装包不包含该目录。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，用 `prepare-ide-tools.py` 按固定版本准备 Windows 与 Linux 的开发工具（Ruff、ty、TypeScript 原生编译器、debugpy、js-debug），运行 `build.ts --release` 构建预览页面，由 `native/scripts/build-hosts.sh` 构建 Windows 的 `rainy-host.exe` 和 Linux 的 `rainy-host`（cargo-zigbuild，glibc 2.17），`stage-windows.mjs` 与 `stage-linux.py` 分别暂存两个 Host 运行环境，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。构建需要 GNU 工具链的 Rust、`cargo-zigbuild` 和 Zig。`-ComponentSource` 指向恢复到 `release/offline-4.2.2` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
+[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、WSL 和运行环境输入。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，用 `prepare-ide-tools.py` 按固定版本准备 Windows 与 Linux 的开发工具（Ruff、ty、TypeScript 原生编译器、debugpy、js-debug），运行 `build.ts --release` 构建预览页面，由 `native/scripts/build-hosts.sh` 构建 Windows 的 `rainy-host.exe` 和 Linux 的 `rainy-host`（cargo-zigbuild，glibc 2.17），`stage-windows.mjs` 与 `stage-linux.py` 分别暂存两个 Host 运行环境，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。构建需要 GNU 工具链的 Rust、`cargo-zigbuild` 和 Zig。`-ComponentSource` 指向恢复到 `release/offline-4.3.0` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
 
 Windows 与 Linux Host 都由 `cargo` 从仓库源码构建，依赖版本由 `native/Cargo.lock` 固定。
 
 生产构建使用独立 Ed25519 发行密钥。默认在忽略提交的 `build/release-signing-key.pem` 创建并复用本机构建密钥；`RAINY_RELEASE_SIGNING_KEY` 可指定已有私钥文件，路径缺失、格式不符或与暂存公钥不匹配时构建失败。公开资源只包含发行公钥，载体将该公钥嵌入并校验签名资源清单。该流程不读取客户授权数据库。
 
-完整离线目录为 `release/offline-4.2.2/`，包含核心安装程序、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、PHP 组件和 Linux 运行环境都位于核心 EXE 之外；安装包只附带固定可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；两个 Host 都是单个原生程序，不带依赖目录。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
+完整离线目录为 `release/offline-4.3.0/`，包含核心安装程序、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、PHP 组件和 Linux 运行环境都位于核心 EXE 之外；安装包只附带固定可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；两个 Host 都是单个原生程序，不带依赖目录。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
 
 ## 诊断信息
 

@@ -61,9 +61,10 @@ pub struct ModelsPage {
     busy: bool,
     loaded: bool,
     proxy: Entity<super::models_extra::ProxyCard>,
-    strata: Entity<super::strata::StrataCard>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<super::ShowSection> for ModelsPage {}
 
 impl ModelsPage {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -78,10 +79,8 @@ impl ModelsPage {
             cx.notify();
         })];
         let proxy = cx.new(|cx| super::models_extra::ProxyCard::new(store.clone(), window, cx));
-        let strata = cx.new(|cx| super::strata::StrataCard::new(store.clone(), window, cx));
         let mut page = Self {
             proxy,
-            strata,
             provider: input(window, cx),
             model: input(window, cx),
             base_url: input(window, cx),
@@ -742,7 +741,25 @@ impl Render for ModelsPage {
             )
             .children(list)
             .child(form)
-            .child(self.strata.clone())
+            .child(
+                h_flex()
+                    .gap_3()
+                    .p_4()
+                    .items_center()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.group_box)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(div().text_sm().font_semibold().child(tr(cx, "settings.strataTitle")))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataModelsPointer"))),
+                    )
+                    .child(Button::new("model-strata-tools").outline().small().label(tr(cx, "settings.strataOpenTools")).on_click(cx.listener(|_, _, _, cx| cx.emit(super::ShowSection(super::Section::Tools))))),
+            )
             .child(editor_ai)
             .child(web_search)
             .child(prompt)

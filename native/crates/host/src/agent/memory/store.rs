@@ -257,7 +257,9 @@ impl Store {
     fn read_current(path: &Path) -> HostResult<Document> {
         match std::fs::read(path) {
             Ok(bytes) => {
-                let document: Document = serde_json::from_slice(&bytes).map_err(|error| HostError::other(format!("{}: {error}", path.display())))?;
+                let document: Document = serde_json::from_slice(&bytes).map_err(|error| {
+                    HostError::other(l(&format!("无法读取项目记忆 {}：{error}", path.display()), &format!("The project memory {} cannot be read: {error}", path.display())))
+                })?;
                 document.check().map_err(HostError::other)?;
                 Ok(document)
             }

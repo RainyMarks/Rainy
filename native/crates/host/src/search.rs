@@ -226,7 +226,7 @@ fn replace_file(root: &Root, path: &str, regex: &Regex, replacement: &str) -> Re
 fn search_root(root: &Root, request: &Value, regex: &Regex, budget: usize, cancelled: &Arc<AtomicBool>, deadline: Instant) -> HostResult<(Vec<Value>, usize, bool)> {
     let base = Path::new(&root.path);
     let mut overrides = ignore::overrides::OverrideBuilder::new(base);
-    let invalid = |error: ignore::Error| HostError::invalid(error.to_string());
+    let invalid = |error: ignore::Error| HostError::invalid(l(&format!("文件筛选规则无效：{error}"), &format!("The file filter is not valid: {error}")));
     for glob in globs(request["include"].as_str().unwrap_or_default()) {
         overrides.add(&glob).map_err(invalid)?;
     }

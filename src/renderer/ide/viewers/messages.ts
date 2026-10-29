@@ -36,7 +36,7 @@ const zh = {
   pdfErrorNetwork: '无法连接 Rainy 后台来读取文件', pdfErrorHttp: '读取文件失败（HTTP {status}）', pdfErrorPassword: '这个 PDF 需要密码才能打开',
   pdfErrorUnknown: '打开时出错',
   pdfPasswordNeeded: '这个 PDF 设置了打开密码，请输入密码', pdfPasswordWrong: '密码不正确，请重新输入', pdfPasswordLabel: '密码',
-  pdfPasswordOpen: '打开',
+  pdfPasswordOpen: '打开', pdfFindSearching: '正在查找…',
   hexOffset: '偏移', hexGoto: '跳转到偏移', hexGotoPlaceholder: '如 0x1F0 或 496', hexGotoInvalid: '请输入有效偏移（十六进制加 0x 前缀）',
   hexSelection: '选中 {count} 字节，起点 0x{start}', hexNoSelection: '点击字节查看数值', hexCopy: '复制',
   hexCopyHex: '复制为十六进制', hexCopyText: '复制为文本', hexCopyPython: '复制为 Python bytes', hexCopyC: '复制为 C 数组',
@@ -62,6 +62,8 @@ const zh = {
   shortcutTitle: 'Windows 快捷方式', shortcutTarget: '指向', shortcutArguments: '参数', shortcutFolder: '起始位置', shortcutComment: '备注',
   shortcutBroken: '无法读取这个快捷方式。', shortcutCopy: '复制路径', shortcutCopied: '已复制路径',
   toolMore: '更多',
+  hexOpenText: '以文本查看', hexOpenTextTitle: '按所选编码把文件当作文本只读查看', hexTextBack: '查看十六进制', hexTextEncoding: '编码',
+  hexTextTruncated: '文件有 {total}，只显示开头 {size}',
   hexBack: '退出十六进制', fileDamaged: '文件内容无法解析，可能已损坏，或者不是扩展名所表示的格式',
   previewTooLarge: '文件有 {size}，超过 200 MB，无法在这里预览，请用默认程序打开',
   officeTimeout: 'Office 在 2 分钟内没有完成转换。可以重试，或用默认程序打开。', officeTooLarge: '文件超过 200 MB，没有交给 Office 转换。',
@@ -72,7 +74,8 @@ const zh = {
   codeFold: '折叠', codeUnfold: '展开', codeFolded: '已折叠的代码', codeFoldedLines: '已折叠行', codeUnfoldedLines: '已展开行', codeLinesTo: '至',
   codeCompletions: '补全', richPlainText: '纯文本', richFrontMatterToml: 'TOML 前言',
   richHighlight: '高亮', toc: '目录', tocEmpty: '文档中还没有标题',
-  richTooLarge: '文件有 {size}，所见即所得编辑会很慢，已关闭。请切换到“源码”编辑，或用“预览”查看。',
+  richTooLarge: '文件有 {size}，所见即所得编辑会很慢，已关闭。可以改用源码编辑，或用“预览”查看。', richOpenSource: '改用源码编辑',
+  richTypingReplaced: '文件在别处被修改，刚输入的几个字与修改在同一处，已按新内容显示',
 }
 
 const en: typeof zh = {
@@ -110,7 +113,7 @@ const en: typeof zh = {
   pdfErrorNetwork: 'Rainy cannot reach its background service to read the file', pdfErrorHttp: 'reading the file failed (HTTP {status})', pdfErrorPassword: 'it needs a password',
   pdfErrorUnknown: 'something went wrong',
   pdfPasswordNeeded: 'This PDF is protected with a password. Enter it to open the file.', pdfPasswordWrong: 'That password is incorrect. Try again.', pdfPasswordLabel: 'Password',
-  pdfPasswordOpen: 'Open',
+  pdfPasswordOpen: 'Open', pdfFindSearching: 'Searching…',
   hexOffset: 'Offset', hexGoto: 'Go to offset', hexGotoPlaceholder: 'e.g. 0x1F0 or 496', hexGotoInvalid: 'Enter a valid offset (hex needs a 0x prefix)',
   hexSelection: '{count} bytes selected from 0x{start}', hexNoSelection: 'Click a byte to inspect it', hexCopy: 'Copy',
   hexCopyHex: 'Copy as hex', hexCopyText: 'Copy as text', hexCopyPython: 'Copy as Python bytes', hexCopyC: 'Copy as C array',
@@ -136,6 +139,8 @@ const en: typeof zh = {
   shortcutTitle: 'Windows shortcut', shortcutTarget: 'Target', shortcutArguments: 'Arguments', shortcutFolder: 'Start in', shortcutComment: 'Comment',
   shortcutBroken: 'This shortcut cannot be read.', shortcutCopy: 'Copy path', shortcutCopied: 'Path copied',
   toolMore: 'More',
+  hexOpenText: 'View as text', hexOpenTextTitle: 'View the file as read-only text in the chosen encoding', hexTextBack: 'View as hex',
+  hexTextEncoding: 'Encoding', hexTextTruncated: 'The file is {total}; only its first {size} are shown',
   hexBack: 'Leave hex view', fileDamaged: 'the content cannot be read. The file may be damaged or not in the format its extension says',
   previewTooLarge: 'the file is {size}, more than 200 MB, too large to preview here. Open it in its default app',
   officeTimeout: 'Office did not finish converting within 2 minutes. Retry, or open the file in its default app.', officeTooLarge: 'The file is larger than 200 MB and was not handed to Office.',
@@ -146,7 +151,8 @@ const en: typeof zh = {
   codeFold: 'Fold line', codeUnfold: 'Unfold line', codeFolded: 'folded code', codeFoldedLines: 'Folded lines', codeUnfoldedLines: 'Unfolded lines', codeLinesTo: 'to',
   codeCompletions: 'Completions', richPlainText: 'Plain text', richFrontMatterToml: 'TOML front matter',
   richHighlight: 'Highlight', toc: 'Contents', tocEmpty: 'The document has no headings yet',
-  richTooLarge: 'This file is {size}; rich editing would be slow, so it is off. Edit it in Source, or read it in Preview.',
+  richTooLarge: 'This file is {size}; rich editing would be slow, so it is off. Edit its source instead, or read it in Preview.', richOpenSource: 'Edit the source',
+  richTypingReplaced: 'The file changed elsewhere where you were just typing; the new text is shown instead of your last keystrokes',
 }
 
 /** Viewer strings. */

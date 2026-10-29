@@ -116,7 +116,7 @@ struct History {
 
 pub struct Execution {
     runtime: Arc<Runtime>,
-    tools: PathBuf,
+    tools: super::tools::Tools,
     pwsh_path: Option<PathBuf>,
     operations: Mutex<Vec<Arc<Operation>>>,
     history: Mutex<History>,
@@ -137,7 +137,7 @@ fn dimension(value: &Value, fallback: u16) -> HostResult<u16> {
 }
 
 impl Execution {
-    pub fn new(runtime: Arc<Runtime>, tools: PathBuf, pwsh_path: Option<PathBuf>, hint: impl Fn(&str) + Send + Sync + 'static) -> Arc<Self> {
+    pub fn new(runtime: Arc<Runtime>, tools: super::tools::Tools, pwsh_path: Option<PathBuf>, hint: impl Fn(&str) + Send + Sync + 'static) -> Arc<Self> {
         Arc::new(Self { runtime, tools, pwsh_path, operations: Mutex::default(), history: Mutex::default(), hint: Arc::new(hint), disposed: AtomicBool::new(false) })
     }
 

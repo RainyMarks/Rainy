@@ -113,8 +113,7 @@ export function versionStrings(exe) {
 
 /**
  * How the package inputs disagree with `version`, the version setup and latest.yml carry: the Host in windows-host, the
- * Linux runtime, Rainy.exe's version resource and the release the optional modules download from (Strata keeps the
- * archive published as a build input).
+ * Linux runtime, Rainy.exe's version resource and the release the optional modules download from.
  */
 export function releaseMismatches(version, { host, linux, exe, modules }) {
   const problems = []
@@ -125,7 +124,7 @@ export function releaseMismatches(version, { host, linux, exe, modules }) {
     problems.push(`native/target/release/Rainy.exe is ${exe.fileVersion ?? 'without a FileVersion'} (ProductVersion ${exe.productVersion ?? 'missing'})`)
   }
   for (const module of Array.isArray(modules?.modules) ? modules.modules : []) {
-    if (module?.id !== 'strata' && !String(module?.baseUrl ?? '').endsWith(`/v${version}-resources/`)) {
+    if (!String(module?.baseUrl ?? '').endsWith(`/v${version}-resources/`)) {
       problems.push(`runtime/optional-modules.json downloads ${module?.id} from ${module?.baseUrl}`)
     }
   }

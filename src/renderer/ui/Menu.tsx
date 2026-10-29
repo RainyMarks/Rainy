@@ -5,7 +5,6 @@ import clsx from 'clsx'
 import { IconCheckOutlineRegular } from './icons/index.tsx'
 import { overlayTopMargin } from './overlay-top-margin.ts'
 import { usePointerGrace } from './pointer-grace.ts'
-import { isBehindModal } from './useModalLayer.ts'
 import { observeComposition } from './keyboard-composition.ts'
 import { focusWithoutRing } from './focus.ts'
 import { ShortcutKeys } from './ShortcutKeys.tsx'
@@ -331,7 +330,7 @@ export function Menu({ open, anchor, items = [], children, selectedId, selectedI
       onClose()
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (composition.guards(e) || isBehindModal(rootRef.current) || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return
+      if (composition.guards(e) || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return
       // Where the keyboard is, computed once: the menu owns it when it holds a
       // row or sits on its anchor region.
       const focused = document.activeElement
