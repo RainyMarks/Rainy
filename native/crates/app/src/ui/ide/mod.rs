@@ -81,6 +81,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         // The layouts (`ui::agent`), and the new chat and sidebar keys of chat apps and VS Code; a terminal keeps Ctrl+N
         // and Ctrl+B for the program in it (readline, tmux).
         KeyBinding::new("ctrl-shift-a", crate::ui::agent::ToggleMode, None),
+        // Text fields bind it to select to the start of the line (gpui-base, Emacs style); bound after it at the same
+        // depth, the layout switch wins there too, where the keyboard usually is.
+        KeyBinding::new("ctrl-shift-a", crate::ui::agent::ToggleMode, Some("Input")),
         KeyBinding::new("ctrl-n", NewChat, Some("Workbench && !Terminal")),
         KeyBinding::new("ctrl-b", crate::ui::agent::ToggleSidebar, Some("Workbench && !Terminal")),
     ]
@@ -170,7 +173,10 @@ mod tests {
 
     /// The actions `keys` runs with the keyboard in `contexts` (outermost first), and whether more keys could follow.
     fn resolve(keys: &str, contexts: &[&str]) -> (Vec<&'static str>, bool) {
-        let keymap = Keymap::new(key_bindings());
+        // The text fields' own bindings come first, as `gpui_kit::init` binds them before `bind_keys`.
+        let mut bindings = vec![KeyBinding::new("ctrl-shift-a", gpui_kit::component::input::SelectToStartOfLine, Some("Input"))];
+        bindings.extend(key_bindings());
+        let keymap = Keymap::new(bindings);
         let input: Vec<Keystroke> = keys.split(' ').map(|key| Keystroke::parse(key).expect("a keystroke")).collect();
         let contexts: Vec<KeyContext> = contexts.iter().map(|context| KeyContext::parse(context).expect("a context")).collect();
         let (bindings, pending) = keymap.bindings_for_input(&input, &contexts);
@@ -197,6 +203,8 @@ mod tests {
         assert_eq!(resolve("ctrl-n", &terminal), (vec![], false));
         assert_eq!(resolve("ctrl-b", &terminal), (vec![], false));
         assert_eq!(resolve("ctrl-shift-a", &terminal), (vec!["rainy::ToggleMode"], false));
+        assert_eq!(resolve("ctrl-shift-a", &composer).0.first(), Some(&"rainy::ToggleMode"));
+        assert_eq!(resolve("ctrl-shift-a", &["Root", "Workbench", "Input mode=editor"]).0.first(), Some(&"rainy::ToggleMode"));
         assert_eq!(resolve("ctrl-alt-n", &terminal), (vec!["rainy::NewChat"], false));
     }
 
