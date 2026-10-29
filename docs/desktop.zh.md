@@ -19,6 +19,11 @@ Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编
 - [Strata 本地推理](#strata-local-inference)回到“设置 → 模型”。
 - “设置 → Skills 与 MCP”中每个 MCP 服务器都列出它的工具，可逐个开关。
 
+## 4.4 的变化
+
+- Agent 模式：以对话为中心的布局，是没有选过布局时的默认；标题栏左侧按钮或 Ctrl+Shift+A 与 IDE 模式互换，选择按机器保存在 `layout.json`。
+- 推理强度按每个模型的官方档位，规则表在 `native/crates/protocol/src/models/reasoning.rs`，说明见[推理强度说明](reasoning-models.md)；新档位（极低、中、超高）另存在 `thinkingLevel`，`thinking` 保留旧版本认识的最接近档位。
+
 ## 4.3 的变化
 
 - 新的“设置 → 工具”页：Rainy 默认不带任何第三方工具，需要哪个就下载哪个，不用了随时卸载。

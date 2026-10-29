@@ -4,6 +4,15 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.4 · 2026-10-29
+
+A new Agent mode puts the conversation in the middle of the window, and reasoning effort follows each model's official levels.
+
+- **Agent mode**: Rainy opens on a conversation-first layout with the chat in the middle, the chats on the left grouped by project with pins and folding, and the files, terminals and the chat's changes on the right when you want them. The buttons at the left of the title bar or **Ctrl+Shift+A** switch back to IDE mode at any time, keeping the chat, its draft, running work, open files and terminals; the choice is remembered on this PC. **Ctrl+N** starts a new chat and **Ctrl+B** shows or hides the sidebar.
+- **Official reasoning levels**: each model shows only the levels its provider documents, and GPT, Claude, DeepSeek, Qwen, GLM, Kimi, Gemini, Grok and others get their own request parameters, starting at the provider's default. Models that always reason or cannot reason say so. Older versions still read the settings and chats this one saves.
+- **A model and reasoning card**: the button under the composer shows the model and its effort and opens a GPT-style card with the level in large type, a slider (drag it or click a level's name) and a reset to the provider's default; the model's name switches models.
+- A chat created for a message is no longer selected after you moved to another one meanwhile; restoring the last archived chat leaves the archived view.
+
 ## 4.3 · 2026-10-29
 
 Third-party tools become downloads: Strata local models follow Strata's newest release with a recommendation for this PC, and Tab completion is fixed.

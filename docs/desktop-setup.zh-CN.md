@@ -6,7 +6,7 @@
 
 使用 Windows x64，新安装默认原生执行，无需先安装 WSL。核心安装包包含 Windows Host；编辑器的编程工具、Windows PHP 和 Linux 运行环境底座是按需下载的可选组件，Strata 本地大模型在“设置 → 工具”中按需下载；Rainy 不附带 Node.js。完整离线目录另含 WSL 安装介质、Ubuntu 26.04.1 镜像，以及 Windows/Linux 基础、科学计算 CPU/CUDA 和 Windows C/C++ 组件。已有 Python、Conda、项目虚拟环境或 WSL 可直接检测并复用，不向它们安装软件包。也可连接自行管理的推理服务。
 
-1. 运行 `Rainy-4.3.0-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
+1. 运行 `Rainy-4.4.0-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
 2. 从旧版本升级时，旧版下载的 CTF 工具留在原安装位置（安装目录的 `tools` 文件夹或 `%APPDATA%\RainyAgent\native-tools`），Rainy 3.0 不再管理它们；不再需要时可自行删除这些文件夹。
 3. 从桌面 Rainy 快捷方式启动，无需设备码、激活码或授权管理器。已有保存的 WSL 目标继续保留；新安装先使用 Windows。运行环境页可以选择已有 WSL，或点击准备环境并选择外置 `environment/` 目录创建专用 Ubuntu。需要系统组件时明确请求管理员确认；若提示重启，保存其他工作、自行重启后再次打开应用。首次启动会校验全部发行资源，之后启动直接打开；已记录的 WSL 目标跳过环境检查窗口。
 4. Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 11 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。下载失败时可选择“重试”“改用 Windows 原生运行”（记录为执行目标，与在设置中切换相同）或“退出”。
@@ -123,16 +123,16 @@ MCP 服务在同一页面统一添加、编辑、启用或删除，对所有对�
 ```powershell
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.3.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.4.0/environment-components
 ```
 
-[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、WSL 和运行环境输入。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，用 `prepare-ide-tools.py` 按固定版本准备 Windows 与 Linux 的开发工具（Ruff、ty、TypeScript 原生编译器、debugpy、js-debug），运行 `build.ts --release` 构建预览页面，由 `native/scripts/build-hosts.sh` 构建 Windows 的 `rainy-host.exe` 和 Linux 的 `rainy-host`（cargo-zigbuild，glibc 2.17），`stage-windows.mjs` 与 `stage-linux.py` 分别暂存两个 Host 运行环境，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。构建需要 GNU 工具链的 Rust、`cargo-zigbuild` 和 Zig。`-ComponentSource` 指向恢复到 `release/offline-4.3.0` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
+[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、WSL 和运行环境输入。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，用 `prepare-ide-tools.py` 按固定版本准备 Windows 与 Linux 的开发工具（Ruff、ty、TypeScript 原生编译器、debugpy、js-debug），运行 `build.ts --release` 构建预览页面，由 `native/scripts/build-hosts.sh` 构建 Windows 的 `rainy-host.exe` 和 Linux 的 `rainy-host`（cargo-zigbuild，glibc 2.17），`stage-windows.mjs` 与 `stage-linux.py` 分别暂存两个 Host 运行环境，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。构建需要 GNU 工具链的 Rust、`cargo-zigbuild` 和 Zig。`-ComponentSource` 指向恢复到 `release/offline-4.4.0` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
 
 Windows 与 Linux Host 都由 `cargo` 从仓库源码构建，依赖版本由 `native/Cargo.lock` 固定。
 
 生产构建使用独立 Ed25519 发行密钥。默认在忽略提交的 `build/release-signing-key.pem` 创建并复用本机构建密钥；`RAINY_RELEASE_SIGNING_KEY` 可指定已有私钥文件，路径缺失、格式不符或与暂存公钥不匹配时构建失败。公开资源只包含发行公钥，载体将该公钥嵌入并校验签名资源清单。该流程不读取客户授权数据库。
 
-完整离线目录为 `release/offline-4.3.0/`，包含核心安装程序、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、PHP 组件和 Linux 运行环境都位于核心 EXE 之外；安装包只附带固定可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；两个 Host 都是单个原生程序，不带依赖目录。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
+完整离线目录为 `release/offline-4.4.0/`，包含核心安装程序、`environment/` WSL 介质、`environment-components/` 独立运行环境及递归 SHA-256 清单。WSL 镜像、科学计算大依赖、PHP 组件和 Linux 运行环境都位于核心 EXE 之外；安装包只附带固定可选组件归档的签名资源 `optional-modules.json`。构建核对 IDE 固定来源、Linux APT 索引和组件逐文件摘要；两个 Host 都是单个原生程序，不带依赖目录。构建暂存位于 `runtime/` 与 Linux `/var/tmp`，最终容量和验收以本次产物报告为准。
 
 ## 诊断信息
 

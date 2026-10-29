@@ -19,6 +19,11 @@ The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns 
 - [Strata local inference](#strata-local-inference) is back in Settings → Models.
 - Each MCP server in Settings → Skills & MCP lists its tools with a switch per tool.
 
+## What 4.4 changes
+
+- Agent mode, a conversation-first layout, is the default when no layout was chosen; the buttons at the left of the title bar or Ctrl+Shift+A switch it with IDE mode, and the choice is kept per machine in `layout.json`.
+- Reasoning effort follows each model's official levels, from the table in `native/crates/protocol/src/models/reasoning.rs` ([Reasoning levels](reasoning-models.md)); the new levels (minimal, medium, x-high) are stored in `thinkingLevel`, with `thinking` holding the nearest level older versions know.
+
 ## What 4.3 changes
 
 - A new Settings → Tools page: Rainy ships no third-party tools; download what you need and uninstall it any time.

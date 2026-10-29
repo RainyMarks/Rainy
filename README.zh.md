@@ -193,6 +193,8 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 2. 点击 **发现模型**，或手动填写模型 ID。
 3. 填写服务实际的上下文窗口和输出上限，保存后运行流式与工具调用检查。
 
+输入框下方的模型按钮显示模型名和推理强度，点开是推理强度卡片：每个模型只列出它官方支持的档位（如 GPT 的低到最高、DeepSeek 的关闭到最高、Claude 的自适应思考档位），默认用官方默认档，一键恢复；点模型名可以换模型。各模型的档位和请求参数见[推理强度说明](docs/reasoning-models.md)。
+
 所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。想在自己的电脑上跑模型，可在 **设置 → 工具 → Strata 本地大模型** 下载 Strata，从推荐表里下载适合这台电脑的模型，启动后连接并设为默认模型。
 
 <a id="privacy"></a>
@@ -280,10 +282,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.3.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.4.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.3.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.4.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 
