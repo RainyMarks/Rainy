@@ -412,7 +412,7 @@ impl ChatActions {
 /// Chats newest first, pinned ones before the others.
 fn sorted<'a>(chats: impl Iterator<Item = &'a SessionSummary>) -> Vec<&'a SessionSummary> {
     let mut list = newest_first(chats);
-    list.sort_by(|a, b| b.pinned.cmp(&a.pinned));
+    list.sort_by_key(|chat| std::cmp::Reverse(chat.pinned));
     list
 }
 
@@ -520,13 +520,17 @@ impl Render for HistoryPanel {
         let words: Vec<String> = query.split_whitespace().map(str::to_owned).collect();
         let summaries = self.store.read(cx).summaries.clone();
         let archived_count = summaries.iter().filter(|summary| summary.archived).count();
+        // Restoring or deleting the last archived chat leaves the archived view rather than showing it empty.
+        if archived_count == 0 {
+            self.show_archived = false;
+        }
         let searching = !words.is_empty();
         if searching {
             self.searching = true;
         }
         let rows = if self.sidebar { self.render_sidebar_list(&summaries, &words, cx) } else { self.render_side_list(&summaries, &words, cx) };
         let empty = rows.is_empty();
-        let footer = (!searching && (archived_count > 0 || self.show_archived)).then(|| {
+        let footer = (!searching && archived_count > 0).then(|| {
             let label: SharedString =
                 if self.show_archived { tr(cx, "chat.hideArchived") } else { format!("{} ({archived_count})", tr(cx, "chat.showArchived")).into() };
             Button::new("history-archived")
