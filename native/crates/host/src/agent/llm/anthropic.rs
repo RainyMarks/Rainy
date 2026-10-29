@@ -8,15 +8,16 @@ use rainy_protocol::chat::{AssistantBlock, AssistantMessage, ResultContent};
 use serde_json::{Map, Value, json};
 
 use super::json::parse_arguments;
-use super::{Event, HttpRequest, Level, Message, Model, Part, Reader, Request, UserContent, preview_arguments, replay};
+use super::{Control, Event, HttpRequest, Message, Model, Part, Reader, Request, UserContent, Wire, preview_arguments, replay};
 
 const INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
 const OUTPUT_CONFIG: &str = "mid-conversation-output-config-2026-07-01";
 const THINKING_BINDING: &str = "thinking-binding-controls-2026-08-01";
 /// Breakpoints Anthropic allows in one request.
 const MAX_BREAKPOINTS: usize = 4;
-/// Thinking tokens of a budget-thinking model, by level.
-const BUDGETS: [(Level, u64); 3] = [(Level::Low, 2048), (Level::High, 16_384), (Level::Max, 16_384)];
+/// The budget sent with `thinking: enabled` where the level is an effort: Anthropic's form needs one, and the
+/// servers that take an effort this way (DeepSeek's) ignore it.
+const EFFORT_BUDGET: u32 = 16_384;
 /// Tokens always left for the answer when a thinking budget shares the response ceiling.
 const MIN_ANSWER_TOKENS: u64 = 1024;
 
@@ -28,13 +29,9 @@ fn normalize_id(id: &str) -> String {
     id.chars().map(|char| if char.is_ascii_alphanumeric() || char == '_' || char == '-' { char } else { '_' }).take(64).collect()
 }
 
-/// The effort of an adaptive-thinking model for a level.
-fn effort(model: &Model, level: Level) -> &'static str {
-    let named = model.levels.0.iter().find(|(name, _)| *name == level.as_str()).and_then(|(_, value)| *value);
-    named.unwrap_or(match level {
-        Level::Low => "low",
-        _ => "high",
-    })
+/// Whether each reply's effort is replayed before it (Claude's per-message effort).
+fn effort_messages(model: &Model) -> bool {
+    matches!(model.reasoning.control, Control::Claude { effort_messages: true, .. })
 }
 
 /// A tool result's content: one string when it is all text, blocks when it holds images.
@@ -57,7 +54,7 @@ fn result_blocks(content: &[ResultContent]) -> Value {
 
 /// The conversation as Anthropic messages, each reply's effort before it for a model that replays them.
 fn messages(model: &Model, request: &Request<'_>, active_effort: &str) -> Vec<Value> {
-    let effort_messages = model.claude.is_some_and(|claude| claude.effort_messages);
+    let effort_messages = effort_messages(model);
     let mut params: Vec<Value> = Vec::new();
     let mut efforts: HashMap<usize, String> = HashMap::new();
     let replayed = replay(request.messages, model, &|id, _| normalize_id(id));
@@ -150,7 +147,10 @@ fn marks(blocks: &Value) -> usize {
 /// Also mark the user message that ended the previous request: Anthropic looks back only about 20 blocks from a
 /// breakpoint, so a step that adds many tool results would otherwise write the whole conversation again.
 fn mark_previous_turn(body: &mut Map<String, Value>) {
-    let used = marks(&body["system"]) + marks(&body["tools"]) + body["messages"].as_array().map_or(0, |messages| messages.iter().map(|message| marks(&message["content"])).sum());
+    // A map's index panics on a missing key: a request without a system prompt or tools has neither.
+    let field = |name: &str| body.get(name).map_or(0, marks);
+    let messages = body.get("messages").and_then(Value::as_array).map_or(0, |messages| messages.iter().map(|message| marks(&message["content"])).sum());
+    let used = field("system") + field("tools") + messages;
     if used == 0 || used >= MAX_BREAKPOINTS {
         return;
     }
@@ -204,10 +204,14 @@ fn unmark_last_user(body: &mut Map<String, Value>) {
 
 /// The request and its reply reader; `output` records the effort a managed-effort model answers with.
 pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str>, output: &mut AssistantMessage) -> (HttpRequest, Box<dyn Reader>) {
-    let options = model.claude.unwrap_or(super::catalog::ClaudeOptions { adaptive: false, effort_messages: false });
-    let level = request.reasoning.filter(|level| *level != Level::Off && model.reasoning);
-    let active_effort = level.map_or("high", |level| effort(model, level));
-    if options.effort_messages {
+    let wire = model.level(request.reasoning).map(|(_, wire)| wire);
+    let effort_messages = effort_messages(model);
+    // A model with per-message effort offers efforts only.
+    let active_effort = match wire {
+        Some(Wire::Effort(name)) => name,
+        _ => "high",
+    };
+    if effort_messages {
         output.rest.insert("providerThinkingLevel".into(), json!(active_effort));
     }
     let mut betas: Vec<&str> = Vec::new();
@@ -236,31 +240,43 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
             .collect();
         body.insert("tools".into(), Value::Array(tools));
     }
-    if options.effort_messages {
-        body.insert("thinking".into(), json!({ "type": "adaptive", "display": "summarized", "block_binding": { "prefix_mismatch_behavior": "drop_block" } }));
-        body.insert("output_config".into(), json!({ "effort": "high" }));
-        betas.extend([OUTPUT_CONFIG, THINKING_BINDING]);
-    } else if model.reasoning {
-        match level {
-            Some(level) if options.adaptive => {
-                body.insert("thinking".into(), json!({ "type": "adaptive", "display": "summarized" }));
-                body.insert("output_config".into(), json!({ "effort": effort(model, level) }));
+    match (model.reasoning.control, wire) {
+        (_, None) => {}
+        (Control::Claude { .. }, _) if effort_messages => {
+            // The top-level effort stays put so the prompt cache holds; the last effort message says what applies.
+            body.insert("thinking".into(), json!({ "type": "adaptive", "display": "summarized", "block_binding": { "prefix_mismatch_behavior": "drop_block" } }));
+            body.insert("output_config".into(), json!({ "effort": "high" }));
+            betas.extend([OUTPUT_CONFIG, THINKING_BINDING]);
+        }
+        (_, Some(Wire::Off)) => {
+            body.insert("thinking".into(), json!({ "type": "disabled" }));
+        }
+        (Control::Claude { adaptive: true, .. }, Some(Wire::Effort(effort))) => {
+            body.insert("thinking".into(), json!({ "type": "adaptive", "display": "summarized" }));
+            body.insert("output_config".into(), json!({ "effort": effort }));
+        }
+        // Kimi K3 always thinks and takes only the effort.
+        (Control::Effort, Some(Wire::Effort(effort))) => {
+            body.insert("output_config".into(), json!({ "effort": effort }));
+        }
+        (Control::Claude { .. } | Control::Thinking { .. }, Some(wire)) => {
+            let mut budget = u64::from(match wire {
+                Wire::Budget(tokens) => tokens,
+                _ => EFFORT_BUDGET,
+            });
+            let ceiling = (max_tokens + budget).min(model.max_tokens);
+            if ceiling <= budget {
+                budget = budget.min(ceiling.saturating_sub(MIN_ANSWER_TOKENS));
             }
-            Some(level) => {
-                let mut budget = BUDGETS.iter().find(|(known, _)| *known == level).map_or(16_384, |(_, budget)| *budget);
-                let ceiling = (max_tokens + budget).min(model.max_tokens);
-                if ceiling <= budget {
-                    budget = budget.min(ceiling.saturating_sub(MIN_ANSWER_TOKENS));
-                }
-                max_tokens = super::clamp_to_context(model, request, ceiling);
-                body.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": budget.min(max_tokens.saturating_sub(1024)), "display": "summarized" }));
+            max_tokens = super::clamp_to_context(model, request, ceiling);
+            body.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": budget.min(max_tokens.saturating_sub(1024)), "display": "summarized" }));
+            if let Wire::Effort(effort) = wire {
+                body.insert("output_config".into(), json!({ "effort": effort }));
+            } else {
                 betas.push(INTERLEAVED_THINKING);
             }
-            None if model.levels.has_off() => {
-                body.insert("thinking".into(), json!({ "type": "disabled" }));
-            }
-            None => {}
         }
+        _ => {}
     }
     body.insert("max_tokens".into(), json!(max_tokens));
     if request.no_tool_calls && !request.tools.is_empty() {
@@ -427,7 +443,7 @@ impl Reader for AnthropicReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::llm::{Model, ToolSpec};
+    use crate::agent::llm::{Level, Model, ToolSpec};
     use crate::settings::ModelSetup;
 
     fn opus() -> Model {
@@ -476,6 +492,47 @@ mod tests {
         assert!(body["tools"][0].get("cache_control").is_some());
         assert!(body["tools"][0]["input_schema"].get("additionalProperties").is_none());
         assert!(http.headers.iter().any(|(name, value)| name == "anthropic-beta" && value.contains(OUTPUT_CONFIG)));
+    }
+
+    #[test]
+    fn builds_a_request_without_system_prompt_or_tools() {
+        // The connection check, commit messages and memory send no tools, the first two no system prompt either.
+        let model = opus();
+        let messages = [Message::user("hi")];
+        let (http, _) = super::request(&model, &Request::new("", &messages, &[]), None, &mut crate::agent::llm::empty_reply(&model));
+        assert!(http.body.get("system").is_none() && http.body.get("tools").is_none());
+        assert!(http.body["messages"][0]["content"][0].get("cache_control").is_some());
+    }
+
+    #[test]
+    fn sends_each_model_its_thinking() {
+        use crate::agent::llm::Api;
+        use crate::agent::llm::test_support::{body_for, reasoning_fields, setup};
+        let model = |base_url: &str, id: &str| Model::from_setup(&setup(Api::Anthropic, base_url, id), 64_000);
+        let claude = |id: &str, level: Level| reasoning_fields(&body_for(&model("https://api.anthropic.com", id), Some(level)));
+        let adaptive = |effort: &str| json!({ "thinking": { "type": "adaptive", "display": "summarized" }, "output_config": { "effort": effort } });
+        // Opus 4.8 and Sonnet 5 turn thinking off, or think adaptively at an effort; Opus 4.6 has no xhigh.
+        assert_eq!(claude("claude-opus-4-8", Level::Off), json!({ "thinking": { "type": "disabled" } }));
+        assert_eq!(claude("claude-opus-4-8", Level::XHigh), adaptive("xhigh"));
+        assert_eq!(claude("claude-sonnet-5", Level::Minimal), adaptive("low"));
+        assert_eq!(claude("claude-opus-4-6", Level::XHigh), adaptive("max"));
+        // Claude Fable 5 takes no per-message effort.
+        assert_eq!(claude("claude-fable-5", Level::Off), adaptive("low"));
+        // Haiku 4.5 thinks within a budget, with interleaved thinking.
+        assert_eq!(claude("claude-haiku-4-5", Level::Medium)["thinking"], json!({ "type": "enabled", "budget_tokens": 8192, "display": "summarized" }));
+        // Sonnet 5.5 cannot turn thinking off with per-message effort: off thinks at low effort, said last.
+        let sonnet = body_for(&model("https://api.anthropic.com", "claude-sonnet-5-5"), Some(Level::Off));
+        assert_eq!(sonnet["output_config"], json!({ "effort": "high" }));
+        assert_eq!(sonnet["messages"].as_array().unwrap().last().unwrap()["output_config"], json!({ "effort": "low" }));
+        // DeepSeek's Anthropic endpoint: a switch and its own effort names.
+        let deepseek = |level: Level| reasoning_fields(&body_for(&model("https://api.deepseek.com/anthropic", "deepseek-v4-pro"), Some(level)));
+        assert_eq!(deepseek(Level::Off), json!({ "thinking": { "type": "disabled" } }));
+        let high = deepseek(Level::Medium);
+        assert_eq!((&high["thinking"]["type"], &high["output_config"]), (&json!("enabled"), &json!({ "effort": "high" })));
+        // Kimi K3 always thinks; only the effort is sent.
+        assert_eq!(reasoning_fields(&body_for(&model("https://api.moonshot.ai/anthropic", "kimi-k3"), Some(Level::High))), json!({ "output_config": { "effort": "high" } }));
+        // A server Rainy does not know gets a thinking budget, as before.
+        assert_eq!(reasoning_fields(&body_for(&model("https://llm.example.com", "house-model"), Some(Level::Low)))["thinking"]["budget_tokens"], 2048);
     }
 
     #[test]

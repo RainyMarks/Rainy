@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
@@ -18,7 +19,8 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Si
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::StyledExt as _;
-use rainy_protocol::{ImageContent, ModelSelection, PendingApproval, QueuedMessage, RpcError};
+use rainy_protocol::reasoning::{Level, Reasoning};
+use rainy_protocol::{ImageContent, ModelSelection, ModelSetup, PendingApproval, QueuedMessage, RpcError};
 use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
@@ -117,8 +119,6 @@ pub struct ChatPane {
     answering: bool,
     /// The run error shows all of its text.
     error_open: bool,
-    /// The reasoning stop under the pointer while the slider is held; it is sent once, on release.
-    thinking_drag: Option<usize>,
     background_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
     /// Drawn as the middle of Agent mode rather than as the IDE's side pane.
@@ -127,8 +127,16 @@ pub struct ChatPane {
     chat_subscription: Option<Subscription>,
 }
 
-/// The thinking levels and their labels.
-const THINKING: [(&str, &str); 4] = [("off", "chat.thinkingOff"), ("low", "chat.thinkingLow"), ("high", "chat.thinkingHigh"), ("max", "chat.thinkingMax")];
+/// The labels of the reasoning levels, by the names the providers share.
+const THINKING: [(Level, &str); 7] = [
+    (Level::Off, "chat.thinkingOff"),
+    (Level::Minimal, "chat.thinkingMinimal"),
+    (Level::Low, "chat.thinkingLow"),
+    (Level::Medium, "chat.thinkingMedium"),
+    (Level::High, "chat.thinkingHigh"),
+    (Level::XHigh, "chat.thinkingXHigh"),
+    (Level::Max, "chat.thinkingMax"),
+];
 const PERMISSIONS: [(&str, &str); 3] = [("read-only", "chat.permissionReadOnly"), ("ask", "chat.permissionAsk"), ("auto", "chat.permissionAuto")];
 /// Heights of the lists above the composer, which scroll beyond them so the composer always keeps its place.
 const MAX_QUEUE_HEIGHT: f32 = 100.;
@@ -221,7 +229,6 @@ impl ChatPane {
             approval_shown: None,
             answering: false,
             error_open: false,
-            thinking_drag: None,
             background_scroll: ScrollHandle::new(),
             queue_scroll: ScrollHandle::new(),
             wide: false,
@@ -1055,90 +1062,9 @@ impl ChatPane {
             .vertical_scrollbar(&self.queue_scroll)
     }
 
-    /// The model the composer sends with: the chat's, or the one new chats start with.
-    fn current_model(&self, cx: &App) -> Option<ModelSelection> {
-        let chat_model = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.model.clone()));
-        chat_model.or_else(|| self.store.read(cx).models.as_ref().and_then(|models| models.selected.clone()))
-    }
-
-    fn model_picker(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let current = self.current_model(cx);
-        let label = match &current {
-            // A long model name is cut so the composer's buttons keep their place.
-            Some(model) if model.model.chars().count() > 22 => format!("{}…", model.model.chars().take(21).collect::<String>()),
-            Some(model) => model.model.clone(),
-            None => i18n::text(locale, "chat.noModel").to_owned(),
-        };
-        let store = self.store.clone();
-        let session = self.session_id(cx);
-        Button::new("model-picker")
-            .ghost()
-            .small()
-            .label(label)
-            .dropdown_caret(true)
-            .dropdown_menu(move |mut menu, _, cx| {
-                let state = store.read(cx);
-                let Some(models) = state.models.clone() else { return menu };
-                for model in &models.models {
-                    let selected = current.as_ref().is_some_and(|c| c.provider == model.provider && c.model == model.model);
-                    let choice = ModelSelection { provider: model.provider.clone(), model: model.model.clone(), thinking: current.as_ref().and_then(|c| c.thinking.clone()) };
-                    let (store, session) = (store.clone(), session.clone());
-                    menu = menu.item(PopupMenuItem::new(format!("{} · {}", model.model, model.provider)).checked(selected).on_click(move |_, window, cx| {
-                        set_model(&store, session.clone(), choice.clone(), window, cx);
-                    }));
-                }
-                menu
-            })
-    }
-
-    /// The levels the composer's model offers, the stop the slider shows (the one held while dragging) and the one the
-    /// Host uses. None when the model has a single level.
-    fn thinking_state(&self, cx: &App) -> Option<ThinkingState> {
-        let current = self.current_model(cx)?;
-        let levels = self.store.read(cx).models.as_ref()?.thinking_levels.get(&current.provider).cloned().unwrap_or_default();
-        if levels.len() < 2 {
-            return None;
-        }
-        let sent = shown_level(&levels, current.thinking.as_deref().unwrap_or("off"));
-        let index = self.thinking_drag.unwrap_or(sent).min(levels.len() - 1);
-        Some(ThinkingState { levels, index, sent, current })
-    }
-
-    /// Ends a press on the slider: the stop it was released on is sent, unless it is the level already in use.
-    fn commit_thinking(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.thinking_drag.take() else { return };
-        cx.notify();
-        let Some(state) = self.thinking_state(cx) else { return };
-        if index == state.sent {
-            return;
-        }
-        let choice = ModelSelection { thinking: state.levels.get(index).cloned(), ..state.current };
-        set_model(&self.store, self.session_id(cx), choice, window, cx);
-    }
-
-    /// A compact button with a strength meter and the level's name; it opens the reasoning slider above the composer.
-    fn thinking_picker(&self, locale: Locale, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let state = self.thinking_state(cx)?;
-        let theme = cx.theme();
-        let (accent, rail) = (theme.primary, theme.muted_foreground.opacity(0.35));
-        let meter = h_flex().h(px(12.)).gap(px(2.)).items_end().children((0..state.levels.len()).map(|bar| {
-            let height = 12. * (bar + 1) as f32 / state.levels.len() as f32;
-            div().w(px(3.)).h(px(height.max(3.))).rounded(px(1.)).bg(if bar <= state.index { accent } else { rail })
-        }));
-        let pane = cx.entity().downgrade();
-        Some(
-            Popover::new("thinking-popover")
-                .anchor(gpui_kit::Anchor::BottomLeft)
-                .trigger(
-                    Button::new("thinking-picker")
-                        .ghost()
-                        .small()
-                        .tooltip(i18n::text(locale, "chat.thinkingTitle"))
-                        .child(h_flex().gap_1p5().items_center().child(meter).child(thinking_label(locale, &state.levels[state.index]))),
-                )
-                .content(move |_, _, cx| thinking_panel(&pane, locale, cx))
-                .into_any_element(),
-        )
+    /// The model and reasoning control under the composer ([`model_control`]).
+    fn model_picker(&self, _locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        model_control(&self.store, self.chat.as_ref(), cx)
     }
 
     /// The chat's mode; before a new chat's first message, the mode it will start in (3.x `nextMode`, else the
@@ -1178,7 +1104,6 @@ impl ChatPane {
         let creating = self.creating_here();
         let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
         let model_picker = self.model_picker(locale, cx);
-        let thinking_picker = self.thinking_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
         let session = self.session_id(cx);
         let attachments = (!self.attachments.is_empty()).then(|| self.render_attachments(cx));
@@ -1211,7 +1136,7 @@ impl ChatPane {
                             .on_click(cx.listener(|this, _, window, cx| this.choose_images(window, cx))),
                     )
                     // The pickers give way in a narrow panel; the context share and the send button never leave it.
-                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().child(model_picker).children(thinking_picker).child(permission_picker))
+                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().child(model_picker).child(permission_picker))
                     .when_some(context, |this, context| {
                         let percent = if context.input_limit > 0.0 { (context.tokens / context.input_limit * 100.0).round() } else { 0.0 };
                         this.child(
@@ -1359,7 +1284,6 @@ impl ChatPane {
     fn render_composer_footer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
         let model_picker = self.model_picker(locale, cx);
-        let thinking_picker = self.thinking_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
         let ring = context.map(|context| {
             let fraction = if context.input_limit > 0.0 { (context.tokens / context.input_limit) as f32 } else { 0. };
@@ -1392,7 +1316,7 @@ impl ChatPane {
             .items_center()
             .child(div().flex_shrink_0().child(permission_picker))
             .child(div().flex_1())
-            .child(h_flex().min_w_0().overflow_hidden().gap_1().child(model_picker).children(thinking_picker))
+            .child(h_flex().min_w_0().overflow_hidden().gap_1().child(model_picker))
             .children(ring)
     }
 }
@@ -1429,41 +1353,262 @@ fn report_failure(request: impl Future<Output = Result<Value, RpcError>> + 'stat
         .detach();
 }
 
-/// What the reasoning control draws; see [`ChatPane::thinking_state`].
-struct ThinkingState {
-    levels: Vec<String>,
-    index: usize,
-    sent: usize,
+/// The card the model control opens.
+const CARD_WIDTH: f32 = 300.;
+const CARD_PADDING: f32 = 14.;
+const TRACK_WIDTH: f32 = CARD_WIDTH - 2. * CARD_PADDING;
+const TRACK_HEIGHT: f32 = 30.;
+const THUMB: f32 = 26.;
+/// Sparkles on the filled part of the track: x as a share of the track, y from its top, diameter, blink period in
+/// milliseconds and phase. Fixed, so they twinkle in place instead of jumping on every draw.
+const SPARKLES: [(f32, f32, f32, u64, f32); 10] = [
+    (0.05, 9., 2., 1900, 0.0),
+    (0.12, 19., 1.5, 2600, 0.4),
+    (0.2, 12., 2.5, 2200, 0.7),
+    (0.29, 21., 1.5, 3000, 0.2),
+    (0.37, 8., 2., 2400, 0.9),
+    (0.46, 17., 2.5, 2000, 0.5),
+    (0.55, 11., 1.5, 2800, 0.1),
+    (0.65, 20., 2., 2300, 0.6),
+    (0.75, 10., 1.5, 2700, 0.3),
+    (0.86, 18., 2., 2100, 0.8),
+];
+/// The thumb and the fill follow a level with a critically damped spring.
+const SLIDE: SpringConfig = SpringConfig::new(420., 41., 1.);
+/// How long a level sent from the card is shown, at most, before the chat reports it.
+const PENDING: Duration = Duration::from_secs(3);
+
+/// What the model control shows: the selection the composer sends with, what its model offers for reasoning and the
+/// level requests use now.
+struct ModelState {
     current: ModelSelection,
+    reasoning: Reasoning,
+    level: Option<Level>,
+    name: SharedString,
 }
 
-fn thinking_label(locale: Locale, level: &str) -> &'static str {
-    i18n::text(locale, THINKING.iter().find(|(id, _)| *id == level).map_or("chat.thinkingOff", |(_, key)| key))
+/// The model the composer sends with: the chat's, or the one new chats start with.
+fn model_state(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx: &App) -> Option<ModelState> {
+    let models = store.read(cx).models.as_ref()?;
+    let chat_model = chat.and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.model.clone()));
+    let current = chat_model.or_else(|| models.selected.clone())?;
+    let profile = models.model(&current.provider).filter(|profile| profile.model == current.model);
+    let reasoning = profile.map_or(Reasoning::NONE, ModelSetup::reasoning);
+    // The level the Host resolves for this selection (`effective_thinking`).
+    let level = reasoning.choose(current.thinking.as_deref().or_else(|| profile.and_then(|profile| profile.thinking.as_deref())));
+    let preset = models.presets.iter().find(|preset| preset.model.provider == current.provider && preset.model.model == current.model);
+    let name = short_model_name(&current.model, preset.map(|preset| preset.name.as_str())).into();
+    Some(ModelState { current, reasoning, level, name })
 }
 
-/// The reasoning slider: one stop per level, weakest on the left, each named below. Pressing a stop or dragging
-/// across them moves the thumb; the level is sent once, on release, wherever the button comes up. It reads the pane on
-/// every draw, so it follows a chat or model switched while it is open.
-fn thinking_panel(pane: &WeakEntity<ChatPane>, locale: Locale, cx: &mut App) -> AnyElement {
-    const STOP: f32 = 52.;
-    let Some(pane) = pane.upgrade() else { return div().into_any_element() };
-    let Some(state) = pane.read(cx).thinking_state(cx) else { return div().into_any_element() };
+/// A level's label; a model that only switches reasoning calls its level On.
+pub(crate) fn thinking_label(locale: Locale, level: Level, toggle: bool) -> &'static str {
+    if toggle && level != Level::Off {
+        return i18n::text(locale, "chat.thinkingOn");
+    }
+    i18n::text(locale, THINKING.iter().find(|(known, _)| *known == level).map_or("chat.thinkingOff", |(_, key)| key))
+}
+
+/// A model's name as the composer shows it: a preset's without the vendor ("Opus 5.5"), a known id in its vendor's
+/// spelling ("GPT-6.1 Sol", "Gemini 3.1 Pro"), else the id.
+fn short_model_name(id: &str, preset: Option<&str>) -> String {
+    if let Some(name) = preset {
+        return name.strip_prefix("Claude ").unwrap_or(name).to_owned();
+    }
+    let base = id.rsplit('/').next().unwrap_or(id);
+    let lower = base.to_ascii_lowercase();
+    let words: Vec<&str> = lower.split('-').filter(|word| !word.is_empty()).collect();
+    let title = |word: &str| {
+        let mut chars = word.chars();
+        chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+    };
+    let joined = |first: String, from: usize| std::iter::once(first).chain(words[from..].iter().map(|word| title(word))).collect::<Vec<_>>().join(" ");
+    match words.as_slice() {
+        ["claude", family, version @ ..] if !version.is_empty() => {
+            // `claude-haiku-4-5-20251001`: the version is the short numbers before a date.
+            let numbers: Vec<&str> = version.iter().copied().take_while(|part| part.len() <= 2 && part.chars().all(|c| c.is_ascii_digit())).collect();
+            format!("{} {}", title(family), numbers.join("."))
+        }
+        ["gpt" | "glm", version, ..] => joined(format!("{}-{}", words[0].to_ascii_uppercase(), if version.chars().all(char::is_alphabetic) { version.to_ascii_uppercase() } else { (*version).to_owned() }), 2),
+        ["deepseek", ..] => joined("DeepSeek".into(), 1),
+        [first, ..] if ["gemini", "grok", "kimi", "mistral", "magistral"].contains(first) || first.starts_with("qwen") => joined(title(first), 1),
+        _ => base.to_owned(),
+    }
+}
+
+/// The model and reasoning control both chat layouts place under their composer: the model's short name and its
+/// reasoning level, opening a card with the level slider and the model list. `chat` is the chat shown, `None` before a
+/// new chat's first message. The card reads both on every draw, so it follows a chat or model switched while it is
+/// open.
+pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx: &App) -> AnyElement {
+    let locale = store.read(cx).locale();
+    let state = model_state(store, chat, cx);
     let theme = cx.theme();
-    let (accent, rail, ring, strong, muted) = (theme.primary, theme.muted_foreground.opacity(0.35), theme.popover, theme.foreground, theme.muted_foreground);
-    let count = state.levels.len();
-    let stops = (0..count).map(|stop| {
-        let (press, glide) = (pane.clone(), pane.clone());
-        div()
-            .id(("thinking-stop", stop))
-            .w(px(STOP))
-            .h_full()
-            .flex()
+    let name: SharedString = state.as_ref().map_or_else(|| i18n::text(locale, "chat.noModel").into(), |state| state.name.clone());
+    let level = state
+        .as_ref()
+        .filter(|state| state.reasoning.adjustable())
+        .and_then(|state| state.level.map(|level| thinking_label(locale, level, state.reasoning.toggle())));
+    // The name gives way first, so a narrow composer keeps the level and the other buttons.
+    let trigger = Button::new("model-control").ghost().small().dropdown_caret(true).tooltip(i18n::text(locale, "chat.modelTitle")).min_w_0().flex_shrink(1.).child(
+        h_flex()
+            .min_w_0()
+            .gap_1p5()
             .items_center()
-            .justify_center()
+            .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+            .when_some(level, |this, level| this.child(div().flex_shrink_0().text_color(theme.muted_foreground).child(level))),
+    );
+    let (store, chat) = (store.clone(), chat.cloned());
+    Popover::new("model-control-card")
+        .anchor(gpui_kit::Anchor::BottomLeft)
+        .w(px(CARD_WIDTH))
+        .p(px(CARD_PADDING))
+        .rounded(theme.radius_lg)
+        .trigger(trigger)
+        .content(move |_, window, cx| model_card(&store, chat.as_ref(), window, cx))
+        .into_any_element()
+}
+
+/// The card's own state, kept while it is open.
+#[derive(Default)]
+struct CardState {
+    /// The stop under the pointer while the track is held; it is sent once, on release.
+    drag: Option<usize>,
+    /// A level sent and not yet reported by the chat: the selection it replaced, its stop and when it was sent.
+    pending: Option<(ModelSelection, usize, Instant)>,
+    /// The model list shows instead of the slider.
+    list: bool,
+}
+
+/// The card the control opens: the level slider for a model with reasoning levels, the list of saved models on
+/// request, and for a model without levels the list with a note.
+fn model_card(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let card = window.use_keyed_state("model-card", cx, |_, _| CardState::default());
+    let locale = store.read(cx).locale();
+    let Some(state) = model_state(store, chat, cx) else {
+        return div().text_sm().text_color(cx.theme().muted_foreground).child(i18n::text(locale, "chat.noModel")).into_any_element();
+    };
+    let session = chat.map(|chat| chat.read(cx).id.clone());
+    if card.read(cx).list || !state.reasoning.adjustable() {
+        return model_list(store, session, &state, &card, locale, cx);
+    }
+    level_slider(store, session, &state, &card, locale, cx)
+}
+
+/// Send a level chosen in the card, and show it until the chat reports it.
+fn send_level(store: &Entity<Store>, session: Option<String>, card: &Entity<CardState>, current: &ModelSelection, level: Level, stop: usize, window: &mut Window, cx: &mut App) {
+    card.update(cx, |card, cx| {
+        card.pending = Some((current.clone(), stop, Instant::now()));
+        cx.notify();
+    });
+    set_model(store, session, ModelSelection { thinking: Some(level.as_str().to_owned()), ..current.clone() }, window, cx);
+}
+
+/// The level slider: the level's name large in the accent color, with a reset to the provider's default; the model's
+/// name, which opens the list; and a pill track filled with the accent up to a round white thumb, one stop per level,
+/// each named below. Pressing a stop or dragging across them moves the thumb; the level is sent once, on release,
+/// wherever the button comes up.
+fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let dark = theme.mode.is_dark();
+    let levels: Vec<Level> = state.reasoning.levels().collect();
+    let count = levels.len();
+    let sent = state.level.and_then(|level| levels.iter().position(|known| *known == level)).unwrap_or(0);
+    let view = card.read(cx);
+    let pending = view.pending.as_ref().filter(|(before, _, at)| *before == state.current && at.elapsed() < PENDING).map(|(_, stop, _)| *stop);
+    let shown = view.drag.or(pending).unwrap_or(sent).min(count - 1);
+    let toggle = state.reasoning.toggle();
+    let label = move |level: Level| thinking_label(locale, level, toggle);
+    // The accent as text: the lighter step reads better on a dark card.
+    let accent = if dark { theme.link } else { theme.primary };
+
+    let default = state.reasoning.choose(None);
+    let default_stop = default.and_then(|level| levels.iter().position(|known| *known == level));
+    let reset = {
+        let (store, session, card, current) = (store.clone(), session.clone(), card.clone(), state.current.clone());
+        Button::new("reasoning-reset")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(gpui_kit::assets::IconName::RotateCcw))
+            .disabled(default_stop.is_none_or(|stop| stop == shown))
+            .when_some(default, |this, level| this.tooltip(i18n::format(locale, "chat.thinkingReset", &[("level", &label(level))])))
+            .on_click(move |_, window, cx| {
+                if let (Some(level), Some(stop)) = (default, default_stop) {
+                    send_level(&store, session.clone(), &card, &current, level, stop, window, cx);
+                }
+            })
+    };
+    let header = h_flex()
+        .h(px(30.))
+        .items_center()
+        .child(div().w(px(24.)).flex_shrink_0().child(Icon::new(gpui_kit::assets::IconName::Zap).size_4().text_color(accent)))
+        .child(div().flex_1().min_w_0().text_center().text_xl().font_semibold().text_color(accent).child(label(levels[shown])))
+        .child(h_flex().w(px(24.)).flex_shrink_0().justify_end().child(reset));
+
+    let list = card.clone();
+    let (muted, strong) = (theme.muted_foreground, theme.foreground);
+    let model = h_flex()
+        .id("reasoning-model")
+        .justify_center()
+        .gap_0p5()
+        .text_sm()
+        .text_color(muted)
+        .cursor_pointer()
+        .hover(move |style| style.text_color(strong))
+        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(state.name.clone()))
+        .child(Icon::new(IconName::ChevronRight).xsmall())
+        .on_click(move |_, _, cx| {
+            list.update(cx, |card, cx| {
+                card.list = true;
+                cx.notify();
+            });
+        });
+
+    let stop_x = |stop: usize| TRACK_WIDTH * (stop as f32 + 0.5) / count as f32;
+    let thumb = stop_x(shown);
+    let fill = thumb + THUMB / 2.;
+    let sparkle = theme.primary_foreground.opacity(if dark { 0.9 } else { 0.75 });
+    let sparkles = SPARKLES.iter().enumerate().filter(|(_, (x, ..))| x * TRACK_WIDTH < fill - THUMB).map(|(index, &(x, y, size, period, phase))| {
+        div().absolute().left(px(x * TRACK_WIDTH)).top(px(y)).size(px(size)).rounded_full().bg(sparkle).with_animation(
+            ("reasoning-sparkle", index),
+            Animation::new(Duration::from_millis(period)).repeat().with_max_fps(20.).with_easing(move |t| 0.5 - 0.5 * ((t + phase) * std::f32::consts::TAU).cos()),
+            |dot, glow| dot.opacity(0.15 + 0.85 * glow),
+        )
+    });
+    let gradient = linear_gradient(90., linear_color_stop(theme.primary.opacity(if dark { 0.55 } else { 0.7 }), 0.), linear_color_stop(theme.primary, 1.));
+    let filled = div()
+        .absolute()
+        .left_0()
+        .top_0()
+        .h(px(TRACK_HEIGHT))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(gradient)
+        .children(sparkles)
+        .with_spring("reasoning-fill", SpringAnimation::new(SLIDE).to(px(fill)), |filled, width| filled.w(width));
+    let stops = (shown + 1..count).map(|stop| {
+        div().absolute().left(px(stop_x(stop) - 2.5)).top(px(TRACK_HEIGHT / 2. - 2.5)).size(px(5.)).rounded_full().bg(muted.opacity(0.7))
+    });
+    let knob = div()
+        .absolute()
+        .top(px((TRACK_HEIGHT - THUMB) / 2.))
+        .size(px(THUMB))
+        .rounded_full()
+        .bg(theme.primary_foreground)
+        .border_1()
+        .border_color(theme.border)
+        .shadow(theme.shadow_tokens().md)
+        .with_spring("reasoning-thumb", SpringAnimation::new(SLIDE).to(px(thumb - THUMB / 2.)), |knob, left| knob.left(left));
+    let targets = (0..count).map(|stop| {
+        let (press, glide) = (card.clone(), card.clone());
+        div()
+            .id(("reasoning-stop", stop))
+            .w(px(TRACK_WIDTH / count as f32))
+            .h_full()
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                press.update(cx, |this, cx| {
-                    this.thinking_drag = Some(stop);
+                press.update(cx, |card, cx| {
+                    card.drag = Some(stop);
                     cx.notify();
                 });
                 cx.stop_propagation();
@@ -1472,56 +1617,130 @@ fn thinking_panel(pane: &WeakEntity<ChatPane>, locale: Locale, cx: &mut App) -> 
                 if event.pressed_button != Some(MouseButton::Left) {
                     return;
                 }
-                glide.update(cx, |this, cx| {
-                    if this.thinking_drag.is_some_and(|held| held != stop) {
-                        this.thinking_drag = Some(stop);
+                glide.update(cx, |card, cx| {
+                    if card.drag.is_some_and(|held| held != stop) {
+                        card.drag = Some(stop);
                         cx.notify();
                     }
                 });
             })
-            .child(if stop == state.index {
-                div().size(px(14.)).rounded_full().bg(accent).border_2().border_color(ring).shadow_sm()
-            } else {
-                div().size(px(6.)).rounded_full().bg(if stop < state.index { accent } else { rail })
-            })
-    }).collect::<Vec<_>>();
-    let (release, release_out) = (pane.clone(), pane);
+    });
+    // A level's name below the track picks it too.
+    let pick = (store.clone(), session.clone(), card.clone(), state.current.clone());
+    let release = {
+        let (store, card, current, levels) = (store.clone(), card.clone(), state.current.clone(), levels.clone());
+        Rc::new(move |window: &mut Window, cx: &mut App| {
+            let Some(stop) = card.update(cx, |card, cx| {
+                cx.notify();
+                card.drag.take()
+            }) else {
+                return;
+            };
+            if stop != sent {
+                send_level(&store, session.clone(), &card, &current, levels[stop], stop, window, cx);
+            }
+        })
+    };
+    let release_out = release.clone();
     let track = div()
-        .id("thinking-slider")
+        .id("reasoning-track")
         .relative()
-        .h(px(24.))
-        .w(px(count as f32 * STOP))
-        .child(div().absolute().top(px(11.)).left(px(STOP / 2.)).w(px((count - 1) as f32 * STOP)).h(px(2.)).rounded_full().bg(rail))
-        .child(div().absolute().top(px(11.)).left(px(STOP / 2.)).w(px(state.index as f32 * STOP)).h(px(2.)).rounded_full().bg(accent))
-        .child(h_flex().relative().size_full().children(stops))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| release.update(cx, |this, cx| this.commit_thinking(window, cx)))
-        .on_mouse_up_out(MouseButton::Left, move |_, window, cx| release_out.update(cx, |this, cx| this.commit_thinking(window, cx)));
-    let names = h_flex().w(px(count as f32 * STOP)).children(state.levels.iter().enumerate().map(|(stop, level)| {
-        div().w(px(STOP)).text_center().text_color(if stop == state.index { strong } else { muted }).child(thinking_label(locale, level))
+        .w(px(TRACK_WIDTH))
+        .h(px(TRACK_HEIGHT))
+        .child(div().absolute().inset_0().rounded_full().bg(theme.muted))
+        .child(filled)
+        .children(stops)
+        .child(knob)
+        .child(h_flex().absolute().inset_0().children(targets))
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| release(window, cx))
+        .on_mouse_up_out(MouseButton::Left, move |_, window, cx| release_out(window, cx));
+    let names = h_flex().w(px(TRACK_WIDTH)).children(levels.iter().enumerate().map(|(stop, level)| {
+        let (store, session, card, current, level_sent) = (pick.0.clone(), pick.1.clone(), pick.2.clone(), pick.3.clone(), *level);
+        div()
+            .id(("reasoning-name", stop))
+            .cursor_pointer()
+            .on_click(move |_, window, cx| {
+                if stop != sent {
+                    send_level(&store, session.clone(), &card, &current, level_sent, stop, window, cx);
+                }
+            })
+            .w(px(TRACK_WIDTH / count as f32))
+            .text_center()
+            .text_xs()
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .text_ellipsis()
+            .text_color(if stop == shown { strong } else { muted })
+            .when(stop == shown, |this| this.font_medium())
+            .child(label(*level))
     }));
-    v_flex()
-        .gap_1()
-        .text_xs()
-        .child(
-            h_flex()
-                .justify_between()
-                .pb_1()
-                .child(div().text_color(muted).child(i18n::text(locale, "chat.thinkingTitle")))
-                .child(div().text_color(strong).font_medium().child(thinking_label(locale, &state.levels[state.index]))),
-        )
-        .child(track)
-        .child(names)
-        .into_any_element()
+    v_flex().gap_1().child(header).child(model).child(v_flex().pt_2().gap_1p5().child(track).child(names)).into_any_element()
 }
 
-/// The stop the slider shows for a requested level, as the Host resolves it (`effective_thinking`): a level the model
-/// lacks becomes low when off was asked for and low exists, else the strongest.
-fn shown_level(levels: &[String], requested: &str) -> usize {
-    if let Some(index) = levels.iter().position(|level| level == requested) {
-        return index;
-    }
-    let low = (requested == "off").then(|| levels.iter().position(|level| level == "low")).flatten();
-    low.unwrap_or(levels.len().saturating_sub(1))
+/// The saved models, the one in use checked. A chosen model keeps the level, which the Host moves to the nearest one
+/// that model offers. Above the list, a model without levels says so.
+fn model_list(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let adjustable = state.reasoning.adjustable();
+    let (models, presets) = store.read(cx).models.as_ref().map(|status| (status.models.clone(), status.presets.clone())).unwrap_or_default();
+    let back = card.clone();
+    let header = h_flex()
+        .h(px(26.))
+        .gap_1()
+        .items_center()
+        .when(adjustable, |this| {
+            this.child(Button::new("reasoning-back").ghost().xsmall().icon(Icon::new(IconName::ChevronLeft)).on_click(move |_, _, cx| {
+                back.update(cx, |card, cx| {
+                    card.list = false;
+                    cx.notify();
+                });
+            }))
+        })
+        .child(div().text_sm().font_semibold().child(i18n::text(locale, "chat.modelsTitle")));
+    let note = (!adjustable).then(|| {
+        let key = if state.reasoning.reasons() { "chat.thinkingFixed" } else { "chat.thinkingNone" };
+        div().px_1().text_xs().text_color(theme.muted_foreground).child(i18n::text(locale, key))
+    });
+    let (hover, muted, accent) = (theme.accent, theme.muted_foreground, if theme.mode.is_dark() { theme.link } else { theme.primary });
+    let rows = models.iter().enumerate().map(|(index, model)| {
+        let selected = model.provider == state.current.provider && model.model == state.current.model;
+        let choice = ModelSelection { provider: model.provider.clone(), model: model.model.clone(), thinking: state.current.thinking.clone() };
+        let preset = presets.iter().find(|preset| preset.model.provider == model.provider && preset.model.model == model.model).map(|preset| preset.name.as_str());
+        let (store, session, card) = (store.clone(), session.clone(), card.clone());
+        h_flex()
+            .id(("model-row", index))
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .items_center()
+            .rounded(theme.radius)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(short_model_name(&model.model, preset)))
+                    .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(format!("{} · {}", model.model, model.provider))),
+            )
+            .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
+            .on_click(move |_, window, cx| {
+                card.update(cx, |card, cx| {
+                    card.list = false;
+                    card.pending = None;
+                    cx.notify();
+                });
+                if !selected {
+                    set_model(&store, session.clone(), choice.clone(), window, cx);
+                }
+            })
+    });
+    v_flex()
+        .gap_1()
+        .child(header)
+        .children(note)
+        .child(v_flex().id("model-rows").max_h(px(260.)).overflow_y_scroll().gap_0p5().children(rows))
+        .into_any_element()
 }
 
 fn set_model(store: &Entity<Store>, session: Option<String>, choice: ModelSelection, window: &mut Window, cx: &mut App) {
@@ -1845,14 +2064,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_slider_shows_the_level_the_host_uses() {
-        let all: Vec<String> = ["off", "low", "high", "max"].map(String::from).to_vec();
-        let claude: Vec<String> = ["low", "high", "max"].map(String::from).to_vec();
-        assert_eq!(shown_level(&all, "high"), 2);
-        assert_eq!(shown_level(&all, "off"), 0);
-        // A model that cannot turn reasoning off thinks a little; an unknown level is the strongest.
-        assert_eq!(shown_level(&claude, "off"), 0);
-        assert_eq!(shown_level(&claude, "medium"), 2);
+    fn names_models_the_way_their_vendors_do() {
+        assert_eq!(short_model_name("claude-opus-5-5", Some("Claude Opus 5.5")), "Opus 5.5");
+        assert_eq!(short_model_name("deepseek-flash", Some("DeepSeek V4.1 Flash")), "DeepSeek V4.1 Flash");
+        assert_eq!(short_model_name("claude-haiku-4-5-20251001", None), "Haiku 4.5");
+        assert_eq!(short_model_name("gpt-6.1-sol", None), "GPT-6.1 Sol");
+        assert_eq!(short_model_name("openai/gpt-5.4-mini", None), "GPT-5.4 Mini");
+        assert_eq!(short_model_name("gpt-oss-120b", None), "GPT-OSS 120b");
+        assert_eq!(short_model_name("glm-5.3", None), "GLM-5.3");
+        assert_eq!(short_model_name("deepseek-v4-pro", None), "DeepSeek V4 Pro");
+        assert_eq!(short_model_name("Qwen3.8-27B", None), "Qwen3.8 27b");
+        assert_eq!(short_model_name("gemini-3.1-pro-preview", None), "Gemini 3.1 Pro Preview");
+        assert_eq!(short_model_name("house-model", None), "house-model");
+    }
+
+    #[test]
+    fn labels_every_level() {
+        for (level, key) in THINKING {
+            assert_ne!(thinking_label(Locale::Zh, level, false), key, "{level:?}");
+            assert_ne!(thinking_label(Locale::En, level, false), key, "{level:?}");
+        }
+        assert_eq!(thinking_label(Locale::Zh, Level::XHigh, false), "超高");
+        // A model that only switches reasoning names its level On.
+        assert_eq!(thinking_label(Locale::Zh, Level::High, true), "开启");
+        assert_eq!(thinking_label(Locale::Zh, Level::Off, true), "关闭");
     }
 
     #[test]
