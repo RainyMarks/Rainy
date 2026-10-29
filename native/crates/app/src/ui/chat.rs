@@ -1625,6 +1625,8 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
                 });
             })
     });
+    // A level's name below the track picks it too.
+    let pick = (store.clone(), session.clone(), card.clone(), state.current.clone());
     let release = {
         let (store, card, current, levels) = (store.clone(), card.clone(), state.current.clone(), levels.clone());
         Rc::new(move |window: &mut Window, cx: &mut App| {
@@ -1653,7 +1655,15 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
         .on_mouse_up(MouseButton::Left, move |_, window, cx| release(window, cx))
         .on_mouse_up_out(MouseButton::Left, move |_, window, cx| release_out(window, cx));
     let names = h_flex().w(px(TRACK_WIDTH)).children(levels.iter().enumerate().map(|(stop, level)| {
+        let (store, session, card, current, level_sent) = (pick.0.clone(), pick.1.clone(), pick.2.clone(), pick.3.clone(), *level);
         div()
+            .id(("reasoning-name", stop))
+            .cursor_pointer()
+            .on_click(move |_, window, cx| {
+                if stop != sent {
+                    send_level(&store, session.clone(), &card, &current, level_sent, stop, window, cx);
+                }
+            })
             .w(px(TRACK_WIDTH / count as f32))
             .text_center()
             .text_xs()
