@@ -1,17 +1,20 @@
-//! The window (`Workbench.tsx`): title bar with the project menu, the file and history pane, the editor area, the AI
-//! pane, and the status bar.
+//! The window (`Workbench.tsx`) in its two layouts. IDE mode: the title bar with the project menu, the file and
+//! history pane, the editor area, the AI pane and the status bar. Agent mode (`ui::agent`): the chat sidebar, the
+//! conversation in the middle and, on demand, a panel on the right with the files, the terminals or the chat's
+//! changes. Both show the same entities.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::DialogFooter;
 use rainy_carrier::{ExecutionTarget, targets};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, ResizableState, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, ResizableState, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::{Disableable as _, Selectable as _, StyledExt as _};
@@ -19,12 +22,14 @@ use serde_json::Value;
 use rainy_carrier::ConnectionState;
 use rainy_carrier::trust::TrustError;
 
-use crate::store::ide::{Ide, PaneLayout};
+use crate::placement::Layout;
+use crate::store::ide::{Ide, IdeEvent, PaneLayout};
 use crate::boot::RuntimeChoice;
 use crate::store::{Phase, RuntimePrompt, Store, StoreEvent};
 use crate::theme;
+use crate::ui::agent::{self, AgentMode, Fit, IdeMode, Mode, ToggleMode, ToggleSidebar, Tool};
 use crate::ui::chat::ChatPane;
-use crate::ui::history::HistoryPanel;
+use crate::ui::history::{ChatActions, HistoryPanel};
 use crate::ui::ide::editor_area::{EditorArea, close_tab};
 use crate::ui::ide::file_tree::FileTree;
 use crate::ui::ide::git::GitView;
@@ -72,6 +77,8 @@ const DEFAULT_SIZES: Sizes = Sizes { sidebar: 240., agent: 0., bottom: 220. };
 /// `clampAgent`).
 const EDITOR_MIN: f32 = 300.;
 const AGENT_MIN: f32 = 300.;
+/// GPUI Kit's title bar starts its children this far from the window's left edge.
+const TITLE_BAR_INSET: f32 = 12.;
 
 impl Sizes {
     /// The sizes to lay out in a window of `width` × `height` (3.x `layout.ts`): the file pane 180–360 px, the AI pane
@@ -116,10 +123,25 @@ pub struct Workbench {
     /// The states of the pane groups: the window's columns, and the editor above the bottom panel.
     panes: Option<PaneGroup>,
     bottom_panes: Option<PaneGroup>,
+    /// The layout and what Agent mode keeps across launches (`layout.json`).
+    layout: Layout,
+    /// What the panel on the right of Agent mode shows; hidden while `None`.
+    tool: Option<Tool>,
+    /// The file tree beside the editor in the files panel, as the user set it; until then it is shown in a panel wide
+    /// enough for both, or while no file is open.
+    tool_tree: Option<bool>,
+    /// The sidebar shown over the conversation, in a window too narrow to dock it.
+    sidebar_peek: bool,
+    /// The state of Agent mode's columns.
+    agent_panes: Option<PaneGroup>,
+    /// The tabs open when the editor was last looked at, and whether the next tabs are the ones a project shown just
+    /// now restores: in Agent mode, a tab opened for the user brings up the files panel, a restored one does not.
+    known_tabs: HashSet<String>,
+    restoring_tabs: bool,
     /// Whether the projects were loaded since the Host became ready.
     ide_started: bool,
     /// Chats known to wait for an approval, so each new wait flashes the taskbar once.
-    awaiting: std::collections::HashSet<String>,
+    awaiting: HashSet<String>,
     /// The window's own focus, so shortcuts work while nothing inside it has the focus (after a dialog closed, say).
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -128,6 +150,7 @@ pub struct Workbench {
 impl Workbench {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let ide = Ide::global(cx);
+        let layout = crate::placement::read_layout(&store.read(cx).paths.user_data);
         let history = cx.new(|cx| HistoryPanel::new(store.clone(), window, cx));
         let chat = cx.new(|cx| ChatPane::new(store.clone(), window, cx));
         let files = cx.new(|cx| FileTree::new(ide.clone(), cx));
@@ -145,7 +168,7 @@ impl Workbench {
                     this.ide_started = true;
                     this.ide.update(cx, |ide, cx| ide.initialize(window, cx));
                 }
-                let awaiting: std::collections::HashSet<String> =
+                let awaiting: HashSet<String> =
                     store.read(cx).summaries.iter().filter(|summary| summary.awaiting_approval == Some(true)).map(|summary| summary.id.clone()).collect();
                 if awaiting.iter().any(|id| !this.awaiting.contains(id)) {
                     crate::ui::attention::flash(window);
@@ -155,6 +178,21 @@ impl Workbench {
                 cx.notify();
             }),
             cx.observe(&ide, |_, _, cx| cx.notify()),
+            cx.subscribe(&ide, |this, ide, event: &IdeEvent, cx| match event {
+                IdeEvent::WorkspaceChanged => this.restoring_tabs = true,
+                IdeEvent::ActiveChanged => {
+                    let (opened, restored, tabs) = {
+                        let ide = ide.read(cx);
+                        (ide.active.clone().filter(|key| !this.known_tabs.contains(key)), ide.restored, ide.tabs.iter().cloned().collect())
+                    };
+                    let restoring = std::mem::take(&mut this.restoring_tabs) || !restored;
+                    this.known_tabs = tabs;
+                    if opened.is_some() && !restoring {
+                        this.show_tool(Tool::Files, cx);
+                    }
+                }
+                _ => {}
+            }),
             // An image viewer's "添加到对话" lands in the composer, which is shown for it.
             cx.subscribe_in(&editor, window, |this, _, event: &crate::ui::ide::editor_area::EditorAreaEvent, window, cx| match event {
                 crate::ui::ide::editor_area::EditorAreaEvent::AttachImage { name, bytes } => {
@@ -172,6 +210,11 @@ impl Workbench {
                     StoreEvent::PrefsChanged => {
                         let prefs = this.store.read(cx).prefs.clone();
                         theme::apply(&prefs, Some(window), cx);
+                    }
+                    // A chat chosen in the sidebar shown over the conversation closes it.
+                    StoreEvent::SelectionChanged if this.sidebar_peek => {
+                        this.sidebar_peek = false;
+                        cx.notify();
                     }
                     StoreEvent::HostExited(code) => crate::ui::ssh::host_exited(this.store.clone(), *code, window, cx),
                     StoreEvent::ResourcesDamaged(error) => resources_damaged(error, window, cx),
@@ -202,7 +245,7 @@ impl Workbench {
             }
         })
         .detach();
-        Self {
+        let mut workbench = Self {
             store,
             ide,
             history,
@@ -223,8 +266,15 @@ impl Workbench {
             sizes: DEFAULT_SIZES,
             panes: None,
             bottom_panes: None,
+            layout,
+            tool: None,
+            tool_tree: None,
+            sidebar_peek: false,
+            agent_panes: None,
+            known_tabs: HashSet::new(),
+            restoring_tabs: false,
             ide_started: false,
-            awaiting: std::collections::HashSet::new(),
+            awaiting: HashSet::new(),
             focus: {
                 let focus = cx.focus_handle();
                 cx.set_global(WorkbenchFocus(focus.clone()));
@@ -232,7 +282,165 @@ impl Workbench {
                 focus
             },
             _subscriptions: subscriptions,
+        };
+        workbench.apply_mode(cx);
+        workbench
+    }
+
+    /// The layout shown.
+    pub fn mode(&self) -> Mode {
+        self.layout.mode
+    }
+
+    fn agent(&self) -> bool {
+        self.layout.mode == Mode::Agent
+    }
+
+    /// Switch the layout. Everything stays as it is: the chat and its draft, running work, open files and terminals.
+    fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout.mode == mode {
+            return;
         }
+        self.layout.mode = mode;
+        // The pane groups of the other layout start again at their sizes when it comes back.
+        self.panes = None;
+        self.bottom_panes = None;
+        self.agent_panes = None;
+        self.sidebar_peek = false;
+        self.apply_mode(cx);
+        // Git reads its status more often only while its view is shown.
+        let git_shown = mode == Mode::Ide && self.left_visible && self.side == Side::Git;
+        self.git.update(cx, |git, cx| git.set_visible(git_shown, window, cx));
+        self.save_layout(cx);
+        match mode {
+            Mode::Agent => self.chat.update(cx, |chat, cx| chat.focus_composer(window, cx)),
+            Mode::Ide => {
+                if let Some((_, editor)) = editor_commands::active_editor(cx) {
+                    editor.update(cx, |state, cx| state.focus(window, cx));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Draw the shared views the way the layout shows them.
+    fn apply_mode(&mut self, cx: &mut Context<Self>) {
+        let agent = self.agent();
+        self.chat.update(cx, |chat, cx| chat.set_wide(agent, cx));
+        self.history.update(cx, |history, cx| history.set_sidebar(agent, cx));
+        self.dock_changes(cx);
+    }
+
+    /// The chat's changes are in the panel while it shows them, else above the composer.
+    fn dock_changes(&mut self, cx: &mut Context<Self>) {
+        let docked = self.agent() && self.tool == Some(Tool::Changes);
+        let changes = self.chat.read(cx).changes();
+        changes.update(cx, |changes, cx| changes.set_docked(docked, cx));
+    }
+
+    /// Keep the layout for the next start. The record is small and changes only on a click or at the end of a drag.
+    fn save_layout(&self, cx: &App) {
+        if let Err(error) = crate::placement::write_layout(&self.store.read(cx).paths.user_data, &self.layout) {
+            log::warn!("The window layout was not saved: {error:#}");
+        }
+    }
+
+    /// Show a tool: in Agent mode in the panel on the right; in IDE mode the editor is always there, and the
+    /// terminals are in the bottom panel.
+    pub fn show_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        if !self.agent() {
+            if tool == Tool::Terminal {
+                self.bottom_visible = true;
+                cx.notify();
+            }
+            return;
+        }
+        if self.tool == Some(tool) {
+            return;
+        }
+        self.tool = Some(tool);
+        self.dock_changes(cx);
+        cx.notify();
+    }
+
+    /// Open the panel with a tool, or close it when it shows that tool already; the terminal takes the keyboard when
+    /// it opens, the composer when the panel closes.
+    fn toggle_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tool == Some(tool) {
+            self.close_tool(window, cx);
+            return;
+        }
+        self.show_tool(tool, cx);
+        if tool == Tool::Terminal {
+            self.terminals.update(cx, |terminals, cx| terminals.focus(window, cx));
+        }
+    }
+
+    fn close_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tool = None;
+        self.dock_changes(cx);
+        self.chat.update(cx, |chat, cx| chat.focus_composer(window, cx));
+        cx.notify();
+    }
+
+    /// Where Agent mode's sidebar and panel go in this window.
+    fn agent_fit(&self, window: &Window) -> Fit {
+        let width = f32::from(window.viewport_size().width);
+        agent::fit(width, self.layout.sidebar.then_some(self.layout.sidebar_width), self.tool.map(|_| self.layout.panel_width))
+    }
+
+    /// Show or hide the sidebar of Agent mode, or the file pane of IDE mode (Ctrl+B). A window too narrow to dock
+    /// Agent mode's sidebar shows it over the conversation until a chat is chosen.
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.agent() {
+            self.left_visible = !self.left_visible;
+            cx.notify();
+            return;
+        }
+        if self.sidebar_peek {
+            self.sidebar_peek = false;
+        } else if self.agent_fit(window).sidebar.is_some() {
+            self.layout.sidebar = false;
+            self.save_layout(cx);
+        } else if !self.layout.sidebar {
+            self.layout.sidebar = true;
+            self.sidebar_peek = self.agent_fit(window).sidebar.is_none();
+            self.save_layout(cx);
+        } else {
+            self.sidebar_peek = true;
+        }
+        cx.notify();
+    }
+
+    /// Bring up the chat sidebar with the cursor in its search field (Ctrl+Alt+K).
+    fn search_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.agent() {
+            if self.agent_fit(window).sidebar.is_none() {
+                self.sidebar_peek = true;
+            }
+        } else {
+            self.agent_visible = true;
+            self.show_side(Side::History, window, cx);
+        }
+        self.history.update(cx, |history, cx| history.focus_search(window, cx));
+        cx.notify();
+    }
+
+    /// Commands of IDE mode alone switch to it first.
+    fn ide_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Ide, window, cx);
+    }
+
+    /// A drag in Agent mode ended: keep the widths it made.
+    fn agent_resized(&mut self, sidebar: Option<f32>, panel: Option<f32>, cx: &mut Context<Self>) {
+        if let Some(sidebar) = sidebar {
+            self.layout.sidebar_width = sidebar.clamp(agent::SIDEBAR_MIN, agent::SIDEBAR_MAX);
+        }
+        if let Some(panel) = panel {
+            self.layout.panel_width = panel;
+        }
+        self.save_layout(cx);
+        cx.notify();
     }
 
     /// Open the settings window at `section`.
@@ -255,55 +463,26 @@ impl Workbench {
         let title: SharedString =
             ide.workspace.as_ref().map(|workspace| SharedString::from(workspace.title.clone())).unwrap_or_else(|| tr(cx, "ide.ideOpenFolder"));
         let path = ide.workspace.as_ref().map(|workspace| workspace.path.clone()).unwrap_or_default();
-        let current = ide.workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
-        let has_project = current.is_some();
-        let workspaces = ide.workspaces.clone();
-        let handle = self.ide.clone();
+        let has_project = ide.workspace.is_some();
         let (left, agent, bottom) = (self.left_visible, self.agent_visible, self.bottom_visible);
         let tooltip: SharedString = if path.is_empty() { tr(cx, "native.projects") } else { path.into() };
         // The name is cut with an ellipsis; the tooltip keeps the whole path.
-        let projects = Button::new("projects")
-            .ghost()
-            .small()
-            .min_w_0()
-            .flex_shrink_1()
-            .max_w(px(if narrow { 180. } else { 280. }))
-            .icon(gpui_kit::component::IconName::Folder)
-            .label(title)
-            .tooltip(tooltip)
-            .dropdown_menu(move |mut menu, _, cx| {
-                for workspace in workspaces.iter().rev() {
-                    let checked = current.as_deref() == Some(workspace.workspace_id.as_str());
-                    let (handle, workspace) = (handle.clone(), workspace.clone());
-                    menu = menu.item(PopupMenuItem::new(workspace.title.clone()).checked(checked).on_click(move |_, window, cx| {
-                        let workspace = workspace.clone();
-                        handle.update(cx, |ide, cx| ide.select(workspace, window, cx));
-                    }));
-                }
-                if !workspaces.is_empty() {
-                    menu = menu.separator();
-                }
-                menu = menu
-                    .item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| choose_folder(window, cx)))
-                    .item(PopupMenuItem::new(tr(cx, "ide.ideWslFolder")).on_click(|_, window, cx| crate::ui::ide::browse_folder(window, cx)));
-                if current.is_some() {
-                    menu = menu.item(
-                        PopupMenuItem::new(tr(cx, "ide.ideAddFolder")).on_click(|_, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx)),
-                    );
-                }
-                if let Some(current) = current.clone() {
-                    let handle = handle.clone();
-                    let title = workspaces.iter().find(|w| w.workspace_id == current).map(|w| w.title.clone()).unwrap_or_default();
-                    menu = menu.item(PopupMenuItem::new(tr(cx, "ide.ideRemoveWorkspace")).on_click(move |_, window, cx| {
-                        confirm_remove(handle.clone(), current.clone(), title.clone(), window, cx);
-                    }));
-                }
-                menu
-            });
+        let projects = agent::with_project_menu(
+            Button::new("projects")
+                .ghost()
+                .small()
+                .min_w_0()
+                .flex_shrink_1()
+                .max_w(px(if narrow { 180. } else { 280. }))
+                .icon(IconName::Folder)
+                .label(title)
+                .tooltip(tooltip),
+            cx,
+        );
         let quick_open = Button::new("quick-open")
             .ghost()
             .small()
-            .icon(gpui_kit::component::IconName::Search)
+            .icon(IconName::Search)
             .when(!narrow, |this| this.label(tr(cx, "ide.ideSearchFiles")))
             .tooltip(tr(cx, "ide.ideQuickOpen"))
             .on_click(|_, window, cx| quick_open::open(window, cx));
@@ -313,8 +492,8 @@ impl Workbench {
             Button::new("toggle-files")
                 .ghost()
                 .small()
-                .icon(gpui_kit::component::IconName::PanelLeft)
-                .tooltip(tr(cx, "ide.ideToggleFiles"))
+                .icon(IconName::PanelLeft)
+                .tooltip_with_action(tr(cx, "ide.ideToggleFiles"), &ToggleSidebar, None)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.left_visible = !this.left_visible;
                     cx.notify();
@@ -325,7 +504,7 @@ impl Workbench {
             Button::new("toggle-bottom")
                 .ghost()
                 .small()
-                .icon(gpui_kit::component::IconName::PanelBottom)
+                .icon(IconName::PanelBottom)
                 .tooltip(tr(cx, "ide.ideToggleBottom"))
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
         );
@@ -334,7 +513,7 @@ impl Workbench {
             Button::new("toggle-agent")
                 .ghost()
                 .small()
-                .icon(gpui_kit::component::IconName::PanelRight)
+                .icon(IconName::PanelRight)
                 .tooltip(tr(cx, "ide.ideToggleAgent"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.agent_visible = !this.agent_visible;
@@ -344,7 +523,7 @@ impl Workbench {
         let settings = Button::new("open-settings")
             .ghost()
             .small()
-            .icon(gpui_kit::component::IconName::Settings)
+            .icon(IconName::Settings)
             .tooltip(tr(cx, "app.settings"))
             .on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::General, window, cx)));
         let run_controls = (ready && has_project).then(|| self.render_run_controls(narrow, cx));
@@ -362,6 +541,7 @@ impl Workbench {
                 .items_center()
                 .child(img("brand/rainy-mark.svg").size(px(18.)).flex_shrink_0())
                 .child(div().flex_shrink_0().text_sm().font_semibold().child("Rainy"))
+                .child(title_control(agent::mode_switch(Mode::Ide, cx)))
                 .child(div().flex_1())
                 .child(
                     h_flex()
@@ -386,7 +566,99 @@ impl Workbench {
         )
     }
 
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Agent mode's title bar: the sidebar toggle and the mode switch over the sidebar, the chat's title with its
+    /// menu, and the toggles of the panel on the right.
+    fn render_agent_title_bar(&self, fit: Fit, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let store = self.store.read(cx);
+        let summary = store.selected.as_ref().and_then(|id| store.summaries.iter().find(|summary| summary.id == *id)).cloned();
+        let toggle = |on: bool, button: Button| button.toggled(on).selected(on).when(on, |this| this.custom(crate::theme::selected_button(cx)));
+        let sidebar = toggle(
+            fit.sidebar.is_some() || self.sidebar_peek,
+            Button::new("toggle-sidebar")
+                .ghost()
+                .small()
+                .icon(IconName::PanelLeft)
+                .tooltip_with_action(tr(cx, "agent.toggleSidebar"), &ToggleSidebar, None)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
+        );
+        let title = match summary {
+            Some(summary) => {
+                let title: SharedString = if summary.title.is_empty() { tr(cx, "chat.newChat") } else { summary.title.clone().into() };
+                let actions = ChatActions::of(&summary, title.clone());
+                // The title is cut with an ellipsis before the buttons give way.
+                title_control(
+                    Button::new("chat-title").ghost().small().min_w_0().flex_shrink_1().max_w(px(560.)).label(title).dropdown_caret(true).dropdown_menu(
+                        move |menu, _, cx| {
+                            actions
+                                .menu(menu, cx)
+                                .separator()
+                                .item(PopupMenuItem::new(tr(cx, "agent.newChat")).on_click(|_, window, cx| window.dispatch_action(Box::new(NewChat), cx)))
+                        },
+                    ),
+                )
+                .min_w_0()
+                .into_any_element()
+            }
+            None => div().min_w_0().px_2().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().child(tr(cx, "chat.newChat")).into_any_element(),
+        };
+        let changes = self.chat.read(cx).changes().read(cx).count();
+        let tool = |id: &'static str, icon: Icon, label: &str, value: Tool| {
+            toggle(
+                self.tool == Some(value),
+                Button::new(id).ghost().small().icon(icon).tooltip(tr(cx, label)).on_click(cx.listener(move |this, _, window, cx| this.toggle_tool(value, window, cx))),
+            )
+        };
+        let files = tool("tool-files", Icon::new(IconName::FolderOpen), "agent.toolFiles", Tool::Files);
+        let terminal = tool("tool-terminal", Icon::new(IconName::SquareTerminal), "agent.toolTerminal", Tool::Terminal);
+        let theme = cx.theme();
+        let changes = tool("tool-changes", Icon::new(gpui_kit::assets::IconName::GitCompare), "agent.toolChanges", Tool::Changes).when(changes > 0, |this| {
+            this.child(div().flex_shrink_0().px_1().rounded(theme.radius).bg(theme.muted).text_xs().text_color(theme.foreground).child(changes.min(99).to_string()))
+        });
+        let more = Button::new("agent-more").ghost().small().icon(IconName::Ellipsis).tooltip(tr(cx, "agent.more")).dropdown_menu_with_anchor(Anchor::TopRight, |menu, _, cx| {
+            menu.item(PopupMenuItem::new(tr(cx, "agent.openInIde")).on_click(|_, window, cx| window.dispatch_action(Box::new(IdeMode), cx)))
+                .item(PopupMenuItem::new(tr(cx, "native.projectMap")).on_click(|_, window, cx| window.dispatch_action(Box::new(ShowMap), cx)))
+                .separator()
+                .item(PopupMenuItem::new(tr(cx, "app.settings")).on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)))
+        });
+        TitleBar::new().child(
+            // As in IDE mode, the row asks for no width of its own; the title gives way first.
+            h_flex()
+                .flex_1()
+                .w_0()
+                .min_w_0()
+                .overflow_hidden()
+                .pr_2()
+                .gap_2()
+                .items_center()
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_1()
+                        .items_center()
+                        // Over a docked sidebar the group spans it, so the title starts over the conversation.
+                        .when_some(fit.sidebar, |this, width| this.w(px(width - TITLE_BAR_INSET - 8.)))
+                        .child(img("brand/rainy-mark.svg").size(px(18.)).flex_shrink_0().mr_1())
+                        .child(title_control(sidebar))
+                        .child(div().flex_1())
+                        .child(title_control(agent::mode_switch(Mode::Agent, cx))),
+                )
+                .child(title)
+                .child(div().flex_1())
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_1()
+                        .items_center()
+                        .child(title_control(files))
+                        .child(title_control(terminal))
+                        .child(title_control(changes))
+                        .child(title_control(more)),
+                ),
+        )
+    }
+
+    /// The execution environment, as a label whose menu switches it, and the connection's color.
+    fn render_target(&self, id: &'static str, cx: &mut Context<Self>) -> (Hsla, impl IntoElement + use<>) {
         let store = self.store.read(cx);
         let target: SharedString = store
             .target
@@ -397,8 +669,24 @@ impl Workbench {
             .into();
         let current = store.target.as_ref().map(|target| target.id().to_owned());
         let handle = self.store.clone();
+        let theme = cx.theme();
+        let dot = match store.connection {
+            ConnectionState::Open => theme.success,
+            ConnectionState::Connecting => theme.warning,
+            ConnectionState::Closed => theme.danger,
+        };
+        let button = Button::new(id)
+            .ghost()
+            .xsmall()
+            .max_w(px(200.))
+            .label(target)
+            .tooltip(tr(cx, "native.switchTarget"))
+            .dropdown_menu(move |menu, _, _| target_menu(menu, handle.clone(), current.clone()));
+        (dot, button)
+    }
+
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let version = env!("CARGO_PKG_VERSION");
-        let connection = store.connection;
         // The language service of the file shown, while it starts or after it failed; a working one says nothing.
         let active = crate::store::ide::Ide::global(cx).read(cx).active.clone();
         let language = active.and_then(|key| {
@@ -443,12 +731,8 @@ impl Workbench {
                 .tooltip(tr(cx, "git.gitPanel"))
                 .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Git, window, cx)))
         });
+        let (dot, target) = self.render_target("target", cx);
         let theme = cx.theme();
-        let dot = match connection {
-            ConnectionState::Open => theme.success,
-            ConnectionState::Connecting => theme.warning,
-            ConnectionState::Closed => theme.danger,
-        };
         // What does not fit in a narrow window is cut: the branch and the language state give way first.
         h_flex()
             .h(px(24.))
@@ -463,28 +747,7 @@ impl Workbench {
             .border_t_1()
             .border_color(theme.status_bar_border)
             .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(dot))
-            .child(
-                Button::new("target")
-                    .ghost()
-                    .xsmall()
-                    .max_w(px(200.))
-                    .label(target)
-                    .tooltip(tr(cx, "native.switchTarget"))
-                    .dropdown_menu(move |mut menu, _, _| {
-                        let mut choices = vec![ExecutionTarget::windows()];
-                        choices.extend(targets::wsl_distributions());
-                        for choice in choices {
-                            let checked = current.as_deref() == Some(choice.id());
-                            let handle = handle.clone();
-                            menu = menu.item(PopupMenuItem::new(choice.label().to_owned()).checked(checked).on_click(move |_, window, cx| {
-                                if !checked {
-                                    confirm_switch(handle.clone(), choice.clone(), window, cx);
-                                }
-                            }));
-                        }
-                        menu
-                    }),
-            )
+            .child(target)
             .children(branch)
             .child(div().flex_1())
             .children(language)
@@ -620,7 +883,7 @@ impl Workbench {
                     .on_click(cx.listener(|this, _, window, cx| this.launch(false, window, cx))),
             ))
             .child(title_control(
-                Button::new("run-menu").ghost().small().icon(gpui_kit::component::IconName::ChevronDown).tooltip(tr(cx, "ide.ideRunMode")).dropdown_menu(
+                Button::new("run-menu").ghost().small().icon(IconName::ChevronDown).tooltip(tr(cx, "ide.ideRunMode")).dropdown_menu(
                     move |mut menu, _, _| {
                         menu = menu.label(current_label.clone());
                         let choose = |choice: Option<&'static str>| {
@@ -701,7 +964,7 @@ impl Workbench {
         }
         let breakpoints = debugging.then(|| ide.breakpoints_for_root(configuration["rootId"].as_str()));
         let save = self.ide.update(cx, |ide, cx| ide.save_all(window, cx));
-        self.bottom_visible = true;
+        self.show_tool(Tool::Terminal, cx);
         self.terminals.update(cx, |terminals, cx| terminals.show(if debugging { BottomTab::Debug } else { BottomTab::Terminal }, cx));
         cx.notify();
         cx.spawn_in(window, async move |_, cx| {
@@ -762,8 +1025,12 @@ impl Workbench {
         Execution::global(cx).read(cx).set_breakpoints(source, cx);
     }
 
-    /// Show or hide the terminals; showing them focuses the current one.
+    /// Show or hide the terminals; showing them focuses the current one. Agent mode shows them in its panel.
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.agent() {
+            self.toggle_tool(Tool::Terminal, window, cx);
+            return;
+        }
         self.bottom_visible = !self.bottom_visible;
         if self.bottom_visible {
             self.terminals.update(cx, |terminals, cx| terminals.focus(window, cx));
@@ -780,10 +1047,10 @@ impl Workbench {
     }
 
     fn render_side(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let files = self.side_tab("side-files", gpui_kit::component::Icon::new(gpui_kit::component::IconName::Folder), tr(cx, "ide.ideExplorer"), Side::Files, cx);
+        let files = self.side_tab("side-files", gpui_kit::component::Icon::new(IconName::Folder), tr(cx, "ide.ideExplorer"), Side::Files, cx);
         let search = self.side_tab(
             "side-search",
-            gpui_kit::component::Icon::new(gpui_kit::component::IconName::Search),
+            gpui_kit::component::Icon::new(IconName::Search),
             tr(cx, "search.searchTitle"),
             Side::Search,
             cx,
@@ -915,6 +1182,187 @@ impl Workbench {
         }
         panes.into_any_element()
     }
+
+    /// Agent mode's columns: the sidebar, the conversation and the panel, each resizable; the sidebar shown over the
+    /// conversation in a narrow window.
+    fn render_agent_body(&mut self, fit: Fit, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let width = f32::from(window.viewport_size().width);
+        let this = cx.entity().downgrade();
+        let dragged = |now: Option<&Pixels>, before: f32| now.map(|size| f32::from(*size).round()).filter(|size| (size - before).abs() >= 1.);
+        let mut targets = Vec::new();
+        if let Some(sidebar) = fit.sidebar {
+            targets.push((0, sidebar));
+        }
+        if let Some(panel) = fit.panel {
+            targets.push((usize::from(fit.sidebar.is_some()) + 1, panel));
+        }
+        let state = pane_group(&mut self.agent_panes, format!("agent-{}-{}", fit.sidebar.is_some(), fit.panel.is_some()), targets, window, cx);
+        let mut panes = h_resizable("agent").with_state(&state).on_resize(move |state, _, cx| {
+            let now = state.read(cx).sizes().clone();
+            let sidebar = fit.sidebar.and_then(|before| dragged(now.first(), before));
+            let panel = fit.panel.and_then(|before| dragged(now.last(), before));
+            if sidebar.is_some() || panel.is_some() {
+                let _ = this.update(cx, |this, cx| this.agent_resized(sidebar, panel, cx));
+            }
+        });
+        if let Some(sidebar) = fit.sidebar {
+            panes = panes.child(
+                resizable_panel().size(px(sidebar)).size_range(px(agent::SIDEBAR_MIN)..px(agent::SIDEBAR_MAX)).fixed().child(self.render_agent_sidebar(cx)),
+            );
+        }
+        let rest = width - fit.sidebar.unwrap_or(0.) - fit.panel.unwrap_or(0.);
+        panes = panes.child(resizable_panel().size_range(px(rest.clamp(100., agent::CONVERSATION_MIN))..Pixels::MAX).child(self.chat.clone()));
+        if let Some(panel) = fit.panel {
+            let most = (width - fit.sidebar.unwrap_or(0.) - agent::CONVERSATION_MIN).max(agent::PANEL_MIN);
+            let content = self.render_tool_panel(panel, cx);
+            panes = panes.child(resizable_panel().size(px(panel)).size_range(px(agent::PANEL_MIN)..px(most)).fixed().child(content));
+        }
+        if fit.sidebar.is_some() {
+            self.sidebar_peek = false;
+        }
+        // Over the conversation only: a page in the panel is a window of its own, which nothing GPUI draws can cover.
+        let peek = self.sidebar_peek.then(|| {
+            let theme = cx.theme();
+            let backdrop = theme.background.opacity(0.4);
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(
+                    div()
+                        .id("sidebar-backdrop")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .right(px(fit.panel.unwrap_or(0.)))
+                        .bg(backdrop)
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.sidebar_peek = false;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .h_full()
+                        .w(px(self.layout.sidebar_width))
+                        .occlude()
+                        .shadow_lg()
+                        .child(self.render_agent_sidebar(cx)),
+                )
+        });
+        div().relative().size_full().child(panes).children(peek).into_any_element()
+    }
+
+    /// The chat sidebar: the list (`HistoryPanel`), then settings and the execution environment at the bottom.
+    fn render_agent_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (dot, target) = self.render_target("sidebar-target", cx);
+        let theme = cx.theme();
+        v_flex()
+            .size_full()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.sidebar_border)
+            .child(div().flex_1().min_h_0().child(self.history.clone()))
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .h(px(40.))
+                    .px_2()
+                    .gap_1()
+                    .items_center()
+                    .border_t_1()
+                    .border_color(theme.sidebar_border)
+                    .child(
+                        Button::new("sidebar-settings")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Settings)
+                            .label(tr(cx, "app.settings"))
+                            .on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::General, window, cx))),
+                    )
+                    .child(div().flex_1())
+                    .child(h_flex().min_w_0().gap_1().items_center().text_xs().text_color(theme.muted_foreground).child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(dot)).child(target)),
+            )
+    }
+
+    /// Agent mode's panel on the right, `width` wide: a header with the tool's name and close, then the tool.
+    fn render_tool_panel(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let Some(tool) = self.tool else { return div().into_any_element() };
+        let (icon, label) = match tool {
+            Tool::Files => (Icon::new(IconName::FolderOpen), "agent.toolFiles"),
+            Tool::Terminal => (Icon::new(IconName::SquareTerminal), "agent.toolTerminal"),
+            Tool::Changes => (Icon::new(gpui_kit::assets::IconName::GitCompare), "agent.toolChanges"),
+        };
+        let ide = self.ide.read(cx);
+        let tree = tool == Tool::Files && ide.workspace.is_some() && self.tool_tree.unwrap_or(width >= 560. || ide.tabs.is_empty());
+        let tree_toggle = (tool == Tool::Files).then(|| {
+            Button::new("tool-tree")
+                .ghost()
+                .xsmall()
+                .icon(IconName::PanelLeft)
+                .selected(tree)
+                .tooltip(tr(cx, "agent.toggleTree"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.tool_tree = Some(!tree);
+                    cx.notify();
+                }))
+        });
+        let close = Button::new("tool-close")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Close)
+            .tooltip(tr(cx, "agent.closePanel"))
+            .on_click(cx.listener(|this, _, window, cx| this.close_tool(window, cx)));
+        let theme = cx.theme().clone();
+        let body: AnyElement = match tool {
+            Tool::Files => h_flex()
+                .size_full()
+                .when(tree, |this| {
+                    this.child(
+                        div()
+                            .w(px((width * 0.36).clamp(160., 260.)))
+                            .h_full()
+                            .flex_shrink_0()
+                            .bg(theme.sidebar)
+                            .border_r_1()
+                            .border_color(theme.sidebar_border)
+                            .child(self.files.clone()),
+                    )
+                })
+                .child(div().flex_1().min_w_0().h_full().child(self.editor.clone()))
+                .into_any_element(),
+            Tool::Terminal => self.terminals.clone().into_any_element(),
+            Tool::Changes => self.chat.read(cx).changes().into_any_element(),
+        };
+        v_flex()
+            .size_full()
+            .bg(theme.background)
+            .border_l_1()
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .h(px(34.))
+                    .flex_shrink_0()
+                    .pl_3()
+                    .pr_1()
+                    .gap_1p5()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(icon.small().text_color(theme.muted_foreground))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(tr(cx, label)))
+                    .children(tree_toggle)
+                    .child(close),
+            )
+            .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
 }
 
 /// The state of a group of resizable panes, and the sizes last put into it.
@@ -954,6 +1402,22 @@ fn pane_group(slot: &mut Option<PaneGroup>, key: String, targets: Vec<(usize, f3
     }
 }
 
+/// The execution environments to switch to, the current one checked; switching asks, then restarts.
+fn target_menu(mut menu: PopupMenu, store: Entity<Store>, current: Option<String>) -> PopupMenu {
+    let mut choices = vec![ExecutionTarget::windows()];
+    choices.extend(targets::wsl_distributions());
+    for choice in choices {
+        let checked = current.as_deref() == Some(choice.id());
+        let store = store.clone();
+        menu = menu.item(PopupMenuItem::new(choice.label().to_owned()).checked(checked).on_click(move |_, window, cx| {
+            if !checked {
+                confirm_switch(store.clone(), choice.clone(), window, cx);
+            }
+        }));
+    }
+    menu
+}
+
 /// The workbench's own focus, for commands that run after a dialog closed.
 pub struct WorkbenchFocus(pub FocusHandle);
 impl Global for WorkbenchFocus {}
@@ -965,17 +1429,27 @@ impl Global for WorkbenchHandle {}
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::web::begin_frame(cx);
-        let sizes = self.pane_sizes(window, cx);
+        // An entity's async updates (`update_in`) go to the window that last drew it, and the projects load through
+        // them from their first request on: every frame reads the Ide, so this window is its own before any view
+        // that shows a project has been drawn (Agent mode starts without one).
+        let _ = self.ide.read(cx);
+        let agent_mode = self.agent();
         let phase = self.render_phase(cx);
-        // Toasts stack in the top right corner, over the AI pane: while it is shown they are narrowed to fit inside it,
-        // so no page, which is only ever in the editor area, has to step aside for them (`web::end_frame`).
-        let toast_width = px(if phase.is_none() && self.agent_visible { (sizes.agent - 32.).clamp(260., 382.) } else { 382. });
-        if cx.theme().notification.width != toast_width {
-            gpui_kit::component::Theme::global_mut(cx).notification.width = toast_width;
+        let (body, title_bar, status_bar, toast_width) = if agent_mode {
+            let fit = self.agent_fit(window);
+            let body = phase.unwrap_or_else(|| self.render_agent_body(fit, window, cx));
+            (body, self.render_agent_title_bar(fit, cx).into_any_element(), None, 382.)
+        } else {
+            let sizes = self.pane_sizes(window, cx);
+            // Toasts stack in the top right corner, over the AI pane: while it is shown they are narrowed to fit inside
+            // it, so no page, which is only ever in the editor area, has to step aside for them (`web::end_frame`).
+            let toast_width = if phase.is_none() && self.agent_visible { (sizes.agent - 32.).clamp(260., 382.) } else { 382. };
+            let body = phase.unwrap_or_else(|| self.render_body(sizes, window, cx));
+            (body, self.render_title_bar(window, cx).into_any_element(), Some(self.render_status_bar(cx)), toast_width)
+        };
+        if cx.theme().notification.width != px(toast_width) {
+            gpui_kit::component::Theme::global_mut(cx).notification.width = px(toast_width);
         }
-        let body = phase.unwrap_or_else(|| self.render_body(sizes, window, cx));
-        let title_bar = self.render_title_bar(window, cx);
-        let status_bar = self.render_status_bar(cx);
         if window.focused(cx).is_none() {
             let focus = self.focus.clone();
             window.defer(cx, move |window, cx| {
@@ -991,36 +1465,71 @@ impl Render for Workbench {
             .size_full()
             .key_context("Workbench")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &AgentMode, window, cx| this.set_mode(Mode::Agent, window, cx)))
+            .on_action(cx.listener(|this, _: &IdeMode, window, cx| this.set_mode(Mode::Ide, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleMode, window, cx| {
+                let next = if this.agent() { Mode::Ide } else { Mode::Agent };
+                this.set_mode(next, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
             .on_action(cx.listener(|this, _: &SaveFile, window, cx| {
                 this.ide.update(cx, |ide, cx| ide.save(None, false, window, cx));
             }))
             .on_action(cx.listener(|this, _: &CloseFile, window, cx| {
+                // Not a tab out of sight: Agent mode closes tabs while its files panel shows them.
+                if this.agent() && this.tool != Some(Tool::Files) {
+                    return;
+                }
                 if let Some(key) = this.ide.read(cx).active.clone() {
                     close_tab(this.ide.clone(), key, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ReplaceInFiles, window, cx| {
+                this.ide_mode(window, cx);
                 this.show_side(Side::Search, window, cx);
                 this.search.update(cx, |search, cx| search.show_replace(cx));
                 let query = this.search.read(cx).query();
                 query.update(cx, |state, cx| state.focus(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &ShowExplorer, window, cx| this.show_side(Side::Files, window, cx)))
-            .on_action(cx.listener(|this, _: &ShowSourceControl, window, cx| this.show_side(Side::Git, window, cx)))
+            .on_action(cx.listener(|this, _: &ShowExplorer, window, cx| {
+                if this.agent() {
+                    this.tool_tree = Some(true);
+                    this.show_tool(Tool::Files, cx);
+                } else {
+                    this.show_side(Side::Files, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowSourceControl, window, cx| {
+                this.ide_mode(window, cx);
+                this.show_side(Side::Git, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(Section::General, window, cx)))
             .on_action(cx.listener(|this, _: &OpenRuntimeSettings, window, cx| this.open_settings(Section::Runtime, window, cx)))
-            .on_action(cx.listener(|_, _: &CommandPalette, window, cx| crate::ui::palette::open(window, cx)))
-            .on_action(cx.listener(|this, _: &ShowMap, window, cx| this.editor.update(cx, |editor, cx| editor.toggle_map(window, cx))))
-            .on_action(cx.listener(|this, _: &ShowChat, _, cx| {
-                this.agent_visible = true;
+            // Not through the workbench: the palette reads it to list the commands.
+            .on_action(|_: &CommandPalette, window, cx| crate::ui::palette::open(window, cx))
+            .on_action(cx.listener(|this, _: &ShowMap, window, cx| {
+                this.show_tool(Tool::Files, cx);
+                this.editor.update(cx, |editor, cx| editor.toggle_map(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &ShowChat, window, cx| {
+                if this.agent() {
+                    this.chat.update(cx, |chat, cx| chat.focus_composer(window, cx));
+                } else {
+                    this.agent_visible = true;
+                }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &NewChat, _, cx| {
+            .on_action(cx.listener(|this, _: &NewChat, window, cx| {
                 this.agent_visible = true;
+                this.sidebar_peek = false;
                 this.store.update(cx, |store, cx| store.select(None, cx));
+                if this.agent() {
+                    this.chat.update(cx, |chat, cx| chat.focus_composer(window, cx));
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FindInFiles, window, cx| {
+                this.ide_mode(window, cx);
                 this.show_side(Side::Search, window, cx);
                 let query = this.search.read(cx).query();
                 query.update(cx, |state, cx| state.focus(window, cx));
@@ -1038,7 +1547,10 @@ impl Render for Workbench {
             .on_action(|_: &GoToLine, window, cx| editor_commands::go_to_line(window, cx))
             .on_action(cx.listener(|this, _: &ExportPdf, window, cx| this.editor.update(cx, |editor, cx| editor.export_markdown("pdf", window, cx))))
             .on_action(cx.listener(|this, _: &ExportHtml, window, cx| this.editor.update(cx, |editor, cx| editor.export_markdown("html", window, cx))))
-            .on_action(cx.listener(|this, _: &ShowOutline, window, cx| this.show_side(Side::Outline, window, cx)))
+            .on_action(cx.listener(|this, _: &ShowOutline, window, cx| {
+                this.ide_mode(window, cx);
+                this.show_side(Side::Outline, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &MarkdownSource, _, cx| this.editor.update(cx, |editor, cx| editor.toggle_markdown_source(cx))))
             .on_action(cx.listener(|this, _: &MarkdownFocus, window, cx| {
                 let on = this.store.read(cx).prefs.markdown_focus;
@@ -1051,9 +1563,13 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &SaveAll, window, cx| {
                 this.ide.update(cx, |ide, cx| ide.save_all(window, cx)).detach();
             }))
-            .on_action(cx.listener(|this, _: &ToggleFiles, _, cx| {
-                this.left_visible = !this.left_visible;
-                cx.notify();
+            .on_action(cx.listener(|this, _: &ToggleFiles, window, cx| {
+                if this.agent() {
+                    this.toggle_tool(Tool::Files, window, cx);
+                } else {
+                    this.left_visible = !this.left_visible;
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|this, _: &ToggleAgent, _, cx| {
                 this.agent_visible = !this.agent_visible;
@@ -1061,6 +1577,7 @@ impl Render for Workbench {
             }))
             // 3.x "focus editor": the AI pane and the bottom panel step aside.
             .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
+                this.ide_mode(window, cx);
                 this.agent_visible = false;
                 this.bottom_visible = false;
                 this.editor.update(cx, |editor, cx| editor.hide_map(cx));
@@ -1070,15 +1587,11 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ShowProblems, _, cx| {
-                this.bottom_visible = true;
+                this.show_tool(Tool::Terminal, cx);
                 this.terminals.update(cx, |terminals, cx| terminals.show(BottomTab::Problems, cx));
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &SearchHistory, window, cx| {
-                this.agent_visible = true;
-                this.show_side(Side::History, window, cx);
-                this.history.update(cx, |history, cx| history.focus_search(window, cx));
-            }))
+            .on_action(cx.listener(|this, _: &SearchHistory, window, cx| this.search_chats(window, cx)))
             .on_action(|_: &AttachFolder, window, cx| crate::ui::ide::choose_folder_to_attach(window, cx))
             .on_action(cx.listener(|this, _: &GitRefresh, window, cx| this.git.update(cx, |git, cx| git.refresh(window, cx))))
             .on_action(cx.listener(|this, _: &CheckUpdates, _, cx| this.store.update(cx, |store, cx| store.check_updates(true, cx))))
@@ -1087,7 +1600,11 @@ impl Render for Workbench {
             .on_action(|_: &SendSelection, window, cx| editor_commands::send_selection(window, cx))
             .on_action(|_: &FindReferences, window, cx| editor_commands::find_references(window, cx))
             .on_action(|_: &RenameSymbol, window, cx| editor_commands::rename_symbol(window, cx))
-            .on_action(cx.listener(|_, _: &QuickOpen, window, cx| quick_open::open(window, cx)))
+            .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
+                // The file chosen opens in the files panel of Agent mode.
+                this.show_tool(Tool::Files, cx);
+                quick_open::open(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &OpenFolder, window, cx| {
                 if matches!(this.store.read(cx).phase, Phase::Ready) {
                     choose_folder(window, cx);
@@ -1099,7 +1616,7 @@ impl Render for Workbench {
             .text_size(theme.font_size)
             .child(title_bar)
             .child(div().flex_1().min_h_0().flex().overflow_hidden().child(body))
-            .child(status_bar)
+            .children(status_bar)
             .children(settings.clone())
             // Painted after everything else: pages show only where their area was painted and nothing covers them.
             .child(canvas(|_, _, _| {}, move |_, _, window, cx| crate::web::end_frame(settings.is_some(), window, cx)).absolute().size_0())
@@ -1158,24 +1675,6 @@ fn runtime_download_failed(prompt: RuntimePrompt, window: &mut Window, cx: &mut 
                         window.close_dialog(cx);
                     })),
             )
-    });
-}
-
-/// Confirm, then remove a project from the list; its files stay on disk.
-fn confirm_remove(ide: Entity<Ide>, workspace_id: String, title: String, window: &mut Window, cx: &mut App) {
-    window.open_alert_dialog(cx, move |alert, _, cx| {
-        let (ide, workspace_id) = (ide.clone(), workspace_id.clone());
-        alert
-            .title(tr(cx, "ide.ideRemoveWorkspace"))
-            .description(trf(cx, "ide.ideRemoveWorkspaceDescription", &[("title", &title)]))
-            .ok_text(tr(cx, "ide.ideConfirm"))
-            .cancel_text(tr(cx, "ide.ideCancel"))
-            .show_cancel(true)
-            .on_ok(move |_, window, cx| {
-                let id = workspace_id.clone();
-                ide.update(cx, |ide, cx| ide.remove_workspace(id, window, cx));
-                true
-            })
     });
 }
 

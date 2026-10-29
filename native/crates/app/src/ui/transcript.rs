@@ -740,7 +740,10 @@ fn open_file(target: &str, window: &mut Window, cx: &mut App) {
     let ide = Ide::global(cx);
     let key = ide.read(cx).key_from_absolute(target);
     match key {
-        Some(key) => ide.update(cx, |ide, cx| ide.open(key, true, window, cx)),
+        Some(key) => {
+            ide.update(cx, |ide, cx| ide.open(key, true, window, cx));
+            crate::ui::agent::reveal_editor(cx);
+        }
         None => window.push_notification(tr(cx, "chat.fileOutsideProject").to_string(), cx),
     }
 }

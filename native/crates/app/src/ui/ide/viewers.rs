@@ -130,6 +130,7 @@ pub fn shortcut_action(shortcut: Shortcut, kind: &str) -> Option<Box<dyn Action>
         (true, false, Some('G'), _) => Box::new(ShowSourceControl),
         (false, false, Some('O'), _) | (false, true, Some('O'), _) => Box::new(OpenFolder),
         (false, true, Some('N'), _) => Box::new(NewChat),
+        (true, false, Some('A'), _) => Box::new(crate::ui::agent::ToggleMode),
         (false, false, None, VK_OEM_3) => Box::new(ToggleTerminal),
         (false, false, None, VK_OEM_COMMA) => Box::new(OpenSettings),
         _ => return None,
