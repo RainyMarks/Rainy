@@ -15,12 +15,12 @@ use serde_json::{Value, json};
 
 use super::{heading, segmented};
 use crate::store::{Store, StoreEvent};
+use crate::ui::chat::thinking_label;
 use crate::ui::{tr, trf};
 
 const LOCAL_CONTEXT: u64 = 100_000;
 const API_CONTEXT: u64 = 1_000_000;
 const APIS: [&str; 3] = ["openai-completions", "openai-responses", "anthropic-messages"];
-const THINKING: [&str; 4] = ["off", "low", "high", "max"];
 const THINKING_FORMATS: [&str; 3] = ["openai", "deepseek", "qwen"];
 const OUTPUT_FIELDS: [&str; 2] = ["max_tokens", "max_completion_tokens"];
 
@@ -197,6 +197,23 @@ impl ModelsPage {
         Ok(value)
     }
 
+    /// The profile the form describes now, for the reasoning levels its model offers.
+    fn form_profile(&self, cx: &App) -> ModelSetup {
+        ModelSetup {
+            provider: self.value(&self.provider, cx),
+            base_url: self.value(&self.base_url, cx),
+            model: self.value(&self.model, cx),
+            context_window: 0.,
+            max_tokens: None,
+            local: self.local,
+            api: Some(self.api.to_owned()),
+            thinking: Some(self.thinking.clone()),
+            thinking_format: (self.api == "openai-completions").then(|| self.thinking_format.to_owned()),
+            max_tokens_field: None,
+            images: None,
+        }
+    }
+
     /// The whole form as `ModelSetupInput`.
     fn setup(&self, cx: &App) -> Result<Value, SharedString> {
         let mut value = self.connection(cx).map_err(|_| tr(cx, "settings.settingsRequiredModel"))?;
@@ -332,28 +349,30 @@ impl ModelsPage {
             let default = status.selected.as_ref().is_some_and(|selected| key_of(&selected.provider, &selected.model) == key);
             let kind = tr(cx, if model.local { "settings.settingsLocalModel" } else { "settings.settingsApiModel" });
             let detail = trf(cx, "settings.modelContext", &[("kind", &kind), ("context", &(model.context_window as u64))]);
-            let levels: Vec<String> = model.reasoning().levels().map(|level| level.as_str().to_owned()).collect();
-            let current_thinking = status.selected.as_ref().and_then(|s| s.thinking.clone()).or_else(|| model.thinking.clone()).unwrap_or_else(|| "off".into());
+            // The default model's level, as chats start with it; only a model with levels to choose from shows it.
+            let reasoning = model.reasoning();
+            let toggle = reasoning.toggle();
+            let current = reasoning.choose(status.selected.as_ref().and_then(|selected| selected.thinking.as_deref()).or(model.thinking.as_deref()));
             let (select_model, edit_model, remove_model) = (model.clone(), model.clone(), model.clone());
             let edit_key = key.clone();
             let thinking_model = model.clone();
             let page = cx.weak_entity();
+            let locale = self.store.read(cx).locale();
             let actions = h_flex()
                 .gap_1()
-                .when(default, |this| {
-                    let label = if current_thinking == "off" { tr(cx, "settings.settingsThinkingOff") } else { current_thinking.clone().into() };
+                .when_some(current.filter(|_| default && reasoning.adjustable()), |this, current| {
                     this.child(
                         Button::new(ElementId::Name(format!("thinking-{key}").into()))
                             .small()
                             .outline()
-                            .label(label)
+                            .label(thinking_label(locale, current, toggle))
+                            .tooltip(tr(cx, "chat.thinkingTitle"))
                             .dropdown_caret(true)
-                            .dropdown_menu(move |mut menu, _, cx| {
-                                for level in &levels {
-                                    let (page, model, level) = (page.clone(), thinking_model.clone(), level.clone());
-                                    let label = if level == "off" { tr(cx, "settings.settingsThinkingOff") } else { level.clone().into() };
-                                    menu = menu.item(PopupMenuItem::new(label).checked(level == current_thinking).on_click(move |_, window, cx| {
-                                        let _ = page.update(cx, |this, cx| this.select(&model, Some(level.clone()), window, cx));
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for level in reasoning.levels() {
+                                    let (page, model) = (page.clone(), thinking_model.clone());
+                                    menu = menu.item(PopupMenuItem::new(thinking_label(locale, level, toggle)).checked(level == current).on_click(move |_, window, cx| {
+                                        let _ = page.update(cx, |this, cx| this.select(&model, Some(level.as_str().to_owned()), window, cx));
                                     }));
                                 }
                                 menu
@@ -483,16 +502,11 @@ impl ModelsPage {
             (None, Some(preset)) => trf(cx, "settings.settingsPreset", &[("name", preset)]),
             _ => tr(cx, "settings.settingsAddModel"),
         };
-        let levels: Vec<(String, SharedString)> = status
-            .and_then(|status| status.model(&provider))
-            .map(|model| model.reasoning().levels().map(|level| level.as_str().to_owned()).collect::<Vec<_>>())
-            .unwrap_or_else(|| THINKING.iter().map(|s| (*s).to_owned()).collect())
-            .into_iter()
-            .map(|level| {
-                let label: SharedString = if level == "off" { tr(cx, "settings.settingsThinkingOff") } else { level.clone().into() };
-                (level, label)
-            })
-            .collect();
+        // The levels of the model the form describes now, saved or not: the same table the Host and the composer use.
+        let reasoning = self.form_profile(cx).reasoning();
+        let locale = self.store.read(cx).locale();
+        let levels: Vec<(String, SharedString)> = reasoning.levels().map(|level| (level.as_str().to_owned(), thinking_label(locale, level, reasoning.toggle()).into())).collect();
+        let shown_thinking = reasoning.choose(Some(&self.thinking)).map_or_else(|| self.thinking.clone(), |level| level.as_str().to_owned());
         let local = self.local;
         let mut form = v_flex()
             .gap_3()
@@ -560,13 +574,25 @@ impl ModelsPage {
             let apis: Vec<(String, SharedString)> = APIS.iter().map(|api| ((*api).to_owned(), SharedString::from(*api))).collect();
             let formats: Vec<(String, SharedString)> = THINKING_FORMATS.iter().map(|value| ((*value).to_owned(), SharedString::from(*value))).collect();
             let fields: Vec<(String, SharedString)> = OUTPUT_FIELDS.iter().map(|value| ((*value).to_owned(), SharedString::from(*value))).collect();
+            let thinking: AnyElement = if reasoning.adjustable() {
+                self.choice("model-thinking", tr(cx, "settings.settingsThinking"), &shown_thinking, levels, |this, value| this.thinking = value, cx).into_any_element()
+            } else {
+                let note = if reasoning.reasons() { "chat.thinkingFixed" } else { "chat.thinkingNone" };
+                v_flex()
+                    .gap_1()
+                    .flex_1()
+                    .min_w(px(200.))
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.settingsThinking")))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(tr(cx, note)))
+                    .into_any_element()
+            };
             let mut row = h_flex()
                 .gap_3()
                 .flex_wrap()
                 .child(self.choice("model-api", tr(cx, "settings.settingsProtocol"), self.api, apis, |this, value| {
                     this.api = APIS.iter().copied().find(|api| *api == value).unwrap_or("openai-completions");
                 }, cx))
-                .child(self.choice("model-thinking", tr(cx, "settings.settingsThinking"), &self.thinking.clone(), levels, |this, value| this.thinking = value, cx));
+                .child(thinking);
             if self.api == "openai-completions" {
                 row = row
                     .child(self.choice("model-thinking-format", tr(cx, "settings.settingsThinkingFormat"), self.thinking_format, formats, |this, value| {
