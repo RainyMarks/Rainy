@@ -8,7 +8,7 @@
 #   hittest:X,Y      print WM_NCHITTEST's answer at X,Y after moving the mouse there (1 client, 2 caption)
 #   busy:            print how long the window's thread stays busy (after a click, say)
 #   key:NAME         press enter, escape, tab, down, up, backspace; prefix ctrl+ or shift+
-#   chord:ctrl+K     press a key with ctrl, shift or alt held in the window's own key state
+#   chord:ctrl+K     press a key with ctrl, shift and/or alt held in the window's own key state (chord:ctrl+shift+A)
 #   wait:SECONDS     sleep
 #   shot:PATH        capture the window to PATH
 #   powershell -File native/scripts/drive.ps1 -ProcessId <pid> -Steps "click:900,1260;;type:hello;;key:enter;;wait:3;;shot:a.png"
@@ -93,20 +93,19 @@ public static class Drive {
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   /// A key with a modifier held, as the window's own thread sees it: the modifier is set in that thread's key state
   /// (shared for a moment through AttachThreadInput), never in the system's, so no other window gets it.
-  public static void Chord(IntPtr h, uint modifier, uint vk) {
+  public static void Chord(IntPtr h, uint[] modifiers, uint vk) {
     uint pid; uint target = GetWindowThreadProcessId(h, out pid);
     uint self = GetCurrentThreadId();
     AttachThreadInput(self, target, true);
     var state = new byte[256];
     GetKeyboardState(state);
-    byte before = state[modifier];
-    state[modifier] = 0x80;
+    var before = (byte[])state.Clone();
+    foreach (uint modifier in modifiers) { state[modifier] = 0x80; }
     SetKeyboardState(state);
     PostMessage(h, 0x0100, (IntPtr)vk, KeyParam(vk, false));
     PostMessage(h, 0x0101, (IntPtr)vk, KeyParam(vk, true));
     System.Threading.Thread.Sleep(300);
-    state[modifier] = before;
-    SetKeyboardState(state);
+    SetKeyboardState(before);
     AttachThreadInput(self, target, false);
   }
   public static void Click(IntPtr h, int screenX, int screenY, bool right) {
@@ -154,7 +153,8 @@ foreach ($step in ($Steps -split ';;')) {
       $parts = $arg -split '\+'
       $name = $parts[-1]
       $vk = if ($vks.ContainsKey($name)) { $vks[$name] } else { [int][char]$name.ToUpper() }
-      [Drive]::Chord($h, $mods[$parts[0]], $vk)
+      [uint32[]]$held = @($parts[0..($parts.Count - 2)] | ForEach-Object { $mods[$_] })
+      [Drive]::Chord($h, $held, $vk)
       Start-Sleep -Milliseconds 150
     }
     'key' {
