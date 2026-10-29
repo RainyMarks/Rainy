@@ -7,7 +7,30 @@ use std::io::{self, Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::paths::realpath;
+
+pub fn not_file() -> HostError {
+    HostError::new("not-file", l("所选路径不是普通文件。", "The selected path is not a regular file."))
+}
+
+pub fn too_large() -> HostError {
+    HostError::new("too-large", l("文件超过了大小上限。", "The file exceeds the configured size limit."))
+}
+
+pub fn exists() -> HostError {
+    HostError::new("already-exists", l("目标已存在。", "The destination already exists."))
+}
+
+/// The file on disk is not the version the editor opened.
+pub fn changed() -> HostError {
+    HostError::new("version-conflict", l("文件在打开后被修改了。请重新加载，或比较后再保存。", "The file changed after it was opened. Reload or compare before saving."))
+}
+
+fn rename_exists(destination: &Path) -> HostError {
+    let name = destination.display();
+    HostError::new("already-exists", l(&format!("无法重命名为“{name}”：目标已存在。"), &format!("Cannot rename to \"{name}\": the destination already exists.")))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -117,7 +140,7 @@ pub fn resolve(path: &Path) -> HostResult<PathBuf> {
     loop {
         match realpath(&current) {
             Ok(real) => return Ok(missing.iter().rev().fold(real, |path, part| path.join(part))),
-            Err(error) if error.kind() == io::ErrorKind::NotADirectory => return Err(HostError::new("not-found", "A parent path segment is not a directory.")),
+            Err(error) if error.kind() == io::ErrorKind::NotADirectory => return Err(HostError::new("not-found", l("上级路径中有一段不是文件夹。", "A parent path segment is not a directory."))),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let Some(parent) = current.parent().map(Path::to_path_buf) else { return Ok(path.to_path_buf()) };
                 if parent == current {
@@ -135,15 +158,15 @@ pub fn resolve(path: &Path) -> HostResult<PathBuf> {
 pub fn read_bytes(path: &Path, max: u64) -> HostResult<Vec<u8>> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
-        return Err(HostError::new("not-file", "The selected path is not a regular file."));
+        return Err(not_file());
     }
     if metadata.len() > max {
-        return Err(HostError::new("too-large", "The file exceeds the configured size limit."));
+        return Err(too_large());
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     fs::File::open(path)?.take(max + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max {
-        return Err(HostError::new("too-large", "The file exceeds the configured size limit."));
+        return Err(too_large());
     }
     Ok(bytes)
 }
@@ -151,7 +174,7 @@ pub fn read_bytes(path: &Path, max: u64) -> HostResult<Vec<u8>> {
 /// At most `length` bytes from `offset`.
 pub fn read_range(path: &Path, offset: u64, length: u64) -> HostResult<Vec<u8>> {
     if !fs::metadata(path)?.is_file() {
-        return Err(HostError::new("not-file", "The selected path is not a regular file."));
+        return Err(not_file());
     }
     let mut file = fs::File::open(path)?;
     file.seek(io::SeekFrom::Start(offset))?;
@@ -163,12 +186,12 @@ pub fn read_range(path: &Path, offset: u64, length: u64) -> HostResult<Vec<u8>> 
 /// Open a regular file only if it is still the version that was observed.
 pub fn open_stable(path: &Path, version: &str) -> HostResult<(fs::File, u64)> {
     let file = fs::File::open(path)?;
-    let info = stat(path)?.ok_or_else(|| HostError::new("not-found", "The file no longer exists."))?;
+    let info = stat(path)?.ok_or_else(|| HostError::new("not-found", l("文件已不存在。", "The file no longer exists.")))?;
     if info.kind != Kind::File {
-        return Err(HostError::new("not-file", "The selected path is not a regular file."));
+        return Err(not_file());
     }
     if info.version != version {
-        return Err(HostError::new("version-conflict", "The file changed while it was opened."));
+        return Err(HostError::new("version-conflict", l("文件在读取时被修改了。", "The file changed while it was opened.")));
     }
     Ok((file, info.size))
 }
@@ -189,12 +212,12 @@ pub fn write(path: &Path, content: &[u8], intent: Intent<'_>) -> HostResult<()> 
     let _serial = WRITES.lock().unwrap();
     let existing = stat(path)?;
     if existing.as_ref().is_some_and(|info| info.kind != Kind::File) {
-        return Err(HostError::new("not-file", "The destination is not a regular file."));
+        return Err(HostError::new("not-file", l("目标不是普通文件。", "The destination is not a regular file.")));
     }
     match (&intent, &existing) {
-        (Intent::CreateIfAbsent, Some(_)) => return Err(HostError::new("already-exists", "The destination already exists.")),
+        (Intent::CreateIfAbsent, Some(_)) => return Err(exists()),
         (Intent::ReplaceIfVersion(version), Some(info)) if info.version == *version => {}
-        (Intent::ReplaceIfVersion(_), _) => return Err(HostError::new("version-conflict", "The file changed after it was opened. Reload or compare before saving.")),
+        (Intent::ReplaceIfVersion(_), _) => return Err(changed()),
         _ => {}
     }
     let folder = path.parent().ok_or_else(|| HostError::invalid("The destination has no folder."))?;
@@ -215,11 +238,11 @@ pub fn write(path: &Path, content: &[u8], intent: Intent<'_>) -> HostResult<()> 
                     let _ = fs::remove_file(&temporary);
                     Ok(())
                 }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(HostError::new("already-exists", "The destination already exists.")),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(exists()),
                 // A filesystem without hard links: the check above is the best there is.
                 Err(_) => {
                     if fs::symlink_metadata(path).is_ok() {
-                        return Err(HostError::new("already-exists", "The destination already exists."));
+                        return Err(exists());
                     }
                     crate::store::rename_retrying(&temporary, path).map_err(Into::into)
                 }
@@ -245,12 +268,12 @@ pub fn rename_no_replace(source: &Path, destination: &Path, kind: Kind) -> HostR
                 }
                 return Ok(());
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(HostError::new("already-exists", format!("Cannot rename to \"{}\": the destination already exists.", destination.display()))),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(rename_exists(&destination)),
             Err(_) => {}
         }
     }
     if fs::symlink_metadata(destination).is_ok() {
-        return Err(HostError::new("already-exists", format!("Cannot rename to \"{}\": the destination already exists.", destination.display())));
+        return Err(rename_exists(&destination));
     }
     fs::rename(source, destination)?;
     Ok(())

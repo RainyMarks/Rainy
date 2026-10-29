@@ -182,7 +182,8 @@ pub struct Memory {
 /// The registry changes that bring the current user's registration to `wanted` (`integrationOperations`): parts turned
 /// on are (re)written for this executable and language, and the parts in `present` that are off are removed. A part
 /// that is not present is not removed at all, so keys Windows or the user made under the same names
-/// (`Applications\RainyAgent.exe` from "Choose another app") stay.
+/// (`Applications\RainyAgent.exe` from "Choose another app") stay. The values [`read_status`] compares are each part's
+/// last writes (the `*` verb, then `Rainy.md` with its command last), so a write cut short never reads as current.
 pub fn operations(executable: &str, language: Language, wanted: ShellIntegration, memory: &Memory, present: ShellIntegration) -> Vec<Operation> {
     let keep: HashSet<String> = memory.keep.iter().map(|path| path.to_lowercase()).collect();
     let kept = |path: &str| keep.contains(&path.to_lowercase());
@@ -209,7 +210,7 @@ pub fn operations(executable: &str, language: Language, wanted: ShellIntegration
     let icon = format!("\"{executable}\",0");
     if wanted.context_menu {
         let label = context_menu_label(language);
-        for (index, (verb, _)) in CONTEXT_KEYS.iter().enumerate() {
+        for (index, (verb, _)) in CONTEXT_KEYS.iter().enumerate().rev() {
             let placeholder = if index == 0 { "%1" } else { "%V" };
             operations.extend([set(verb, "", label), set(verb, "Icon", &icon), set(&format!(r"{verb}\command"), "", &launch_command(executable, placeholder))]);
         }
@@ -230,16 +231,16 @@ pub fn operations(executable: &str, language: Language, wanted: ShellIntegration
             set(CAPABILITIES, "ApplicationIcon", &icon),
             set(REGISTERED_APPLICATIONS, REGISTERED_APPLICATION, CAPABILITIES),
         ]);
-        for entry in &FILE_TYPES {
-            for extension in entry.extensions {
+        for entry in FILE_TYPES.iter().rev() {
+            for extension in entry.extensions.iter().rev() {
                 let id = prog_id(extension);
                 operations.extend([
                     set(&format!(r"{CLASSES}\{id}"), "", entry.name(language)),
                     set(&format!(r"{CLASSES}\{id}\DefaultIcon"), "", &icon),
-                    set(&format!(r"{CLASSES}\{id}\shell\open\command"), "", &command),
                     set(&format!(r"{CLASSES}\.{extension}\OpenWithProgids"), &id, ""),
                     set(&format!(r"{APPLICATION}\SupportedTypes"), &format!(".{extension}"), ""),
                     set(&format!(r"{CAPABILITIES}\FileAssociations"), &format!(".{extension}"), &id),
+                    set(&format!(r"{CLASSES}\{id}\shell\open\command"), "", &command),
                 ]);
             }
         }
@@ -304,40 +305,55 @@ pub fn existing_keys(registry: &impl Registry, keys: &[String]) -> Result<Vec<St
     Ok(found)
 }
 
-/// What the registry holds now: the context menu's label and command, and the command and name of Rainy's Markdown type.
+/// What the registry holds now: the context menu's label and command, the command and name of Rainy's Markdown type,
+/// and for each part whether anything of it is there, also without those values, as a write cut short leaves it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
     pub context_menu_label: Option<String>,
     pub context_menu_command: Option<String>,
     pub file_type_command: Option<String>,
     pub file_type_name: Option<String>,
+    /// One of the menu's verb keys.
+    pub context_menu_traces: bool,
+    /// Rainy's name on `Applications\RainyAgent.exe`, its capabilities or its Default apps entry: the first file-type
+    /// values written.
+    pub file_type_traces: bool,
 }
 
 pub fn read_status(registry: &impl Registry) -> Result<Status> {
     let (menu, _) = CONTEXT_KEYS[0];
     let markdown = format!(r"{CLASSES}\{}", prog_id("md"));
+    let mut context_menu_traces = false;
+    for (verb, _) in CONTEXT_KEYS {
+        context_menu_traces = context_menu_traces || registry.exists(verb)?;
+    }
+    let file_type_traces = registry.read(APPLICATION, FRIENDLY_APP_NAME)?.as_deref() == Some("Rainy")
+        || registry.exists(PRODUCT)?
+        || registry.has_value(REGISTERED_APPLICATIONS, REGISTERED_APPLICATION)?;
     Ok(Status {
         context_menu_label: registry.read(menu, "")?,
         context_menu_command: registry.read(&format!(r"{menu}\command"), "")?,
         file_type_command: registry.read(&format!(r"{markdown}\shell\open\command"), "")?,
         file_type_name: registry.read(&markdown, "")?,
+        context_menu_traces,
+        file_type_traces,
     })
 }
 
 /// Whether the registry already matches, so nothing needs to be written (`shellIntegrationCurrent`). A moved
 /// installation or another language needs a rewrite; unlike 3.x the type name is compared too, so the names follow the
-/// language when only the file types are on.
+/// language when only the file types are on, and a part that is off must have left no trace.
 pub fn current(status: &Status, executable: &str, language: Language, wanted: ShellIntegration) -> bool {
     let command = launch_command(executable, "%1");
     let menu = if wanted.context_menu {
         status.context_menu_command.as_deref() == Some(command.as_str()) && status.context_menu_label.as_deref() == Some(context_menu_label(language))
     } else {
-        status.context_menu_command.is_none()
+        status.context_menu_command.is_none() && !status.context_menu_traces
     };
     let types = if wanted.file_types {
         status.file_type_command.as_deref() == Some(command.as_str()) && status.file_type_name.as_deref() == Some(FILE_TYPES[0].name(language))
     } else {
-        status.file_type_command.is_none()
+        status.file_type_command.is_none() && !status.file_type_traces
     };
     menu && types
 }
@@ -438,9 +454,10 @@ pub fn sync(
         return Ok(Synced { changed: false, memory: memory.clone() });
     }
     let registered = ShellIntegration { context_menu: status.context_menu_command.is_some(), file_types: status.file_type_command.is_some() };
+    // A part whose write was cut short keeps the memory saved before that write: the keys it created since are Rainy's.
     let turning_on = ShellIntegration {
-        context_menu: wanted.context_menu && !registered.context_menu,
-        file_types: wanted.file_types && !registered.file_types,
+        context_menu: wanted.context_menu && !registered.context_menu && !(status.context_menu_traces && memory.recorded.context_menu),
+        file_types: wanted.file_types && !registered.file_types && !(status.file_type_traces && memory.recorded.file_types),
     };
     let mut before = memory.clone();
     if turning_on.any() {
@@ -457,11 +474,11 @@ pub fn sync(
         before = Memory { keep, recorded };
         remember(&before)?;
     }
-    // A part that is off is removed only while Rainy's registration for it is there and is this installation's, or that
-    // of a Rainy that is gone.
+    // A part that is off is removed only while Rainy's registration for it, whole or cut short, is there and is this
+    // installation's, or that of a Rainy that is gone.
     let present = ShellIntegration {
-        context_menu: registered.context_menu && !elsewhere(status.context_menu_command.as_deref(), executable),
-        file_types: registered.file_types && !elsewhere(status.file_type_command.as_deref(), executable),
+        context_menu: (registered.context_menu || status.context_menu_traces) && !elsewhere(status.context_menu_command.as_deref(), executable),
+        file_types: (registered.file_types || status.file_type_traces) && !elsewhere(status.file_type_command.as_deref(), executable),
     };
     let changed = apply(registry, &operations(executable, language, wanted, &before, present))?;
     // A part that is off now has nothing of Rainy's left; the next time it is turned on, it looks again.
@@ -578,8 +595,9 @@ pub fn sync_saved(registry: &mut impl Registry, settings: &Path, executable: &st
 
 /// Save a switch and bring the registry to it with `sync` (`rainy:shell-integration-set`). When that fails, the switches
 /// the change set go back to what they were: the settings page keeps showing them, and the next start would otherwise
-/// apply the choice unasked.
-pub fn change_saved(settings: &Path, change: Change, sync: impl FnOnce() -> Result<()>) -> Result<()> {
+/// apply the choice unasked. A second `sync` then takes back what the failed one wrote, rather than leaving a part
+/// half written until the next start.
+pub fn change_saved(settings: &Path, change: Change, mut sync: impl FnMut() -> Result<()>) -> Result<()> {
     let previous = preference(&targets::read_preferences(settings)?);
     let (context_menu, file_types) = (change.context_menu, change.file_types);
     save(settings, change)?;
@@ -589,8 +607,13 @@ pub fn change_saved(settings: &Path, change: Change, sync: impl FnOnce() -> Resu
             file_types: file_types.map(|_| previous.file_types),
             ..Change::default()
         };
-        if let Err(error) = save(settings, back) {
-            log::warn!("The Explorer integration switch was not put back: {error:#}");
+        match save(settings, back) {
+            Ok(()) => {
+                if let Err(error) = sync() {
+                    log::warn!("Explorer integration was not put back: {error:#}");
+                }
+            }
+            Err(error) => log::warn!("The Explorer integration switch was not put back: {error:#}"),
         }
     })
 }
@@ -955,11 +978,13 @@ mod tests {
     fn registers_the_context_menu_on_files_folders_and_backgrounds() {
         let planned = operations(EXE, Language::Chinese, on(true, false), &recorded(&[]), ALL);
         let commands: Vec<&Operation> = planned.iter().filter(|operation| matches!(operation, Operation::Set { key, .. } if key.ends_with(r"\command"))).collect();
+        // The command of files, which tells a registration that is there, is written last.
         assert_eq!(commands, [
-            &set(r"Software\Classes\*\shell\Rainy\command", "", &format!("\"{EXE}\" \"%1\"")),
-            &set(r"Software\Classes\Directory\shell\Rainy\command", "", &format!("\"{EXE}\" \"%V\"")),
             &set(r"Software\Classes\Directory\Background\shell\Rainy\command", "", &format!("\"{EXE}\" \"%V\"")),
+            &set(r"Software\Classes\Directory\shell\Rainy\command", "", &format!("\"{EXE}\" \"%V\"")),
+            &set(r"Software\Classes\*\shell\Rainy\command", "", &format!("\"{EXE}\" \"%1\"")),
         ]);
+        assert_eq!(menu_last(&planned), Some(&set(r"Software\Classes\*\shell\Rainy\command", "", &format!("\"{EXE}\" \"%1\""))));
         assert!(planned.contains(&set(r"Software\Classes\*\shell\Rainy", "", "通过 Rainy 打开")));
         assert!(planned.contains(&set(r"Software\Classes\Directory\shell\Rainy", "Icon", &format!("\"{EXE}\",0"))));
         // File types that are turned off lose only Rainy's value; the keys above it go only when that left them empty.
@@ -1036,6 +1061,8 @@ mod tests {
             context_menu_command: Some(command.clone()),
             file_type_command: Some(command),
             file_type_name: Some("Markdown 文档".into()),
+            context_menu_traces: true,
+            file_type_traces: true,
         };
         assert!(current(&registered, EXE, Language::Chinese, ALL));
         // Another language, a moved installation or a part turned off all need a rewrite.
@@ -1044,9 +1071,12 @@ mod tests {
         assert!(!current(&registered, EXE, Language::Chinese, on(false, true)));
         assert!(current(&Status::default(), EXE, Language::Chinese, OFF));
         // The type names follow the language also when only the file types are on.
-        let types_only = Status { context_menu_label: None, context_menu_command: None, ..registered };
+        let types_only = Status { context_menu_label: None, context_menu_command: None, context_menu_traces: false, ..registered };
         assert!(current(&types_only, EXE, Language::Chinese, on(false, true)));
         assert!(!current(&types_only, EXE, Language::English, on(false, true)));
+        // A part that is off but left something behind, as a write cut short does, is not current either.
+        assert!(!current(&Status { context_menu_traces: true, ..Status::default() }, EXE, Language::Chinese, OFF));
+        assert!(!current(&Status { file_type_traces: true, ..Status::default() }, EXE, Language::Chinese, OFF));
     }
 
     #[test]
@@ -1062,6 +1092,8 @@ mod tests {
             context_menu_command: Some(launch_command(unicode, "%1")),
             file_type_command: Some(launch_command(unicode, "%1")),
             file_type_name: Some("Markdown 文档".into()),
+            context_menu_traces: true,
+            file_type_traces: true,
         });
         assert!(current(&status, unicode, Language::Chinese, ALL));
         // Both parts were recorded as turned on into an empty registry: everything Rainy created goes.
@@ -1130,7 +1162,7 @@ mod tests {
 
     #[test]
     fn saves_the_memory_before_a_write_that_fails() {
-        let mut registry = Hive { refused: Some(r"Software\Classes\*\shell\Rainy".into()), ..Hive::default() };
+        let mut registry = Hive { refused: Some(r"Software\Classes\Directory\Background\shell\Rainy".into()), ..Hive::default() };
         registry.create(r"Software\Classes\Directory\shell");
         let mut saved = Vec::new();
         let failed = sync(&mut registry, EXE, Language::Chinese, on(true, false), &Memory::default(), |memory| {
@@ -1333,8 +1365,92 @@ mod tests {
     fn tells_explorer_about_what_changed_before_a_failure() {
         let mut registry = Hive { refused: Some(r"Software\Classes\Directory\shell\Rainy".into()), ..Hive::default() };
         assert!(apply(&mut registry, &operations(EXE, Language::Chinese, on(true, false), &Memory::default(), ALL)).is_err());
-        assert!(registry.has(r"Software\Classes\*\shell\Rainy\command"));
+        assert!(registry.has(r"Software\Classes\Directory\Background\shell\Rainy\command"));
         assert_eq!(registry.notified, 1);
+        // The verb written last, which tells a registration that is there, was not reached.
+        assert!(!registry.has(r"Software\Classes\*\shell\Rainy"));
+        let status = read_status(&registry).unwrap();
+        assert!(status.context_menu_command.is_none() && status.context_menu_traces);
+    }
+
+    /// The last `Set` of the menu part.
+    fn menu_last(planned: &[Operation]) -> Option<&Operation> {
+        planned.iter().filter(|operation| matches!(operation, Operation::Set { key, .. } if key.contains(r"\shell\Rainy"))).last()
+    }
+
+    #[test]
+    fn writes_the_values_a_sync_compares_last() {
+        let planned = operations(EXE, Language::Chinese, on(false, true), &recorded(&[]), OFF);
+        let markdown = r"Software\Classes\Rainy.md";
+        assert_eq!(planned.last(), Some(&set(&format!(r"{markdown}\shell\open\command"), "", &launch_command(EXE, "%1"))));
+        // The type name a sync compares comes after every other type's.
+        let names: Vec<usize> = planned
+            .iter()
+            .enumerate()
+            .filter(|(_, operation)| matches!(operation, Operation::Set { key, name, .. } if name.is_empty() && key.rsplit('\\').next().is_some_and(|last| last.starts_with("Rainy."))))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(names.len(), 80);
+        assert_eq!(planned.iter().position(|operation| *operation == set(markdown, "", "Markdown 文档")), names.last().copied());
+    }
+
+    /// Every key and value of a registration written in one go.
+    fn whole(wanted: ShellIntegration) -> BTreeMap<String, BTreeMap<String, String>> {
+        let mut registry = Hive::default();
+        quietly(&mut registry, EXE, Language::Chinese, wanted, &Memory::default());
+        registry.keys
+    }
+
+    #[test]
+    fn a_write_cut_short_is_finished_or_taken_back_by_the_next_sync() {
+        for (refused, wanted) in [
+            (r"Software\Classes\Directory\shell\Rainy", on(true, false)),
+            (r"Software\Classes\Rainy.py", on(false, true)),
+            (r"Software\Classes\Rainy.md", on(false, true)),
+            (r"Software\RegisteredApplications", on(false, true)),
+        ] {
+            let mut registry = Hive { refused: Some(refused.into()), ..Hive::default() };
+            let mut saved = Memory::default();
+            let failed = sync(&mut registry, EXE, Language::Chinese, wanted, &Memory::default(), |memory| {
+                saved = memory.clone();
+                Ok(())
+            });
+            assert!(failed.is_err(), "{refused}");
+            let status = read_status(&registry).unwrap();
+            assert!(!current(&status, EXE, Language::Chinese, wanted), "{refused}");
+            assert!(!current(&status, EXE, Language::Chinese, OFF), "{refused}");
+            // Turned on still: the next sync finishes the registration, keeping the memory saved before the first.
+            let mut finished = Hive { keys: registry.keys.clone(), ..Hive::default() };
+            let synced = quietly(&mut finished, EXE, Language::Chinese, wanted, &saved);
+            assert!(synced.changed, "{refused}");
+            assert_eq!(synced.memory, saved, "{refused}");
+            assert_eq!(finished.keys, whole(wanted), "{refused}");
+            // Turned off meanwhile: everything the cut write made goes.
+            registry.refused = None;
+            assert!(quietly(&mut registry, EXE, Language::Chinese, OFF, &saved).changed, "{refused}");
+            assert_eq!(registry.paths(), ["software", r"software\classes"], "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_switch_that_fails_takes_back_what_it_wrote() {
+        let folder = tempfile::tempdir().unwrap();
+        let settings = folder.path().join("desktop.json");
+        std::fs::write(&settings, r#"{"explorerIntegration": {"contextMenu": true}}"#).unwrap();
+        let mut registry = Hive::default();
+        registry.create(r"Software\Classes\.txt\OpenWithProgids");
+        sync_saved(&mut registry, &settings, EXE, Language::Chinese).unwrap();
+        let before = registry.keys.clone();
+        // The file types break off half way, after Rainy's capabilities and some of the types are written.
+        registry.refused = Some(r"Software\Classes\Rainy.py".into());
+        let failed = change_saved(&settings, Change { file_types: Some(true), ..Change::default() }, || {
+            sync_saved(&mut registry, &settings, EXE, Language::Chinese).map(drop)
+        });
+        assert!(failed.is_err());
+        let saved = targets::read_preferences(&settings).unwrap();
+        assert_eq!(preference(&saved), on(true, false));
+        assert_eq!(registry.keys, before);
+        assert_eq!(memory(&saved).recorded, on(true, false));
     }
 
     #[test]

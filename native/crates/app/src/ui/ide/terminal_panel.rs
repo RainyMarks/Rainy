@@ -518,11 +518,7 @@ impl TerminalPanel {
                 let path = source["path"].as_str().unwrap_or_default().to_owned();
                 let root = source["rootId"].as_str().map(str::to_owned);
                 source["lines"].as_array().cloned().unwrap_or_default().into_iter().filter_map(move |line| {
-                    let key = match &root {
-                        Some(root) => format!("\0{root}/{path}"),
-                        None => path.clone(),
-                    };
-                    Some((key, line.as_u64()?))
+                    Some((crate::store::ide::root_key(root.as_deref(), &path), line.as_u64()?))
                 })
             })
             .collect();

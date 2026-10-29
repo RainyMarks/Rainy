@@ -60,14 +60,6 @@
   background: var(--rainy-alias-control-fill-hover);
 }
 
-.toolbar {
-  background: var(--rainy-alias-button-tool-bar-fill);
-}
-
-.toolbar:hover:not(:disabled) {
-  background: var(--rainy-alias-button-tool-bar-hover);
-}
-
 .icon {
   display: inline-flex;
   width: 16px;

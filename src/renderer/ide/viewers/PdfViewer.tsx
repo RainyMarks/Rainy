@@ -1,11 +1,14 @@
 /** PDF viewer on the bundled pdf.js 2.16 build (`resources/pdfjs`): pages render on demand with selectable text and links,
- *  a new zoom keeps the reader's place, a password-protected file asks for its password, and the text can be extracted. */
+ *  a new zoom keeps the reader's place, a password-protected file asks for its password, the text can be extracted, and
+ *  Ctrl+F finds text in every page. */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
+import { Button, fileSizeText, IconAction, IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, IconCloseOutlineRegular, isComposingKey, toast,
+  writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
 import { describePdfError, PdfJsUnavailableError } from './pdf-errors.ts'
+import { findMatches, findPattern, type MatchPiece, type PdfMatch } from './pdf-find.ts'
 import { anchoredScroll, canvasPixelRatio, captureAnchor, pageIndexAt, type Anchor, type Box } from './pdf-layout.ts'
-import { fixRadicals, joinTextItems, selectedText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
+import { fixRadicals, joinTextItems, layOutText, selectedText, type LaidOutText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
 import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
@@ -178,13 +181,18 @@ function endOfContent(layer: HTMLElement): HTMLElement {
   return end
 }
 
+/** The matches of the find bar on one page: the item pieces of each, which of them is the current one (-1 for none), and
+ *  a number that changes when the current one should be scrolled into view. */
+interface PageFinds { readonly matches: readonly (readonly MatchPiece[])[]; readonly current: number; readonly reveal: number }
+
 /** One page: a frame of the page's size that holds a canvas, the text layer and the links while it is near the view. */
-function PdfPageView({ context, number, size, scale, root }: {
+function PdfPageView({ context, number, size, scale, root, finds }: {
   context: PdfContext
   number: number
   size: Size
   scale: number
   root: HTMLElement | null
+  finds: PageFinds | undefined
 }): JSX.Element {
   const frame = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
@@ -195,13 +203,60 @@ function PdfPageView({ context, number, size, scale, root }: {
   const shown = useRef<{ canvas?: HTMLCanvasElement | undefined; text?: HTMLElement | undefined; links?: HTMLElement | undefined; scale?: number | undefined }>({})
   /** Whether pdf.js holds resources it parsed to render this page, which `cleanup()` gives back. */
   const parsed = useRef(false)
+  /** Bumped when a new text layer is shown, so the find marks are placed over it. */
+  const [layerVersion, setLayerVersion] = useState(0)
+  const marks = useRef<HTMLElement | undefined>(undefined)
+  const revealed = useRef(0)
 
   const dropLayers = (): void => {
     shown.current.text?.remove()
     shown.current.links?.remove()
+    marks.current?.remove()
+    marks.current = undefined
     shown.current = { canvas: shown.current.canvas, scale: shown.current.scale }
     context.layers.delete(number)
   }
+
+  // The find bar's matches, as boxes behind the text layer's own text, measured from it at its current zoom.
+  useEffect(() => {
+    marks.current?.remove()
+    marks.current = undefined
+    const element = frame.current
+    const record = context.layers.get(number)
+    if (element === null || record === undefined || finds === undefined || finds.matches.length === 0) return
+    const box = element.getBoundingClientRect()
+    const layer = document.createElement('div')
+    layer.className = css.findLayer
+    let current: HTMLElement | undefined
+    finds.matches.forEach((pieces, index) => {
+      for (const piece of pieces) {
+        const node = record.divs[piece.item]?.firstChild
+        if (!(node instanceof Text)) continue
+        const range = document.createRange()
+        range.setStart(node, Math.min(piece.from, node.length))
+        range.setEnd(node, Math.min(piece.to, node.length))
+        for (const rect of range.getClientRects()) {
+          const mark = document.createElement('div')
+          mark.className = css.findMatch
+          if (index === finds.current) {
+            mark.dataset.current = ''
+            current ??= mark
+          }
+          mark.style.left = `${rect.left - box.left}px`
+          mark.style.top = `${rect.top - box.top}px`
+          mark.style.width = `${rect.width}px`
+          mark.style.height = `${rect.height}px`
+          layer.append(mark)
+        }
+      }
+    })
+    element.append(layer)
+    marks.current = layer
+    if (current !== undefined && finds.reveal !== revealed.current) {
+      revealed.current = finds.reveal
+      current.scrollIntoView({ block: 'center', inline: 'nearest' })
+    }
+  }, [finds, layerVersion, context, number])
   /** A page far from the view keeps only its empty frame: canvas pixels, layers and pdf.js's parsed resources go. */
   const release = (): void => {
     dropLayers()
@@ -286,6 +341,7 @@ function PdfPageView({ context, number, size, scale, root }: {
       shown.current = { ...shown.current, text: layer }
       // pdf.js makes one text div for every item that has a string, in order.
       context.layers.set(number, { divs, items: items.filter(item => item.str !== undefined) })
+      setLayerVersion(value => value + 1)
 
       const links = (await annotations).filter(annotation => annotation.annotationType === LINK_ANNOTATION)
       if (cancelled || links.length === 0) return
@@ -353,9 +409,55 @@ function PdfPassword({ incorrect, onSubmit }: { incorrect: boolean; onSubmit: (p
   )
 }
 
+/** What the find bar found: every match in reading order, the current one, and a number that changes when it should be
+ *  scrolled into view. */
+interface Found { readonly matches: readonly PdfMatch[]; readonly current: number; readonly reveal: number }
+
+/** The find bar (Ctrl+F): the query, how many matches, the previous and next match, and whether case counts. */
+function PdfFindBar({ request, query, caseSensitive, found, searching, onQuery, onCase, onStep, onClose }: {
+  /** Changes with every Ctrl+F, which selects the query again. */
+  request: number
+  query: string
+  caseSensitive: boolean
+  found: Found | undefined
+  searching: boolean
+  onQuery: (query: string) => void
+  onCase: () => void
+  onStep: (delta: 1 | -1) => void
+  onClose: () => void
+}): JSX.Element {
+  const t = useViewerT()
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(() => { input.current?.focus(); input.current?.select() }, [request])
+  const total = found?.matches.length ?? 0
+  const count = query.trim() === '' ? '' : searching ? t('pdfFindSearching') : total === 0 ? t('findNone') : t('findCount', { current: (found?.current ?? 0) + 1, total })
+  return <div className="rainy-find" role="search" data-pdf-find onKeyDown={(event) => {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    onClose()
+  }}>
+    <div className="rainy-find-row">
+      <input ref={input} className="rainy-find-input" value={query} placeholder={t('findPlaceholder')} aria-label={t('findPlaceholder')} spellCheck={false}
+        onChange={(event) => { onQuery(event.target.value) }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' || isComposingKey(event.nativeEvent)) return
+          event.preventDefault()
+          onStep(event.shiftKey ? -1 : 1)
+        }} />
+      <span className="rainy-find-count" aria-live="polite">{count}</span>
+      <button type="button" className="rainy-find-toggle" aria-pressed={caseSensitive} title={t('findCase')} aria-label={t('findCase')} onClick={onCase}>Aa</button>
+      <IconAction label={t('findPrevious')} disabled={total === 0} onClick={() => { onStep(-1) }}><IconChevronUpOutlineRegular size={14} /></IconAction>
+      <IconAction label={t('findNext')} disabled={total === 0} onClick={() => { onStep(1) }}><IconChevronDownOutlineRegular size={14} /></IconAction>
+      <IconAction label={t('findClose')} onClick={onClose}><IconCloseOutlineRegular size={14} /></IconAction>
+    </div>
+  </div>
+}
+
 /**
  * Ctrl+wheel zooms around the pointer; Ctrl+= and Ctrl+- step the zoom like the buttons, and Ctrl+0 goes back to
- * automatic zoom, the zoom a PDF opens at.
+ * automatic zoom, the zoom a PDF opens at. Ctrl+F finds text: Enter and F3 go to the next match, Shift with them to the
+ * previous one, Esc closes the bar.
  * @param props.url Byte route URL of the PDF.
  * @param props.data The PDF itself, for a copy made from another format; it takes the place of `url`.
  * @param props.bytes File size shown in the status bar.
@@ -544,6 +646,91 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
     document.addEventListener('copy', onCopy)
     return () => { document.removeEventListener('copy', onCopy) }
   }, [context])
+  // Find: the text of every page as copying joins it, read once per document.
+  const [findRequest, setFindRequest] = useState<number | undefined>()
+  const [query, setQuery] = useState('')
+  const [caseSensitive, setCaseSensitive] = useState(false)
+  const [found, setFound] = useState<Found | undefined>()
+  const [searching, setSearching] = useState(false)
+  const texts = useRef<{ document: PdfDocument | undefined; pages: Map<number, LaidOutText> }>({ document: undefined, pages: new Map() })
+  const finding = findRequest !== undefined && opened !== undefined
+  useEffect(() => {
+    const pattern = finding ? findPattern(query, caseSensitive) : undefined
+    if (opened === undefined || pattern === undefined) { setFound(undefined); setSearching(false); return }
+    if (texts.current.document !== opened.document) texts.current = { document: opened.document, pages: new Map() }
+    const cache = texts.current.pages
+    let cancelled = false
+    setSearching(true)
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const pages: LaidOutText[] = []
+        for (let number = 1; number <= opened.document.numPages; number++) {
+          let text = cache.get(number)
+          if (text === undefined) {
+            text = layOutText((await (await opened.document.getPage(number)).getTextContent()).items)
+            cache.set(number, text)
+          }
+          if (cancelled) return
+          pages.push(text)
+        }
+        const matches = findMatches(pages, pattern)
+        // The first match is the first one on or after the page being read.
+        const first = Math.max(0, matches.findIndex(match => match.page >= currentPage.current))
+        setFound(previous => ({ matches, current: first, reveal: (previous?.reveal ?? 0) + 1 }))
+        setSearching(false)
+      })().catch(() => {
+        if (cancelled) return
+        setFound(previous => ({ matches: [], current: 0, reveal: previous?.reveal ?? 0 }))
+        setSearching(false)
+      })
+    }, 150)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [finding, query, caseSensitive, opened])
+  const stepFind = (delta: 1 | -1): void => {
+    setFound(previous => previous === undefined || previous.matches.length === 0 ? previous
+      : { ...previous, current: (previous.current + delta + previous.matches.length) % previous.matches.length, reveal: previous.reveal + 1 })
+  }
+  const latestFind = useRef({ finding, stepFind })
+  latestFind.current = { finding, stepFind }
+  useEffect(() => {
+    if (opened === undefined) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || isComposingKey(event)) return
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        const selected = window.getSelection()?.toString().trim() ?? ''
+        if (selected !== '' && !selected.includes('\n') && selected.length <= 200) setQuery(selected)
+        setFindRequest(Date.now())
+      } else if (event.key === 'F3' && !event.ctrlKey && !event.altKey && latestFind.current.finding) {
+        event.preventDefault()
+        latestFind.current.stepFind(event.shiftKey ? -1 : 1)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('keydown', onKey) }
+  }, [opened])
+  // A match on a page that has no text layer yet: showing the page renders it, and the page scrolls to the match.
+  useEffect(() => {
+    const match = found?.matches[found.current]
+    if (match !== undefined && context !== undefined && !context.layers.has(match.page)) goTo.current(match.page - 1)
+  // Only a new request to show the current match moves the view.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [found?.reveal])
+  const pageFinds = useMemo(() => {
+    const byPage = new Map<number, PageFinds>()
+    if (found === undefined) return byPage
+    const lists = new Map<number, MatchPiece[][]>()
+    let current: { page: number; index: number } | undefined
+    found.matches.forEach((match, index) => {
+      const list = lists.get(match.page) ?? []
+      if (index === found.current) current = { page: match.page, index: list.length }
+      list.push([...match.pieces])
+      lists.set(match.page, list)
+    })
+    for (const [page, matches] of lists) byPage.set(page, { matches, current: current?.page === page ? current.index : -1, reveal: found.reveal })
+    return byPage
+  }, [found])
+
   const extract = async (): Promise<void> => {
     if (opened === undefined) return
     setExtracting(true)
@@ -584,6 +771,8 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
         ]} />
         {tools}
       </div>
+      {finding && <PdfFindBar request={findRequest} query={query} caseSensitive={caseSensitive} found={found} searching={searching}
+        onQuery={setQuery} onCase={() => { setCaseSensitive(value => !value) }} onStep={stepFind} onClose={() => { setFindRequest(undefined) }} />}
       <div ref={stage} className={css.stage} onScroll={onScroll}>
         {problem !== undefined ? (
           <div className={css.message}>
@@ -593,7 +782,7 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
         ) : password !== undefined ? <PdfPassword key={password.attempt} incorrect={password.incorrect} onSubmit={password.submit} />
           : context === undefined ? <div className={css.message}>{t('loading')}</div>
             : <div ref={frames} className={`${css.pages} ${css.pdfPages}`}>{pages.map(number => (
-              <PdfPageView key={number} context={context} number={number} size={size} scale={scale} root={stage.current} />
+              <PdfPageView key={number} context={context} number={number} size={size} scale={scale} root={stage.current} finds={pageFinds.get(number)} />
             ))}</div>}
       </div>
       <div className={css.status}>{note !== undefined && <span>{note}</span>}<span>{fileSizeText(bytes)}</span></div>

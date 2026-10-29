@@ -6,8 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
@@ -27,10 +28,13 @@ pub enum QuestionKind {
     Secret,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Question {
     pub kind: QuestionKind,
     pub prompt: String,
+    /// Cleared once the `ssh` run that asks has ended or its askpass process is gone: nobody waits for the answer, and
+    /// the window stops asking.
+    pub open: Arc<AtomicBool>,
 }
 
 /// Shows one question and waits for the answer; `None` cancels. Called on a server thread.
@@ -50,6 +54,8 @@ struct State {
     /// Runs whose question the user cancelled: `ssh` takes a failed askpass as an empty answer and asks again, up to
     /// three times, so their later questions are refused without a window.
     cancelled: HashSet<String>,
+    /// The question each run is asking now, by token, closed when the run ends.
+    questions: HashMap<String, Arc<AtomicBool>>,
 }
 
 /// The askpass server of one application run.
@@ -93,8 +99,26 @@ impl Drop for Session {
             let mut state = owner.state.lock().unwrap();
             state.sessions.remove(&self.token);
             state.cancelled.remove(&self.token);
+            // The run's `ssh` has ended; a question it left open closes.
+            if let Some(open) = state.questions.remove(&self.token) {
+                open.store(false, Ordering::SeqCst);
+            }
         }
     }
+}
+
+/// Clear `open` once the askpass process closes its end of `stream`; it sends nothing after its question.
+fn watch(mut stream: TcpStream, open: &AtomicBool) {
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => {}
+            Err(_) => break,
+        }
+    }
+    open.store(false, Ordering::SeqCst);
 }
 
 fn random_token() -> String {
@@ -142,18 +166,26 @@ impl Askpass {
         let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
         let token = request.get("token").and_then(Value::as_str).unwrap_or_default();
         let prompt: String = request.get("prompt").and_then(Value::as_str).unwrap_or_default().chars().take(4096).collect();
-        let reply = if self.state.lock().unwrap().sessions.contains_key(token) { self.answer(token, &prompt) } else { None };
+        // `ssh` may end while the window asks, killing its askpass process with it.
+        let open = Arc::new(AtomicBool::new(true));
+        if let Ok(watched) = stream.try_clone() {
+            let open = open.clone();
+            let _ = thread::Builder::new().name("askpass-watch".into()).spawn(move || watch(watched, &open));
+        }
+        let reply = if self.state.lock().unwrap().sessions.contains_key(token) { self.answer(token, &prompt, &open) } else { None };
         let body = reply.map_or_else(|| json!({}), |answer| json!({ "answer": answer }));
         let mut stream = stream;
         let _ = stream.write_all(body.to_string().as_bytes());
+        // The watcher holds the socket too; the askpass process reads to its end.
+        let _ = stream.shutdown(Shutdown::Both);
     }
 
-    fn answer(&self, token: &str, prompt: &str) -> Option<String> {
+    fn answer(&self, token: &str, prompt: &str, open: &Arc<AtomicBool>) -> Option<String> {
         let _turn = self.asking.lock().unwrap();
         let kind = if is_host_key_question(prompt) { QuestionKind::HostKey } else { QuestionKind::Secret };
         {
             let mut state = self.state.lock().unwrap();
-            let State { remembered, sessions, cancelled } = &mut *state;
+            let State { remembered, sessions, cancelled, questions } = &mut *state;
             if cancelled.contains(token) {
                 return None;
             }
@@ -169,9 +201,15 @@ impl Askpass {
             if used.contains(prompt) {
                 remembered.remove(prompt);
             }
+            questions.insert(token.to_owned(), open.clone());
         }
-        let reply = (self.ask)(Question { kind, prompt: prompt.to_owned() });
+        let reply = (self.ask)(Question { kind, prompt: prompt.to_owned(), open: open.clone() });
         let mut state = self.state.lock().unwrap();
+        state.questions.remove(token);
+        // Nobody waits for an answer the run gave up on; it is neither remembered nor taken as a cancel.
+        if !open.load(Ordering::SeqCst) {
+            return None;
+        }
         match &reply {
             Some(answer) if kind == QuestionKind::Secret => {
                 state.remembered.insert(prompt.to_owned(), answer.clone());
@@ -270,5 +308,53 @@ mod tests {
         assert_eq!(ask_once(&server, &next, "Password: ").as_deref(), Some("pw"));
         drop(run);
         assert!(server.state.lock().unwrap().cancelled.is_empty());
+    }
+
+    /// A window that keeps asking until the question closes, then answers too late.
+    fn until_closed() -> Ask {
+        Arc::new(|question: Question| {
+            while question.open.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Some("too late".to_owned())
+        })
+    }
+
+    #[test]
+    fn a_question_closes_when_its_run_ends() {
+        let server = Askpass::start(PathBuf::from("Rainy.exe"), until_closed()).unwrap();
+        let run = server.session();
+        let (token, address) = (run.token.clone(), server.address);
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.write_all(format!("{}\n", json!({ "token": token, "prompt": "Password: " })).as_bytes()).unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            reply
+        });
+        while !server.state.lock().unwrap().questions.contains_key(&run.token) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(run);
+        // Nothing is answered, remembered or marked cancelled.
+        assert_eq!(client.join().unwrap(), "{}");
+        let state = server.state.lock().unwrap();
+        assert!(state.remembered.is_empty() && state.cancelled.is_empty() && state.questions.is_empty());
+    }
+
+    #[test]
+    fn a_question_closes_when_its_askpass_process_goes() {
+        let server = Askpass::start(PathBuf::from("Rainy.exe"), until_closed()).unwrap();
+        let run = server.session();
+        let mut stream = TcpStream::connect(server.address).unwrap();
+        stream.write_all(format!("{}\n", json!({ "token": run.token, "prompt": "Password: " })).as_bytes()).unwrap();
+        while !server.state.lock().unwrap().questions.contains_key(&run.token) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(stream);
+        while !server.state.lock().unwrap().questions.is_empty() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(server.state.lock().unwrap().remembered.is_empty());
     }
 }

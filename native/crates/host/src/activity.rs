@@ -1,6 +1,6 @@
 //! Whether anything is running, for target switches and update installs the carrier asks about (3.x `activity.ts`).
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::HostError;
@@ -11,25 +11,19 @@ type Probe = Arc<dyn Fn() -> bool + Send + Sync>;
 /// Probes of running work, and the gate the carrier closes before it replaces this Host.
 #[derive(Default)]
 pub struct Activity {
-    probes: Mutex<Vec<(usize, Probe)>>,
-    next: AtomicUsize,
+    probes: Mutex<Vec<Probe>>,
     frozen: AtomicBool,
 }
 
 impl Activity {
-    /// Add a probe that reports whether its owner has running work; returns its id for [`Activity::remove`].
-    pub fn add(&self, probe: impl Fn() -> bool + Send + Sync + 'static) -> usize {
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
-        self.probes.lock().unwrap().push((id, Arc::new(probe)));
-        id
-    }
-
-    pub fn remove(&self, id: usize) {
-        self.probes.lock().unwrap().retain(|(known, _)| *known != id);
+    /// Add a probe that reports whether its owner has running work, for the life of the Host.
+    pub fn add(&self, probe: impl Fn() -> bool + Send + Sync + 'static) {
+        self.probes.lock().unwrap().push(Arc::new(probe));
     }
 
     pub fn active(&self) -> bool {
-        let probes: Vec<Probe> = self.probes.lock().unwrap().iter().map(|(_, probe)| probe.clone()).collect();
+        // The probes lock their owners' state; they run without this lock held.
+        let probes: Vec<Probe> = self.probes.lock().unwrap().clone();
         probes.iter().any(|probe| probe())
     }
 

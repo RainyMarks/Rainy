@@ -1,174 +1,187 @@
-//! The Strata local model card under the model settings (3.x `StrataSettings.tsx`): the engine's state, the model files
-//! and run settings, and start, stop and connect. It starts collapsed; its header keeps the engine's state visible.
+//! The Strata card in Settings → Tools: download Strata, keep it at its newest release, choose a model from Strata's
+//! own catalog by what fits this computer, download it, serve it, connect it as the default model, and remove it all
+//! again. Strata's catalog words are English; this card says them in the interface language.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::progress::Progress;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use rainy_carrier::strata::{Phase, Settings, Status};
+use rainy_carrier::strata::{Catalog, Choice, Fit, Job, JobKind, Phase, Settings, Size, Source, Status};
 
 use super::models_extra::notice;
 use crate::store::Store;
 use crate::ui::{tr, trf};
 
-const CONTEXTS: [u32; 5] = [8192, 32768, 65536, 131072, 262144];
-const KV_CACHES: [&str; 3] = ["int8", "q4_0", "k8v4"];
-
-/// The form as typed.
-#[derive(Clone, PartialEq)]
-struct Form {
-    model_path: String,
-    mtp_path: String,
-    context: String,
-    port: String,
-    kv_cache: String,
-    vram: String,
-    budget: String,
-}
-
-impl Form {
-    fn of(settings: &Settings) -> Self {
-        Self {
-            model_path: settings.model_path.clone(),
-            mtp_path: settings.mtp_path.clone(),
-            context: settings.context_window.to_string(),
-            port: settings.port.to_string(),
-            kv_cache: settings.kv_cache.clone(),
-            vram: settings.vram_reserve_mib.to_string(),
-            budget: settings.resident_budget_gib.map(|budget| budget.to_string()).unwrap_or_default(),
-        }
-    }
-
-    /// The settings it describes, when every field is valid.
-    fn settings(&self) -> Option<Settings> {
-        let budget = self.budget.trim();
-        let settings = Settings {
-            model_path: self.model_path.trim().to_owned(),
-            mtp_path: self.mtp_path.trim().to_owned(),
-            context_window: self.context.parse().ok()?,
-            port: self.port.trim().parse().ok()?,
-            kv_cache: self.kv_cache.clone(),
-            vram_reserve_mib: self.vram.trim().parse().ok()?,
-            resident_budget_gib: if budget.is_empty() { None } else { Some(budget.parse().ok()?) },
-        };
-        settings.check().is_ok().then_some(settings)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Field {
-    Model,
-    Mtp,
-}
+/// Families shown before "more models": the original model, its coding version and the smaller model.
+const MAIN_FAMILIES: [&str; 3] = ["qwen", "coder", "qwen36"];
 
 pub struct StrataCard {
     store: Entity<Store>,
-    open: bool,
-    advanced: bool,
-    model_path: Entity<InputState>,
-    mtp_path: Entity<InputState>,
     port: Entity<InputState>,
-    vram: Entity<InputState>,
-    budget: Entity<InputState>,
-    context: String,
-    kv_cache: String,
-    /// The settings the form was last filled from.
-    shown: Option<Settings>,
+    /// All families are listed, not only the main ones.
+    all: bool,
+    /// The port the field was last filled with.
+    shown_port: Option<u16>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// `12.3 GB`, `620 MB`.
+fn bytes_text(bytes: u64) -> String {
+    let gb = bytes as f64 / 1e9;
+    if gb >= 10.0 {
+        format!("{gb:.0} GB")
+    } else if gb >= 1.0 {
+        format!("{gb:.1} GB")
+    } else {
+        format!("{:.0} MB", bytes as f64 / 1e6)
+    }
+}
+
+fn gb_text(gb: f64) -> String {
+    if gb >= 10.0 { format!("{gb:.0} GB") } else { format!("{gb:.1} GB") }
+}
+
+/// A context length as people say it: `128K`.
+fn context_text(tokens: u64) -> String {
+    if tokens >= 1024 && tokens % 1024 == 0 { format!("{}K", tokens / 1024) } else { tokens.to_string() }
+}
+
+fn elapsed_text(seconds: u64) -> String {
+    if seconds < 90 { format!("{seconds} s") } else { format!("{} min", seconds / 60) }
+}
+
+/// The family's words in Chinese, else Strata's own.
+fn family_about(id: &str, english: &str, zh: bool) -> String {
+    let chinese = match id {
+        "qwen" => "原版模型，通用，推荐",
+        "swift" => "Swift 1.5：思考更短、回答更快，质量相近",
+        "coder" => "只保留一半专家，专门写代码；约 32 GB 内存即可，代码以外较弱",
+        "unsloth" => "Unsloth 的 4～8 位版本：质量更高，内存够大（72～136 GB）才快，否则部分从硬盘读取",
+        "gyro" => "体积最小，适合内存较少的电脑；质量略低、速度较慢",
+        "nvfp4" => "NVIDIA 显卡专用的 4 位版本：下载 102～128 GB，约需 80 GB 内存",
+        "qwen36" => "更小的模型，32～52 GB 内存即可，速度快",
+        "deepseek41" => "超大模型：需要 12 GB 以上显卡、64 GB 内存和 240 GB 以上的固态硬盘",
+        _ => "",
+    };
+    if zh && !chinese.is_empty() { chinese.to_owned() } else { english.to_owned() }
+}
+
+/// The size's words in Chinese, else Strata's own.
+fn size_about(family: &str, size: &Size, zh: bool) -> String {
+    let chinese = match (family, size.model.as_str()) {
+        ("qwen" | "swift", "Q2_0") => "2 位，最快，质量好",
+        ("qwen" | "swift", "IQ2_XS") => "2 位，质量更好，速度接近",
+        ("qwen" | "swift", "IQ3_XXS") => "3 位，质量很好，较慢",
+        ("qwen" | "swift", "IQ3_S") => "3.5 位，质量最好（与完整模型相当），最慢；适合 64 GB 内存",
+        ("coder", "IQ1_M") => "Coder 唯一的尺寸：一半专家，按 3.5 位存储",
+        ("unsloth", "UD-IQ4_XS") => "约 4 位，质量介于 IQ3_S 和 UD-Q4_K_XL 之间",
+        ("unsloth", "UD-Q4_K_XL") => "4 位，质量更高",
+        ("unsloth", "UD-Q5_K_XL") => "5 位，接近 8 位的质量",
+        ("unsloth", "UD-Q6_K_XL") => "6 位",
+        ("unsloth", "Q8_0") => "8 位，参考质量；适合 192 GB 内存",
+        ("gyro", "Gyro-S") => "最小：显存加内存共 27.6 GB；质量低于 2～3 位版本",
+        ("gyro", "Gyro-M") => "约等于 IQ3_XXS 的质量，显存少用约 20%，比 Q2_0 慢 16～21%",
+        ("nvfp4", "NVFP4") => "NVFP4 里质量最好（Strata 自己转换）",
+        ("nvfp4", "NVFP4-NVIDIA") => "NVIDIA 官方的 NVFP4，大小和速度同上",
+        ("nvfp4", "NVFP4-QAD") => "NVIDIA 为 4 位重新训练的版本，短提示更快；下载后在本机转换，需额外约 110 GB",
+        ("qwen36", "UD-Q4_K_XL") => "4 位，最小",
+        ("qwen36", "UD-Q6_K_XL") => "6 位，更接近完整模型",
+        ("qwen36", "Q8_0") => "8 位，最接近完整模型",
+        ("deepseek41", "IST-DAS-1.75bpw") => "官方最小的版本，占硬盘 239 GB",
+        ("deepseek41", "IST-DAS-2.00bpw") => "官方较小的版本，占硬盘 257 GB，每秒约 5～7 个词",
+        ("deepseek41", "IST-DAS-2.25bpw") => "官方较好的版本，占硬盘 274 GB，适合写代码和智能体",
+        ("deepseek41", "UD-Q8_K_XL") => "Unsloth 8 位，508 GB，适合有几百 GB 内存的多显卡机器",
+        _ => "",
+    };
+    if zh && !chinese.is_empty() { chinese.to_owned() } else { size.about.clone() }
+}
+
+fn fit_key(fit: Fit) -> &'static str {
+    match fit {
+        Fit::Fits => "settings.strataFits",
+        Fit::Slower => "settings.strataFitsSlower",
+        Fit::Tight => "settings.strataFitTight",
+        Fit::Disk => "settings.strataFitDisk",
+        Fit::No => "settings.strataFitNo",
+        Fit::Unknown => "settings.strataFitUnknown",
+    }
+}
+
+/// The step's words: Strata's own sentence for a step this card does not know.
+fn step_text(job: &Job, cx: &App) -> SharedString {
+    let key = match job.step.as_str() {
+        "terminal" => "settings.strataStepTerminal",
+        "verify" => "settings.strataStepVerify",
+        "feed" => "settings.strataStepFeed",
+        "engine" => "settings.strataStepEngine",
+        "engine-verify" => "settings.strataStepEngineVerify",
+        "engine-test" => "settings.strataStepEngineTest",
+        "engine-switch" => "settings.strataStepEngineSwitch",
+        "control" => "settings.strataStepControl",
+        "stop" => "settings.strataStepStop",
+        "remove" => "settings.strataStepRemove",
+        "model:check" => "settings.strataStepCheck",
+        "model:helpers" => "settings.strataStepHelpers",
+        "model:engine" => "settings.strataStepModelEngine",
+        "model:download" => "settings.strataStepDownload",
+        "model:verify" => "settings.strataStepModelVerify",
+        "model:repair" => "settings.strataStepRepair",
+        "model:pictures" => "settings.strataStepPictures",
+        "model:draft_download" => "settings.strataStepDraftDownload",
+        "model:draft" => "settings.strataStepDraft",
+        "model:pack" => "settings.strataStepPack",
+        "model:tokenizer" => "settings.strataStepTokenizer",
+        "model:settings" => "settings.strataStepSettings",
+        _ if job.step.starts_with("model:") => "settings.strataStepWorking",
+        _ => return job.detail.clone().unwrap_or_default().into(),
+    };
+    tr(cx, key)
 }
 
 impl StrataCard {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = |window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx));
+        let port = cx.new(|cx| InputState::new(window, cx).placeholder("8080"));
         let subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
-        let defaults = Settings::default();
-        Self {
-            model_path: input(window, cx),
-            mtp_path: input(window, cx),
-            port: input(window, cx),
-            vram: input(window, cx),
-            budget: input(window, cx),
-            context: defaults.context_window.to_string(),
-            kv_cache: defaults.kv_cache,
-            store,
-            open: false,
-            advanced: false,
-            shown: None,
-            _subscriptions: subscriptions,
-        }
+        store.update(cx, |store, cx| store.refresh_strata(cx));
+        Self { store, port, all: false, shown_port: None, _subscriptions: subscriptions }
     }
 
-    fn form(&self, cx: &App) -> Form {
-        let text = |state: &Entity<InputState>| state.read(cx).value().to_string();
-        Form {
-            model_path: text(&self.model_path),
-            mtp_path: text(&self.mtp_path),
-            context: self.context.clone(),
-            port: text(&self.port),
-            kv_cache: self.kv_cache.clone(),
-            vram: text(&self.vram),
-            budget: text(&self.budget),
-        }
-    }
-
-    fn fill(&mut self, form: Form, window: &mut Window, cx: &mut Context<Self>) {
-        for (state, value) in [(&self.model_path, form.model_path), (&self.mtp_path, form.mtp_path), (&self.port, form.port), (&self.vram, form.vram), (&self.budget, form.budget)] {
-            state.update(cx, |state, cx| state.set_value(value, window, cx));
-        }
-        self.context = form.context;
-        self.kv_cache = form.kv_cache;
-    }
-
-    /// Take saved settings into the form unless the user has edited it since it was last filled.
-    fn sync(&mut self, status: &Status, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shown.as_ref() == Some(&status.settings) {
-            return;
-        }
-        let untouched = self.shown.as_ref().is_none_or(|shown| self.form(cx) == Form::of(shown));
-        if untouched {
-            self.fill(Form::of(&status.settings), window, cx);
-        }
-        self.shown = Some(status.settings.clone());
-    }
-
-    fn toggle(&mut self, cx: &mut Context<Self>) {
-        self.open = !self.open;
-        if self.open {
-            self.store.update(cx, |store, cx| store.refresh_strata(true, cx));
-        }
-        cx.notify();
-    }
-
-    fn choose(&mut self, field: Field, files: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let chosen = cx.prompt_for_paths(PathPromptOptions { files, directories: !files, multiple: false, prompt: None });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = chosen.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |this, window, cx| {
-                let state = match field {
-                    Field::Model => &this.model_path,
-                    Field::Mtp => &this.mtp_path,
-                };
-                state.update(cx, |state, cx| state.set_value(path.to_string_lossy().into_owned(), window, cx));
-                cx.notify();
-            });
+    /// Show how a request ended: a refusal as an error notification.
+    fn finish(task: Task<Result<(), String>>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |_, cx| {
+            if let Err(message) = task.await
+                && !message.is_empty()
+            {
+                let _ = cx.update(|window, cx| window.push_notification(Notification::error(message), cx));
+            }
         })
         .detach();
     }
 
-    /// Show how an operation ended: `success` names the message for a completed one.
-    fn finish<T: 'static>(task: Task<Result<T, String>>, success: impl Fn(&T) -> Option<&'static str> + 'static, window: &mut Window, cx: &mut Context<Self>) {
-        cx.spawn_in(window, async move |this, cx| {
+    fn run(&mut self, window: &mut Window, cx: &mut Context<Self>, request: impl FnOnce(&mut Store, &mut Context<Store>) -> Task<Result<(), String>>) {
+        let task = self.store.update(cx, request);
+        Self::finish(task, window, cx);
+    }
+
+    fn save(&mut self, change: impl FnOnce(&mut Settings), window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut settings) = self.store.read(cx).strata.status.as_ref().map(|status| status.settings.clone()) else { return };
+        change(&mut settings);
+        self.run(window, cx, move |store, cx| store.save_strata(settings, cx));
+    }
+
+    fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let task = self.store.update(cx, |store, cx| store.connect_strata(cx));
+        cx.spawn_in(window, async move |_, cx| {
             let result = task.await;
-            let _ = this.update_in(cx, |_, window, cx| match result {
-                Ok(value) => {
-                    if let Some(key) = success(&value) {
-                        window.push_notification(tr(cx, key).to_string(), cx);
-                    }
-                }
+            let _ = cx.update(|window, cx| match result {
+                Ok(_) => window.push_notification(Notification::success(tr(cx, "settings.strataConnected").to_string()), cx),
                 Err(message) if !message.is_empty() => window.push_notification(Notification::error(message), cx),
                 Err(_) => {}
             });
@@ -176,290 +189,551 @@ impl StrataCard {
         .detach();
     }
 
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(settings) = self.form(cx).settings() else { return };
-        let task = self.store.update(cx, |store, cx| store.save_strata(settings, cx));
-        // The saved settings (a profile may have filled some in) replace the form.
-        self.shown = None;
-        Self::finish(task, |_| Some("settings.strataSaved"), window, cx);
+    fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: None });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let folder = rainy_carrier::strata::Manager::data_folder_for(&path);
+            let _ = this.update_in(cx, |this, window, cx| this.save(move |settings| settings.data_dir = Some(folder.to_string_lossy().into_owned()), window, cx));
+        })
+        .detach();
     }
 
-    fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let task = self.store.update(cx, |store, cx| store.start_strata(cx));
-        Self::finish(task, |_| None, window, cx);
+    fn confirm_uninstall(&mut self, status: &Status, window: &mut Window, cx: &mut Context<Self>) {
+        let models: Vec<(String, f64)> = status
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.installed().into_iter().map(|(family, size)| (format!("{} {}", family.title, size.model), size.download_gb)).collect())
+            .unwrap_or_default();
+        let total: f64 = models.iter().map(|(_, gb)| gb).sum();
+        // Before the model list is read the models are not known by name; the uninstall reads the list itself.
+        let unknown = status.catalog.is_none();
+        let store = self.store.clone();
+        let remove_models = std::rc::Rc::new(std::cell::Cell::new(false));
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let (store, flag, toggle) = (store.clone(), remove_models.clone(), remove_models.clone());
+            let checked = flag.get();
+            dialog
+                .title(tr(cx, "settings.strataUninstallTitle"))
+                .w(px(460.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(div().text_sm().child(tr(cx, "settings.strataUninstallBody")))
+                        .when(unknown || !models.is_empty(), |this| {
+                            let names = models.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>().join("、");
+                            let label = if unknown {
+                                tr(cx, "settings.strataUninstallModelsUnknown")
+                            } else {
+                                trf(cx, "settings.strataUninstallModels", &[("models", &names), ("size", &gb_text(total))])
+                            };
+                            this.child(Checkbox::new("strata-uninstall-models").checked(checked).label(label).on_click(
+                                move |checked: &bool, window, cx| {
+                                    toggle.set(*checked);
+                                    window.refresh();
+                                    let _ = cx;
+                                },
+                            ))
+                        }),
+                )
+                .footer(
+                    gpui_kit::component::dialog::DialogFooter::new()
+                        .child(Button::new("strata-uninstall-cancel").outline().label(tr(cx, "chat.cancel")).on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("strata-uninstall-ok").danger().label(tr(cx, "settings.strataUninstall")).on_click(move |_, window, cx| {
+                            let models = flag.get();
+                            let task = store.update(cx, |store, cx| store.uninstall_strata(models, cx));
+                            window.close_dialog(cx);
+                            window
+                                .spawn(cx, async move |cx| {
+                                    if let Err(message) = task.await
+                                        && !message.is_empty()
+                                    {
+                                        let _ = cx.update(|window, cx| window.push_notification(Notification::error(message), cx));
+                                    }
+                                })
+                                .detach();
+                        })),
+                )
+        });
     }
 
-    fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let task = self.store.update(cx, |store, cx| store.stop_strata(cx));
-        Self::finish(task, |status: &Status| (status.phase == Phase::Stopped).then_some("settings.strataStopped"), window, cx);
+    /// Ask before a download of tens of gigabytes, saying how big it is and where it goes.
+    #[allow(clippy::too_many_arguments)]
+    fn confirm_download(&mut self, choice: Choice, title: String, gb: f64, folder: String, free: Option<f64>, window: &mut Window, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        let short = free.is_some_and(|free| free < gb + 8.0);
+        window.open_alert_dialog(cx, move |alert, _, cx| {
+            let (store, choice) = (store.clone(), choice.clone());
+            let free_text = free.map(|free| trf(cx, "settings.strataFree", &[("size", &gb_text(free))]).to_string()).unwrap_or_default();
+            let mut description = trf(cx, "settings.strataDownloadConfirm", &[("model", &title), ("size", &gb_text(gb)), ("folder", &folder), ("free", &free_text)]).to_string();
+            if short {
+                description.push_str(&format!("\n\n{}", tr(cx, "settings.strataDownloadShort")));
+            }
+            alert
+                .title(tr(cx, "settings.strataDownloadTitle"))
+                .description(description)
+                .ok_text(trf(cx, "settings.strataDownload", &[("size", &gb_text(gb))]))
+                .cancel_text(tr(cx, "chat.cancel"))
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    let choice = choice.clone();
+                    let task = store.update(cx, |store, cx| store.download_strata_model(choice, cx));
+                    window
+                        .spawn(cx, async move |cx| {
+                            if let Err(message) = task.await
+                                && !message.is_empty()
+                            {
+                                let _ = cx.update(|window, cx| window.push_notification(Notification::error(message), cx));
+                            }
+                        })
+                        .detach();
+                    true
+                })
+        });
     }
 
-    fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let task = self.store.update(cx, |store, cx| store.connect_strata(cx));
-        Self::finish(task, |_| Some("settings.strataConnected"), window, cx);
+    fn muted(text: impl Into<SharedString>, cx: &App) -> AnyElement {
+        div().text_xs().text_color(cx.theme().muted_foreground).child(text.into()).into_any_element()
     }
 
-    fn phase_key(phase: Phase) -> &'static str {
-        match phase {
-            Phase::Unconfigured => "settings.strataUnconfigured",
-            Phase::Stopped => "settings.strataStoppedState",
-            Phase::Preparing => "settings.strataPreparing",
-            Phase::Starting => "settings.strataStarting",
-            Phase::Running => "settings.strataRunning",
-            Phase::Stopping => "settings.strataStopping",
-            Phase::External => "settings.strataExternal",
-            Phase::Error => "settings.strataError",
+    /// The running job with its progress, and how to stop it.
+    fn render_job(&self, job: &Job, catalog: Option<&Catalog>, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let mut line = step_text(job, cx).to_string();
+        if job.total > 0 {
+            let percent = (job.done as f64 / job.total as f64 * 100.0).min(100.0);
+            line.push_str(&format!("  {} / {}（{percent:.0}%）", bytes_text(job.done), bytes_text(job.total)));
         }
-    }
-
-    fn header(&self, phase: Option<Phase>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        h_flex()
-            .id("strata-header")
-            .justify_between()
-            .items_center()
-            .cursor_pointer()
-            .child(div().text_sm().font_semibold().child(tr(cx, "settings.strataTitle")))
+        let title = match &job.kind {
+            JobKind::Install => tr(cx, "settings.strataInstalling"),
+            JobKind::Update => tr(cx, "settings.strataUpdating"),
+            JobKind::Uninstall => tr(cx, "settings.strataUninstalling"),
+            JobKind::Download { family, model } => {
+                let title = catalog.and_then(|catalog| catalog.size(family, model)).map(|(family, size)| format!("{} {}", family.title, size.model)).unwrap_or_else(|| format!("{family} {model}"));
+                trf(cx, "settings.strataDownloading", &[("model", &title)])
+            }
+            JobKind::Remove { id } => {
+                let title = catalog
+                    .and_then(|catalog| catalog.families.iter().find_map(|family| family.sizes.iter().find(|size| &size.id == id).map(|size| format!("{} {}", family.title, size.model))))
+                    .unwrap_or_else(|| id.clone());
+                trf(cx, "settings.strataRemoving", &[("model", &title)])
+            }
+        };
+        let percent = (job.total > 0).then(|| (job.done as f32 / job.total as f32 * 100.0).min(100.0));
+        v_flex()
+            .gap_2()
+            .p_3()
+            .rounded(theme.radius)
+            .bg(theme.muted)
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .when_some(phase, |this, phase| this.child(tr(cx, Self::phase_key(phase))))
-                    .child(Icon::new(if self.open { IconName::ChevronUp } else { IconName::ChevronDown }).small()),
+                    .child(Spinner::new().small())
+                    .child(div().flex_1().min_w_0().text_sm().font_semibold().child(title))
+                    .when(job.cancellable, |this| {
+                        this.child(Button::new("strata-cancel").outline().xsmall().label(tr(cx, "settings.strataCancel")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.cancel_strata(cx)))))
+                    }),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.toggle(cx)))
+            .child(div().text_xs().text_color(theme.muted_foreground).child(line))
+            .when_some(percent, |this, percent| this.child(Progress::new("strata-progress").xsmall().value(percent)))
+            .when(matches!(job.kind, JobKind::Download { .. }), |this| this.child(Self::muted(tr(cx, "settings.strataDownloadResumes"), cx)))
             .into_any_element()
     }
 
-    fn field(&self, label: &'static str, state: &Entity<InputState>, locked: bool, cx: &App) -> AnyElement {
-        v_flex()
-            .gap_1()
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tr(cx, label)))
-            .child(Input::new(state).disabled(locked))
-            .into_any_element()
-    }
-
-    fn render_form(&self, status: &Status, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = cx.theme().clone();
-        let store = self.store.read(cx);
-        let pending = store.strata.pending;
-        let loading = store.strata.loading;
-        let saved_context = store.models.as_ref().and_then(|models| models.models.iter().find(|model| model.provider == "rainy-strata")).map(|model| model.context_window as u64);
-        let module = store.modules.statuses.as_ref().and_then(|statuses| statuses.as_ref().ok()).and_then(|statuses| statuses.iter().find(|status| status.id == "strata").cloned());
-        let module_busy = store.modules.busy || store.modules.running();
-        let form = self.form(cx);
-        let dirty = form != Form::of(&status.settings);
-        let valid = form.settings().is_some();
-        let preparing = matches!(status.phase, Phase::Preparing | Phase::Starting) || pending == Some("start");
-        let active = preparing || matches!(status.phase, Phase::Running | Phase::Stopping);
-        let locked = pending.is_some() || active;
-        let can_stop = preparing || (status.phase == Phase::Running && status.server.as_ref().is_some_and(|server| server.owned));
-        let muted = |text: SharedString| div().text_xs().text_color(theme.muted_foreground).child(text).into_any_element();
-        let mut body = Vec::new();
-
-        let runtime_line = if status.runtime.available {
-            let version = status.runtime.version.as_deref().map(|version| format!(" · {version}")).unwrap_or_default();
-            muted(format!("{}{version}", tr(cx, "settings.strataRuntimeReady")).into())
-        } else {
-            notice(cx, tr(cx, "settings.strataRuntimeMissing"), true)
-        };
-        let store_handle = self.store.clone();
+    fn render_not_installed(&self, status: &Status, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut body = vec![Self::muted(tr(cx, "settings.strataNotInstalled"), cx)];
         body.push(
             h_flex()
-                .gap_2()
-                .items_center()
-                .child(div().flex_1().child(runtime_line))
-                .when(!status.runtime.available, |this| {
-                    this.when_some(module.filter(|module| !module.installed), |this, module| {
-                        let size = crate::ui::settings::runtime::file_size_text(module.download_bytes);
-                        let store = store_handle.clone();
-                        this.child(
-                            Button::new("strata-download")
-                                .primary()
-                                .small()
-                                .label(trf(cx, "settings.modulesDownload", &[("size", &size)]))
-                                .disabled(module_busy)
-                                .on_click(move |_, _, cx| store.update(cx, |store, cx| store.install_module("strata", cx))),
-                        )
-                    })
-                })
                 .child(
-                    Button::new("strata-refresh")
-                        .outline()
+                    Button::new("strata-install")
+                        .primary()
                         .small()
-                        .label(tr(cx, "settings.settingsRefresh"))
-                        .disabled(loading || pending.is_some())
-                        .on_click(cx.listener(|this, _, _, cx| this.store.update(cx, |store, cx| store.refresh_strata(true, cx)))),
+                        .label(tr(cx, "settings.strataInstall"))
+                        .disabled(status.job.is_some())
+                        .on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.install_strata(cx)))),
                 )
                 .into_any_element(),
         );
-        body.push(muted(tr(cx, "settings.strataSupported")));
-        body.push(self.field("settings.strataModelPath", &self.model_path, locked, cx));
-        body.push(
-            h_flex()
-                .gap_2()
-                .flex_wrap()
-                .child(Button::new("strata-gguf").outline().small().label(tr(cx, "settings.strataChooseGguf")).disabled(locked).on_click(cx.listener(|this, _, window, cx| this.choose(Field::Model, true, window, cx))))
-                .child(Button::new("strata-folder").outline().small().label(tr(cx, "settings.strataChooseDirectory")).disabled(locked).on_click(cx.listener(|this, _, window, cx| this.choose(Field::Model, false, window, cx))))
-                .child(Button::new("strata-profile").outline().small().label(tr(cx, "settings.strataChooseProfile")).disabled(locked).on_click(cx.listener(|this, _, window, cx| this.choose(Field::Model, true, window, cx))))
-                .when(!status.profiles.is_empty(), |this| {
-                    let profiles = status.profiles.clone();
-                    let current = form.model_path.clone();
-                    let entity = cx.entity().downgrade();
-                    let label = profiles.iter().find(|profile| profile.path == current).map(|profile| SharedString::from(profile.label.clone())).unwrap_or_else(|| tr(cx, "settings.strataProfileNone"));
-                    this.child(Button::new("strata-profiles").outline().small().label(label).disabled(locked).dropdown_menu(move |mut menu, _, _| {
-                        for profile in &profiles {
-                            let (path, entity) = (profile.path.clone(), entity.clone());
-                            menu = menu.item(PopupMenuItem::new(profile.label.clone()).checked(current == profile.path).on_click(move |_, window, cx| {
-                                let path = path.clone();
-                                let _ = entity.update(cx, |this, cx| this.model_path.update(cx, |state, cx| state.set_value(path, window, cx)));
-                            }));
-                        }
-                        menu
-                    }))
-                })
-                .into_any_element(),
-        );
-        body.push(self.field("settings.strataMtpPath", &self.mtp_path, locked, cx));
-        body.push(
-            h_flex()
-                .gap_2()
-                .child(Button::new("strata-mtp-file").outline().small().label(tr(cx, "settings.strataChooseMtpFile")).disabled(locked).on_click(cx.listener(|this, _, window, cx| this.choose(Field::Mtp, true, window, cx))))
-                .child(Button::new("strata-mtp-folder").outline().small().label(tr(cx, "settings.strataChooseMtp")).disabled(locked).on_click(cx.listener(|this, _, window, cx| this.choose(Field::Mtp, false, window, cx))))
-                .into_any_element(),
-        );
-        let context_label: SharedString = form.context.parse::<u64>().map(|value| group(value)).unwrap_or_else(|_| form.context.clone()).into();
-        let mut contexts: Vec<String> = CONTEXTS.iter().map(u32::to_string).collect();
-        if !contexts.contains(&form.context) {
-            contexts.push(form.context.clone());
+        body
+    }
+
+    fn render_version(&self, status: &Status, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let Some(installed) = &status.installed else { return Vec::new() };
+        let mut text = match &installed.strata {
+            Some(version) => format!("Strata {version}"),
+            None => format!("Strata · {}", installed.control),
+        };
+        if let Some(engine) = &installed.engine {
+            let backend = match engine.backend.as_str() {
+                "cuda" => format!("NVIDIA {}", engine.variant.replace("cuda", "CUDA ")),
+                "hip" => format!("AMD {}", engine.variant),
+                other => other.to_owned(),
+            };
+            text.push_str(&format!(" · {} {} · {backend}", tr(cx, "settings.strataEngine"), engine.version));
         }
-        let current_context = form.context.clone();
-        let context_picker = Button::new("strata-context").outline().small().label(context_label).disabled(locked).dropdown_menu({
-            let entity = cx.entity().downgrade();
-            move |mut menu, _, _| {
-                for value in &contexts {
-                    let (value, entity) = (value.clone(), entity.clone());
-                    let label = value.parse::<u64>().map(group).unwrap_or_else(|_| value.clone());
-                    menu = menu.item(PopupMenuItem::new(label).checked(current_context == value).on_click(move |_, _, cx| {
-                        let value = value.clone();
-                        let _ = entity.update(cx, |this, cx| {
-                            this.context = value;
-                            cx.notify();
-                        });
-                    }));
-                }
-                menu
-            }
-        });
-        body.push(
+        let busy = status.job.is_some();
+        let snapshot = status.clone();
+        let mut body = vec![
             h_flex()
-                .gap_4()
-                .items_end()
-                .child(v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataContext"))).child(context_picker))
-                .child(div().w(px(160.)).child(self.field("settings.strataPort", &self.port, locked, cx)))
-                .into_any_element(),
-        );
-        body.push(
-            h_flex()
-                .id("strata-advanced")
-                .gap_1()
+                .gap_2()
                 .items_center()
-                .cursor_pointer()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(Icon::new(if self.advanced { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall())
-                .child(tr(cx, "settings.strataAdvanced"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.advanced = !this.advanced;
-                    cx.notify();
-                }))
+                .child(div().flex_1().min_w_0().text_sm().child(text))
+                .child(
+                    Button::new("strata-check")
+                        .outline()
+                        .small()
+                        .label(tr(cx, "settings.strataCheckUpdate"))
+                        .loading(status.checking)
+                        .disabled(busy || status.checking)
+                        .on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.check_strata(cx)))),
+                )
+                .child(Button::new("strata-uninstall").ghost().small().label(tr(cx, "settings.strataUninstall")).disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_uninstall(&snapshot, window, cx))))
                 .into_any_element(),
-        );
-        if self.advanced {
-            let current_kv = form.kv_cache.clone();
-            let kv_picker = Button::new("strata-kv").outline().small().label(SharedString::from(current_kv.clone())).disabled(locked).dropdown_menu({
-                let entity = cx.entity().downgrade();
-                move |mut menu, _, _| {
-                    for value in KV_CACHES {
-                        let entity = entity.clone();
-                        menu = menu.item(PopupMenuItem::new(value).checked(current_kv == value).on_click(move |_, _, cx| {
-                            let _ = entity.update(cx, |this, cx| {
-                                this.kv_cache = value.to_owned();
-                                cx.notify();
-                            });
-                        }));
-                    }
-                    menu
-                }
-            });
+        ];
+        if let Some(update) = status.update.as_ref().filter(|update| update.available()) {
+            let what = [update.control.as_ref().map(|version| format!("{} {version}", tr(cx, "settings.strataTerminal"))), update.engine.as_ref().map(|version| format!("{} {version}", tr(cx, "settings.strataEngine")))]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("、");
+            let serving = matches!(status.server.phase, Phase::Starting | Phase::Running | Phase::Stopping);
             body.push(
                 h_flex()
-                    .gap_4()
-                    .items_end()
-                    .child(v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataKvCache"))).child(kv_picker))
-                    .child(div().w(px(160.)).child(self.field("settings.strataVramReserve", &self.vram, locked, cx)))
-                    .child(div().w(px(240.)).child(self.field("settings.strataResidentBudget", &self.budget, locked, cx)))
+                    .gap_2()
+                    .items_center()
+                    .px_3()
+                    .py_2()
+                    .rounded(theme.radius)
+                    .bg(theme.muted)
+                    .child(div().flex_1().min_w_0().text_sm().child(trf(cx, if serving { "settings.strataUpdateWaiting" } else { "settings.strataUpdateAvailable" }, &[("what", &what)])))
+                    .child(Button::new("strata-update").primary().small().label(tr(cx, "settings.strataUpdateNow")).disabled(busy || serving).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.update_strata(cx)))))
+                    .into_any_element(),
+            );
+        } else if let Some(update) = &status.update {
+            if let Some(reason) = update.no_engine.as_ref().filter(|reason| !reason.is_empty()) {
+                body.push(notice(cx, trf(cx, "settings.strataNoEngine", &[("reason", reason)]), true));
+            } else {
+                body.push(Self::muted(tr(cx, "settings.strataUpToDate"), cx));
+            }
+        }
+        let automatic = status.settings.auto_update;
+        body.push(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Switch::new("strata-auto-update").checked(automatic).small().on_click(cx.listener(|this, checked: &bool, window, cx| {
+                    let checked = *checked;
+                    this.save(move |settings| settings.auto_update = checked, window, cx);
+                })))
+                .child(Self::muted(tr(cx, "settings.strataAutoUpdate"), cx))
+                .into_any_element(),
+        );
+        body
+    }
+
+    /// The computer as Strata sees it, and the size its setup would pick.
+    fn render_recommendation(&self, status: &Status, catalog: &Catalog, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let zh = crate::ui::locale(cx) == crate::i18n::Locale::Zh;
+        let mut body = Vec::new();
+        let card = catalog.gpus.iter().filter(|gpu| gpu.usable).max_by(|a, b| a.vram_gb.total_cmp(&b.vram_gb));
+        let pc = match (card, catalog.ram_gb) {
+            (Some(card), Some(ram)) => trf(cx, "settings.strataThisPc", &[("gpu", &card.name), ("vram", &gb_text(card.vram_gb)), ("ram", &gb_text(ram))]),
+            (None, Some(ram)) => trf(cx, "settings.strataThisPcNoGpu", &[("ram", &gb_text(ram))]),
+            _ => SharedString::default(),
+        };
+        if !pc.is_empty() {
+            body.push(Self::muted(pc, cx));
+        }
+        match &catalog.recommendation {
+            Some(recommendation) => {
+                let Some((family, size)) = catalog.size(&recommendation.family, &recommendation.model) else { return body };
+                let choice = Choice { family: family.id.clone(), model: size.model.clone() };
+                body.push(
+                    v_flex()
+                        .gap_2()
+                        .p_3()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.primary.opacity(0.5))
+                        .bg(theme.primary.opacity(0.06))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(Icon::new(IconName::Star).small().text_color(theme.primary))
+                                .child(div().text_sm().font_semibold().child(trf(cx, "settings.strataRecommended", &[("model", &format!("{} {}", family.title, size.model))]))),
+                        )
+                        .child(Self::muted(format!("{} · {}", size_about(&family.id, size, zh), trf(cx, "settings.strataSizeLine", &[("download", &gb_text(size.download_gb)), ("memory", &gb_text(size.memory_gb)), ("context", &context_text(u64::from(recommendation.context)))])), cx))
+                        .child(Self::muted(tr(cx, "settings.strataRecommendedWhy"), cx))
+                        .child(h_flex().gap_2().child(self.size_actions(status, &choice, size, "recommended", cx)))
+                        .into_any_element(),
+                );
+            }
+            None => {
+                if let Some(why) = &catalog.no_recommendation {
+                    body.push(notice(cx, trf(cx, "settings.strataNothingFits", &[("reason", why)]), true));
+                }
+            }
+        }
+        body
+    }
+
+    /// Download, or start and remove, for one size.
+    fn size_actions(&self, status: &Status, choice: &Choice, size: &Size, place: &str, cx: &mut Context<Self>) -> AnyElement {
+        let busy = status.job.is_some();
+        let serving = status.server.choice.as_ref() == Some(choice) && matches!(status.server.phase, Phase::Starting | Phase::Running);
+        let any_serving = matches!(status.server.phase, Phase::Starting | Phase::Running | Phase::Stopping);
+        let id = format!("{place}-{}-{}", choice.family, choice.model);
+        if !size.installed {
+            let choice = choice.clone();
+            let title = status.catalog.as_ref().and_then(|catalog| catalog.size(&choice.family, &choice.model)).map(|(family, size)| format!("{} {}", family.title, size.model)).unwrap_or_else(|| format!("{} {}", choice.family, choice.model));
+            let (gb, folder, free) = (size.download_gb, status.data_dir.clone(), status.data_free_gb);
+            return Button::new(SharedString::from(format!("strata-download-{id}")))
+                .primary()
+                .xsmall()
+                .label(trf(cx, "settings.strataDownload", &[("size", &gb_text(size.download_gb))]))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, window, cx| this.confirm_download(choice.clone(), title.clone(), gb, folder.clone(), free, window, cx)))
+                .into_any_element();
+        }
+        let (start, remove) = (choice.clone(), choice.clone());
+        h_flex()
+            .gap_1()
+            .child(if serving {
+                Button::new(SharedString::from(format!("strata-stop-{id}"))).outline().xsmall().label(tr(cx, "settings.strataStop")).disabled(status.server.phase == Phase::Stopping).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.stop_strata(cx))))
+            } else {
+                Button::new(SharedString::from(format!("strata-start-{id}")))
+                    .primary()
+                    .xsmall()
+                    .label(tr(cx, "settings.strataStart"))
+                    .disabled(any_serving || matches!(status.job.as_ref().map(|job| &job.kind), Some(JobKind::Update | JobKind::Uninstall | JobKind::Install)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let choice = start.clone();
+                        this.run(window, cx, move |store, cx| store.start_strata(choice, cx));
+                    }))
+            })
+            .child(Button::new(SharedString::from(format!("strata-remove-{id}"))).ghost().xsmall().label(tr(cx, "settings.strataRemoveModel")).disabled(busy || serving).on_click(cx.listener(move |this, _, window, cx| {
+                let choice = remove.clone();
+                this.run(window, cx, move |store, cx| store.remove_strata_model(choice, cx));
+            })))
+            .into_any_element()
+    }
+
+    /// Every family and size of the catalog, with what fits.
+    fn render_catalog(&self, status: &Status, catalog: &Catalog, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let zh = crate::ui::locale(cx) == crate::i18n::Locale::Zh;
+        let mut body = vec![div().mt_2().text_sm().font_semibold().child(tr(cx, "settings.strataAllModels")).into_any_element()];
+        for family in catalog.families.iter().filter(|family| self.all || MAIN_FAMILIES.contains(&family.id.as_str()) || family.sizes.iter().any(|size| size.installed)) {
+            body.push(
+                v_flex()
+                    .gap_0p5()
+                    .mt_1()
+                    .child(div().text_sm().font_semibold().child(family.title.clone()))
+                    .child(Self::muted(family_about(&family.id, &family.about, zh), cx))
+                    .into_any_element(),
+            );
+            for size in &family.sizes {
+                let choice = Choice { family: family.id.clone(), model: size.model.clone() };
+                let fit_color = match size.fit {
+                    Fit::Fits => theme.success,
+                    Fit::Slower => theme.foreground,
+                    Fit::Tight | Fit::Disk => theme.warning,
+                    Fit::No => theme.danger,
+                    Fit::Unknown => theme.muted_foreground,
+                };
+                let recommended = catalog.recommendation.as_ref().is_some_and(|recommendation| recommendation.family == family.id && recommendation.model == size.model);
+                body.push(
+                    h_flex()
+                        .id(SharedString::from(format!("strata-size-{}-{}", family.id, size.model)))
+                        .gap_3()
+                        .px_2()
+                        .py_1p5()
+                        .rounded(theme.radius)
+                        .items_center()
+                        .hover(|style| style.bg(theme.list_hover))
+                        .tooltip({
+                            let words = size.fit_words.clone();
+                            move |window, cx| gpui_kit::component::tooltip::Tooltip::new(words.clone()).build(window, cx)
+                        })
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .items_center()
+                                        .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(size.model.clone()))
+                                        .when(recommended, |this| this.child(Icon::new(IconName::Star).xsmall().text_color(theme.primary)))
+                                        .when(size.installed, |this| this.child(div().text_xs().px_1().rounded(theme.radius).bg(theme.success.opacity(0.15)).text_color(theme.success).child(tr(cx, "settings.strataInstalled")))),
+                                )
+                                .child(div().text_xs().text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(size_about(&family.id, size, zh))),
+                        )
+                        .child(div().w(px(150.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(trf(cx, "settings.strataSizeShort", &[("download", &gb_text(size.download_gb)), ("memory", &gb_text(size.memory_gb))])))
+                        .child(div().w(px(110.)).flex_shrink_0().text_xs().text_color(fit_color).child(tr(cx, fit_key(size.fit))))
+                        .child(div().flex_shrink_0().child(self.size_actions(status, &choice, size, "list", cx)))
+                        .into_any_element(),
+                );
+            }
+        }
+        let hidden = catalog.families.iter().filter(|family| !MAIN_FAMILIES.contains(&family.id.as_str()) && !family.sizes.iter().any(|size| size.installed)).count();
+        if hidden > 0 || self.all {
+            body.push(
+                h_flex()
+                    .child(
+                        Button::new("strata-more")
+                            .ghost()
+                            .xsmall()
+                            .label(if self.all { tr(cx, "settings.strataFewerModels") } else { trf(cx, "settings.strataMoreModels", &[("count", &hidden)]) })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.all = !this.all;
+                                cx.notify();
+                            })),
+                    )
                     .into_any_element(),
             );
         }
-        if dirty {
-            body.push(muted(tr(cx, "settings.strataUnsaved")));
-        }
-        if !valid {
-            body.push(notice(cx, tr(cx, "settings.strataInvalid"), true));
-        }
-        if status.model.as_ref().is_some_and(|model| model.needs_preparation) {
-            body.push(muted(tr(cx, "settings.strataPreparingNote")));
-        }
-        if let Some(progress) = &status.progress {
-            body.push(notice(cx, progress.clone().into(), false));
-        }
-        if let Some(error) = &status.error {
-            body.push(notice(cx, error.clone().into(), true));
-        }
-        if let Some(server) = status.server.as_ref().filter(|server| server.loaded) {
-            body.push(muted(trf(cx, "settings.strataHealth", &[("model", &server.model), ("context", &group(server.context_window))])));
-            if let Some(saved) = saved_context.filter(|saved| *saved != server.context_window) {
-                body.push(notice(cx, trf(cx, "settings.strataContextStale", &[("saved", &group(saved)), ("actual", &group(server.context_window))]), false));
-            }
-        }
-        if status.server.as_ref().is_some_and(|server| !server.owned) {
-            body.push(muted(tr(cx, "settings.strataExternalNote")));
-        }
-        if status.server.as_ref().is_some_and(|server| server.authentication_required) {
-            body.push(notice(cx, tr(cx, "settings.strataAuthentication"), false));
-        }
-        let connectable = status.server.as_ref().is_some_and(|server| server.loaded && !server.authentication_required) && matches!(status.phase, Phase::Running | Phase::External);
-        body.push(
+        body
+    }
+
+    /// Where downloads go and where they come from.
+    fn render_download_settings(&self, status: &Status, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let busy = status.job.is_some();
+        let free = status.data_free_gb.map(|free| trf(cx, "settings.strataFree", &[("size", &gb_text(free))])).unwrap_or_default();
+        let source = status.settings.source;
+        vec![
+            div().mt_2().text_sm().font_semibold().child(tr(cx, "settings.strataDownloadSettings")).into_any_element(),
             h_flex()
                 .gap_2()
-                .flex_wrap()
-                .child(Button::new("strata-save").outline().small().label(tr(cx, "settings.strataSave")).disabled(locked || !dirty || !valid).on_click(cx.listener(|this, _, window, cx| this.save(window, cx))))
+                .items_center()
+                .child(div().w(px(84.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataDataDir")))
+                .child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).whitespace_nowrap().overflow_hidden().text_ellipsis().child(status.data_dir.clone()))
+                .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(free))
+                .child(Button::new("strata-data-dir").outline().xsmall().label(tr(cx, "settings.strataChange")).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))))
+                .into_any_element(),
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().w(px(84.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataSource")))
+                .child(super::segmented(
+                    "strata-source",
+                    vec![("huggingface", tr(cx, "settings.strataSourceHf")), ("modelscope", tr(cx, "settings.strataSourceMs"))],
+                    if source == Source::Modelscope { "modelscope" } else { "huggingface" },
+                    {
+                        let entity = cx.entity().downgrade();
+                        move |value, window, cx| {
+                            let source = if value == "modelscope" { Source::Modelscope } else { Source::Huggingface };
+                            let _ = entity.update(cx, |this, cx| this.save(move |settings| settings.source = source, window, cx));
+                        }
+                    },
+                ))
+                .into_any_element(),
+            Self::muted(tr(cx, "settings.strataSourceHint"), cx),
+        ]
+    }
+
+    /// The server: what runs, the context and port, and connecting it.
+    fn render_server(&self, status: &Status, catalog: Option<&Catalog>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let server = &status.server;
+        let title = |choice: &Choice| catalog.and_then(|catalog| catalog.size(&choice.family, &choice.model)).map(|(family, size)| format!("{} {}", family.title, size.model)).unwrap_or_else(|| format!("{} {}", choice.family, choice.model));
+        let line: SharedString = match server.phase {
+            Phase::Stopped => tr(cx, "settings.strataNotRunning"),
+            Phase::Starting => {
+                let model = server.choice.as_ref().map(title).unwrap_or_default();
+                let key = if server.health.is_some() { "settings.strataLoadingModel" } else { "settings.strataStartingModel" };
+                trf(cx, key, &[("model", &model), ("elapsed", &elapsed_text(server.elapsed))])
+            }
+            Phase::Running => {
+                let health = server.health.clone();
+                match health {
+                    Some(health) => trf(cx, "settings.strataRunningModel", &[("model", &health.model), ("context", &context_text(health.context_window)), ("url", &health.base_url)]),
+                    None => tr(cx, "settings.strataRunningState"),
+                }
+            }
+            Phase::Stopping => tr(cx, "settings.strataStopping"),
+            Phase::External => {
+                let model = server.health.as_ref().map(|health| health.model.clone()).unwrap_or_default();
+                trf(cx, "settings.strataExternal", &[("port", &status.settings.port), ("model", &model)])
+            }
+        };
+        let connectable = matches!(server.phase, Phase::Running | Phase::External) && server.health.as_ref().is_some_and(|health| health.loaded && !health.authentication_required);
+        let connecting = self.store.read(cx).strata.connecting;
+        let mut body = vec![
+            div().mt_2().text_sm().font_semibold().child(tr(cx, "settings.strataServer")).into_any_element(),
+            h_flex()
+                .gap_2()
+                .items_center()
+                .when(matches!(server.phase, Phase::Starting | Phase::Stopping), |this| this.child(Spinner::new().small()))
+                .when(server.phase == Phase::Running, |this| this.child(div().size(px(8.)).rounded_full().bg(theme.success)))
+                .child(div().flex_1().min_w_0().text_sm().child(line))
+                .when(server.phase == Phase::Starting, |this| {
+                    this.child(Button::new("strata-cancel-start").outline().xsmall().label(tr(cx, "settings.strataCancel")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.stop_strata(cx)))))
+                })
+                .when(server.phase == Phase::Running, |this| {
+                    this.child(Button::new("strata-stop").outline().xsmall().label(tr(cx, "settings.strataStop")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.stop_strata(cx)))))
+                })
+                .when(connectable, |this| {
+                    this.child(Button::new("strata-connect").primary().xsmall().label(tr(cx, "settings.strataConnect")).loading(connecting).disabled(connecting).on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))))
+                })
+                .into_any_element(),
+        ];
+        if server.phase == Phase::Starting {
+            body.push(Self::muted(tr(cx, "settings.strataStartingHint"), cx));
+        }
+        if server.phase == Phase::External {
+            body.push(Self::muted(tr(cx, "settings.strataExternalNote"), cx));
+        }
+        // Context and port apply to the next start.
+        let contexts: Vec<u32> = catalog.map(|catalog| catalog.contexts.clone()).unwrap_or_default();
+        let current = status.settings.context;
+        // Automatic leaves the length to Strata, which picks it for each model and computer; the recommendation's
+        // length belongs to the recommended model only.
+        let automatic = tr(cx, "settings.strataContextAutoPlain");
+        let label: SharedString = match current {
+            Some(context) => context_text(u64::from(context)).into(),
+            None => automatic.clone(),
+        };
+        let entity = cx.entity().downgrade();
+        let locked = matches!(server.phase, Phase::Starting | Phase::Running | Phase::Stopping);
+        let picker = Button::new("strata-context").outline().xsmall().label(label).disabled(locked || contexts.is_empty()).dropdown_menu(move |mut menu, _, _| {
+            let pick = |value: Option<u32>, entity: WeakEntity<StrataCard>| {
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    let _ = entity.update(cx, |this, cx| this.save(move |settings| settings.context = value, window, cx));
+                }
+            };
+            menu = menu.item(PopupMenuItem::new(automatic.clone()).checked(current.is_none()).on_click(pick(None, entity.clone())));
+            for context in &contexts {
+                menu = menu.item(PopupMenuItem::new(context_text(u64::from(*context))).checked(current == Some(*context)).on_click(pick(Some(*context), entity.clone())));
+            }
+            menu
+        });
+        let port_text = self.port.read(cx).value().trim().to_owned();
+        let port_changed = port_text.parse::<u16>().ok().filter(|port| *port >= 1024).is_some_and(|port| port != status.settings.port);
+        body.push(
+            h_flex()
+                .gap_4()
+                .items_center()
+                .child(h_flex().gap_2().items_center().child(Self::muted(tr(cx, "settings.strataContext"), cx)).child(picker))
                 .child(
-                    Button::new("strata-start")
-                        .outline()
-                        .small()
-                        .label(tr(cx, "settings.strataStart"))
-                        .disabled(locked || dirty || form.model_path.trim().is_empty() || !status.runtime.available || status.phase == Phase::External)
-                        .on_click(cx.listener(|this, _, window, cx| this.start(window, cx))),
-                )
-                .child(
-                    Button::new("strata-stop")
-                        .outline()
-                        .small()
-                        .label(tr(cx, if preparing { "settings.strataCancelStart" } else { "settings.strataStop" }))
-                        .disabled(!can_stop || (pending.is_some() && pending != Some("start")))
-                        .on_click(cx.listener(|this, _, window, cx| this.stop(window, cx))),
-                )
-                .child(
-                    Button::new("strata-connect")
-                        .primary()
-                        .small()
-                        .label(tr(cx, "settings.strataConnect"))
-                        .disabled(pending.is_some() || dirty || !connectable)
-                        .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Self::muted(tr(cx, "settings.strataPort"), cx))
+                        .child(div().w(px(80.)).child(Input::new(&self.port).xsmall().disabled(locked)))
+                        .when(port_changed, |this| {
+                            this.child(Button::new("strata-port-save").outline().xsmall().label(tr(cx, "settings.strataSave")).on_click(cx.listener(move |this, _, window, cx| {
+                                if let Ok(port) = this.port.read(cx).value().trim().parse::<u16>() {
+                                    this.save(move |settings| settings.port = port, window, cx);
+                                }
+                            })))
+                        }),
                 )
                 .into_any_element(),
         );
@@ -467,53 +741,82 @@ impl StrataCard {
     }
 }
 
-/// A count with thousands separators, as 3.x showed it (`toLocaleString('en-US')`).
-fn group(value: u64) -> String {
-    let digits = value.to_string();
-    let mut grouped = String::new();
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
-}
-
 impl Render for StrataCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (status, loading, error, available) = {
+        let (status, available) = {
             let store = self.store.read(cx);
-            (store.strata.status.clone(), store.strata.loading, store.strata.error.clone(), store.strata.manager.is_some())
+            (store.strata.status.clone(), store.strata.manager.is_some())
         };
-        if let Some(status) = &status {
-            self.sync(status, window, cx);
-        }
         let theme = cx.theme().clone();
-        let mut body = vec![self.header(status.as_ref().map(|status| status.phase), cx)];
-        if self.open {
-            if !available {
-                body.push(match error {
-                    Some(error) => notice(cx, error.into(), true),
-                    None => notice(cx, tr(cx, "settings.strataLoading"), false),
-                });
-            } else {
-                if let Some(error) = error {
-                    body.push(notice(cx, error.into(), true));
+        let mut body: Vec<AnyElement> = vec![
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_sm().font_semibold().child(tr(cx, "settings.strataTitle")))
+                .child(div().flex_1())
+                .when_some(status.as_ref().and_then(|status| status.installed.as_ref()).and_then(|installed| installed.strata.clone()), |this, version| {
+                    this.child(div().text_xs().text_color(theme.muted_foreground).child(version))
+                })
+                .into_any_element(),
+            Self::muted(tr(cx, "settings.strataLead"), cx),
+        ];
+        let Some(status) = status.filter(|_| available) else {
+            body.push(h_flex().child(Spinner::new().small()).into_any_element());
+            return v_flex().gap_3().p_4().rounded(theme.radius_lg).border_1().border_color(theme.border).bg(theme.group_box).children(body);
+        };
+        if self.shown_port != Some(status.settings.port) {
+            let port = status.settings.port.to_string();
+            self.port.update(cx, |state, cx| state.set_value(port, window, cx));
+            self.shown_port = Some(status.settings.port);
+        }
+        if let Some(job) = &status.job {
+            body.push(self.render_job(job, status.catalog.as_ref(), cx));
+        }
+        if let Some(error) = &status.error {
+            body.push(notice(cx, error.clone().into(), true));
+        }
+        if let Some(text) = &status.notice {
+            body.push(notice(cx, text.clone().into(), false));
+        }
+        if status.installed.is_none() {
+            if !matches!(status.job.as_ref().map(|job| &job.kind), Some(JobKind::Install | JobKind::Uninstall)) {
+                body.extend(self.render_not_installed(&status, cx));
+            }
+        } else {
+            body.extend(self.render_version(&status, cx));
+            match &status.catalog {
+                Some(catalog) => {
+                    body.extend(self.render_recommendation(&status, catalog, cx));
+                    body.extend(self.render_server(&status, Some(catalog), cx));
+                    body.extend(self.render_catalog(&status, catalog, cx));
                 }
-                match &status {
-                    Some(status) => body.extend(self.render_form(status, cx)),
-                    None if loading => body.push(notice(cx, tr(cx, "settings.strataLoading"), false)),
-                    None => body.push(
-                        Button::new("strata-retry")
-                            .outline()
-                            .small()
-                            .label(tr(cx, "settings.settingsRetry"))
-                            .on_click(cx.listener(|this, _, _, cx| this.store.update(cx, |store, cx| store.refresh_strata(true, cx))))
+                None if status.catalog_loading => body.push(
+                    h_flex().gap_2().items_center().child(Spinner::new().small()).child(Self::muted(tr(cx, "settings.strataReadingCatalog"), cx)).into_any_element(),
+                ),
+                None => {
+                    if let Some(error) = &status.catalog_error {
+                        body.push(notice(cx, error.clone().into(), true));
+                    }
+                    body.push(
+                        h_flex()
+                            .child(Button::new("strata-catalog").outline().small().label(tr(cx, "settings.strataShowModels")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.load_strata_catalog(cx)))))
                             .into_any_element(),
-                    ),
+                    );
+                    body.extend(self.render_server(&status, None, cx));
                 }
             }
+            body.extend(self.render_download_settings(&status, cx));
+        }
+        if status.legacy_bytes > 0 {
+            body.push(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .mt_1()
+                    .child(div().flex_1().min_w_0().child(Self::muted(trf(cx, "settings.strataLegacy", &[("size", &bytes_text(status.legacy_bytes))]), cx)))
+                    .child(Button::new("strata-legacy").ghost().xsmall().label(tr(cx, "settings.strataDeleteLegacy")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.remove_strata_legacy(cx)))))
+                    .into_any_element(),
+            );
         }
         v_flex().gap_3().p_4().rounded(theme.radius_lg).border_1().border_color(theme.border).bg(theme.group_box).children(body)
     }
@@ -526,11 +829,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn forms_and_counts() {
-        let form = Form::of(&Settings::default());
-        assert_eq!(form.settings(), Some(Settings::default()));
-        assert_eq!(Form { port: "80".into(), ..form.clone() }.settings(), None);
-        assert_eq!(Form { budget: "12.5".into(), ..form }.settings().and_then(|settings| settings.resident_budget_gib), Some(12.5));
-        assert_eq!((group(32768), group(262144), group(999)), ("32,768".to_owned(), "262,144".to_owned(), "999".to_owned()));
+    fn sizes_and_contexts_read_as_people_say_them() {
+        assert_eq!(bytes_text(620_430_878), "620 MB");
+        assert_eq!(bytes_text(12_300_000_000), "12 GB");
+        assert_eq!(bytes_text(1_500_000_000), "1.5 GB");
+        assert_eq!(context_text(131_072), "128K");
+        assert_eq!(context_text(8192), "8K");
+        assert_eq!(context_text(1000), "1000");
+        assert_eq!(elapsed_text(45), "45 s");
+        assert_eq!(elapsed_text(600), "10 min");
+    }
+
+    #[test]
+    fn every_size_of_the_catalog_has_chinese_words() {
+        let size = |model: &str| Size { model: model.into(), id: String::new(), about: "english".into(), download_gb: 1.0, memory_gb: 1.0, fit: Fit::Fits, fit_words: String::new(), installed: false, experimental: false, images: true, disk_gb: None };
+        for (family, model) in [("qwen", "Q2_0"), ("swift", "IQ3_S"), ("coder", "IQ1_M"), ("unsloth", "Q8_0"), ("gyro", "Gyro-M"), ("nvfp4", "NVFP4-QAD"), ("qwen36", "UD-Q4_K_XL"), ("deepseek41", "IST-DAS-2.25bpw")] {
+            assert_ne!(size_about(family, &size(model), true), "english", "{family} {model}");
+            assert_ne!(family_about(family, "english", true), "english", "{family}");
+        }
+        // A size a later Strata adds keeps Strata's words, and English keeps them too.
+        assert_eq!(size_about("qwen", &size("Q9_9"), true), "english");
+        assert_eq!(size_about("qwen", &size("Q2_0"), false), "english");
     }
 }

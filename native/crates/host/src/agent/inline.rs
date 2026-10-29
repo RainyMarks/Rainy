@@ -60,26 +60,93 @@ fn unfence(text: &str) -> &str {
     FENCE.captures(text).and_then(|found| found.get(1)).map_or(text, |body| body.as_str())
 }
 
-/// A model reply as text to insert at the cursor; empty when nothing usable remains.
+/// A model reply as text to insert at the cursor; empty when nothing usable remains. Tab inserts it as it is, so what
+/// the reply repeats of the text around the cursor goes: the line or the word already typed, the indentation of an
+/// empty line, and the closing bracket or quote that already follows the cursor.
 pub fn clean_suggestion(raw: &str, prefix: &str, suffix: &str) -> String {
-    let mut text = unfence(raw).replace(CURSOR, "");
-    let line_prefix = prefix.rsplit('\n').next().unwrap_or_default();
-    // Models sometimes repeat the start of the line before continuing it.
-    if !line_prefix.trim().is_empty() && text.starts_with(line_prefix) {
-        text = text[line_prefix.len()..].to_owned();
-    }
-    let line_suffix = suffix.split('\n').next().unwrap_or_default();
-    if !line_suffix.trim().is_empty() {
-        // In the middle of a line only the rest of that line fits, without what already follows the cursor.
+    let text = unfence(raw).replace(CURSOR, "").replace("\r\n", "\n");
+    let line_prefix = prefix.rsplit('\n').next().unwrap_or_default().trim_end_matches('\r');
+    let mut text = without_repeated_start(&text, line_prefix).to_owned();
+    let rest = suffix.split('\n').next().unwrap_or_default().trim_end_matches('\r').trim();
+    if !rest.is_empty() {
+        // In the middle of a line only the rest of that line fits, and it ends where the text after the cursor begins.
         text = text.split('\n').next().unwrap_or_default().to_owned();
-        let tail = line_suffix.trim();
-        let trimmed = text.trim_end();
-        if let Some(kept) = trimmed.strip_suffix(tail) {
-            text = kept.to_owned();
-        }
+        text = before_existing(&text, rest).to_owned();
     }
     let text = text.split('\n').take(SUGGEST_MAX_LINES).collect::<Vec<_>>().join("\n").trim_end().to_owned();
     if text.trim().is_empty() { String::new() } else { text }
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `text` without what it repeats of the line before the cursor: its longest start that the line already ends with.
+/// That counts when it is everything typed on the line, or two or more visible characters that begin a word or a
+/// symbol there (`x = pri` answered with `print(y)`); one letter after other text (`x = l` answered with `lm.call()`)
+/// may well be new text.
+fn without_repeated_start<'a>(text: &'a str, line_prefix: &str) -> &'a str {
+    let ends: Vec<usize> = text.char_indices().map(|(at, _)| at).skip(1).chain([text.len()]).take_while(|end| *end <= line_prefix.len()).collect();
+    for &end in ends.iter().rev() {
+        let repeated = &text[..end];
+        if !line_prefix.ends_with(repeated) {
+            continue;
+        }
+        let before = &line_prefix[..line_prefix.len() - end];
+        let whole_line = before.trim().is_empty();
+        let at_start = !before.ends_with(is_word) || !repeated.starts_with(is_word);
+        if whole_line || (at_start && repeated.chars().filter(|c| !c.is_whitespace()).count() >= 2) {
+            return &text[end..];
+        }
+    }
+    text
+}
+
+/// `text` up to where the text that already follows the cursor on its line (`rest`, trimmed) takes over: without that
+/// text repeated at its end, and before the first closing bracket, quote or `;` that would close what `rest` already
+/// closes.
+fn before_existing<'a>(text: &'a str, rest: &str) -> &'a str {
+    if let Some(kept) = text.trim_end().strip_suffix(rest) {
+        return kept;
+    }
+    let Some(next) = rest.chars().next() else { return text };
+    if matches!(next, '"' | '\'' | '`') {
+        // Inside a string that already has its closing quote: the reply's first one would close it again.
+        let mut escaped = false;
+        for (at, c) in text.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                _ if c == next => return &text[..at],
+                _ => {}
+            }
+        }
+        return text;
+    }
+    if !matches!(next, ')' | ']' | '}' | ';') {
+        return text;
+    }
+    // Brackets the reply opens and strings it holds are its own; what is left at depth 0 is the one `rest` has.
+    let (mut depth, mut quote, mut escaped) = (0usize, None, false);
+    for (at, c) in text.char_indices() {
+        if let Some(open) = quote {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                _ if c == open => quote = None,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' | ';' if depth == 0 && c == next => return &text[..at],
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    text
 }
 
 /// A model reply as the replacement of a selection.
@@ -260,5 +327,34 @@ mod tests {
         assert_eq!(clean_suggestion("a, b)\nmore", "f(", ")"), "a, b");
         assert_eq!(clean_edit("\n  x = 2\n", "  x = 1"), "  x = 2");
         assert_eq!(clean_edit("y\n", "x\n"), "y\n");
+    }
+
+    /// Tab inserts a suggestion as it is, so nothing of it may repeat the line it continues.
+    #[test]
+    fn drops_what_the_line_already_has() {
+        // The indentation of an empty line, the whole line, or the word being typed.
+        assert_eq!(clean_suggestion("    return x", "def f():\n    ", "\n"), "return x");
+        assert_eq!(clean_suggestion("return x", "def f():\n    ", ""), "return x");
+        assert_eq!(clean_suggestion("    x = 1\r\n    y = 2", "if a:\r\n    ", "\r\n"), "x = 1\n    y = 2");
+        assert_eq!(clean_suggestion("foo(bar)", "    foo", ""), "(bar)");
+        assert_eq!(clean_suggestion("x = 1", "x", ""), " = 1");
+        assert_eq!(clean_suggestion("print(y)", "    x = pri", "\n"), "nt(y)");
+        assert_eq!(clean_suggestion("self, y):", "def f(self, ", ""), "y):");
+        // One letter after other text may be the start of something new.
+        assert_eq!(clean_suggestion("lm.call()", "x = l", ""), "lm.call()");
+        assert_eq!(clean_suggestion("count + 1", "total = 1 + ", ""), "count + 1");
+    }
+
+    #[test]
+    fn stops_where_the_rest_of_the_line_takes_over() {
+        assert_eq!(clean_suggestion("a, b);", "foo(", ")"), "a, b");
+        assert_eq!(clean_suggestion("x)", "f(g(", "))"), "x");
+        assert_eq!(clean_suggestion("g(x), y)", "f(", ")"), "g(x), y");
+        assert_eq!(clean_suggestion("\")\", x)", "f(", ")"), "\")\", x");
+        assert_eq!(clean_suggestion("1, 2]", "v = [", "]"), "1, 2");
+        assert_eq!(clean_suggestion("hello\");", "print(\"", "\")"), "hello");
+        assert_eq!(clean_suggestion(r#"say \"hi\"");"#, "s = \"", "\""), r#"say \"hi\""#);
+        assert_eq!(clean_suggestion("foo(1); // x", "let a = ", ";"), "foo(1)");
+        assert_eq!(clean_suggestion("x > 0", "if (", ") {"), "x > 0");
     }
 }

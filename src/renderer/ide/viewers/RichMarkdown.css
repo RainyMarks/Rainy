@@ -149,29 +149,6 @@ body[data-rainy-dark] .rainy-rich {
 /* Find and replace. */
 .rainy-search-match { background: color-mix(in srgb, var(--rainy-alias-state-warn-primary, #e5a50a) 32%, transparent); border-radius: 2px; }
 .rainy-search-current { background: color-mix(in srgb, var(--rainy-alias-state-warn-primary, #e5a50a) 70%, transparent); outline: 1px solid var(--rainy-alias-state-warn-primary, #e5a50a); }
-/* A strip above the document that pushes it down, so it covers no text; above Crepe's toolbar, block handle and language
- * list (up to 999), below the page's menus. */
-.rainy-find {
-  position: relative; z-index: 1000; flex: none; align-self: flex-end; margin: 6px 18px 4px; display: flex; align-items: flex-start; gap: 2px;
-  padding: 4px; border: 1px solid var(--rainy-alias-border-l2); border-radius: 6px;
-  background: var(--rainy-alias-bg-layer-1); box-shadow: 0 4px 14px rgb(0 0 0 / 18%);
-}
-.rainy-find-fields { display: flex; flex-direction: column; gap: 4px; }
-.rainy-find-row { display: flex; align-items: center; gap: 2px; }
-.rainy-find-input {
-  width: 200px; height: 26px; box-sizing: border-box; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--rainy-alias-label-secondary) 35%, transparent); border-radius: 4px;
-  background: var(--rainy-alias-bg-base); color: var(--rainy-alias-label-primary); font: inherit; font-size: 13px; outline: none;
-}
-.rainy-find-input:focus { border-color: var(--rainy-alias-state-business-primary); }
-.rainy-find-count { min-width: 64px; padding: 0 6px; font-size: 12px; color: var(--rainy-alias-label-secondary); white-space: nowrap; }
-.rainy-find-toggle, .rainy-find-button {
-  height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--rainy-alias-label-secondary);
-  font-size: 12px; cursor: pointer; white-space: nowrap;
-}
-.rainy-find-toggle[aria-pressed='true'] { border-color: var(--rainy-alias-state-business-primary); color: var(--rainy-alias-label-primary); }
-.rainy-find-toggle:hover, .rainy-find-button:hover:not(:disabled) { background: var(--rainy-alias-interactive-bg-hover); color: var(--rainy-alias-label-primary); }
-.rainy-find-button:disabled { opacity: 0.5; cursor: default; }
-
 /* Focus mode: everything but the block being written fades. */
 /* Only the document's own editor: an inline formula's popup holds a ProseMirror of its own. */
 [data-focus-mode='true'] .rainy-rich .milkdown > .ProseMirror > :not(.rainy-current-block) { opacity: 0.3; transition: opacity 0.2s; }

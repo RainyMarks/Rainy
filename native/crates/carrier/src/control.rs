@@ -2,7 +2,7 @@
 //!
 //! The Host prints `RAINY_CONTROL {json}` lines on stdout: `ready` once it listens, `fatal` when it cannot start, and its
 //! own requests (`credential-key`, `system-proxy`, `preview`), which the carrier answers with `{"type":"reply",…}` lines on
-//! stdin. The carrier's requests (`inspect-activity`, `inspect-project`, `stop`) go the same way and are matched by id.
+//! stdin. The carrier's own lines go the same way: `stop`, and `inspect-activity`, whose `activity` answer carries its id.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -95,6 +95,8 @@ pub struct HostProcess {
     pending: Pending,
     ready: HostReady,
     exited: Arc<Mutex<Option<Option<i32>>>>,
+    /// The distribution and Linux path of a Host in WSL, which outlives `wsl.exe` when it does not stop by itself.
+    wsl: Option<(String, String)>,
 }
 
 /// Validate the `ready` message, as `parseReady` in `transport.ts` does.
@@ -221,7 +223,7 @@ impl HostProcess {
             }
         };
 
-        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone() };
+        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone(), wsl: crate::wsl::host_of(command) };
         // Report the exit once, from a thread that only polls the child.
         let child_ref = child;
         thread::Builder::new().name("host-exit".into()).spawn(move || {
@@ -269,15 +271,6 @@ impl HostProcess {
         answer.get("active").and_then(Value::as_bool).ok_or_else(invalid)
     }
 
-    /// Canonical project roots, or `Value::Null` when no project is selected.
-    pub fn inspect_project(&self, workspace_id: Option<&str>) -> Result<Value> {
-        let mut message = json!({ "type": "inspect-project" });
-        if let Some(id) = workspace_id {
-            message["workspaceId"] = Value::String(id.to_owned());
-        }
-        Ok(self.request(message)?.get("project").cloned().unwrap_or(Value::Null))
-    }
-
     /// Ask the Host to stop, and kill it when it has not exited after the grace period.
     pub fn stop(&self) {
         if self.has_exited() {
@@ -291,6 +284,11 @@ impl HostProcess {
                 return;
             }
             thread::sleep(Duration::from_millis(100));
+        }
+        if let Some((distro, host)) = &self.wsl
+            && let Err(error) = crate::wsl::force_stop(distro, host, self.ready.pid)
+        {
+            log::warn!("The WSL Host did not stop: {error:#}");
         }
         let mut child = self.child.lock().unwrap();
         #[cfg(windows)]
@@ -370,7 +368,7 @@ fn read_control(
                     write_line(&stdin, &json!({ "type": "reply", "id": id, "answer": answer }));
                 });
             }
-            ("activity" | "project", Some(id)) => {
+            ("activity", Some(id)) => {
                 if let Some(waiting) = pending.lock().unwrap().remove(&id) {
                     let _ = waiting.send(message);
                 }

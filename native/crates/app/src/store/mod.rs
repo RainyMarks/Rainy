@@ -79,6 +79,56 @@ pub struct AskpassRequest {
     pub reply: mpsc::Sender<Option<String>>,
 }
 
+/// How long quitting waits for the editor's unsaved text to be stored.
+const QUIT_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a component operation may take to stop at its next chunk.
+const MODULES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What still has to stop when Rainy quits, restarts or hands over to an installer, taken out of the store
+/// ([`Store::shutdown`]) so the waiting happens off the interface thread.
+pub struct Shutdown {
+    host: Option<Arc<HostProcess>>,
+    modules: Arc<rainy_carrier::modules::Modules>,
+    strata: Option<Arc<rainy_carrier::strata::Manager>>,
+}
+
+impl Shutdown {
+    /// Stop the Host (asked first, killed after its grace period) and the Strata server Rainy started at the same time,
+    /// and wait for a component operation to stop at its next chunk; whether none still runs. Blocks for up to about ten
+    /// seconds.
+    pub fn finish(self) -> bool {
+        let stop = |name: &str, run: Box<dyn FnOnce() + Send>| std::thread::Builder::new().name(name.to_owned()).spawn(run).ok();
+        let host = self.host.and_then(|host| stop("stop-host", Box::new(move || host.stop())));
+        // The model server Rainy started does not outlive it; a server it did not start is left running.
+        let strata = self.strata.and_then(|strata| stop("stop-strata", Box::new(move || strata.close())));
+        let idle = self.modules.wait_idle(MODULES_TIMEOUT);
+        for thread in [host, strata].into_iter().flatten() {
+            let _ = thread.join();
+        }
+        idle
+    }
+}
+
+/// Hide every window of Rainy at once, before what quitting waits for. Asynchronous, so it is safe in any update: the
+/// windows go when the message loop next runs.
+pub fn hide_windows() {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SW_HIDE, ShowWindowAsync};
+    unsafe extern "system" fn hide(window: HWND, _: LPARAM) -> i32 {
+        let mut process = 0;
+        // SAFETY: plain queries and an asynchronous show request on a window handle Windows enumerated.
+        unsafe {
+            GetWindowThreadProcessId(window, &mut process);
+            if process == std::process::id() && IsWindowVisible(window) != 0 {
+                ShowWindowAsync(window, SW_HIDE);
+            }
+        }
+        1
+    }
+    // SAFETY: the callback only reads the handles it is given.
+    unsafe { EnumWindows(Some(hide), 0) };
+}
+
 /// The Linux runtime could not be downloaded during startup: why, and where the user's choice goes. Dropping `reply`
 /// quits, as closing 3.x's dialog did.
 pub struct RuntimePrompt {
@@ -111,6 +161,8 @@ pub struct Store {
     /// The Strata local model engine, once the modules are read.
     pub strata: strata::Strata,
     stopping: bool,
+    /// Quitting or restarting gracefully ([`Store::quit`], [`Store::restart`]) is under way.
+    quitting: bool,
     pub info: Option<AppInfo>,
     pub prefs: UiPreferences,
     pub models: Option<ModelsStatus>,
@@ -155,8 +207,16 @@ impl Store {
         let askpass = std::env::current_exe().ok().and_then(|exe| {
             let ask = move |question: Question| {
                 let (reply, answer) = mpsc::channel();
+                let open = question.open.clone();
                 questions_tx.send_blocking(AskpassRequest { question, reply }).ok()?;
-                answer.recv().ok().flatten()
+                // The `ssh` run may end while the window asks; the window then closes the question (`ui::ssh`).
+                loop {
+                    match answer.recv_timeout(std::time::Duration::from_millis(250)) {
+                        Ok(answer) => return answer,
+                        Err(mpsc::RecvTimeoutError::Timeout) if open.load(std::sync::atomic::Ordering::SeqCst) => {}
+                        Err(_) => return None,
+                    }
+                }
             };
             Askpass::start(exe, Arc::new(ask)).inspect_err(|error| log::warn!("SSH questions cannot be answered: {error:#}")).ok()
         });
@@ -189,6 +249,7 @@ impl Store {
                 modules: modules::OptionalModules::new(manager),
                 strata: strata::Strata::default(),
                 stopping: false,
+                quitting: false,
                 info: None,
                 prefs: UiPreferences::default(),
                 models: None,
@@ -369,8 +430,9 @@ impl Store {
         self._tasks.push(task);
     }
 
-    /// Stop the Host; called when the application quits.
-    pub fn shutdown(&mut self) {
+    /// Stop taking work and hand over what still has to stop: run [`Shutdown::finish`] off the interface thread. A
+    /// second call has nothing left to stop.
+    pub fn shutdown(&mut self) -> Shutdown {
         self.stopping = true;
         // A download stops; what it received is kept for the next attempt.
         self.modules.manager.close();
@@ -378,9 +440,36 @@ impl Store {
         if let Some(rpc) = self.rpc.take() {
             rpc.close();
         }
-        if let Some(host) = self.host.take() {
-            host.stop();
+        Shutdown { host: self.host.take(), modules: self.modules.manager.clone(), strata: self.strata.manager.clone() }
+    }
+
+    /// Quit as 3.x did: the editor's unsaved text is stored, the Host and the Strata server Rainy started stop, then Rainy
+    /// exits. The windows go at once; nothing here blocks the interface thread, and a second request while this runs
+    /// does nothing.
+    pub fn quit(&mut self, cx: &mut Context<Self>) {
+        if self.quitting {
+            return;
         }
+        self.quitting = true;
+        log::info!("Quitting: saving the editor state and stopping the Host");
+        crate::placement::save(cx);
+        hide_windows();
+        let flush = (self.rpc.is_some() && self.host.as_ref().is_some_and(|host| !host.has_exited()))
+            .then(|| ide::Ide::global(cx).update(cx, |ide, cx| ide.flush_now(cx)));
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            if let Some(flush) = flush {
+                match flush.with_timeout(QUIT_FLUSH_TIMEOUT, cx.background_executor()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => log::warn!("The editor state was not saved before quitting: {error}"),
+                    Err(_) => log::warn!("The editor state was not saved before quitting: no answer in time"),
+                }
+            }
+            if let Ok(shutdown) = this.update(cx, |store, _| store.shutdown()) {
+                cx.background_spawn(async move { shutdown.finish() }).await;
+            }
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
     }
 
     fn handle(&mut self, event: RpcEvent, cx: &mut Context<Self>) {
@@ -638,17 +727,28 @@ impl Store {
         cx.emit(StoreEvent::PrefsChanged);
     }
 
-    /// Start Rainy again with this run's switches, then quit. The new process waits for this one to exit before it
-    /// takes the single-instance lock, and opens none of the paths this run was launched with.
+    /// Start Rainy again with this run's switches, then quit. The window goes at once and the Host stops off the
+    /// interface thread. The new process waits for this one to exit before it takes the single-instance lock, and opens
+    /// none of the paths this run was launched with.
     pub fn restart(&mut self, cx: &mut Context<Self>) {
-        if let Ok(exe) = std::env::current_exe() {
-            self.shutdown();
-            let arguments = rainy_carrier::launch::relaunch_arguments(&std::env::args_os().collect::<Vec<_>>(), std::process::id());
-            if let Err(error) = std::process::Command::new(exe).args(arguments).spawn() {
-                log::warn!("Rainy could not start again: {error}");
-            }
+        if self.quitting {
+            return;
         }
-        cx.quit();
+        self.quitting = true;
+        crate::placement::save(cx);
+        hide_windows();
+        let shutdown = self.shutdown();
+        cx.spawn(async move |_, cx: &mut AsyncApp| {
+            cx.background_spawn(async move { shutdown.finish() }).await;
+            if let Ok(exe) = std::env::current_exe() {
+                let arguments = rainy_carrier::launch::relaunch_arguments(&std::env::args_os().collect::<Vec<_>>(), std::process::id());
+                if let Err(error) = std::process::Command::new(exe).args(arguments).spawn() {
+                    log::warn!("Rainy could not start again: {error}");
+                }
+            }
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
     }
 
     /// Remember `target` and restart into it; refused while the Host is busy.

@@ -1,11 +1,11 @@
-/** Grammar choice for code blocks and files, and grammars that load together for embedded code. */
+/** Grammar choice for code blocks, and grammars that load together for embedded code. */
 import { describe, expect, it, vi } from 'vitest'
-import { grammarFor, highlightLines, languageForPath, loadGrammar } from '../../src/renderer/ui/highlight.ts'
+import { grammarFor, highlightLines, loadGrammar } from '../../src/renderer/ui/highlight.ts'
 
 describe('grammar choice', () => {
   it('knows the aliases grammars register themselves before they load', () => {
-    expect(['xsl', 'XHTML', 'ipython', 'h++', 'jsp', 'mkd', 'ps'].map(grammarFor)).toEqual(['xml', 'xml', 'python', 'cpp', 'java', 'markdown', 'powershell'])
-    expect(languageForPath('C:\\ctf\\Info.plist')).toBe('xml')
+    expect(['xsl', 'XHTML', 'ipython', 'h++', 'jsp', 'mkd', 'ps', 'plist'].map(grammarFor))
+      .toEqual(['xml', 'xml', 'python', 'cpp', 'java', 'markdown', 'powershell', 'xml'])
     expect(grammarFor('brainfuck')).toBeUndefined()
   })
 

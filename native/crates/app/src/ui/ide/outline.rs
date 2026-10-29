@@ -25,7 +25,8 @@ pub struct Heading {
     pub line: usize,
 }
 
-fn pattern(cell: &'static OnceLock<Regex>, source: &str) -> &'static Regex {
+/// A regular expression compiled once, on first use.
+pub(crate) fn pattern(cell: &'static OnceLock<Regex>, source: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(source).expect("a valid pattern"))
 }
 
@@ -68,8 +69,8 @@ pub fn plain_heading(raw: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The lines of front matter at the start, if any (`splitFrontMatter`).
-fn front_matter_lines(lines: &[&str]) -> usize {
+/// The lines of YAML (`---`) or TOML (`+++`) front matter at the start, if any (`splitFrontMatter`).
+pub(crate) fn front_matter_lines(lines: &[&str]) -> usize {
     let opening = lines.first().map(|line| line.trim_end_matches([' ', '\t']));
     let closing: &[&str] = match opening {
         Some("---") => &["---", "..."],

@@ -47,8 +47,8 @@ shutil.copytree(app / 'dist/renderer', target / 'dist/renderer', ignore=shutil.i
 
 
 def ignore_resources(path, names):
-    """Strata is an optional module of the Windows carrier; the offline Ubuntu packages are the optional module
-    `linux-dev-packages` (prepare-optional-modules.mjs), of which the base keeps the manifest the environment check reads."""
+    """The offline Ubuntu packages are the optional module `linux-dev-packages` (prepare-optional-modules.mjs), of which
+    the base keeps the manifest the environment check reads; a Strata runtime an earlier bootstrap left is not packaged."""
     ignored = set(shutil.ignore_patterns('*.map')(path, names))
     if Path(path) == app / 'resources':
         ignored.add('strata-runtime')

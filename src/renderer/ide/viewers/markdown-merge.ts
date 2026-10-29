@@ -172,6 +172,53 @@ export function preserveBlocks(source: string, loaded: string, edited: string, r
   return out + (last.source === from.length - 1 ? source.slice(from.at(-1)![1]) : '\n')
 }
 
+/** Lines `[start, end)` of a base text replaced by `lines`. */
+interface Hunk { readonly start: number; readonly end: number; readonly lines: readonly string[] }
+
+/** @returns The stretches of `base` that `other` changed, in order. */
+function hunks(base: readonly string[], other: readonly string[]): Hunk[] {
+  const result: Hunk[] = []
+  let at = 0
+  let open: { start: number; end: number; lines: string[] } | undefined
+  for (const part of diffArrays(base as string[], other as string[])) {
+    const count = part.count ?? part.value.length
+    if (!part.added && !part.removed) {
+      if (open !== undefined) { result.push(open); open = undefined }
+      at += count
+      continue
+    }
+    open ??= { start: at, end: at, lines: [] }
+    if (part.removed) { at += count; open.end = at } else open.lines.push(...part.value)
+  }
+  if (open !== undefined) result.push(open)
+  return result
+}
+
+/**
+ * Carry an edit over onto a text that changed meanwhile, line by line, as diff3 does: `mine` and `theirs` both started
+ * from `base`.
+ * @param base The text both started from.
+ * @param mine The edited text.
+ * @param theirs The text it changed into meanwhile.
+ * @returns `theirs` with the lines `mine` changed, or `undefined` when both changed the same or neighbouring lines.
+ */
+export function rebaseEdit(base: string, mine: string, theirs: string): string | undefined {
+  if (mine === base || mine === theirs) return theirs
+  if (theirs === base) return mine
+  const lines = base.split('\n')
+  const ours = hunks(lines, mine.split('\n'))
+  const others = hunks(lines, theirs.split('\n'))
+  if (ours.some(a => others.some(b => a.start <= b.end && b.start <= a.end))) return undefined
+  const out: string[] = []
+  let at = 0
+  for (const hunk of [...ours, ...others].sort((a, b) => a.start - b.start)) {
+    out.push(...lines.slice(at, hunk.start), ...hunk.lines)
+    at = hunk.end
+  }
+  out.push(...lines.slice(at))
+  return out.join('\n')
+}
+
 /** What the merge needs from the editor's own Markdown parser and serializer. */
 export interface MarkdownReader {
   /** @returns The editor's serialization of its parse of `text`. */

@@ -7,7 +7,7 @@
 ### The AI workbench that gets things done, for office work, research and code
 
 An agent that edits your files, runs commands and checks its own work,<br>
-with an editor, Office previews and SSH remote development, in one 52 MB Windows app.
+with an editor, Office previews and SSH remote development, in one 27 MB Windows app.
 
 <br>
 
@@ -141,7 +141,7 @@ See what a project is made of, how its parts import each other and which stack i
 | **Three execution environments** | Native Windows by default; switch to WSL2 or an SSH server when a project needs Linux. |
 | **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
 | **Context management** | Shows how full the context is and compacts it automatically before it runs out; Claude's prompt cache lasts an hour. |
-| **Light** | A 52 MB installer; PHP and the Linux runtime download only when needed. |
+| **Light** | A 27 MB installer; editor tools, PHP and the Linux runtime download only when needed. |
 | **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
 | **Details** | A light rain falls behind empty views and ripples where you click; turn it off in **Settings → Appearance**. |
 
@@ -161,7 +161,7 @@ Rainy downloads stable updates in the background and then offers **Later** or **
 | Item | Requirement |
 |---|---|
 | Operating system | Windows 10 / 11 x64 |
-| Disk space | About 165 MB installed |
+| Disk space | About 67 MB installed |
 | WSL (optional) | WSL2; the bundled Ubuntu development tools wizard supports Ubuntu 26.04 |
 | SSH server (optional) | x86_64 Linux with `python3` and glibc 2.17 or later; the runtime takes about 110 MB |
 | WebView2 | For PDF, Office and Markdown previews; Windows 11 includes it, Windows 10 installs it when asked |
@@ -171,9 +171,11 @@ Rainy downloads stable updates in the background and then offers **Later** or **
 | Component | Size | When |
 |---|---|---|
 | Linux runtime | about 27 MB | Automatically, the first time you use WSL or an SSH host |
-| Strata engine | about 533 MB | **Settings → Models → Strata local model**, for local models on an NVIDIA GPU |
+| Python tools | about 26 MB | **Settings → Tools**: Ruff, ty and debugpy, for editing and debugging Python |
+| JavaScript / TypeScript tools | about 11 MB | **Settings → Tools**: TypeScript 7 and js-debug |
+| Strata local models | depends on the GPU | **Settings → Tools**: Strata's newest release; models are downloaded separately |
 | Ubuntu development packages | about 165 MB | When you install the development tools; deleted once installed |
-| PHP | about 38 MB | **Settings → Runtime → Optional components** |
+| PHP | about 38 MB | **Settings → Tools** |
 
 <a id="connect-a-model"></a>
 ## Connect a model
@@ -191,7 +193,7 @@ Bring your own model; Rainy never switches to another one behind your back.
 2. Select **Discover models**, or enter the model ID.
 3. Set the service's actual context window and output limit, save, then run the streaming and tool-call check.
 
-The selected Windows, WSL or SSH environment must reach the model service. Through a relay, keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`). To run a model on your own NVIDIA GPU, **Settings → Models → Strata local model** downloads the Strata engine, loads your Qwen3.8 Flash Next GGUF and sets it as the default model.
+The selected Windows, WSL or SSH environment must reach the model service. Through a relay, keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`). To run a model on your own PC, **Settings → Tools → Strata local models** downloads Strata and the model it recommends for your PC; start it, then connect it as the default model.
 
 <a id="privacy"></a>
 ## Privacy and security
@@ -271,17 +273,17 @@ Yes, with a model server on your machine (such as Ollama). The full offline rele
 <summary>Show the build steps</summary>
 <br>
 
-Building the Windows release requires Node.js `^22.19 || >=24`, pnpm `11.7.0`, and the Windows/WSL prerequisites in the [build guide](docs/desktop-setup.zh-CN.md#从源码构建). Pinned binaries such as `build-inputs/strata-runtime.tar.gz` are restored from release assets by the bootstrap command rather than stored in Git.
+Building the Windows release requires Node.js `^22.19 || >=24`, pnpm `11.7.0`, and the Windows/WSL prerequisites in the [build guide](docs/desktop-setup.zh-CN.md#从源码构建). Pinned binaries are restored from release assets by the bootstrap command rather than stored in Git.
 
 ```powershell
 git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.2.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.3.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `4.2.2` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `4.3.0` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host on its own, then prints a URL to open in a browser; the interface lives in `native/`: `cargo build -p rainy --offline` builds it and `bash native/scripts/run-ui.sh` starts it with a scratch data folder. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 

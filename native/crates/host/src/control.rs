@@ -1,8 +1,8 @@
 //! The stdio channel to the carrier (3.x `control.ts`).
 //!
-//! stdout lines `RAINY_CONTROL {json}`: `ready`, `fatal`, `activity`, `project`, and the Host's own requests
-//! (`credential-key`, `system-proxy`, `preview`). stdin JSON lines: `stop`, `inspect-activity {id, mode?}`,
-//! `inspect-project {id, workspaceId?}` and `reply {id, …}` answering a Host request. Nothing else is written to stdout.
+//! stdout lines `RAINY_CONTROL {json}`: `ready`, `fatal`, `activity`, and the Host's own requests (`credential-key`,
+//! `system-proxy`, `preview`). stdin JSON lines: `stop`, `inspect-activity {id, mode?}` and `reply {id, …}` answering a
+//! Host request. Nothing else is written to stdout.
 
 use std::collections::HashMap;
 use std::io::Write as _;

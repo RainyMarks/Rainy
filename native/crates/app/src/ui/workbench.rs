@@ -693,9 +693,11 @@ impl Workbench {
             let servers = crate::store::language::LanguageServers::global(cx);
             let servers = servers.read(cx);
             let (name, phase) = servers.phase_of(&key)?;
-            let (label, reason) = match phase {
-                crate::store::language::ServerPhase::Starting => (trf(cx, "native.languageStarting", &[("language", &name)]), None),
-                crate::store::language::ServerPhase::Failed(reason) => (trf(cx, "native.languageFailed", &[("language", &name)]), Some(reason.clone())),
+            let (label, reason, missing) = match phase {
+                crate::store::language::ServerPhase::Starting => (trf(cx, "native.languageStarting", &[("language", &name)]), None, false),
+                // Its tools are not downloaded: a click opens the page that downloads them.
+                crate::store::language::ServerPhase::Failed(reason) if reason.as_ref() == "tools-missing" => (trf(cx, "native.languageToolsMissing", &[("language", &name)]), None, true),
+                crate::store::language::ServerPhase::Failed(reason) => (trf(cx, "native.languageFailed", &[("language", &name)]), Some(reason.clone()), false),
                 crate::store::language::ServerPhase::Ready => return None,
             };
             Some(
@@ -706,6 +708,7 @@ impl Workbench {
                     .text_ellipsis()
                     .whitespace_nowrap()
                     .child(label)
+                    .when(missing, |this| this.cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::Tools, window, cx))))
                     .when_some(reason, |this, reason| this.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(reason.clone()).build(window, cx))),
             )
         });

@@ -71,10 +71,7 @@ impl FileTree {
         }
         let (root, _) = split_key(directory);
         for entry in &listing.entries {
-            let key = match root {
-                Some(root) => format!("\0{root}/{}", entry.path),
-                None => entry.path.clone(),
-            };
+            let key = crate::store::ide::root_key(root, &entry.path);
             let open = entry.is_directory() && ide.expanded.contains(&key);
             rows.push(Row::Entry { key: key.clone(), entry: entry.clone(), depth, open });
             if open {

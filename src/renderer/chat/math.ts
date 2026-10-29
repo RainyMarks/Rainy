@@ -12,7 +12,7 @@ const listeners = new Set<() => void>()
  * @param text Markdown source.
  * @returns Whether KaTeX is needed to render it.
  */
-export function mayContainMath(text: string): boolean {
+function mayContainMath(text: string): boolean {
   return text.includes('$')
 }
 

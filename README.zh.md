@@ -7,7 +7,7 @@
 ### 会动手的 AI 工作台，为办公、科研和编码而生
 
 能读写文件、执行命令、自己检查成果的 AI 智能体，<br>
-连同编辑器、Office 文档预览和 SSH 远程开发，装进一个 52 MB 的 Windows 应用。
+连同编辑器、Office 文档预览和 SSH 远程开发，装进一个 27 MB 的 Windows 应用。
 
 <br>
 
@@ -141,7 +141,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 | **三种执行环境** | 默认 Windows 原生；需要 Linux 时切到 WSL2 或一台 SSH 服务器。 |
 | **项目记忆** | 开启后在空闲时整理项目要点，新对话开始时自动带上。 |
 | **上下文管理** | 实时显示上下文占用，快满时自动压缩；Claude 的提示词缓存保留一小时。 |
-| **轻量** | 安装包 52 MB；PHP 和 Linux 运行环境都在用到时才下载。 |
+| **轻量** | 安装包 27 MB；编程工具、PHP 和 Linux 运行环境都在用到时才下载。 |
 | **适配任意屏幕** | 高缩放（如 225%）和小屏幕上自动适配，换显示器或改缩放后自动调整。 |
 | **细节** | 空白页飘着细雨，点一下泛起涟漪；可在 **设置 → 外观** 关闭。 |
 
@@ -161,7 +161,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | 项目 | 要求 |
 |---|---|
 | 操作系统 | Windows 10 / 11 x64 |
-| 磁盘空间 | 安装后约 165 MB |
+| 磁盘空间 | 安装后约 67 MB |
 | WSL（可选） | WSL2；随附的 Ubuntu 开发工具向导适用于 Ubuntu 26.04 |
 | SSH 服务器（可选） | x86_64 Linux，装有 `python3`，glibc 2.17 或更新；运行环境约占 110 MB |
 | WebView2 | 预览 PDF、Office 和 Markdown 时使用；Windows 11 自带，Windows 10 上没有时按提示安装 |
@@ -171,9 +171,11 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 | 组件 | 大小 | 何时下载 |
 |---|---|---|
 | Linux 运行环境 | 约 27 MB | 第一次使用 WSL 或 SSH 主机时自动下载 |
-| Strata 引擎 | 约 533 MB | **设置 → 模型 → Strata 本地模型**，在 NVIDIA 显卡上运行本地模型时 |
+| Python 编程工具 | 约 26 MB | **设置 → 工具**：Ruff、ty、debugpy，编辑和调试 Python 时 |
+| JavaScript / TypeScript 编程工具 | 约 11 MB | **设置 → 工具**：TypeScript 7、js-debug |
+| Strata 本地大模型 | 视显卡而定 | **设置 → 工具**：Strata 官方最新版，模型另行下载 |
 | Ubuntu 开发工具包 | 约 165 MB | 在“准备开发工具”中点击安装时，装好后自动删除 |
-| PHP | 约 38 MB | **设置 → 运行环境 → 可选组件** |
+| PHP | 约 38 MB | **设置 → 工具** |
 
 <a id="connect-a-model"></a>
 ## 连接模型
@@ -191,7 +193,7 @@ Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** �
 2. 点击 **发现模型**，或手动填写模型 ID。
 3. 填写服务实际的上下文窗口和输出上限，保存后运行流式与工具调用检查。
 
-所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。想在自己的 NVIDIA 显卡上跑模型，可在 **设置 → 模型 → Strata 本地模型** 下载 Strata 引擎，载入你的 Qwen3.8 Flash Next GGUF 并设为默认模型。
+所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。想在自己的电脑上跑模型，可在 **设置 → 工具 → Strata 本地大模型** 下载 Strata，从推荐表里下载适合这台电脑的模型，启动后连接并设为默认模型。
 
 <a id="privacy"></a>
 ## 隐私与安全
@@ -271,17 +273,17 @@ AI 改过的文件都列在输入框上方，可以在编辑器里逐处撤销�
 <summary>展开构建步骤</summary>
 <br>
 
-需要 Node.js `^22.19 || >=24`、pnpm `11.7.0`，以及[构建指南](docs/desktop-setup.zh-CN.md#从源码构建)列出的 Windows/WSL 环境。`build-inputs/strata-runtime.tar.gz` 等固定版本的二进制资源由 bootstrap 命令从发行资产恢复，不存放在 Git 中。
+需要 Node.js `^22.19 || >=24`、pnpm `11.7.0`，以及[构建指南](docs/desktop-setup.zh-CN.md#从源码构建)列出的 Windows/WSL 环境。固定版本的二进制资源由 bootstrap 命令从发行资产恢复，不存放在 Git 中。
 
 ```powershell
 git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.2.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.3.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.2.2` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.3.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

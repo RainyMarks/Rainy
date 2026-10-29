@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
-/** The PDF viewer's text extraction and copy, its error reasons, the canvas size cap and the place kept across a zoom. */
+/** The PDF viewer's text extraction, find and copy, its error reasons, the canvas size cap and the place kept across a zoom. */
 import { describe, expect, it } from 'vitest'
 import { describePdfError, PdfJsUnavailableError } from '../../src/renderer/ide/viewers/pdf-errors.ts'
 import { anchoredScroll, canvasPixelRatio, captureAnchor, MAX_CANVAS_PIXELS, pageIndexAt, type Box } from '../../src/renderer/ide/viewers/pdf-layout.ts'
-import { fixRadicals, joinTextItems, selectedText, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
+import { findMatches, findPattern } from '../../src/renderer/ide/viewers/pdf-find.ts'
+import { fixRadicals, joinTextItems, layOutText, selectedText, type PdfTextItem } from '../../src/renderer/ide/viewers/pdf-text.ts'
 import radicals from '../../native/crates/app/src/web/radicals.in?raw'
 
 /** An upright item at `x`, `y` in a 10 pt font, `width` wide. */
@@ -54,6 +55,33 @@ describe('text of a page', () => {
 
   it('maps radicals, skips marked content and trims line ends', () => {
     expect(joinTextItems([{ str: '第⼆节   ', hasEOL: true }, {}, { str: '⽇期' }])).toBe('第二节\n日期')
+  })
+})
+
+describe('find', () => {
+  const pages = [
+    layOutText([item('第一章', 72, 30), item('总则', 102, 20, 700, true), {}, item('Hello', 72, 25, 680), item('world', 100, 25, 680)]),
+    layOutText([item('本办法适用于', 72, 60, 700, true), item('hello', 72, 25, 680)]),
+  ]
+
+  it('finds text across items, case aside unless asked, and maps it to the text layer', () => {
+    const matches = findMatches(pages, findPattern('章总', false)!)
+    // `{}` is marked content: it has no div, so the items after it keep their indexes in the text layer.
+    expect(matches).toEqual([{ page: 1, pieces: [{ item: 0, from: 2, to: 3 }, { item: 1, from: 0, to: 1 }] }])
+    expect(findMatches(pages, findPattern('HELLO', false)!).map(match => match.page)).toEqual([1, 2])
+    expect(findMatches(pages, findPattern('HELLO', true)!)).toEqual([])
+    expect(findMatches(pages, findPattern('hello', true)!)).toEqual([{ page: 2, pieces: [{ item: 1, from: 0, to: 5 }] }])
+  })
+
+  it('matches white space in the query to the spaces and line ends between items', () => {
+    expect(findMatches(pages, findPattern('Hello  world', false)!)).toEqual([{ page: 1, pieces: [{ item: 2, from: 0, to: 5 }, { item: 3, from: 0, to: 5 }] }])
+    expect(findMatches(pages, findPattern('总则 Hello', false)!)).toHaveLength(1)
+  })
+
+  it('takes the query as text and finds nothing for white space alone', () => {
+    expect(findPattern('  ', false)).toBeUndefined()
+    expect(findMatches([layOutText([{ str: 'a.b (c)' }])], findPattern('.b (c', false)!)).toHaveLength(1)
+    expect(findMatches([layOutText([{ str: 'axb' }])], findPattern('.', false)!)).toEqual([])
   })
 })
 

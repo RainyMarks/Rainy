@@ -42,29 +42,46 @@ function touching(previous: PdfTextItem, next: PdfTextItem): boolean {
   return Math.abs(b[4] - (a[4] + previous.width)) < size * 0.15
 }
 
+/** A page's text as {@link joinTextItems} joins it, before trimming, and where each item's string lies in it. */
+export interface LaidOutText {
+  readonly text: string
+  /** `[start, end)` of the string of each item that has one, in order: the items of the page's text layer. */
+  readonly spans: readonly (readonly [number, number])[]
+}
+
 /**
  * @param items Items of one page in reading order, or the selected part of them.
  * @returns Their text: a line break after every item with `hasEOL`, and a space between two items only where a letter or
  *   digit of a space-separated script meets another with a gap between them, so Chinese runs together and punctuation
- *   stays attached; pdf.js's own spaces are kept.
+ *   stays attached; pdf.js's own spaces are kept. Items without a string are left out.
  */
-export function joinTextItems(items: Iterable<PdfTextItem>): string {
+export function layOutText(items: Iterable<PdfTextItem>): LaidOutText {
   let text = ''
+  const spans: [number, number][] = []
   let previous: PdfTextItem | undefined
   for (const item of items) {
     if (item.str === undefined) continue
     const str = fixRadicals(item.str)
     if (str !== '') {
       if (previous !== undefined && WORD.test(text.at(-1) ?? '') && WORD.test(str[0]) && !touching(previous, item)) text += ' '
-      text += str
       previous = item
     }
+    spans.push([text.length, text.length + str.length])
+    text += str
     if (item.hasEOL === true) {
       text += '\n'
       previous = undefined
     }
   }
-  return text.replace(/[ \t]+\n/g, '\n').trimEnd()
+  return { text, spans }
+}
+
+/**
+ * @param items Items of one page in reading order, or the selected part of them.
+ * @returns Their text as {@link layOutText} joins it, without spaces at line ends or at the end.
+ */
+export function joinTextItems(items: Iterable<PdfTextItem>): string {
+  return layOutText(items).text.replace(/[ \t]+\n/g, '\n').trimEnd()
 }
 
 /** The text layer of one rendered page: pdf.js's `textDivs` and the items they show, index for index. Items with no text

@@ -213,6 +213,54 @@ pub fn prune_runtimes(distro: &str, files: &RuntimeFiles) -> Result<Vec<String>>
     Ok(value.get("removed").and_then(Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()).unwrap_or_default())
 }
 
+/// Ends the process `argv[1]` and everything it started, with SIGKILL, while `/proc/<pid>/cmdline` still begins with
+/// the Host's path `argv[2]`, so a pid the system gave to another process since is left alone (3.x `forceStop`).
+const FORCE_STOP: &str = r#"import os,signal,sys
+pid,host=int(sys.argv[1]),os.fsencode(sys.argv[2])
+def argv(p):
+    try:
+        with open("/proc/%d/cmdline"%p,"rb") as f: return f.read().split(b"\0")
+    except OSError: return []
+if argv(pid)[:1]!=[host]: sys.exit(3)
+children={}
+for name in os.listdir("/proc"):
+    if name.isdigit():
+        try:
+            with open("/proc/%s/stat"%name,"rb") as f: stat=f.read()
+            children.setdefault(int(stat[stat.rindex(b")")+2:].split()[1]),[]).append(int(name))
+        except (OSError,ValueError,IndexError): pass
+tree=[pid]
+for p in tree: tree.extend(children.get(p,[]))
+for p in tree:
+    try: os.kill(p,signal.SIGKILL)
+    except OSError: pass
+"#;
+
+/// The distribution and the Linux path of the Host a command of [`host_command`] starts.
+pub(crate) fn host_of(command: &HostCommand) -> Option<(String, String)> {
+    if !command.program.file_name().is_some_and(|name| name.eq_ignore_ascii_case("wsl.exe")) {
+        return None;
+    }
+    let args: Vec<&str> = command.args.iter().map(|arg| arg.to_str()).collect::<Option<_>>()?;
+    match args.as_slice() {
+        ["--distribution", distro, "--exec", "env", .., host] if host.starts_with('/') => Some(((*distro).to_owned(), (*host).to_owned())),
+        _ => None,
+    }
+}
+
+/// End a Host that did not stop when asked, with the language servers, terminals and commands it started: killing
+/// `wsl.exe` on Windows leaves them running in the distribution. Only while `pid` is still that Host.
+pub(crate) fn force_stop(distro: &str, host: &str, pid: u32) -> Result<()> {
+    let what = localized("结束 WSL 中的执行后端", "Stopping the execution Host in WSL");
+    let output = output_within(wsl(distro, &["python3", "-c", FORCE_STOP, &pid.to_string(), host]), Duration::from_secs(20), &what)?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        // The pid is no longer the Host: it ended meanwhile.
+        Some(3) => Ok(()),
+        _ => Err(failure(distro, &output, &what)),
+    }
+}
+
 /// The Host inside the distribution: `wsl.exe --distribution D --exec env K=V… rainy-host` (`WslHostTransport`).
 pub fn host_command(distro: &str, host: &str, env: &[(String, String)]) -> HostCommand {
     let mut args: Vec<OsString> = ["--distribution", distro, "--exec", "env"].into_iter().map(OsString::from).collect();
@@ -314,5 +362,57 @@ mod tests {
         assert!(args.contains(&"RAINY_HOME=/home/u/.rainy-agent".to_owned()));
         assert_eq!(args.last().map(String::as_str), Some("/r/rainy-host"));
         assert!(command.wait_for_loopback);
+        // What a force stop needs to find the Host in the distribution.
+        assert_eq!(host_of(&command), Some(("Ubuntu".to_owned(), "/r/rainy-host".to_owned())));
+        assert_eq!(host_of(&host_command("Debian", "/r/rainy-host", &[])), Some(("Debian".to_owned(), "/r/rainy-host".to_owned())));
+        assert_eq!(host_of(&HostCommand { program: r"C:\Rainy\resources\windows-host\rainy-host.exe".into(), ..command.clone() }), None);
+        assert_eq!(host_of(&HostCommand { args: command.args[..3].to_vec(), ..command }), None);
+    }
+
+    /// A WSL Host that ignores `stop` is ended in the distribution, with what it started, not only `wsl.exe` on
+    /// Windows. Run with `--ignored` where WSL has a distribution with python3 (`RAINY_TEST_WSL`, default Ubuntu); it
+    /// uses only a folder in `/tmp`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs a WSL distribution"]
+    fn force_stops_a_wsl_host_that_ignores_stop() {
+        use std::sync::Arc;
+
+        use crate::control::{HostEvents, HostProcess};
+
+        struct Quiet;
+        impl HostEvents for Quiet {}
+
+        let distro = std::env::var("RAINY_TEST_WSL").unwrap_or_else(|_| "Ubuntu".to_owned());
+        let folder = format!("/tmp/rainy-force-stop-{}", std::process::id());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // bash under another name runs BASH_ENV before it reads its input: this Host announces itself, starts a child
+        // and never reads `stop`.
+        let script = format!(
+            r#"trap '' TERM HUP INT
+(exec -a "$0-child" sleep 600) &
+echo 'RAINY_CONTROL {{"type":"ready","protocol":1,"url":"http://127.0.0.1:{port}/","pid":'$$',"home":"/tmp"}}'
+while :; do sleep 1; done
+"#
+        );
+        let setup = r#"mkdir -p "$1" && cp /bin/bash "$1/fake-host" && printf '%s' "$2" > "$1/env.sh""#;
+        let made = output_within(wsl(&distro, &["sh", "-c", setup, "sh", &folder, &script]), Duration::from_secs(120), "setup").unwrap();
+        assert!(made.status.success(), "{}", said(&made));
+        let count = || {
+            let code = "import os,sys\nn=0\nfor p in os.listdir('/proc'):\n    if p.isdigit() and int(p)!=os.getpid():\n        try: n+=sys.argv[1].encode() in open('/proc/%s/cmdline'%p,'rb').read()\n        except OSError: pass\nprint(n)";
+            let output = output_within(wsl(&distro, &["python3", "-c", code, &folder]), Duration::from_secs(60), "count").unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().parse::<usize>().unwrap()
+        };
+        let host = format!("{folder}/fake-host");
+        let process = HostProcess::start(&host_command(&distro, &host, &[("BASH_ENV".into(), format!("{folder}/env.sh"))]), Arc::new(Quiet)).unwrap();
+        assert_eq!(count(), 2);
+        let started = Instant::now();
+        process.stop();
+        assert!(started.elapsed() < Duration::from_secs(40));
+        assert_eq!(count(), 0);
+        // A pid that is no longer the Host is left alone.
+        force_stop(&distro, &host, process.ready().pid).unwrap();
+        let _ = output_within(wsl(&distro, &["rm", "-rf", &folder]), Duration::from_secs(60), "cleanup");
     }
 }

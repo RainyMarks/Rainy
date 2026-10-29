@@ -32,38 +32,6 @@ export function fileReference(key: string): IdeFileReference {
   return { rootId: key.slice(1, separator) as IdeRootId, path: key.slice(separator + 1) }
 }
 
-/** Resolve the mount that owns an editor key.
- * @param workspace Project directory snapshot.
- * @param key Editor key.
- * @returns Its mounted directory, if still attached.
- */
-export function fileRoot(workspace: IdeWorkspace, key: string): IdeWorkspaceRoot | undefined {
-  const reference = fileReference(key)
-  return workspaceRoots(workspace).find(root => root.rootId === (reference.rootId ?? primary))
-}
-
-/** Present a root-qualified filename without exposing internal editor keys.
- * @param workspace Selected project.
- * @param key Editor key.
- * @returns Primary-relative path, or root title and relative path for attachments.
- */
-export function fileLabel(workspace: IdeWorkspace | null, key: string): string {
-  const reference = fileReference(key)
-  if (reference.rootId === undefined || workspace === null) return reference.path
-  return `${fileRoot(workspace, key)?.title ?? reference.rootId}/${reference.path}`
-}
-
-/** Join the Host root and relative path using a normalized URI-compatible spelling.
- * @param workspace Selected project.
- * @param key Editor key.
- * @returns Absolute Host path, or undefined for a removed root.
- */
-export function absoluteFilePath(workspace: IdeWorkspace, key: string): string | undefined {
-  const root = fileRoot(workspace, key)
-  if (root === undefined) return undefined
-  return root.path.replaceAll('\\', '/').replace(/\/$/, '') + '/' + fileReference(key).path
-}
-
 /** Resolve an absolute Host path to its most specific attached root.
  * @param workspace Selected project.
  * @param path Absolute Host path.

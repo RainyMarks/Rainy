@@ -479,7 +479,7 @@ impl Runtime {
         let language = request["language"].as_str().filter(|language| LANGUAGES.contains(language)).map(str::to_owned);
         let project = self.projects.get(&workspace_id).ok_or_else(|| HostError::new("runtime-error", l("所选项目不可用。", "The selected workspace is unavailable.")))?;
         let failure = |error: HostError| HostError::new("runtime-error", error.message);
-        self.registry.get_or_register(&project.id, &project.path, &project.title, None).await.map_err(failure)?;
+        self.registry.get_or_register(&project.id, &project.path, &project.title).await.map_err(failure)?;
         if op == "status" {
             return self.snapshot(&workspace_id).map_err(failure);
         }

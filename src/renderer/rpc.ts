@@ -1,5 +1,4 @@
 /** WebSocket client for the Host's `/rpc` endpoint, with automatic reconnection. */
-import { useSyncExternalStore } from 'react'
 import type {
   HostEvent, HostEvents, HostMethod, MethodParams, MethodResult, RpcErrorBody, RpcEventFrame, RpcResponseFrame,
 } from '../shared/rpc.ts'
@@ -7,13 +6,11 @@ import type {
 /** A failed Host request. */
 export class HostError extends Error {
   readonly code: string
-  readonly data: RpcErrorBody['data']
   /** @param body Error body from the Host. */
   constructor(body: RpcErrorBody) {
     super(body.message)
     this.name = 'HostError'
     this.code = body.code
-    this.data = body.data
   }
 }
 
@@ -139,8 +136,3 @@ export function describeDisconnection(text: () => string): void {
 
 /** The renderer's single Host connection. */
 export const host = new HostClient()
-
-/** @returns The current connection state; re-renders on change. */
-export function useConnectionState(): ConnectionState {
-  return useSyncExternalStore(listener => host.onState(listener), () => host.state)
-}

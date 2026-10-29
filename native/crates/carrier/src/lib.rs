@@ -6,6 +6,7 @@ pub mod control;
 pub mod credential;
 pub mod diagnostics;
 pub mod download;
+mod http;
 #[cfg(windows)]
 pub mod instance;
 pub mod keyring;
@@ -26,6 +27,7 @@ pub mod tarball;
 pub mod targets;
 pub mod text;
 pub mod trust;
+pub mod unzip;
 pub mod update;
 pub mod window_state;
 pub mod wsl;

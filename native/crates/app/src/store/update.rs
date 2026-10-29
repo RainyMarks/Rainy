@@ -24,8 +24,6 @@ const CHECK_DELAY: Duration = Duration::from_secs(10);
 const RECHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// How long saving the drafts may take before the user is asked (3.x `rainy:flush-workbench`).
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(65);
-/// How long a component operation may take to stop at its next chunk.
-const MODULES_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where the updater stands (3.x `RainyUpdateState`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +161,7 @@ impl Store {
         if self.stopping {
             return;
         }
+        let locale = self.locale();
         let updates = &mut self.updates;
         if updates.running {
             updates.manual |= manual;
@@ -187,6 +186,16 @@ impl Store {
             }
             return;
         }
+        // Installers are kept under LOCALAPPDATA; a session without it cannot download one.
+        let Some(cache) = updates.cache.clone() else {
+            log::warn!("Update check skipped: LOCALAPPDATA is not set, so installers have nowhere to go");
+            updates.phase = UpdatePhase::Failed;
+            cx.notify();
+            if manual {
+                cx.emit(StoreEvent::Update(UpdateNotice::Failed(i18n::text(locale, "native.updateNoFolder").to_owned())));
+            }
+            return;
+        };
         log::info!("Update check ({}), running {}", if manual { "manual" } else { "automatic" }, updates.current);
         updates.running = true;
         updates.manual = manual;
@@ -195,7 +204,7 @@ impl Store {
             updates.phase = UpdatePhase::Checking;
         }
         cx.notify();
-        let (source, cache, current, cancel) = (updates.source.clone(), updates.cache.clone(), updates.current.clone(), updates.cancel.clone());
+        let (source, current, cancel) = (updates.source.clone(), updates.current.clone(), updates.cancel.clone());
         let (progress_tx, progress_rx) = async_channel::unbounded::<(String, u8)>();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             while let Ok((version, percent)) = progress_rx.recv().await {
@@ -317,14 +326,13 @@ impl Store {
 /// is removed.
 fn prepare(
     source: &Source,
-    cache: Option<PathBuf>,
+    cache: PathBuf,
     current: &Version,
     baseline: Option<&Version>,
     cancel: &Arc<AtomicBool>,
     progress: &async_channel::Sender<(String, u8)>,
 ) -> Result<Outcome, (&'static str, UpdateError)> {
     let options = source.options(cancel.clone());
-    let cache = cache.ok_or_else(|| ("check", UpdateError::Io("LOCALAPPDATA is not set".into())))?;
     let installer = match update::check(source, baseline.unwrap_or(current), crate::release::keyring(), &options) {
         Ok(None) => {
             if baseline.is_none() {
@@ -423,20 +431,17 @@ async fn install(
             return Installed::Discarded(UpdateNotice::Failed(detail));
         }
     }
-    // Nothing of Rainy may keep a file in the installation folder open once the installer runs.
-    log::info!("Update {version}: saving the window placement and stopping the Host and the module manager");
-    let modules = cx.update(|cx| {
+    // Nothing of Rainy may keep a file in the installation folder open once the installer runs. The window stays
+    // responsive while the Host stops.
+    log::info!("Update {version}: saving the window placement and stopping the Host, Strata and the module manager");
+    let shutdown = cx.update(|cx| {
         crate::placement::save(cx);
         crate::web::preview::close();
-        this.update(cx, |store, _| {
-            store.shutdown();
-            store.modules.manager.clone()
-        })
-        .ok()
+        this.update(cx, |store, _| store.shutdown()).ok()
     });
-    let Some(modules) = modules else { return Installed::Kept(None) };
+    let Some(shutdown) = shutdown else { return Installed::Kept(None) };
     // As 3.x, nothing is installed when the cleanup failed; Rainy starts again and offers the update again.
-    if !cx.background_spawn(async move { modules.wait_idle(MODULES_TIMEOUT) }).await {
+    if !cx.background_spawn(async move { shutdown.finish() }).await {
         log::warn!("Update {version}: a component operation had not stopped; the installer is not started");
         return Installed::Stopped(i18n::text(locale, "native.updateCleanupFailed").to_owned());
     }

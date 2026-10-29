@@ -49,8 +49,8 @@ struct Inner {
 pub struct DebugSession {
     resolved: ResolvedRun,
     owner: Arc<Owner>,
-    /// `resources/ide`: debugpy and js-debug.
-    tools: PathBuf,
+    /// Where debugpy and js-debug are.
+    tools: super::tools::Tools,
     cols: u16,
     rows: u16,
     stop_on_entry: bool,
@@ -70,7 +70,7 @@ impl DebugSession {
         snapshot: Map<String, Value>,
         resolved: ResolvedRun,
         owner: Arc<Owner>,
-        tools: PathBuf,
+        tools: super::tools::Tools,
         (cols, rows): (u16, u16),
         stop_on_entry: bool,
         breakpoints: Vec<(String, Vec<u64>)>,
@@ -249,7 +249,9 @@ impl DebugSession {
         match self.resolved.language.as_str() {
             "python" => {
                 let separator = if cfg!(windows) { ";" } else { ":" };
-                let own = self.tools.join("python").display().to_string();
+                let adapter = self.tools.debugpy().join("debugpy").join("adapter").join("__main__.py");
+                super::tools::Tools::require(adapter, super::tools::Kit::Python)?;
+                let own = self.tools.debugpy().display().to_string();
                 let path = match environment.get("PYTHONPATH").filter(|value| !value.is_empty()) {
                     Some(existing) => format!("{own}{separator}{existing}"),
                     None => own,
@@ -264,10 +266,7 @@ impl DebugSession {
                 Ok(peer)
             }
             "javascript" | "typescript" => {
-                let adapter = self.tools.join("js-debug").join("src").join("dapDebugServer.js");
-                if !adapter.is_file() {
-                    return Err(error("The bundled JavaScript debug adapter is unavailable."));
-                }
+                let adapter = super::tools::Tools::require(self.tools.js_debug(), super::tools::Kit::Web)?;
                 // js-debug is a script; it runs on the same Node.js as the program.
                 let spec = CommandSpec { argv: vec![launch.argv[0].clone(), adapter.display().to_string(), "0".into(), "127.0.0.1".into()], cwd: launch.cwd.clone(), environment };
                 let mut child = self.owner.spawn(&spec, false)?;

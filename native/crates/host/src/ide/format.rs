@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::framing;
-use super::tools::Tools;
+use super::tools::{Kit, Tools};
 use crate::error::{HostError, HostResult};
 use crate::paths::{join_relative, relative_path};
 use crate::process::{child_env, read_limited, resolve_executable};
@@ -32,8 +32,8 @@ pub async fn format(request: &Value, root: &Path, tools: &Tools, environment: &B
     let env = child_env(environment);
     let work = async {
         match request["language"].as_str() {
-            Some("python") => filter(&[tools.ruff().display().to_string(), "format".into(), "--isolated".into(), "--stdin-filename".into(), filename, "-".into()], root, &env, text).await,
-            Some(language @ ("javascript" | "typescript")) => script(&tools.tsc(), root, &file, language, &text.replace("\r\n", "\n"), &env).await,
+            Some("python") => filter(&[Tools::require(tools.ruff(), Kit::Python)?.display().to_string(), "format".into(), "--isolated".into(), "--stdin-filename".into(), filename, "-".into()], root, &env, text).await,
+            Some(language @ ("javascript" | "typescript")) => script(&Tools::require(tools.tsc(), Kit::Web)?, root, &file, language, &text.replace("\r\n", "\n"), &env).await,
             Some("c" | "cpp") => {
                 let clang = resolve_executable("clang-format", Some(&env)).ok_or_else(|| crate::process::executable_missing("clang-format"))?;
                 filter(&[clang.display().to_string(), "--style=LLVM".into(), format!("--assume-filename={filename}")], root, &env, text).await

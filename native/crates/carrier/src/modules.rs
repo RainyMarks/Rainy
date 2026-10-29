@@ -23,7 +23,7 @@ use crate::tarball::{self, TarError};
 /// The descriptor, in the resources folder.
 pub const DESCRIPTOR_FILE: &str = "optional-modules.json";
 /// Every module a descriptor may pin.
-pub const IDS: [&str; 4] = ["strata", "php", "linux-runtime", "linux-dev-packages"];
+pub const IDS: [&str; 5] = ["ide-python", "ide-web", "php", "linux-runtime", "linux-dev-packages"];
 const MARKER: &str = ".rainy-module.json";
 const DOWNLOADS: &str = ".downloads";
 /// JavaScript's `Number.MAX_SAFE_INTEGER`, the largest size the 3.x schema accepts.
@@ -297,11 +297,6 @@ impl Modules {
         self
     }
 
-    /// `<userData>\modules`.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// The pinned modules, read once.
     pub fn list(&self) -> Result<Arc<Vec<Module>>, ModuleError> {
         if let Some(list) = self.inner.lock().unwrap().list.clone() {
@@ -338,13 +333,15 @@ impl Modules {
     }
 
     /// The archive of an installed file module.
-    pub fn archive(&self, id: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    fn archive(&self, id: &str) -> Option<PathBuf> {
         let module = self.module(id).ok()?;
         (module.kind == Kind::File && self.is_installed(&module).ok()?).then(|| self.root.join(id).join(&module.file))
     }
 
     /// Whether the installed module is the archive this version pins.
-    pub fn installed(&self, id: &str) -> Result<bool, ModuleError> {
+    #[cfg(test)]
+    fn installed(&self, id: &str) -> Result<bool, ModuleError> {
         self.is_installed(&self.module(id)?)
     }
 
@@ -688,11 +685,6 @@ pub fn pieces(resources: &Path, id: &str) -> Value {
     Modules::new(resources, Path::new(""), |_| {}).pieces(id)
 }
 
-/// The archive of a file module, when it is installed.
-pub fn archive(resources: &Path, user_data: &Path, id: &str) -> Option<PathBuf> {
-    Modules::new(resources, user_data, |_| {}).archive(id)
-}
-
 #[cfg(test)]
 mod tests {
     use ::core::prelude::v1::test;
@@ -816,7 +808,6 @@ mod tests {
         assert_eq!(modules.status().unwrap(), [Status { id: "php".into(), installed: true, download_bytes: php["bytes"].as_u64().unwrap(), unpacked_bytes: 160_000 }]);
         let archive = user_data.path().join("modules").join("linux-runtime").join("linux-runtime.tar.xz");
         assert_eq!(modules.archive("linux-runtime"), Some(archive.clone()));
-        assert_eq!(super::archive(resources.path(), user_data.path(), "linux-runtime"), Some(archive.clone()));
         assert_eq!(modules.path("linux-runtime"), Ok(archive.clone()));
         assert_eq!(modules.path("php"), Ok(user_data.path().join("modules").join("php")));
         // Installing what is installed needs nothing.
@@ -851,7 +842,7 @@ mod tests {
         assert_eq!(modules.status(), Err(ModuleError::Unavailable));
         assert_eq!(modules.install("php", &|_, _| {}), Err(ModuleError::Unavailable));
         assert_eq!(pieces(resources.path(), "linux-runtime"), json!([]));
-        assert_eq!(archive(resources.path(), user_data.path(), "linux-runtime"), None);
+        assert_eq!(modules.archive("linux-runtime"), None);
         fs::write(resources.path().join(DESCRIPTOR_FILE), "{\"version\":1}").unwrap();
         assert!(matches!(Modules::new(resources.path(), user_data.path(), |_| {}).status(), Err(ModuleError::Invalid(_))));
     }

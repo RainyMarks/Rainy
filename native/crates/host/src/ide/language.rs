@@ -18,7 +18,7 @@ use url::Url;
 use super::files::Files;
 use super::framing::{Decoder, encode};
 use super::state::StateStore;
-use super::tools::Tools;
+use super::tools::{Kit, Tools};
 use crate::activity::Activity;
 use crate::error::{HostError, HostResult};
 use crate::paths::{contains, realpath};
@@ -142,8 +142,8 @@ impl Languages {
         let root = self.files.resolve_workspace(workspace_id, root_id)?.root;
         let environment = self.runtime.resolve_workspace(workspace_id).map(|resolved| resolved.environment).unwrap_or_default();
         let argv = match language {
-            "python" => vec![self.tools.ty().display().to_string(), "server".into()],
-            "javascript" | "typescript" => vec![self.tools.tsc().display().to_string(), "--lsp".into(), "--stdio".into()],
+            "python" => vec![Tools::require(self.tools.ty(), Kit::Python)?.display().to_string(), "server".into()],
+            "javascript" | "typescript" => vec![Tools::require(self.tools.tsc(), Kit::Web)?.display().to_string(), "--lsp".into(), "--stdio".into()],
             "c" | "cpp" => {
                 let clangd = crate::process::resolve_executable("clangd", Some(&child_env(&environment))).ok_or_else(|| crate::process::executable_missing("clangd"))?;
                 let mut argv = vec![clangd.display().to_string(), "--background-index=0".into()];
@@ -181,6 +181,11 @@ impl Languages {
         let root_id = query.get("rootId").cloned();
         let spec = match self.resolve(workspace_id, language, root_id.as_deref()) {
             Ok(spec) => spec,
+            // The interface offers the download of tools that are not there.
+            Err(error) if error.code == super::tools::MISSING_REASON => {
+                let _ = sink.send(close(super::tools::MISSING_CODE, super::tools::MISSING_REASON)).await;
+                return;
+            }
             Err(error) => {
                 log::info!("IDE language request rejected: {}", error.message);
                 let _ = sink.send(close(1008, "Invalid editor language request")).await;

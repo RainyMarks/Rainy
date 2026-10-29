@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use super::fs::{self as ifs, Info, Intent, Kind};
 use super::preview;
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::paths::{contains, fully_qualified, join_relative, realpath, relative_path};
 use crate::projects::Projects;
 use crate::text::{now_ms, sha256_hex};
@@ -110,8 +111,16 @@ fn missing(error: &HostError) -> bool {
     error.code == "not-found"
 }
 
+fn gone() -> HostError {
+    HostError::new("not-found", l("所选路径已不存在。", "The selected path no longer exists."))
+}
+
+fn not_absolute() -> HostError {
+    HostError::new("invalid-path", l("请选择一个绝对路径的文件夹。", "Choose an absolute directory path."))
+}
+
 fn stale(version: Option<&str>) -> HostError {
-    HostError::new("version-conflict", "The file changed after it was opened. Reload or compare before saving.").with("currentVersion", json!(version))
+    ifs::changed().with("currentVersion", json!(version))
 }
 
 fn file_name(path: &str) -> &str {
@@ -164,7 +173,7 @@ impl Files {
             "workspaces.remove" => {
                 let id = required("workspaceId")?;
                 if self.projects.get(id).is_none() {
-                    return Err(HostError::new("workspace-not-found", "The selected project is no longer registered."));
+                    return Err(crate::projects::missing());
                 }
                 self.projects.remove(id)?;
                 return Ok(json!({ "workspaceId": id, "removed": true }));
@@ -207,18 +216,18 @@ impl Files {
         let absolute = join_relative(&workspace.root, path);
         let parent = if path.is_empty() { workspace.root.clone() } else { realpath(absolute.parent().unwrap_or(&workspace.root))? };
         if !contains(&workspace.root, &parent) {
-            return Err(HostError::new("outside-workspace", "A path component points outside the selected workspace."));
+            return Err(HostError::new("outside-workspace", l("路径中有一段指向所选项目之外。", "A path component points outside the selected workspace.")));
         }
         Ok(absolute)
     }
 
     fn observe(&self, workspace: &Workspace, path: &str, allow_root: bool, allow_outside: bool) -> HostResult<Observation> {
         let absolute = self.checked_path(workspace, path, allow_root)?;
-        let info = ifs::lstat(&absolute)?.ok_or_else(|| HostError::new("not-found", "The selected path no longer exists."))?;
+        let info = ifs::lstat(&absolute)?.ok_or_else(gone)?;
         let target = ifs::resolve(&absolute)?;
         let outside = !contains(&workspace.root, &target);
         if outside && !allow_outside {
-            return Err(HostError::new("outside-workspace", "The selected link points outside the workspace."));
+            return Err(HostError::new("outside-workspace", l("所选链接指向项目之外。", "The selected link points outside the workspace.")));
         }
         let target_info = if outside { None } else { ifs::stat(&target)? };
         let version = sha256_hex(json!([absolute, info.version, target, target_info.as_ref().map(|info| &info.version)]).to_string());
@@ -241,7 +250,7 @@ impl Files {
         let mut names = Vec::new();
         for entry in std::fs::read_dir(absolute)? {
             if names.len() == limit {
-                return Err(HostError::new("too-large", "The directory contains more entries than the configured limit."));
+                return Err(HostError::new("too-large", l("文件夹中的条目超过了上限。", "The directory contains more entries than the configured limit.")));
             }
             names.push(entry?.file_name().to_string_lossy().into_owned());
         }
@@ -251,7 +260,7 @@ impl Files {
     fn list(&self, workspace: &Workspace, path: &str) -> HostResult<Value> {
         let directory = self.observe(workspace, path, true, false)?;
         if directory.target_info.as_ref().map(|info| info.kind) != Some(Kind::Directory) {
-            return Err(HostError::new("not-directory", "The selected path is not a directory."));
+            return Err(HostError::new("not-directory", l("所选路径不是文件夹。", "The selected path is not a directory.")));
         }
         let mut names = self.directory_names(&directory.target, MAX_DIRECTORY_ENTRIES)?;
         names.sort();
@@ -271,7 +280,7 @@ impl Files {
     pub fn read(&self, workspace: &Workspace, path: &str) -> HostResult<Value> {
         let before = self.observe(workspace, path, false, false)?;
         if before.target_info.as_ref().map(|info| info.kind) != Some(Kind::File) {
-            return Err(HostError::new("not-file", "The selected path is not a regular file."));
+            return Err(ifs::not_file());
         }
         let base = |bytes: u64| json!({ "workspaceId": workspace.workspace_id, "path": path, "version": before.version, "bytes": bytes });
         // Images, audio, video and PDF go to their viewers as bytes; decoding them as text would only be discarded.
@@ -314,7 +323,7 @@ impl Files {
         let workspace = self.resolve_workspace(workspace_id, root_id)?;
         let observation = self.observe(&workspace, path, false, false)?;
         let Some(target) = observation.target_info.filter(|info| info.kind == Kind::File) else {
-            return Err(HostError::new("not-file", "The selected path is not a regular file."));
+            return Err(ifs::not_file());
         };
         let (file, size) = ifs::open_stable(&observation.target, &target.version)?;
         Ok((file, size, observation.version))
@@ -322,10 +331,10 @@ impl Files {
 
     fn check_text(&self, content: &str) -> HostResult<()> {
         if content.contains('\0') {
-            return Err(HostError::new("read-only", "Only valid UTF-8 text can be saved by the editor."));
+            return Err(HostError::new("read-only", l("编辑器只能保存有效的 UTF-8 文本。", "Only valid UTF-8 text can be saved by the editor.")));
         }
         if content.len() as u64 > MAX_TEXT_BYTES {
-            return Err(HostError::new("too-large", "The edited text exceeds the configured file limit."));
+            return Err(HostError::new("too-large", l("编辑后的文本超过了文件大小上限。", "The edited text exceeds the configured file limit.")));
         }
         Ok(())
     }
@@ -340,7 +349,7 @@ impl Files {
             return Err(stale(current["version"].as_str()));
         }
         if !current["readOnlyReason"].is_null() {
-            return Err(HostError::new("read-only", "This file cannot be edited as bounded UTF-8 text."));
+            return Err(HostError::new("read-only", l("这个文件无法作为 UTF-8 文本编辑。", "This file cannot be edited as bounded UTF-8 text.")));
         }
         let content = if current["eol"] == "crlf" { content.replace("\r\n", "\n").replace('\n', "\r\n") } else { content.to_owned() };
         let raw = format!("{}{content}", if current["bom"] == true { "\u{feff}" } else { "" });
@@ -361,7 +370,7 @@ impl Files {
     fn prepare_new(&self, workspace: &Workspace, path: &str) -> HostResult<PathBuf> {
         let absolute = self.checked_path(workspace, path, false)?;
         if ifs::lstat(&absolute)?.is_some() {
-            return Err(HostError::new("already-exists", "The destination already exists."));
+            return Err(ifs::exists());
         }
         Ok(absolute)
     }
@@ -370,7 +379,7 @@ impl Files {
         let absolute = self.prepare_new(workspace, path)?;
         let target = ifs::resolve(&absolute)?;
         if !contains(&workspace.root, &target) {
-            return Err(HostError::new("outside-workspace", "The destination points outside the selected workspace."));
+            return Err(HostError::new("outside-workspace", l("目标位置在所选项目之外。", "The destination points outside the selected workspace.")));
         }
         Ok(target)
     }
@@ -385,7 +394,7 @@ impl Files {
     fn create_binary(&self, workspace: &Workspace, path: &str, encoded: &str) -> HostResult<Value> {
         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| HostError::invalid("The file content is not valid base64."))?;
         if bytes.len() > MAX_BINARY_BYTES {
-            return Err(HostError::new("too-large", "The file exceeds the configured size limit."));
+            return Err(ifs::too_large());
         }
         let target = self.new_target(workspace, path)?;
         ifs::write(&target, &bytes, Intent::CreateIfAbsent)?;
@@ -402,7 +411,7 @@ impl Files {
         }
         let target = self.prepare_new(workspace, destination)?;
         if source.info.kind == Kind::Directory && contains(&source.absolute, &target) {
-            return Err(HostError::new("invalid-path", "A directory cannot be moved into itself."));
+            return Err(HostError::new("invalid-path", l("不能把文件夹移动到它自己里面。", "A directory cannot be moved into itself.")));
         }
         let fresh = self.observe(workspace, path, false, true)?;
         if fresh.version != source.version {
@@ -423,7 +432,7 @@ impl Files {
             let bytes = if observed.info.kind == Kind::File { observed.bytes } else { 0 };
             entries.push((next.clone(), observed.info.version.clone(), observed.info.kind, bytes, identity));
             if entries.len() > MAX_DELETE_ENTRIES {
-                return Err(HostError::new("too-large", "The selected tree exceeds the configured deletion limit."));
+                return Err(HostError::new("too-large", l("所选内容超过了一次可删除的上限。", "The selected tree exceeds the configured deletion limit.")));
             }
             if observed.info.kind == Kind::Directory {
                 let mut names = self.directory_names(&observed.absolute, MAX_DELETE_ENTRIES.saturating_sub(entries.len() + pending.len()))?;
@@ -443,7 +452,7 @@ impl Files {
 
     fn preview_delete(&self, workspace: &Workspace, path: &str) -> HostResult<Value> {
         let entries = self.deletion_snapshot(workspace, path)?;
-        let first = entries.first().ok_or_else(|| HostError::new("not-found", "The selected path no longer exists."))?;
+        let first = entries.first().ok_or_else(gone)?;
         let now = now_ms();
         let mut deletions = self.deletions.lock().unwrap();
         deletions.retain(|(_, deletion)| deletion.expires > now);
@@ -466,11 +475,11 @@ impl Files {
         };
         let valid = preview.as_ref().is_some_and(|preview| preview.workspace_id == workspace.workspace_id && preview.root == workspace.root && preview.path == path && preview.expires > now_ms());
         let Some(preview) = preview.filter(|_| valid) else {
-            return Err(HostError::new("confirmation-required", "Confirm a fresh preview of this exact path before deleting it."));
+            return Err(HostError::new("confirmation-required", l("请先确认这个路径的最新预览，再删除。", "Confirm a fresh preview of this exact path before deleting it.")));
         };
         let entries = self.deletion_snapshot(workspace, path)?;
         if Self::fingerprint(&entries) != preview.fingerprint {
-            return Err(HostError::new("version-conflict", "The selected tree changed after the deletion preview. Confirm the updated preview."));
+            return Err(HostError::new("version-conflict", l("所选内容在删除预览后发生了变化，请确认更新后的预览。", "The selected tree changed after the deletion preview. Confirm the updated preview.")));
         }
         // No recursive remover is used: links are unlinked and directories must be empty.
         for (entry_path, version, kind, _, identity) in entries.into_iter().rev() {
@@ -567,7 +576,7 @@ impl Files {
                 set(&mut result, Value::Null, "unavailable", Some("not-git"));
                 return Ok(result);
             }
-            Err(_) => return Err(HostError::new("io-error", "Git could not be run.")),
+            Err(_) => return Err(HostError::new("io-error", l("无法运行 Git。", "Git could not be run."))),
         };
         let repository_path = crate::paths::relative_to(&realpath(Path::new(&repository)).unwrap_or_else(|_| PathBuf::from(&repository)), &join_relative(&workspace.root, path))
             .unwrap_or_else(|| path.to_owned());
@@ -578,7 +587,7 @@ impl Files {
                 added(&mut result);
                 return Ok(result);
             }
-            Err(_) => return Err(HostError::new("io-error", "Git could not be run.")),
+            Err(_) => return Err(HostError::new("io-error", l("无法运行 Git。", "Git could not be run."))),
         };
         if tree.is_empty() {
             added(&mut result);
@@ -598,7 +607,7 @@ impl Files {
             set(&mut result, Value::Null, "unavailable", Some("too-large"));
             return Ok(result);
         }
-        let blob = self.git(&workspace.root, &["cat-file", "blob", &object]).map_err(|_| HostError::new("io-error", "Git could not read the committed file."))?;
+        let blob = self.git(&workspace.root, &["cat-file", "blob", &object]).map_err(|_| HostError::new("io-error", l("Git 无法读取已提交的文件。", "Git could not read the committed file.")))?;
         let decoded = decode(&blob, false);
         let Some(content) = decoded.content else {
             set(&mut result, Value::Null, "unavailable", Some(decoded.reason.unwrap_or("unsupported-encoding")));
@@ -698,12 +707,12 @@ pub fn list_directories(path: Option<&str>, show_hidden: bool) -> HostResult<Val
     let target = match path {
         None => crate::env::home_dir(),
         Some(path) if fully_qualified(path) => crate::paths::normalize(Path::new(path)),
-        Some(_) => return Err(HostError::new("invalid-path", "Choose an absolute directory path.")),
+        Some(_) => return Err(not_absolute()),
     };
     let failure = |error: std::io::Error| match error.kind() {
-        std::io::ErrorKind::NotFound => HostError::new("not-found", format!("The directory does not exist: {}", target.display())),
-        std::io::ErrorKind::NotADirectory => HostError::new("not-directory", format!("The path is not a directory: {}", target.display())),
-        std::io::ErrorKind::PermissionDenied => HostError::new("permission-denied", format!("The directory cannot be read: {}", target.display())),
+        std::io::ErrorKind::NotFound => HostError::new("not-found", l(&format!("文件夹不存在：{}", target.display()), &format!("The directory does not exist: {}", target.display()))),
+        std::io::ErrorKind::NotADirectory => HostError::new("not-directory", l(&format!("这个路径不是文件夹：{}", target.display()), &format!("The path is not a directory: {}", target.display()))),
+        std::io::ErrorKind::PermissionDenied => HostError::new("permission-denied", l(&format!("无法读取文件夹：{}", target.display()), &format!("The directory cannot be read: {}", target.display()))),
         _ => HostError::new("io-error", error.to_string()),
     };
     let mut names = Vec::new();
@@ -728,15 +737,17 @@ pub fn list_directories(path: Option<&str>, show_hidden: bool) -> HostResult<Val
 /// Create one folder whose parent exists, then list it.
 pub fn create_directory(path: &str) -> HostResult<Value> {
     if !fully_qualified(path) {
-        return Err(HostError::new("invalid-path", "Choose an absolute directory path."));
+        return Err(not_absolute());
     }
     let target = crate::paths::normalize(Path::new(path));
     if target.file_name().is_none() {
-        return Err(HostError::new("invalid-path", "Choose a new directory inside an existing directory."));
+        return Err(HostError::new("invalid-path", l("请在已有的文件夹中新建文件夹。", "Choose a new directory inside an existing directory.")));
     }
     match std::fs::create_dir(&target) {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(HostError::new("already-exists", format!("The directory already exists: {}", target.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(HostError::new("already-exists", l(&format!("文件夹已存在：{}", target.display()), &format!("The directory already exists: {}", target.display()))));
+        }
         Err(error) => return Err(error.into()),
     }
     list_directories(Some(&target.to_string_lossy()), true)

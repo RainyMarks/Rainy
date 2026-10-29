@@ -4,6 +4,17 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.3 · 2026-10-29
+
+Third-party tools become downloads: Strata local models follow Strata's newest release with a recommendation for this PC, and Tab completion is fixed.
+
+- **A new Settings → Tools page**: Rainy ships no third-party tools; download what you need and uninstall it any time. The editor's Python tools (Ruff, ty, debugpy, about 26 MB) and JavaScript / TypeScript tools (TypeScript 7, js-debug, about 11 MB) are downloaded here too; without them the status bar says which download a language needs and opens the page. The installer is smaller for it.
+- **Strata follows its newest release**: Rainy downloads Strata's latest version (checked against its install manifest, GitHub's digest and Strata's signed feed) and the engine for this PC's graphics card, then updates it when no model runs. The Strata 0.1.39 runtime Rainy used to provide is gone; the old component can be deleted in one click.
+- **A model table with one-click downloads**: every model and size Strata supports, each with its download size, the memory it needs and whether it fits, fits slowly or does not fit, plus the size Strata recommends for this PC. Downloads show progress, can be cancelled and resumed, come from Hugging Face or ModelScope, and go to the roomiest non-system drive by default. Then Start, and Connect and set as default to chat.
+- **The "tmp" error is fixed**: every Strata process gets Rainy's own folders and a writable temporary folder with an ASCII path, so it starts under a Chinese user name or an unusable TEMP, and it all ends with Rainy.
+- **Tab completion**: AI suggestions no longer repeat the indentation, word or closing bracket already around the cursor; Tab with the completion list open takes the highlighted item (it used to insert spaces); an auto-import completion adds its `import` line and no longer repeats the letters typed; Enter after a wrapped long line keeps its indentation. In the chat box Tab only completes a `/command` and Enter runs it, and typing `@file` quickly no longer picks an outdated result.
+- **Steadier**: Ctrl+K V and the changed-on-disk banner work in Markdown pages; Ctrl+F finds text in PDFs; the hex view can read a file as text in GB18030, UTF-8 and other encodings; closing the window and updating no longer freeze the interface; SSH hosts whose config sets a `RemoteCommand` (such as attaching tmux) work; a WSL Host that ignores stop is ended completely; more errors follow the interface language.
+
 ## 4.2 · 2026-10-25
 
 A full checkup: Markdown no longer damages files, the image, PDF and hex views are back, and many details are smoother.

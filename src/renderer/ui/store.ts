@@ -1,5 +1,4 @@
 /** Minimal observable values read by React through `useSyncExternalStore`. */
-import { useSyncExternalStore } from 'react'
 
 /** One replaceable value with change listeners. */
 export interface Store<T> {
@@ -37,13 +36,4 @@ export function createStore<T>(initial: T): Store<T> {
       return () => { listeners.delete(listener) }
     },
   }
-}
-
-/**
- * Read a store and re-render when it changes.
- * @param store Store to observe.
- * @returns Its current value.
- */
-export function useStore<T>(store: Store<T>): T {
-  return useSyncExternalStore(store.subscribe, store.getSnapshot)
 }
