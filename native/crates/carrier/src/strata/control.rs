@@ -159,6 +159,31 @@ fn pointed(components: &Path) -> Option<Control> {
     Some(Control { version, root })
 }
 
+/// The Strata folder of the person's own installation, outside Rainy: Strata's own Windows installer puts its Terminal in
+/// `%LOCALAPPDATA%\Strata\terminal\<version>`, and `strata update` or Strata's app can point
+/// `%LOCALAPPDATA%\Strata\components\control\active.json` at a newer one. The newest that can run; Rainy uses it as it is.
+pub fn own_folder() -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").filter(|folder| !folder.is_empty())?;
+    std::path::absolute(PathBuf::from(local).join("Strata")).ok()
+}
+
+/// The Strata the person installed themselves under their Strata folder `base` ([`own_folder`]).
+pub fn own_install_in(base: &Path) -> Option<Control> {
+    let mut found: Vec<Control> = Vec::new();
+    if let Ok(entries) = fs::read_dir(base.join("terminal")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // `current` is the installer's shortcut to one of the versions beside it.
+            if version_key(&name).is_some() && whole(&entry.path()) {
+                found.push(Control { version: name, root: entry.path() });
+            }
+        }
+    }
+    found.extend(pointed(&base.join("components")));
+    found.sort_by_key(|control| std::cmp::Reverse(version_key(&control.version)));
+    found.into_iter().next()
+}
+
 /// Download, check and unpack `offer` into `control\<version>`; `progress` gets the bytes downloaded and the total, then
 /// `(0, 0)` while it unpacks and checks the release's signature. `terminal` makes the commands of the unpacked copy.
 pub fn install(folders: &Folders, offer: &Offer, cancel: Arc<AtomicBool>, progress: &dyn Fn(u64, u64), terminal: &dyn Fn(Control) -> Terminal) -> Result<Control> {
@@ -270,6 +295,29 @@ windows-x86_64 0.1.53 strata-control-0.1.53-windows-x86_64.zip 72CB29F2BB0FC534D
         assert!(!newer("0.1.53", "0.1.53"));
         assert!(newer("0.1.45.1", "0.1.45"));
         assert!(!newer("garbage", "0.1.0"));
+    }
+
+    #[test]
+    fn finds_a_strata_the_person_installed() {
+        let base = std::env::temp_dir().join(format!("rainy-own-strata-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let make = |root: &Path| {
+            fs::create_dir_all(root.join("python")).unwrap();
+            fs::create_dir_all(root.join("strata_control")).unwrap();
+            fs::create_dir_all(root.join("tools")).unwrap();
+            fs::write(root.join("python").join("python.exe"), b"").unwrap();
+            fs::write(root.join("strata.py"), b"").unwrap();
+            fs::write(root.join("tools").join("strata_mcp.py"), b"").unwrap();
+        };
+        assert!(own_install_in(&base).is_none());
+        make(&base.join("terminal").join("0.2.7"));
+        make(&base.join("terminal").join("0.2.8"));
+        // Half a version, and the installer's `current` shortcut, are not taken.
+        fs::create_dir_all(base.join("terminal").join("0.2.9")).unwrap();
+        make(&base.join("terminal").join("current"));
+        let found = own_install_in(&base).unwrap();
+        assert_eq!((found.version.as_str(), found.root.clone()), ("0.2.8", base.join("terminal").join("0.2.8")));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

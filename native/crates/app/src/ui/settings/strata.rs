@@ -200,6 +200,17 @@ impl StrataCard {
         .detach();
     }
 
+    /// Model files the person already has: a file, or the folder they are in.
+    fn choose_local(&mut self, files: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions { files, directories: !files, multiple: false, prompt: None });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |this, window, cx| this.run(window, cx, move |store, cx| store.use_local_strata_model(path, cx)));
+        })
+        .detach();
+    }
+
     fn confirm_uninstall(&mut self, status: &Status, window: &mut Window, cx: &mut Context<Self>) {
         let models: Vec<(String, f64)> = status
             .catalog
@@ -375,6 +386,13 @@ impl StrataCard {
             text.push_str(&format!(" · {} {} · {backend}", tr(cx, "settings.strataEngine"), engine.version));
         }
         let busy = status.job.is_some();
+        // A Strata the person installed: Rainy uses it and leaves its updates and removal to it.
+        if let Some(path) = &installed.external {
+            return vec![
+                div().text_sm().child(text).into_any_element(),
+                Self::muted(trf(cx, "settings.strataOwn", &[("path", path)]), cx),
+            ];
+        }
         let snapshot = status.clone();
         let mut body = vec![
             h_flex()
@@ -607,13 +625,21 @@ impl StrataCard {
         let busy = status.job.is_some();
         let free = status.data_free_gb.map(|free| trf(cx, "settings.strataFree", &[("size", &gb_text(free))])).unwrap_or_default();
         let source = status.settings.source;
+        let folder: SharedString = if status.data_dir.is_empty() { tr(cx, "settings.strataOwnDataDir") } else { status.data_dir.clone().into() };
         vec![
+            div().mt_2().text_sm().font_semibold().child(tr(cx, "settings.strataLocalTitle")).into_any_element(),
+            Self::muted(tr(cx, "settings.strataLocalHint"), cx),
+            h_flex()
+                .gap_2()
+                .child(Button::new("strata-local-file").outline().xsmall().label(tr(cx, "settings.strataLocalFile")).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.choose_local(true, window, cx))))
+                .child(Button::new("strata-local-folder").outline().xsmall().label(tr(cx, "settings.strataLocalFolder")).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.choose_local(false, window, cx))))
+                .into_any_element(),
             div().mt_2().text_sm().font_semibold().child(tr(cx, "settings.strataDownloadSettings")).into_any_element(),
             h_flex()
                 .gap_2()
                 .items_center()
                 .child(div().w(px(84.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataDataDir")))
-                .child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).whitespace_nowrap().overflow_hidden().text_ellipsis().child(status.data_dir.clone()))
+                .child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).whitespace_nowrap().overflow_hidden().text_ellipsis().child(folder))
                 .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(free))
                 .child(Button::new("strata-data-dir").outline().xsmall().label(tr(cx, "settings.strataChange")).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))))
                 .into_any_element(),
@@ -814,6 +840,9 @@ impl Render for StrataCard {
                     .items_center()
                     .mt_1()
                     .child(div().flex_1().min_w_0().child(Self::muted(trf(cx, "settings.strataLegacy", &[("size", &bytes_text(status.legacy_bytes))]), cx)))
+                    .when(status.installed.is_some(), |this| {
+                        this.child(Button::new("strata-legacy-use").outline().xsmall().label(tr(cx, "settings.strataLegacyUse")).disabled(status.job.is_some()).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.use_strata_legacy(cx)))))
+                    })
                     .child(Button::new("strata-legacy").ghost().xsmall().label(tr(cx, "settings.strataDeleteLegacy")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.remove_strata_legacy(cx)))))
                     .into_any_element(),
             );

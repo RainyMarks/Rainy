@@ -71,6 +71,15 @@ impl Store {
         cx.background_spawn(async move { run(&manager).map_err(|error| format!("{error:#}")) })
     }
 
+    /// Set up model files the person already has, where they are.
+    pub fn use_local_strata_model(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, move |manager| manager.use_local(&path))
+    }
+
+    pub fn use_strata_legacy(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.strata_do(cx, |manager| manager.use_legacy())
+    }
+
     pub fn install_strata(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
         self.strata_do(cx, |manager| manager.install())
     }

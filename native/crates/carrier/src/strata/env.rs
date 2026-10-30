@@ -171,8 +171,30 @@ pub enum Source {
     Modelscope,
 }
 
-/// The environment of a Strata process.
+/// The environment of a Strata the person installed themselves: their own `LOCALAPPDATA` and `APPDATA`, so it finds its
+/// engine, settings and models where it keeps them; the rest as for Rainy's own.
+pub fn own_environment(temp: &Path, source: Source) -> Vec<(OsString, OsString)> {
+    let mut environment = common(temp, source);
+    environment.retain(|(name, _)| !name.to_str().is_some_and(|name| name.eq_ignore_ascii_case("STRATA_INSTALL_DIR") || name.eq_ignore_ascii_case("STRATA_COMPONENTS_DIR")));
+    environment
+}
+
+/// The environment of a process of Rainy's own Strata: its per-user folders inside Rainy's.
 pub fn environment(folders: &Folders, temp: &Path, source: Source) -> Vec<(OsString, OsString)> {
+    let mut environment = common(temp, source);
+    let set = |environment: &mut Vec<(OsString, OsString)>, name: &str, value: &OsStr| {
+        environment.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+        environment.push((name.into(), value.to_owned()));
+    };
+    for (name, value) in [("LOCALAPPDATA", &folders.local), ("APPDATA", &folders.roaming), ("STRATA_INSTALL_DIR", &folders.install), ("STRATA_COMPONENTS_DIR", &folders.components)] {
+        set(&mut environment, name, value.as_os_str());
+    }
+    environment
+}
+
+/// What every Strata process gets: this process's environment without credentials or foreign Python, plain output,
+/// no questions, a usable temporary folder and the download source.
+fn common(temp: &Path, source: Source) -> Vec<(OsString, OsString)> {
     let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().filter(|(name, value)| !name.to_str().is_some_and(|name| withheld(name, value))).collect();
     let set = |environment: &mut Vec<(OsString, OsString)>, name: &str, value: &OsStr| {
         environment.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
@@ -181,14 +203,7 @@ pub fn environment(folders: &Folders, temp: &Path, source: Source) -> Vec<(OsStr
     for (name, value) in [("PYTHONUTF8", "1"), ("PYTHONNOUSERSITE", "1"), ("PYTHONIOENCODING", "utf-8"), ("PYTHONUNBUFFERED", "1"), ("NO_COLOR", "1"), ("STRATA_NO_PROMPT", "1")] {
         set(&mut environment, name, OsStr::new(value));
     }
-    for (name, value) in [
-        ("LOCALAPPDATA", &folders.local),
-        ("APPDATA", &folders.roaming),
-        ("STRATA_INSTALL_DIR", &folders.install),
-        ("STRATA_COMPONENTS_DIR", &folders.components),
-        ("TEMP", &temp.to_path_buf()),
-        ("TMP", &temp.to_path_buf()),
-    ] {
+    for (name, value) in [("TEMP", &temp.to_path_buf()), ("TMP", &temp.to_path_buf())] {
         set(&mut environment, name, value.as_os_str());
     }
     if source == Source::Modelscope {

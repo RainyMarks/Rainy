@@ -79,6 +79,10 @@ pub struct Installed {
     /// The Terminal ("Control") version.
     pub control: String,
     pub engine: Option<Engine>,
+    /// The folder of a Strata the person installed themselves, which Rainy uses as it is: never updated or removed by
+    /// Rainy. None for the Strata Rainy downloaded.
+    #[serde(default)]
+    pub external: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,6 +235,8 @@ struct Inner {
 /// The one owner of Rainy's Strata.
 pub struct Manager {
     folders: Folders,
+    /// The Strata folder of the person's own installation (`%LOCALAPPDATA%\Strata`), looked in when Rainy has none.
+    own: Option<PathBuf>,
     /// Rainy's user data folder, for the files earlier versions left.
     user_data: PathBuf,
     temp: Mutex<Option<PathBuf>>,
@@ -244,6 +250,34 @@ fn now() -> u64 {
 }
 
 /// Write a small record atomically.
+/// A data folder for messages; none means the person's own Strata's folder.
+fn shown(folder: &Option<PathBuf>) -> String {
+    folder.as_ref().map_or_else(|| localized("Strata 的模型文件夹", "Strata's model folder"), |folder| folder.display().to_string())
+}
+
+/// The model `strata models import --plan` found in `picked`, and the folder to set it up from; why not, in Strata's
+/// plain words.
+fn local_choice(answer: &Value, picked: &str) -> Result<(Choice, PathBuf)> {
+    let plan = answer.get("plan");
+    let candidate = plan.and_then(|plan| plan.get("candidate_selection")).filter(|candidate| candidate.is_object());
+    let family = candidate.and_then(|candidate| candidate.get("family")).and_then(Value::as_str).filter(|family| !family.is_empty());
+    let model = candidate.and_then(|candidate| candidate.get("model")).and_then(Value::as_str).filter(|model| !model.is_empty());
+    let (Some(family), Some(model)) = (family, model) else {
+        let issues: Vec<String> = plan
+            .and_then(|plan| plan.get("plain_issues"))
+            .and_then(Value::as_array)
+            .map(|issues| issues.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default();
+        let detail = if issues.is_empty() { process::reported_error(answer).unwrap_or_default() } else { issues.join(" ") };
+        bail!(localized(
+            &format!("Strata 没能认出 {picked} 里的模型文件。{detail}"),
+            &format!("Strata did not recognize the model files in {picked}. {detail}")
+        ));
+    };
+    let folder = plan.and_then(|plan| plan.get("model_dir")).and_then(Value::as_str).filter(|folder| !folder.is_empty()).unwrap_or(picked);
+    Ok((Choice { family: family.to_owned(), model: model.to_owned() }, PathBuf::from(folder)))
+}
+
 fn write_record(path: &Path, text: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -315,10 +349,16 @@ fn cancelled(error: &anyhow::Error) -> bool {
 impl Manager {
     /// Read the settings and what is installed; nothing starts until asked. `changed` runs whenever the status changed.
     pub fn new(user_data: &Path, changed: impl Fn() + Send + Sync + 'static) -> Arc<Self> {
+        Self::with_own(user_data, control::own_folder(), changed)
+    }
+
+    /// [`Self::new`], looking for the person's own Strata in `own`.
+    pub fn with_own(user_data: &Path, own: Option<PathBuf>, changed: impl Fn() + Send + Sync + 'static) -> Arc<Self> {
         let folders = Folders::new(user_data);
         let settings = read_json::<Settings>(&folders.root.join(SETTINGS_FILE)).unwrap_or_default();
         let manager = Arc::new(Self {
             folders,
+            own,
             user_data: user_data.to_path_buf(),
             temp: Mutex::new(None),
             inner: Mutex::new(Inner { settings, ..Inner::default() }),
@@ -340,13 +380,31 @@ impl Manager {
 
     /// The record of the last `--version` and engine reads, beside what is on disk now.
     fn read_installed(&self) -> Option<Installed> {
-        let control = control::active(&self.folders)?;
-        let record = read_json::<Installed>(&self.folders.root.join(RECORD_FILE));
+        let (control, external) = self.control()?;
+        let external = external.then(|| control.root.to_string_lossy().into_owned());
+        let record = read_json::<Installed>(&self.folders.root.join(RECORD_FILE)).filter(|record| record.external == external);
         Some(match record {
             Some(record) if record.control == control.version => record,
             Some(record) => Installed { control: control.version, ..record },
-            None => Installed { strata: None, control: control.version, engine: None },
+            None => Installed { strata: None, control: control.version, engine: None, external },
         })
+    }
+
+    /// The Strata to run: the one Rainy downloaded, else one the person installed themselves (`true`).
+    fn control(&self) -> Option<(control::Control, bool)> {
+        control::active(&self.folders).map(|control| (control, false)).or_else(|| self.own.as_deref().and_then(control::own_install_in).map(|control| (control, true)))
+    }
+
+    /// Rainy runs a Strata the person installed themselves.
+    fn external(&self) -> bool {
+        self.control().is_some_and(|(_, external)| external)
+    }
+
+    /// The folder of the person's own Strata whose run configs its app and Terminal share.
+    fn own_install_folder(&self) -> Result<PathBuf> {
+        let folder = self.own.as_ref().ok_or_else(|| anyhow!("LOCALAPPDATA is not set"))?.join("install");
+        fs::create_dir_all(&folder)?;
+        Ok(folder)
     }
 
     /// The temporary folder of Strata's processes, found once.
@@ -360,24 +418,22 @@ impl Manager {
         .clone()
     }
 
-    fn terminal_for(&self, control: control::Control) -> Terminal {
+    /// `external`: the person's own Strata, run with their own folders.
+    fn terminal_for(&self, control: control::Control, external: bool) -> Terminal {
         let source = self.inner.lock().unwrap().settings.source;
-        Terminal {
-            python: control.python(),
-            root: control.root,
-            environment: env::environment(&self.folders, &self.temporary(), source),
-            log: self.folders.logs.join("terminal.log"),
-        }
+        let environment = if external { env::own_environment(&self.temporary(), source) } else { env::environment(&self.folders, &self.temporary(), source) };
+        Terminal { python: control.python(), root: control.root, environment, log: self.folders.logs.join("terminal.log") }
     }
 
     fn terminal(&self) -> Result<Terminal> {
-        let control = control::active(&self.folders).ok_or_else(|| anyhow!(localized("请先下载 Strata。", "Download Strata first.")))?;
-        Ok(self.terminal_for(control))
+        let (control, external) = self.control().ok_or_else(|| anyhow!(localized("请先下载 Strata。", "Download Strata first.")))?;
+        Ok(self.terminal_for(control, external))
     }
 
-    fn data_dir(&self) -> PathBuf {
-        let settings = self.inner.lock().unwrap().settings.clone();
-        settings.data_dir.map(PathBuf::from).unwrap_or_else(|| env::default_data_dir(&self.folders))
+    /// Where model downloads go; none when the person's own Strata keeps its own folder and they chose none here.
+    fn data_dir(&self) -> Option<PathBuf> {
+        let chosen = self.inner.lock().unwrap().settings.data_dir.clone().map(PathBuf::from);
+        chosen.or_else(|| (!self.external()).then(|| env::default_data_dir(&self.folders)))
     }
 
     pub fn status(&self) -> Status {
@@ -395,7 +451,7 @@ impl Manager {
             update: inner.update.clone(),
             checking: inner.checking,
             settings: inner.settings.clone(),
-            data_dir: data_dir.to_string_lossy().into_owned(),
+            data_dir: data_dir.map(|folder| folder.to_string_lossy().into_owned()).unwrap_or_default(),
             data_free_gb: inner.data_free_gb,
             error: inner.error.clone(),
             notice: inner.notice.clone(),
@@ -408,7 +464,7 @@ impl Manager {
         let port = self.inner.lock().unwrap().settings.port;
         let health = health::read(port).ok();
         let installed = self.read_installed();
-        let free = free_gb(&self.data_dir());
+        let free = self.data_dir().and_then(|folder| free_gb(&folder));
         let legacy = folder_bytes(&self.user_data.join("modules").join("strata")) + folder_bytes(&self.user_data.join("strata"));
         {
             let mut inner = self.inner.lock().unwrap();
@@ -539,7 +595,7 @@ impl Manager {
                 &offer,
                 cancel.clone(),
                 &|done, total| this.progress(if total == 0 { "verify" } else { "terminal" }, done, total, None),
-                &|candidate| this.terminal_for(candidate),
+                &|candidate| this.terminal_for(candidate, false),
             )?;
             control::prune(&this.folders, &installed);
             this.update_components(cancel, false)?;
@@ -602,7 +658,7 @@ impl Manager {
     /// Read Strata's version and the engine it would start, for the interface.
     fn record_versions(&self, cancel: &AtomicBool) {
         let Ok(terminal) = self.terminal() else { return };
-        let Some(control) = control::active(&self.folders) else { return };
+        let Some((control, external)) = self.control() else { return };
         let mut version = None;
         let _ = terminal.run(&["--version"], Duration::from_secs(300), cancel, &mut |line| {
             // strata 0.2.7 (build 0.1.53; python 3.12.15 at ...)
@@ -618,7 +674,7 @@ impl Manager {
                 variant: engine.get("variant").and_then(Value::as_str).unwrap_or_default().to_owned(),
             })
         });
-        let installed = Installed { strata: version, control: control.version, engine };
+        let installed = Installed { strata: version, control: control.version, engine, external: external.then(|| control.root.to_string_lossy().into_owned()) };
         if let Ok(text) = serde_json::to_string_pretty(&installed) {
             let _ = write_record(&self.folders.root.join(RECORD_FILE), &(text + "\n"));
         }
@@ -629,7 +685,8 @@ impl Manager {
     pub fn check_update(self: &Arc<Self>) -> Result<()> {
         {
             let mut inner = self.inner.lock().unwrap();
-            if inner.checking || inner.installed.is_none() || inner.closed {
+            // The person's own Strata updates itself, through its app or `strata update`.
+            if inner.checking || inner.installed.as_ref().is_none_or(|installed| installed.external.is_some()) || inner.closed {
                 return Ok(());
             }
             inner.checking = true;
@@ -676,6 +733,9 @@ impl Manager {
 
     /// Install what the last check found newer; refused while a model Rainy started serves.
     pub fn update(self: &Arc<Self>) -> Result<()> {
+        if self.external() {
+            bail!(localized("这是你自己安装的 Strata，请用它自带的更新功能更新。", "This is a Strata you installed yourself; update it with its own updater."));
+        }
         if matches!(self.inner.lock().unwrap().server.phase, Phase::Starting | Phase::Running | Phase::Stopping) {
             bail!(localized("请先停止正在运行的模型，再更新 Strata。", "Stop the running model before updating Strata."));
         }
@@ -696,7 +756,7 @@ impl Manager {
         let ready = {
             let mut inner = self.inner.lock().unwrap();
             let idle = inner.job.is_none() && !inner.checking && !inner.closed && matches!(inner.server.phase, Phase::Stopped | Phase::External);
-            let wanted = inner.settings.auto_update && inner.installed.is_some() && inner.update.as_ref().is_some_and(Update::available);
+            let wanted = inner.settings.auto_update && inner.installed.as_ref().is_some_and(|installed| installed.external.is_none()) && inner.update.as_ref().is_some_and(Update::available);
             inner.update_waiting = wanted && !idle;
             wanted && idle
         };
@@ -730,6 +790,9 @@ impl Manager {
 
     /// Stop everything and remove the tool; `models` removes the downloaded models too.
     pub fn uninstall(self: &Arc<Self>, models: bool) -> Result<()> {
+        if self.external() {
+            bail!(localized("这是你自己安装的 Strata，Rainy 不会卸载它。", "This is a Strata you installed yourself; Rainy does not remove it."));
+        }
         self.begin(JobKind::Uninstall, "stop", false, move |this, _| {
             this.stop_server_now(Duration::from_secs(120));
             if models {
@@ -747,7 +810,7 @@ impl Manager {
             }
             this.end_session();
             this.progress("remove", 0, 0, None);
-            let data = this.data_dir();
+            let data = this.data_dir().unwrap_or_else(|| env::default_data_dir(&this.folders));
             remove_folder(&this.folders.root)?;
             // A data folder outside the tool goes too when it holds nothing any more.
             if models && !data.starts_with(&this.folders.root) {
@@ -761,6 +824,11 @@ impl Manager {
             inner.settings = Settings::default();
             Ok(Some(localized("Strata 已卸载。", "Strata was removed.")))
         })
+    }
+
+    /// Set up the models Rainy 3.x to 4.2 downloaded into its own model cache, where they are.
+    pub fn use_legacy(self: &Arc<Self>) -> Result<()> {
+        self.use_local(&self.user_data.join("strata"))
     }
 
     /// Remove the Strata files Rainy 3.x to 4.2 kept: its 0.1.39 module and its model cache.
@@ -783,7 +851,8 @@ impl Manager {
             old.stop();
         }
         if session.is_none() {
-            *session = Some(mcp::Session::start(&terminal, &self.folders.install, &self.folders.logs.join("management.log"))?);
+            let install = if self.external() { self.own_install_folder()? } else { self.folders.install.clone() };
+            *session = Some(mcp::Session::start(&terminal, &install, &self.folders.logs.join("management.log"))?);
         }
         session.as_mut().unwrap().call(tool, arguments, timeout)
     }
@@ -844,11 +913,34 @@ impl Manager {
 
     /// Download a model of the catalog in the background; it resumes where an earlier download stopped.
     pub fn download(self: &Arc<Self>, choice: Choice) -> Result<()> {
+        self.download_from(choice, None)
+    }
+
+    /// Set up model files the person already has (downloaded by an earlier Rainy, Strata's own app or by hand): Strata
+    /// says which model they are (`strata models import --plan`), then checks them where they are and fetches only the
+    /// helper files that are missing. Nothing is copied or moved.
+    pub fn use_local(self: &Arc<Self>, path: &Path) -> Result<()> {
+        self.assert_open()?;
+        let terminal = self.terminal()?;
+        let picked = path.to_string_lossy().into_owned();
+        let answer = terminal.json(&["models", "import", &picked, "--plan", "--output", "json"], Duration::from_secs(600), &AtomicBool::new(false)).map_err(|error| anyhow!(error))?;
+        let (choice, folder) = local_choice(&answer, &picked)?;
+        log::info!("Strata: {picked} holds {} {}; setting it up from {}", choice.family, choice.model, folder.display());
+        self.download_from(choice, Some(folder))
+    }
+
+    fn download_from(self: &Arc<Self>, choice: Choice, local: Option<PathBuf>) -> Result<()> {
         let kind = JobKind::Download { family: choice.family.clone(), model: choice.model.clone() };
         self.begin(kind, "model:check", true, move |this, cancel| {
             let data = this.data_dir();
             let context = this.inner.lock().unwrap().settings.context;
-            let mut arguments = json!({ "family": choice.family, "model": choice.model, "data_dir": data.to_string_lossy() });
+            let mut arguments = json!({ "family": choice.family, "model": choice.model });
+            if let Some(data) = &data {
+                arguments["data_dir"] = json!(data.to_string_lossy());
+            }
+            if let Some(local) = &local {
+                arguments["gguf_dir"] = json!(local.to_string_lossy());
+            }
             if let Some(context) = context {
                 arguments["context"] = json!(context);
             }
@@ -857,8 +949,8 @@ impl Manager {
                 let needed = plan.pointer("/plan/disk_needed_gb").and_then(Value::as_f64).unwrap_or(0.0);
                 let free = plan.pointer("/plan/disk_free_gb").and_then(Value::as_f64).unwrap_or(0.0);
                 bail!(localized(
-                    &format!("{} 剩余空间不足：这个模型大约需要 {needed:.0} GB，目前只有 {free:.0} GB。请换一个更大的硬盘位置。", data.display()),
-                    &format!("Not enough free space in {}: the model needs about {needed:.0} GB and {free:.0} GB are free. Choose a folder on a bigger drive. ({short})", data.display())
+                    &format!("{} 剩余空间不足：这个模型大约需要 {needed:.0} GB，目前只有 {free:.0} GB。请换一个更大的硬盘位置。", shown(&data)),
+                    &format!("Not enough free space in {}: the model needs about {needed:.0} GB and {free:.0} GB are free. Choose a folder on a bigger drive. ({short})", shown(&data))
                 ));
             }
             arguments["confirm"] = json!(true);
@@ -892,7 +984,11 @@ impl Manager {
                     Some("installed") => {
                         this.inner.lock().unwrap().catalog = None;
                         this.load_catalog();
-                        Ok(Some(localized("模型已下载完成，可以启动了。", "The model is downloaded and ready to start.")))
+                        Ok(Some(if local.is_some() {
+                            localized("已有的模型文件已设置好，可以启动了。", "The model files you had are set up and ready to start.")
+                        } else {
+                            localized("模型已下载完成，可以启动了。", "The model is downloaded and ready to start.")
+                        }))
                     }
                     _ => {
                         let error = job.get("error").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| {
@@ -1126,9 +1222,39 @@ mod tests {
     }
 
     #[test]
+    fn uses_a_strata_the_person_installed_but_never_changes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own");
+        let terminal = own.join("terminal").join("0.2.8");
+        for folder in ["python", "strata_control", "tools"] {
+            fs::create_dir_all(terminal.join(folder)).unwrap();
+        }
+        for file in ["python/python.exe", "strata.py", "tools/strata_mcp.py"] {
+            fs::write(terminal.join(file), b"").unwrap();
+        }
+        let manager = Manager::with_own(&dir.path().join("rainy"), Some(own.clone()), || {});
+        let status = manager.status();
+        let installed = status.installed.unwrap();
+        assert_eq!((installed.control.as_str(), installed.external.as_deref()), ("0.2.8", Some(terminal.to_str().unwrap())));
+        // Its own folder holds its models unless a folder is chosen here; Rainy neither updates nor removes it.
+        assert_eq!(status.data_dir, "");
+        assert!(manager.update().is_err() && manager.uninstall(false).is_err());
+        assert!(terminal.join("strata.py").is_file());
+    }
+
+    #[test]
+    fn recognizes_model_files_the_person_has() {
+        let found = serde_json::json!({"schema_version": 1, "ok": true, "plan": {"model_dir": "E:\\models\\gguf", "candidate_selection": {"family": "qwen", "model": "Q2_0"}}});
+        let (choice, folder) = local_choice(&found, "E:\\models").unwrap();
+        assert_eq!((choice.family.as_str(), choice.model.as_str(), folder), ("qwen", "Q2_0", PathBuf::from("E:\\models\\gguf")));
+        let unknown = serde_json::json!({"schema_version": 1, "ok": false, "plan": {"candidate_selection": null, "plain_issues": ["These files are not a model Strata knows."]}});
+        assert!(local_choice(&unknown, "E:\\x").unwrap_err().to_string().contains("not a model Strata knows"));
+    }
+
+    #[test]
     fn a_fresh_manager_offers_the_download() {
         let dir = tempfile::tempdir().unwrap();
-        let manager = Manager::new(dir.path(), || {});
+        let manager = Manager::with_own(dir.path(), None, || {});
         let status = manager.status();
         assert!(status.installed.is_none() && status.job.is_none());
         assert_eq!(status.server.phase, Phase::Stopped);
