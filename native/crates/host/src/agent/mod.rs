@@ -9,6 +9,7 @@ pub mod store;
 pub mod tools;
 pub mod instructions;
 pub mod permissions;
+pub mod profile;
 pub mod prompt;
 pub mod skills;
 pub mod snapshots;

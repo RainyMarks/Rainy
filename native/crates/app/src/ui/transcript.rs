@@ -20,7 +20,7 @@ use crate::i18n::{self, Locale};
 use crate::store::Store;
 use crate::store::chat::{ChatView, RunningTool, Turn, assistant_text, group_turns};
 use crate::store::ide::Ide;
-use crate::ui::tool_title::{is_command, tool_title};
+use crate::ui::tool_title::{is_command, patch_files, tool_title};
 use crate::ui::{format_duration, format_tokens, tr, trf};
 
 /// What a tool call is doing.
@@ -70,6 +70,8 @@ pub enum LineKind {
     Removed,
     /// Unchanged lines left out between two changes.
     Gap,
+    /// The file the following lines belong to, in a change of several files.
+    File,
 }
 
 /// A change's lines around what changed, at most `OUTPUT_LINES` of them, each with its `+`/`-` mark.
@@ -95,6 +97,12 @@ pub struct ResultView {
     pub refused: Option<Refusal>,
     /// The Host kept what the change replaced (`details.undoable`).
     pub undoable: bool,
+    /// Every file change the call made, by the id its undo goes by: the call's own id for `write` and `edit`, one
+    /// per file for `apply_patch`; `undo` those that can be undone.
+    pub changes: Vec<SharedString>,
+    pub undo: Vec<SharedString>,
+    /// A plan tool's checklist: each item and its status.
+    pub plan: Option<Vec<(SharedString, SharedString)>>,
     pub failed: bool,
 }
 
@@ -231,13 +239,48 @@ fn diff_of(before: &str, after: &str) -> Diff {
 /// A `toolResult` entry of the turn.
 struct ResultEntry<'a> {
     id: &'a str,
+    call_id: &'a str,
     tool_name: &'a str,
     content: &'a [ResultContent],
     is_error: bool,
     details: Option<&'a Value>,
 }
 
-fn result_view(result: &ResultEntry<'_>) -> ResultView {
+/// The diff of each file an `apply_patch` call changed, under a line naming the file.
+fn patch_diff(files: &[Value], locale: Locale) -> Option<Diff> {
+    let mut combined = Diff { added: 0, removed: 0, lines: Vec::new(), hidden: 0 };
+    for file in files {
+        let path = file["path"].as_str().unwrap_or_default();
+        let Some(after) = file["after"].as_str() else { continue };
+        let note = match (file["operation"].as_str(), file["movedFrom"].as_str()) {
+            (_, Some(from)) => format!(" · {}", i18n::format(locale, "chat.patchMovedFrom", &[("from", &from)])),
+            (Some("create"), _) => format!(" · {}", i18n::text(locale, "chat.patchCreated")),
+            (Some("delete"), _) => format!(" · {}", i18n::text(locale, "chat.patchDeleted")),
+            _ => String::new(),
+        };
+        let diff = diff_of(file["before"].as_str().unwrap_or_default(), after);
+        combined.added += diff.added;
+        combined.removed += diff.removed;
+        if files.len() > 1 {
+            if combined.lines.len() < OUTPUT_LINES {
+                combined.lines.push((LineKind::File, format!("{path}{note}").into()));
+            } else {
+                combined.hidden += 1;
+            }
+        }
+        for line in diff.lines {
+            if combined.lines.len() < OUTPUT_LINES {
+                combined.lines.push(line);
+            } else {
+                combined.hidden += 1;
+            }
+        }
+        combined.hidden += diff.hidden;
+    }
+    (!combined.lines.is_empty() || combined.added + combined.removed > 0).then_some(combined)
+}
+
+fn result_view(result: &ResultEntry<'_>, locale: Locale) -> ResultView {
     let details = result.details.and_then(Value::as_object);
     let field = |key: &str| details.and_then(|details| details.get(key));
     let string = |key: &str| field(key).and_then(Value::as_str);
@@ -246,10 +289,34 @@ fn result_view(result: &ResultEntry<'_>) -> ResultView {
         Some("mode") => Some(Refusal::Mode),
         _ => None,
     };
+    let files: &[Value] = field("files").and_then(Value::as_array).map_or(&[], Vec::as_slice);
     let diff = match (result.tool_name, string("after")) {
-        ("write" | "edit", Some(after)) if !result.is_error && refused.is_none() => Some(diff_of(string("before").unwrap_or_default(), after)),
+        _ if result.is_error || refused.is_some() => None,
+        ("write" | "edit", Some(after)) => Some(diff_of(string("before").unwrap_or_default(), after)),
+        ("apply_patch", _) => patch_diff(files, locale),
         _ => None,
     };
+    let undoable_field = field("undoable").and_then(Value::as_bool) == Some(true);
+    let (changes, undo): (Vec<SharedString>, Vec<SharedString>) = match result.tool_name {
+        _ if result.is_error || refused.is_some() => (Vec::new(), Vec::new()),
+        "write" | "edit" => {
+            let id: SharedString = result.call_id.to_owned().into();
+            (vec![id.clone()], if undoable_field { vec![id] } else { Vec::new() })
+        }
+        "apply_patch" => {
+            let id = |file: &Value| file["changeId"].as_str().map(|id| SharedString::from(id.to_owned()));
+            (files.iter().filter_map(id).collect(), files.iter().filter(|file| file["undoable"].as_bool() == Some(true)).filter_map(id).collect())
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
+    let plan = (matches!(result.tool_name, "todo_write" | "update_plan" | "write_todos") && !result.is_error).then(|| {
+        field("plan")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|item| (SharedString::from(item["text"].as_str().unwrap_or_default().to_owned()), SharedString::from(item["status"].as_str().unwrap_or("pending").to_owned())))
+            .collect()
+    });
     let exit = (is_terminal(result.tool_name) && details.is_some() && refused.is_none()).then(|| {
         match (field("exitCode").and_then(Value::as_i64), string("signal")) {
             (Some(code), _) => Exit::Code(code),
@@ -275,7 +342,10 @@ fn result_view(result: &ResultEntry<'_>) -> ResultView {
         images,
         exit,
         refused,
-        undoable: field("undoable").and_then(Value::as_bool) == Some(true),
+        undoable: !undo.is_empty(),
+        changes,
+        undo,
+        plan,
         failed: result.is_error,
     }
 }
@@ -340,18 +410,21 @@ fn tool_row(
     };
     let result = result.map(|result| match reuse.and_then(|reuse| reuse.results.get(result.id)) {
         Some(view) => Arc::clone(view),
-        None => Arc::new(result_view(result)),
+        None => Arc::new(result_view(result, ctx.locale)),
     });
     let output = match &result {
         Some(result) => Some(result.text.clone()),
         None => running.and_then(|tool| tool.partial.clone()).map(Into::into),
     };
     let command = is_command(name).then(|| arguments.get("command").and_then(Value::as_str).unwrap_or_default().to_owned().into());
+    let patched = (name == "apply_patch").then(|| patch_files(arguments.get("input").and_then(Value::as_str).unwrap_or_default())).filter(|files| files.len() == 1);
     let file = arguments
         .get("file_path")
         .and_then(Value::as_str)
+        .or_else(|| patched.as_ref().map(|files| files[0]))
         .filter(|path| !path.trim().is_empty())
         .map(|path| (SharedString::from(path.to_owned()), SharedString::from(host_path(ctx.cwd, path))));
+    let reverted = reverted(ctx, id, result.as_deref());
     ToolRow {
         call_id: id.to_owned().into(),
         name: name.to_owned().into(),
@@ -361,8 +434,13 @@ fn tool_row(
         output,
         file,
         result,
-        reverted: ctx.reverted.contains(id),
+        reverted,
     }
+}
+
+/// Whether the user undid a call: its own id for `write` and `edit`, every file's change for `apply_patch`.
+fn reverted(ctx: &Context<'_>, id: &str, result: Option<&ResultView>) -> bool {
+    ctx.reverted.contains(id) || result.is_some_and(|result| !result.changes.is_empty() && result.changes.iter().all(|change| ctx.reverted.contains(change.as_ref())))
 }
 
 /// `live`: the message is the stream; `pending`: its turn is still running.
@@ -427,7 +505,7 @@ fn unchanged(row: &TurnRow, turn: &Turn<'_>, ctx: &Context<'_>) -> bool {
                 !matches!(tool.state, ToolState::Running | ToolState::Waiting)
                     && !ctx.running.contains_key(id)
                     && !ctx.waiting.contains(id)
-                    && tool.reverted == ctx.reverted.contains(id)
+                    && tool.reverted == reverted(ctx, id, tool.result.as_deref())
             }
             _ => true,
         })
@@ -439,7 +517,7 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
     let mut results: HashMap<&str, ResultEntry<'_>> = HashMap::new();
     for item in &turn.items {
         if let TranscriptEntry::ToolResult { id, tool_call_id, tool_name, content, is_error, details, .. } = item {
-            results.entry(tool_call_id.as_str()).or_insert(ResultEntry { id, tool_name, content, is_error: *is_error, details: details.as_ref() });
+            results.entry(tool_call_id.as_str()).or_insert(ResultEntry { id, call_id: tool_call_id, tool_name, content, is_error: *is_error, details: details.as_ref() });
         }
     }
     let mut blocks = Vec::new();
@@ -465,12 +543,13 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
         match item {
             TranscriptEntry::Assistant { id, .. } if Some(id.as_str()) == answer => {}
             TranscriptEntry::Assistant { .. } => work_steps += 1,
-            TranscriptEntry::ToolResult { tool_name, .. } => {
+            TranscriptEntry::ToolResult { tool_name, details, .. } => {
                 work_steps += 1;
                 match tool_name.as_str() {
                     "read" => reads += 1,
                     "grep" | "glob" => searches += 1,
                     "write" | "edit" => changes += 1,
+                    "apply_patch" => changes += details.as_ref().and_then(|details| details["files"].as_array()).map_or(1, |files| files.len().max(1)),
                     "bash" | "pwsh" => commands += 1,
                     _ => others += 1,
                 }
@@ -749,8 +828,9 @@ fn open_file(target: &str, window: &mut Window, cx: &mut App) {
 }
 
 /// Undo one change (`chat.revert`) and tell the user what happened, as the changes bar does.
-fn undo_change(session: SharedString, call: SharedString, window: &mut Window, cx: &mut App) {
-    let request = Store::global(cx).read(cx).call("chat.revert", json!({ "sessionId": session.as_ref(), "toolCallIds": [call.as_ref()] }));
+fn undo_change(session: SharedString, changes: Vec<SharedString>, window: &mut Window, cx: &mut App) {
+    let ids: Vec<&str> = changes.iter().map(SharedString::as_ref).collect();
+    let request = Store::global(cx).read(cx).call("chat.revert", json!({ "sessionId": session.as_ref(), "toolCallIds": ids }));
     window
         .spawn(cx, async move |cx| {
             let result = request.await;
@@ -884,7 +964,7 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
                     let busy = session.as_ref().is_none_or(|id| {
                         Store::global(cx).read(cx).summaries.iter().any(|summary| summary.id == id.as_ref() && matches!(summary.status.as_str(), "running" | "compacting"))
                     });
-                    let call = tool.call_id.clone();
+                    let changes = result.map(|result| result.undo.clone()).unwrap_or_default();
                     line = line.child(
                         Button::new(ElementId::Name(format!("tool-undo-{}", tool.call_id).into()))
                             .ghost()
@@ -894,7 +974,7 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
                             .when(busy, |this| this.tooltip(tr(cx, "review.changesBusy")))
                             .on_click(move |_, window, cx| {
                                 if let Some(session) = session.clone() {
-                                    undo_change(session, call.clone(), window, cx);
+                                    undo_change(session, changes.clone(), window, cx);
                                 }
                             }),
                     );
@@ -904,16 +984,45 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
             if let Some(command) = &tool.command {
                 body = body.child(div().font_family(mono.clone()).text_color(muted).child(format!("$ {command}")));
             }
+            let plan = result.and_then(|result| result.plan.as_ref());
             if let Some(refused) = refused {
                 body = body.child(div().text_color(muted).child(tr(cx, if refused == Refusal::User { "chat.toolRefusedUser" } else { "chat.toolRefusedMode" })));
+            } else if let Some(plan) = plan {
+                body = body.child(v_flex().w_full().gap_0p5().text_sm().children(plan.iter().map(|(text, status)| {
+                    let (mark, color) = match status.as_ref() {
+                        "completed" => ("✓", good),
+                        "in_progress" => ("▸", theme.foreground),
+                        "cancelled" => ("✕", muted),
+                        _ => ("○", muted),
+                    };
+                    let finished = matches!(status.as_ref(), "completed" | "cancelled");
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_start()
+                        .child(div().flex_shrink_0().w_4().text_color(color).child(mark))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .when(finished, |this| this.text_color(muted).line_through())
+                                .when(status.as_ref() == "in_progress", |this| this.font_semibold())
+                                .child(text.clone()),
+                        )
+                })));
             } else if let Some(diff) = diff {
                 body = body.child(v_flex().w_full().font_family(mono.clone()).children(diff.lines.iter().map(|(kind, text)| {
                     let tint = match kind {
                         LineKind::Added => Some(theme.success.opacity(0.16)),
                         LineKind::Removed => Some(theme.danger.opacity(0.16)),
-                        LineKind::Context | LineKind::Gap => None,
+                        LineKind::Context | LineKind::Gap | LineKind::File => None,
                     };
-                    div().px_1().when_some(tint, |this, tint| this.bg(tint)).when(*kind == LineKind::Gap, |this| this.text_color(muted)).child(text.clone())
+                    div()
+                        .px_1()
+                        .when_some(tint, |this, tint| this.bg(tint))
+                        .when(*kind == LineKind::Gap, |this| this.text_color(muted))
+                        .when(*kind == LineKind::File, |this| this.mt_1().font_semibold().text_color(theme.foreground))
+                        .child(text.clone())
                 })));
                 if diff.hidden > 0 {
                     body = body.child(div().text_color(muted).child(trf(cx, "chat.linesHidden", &[("count", &diff.hidden)])));
@@ -1018,7 +1127,9 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
             Block::Tool(tool) => {
                 let key: SharedString = format!("tool:{}", tool.call_id).into();
                 // The detailed style opens cards; a click toggles away from the default either way.
-                let open = expanded.contains(&key) != detailed || (tool.state == ToolState::Running && tool.output.is_some());
+                // Plan cards open in either style: the checklist is what the user follows.
+                let plan = tool.result.as_ref().is_some_and(|result| result.plan.is_some());
+                let open = expanded.contains(&key) != (detailed || plan) || (tool.state == ToolState::Running && tool.output.is_some());
                 render_tool(tool, open, index, toggle, style, cx)
             }
             Block::Notice { level, text } => {
@@ -1195,6 +1306,46 @@ mod tests {
         assert_eq!(tools[3].result.as_ref().unwrap().images[0].bytes, b"hello");
         assert_eq!(tools[4].result.as_ref().unwrap().exit, Some(Exit::Background));
         assert!(matches!(rows[0].blocks.last(), Some(Block::Muted { text }) if text == "已撤销 1 处文件修改"));
+    }
+
+    #[test]
+    fn shows_patches_and_plans() {
+        let patch = "*** Begin Patch\n*** Update File: a.txt\n-x\n+y\n*** Add File: n.txt\n+z\n*** End Patch";
+        let entries = json!([
+            {"id": "u1", "kind": "user", "ts": 1, "text": "改"},
+            assistant("a1", json!([
+                call("p", "apply_patch", json!({"input": patch})),
+                call("t", "update_plan", json!({"plan": [{"step": "Read", "status": "completed"}, {"step": "Fix", "status": "in_progress"}]})),
+            ]), "toolUse"),
+            result("r1", "p", "apply_patch", json!([{"type": "text", "text": "Success."}]), false, json!({"files": [
+                {"changeId": "p#0", "path": "a.txt", "operation": "update", "before": "x\n", "after": "y\n", "undoable": true},
+                {"changeId": "p#1", "path": "n.txt", "operation": "create", "after": "z\n"},
+            ]})),
+            result("r2", "t", "update_plan", json!([{"type": "text", "text": "Plan updated"}]), false, json!({"plan": [{"text": "Read", "status": "completed"}, {"text": "Fix", "status": "in_progress"}]})),
+            {"id": "x1", "kind": "context", "ts": 4, "label": "notice", "text": "undone", "reverted": ["p#0"]}
+        ]);
+        let rows = build_rows(&view(entries.clone(), Value::Null, "idle"), Locale::Zh);
+        let tools = tools(&rows[0]);
+        let patched = tools[0].result.as_ref().unwrap();
+        let diff = patched.diff.as_ref().unwrap();
+        assert_eq!((diff.added, diff.removed), (2, 1));
+        assert_eq!(diff.lines[0], (LineKind::File, SharedString::from("a.txt")));
+        assert!(diff.lines.iter().any(|(kind, text)| *kind == LineKind::File && text == "n.txt · 新建"));
+        assert_eq!((patched.changes.len(), patched.undo.len()), (2, 1));
+        // One of the two files undone leaves the call standing.
+        assert!(patched.undoable && !tools[0].reverted);
+        assert_eq!(tools[0].title, "修改 2 个文件");
+        let plan = tools[1].result.as_ref().unwrap().plan.as_ref().unwrap();
+        assert_eq!(plan[1], (SharedString::from("Fix"), SharedString::from("in_progress")));
+        assert_eq!(tools[1].title, "更新计划（1/2）");
+        // Both files undone: the call is undone.
+        let mut entries = entries;
+        entries.as_array_mut().unwrap().push(json!({"id": "x2", "kind": "context", "ts": 5, "label": "notice", "text": "undone", "reverted": ["p#1"]}));
+        assert!(tools_reverted(&build_rows(&view(entries, Value::Null, "idle"), Locale::Zh)[0]));
+    }
+
+    fn tools_reverted(row: &TurnRow) -> bool {
+        tools(row)[0].reverted
     }
 
     #[test]

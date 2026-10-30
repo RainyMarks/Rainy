@@ -168,6 +168,9 @@ pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    /// A Lark grammar: the Responses API offers the tool as a freeform custom tool whose raw text input the grammar
+    /// shapes, given to the tool as `{"input": text}`. Other APIs offer the JSON function.
+    pub freeform: Option<String>,
 }
 
 /// One model request.

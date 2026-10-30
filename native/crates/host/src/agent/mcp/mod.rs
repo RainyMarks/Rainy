@@ -214,7 +214,7 @@ impl McpManager {
                     continue;
                 }
                 let description = if tool.description.is_empty() { format!("{} from MCP server {server}", tool.name) } else { tool.description.clone() };
-                tools.push(Arc::new(McpTool { client: client.clone(), server: server.clone(), tool: tool.name.clone(), spec: ToolSpec { name, description, parameters: tool.input_schema.clone() } }));
+                tools.push(Arc::new(McpTool { client: client.clone(), server: server.clone(), tool: tool.name.clone(), spec: ToolSpec { name, description, parameters: tool.input_schema.clone(), freeform: None } }));
             }
         }
         tools

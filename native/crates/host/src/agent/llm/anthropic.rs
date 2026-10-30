@@ -58,6 +58,9 @@ fn messages(model: &Model, request: &Request<'_>, active_effort: &str) -> Vec<Va
     let mut params: Vec<Value> = Vec::new();
     let mut efforts: HashMap<usize, String> = HashMap::new();
     let replayed = replay(request.messages, model, &|id, _| normalize_id(id));
+    // Each round of tool results carries the batching nudge the model's guidance asks for, in every request alike,
+    // so the history stays append-only.
+    let nudge = crate::agent::profile::Profile::of(&model.id).batch_nudge();
     let mut index = 0;
     while index < replayed.len() {
         match &replayed[index] {
@@ -113,6 +116,9 @@ fn messages(model: &Model, request: &Request<'_>, active_effort: &str) -> Vec<Va
                 while let Some(Message::ToolResult(result)) = replayed.get(index) {
                     results.push(json!({ "type": "tool_result", "tool_use_id": result.tool_call_id, "content": result_blocks(&result.content), "is_error": result.is_error }));
                     index += 1;
+                }
+                if let Some(nudge) = nudge {
+                    results.push(json!({ "type": "text", "text": nudge }));
                 }
                 params.push(json!({ "role": "user", "content": results }));
                 continue;
@@ -475,7 +481,7 @@ mod tests {
         second.stop_reason = "stop".into();
         second.content = vec![AssistantBlock::Text { text: "done".into(), text_signature: None, rest: Map::new() }];
         let messages = vec![Message::user("one"), Message::Assistant(first), Message::ToolResult(result), Message::Assistant(second), Message::user("two")];
-        let tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }) }];
+        let tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }), freeform: None }];
         let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::Max), max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false };
         let mut output = crate::agent::llm::empty_reply(&model);
         let (http, _) = super::request(&model, &request, Some("key"), &mut output);
@@ -560,5 +566,25 @@ mod tests {
         assert_eq!((output.usage.input, output.usage.cache_read, output.usage.cache_write, output.usage.output), (10.0, 90.0, 5.0, 42.0));
         assert!(matches!(&output.content[0], AssistantBlock::Thinking { thinking_signature: Some(signature), .. } if signature == "sig"));
         assert!(matches!(&output.content[1], AssistantBlock::ToolCall { arguments, .. } if arguments["path"] == "a"));
+    }
+
+    #[test]
+    fn nudges_fable_5_1_to_batch_tool_calls() {
+        use crate::agent::llm::Api;
+        use crate::agent::llm::test_support::setup;
+        let body = |id: &str| {
+            let model = Model::from_setup(&setup(Api::Anthropic, "https://api.anthropic.com", id), 64_000);
+            let mut reply = crate::agent::llm::empty_reply(&model);
+            reply.content.push(AssistantBlock::ToolCall { id: "toolu_1".into(), name: "read".into(), arguments: Map::new(), rest: Map::new() });
+            let result = super::super::ToolResult { tool_call_id: "toolu_1".into(), tool_name: "read".into(), content: vec![ResultContent::Text { text: "a".into() }], is_error: false, details: None, timestamp: 0.0 };
+            let messages = [Message::user("hi"), Message::Assistant(reply), Message::ToolResult(result)];
+            super::request(&model, &Request::new("sys", &messages, &[]), None, &mut crate::agent::llm::empty_reply(&model)).0.body
+        };
+        let fable = body("claude-fable-5-1");
+        let last = fable["messages"].as_array().unwrap().iter().rev().find(|message| message["role"] == "user").unwrap()["content"].as_array().unwrap().clone();
+        assert_eq!((last[0]["type"].as_str(), last[1]["type"].as_str()), (Some("tool_result"), Some("text")));
+        assert!(last[1]["text"].as_str().unwrap().starts_with("First privately list"));
+        let opus = body("claude-opus-5-5");
+        assert!(!opus.to_string().contains("First privately list"));
     }
 }

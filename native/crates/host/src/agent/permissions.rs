@@ -10,9 +10,13 @@ use serde_json::{Value, json};
 use crate::settings::PermissionRules;
 
 /// Tools that only read; they run in every mode. `stop_command` only ends a command this chat started, and a `task`
-/// sub-agent only reads. The browser tools only reach the project's own server, in a window with no sign-ins.
-const READ_TOOLS: &[&str] = &["read", "grep", "glob", "web_search", "command_output", "stop_command", "task", "browser_open", "browser_read", "browser_act", "browser_screenshot"];
-const CHANGE_TOOLS: &[&str] = &["write", "edit"];
+/// sub-agent only reads. The browser tools only reach the project's own server, in a window with no sign-ins. The plan
+/// tools only record the model's checklist.
+const READ_TOOLS: &[&str] = &[
+    "read", "grep", "glob", "web_search", "command_output", "stop_command", "task", "browser_open", "browser_read", "browser_act", "browser_screenshot", "todo_write", "update_plan",
+    "write_todos",
+];
+use super::changes::CHANGE_TOOLS;
 const SHELL_TOOLS: &[&str] = &["bash", "pwsh"];
 
 /// Characters that chain, redirect, substitute or group commands in Bash or PowerShell; such commands always ask.
@@ -166,10 +170,17 @@ pub fn decide(input: &Input<'_>) -> Decision {
         return if read_only_tool { Decision::Allow } else { Decision::Deny(READ_ONLY_REASON.into()) };
     }
     if CHANGE_TOOLS.contains(&input.tool) {
-        let Some(requested) = string_arg(input.args, "file_path").filter(|path| !path.trim().is_empty()) else { return Decision::Allow };
-        let target = canonical_path(&crate::paths::normalize(&input.cwd.join(requested)));
-        let inside = (input.roots)().iter().any(|root| crate::paths::relative_to(root, &target).is_some());
-        return if inside { Decision::Allow } else { Decision::Ask(json!({ "reason": "outside-write", "path": target.to_string_lossy() })) };
+        let targets: Vec<PathBuf> = if input.tool == crate::agent::tools::patch::NAME {
+            crate::agent::tools::patch::targets(string_arg(input.args, "input").unwrap_or_default(), input.cwd)
+        } else {
+            string_arg(input.args, "file_path").filter(|path| !path.trim().is_empty()).map(|path| crate::paths::normalize(&input.cwd.join(path))).into_iter().collect()
+        };
+        let roots = (input.roots)();
+        let outside = targets.iter().map(|target| canonical_path(target)).find(|target| !roots.iter().any(|root| crate::paths::relative_to(root, target).is_some()));
+        return match outside {
+            None => Decision::Allow,
+            Some(target) => Decision::Ask(json!({ "reason": "outside-write", "path": target.to_string_lossy() })),
+        };
     }
     if SHELL_TOOLS.contains(&input.tool) {
         let command = string_arg(input.args, "command").unwrap_or_default();
@@ -232,5 +243,11 @@ mod tests {
         let fetch = Box::leak(Box::new(json!({ "url": "https://Example.com/a" })));
         assert_eq!(decide(&input("auto", "web_fetch", fetch)), Decision::Allow);
         assert_eq!(decide(&input("read-only", "web_fetch", fetch)), Decision::Ask(json!({ "reason": "web", "path": "https://Example.com/a", "rule": "web_fetch:example.com" })));
+        let plan = Box::leak(Box::new(json!({ "plan": [] })));
+        assert_eq!(decide(&input("read-only", "update_plan", plan)), Decision::Allow);
+        let inside = Box::leak(Box::new(json!({ "input": format!("*** Begin Patch\n*** Add File: {}\n+x\n*** End Patch", std::env::temp_dir().join("a.txt").display()) })));
+        assert_eq!(decide(&input("ask", "apply_patch", inside)), Decision::Allow);
+        let outside = Box::leak(Box::new(json!({ "input": "*** Begin Patch\n*** Update File: /elsewhere/b.txt\n-x\n+y\n*** End Patch" })));
+        assert!(matches!(decide(&input("ask", "apply_patch", outside)), Decision::Ask(approval) if approval["reason"] == "outside-write"));
     }
 }

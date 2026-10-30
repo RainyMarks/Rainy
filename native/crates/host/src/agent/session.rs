@@ -37,7 +37,8 @@ use super::tools::browser::{Browser, Preview};
 use super::tools::jobs::Jobs;
 use super::tools::task::{Progress, Report, Subagents};
 use super::tools::web::{WebAccess, deepseek_key};
-use super::tools::{Observations, RecordChange, Tool, ToolContext, core_tools, subagent_tools};
+use super::profile::Profile;
+use super::tools::{Observations, RecordChange, Tool, ToolContext, ToolStyle, core_tools, subagent_tools};
 use super::{skills, stream};
 use crate::activity::Activity;
 use crate::env::HostEnv;
@@ -151,6 +152,14 @@ fn request_key(model: &llm::Model, thinking: Option<Level>) -> String {
 
 fn jitter() -> f64 {
     (uuid::Uuid::new_v4().as_u128() >> 75) as f64 / (1u64 << 53) as f64
+}
+
+/// The tools a model works with: GPT models patch files (freeform on OpenAI's own Responses API) and the plan tool
+/// follows the family's own agent.
+fn tool_style(model: &llm::Model) -> ToolStyle {
+    let profile = Profile::of(&model.id);
+    let freeform = model.api == llm::Api::Responses && model.base_url.contains("api.openai.com");
+    ToolStyle { patch: profile.patches().then_some(freeform), plan: profile.plan_style() }
 }
 
 fn no_model() -> HostError {
@@ -591,7 +600,7 @@ impl Session {
         changes::pending(&inner.entries, &inner.kept, &inner.chat.cwd)
     }
 
-    /// Undo write and edit calls of this chat, newest first; a file that changed after the call is left alone.
+    /// Undo file changes of this chat by their change ids, newest first; a file that changed after the call is left alone.
     pub async fn revert(&self, tool_call_ids: &[String]) -> HostResult<RevertResult> {
         if self.running() {
             return Err(busy("请等待当前任务结束后再撤销修改。", "Wait for the current task to finish before undoing changes."));
@@ -602,9 +611,11 @@ impl Session {
                 .entries
                 .iter()
                 .enumerate()
-                .filter_map(|(index, entry)| match entry {
-                    TranscriptEntry::ToolResult { tool_call_id, tool_name, .. } if tool_name == "write" || tool_name == "edit" => Some((tool_call_id.clone(), index)),
-                    _ => None,
+                .flat_map(|(index, entry)| match entry {
+                    TranscriptEntry::ToolResult { tool_call_id, tool_name, details: Some(details), .. } => {
+                        changes::file_changes(tool_name, tool_call_id, details).into_iter().map(|change| (change.id, index)).collect::<Vec<_>>()
+                    }
+                    _ => Vec::new(),
                 })
                 .collect();
             (position, changes::reverted(&inner.entries), inner.chat.cwd.clone())
@@ -1012,7 +1023,7 @@ impl Session {
                     duration_ms: started.map(|started| now_ms().saturating_sub(started) as f64),
                 })
                 .await;
-                if (result.tool_name == "write" || result.tool_name == "edit") && !result.is_error {
+                if changes::CHANGE_TOOLS.contains(&result.tool_name.as_str()) && !result.is_error {
                     self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
                 }
             }
@@ -1186,9 +1197,14 @@ impl Session {
     }
 
     async fn prepare_request(&self, initial: &Resolved, state: &mut State, cancel: &CancellationToken) {
-        // The chat's model may have changed since the run started.
+        // The chat's model may have changed since the run started; another family works with other tools and text.
         let latest = self.resolved().unwrap_or_else(|| initial.clone());
+        let refit = latest.model.id != state.model.id || tool_style(&latest.model) != tool_style(&state.model);
         state.model = latest.model.clone();
+        if refit {
+            state.tools = self.tools();
+            state.system = self.system_prompt(&state.tools);
+        }
         state.reasoning = latest.thinking;
         state.api_key = self.services.models.api_key(&latest.setup.provider);
         let Ok(budget) = resolve_budget(state.model.context_window, Some(state.model.max_tokens)) else { return };
@@ -1397,10 +1413,10 @@ impl Session {
             }
         };
         let (snapshots, id) = (self.services.snapshots.clone(), self.id.clone());
-        let record_change: RecordChange = Arc::new(move |call_id: String, path: PathBuf, before: Option<Vec<u8>>, after: Vec<u8>| {
+        let record_change: RecordChange = Arc::new(move |call_id: String, path: PathBuf, before: Option<Vec<u8>>, after: Option<Vec<u8>>| {
             let (snapshots, id) = (snapshots.clone(), id.clone());
             Box::pin(async move {
-                match snapshots.record(&id, &call_id, &path, before.as_deref(), &after) {
+                match snapshots.record(&id, &call_id, &path, before.as_deref(), after.as_deref()) {
                     Ok(()) => true,
                     Err(error) => {
                         log::warn!("[chat {id}] keeping {} for undo failed: {error}", path.display());
@@ -1429,9 +1445,11 @@ impl Session {
         let web = (self.services.settings.prefs().get("webSearch").and_then(Value::as_bool) == Some(true) && deepseek_key(&settings).is_some())
             .then(|| WebAccess { api_key: Arc::new(move || deepseek_key(&settings)), network: self.services.network.clone() });
         let subagents: Arc<dyn Subagents> = Arc::new(ChatSubagents { session: self.this.clone(), context: context.clone(), web: web.clone() });
-        let mut tools = core_tools(&context, self.services.env.windows, web, Some(subagents));
+        let resolved = self.resolved();
+        let style = resolved.as_ref().map_or_else(ToolStyle::default, |resolved| tool_style(&resolved.model));
+        let mut tools = core_tools(&context, self.services.env.windows, web, Some(subagents), style);
         if let Some(preview) = &self.services.preview {
-            let vision = self.resolved().is_some_and(|resolved| resolved.model.images);
+            let vision = resolved.as_ref().is_some_and(|resolved| resolved.model.images);
             tools.extend(Browser::tools(&context, preview.clone(), vision));
         }
         tools.extend(self.services.mcp.tools());
@@ -1460,6 +1478,7 @@ impl Session {
             global_prompt: &self.services.settings.get().global_prompt,
             remote: env.kind() == "SSH",
             powershell_core,
+            profile: self.resolved().map_or_else(|| Profile::of(""), |resolved| Profile::of(&resolved.model.id)),
         })
     }
 

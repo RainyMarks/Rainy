@@ -4,6 +4,8 @@
 pub mod browser;
 pub mod encoding;
 pub mod jobs;
+pub mod patch;
+pub mod plan;
 pub mod read;
 pub mod schema;
 pub mod search;
@@ -75,7 +77,7 @@ pub fn params<T: DeserializeOwned>(args: Value) -> Result<T, String> {
 
 /// A tool's declaration.
 pub fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
-    ToolSpec { name: name.into(), description: description.into(), parameters }
+    ToolSpec { name: name.into(), description: description.into(), parameters, freeform: None }
 }
 
 /// A file's identity at one observation: device, file id, size and modification time, the editor's file version
@@ -90,7 +92,7 @@ pub fn version_of(path: &Path) -> Result<Option<FileVersion>, String> {
     crate::ide::fs::stat(path).map(|info| info.map(|info| without_change_time(info.version))).map_err(|error| error.to_string())
 }
 
-fn path_key(path: &Path) -> String {
+pub(crate) fn path_key(path: &Path) -> String {
     let text = path.to_string_lossy().into_owned();
     if cfg!(windows) { text.to_lowercase() } else { text }
 }
@@ -118,8 +120,8 @@ impl Observations {
     }
 }
 
-/// Keeps what write and edit replaced, so the user can undo the change; answers whether it can be undone.
-pub type RecordChange = Arc<dyn Fn(String, PathBuf, Option<Vec<u8>>, Vec<u8>) -> BoxFuture<'static, bool> + Send + Sync>;
+/// Keeps what a change replaced (before, after; `None`: no file), so the user can undo it; answers whether it can be undone.
+pub type RecordChange = Arc<dyn Fn(String, PathBuf, Option<Vec<u8>>, Option<Vec<u8>>) -> BoxFuture<'static, bool> + Send + Sync>;
 
 /// What every tool of one chat needs.
 #[derive(Clone)]
@@ -196,15 +198,31 @@ impl ToolContext {
 
 /// Built-in tools: read, grep, glob, write, edit, the platform shell, background commands, and web and sub-agents
 /// when given.
-pub fn core_tools(context: &ToolContext, windows: bool, web: Option<web::WebAccess>, subagents: Option<Arc<dyn task::Subagents>>) -> Vec<Arc<dyn Tool>> {
-    let mut tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(read::Read::new(context.clone())),
-        Arc::new(search::Grep::new(context.clone())),
-        Arc::new(search::Glob::new(context.clone())),
-        Arc::new(write::Write::new(context.clone())),
-        Arc::new(write::Edit::new(context.clone())),
-        Arc::new(shell::Shell::new(context.clone(), windows)),
-    ];
+/// How the model changes files and keeps its checklist, after its family ([`crate::agent::profile`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolStyle {
+    /// `apply_patch` in place of `write` and `edit`; `freeform` offers it as a grammar-constrained custom tool.
+    pub patch: Option<bool>,
+    pub plan: plan::Style,
+}
+
+impl Default for ToolStyle {
+    fn default() -> Self {
+        Self { patch: None, plan: plan::Style::Claude }
+    }
+}
+
+pub fn core_tools(context: &ToolContext, windows: bool, web: Option<web::WebAccess>, subagents: Option<Arc<dyn task::Subagents>>, style: ToolStyle) -> Vec<Arc<dyn Tool>> {
+    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(read::Read::new(context.clone())), Arc::new(search::Grep::new(context.clone())), Arc::new(search::Glob::new(context.clone()))];
+    match style.patch {
+        Some(freeform) => tools.push(Arc::new(patch::ApplyPatch::new(context.clone(), freeform))),
+        None => {
+            tools.push(Arc::new(write::Write::new(context.clone())));
+            tools.push(Arc::new(write::Edit::new(context.clone())));
+        }
+    }
+    tools.push(Arc::new(shell::Shell::new(context.clone(), windows)));
+    tools.push(Arc::new(plan::Plan::new(style.plan)));
     if context.jobs.is_some() {
         tools.push(Arc::new(shell::CommandOutput::new(context.clone())));
         tools.push(Arc::new(shell::StopCommand::new(context.clone())));

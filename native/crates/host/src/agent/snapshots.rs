@@ -20,7 +20,8 @@ struct Record {
     path: String,
     /// Hash of the content before the change; `None` when the change created the file.
     before: Option<String>,
-    after: String,
+    /// Hash of the content after the change; `None` when the change deleted the file.
+    after: Option<String>,
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -41,15 +42,16 @@ impl Snapshots {
         Self { root }
     }
 
-    /// Record a change after it was written; `before` is `None` when the file did not exist.
-    pub fn record(&self, session: &str, call_id: &str, path: &Path, before: Option<&[u8]>, after: &[u8]) -> std::io::Result<()> {
+    /// Record a change after it was written; `before` is `None` when the file did not exist, `after` when the change
+    /// deleted it.
+    pub fn record(&self, session: &str, call_id: &str, path: &Path, before: Option<&[u8]>, after: Option<&[u8]>) -> std::io::Result<()> {
         let directory = self.root.join(session);
         crate::store::create_private_dir(&directory)?;
         let stem = stem(call_id);
         if let Some(before) = before {
             crate::store::write_atomic(&directory.join(format!("{stem}.bin")), before)?;
         }
-        let record = Record { version: 1, path: path.to_string_lossy().into_owned(), before: before.map(digest), after: digest(after) };
+        let record = Record { version: 1, path: path.to_string_lossy().into_owned(), before: before.map(digest), after: after.map(digest) };
         crate::store::write_atomic(&directory.join(format!("{stem}.json")), serde_json::to_string(&record)?.as_bytes())
     }
 
@@ -78,9 +80,15 @@ impl Snapshots {
         let (directory, record) = self.find(sessions, call_id).ok_or(RevertFailure { reason: "unavailable", path: String::new(), message: "The original content is no longer kept.".into() })?;
         let path = record.path.clone();
         let changed = |message: &str| RevertFailure { reason: "changed", path: path.clone(), message: message.into() };
-        let current = std::fs::read(&record.path).map_err(|_| changed("The file was moved or deleted after the change."))?;
-        if digest(&current) != record.after {
-            return Err(changed("The file changed after the change was made."));
+        match &record.after {
+            Some(after) => {
+                let current = std::fs::read(&record.path).map_err(|_| changed("The file was moved or deleted after the change."))?;
+                if digest(&current) != *after {
+                    return Err(changed("The file changed after the change was made."));
+                }
+            }
+            None if Path::new(&record.path).exists() => return Err(changed("A file was created again where the change deleted one.")),
+            None => {}
         }
         let failed = |error: std::io::Error| RevertFailure { reason: "failed", path: path.clone(), message: error.to_string() };
         match &record.before {
@@ -89,6 +97,9 @@ impl Snapshots {
                 let original = std::fs::read(directory.join(format!("{stem}.bin"))).map_err(failed)?;
                 if digest(&original) != *before {
                     return Err(RevertFailure { reason: "unavailable", path, message: "The saved original content is damaged.".into() });
+                }
+                if let Some(parent) = Path::new(&record.path).parent() {
+                    std::fs::create_dir_all(parent).map_err(failed)?;
                 }
                 std::fs::write(&record.path, original).map_err(failed)?;
             }
@@ -135,7 +146,7 @@ mod tests {
         let file = root.join("a.txt");
         std::fs::write(&file, "new").unwrap();
         let snapshots = Snapshots::new(root.join("snapshots"));
-        snapshots.record("s1", "call|1", &file, Some(b"old"), b"new").unwrap();
+        snapshots.record("s1", "call|1", &file, Some(b"old"), Some(b"new")).unwrap();
         let fork = vec!["s2".to_owned(), "s1".to_owned()];
         assert_eq!(snapshots.original(&fork, "call|1"), Some(Some(b"old".to_vec())));
         std::fs::write(&file, "edited").unwrap();
@@ -144,6 +155,15 @@ mod tests {
         snapshots.revert(&fork, "call|1").unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
         assert!(snapshots.original(&fork, "call|1").is_none());
+        // A deleted file comes back, unless one was created there again.
+        let gone = root.join("sub").join("gone.txt");
+        snapshots.record("s1", "call|2", &gone, Some(b"was"), None).unwrap();
+        std::fs::create_dir_all(gone.parent().unwrap()).unwrap();
+        std::fs::write(&gone, "again").unwrap();
+        assert_eq!(snapshots.revert(&fork, "call|2").unwrap_err().reason, "changed");
+        std::fs::remove_dir_all(gone.parent().unwrap()).unwrap();
+        snapshots.revert(&fork, "call|2").unwrap();
+        assert_eq!(std::fs::read_to_string(&gone).unwrap(), "was");
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -89,7 +89,17 @@ enum Prepared {
 
 async fn prepare<H: Hooks>(state: &State, hooks: &H, id: &str, name: &str, arguments: &Map<String, Value>, cancel: &CancellationToken) -> Prepared {
     let done = |output: ToolOutput| Prepared::Done { id: id.to_owned(), name: name.to_owned(), output };
-    let Some(tool) = state.tools.iter().find(|tool| tool.spec().name == name).cloned() else { return done(failed(format!("Tool {name} not found"))) };
+    // A name that differs only in letter case is the tool meant; any other unknown name gets the list to choose from.
+    let tool = state.tools.iter().find(|tool| tool.spec().name == name).or_else(|| {
+        let mut matches = state.tools.iter().filter(|tool| tool.spec().name.eq_ignore_ascii_case(name));
+        matches.next().filter(|_| matches.next().is_none())
+    });
+    let Some(tool) = tool.cloned() else {
+        let names: Vec<&str> = state.tools.iter().map(|tool| tool.spec().name.as_str()).collect();
+        return done(failed(format!("Tool {name} not found. Available tools: {}", names.join(", "))));
+    };
+    let name = tool.spec().name.clone();
+    let name = name.as_str();
     let args = match schema::validate(name, &tool.spec().parameters, arguments) {
         Ok(args) => args,
         Err(message) => return done(failed(message)),

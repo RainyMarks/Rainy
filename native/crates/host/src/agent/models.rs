@@ -437,6 +437,7 @@ impl Models {
             name: "rainy_probe".into(),
             description: "Harmless connection diagnostic; returns the supplied integer.".into(),
             parameters: json!({ "type": "object", "properties": { "value": { "type": "integer" } }, "required": ["value"] }),
+            freeform: None,
         }];
         let tool_reply = self.complete(&resolved, "Connection diagnostic. Call rainy_probe with value 7 exactly once. Do not access files or run commands.", &tools, Duration::from_secs(180), Completion::default()).await;
         let mut tool_call = false;

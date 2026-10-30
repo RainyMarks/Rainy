@@ -19,13 +19,13 @@ const DIFF_TEXT_LIMIT: usize = 256 * 1024;
 /// Keep the replaced content for undo; a failure costs only the undo. `before` is `None` for a new file.
 async fn keep_for_undo(context: &ToolContext, call_id: &str, path: &Path, before: Option<Option<Vec<u8>>>, after: Vec<u8>) -> bool {
     match (before, &context.record_change) {
-        (Some(before), Some(record)) => record(call_id.to_owned(), path.to_path_buf(), before, after).await,
+        (Some(before), Some(record)) => record(call_id.to_owned(), path.to_path_buf(), before, Some(after)).await,
         _ => false,
     }
 }
 
 /// Before and after text for the diff card; both are left out when either is too large.
-fn diff_sides(details: &mut Value, before: Option<&str>, after: &str) {
+pub(super) fn diff_sides(details: &mut Value, before: Option<&str>, after: &str) {
     if before.is_some_and(|before| before.len() > DIFF_TEXT_LIMIT) || after.len() > DIFF_TEXT_LIMIT {
         return;
     }
@@ -36,7 +36,7 @@ fn diff_sides(details: &mut Value, before: Option<&str>, after: &str) {
 }
 
 /// A file's text for an edit, in an encoding it can be written back in without touching the rest of the file.
-fn editable(bytes: &[u8], display: &str) -> Result<Decoded, String> {
+pub(super) fn editable(bytes: &[u8], display: &str) -> Result<Decoded, String> {
     let decoded = decode(bytes).ok_or_else(|| format!("cannot modify \"{display}\": it is binary or its text encoding is not UTF-8, UTF-16 with a byte-order mark or GB18030"))?;
     if !round_trips(bytes, &decoded) {
         let why = if decoded.damaged { "UTF-8 text has invalid bytes".to_owned() } else { format!("{} text does not convert back to the same bytes", decoded.encoding.label()) };

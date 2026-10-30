@@ -1,7 +1,7 @@
 //! OpenAI Responses (`POST {base}/responses`) without server-side state (`store: false`): reasoning comes back as
 //! encrypted items the next request replays.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rainy_protocol::chat::{AssistantBlock, AssistantMessage, ResultContent};
 use serde_json::{Map, Value, json};
@@ -73,6 +73,9 @@ fn tool_output(model: &Model, content: &[ResultContent]) -> Value {
 
 /// The conversation as Responses input items.
 fn input(model: &Model, request: &Request<'_>) -> Vec<Value> {
+    // Tools offered freeform, and the calls replayed as freeform ones, whose outputs must be of the same kind.
+    let freeform: HashSet<&str> = request.tools.iter().filter(|tool| tool.freeform.is_some()).map(|tool| tool.name.as_str()).collect();
+    let mut custom_calls: HashSet<String> = HashSet::new();
     let mut items = Vec::new();
     if !request.system.is_empty() {
         items.push(json!({ "role": if model.reasoning.reasons() { "developer" } else { "system" }, "content": request.system }));
@@ -119,11 +122,18 @@ fn input(model: &Model, request: &Request<'_>) -> Vec<Value> {
                             }
                             items.push(item);
                         }
-                        AssistantBlock::ToolCall { id, name, arguments, .. } => {
+                        AssistantBlock::ToolCall { id, name, arguments, rest } => {
                             let (call, item) = id.split_once('|').map_or((id.as_str(), None), |(call, item)| (call, Some(item)));
-                            // An item id from another model, or not naming a function call, would fail pairing checks.
-                            let item = item.filter(|item| !other_model && item.starts_with("fc_"));
-                            let mut entry = json!({ "type": "function_call", "call_id": call, "name": name, "arguments": Value::Object(arguments.clone()).to_string() });
+                            // A freeform call goes back as one while the tool is still offered freeform.
+                            let custom = rest.get("custom").and_then(Value::as_bool) == Some(true) && freeform.contains(name.as_str());
+                            // An item id from another model, or not naming a call of this kind, would fail pairing checks.
+                            let item = item.filter(|item| !other_model && item.starts_with(if custom { "ctc_" } else { "fc_" }));
+                            let mut entry = if custom {
+                                custom_calls.insert(call.to_owned());
+                                json!({ "type": "custom_tool_call", "call_id": call, "name": name, "input": arguments.get("input").and_then(Value::as_str).unwrap_or_default() })
+                            } else {
+                                json!({ "type": "function_call", "call_id": call, "name": name, "arguments": Value::Object(arguments.clone()).to_string() })
+                            };
                             if let Some(item) = item {
                                 entry["id"] = json!(item);
                             }
@@ -134,11 +144,18 @@ fn input(model: &Model, request: &Request<'_>) -> Vec<Value> {
             }
             Message::ToolResult(result) => {
                 let call = result.tool_call_id.split('|').next().unwrap_or_default();
-                items.push(json!({ "type": "function_call_output", "call_id": call, "output": tool_output(model, &result.content) }));
+                let kind = if custom_calls.contains(call) { "custom_tool_call_output" } else { "function_call_output" };
+                items.push(json!({ "type": kind, "call_id": call, "output": tool_output(model, &result.content) }));
             }
         }
     }
     items
+}
+
+fn input_arguments(input: &str) -> Map<String, Value> {
+    let mut arguments = Map::new();
+    arguments.insert("input".into(), json!(input));
+    arguments
 }
 
 /// The request and its reply reader.
@@ -153,7 +170,14 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
     body.insert("store".into(), json!(false));
     body.insert("max_output_tokens".into(), json!(super::max_tokens(model, request).max(16)));
     if !request.tools.is_empty() {
-        let tools: Vec<Value> = request.tools.iter().map(|tool| json!({ "type": "function", "name": tool.name, "description": tool.description, "parameters": tool.parameters })).collect();
+        let tools: Vec<Value> = request
+            .tools
+            .iter()
+            .map(|tool| match &tool.freeform {
+                Some(grammar) => json!({ "type": "custom", "name": tool.name, "description": tool.description, "format": { "type": "grammar", "syntax": "lark", "definition": grammar } }),
+                None => json!({ "type": "function", "name": tool.name, "description": tool.description, "parameters": tool.parameters }),
+            })
+            .collect();
         body.insert("tools".into(), Value::Array(tools));
         if request.no_tool_calls {
             body.insert("tool_choice".into(), json!("none"));
@@ -228,6 +252,17 @@ impl ResponsesReader {
                 output.content.push(AssistantBlock::ToolCall { id, name: item["name"].as_str().unwrap_or_default().into(), arguments: Map::new(), rest: Map::new() });
                 let index = output.content.len() - 1;
                 self.arguments.insert(index, item["arguments"].as_str().unwrap_or_default().into());
+                Slot::Call(index)
+            }
+            // A freeform tool's raw input is given to the tool as `{"input": text}`.
+            "custom_tool_call" => {
+                let id = format!("{}|{}", item["call_id"].as_str().unwrap_or_default(), item["id"].as_str().unwrap_or_default());
+                let input = item["input"].as_str().unwrap_or_default();
+                let mut rest = Map::new();
+                rest.insert("custom".into(), json!(true));
+                output.content.push(AssistantBlock::ToolCall { id, name: item["name"].as_str().unwrap_or_default().into(), arguments: input_arguments(input), rest });
+                let index = output.content.len() - 1;
+                self.arguments.insert(index, input.into());
                 Slot::Call(index)
             }
             _ => return None,
@@ -325,6 +360,19 @@ impl Reader for ResponsesReader {
                 let slot = self.slots.get(&at).copied().filter(|slot| matches!(slot, Slot::Text(_)));
                 Self::append(output, slot, delta, emit);
             }
+            "response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done" => {
+                let Some(Slot::Call(index)) = self.slots.get(&at).copied() else { return Ok(()) };
+                let partial = self.arguments.entry(index).or_default();
+                if kind.ends_with(".done") {
+                    *partial = event["input"].as_str().unwrap_or_default().to_owned();
+                } else {
+                    partial.push_str(delta);
+                }
+                if let AssistantBlock::ToolCall { arguments, .. } = &mut output.content[index] {
+                    *arguments = input_arguments(partial);
+                }
+                emit(Event::Updated, output);
+            }
             "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
                 let Some(Slot::Call(index)) = self.slots.get(&at).copied() else { return Ok(()) };
                 let partial = self.arguments.entry(index).or_default();
@@ -370,6 +418,15 @@ impl Reader for ResponsesReader {
                         if let AssistantBlock::Text { text: held, text_signature, .. } = &mut output.content[index] {
                             *held = text;
                             *text_signature = Some(signature.to_string());
+                        }
+                        self.slots.remove(&at);
+                        emit(Event::BlockEnded(index), output);
+                    }
+                    Some(Slot::Call(index)) if item["type"] == "custom_tool_call" => {
+                        let written = self.arguments.remove(&index).unwrap_or_default();
+                        let input = item["input"].as_str().filter(|text| !text.is_empty()).map_or(written, str::to_owned);
+                        if let AssistantBlock::ToolCall { arguments, .. } = &mut output.content[index] {
+                            *arguments = input_arguments(&input);
                         }
                         self.slots.remove(&at);
                         emit(Event::BlockEnded(index), output);
@@ -430,7 +487,7 @@ impl Reader for ResponsesReader {
 mod tests {
     use super::*;
     use crate::agent::llm::test_support::{body_for, reasoning_fields, setup};
-    use crate::agent::llm::{Api, Level};
+    use crate::agent::llm::{Api, Level, ToolSpec};
     use crate::settings::ModelSetup;
 
     fn model() -> Model {
@@ -489,5 +546,40 @@ mod tests {
         assert_eq!(input[3], json!({ "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read", "arguments": r#"{"path":"a"}"# }));
         assert_eq!(input[4]["output"], "No result provided");
         assert_eq!(http.body["reasoning"], json!({ "effort": "high", "summary": "auto" }));
+    }
+
+    #[test]
+    fn offers_and_replays_freeform_tools() {
+        let model = model();
+        let mut output = crate::agent::llm::empty_reply(&model);
+        let mut reader = ResponsesReader::default();
+        let mut emit = |_: Event, _: &AssistantMessage| {};
+        for data in [
+            r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":""}}"#,
+            r#"{"type":"response.custom_tool_call_input.delta","output_index":0,"delta":"*** Begin Patch\n"}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}"#,
+        ] {
+            reader.event("", data, &mut output, &mut emit).unwrap();
+        }
+        reader.finish(&mut output, &mut emit).unwrap();
+        assert_eq!(output.stop_reason, "toolUse");
+        let AssistantBlock::ToolCall { arguments, .. } = &output.content[0] else { panic!("no call") };
+        assert_eq!(arguments["input"], "*** Begin Patch\n*** End Patch");
+        let result = super::super::ToolResult { tool_call_id: "call_1|ctc_1".into(), tool_name: "apply_patch".into(), content: vec![ResultContent::Text { text: "Success.".into() }], is_error: false, details: None, timestamp: 0.0 };
+        let messages = vec![Message::user("hi"), Message::Assistant(output), Message::ToolResult(result)];
+        let freeform = ToolSpec { name: "apply_patch".into(), description: "Patch".into(), parameters: json!({ "type": "object" }), freeform: Some("start: x".into()) };
+        let request = Request::new("sys", &messages, std::slice::from_ref(&freeform));
+        let (http, _) = super::request(&model, &request, Some("k"), "ua");
+        assert_eq!(http.body["tools"][0], json!({ "type": "custom", "name": "apply_patch", "description": "Patch", "format": { "type": "grammar", "syntax": "lark", "definition": "start: x" } }));
+        let input = http.body["input"].as_array().unwrap();
+        assert_eq!(input[2], json!({ "type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch" }));
+        assert_eq!(input[3]["type"], "custom_tool_call_output");
+        // Once the tool is a JSON function again, the call goes back as a function call.
+        let function = ToolSpec { freeform: None, ..freeform };
+        let (http, _) = super::request(&model, &Request::new("sys", &messages, std::slice::from_ref(&function)), Some("k"), "ua");
+        let input = http.body["input"].as_array().unwrap();
+        assert_eq!((input[2]["type"].as_str(), input[3]["type"].as_str()), (Some("function_call"), Some("function_call_output")));
+        assert!(input[2].get("id").is_none());
     }
 }
