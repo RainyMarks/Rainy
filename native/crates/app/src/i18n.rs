@@ -153,6 +153,17 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "重启前会保存草稿并关闭执行环境。选择“稍后”可继续工作，之后通过“检查更新”安装。",
         "Rainy will save drafts and close the execution environment before restarting. Choose Later to keep working, then use Check for updates to install.",
     ),
+    (
+        "native.updateQuitDetail",
+        "重启前会保存草稿并关闭执行环境。选择“稍后”可继续工作，关闭 Rainy 时会自动安装。",
+        "Rainy will save drafts and close the execution environment before restarting. Choose Later to keep working; the update installs when you close Rainy.",
+    ),
+    ("native.autoUpdateTitle", "自动更新", "Automatic updates"),
+    (
+        "native.autoUpdateDescription",
+        "自动下载新版本并提示；没有立即重启时，关闭 Rainy 会自动安装，下次打开就是新版本",
+        "Download new versions and offer them; if you do not restart at once, the update installs when you close Rainy",
+    ),
     ("native.updateLater", "稍后", "Later"),
     ("native.updateInstall", "重启并安装", "Restart and install"),
     (

@@ -58,6 +58,9 @@ pub enum UpdateNotice {
 pub struct Updates {
     /// An installed release build (3.x `app.isPackaged`), or a build given a test feed.
     pub available: bool,
+    /// Install a downloaded update when Rainy quits (desktop.json `autoUpdate`, on unless turned off).
+    pub automatic: bool,
+    settings: PathBuf,
     pub phase: UpdatePhase,
     source: Source,
     cache: Option<PathBuf>,
@@ -77,7 +80,9 @@ impl Updates {
     pub fn new(paths: &Paths) -> Self {
         let source = Source::from_env();
         let cache = update::cache_dir(&source, &paths.user_data);
-        let updates = Self::with(paths.packaged(), source, cache);
+        let mut updates = Self::with(paths.packaged(), source, cache);
+        updates.settings = paths.desktop_settings();
+        updates.automatic = automatic(&rainy_carrier::targets::read_preferences(&updates.settings).unwrap_or_default());
         if updates.source.overridden() {
             let cache = updates.cache.as_deref().map_or_else(|| "none".into(), |cache| cache.display().to_string());
             log::info!("Updates come from {} (RAINY_UPDATE_FEED), installers go to {cache}", updates.source.feed);
@@ -88,6 +93,8 @@ impl Updates {
     fn with(packaged: bool, source: Source, cache: Option<PathBuf>) -> Self {
         Self {
             available: packaged || source.overridden(),
+            automatic: true,
+            settings: PathBuf::new(),
             phase: UpdatePhase::Idle,
             source,
             cache,
@@ -109,6 +116,33 @@ impl Updates {
     /// Stop a check or a download; what arrived is kept for the next start.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Whether desktop.json lets a downloaded update install as Rainy quits; on unless `autoUpdate` is false.
+fn automatic(preferences: &serde_json::Map<String, serde_json::Value>) -> bool {
+    preferences.get("autoUpdate").and_then(serde_json::Value::as_bool) != Some(false)
+}
+
+/// The update to install as Rainy quits: one is downloaded, automatic updates are on and nothing is installing it.
+pub(super) fn on_quit(updates: &Updates) -> Option<Prepared> {
+    (updates.automatic && !matches!(updates.phase, UpdatePhase::Installing { .. })).then(|| updates.prepared.clone()).flatten()
+}
+
+/// After Rainy stopped everything for quitting: start the downloaded installer silently, if it still matches its
+/// release, so the next start is the new version.
+pub(super) fn install_on_quit(prepared: &Prepared) {
+    let version = &prepared.version;
+    match prepared.verify(&AtomicBool::new(false)) {
+        Ok(true) => {}
+        verified => {
+            log::warn!("Update {version}: not installed on quit, {} no longer matches its release ({verified:?})", prepared.path.display());
+            return;
+        }
+    }
+    match update::launch_on_quit(&prepared.path) {
+        Ok(process) => log::info!("Update {version}: installing as Rainy quits (process {process})"),
+        Err(error) => log::warn!("Update {version}: the installer did not start on quit, it is offered again next time: {error}"),
     }
 }
 
@@ -266,6 +300,20 @@ impl Store {
         if let Some(notice) = notice {
             cx.emit(StoreEvent::Update(notice));
         }
+    }
+
+    /// Turn installing on quit on or off, saved in desktop.json.
+    pub fn set_auto_update(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.updates.automatic = on;
+        cx.notify();
+        let settings = self.updates.settings.clone();
+        cx.background_spawn(async move {
+            let saved = rainy_carrier::targets::update_preferences(&settings, |_| serde_json::Map::from_iter([("autoUpdate".to_owned(), serde_json::Value::Bool(on))]));
+            if let Err(error) = saved {
+                log::warn!("Automatic updates were not saved: {error:#}");
+            }
+        })
+        .detach();
     }
 
     /// Startup, a component download or work in the Host keeps the update waiting (3.x `prepare`), and so does a Host
@@ -495,6 +543,18 @@ mod tests {
         let updates = Updates::with(true, Source::github(), None);
         assert_eq!(updates.current.to_string(), env!("CARGO_PKG_VERSION"));
         assert!(!updates.busy());
+    }
+
+    #[test]
+    fn installs_on_quit_unless_turned_off() {
+        let map = |value: serde_json::Value| value.as_object().cloned().unwrap();
+        assert!(automatic(&map(serde_json::json!({}))));
+        assert!(automatic(&map(serde_json::json!({"autoUpdate": true}))));
+        assert!(!automatic(&map(serde_json::json!({"autoUpdate": false}))));
+        let mut updates = Updates::with(true, Source::github(), None);
+        assert!(on_quit(&updates).is_none());
+        updates.automatic = false;
+        assert!(on_quit(&updates).is_none());
     }
 
     #[test]

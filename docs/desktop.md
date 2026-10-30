@@ -22,6 +22,7 @@ The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns 
 ## What 4.5 changes
 
 - Each model family gets its own agent's guidance, edit tool and plan tool, from `native/crates/host/src/agent/profile.rs` ([Per-model agent adaptation](model-adaptation.md)): GPT-5 and later edit with `apply_patch` and plan with `update_plan`, Gemini plans with `write_todos`, the others use `edit`, `write` and `todo_write`. Undo snapshots of `apply_patch` go by `<call id>#<n>`, one per file.
+- A downloaded update installs silently when Rainy quits (`--updated /S`, Rainy not started again; an installer that needs elevation waits for the next offer) unless `autoUpdate` in `desktop.json` is false (Settings → General → Automatic updates).
 
 ## What 4.4 changes
 

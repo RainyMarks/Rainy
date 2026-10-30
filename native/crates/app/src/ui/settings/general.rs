@@ -110,6 +110,7 @@ fn about(store: &Entity<Store>, cx: &App) -> AnyElement {
         _ => None,
     };
     let checking = updates.busy();
+    let automatic = updates.automatic;
     let exporting = store.read(cx).diagnostics.exporting;
     group(cx, Some("settings.groupAbout"), vec![
         row(
@@ -138,6 +139,15 @@ fn about(store: &Entity<Store>, cx: &App) -> AnyElement {
                 .loading(checking)
                 .disabled(checking)
                 .on_click(|_, _, cx| Store::global(cx).update(cx, |store, cx| store.check_updates(true, cx))),
+        ),
+        row(
+            cx,
+            tr(cx, "native.autoUpdateTitle"),
+            Some(tr(cx, "native.autoUpdateDescription")),
+            Switch::new("auto-update").checked(automatic).on_click(|checked: &bool, _, cx| {
+                let on = *checked;
+                Store::global(cx).update(cx, |store, cx| store.set_auto_update(on, cx));
+            }),
         ),
     ])
     .into_any_element()

@@ -456,6 +456,8 @@ impl Store {
         hide_windows();
         let flush = (self.rpc.is_some() && self.host.as_ref().is_some_and(|host| !host.has_exited()))
             .then(|| ide::Ide::global(cx).update(cx, |ide, cx| ide.flush_now(cx)));
+        // A downloaded update installs once everything stopped, so the next start is the new version.
+        let update = update::on_quit(&self.updates);
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             if let Some(flush) = flush {
                 match flush.with_timeout(QUIT_FLUSH_TIMEOUT, cx.background_executor()).await {
@@ -465,7 +467,16 @@ impl Store {
                 }
             }
             if let Ok(shutdown) = this.update(cx, |store, _| store.shutdown()) {
-                cx.background_spawn(async move { shutdown.finish() }).await;
+                let stopped = cx.background_spawn(async move { shutdown.finish() }).await;
+                match &update {
+                    Some(prepared) if stopped => cx.background_spawn({
+                        let prepared = prepared.clone();
+                        async move { update::install_on_quit(&prepared) }
+                    })
+                    .await,
+                    Some(prepared) => log::warn!("Update {}: not installed on quit, a component operation had not stopped", prepared.version),
+                    None => {}
+                }
             }
             cx.update(|cx| cx.quit());
         })

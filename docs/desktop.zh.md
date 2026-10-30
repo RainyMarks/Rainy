@@ -22,6 +22,7 @@ Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编
 ## 4.5 的变化
 
 - 每个模型家族用它自家 Agent 的提示、改文件工具和计划工具，规则在 `native/crates/host/src/agent/profile.rs`，说明见[按模型适配说明](model-adaptation.md)：GPT-5 及以后用 `apply_patch` 改文件、`update_plan` 记计划，Gemini 用 `write_todos`，其他模型用 `edit`、`write` 和 `todo_write`。`apply_patch` 的撤销快照按 `<调用 id>#<序号>` 每个文件一份。
+- 已下载的更新在关闭 Rainy 时静默安装（`--updated /S`，不重新打开 Rainy；需要管理员权限的安装留到下次提示），除非 `desktop.json` 的 `autoUpdate` 为 false（“设置 → 通用 → 自动更新”）。
 
 ## 4.4 的变化
 

@@ -35,7 +35,8 @@ fn alert(description: String, window: &mut Window, cx: &mut App) {
 /// 3.x's confirmation: 稍后, the default and what closing means, or 重启并安装.
 fn offer(version: &str, window: &mut Window, cx: &mut App) {
     log::info!("Update {version}: offered");
-    let description = format!("{} {version}\n\n{}", tr(cx, "native.updateReady"), tr(cx, "native.updateRestartDetail"));
+    let detail = if Store::global(cx).read(cx).updates.automatic { "native.updateQuitDetail" } else { "native.updateRestartDetail" };
+    let description = format!("{} {version}\n\n{}", tr(cx, "native.updateReady"), tr(cx, detail));
     let version = SharedString::from(version.to_owned());
     window.open_dialog(cx, move |dialog, _, cx| {
         let later = version.clone();

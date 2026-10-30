@@ -41,6 +41,8 @@ const TEST_CACHE: &str = "update-cache";
 const ELECTRON_UPDATER_RECORD: &str = "update-info.json";
 /// The command line every Rainy since 2.2 starts the installer with: update in place, silently, then start Rainy.
 pub const INSTALLER_ARGUMENTS: [&str; 3] = ["--updated", "/S", "--force-run"];
+/// An update installed as Rainy quits: silently, without starting Rainy again.
+pub const QUIT_ARGUMENTS: [&str; 2] = ["--updated", "/S"];
 /// Beside the installer: which release it is, so a later start can offer it without the network.
 const RECORD_FILE: &str = "rainy-update.json";
 const FEED_LIMIT: usize = 1024 * 1024;
@@ -399,10 +401,15 @@ fn electron_updater_file(cache: &Path) -> Option<String> {
 
 /// `"<installer>" --updated /S --force-run`.
 pub fn command_line(installer: &Path) -> OsString {
+    command_line_with(installer, &INSTALLER_ARGUMENTS)
+}
+
+/// The installer's command line with `arguments`.
+pub fn command_line_with(installer: &Path, arguments: &[&str]) -> OsString {
     let mut line = OsString::from("\"");
     line.push(installer.as_os_str());
     line.push("\"");
-    for argument in INSTALLER_ARGUMENTS {
+    for argument in arguments {
         line.push(" ");
         line.push(argument);
     }
@@ -414,6 +421,18 @@ pub fn command_line(installer: &Path) -> OsString {
 /// installer that needs elevation is started through the shell, which asks for it.
 #[cfg(windows)]
 pub fn launch(installer: &Path) -> io::Result<u32> {
+    launch_with(installer, &INSTALLER_ARGUMENTS, true)
+}
+
+/// Install as Rainy quits: silently, Rainy not started again, and never through an elevation prompt the user would
+/// meet after closing the window; an installer that needs elevation is left for the next offer.
+#[cfg(windows)]
+pub fn launch_on_quit(installer: &Path) -> io::Result<u32> {
+    launch_with(installer, &QUIT_ARGUMENTS, false)
+}
+
+#[cfg(windows)]
+fn launch_with(installer: &Path, arguments: &[&str], elevate: bool) -> io::Result<u32> {
     use std::os::windows::ffi::OsStrExt as _;
 
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ELEVATION_REQUIRED};
@@ -423,7 +442,7 @@ pub fn launch(installer: &Path) -> io::Result<u32> {
 
     let wide = |text: &std::ffi::OsStr| text.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     let application = wide(installer.as_os_str());
-    let mut command = wide(&command_line(installer));
+    let mut command = wide(&command_line_with(installer, arguments));
     let folder = installer.parent().map(|folder| wide(folder.as_os_str()));
     // SAFETY: plain data; the size is set below.
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
@@ -448,7 +467,7 @@ pub fn launch(installer: &Path) -> io::Result<u32> {
     };
     if started == 0 {
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_ELEVATION_REQUIRED as i32) {
+        if elevate && error.raw_os_error() == Some(ERROR_ELEVATION_REQUIRED as i32) {
             return launch_elevated(installer);
         }
         return Err(error);
@@ -490,6 +509,11 @@ fn launch_elevated(installer: &Path) -> io::Result<u32> {
 
 #[cfg(not(windows))]
 pub fn launch(_installer: &Path) -> io::Result<u32> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "updates need Windows"))
+}
+
+#[cfg(not(windows))]
+pub fn launch_on_quit(_installer: &Path) -> io::Result<u32> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "updates need Windows"))
 }
 
@@ -1003,6 +1027,8 @@ mod tests {
     fn starts_the_installer_as_3x_did() {
         let line = command_line(Path::new("C:\\Users\\me\\AppData\\Local\\rainy-agent-updater\\pending\\Rainy-4.0.1-windows-x64-setup.exe"));
         assert_eq!(line, "\"C:\\Users\\me\\AppData\\Local\\rainy-agent-updater\\pending\\Rainy-4.0.1-windows-x64-setup.exe\" --updated /S --force-run");
+        // As Rainy quits the update installs silently and Rainy stays closed.
+        assert_eq!(command_line_with(Path::new("C:\\u\\setup.exe"), &QUIT_ARGUMENTS), "\"C:\\u\\setup.exe\" --updated /S");
     }
 
     /// Record `file` of `release` as this updater does, with a placeholder digest.
