@@ -12,7 +12,7 @@ The agent works with each model the way the model's own vendor tunes it, so GPT,
 - **`apply_patch` for GPT**: GPT models change files with Codex's patch format, several files in one call, on OpenAI's own API as the grammar-checked freeform tool Codex uses. A patch that does not fit changes nothing; files keep their encoding (GBK included) and line ends; the card shows a diff per file, and each file, a deleted or moved one too, can be undone.
 - **The model's plan as a checklist**: models keep their task list with their own agent's tool (`todo_write`, `update_plan` or `write_todos`), and the chat shows it as a checklist with the progress in its title.
 - **Automatic updates, on by default**: Rainy still checks for a new version shortly after it starts and every six hours, downloads it in the background and offers to restart; when you choose Later or just keep working, the update now installs silently as you close Rainy, so the next start is the new version. Settings → General → Automatic updates turns this off.
-- A tool called with the wrong letter case still runs, and an unknown tool is answered with the list of tools. The changes bar no longer misses edits to GBK files. Compaction summaries keep the approaches tried and the exact details.
+- A tool called with the wrong letter case still runs, and an unknown tool is answered with the list of tools. The changes bar no longer misses edits to GBK files. Closing the window no longer crashes Rainy on the way out, which left the Host and Strata to be stopped by Windows. Compaction summaries keep the approaches tried and the exact details.
 
 ## 4.4 · 2026-10-29
 
