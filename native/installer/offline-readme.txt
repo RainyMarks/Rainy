@@ -1,8 +1,8 @@
-Rainy 4.4.0 Windows x64 完整离线发行包
+Rainy 4.5.0 Windows x64 完整离线发行包
 
 安装与升级
-1. 运行 Rainy-4.4.0-windows-x64-setup.exe 安装核心，内含原生界面和 Windows Host，不含 Node.js。新安装默认使用 Windows 原生运行，无需先安装 WSL。
-2. 完整离线交付请保留整个 offline-4.4.0 目录，包括 environment/、environment-components/、清单及 SHA256SUMS.txt。无需手动解压任何运行环境归档。安装后直接使用，无需设备码或激活码。
+1. 运行 Rainy-4.5.0-windows-x64-setup.exe 安装核心，内含原生界面和 Windows Host，不含 Node.js。新安装默认使用 Windows 原生运行，无需先安装 WSL。
+2. 完整离线交付请保留整个 offline-4.5.0 目录，包括 environment/、environment-components/、清单及 SHA256SUMS.txt。无需手动解压任何运行环境归档。安装后直接使用，无需设备码或激活码。
 3. 安装版启动时静默检查 GitHub 稳定版并后台下载核心更新；“帮助 → 检查更新”可查看状态或重试。下载完成后选择稍后或重启安装，只有确认、草稿保存与 Host 清理完成后才安装；普通退出不会安装。自动更新保留已有环境，不重新下载离线环境组件。
 4. 启动约 60 秒后，应用删除旧安装程序留在 resources 目录中的 strata-runtime、php、linux-runtime.tar.gz 及旧版工具目录文件（native-tools-*.json）。
 

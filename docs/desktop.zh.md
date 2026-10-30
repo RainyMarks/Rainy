@@ -19,6 +19,10 @@ Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编
 - [Strata 本地推理](#strata-local-inference)回到“设置 → 模型”。
 - “设置 → Skills 与 MCP”中每个 MCP 服务器都列出它的工具，可逐个开关。
 
+## 4.5 的变化
+
+- 每个模型家族用它自家 Agent 的提示、改文件工具和计划工具，规则在 `native/crates/host/src/agent/profile.rs`，说明见[按模型适配说明](model-adaptation.md)：GPT-5 及以后用 `apply_patch` 改文件、`update_plan` 记计划，Gemini 用 `write_todos`，其他模型用 `edit`、`write` 和 `todo_write`。`apply_patch` 的撤销快照按 `<调用 id>#<序号>` 每个文件一份。
+
 ## 4.4 的变化
 
 - Agent 模式：以对话为中心的布局，是没有选过布局时的默认；标题栏左侧按钮或 Ctrl+Shift+A 与 IDE 模式互换，选择按机器保存在 `layout.json`。

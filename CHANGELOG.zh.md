@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) | 中文
 
+## 4.5 · 2026-10-29
+
+Agent 按每个模型厂商自己的调教方式来用它，GPT、Claude、Gemini 和国产模型在 Rainy 里也能接近它们在“老家”的效果。
+
+- **按模型适配**：Rainy 识别模型家族，给它配上厂商调教它时用的那套 Agent 的提示、改文件工具和计划工具。Claude 按 Anthropic 针对各型号的提示建议来（Fable 5.1 另外加上 Anthropic 推荐的“一次发出所有互不依赖的工具调用”提示）；GPT-5 及以后像在 Codex 里一样工作；Gemini 按 Gemini CLI 的规则；DeepSeek、Kimi、GLM、Qwen、MiniMax 这些厂商按 Claude Code 调教的模型用 Claude Code 的工具。无需设置，对话中途换模型也会跟着换。[细节和来源](docs/model-adaptation.md)。
+- **GPT 用 `apply_patch` 改文件**：GPT 用 Codex 的补丁格式改文件，一次可以改多个文件；在 OpenAI 官方接口上用 Codex 同款、按语法校验的自由格式工具。补丁对不上就一个文件都不改；文件保留原来的编码（包括 GBK）和换行符；卡片里每个文件单独显示差异，每个文件（包括删除和移动的）都能撤销。
+- **模型的计划显示成勾选清单**：模型用它自家 Agent 的工具（`todo_write`、`update_plan` 或 `write_todos`）维护任务清单，对话里显示成勾选清单，标题带进度。
+- 工具名大小写写错也能运行，调用不存在的工具会收到可用工具列表。改动栏不再漏掉对 GBK 文件的修改。上下文压缩的摘要会保留试过的做法和准确的细节。
+
 ## 4.4 · 2026-10-29
 
 新的 Agent 模式：对话放在窗口正中；推理强度按每个模型的官方档位来。

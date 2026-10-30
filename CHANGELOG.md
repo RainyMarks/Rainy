@@ -4,6 +4,15 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.5 · 2026-10-29
+
+The agent works with each model the way the model's own vendor tunes it, so GPT, Claude, Gemini and Chinese models get close to their results at home.
+
+- **Per-model adaptation**: Rainy recognizes the model family and gives it the guidance, edit tool and plan tool of the agent its vendor tunes it with. Claude follows Anthropic's prompting guidance for each model (Fable 5.1 also gets the nudge Anthropic recommends to batch independent tool calls); GPT-5 and later work like in Codex; Gemini follows Gemini CLI's rules; DeepSeek, Kimi, GLM, Qwen and MiniMax, which their vendors tune for Claude Code, get Claude Code's tools. Nothing to configure; switching models mid-chat switches too. [Details and sources](docs/model-adaptation.md).
+- **`apply_patch` for GPT**: GPT models change files with Codex's patch format, several files in one call, on OpenAI's own API as the grammar-checked freeform tool Codex uses. A patch that does not fit changes nothing; files keep their encoding (GBK included) and line ends; the card shows a diff per file, and each file, a deleted or moved one too, can be undone.
+- **The model's plan as a checklist**: models keep their task list with their own agent's tool (`todo_write`, `update_plan` or `write_todos`), and the chat shows it as a checklist with the progress in its title.
+- A tool called with the wrong letter case still runs, and an unknown tool is answered with the list of tools. The changes bar no longer misses edits to GBK files. Compaction summaries keep the approaches tried and the exact details.
+
 ## 4.4 · 2026-10-29
 
 A new Agent mode puts the conversation in the middle of the window, and reasoning effort follows each model's official levels.

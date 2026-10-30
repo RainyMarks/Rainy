@@ -19,6 +19,10 @@ The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns 
 - [Strata local inference](#strata-local-inference) is back in Settings → Models.
 - Each MCP server in Settings → Skills & MCP lists its tools with a switch per tool.
 
+## What 4.5 changes
+
+- Each model family gets its own agent's guidance, edit tool and plan tool, from `native/crates/host/src/agent/profile.rs` ([Per-model agent adaptation](model-adaptation.md)): GPT-5 and later edit with `apply_patch` and plan with `update_plan`, Gemini plans with `write_todos`, the others use `edit`, `write` and `todo_write`. Undo snapshots of `apply_patch` go by `<call id>#<n>`, one per file.
+
 ## What 4.4 changes
 
 - Agent mode, a conversation-first layout, is the default when no layout was chosen; the buttons at the left of the title bar or Ctrl+Shift+A switch it with IDE mode, and the choice is kept per machine in `layout.json`.
