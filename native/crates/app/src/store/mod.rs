@@ -454,11 +454,12 @@ impl Store {
         log::info!("Quitting: saving the editor state and stopping the Host");
         crate::placement::save(cx);
         hide_windows();
-        let flush = (self.rpc.is_some() && self.host.as_ref().is_some_and(|host| !host.has_exited()))
-            .then(|| ide::Ide::global(cx).update(cx, |ide, cx| ide.flush_now(cx)));
+        let flush = self.rpc.is_some() && self.host.as_ref().is_some_and(|host| !host.has_exited());
         // A downloaded update installs once everything stopped, so the next start is the new version.
         let update = update::on_quit(&self.updates);
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            // Asked here rather than while the store is being updated: saving reads the store (the interface language).
+            let flush = flush.then(|| cx.update(|cx| ide::Ide::global(cx).update(cx, |ide, cx| ide.flush_now(cx))));
             if let Some(flush) = flush {
                 match flush.with_timeout(QUIT_FLUSH_TIMEOUT, cx.background_executor()).await {
                     Ok(Ok(())) => {}
