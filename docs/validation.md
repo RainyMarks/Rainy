@@ -1,5 +1,30 @@
 # Rainy 验收记录
 
+## 4.5.0（2026-10-29）
+
+被测产物为 `Rainy-4.5.0-windows-x64-setup.exe`（26,925,551 字节，SHA-256 `74e6d63afe7c4ce0a48ce966c50c70315d0398bea6ae6456b8f049898b09f899`），构建自提交 `79120dcbfc`。安装包含 479 个文件、67,488,499 字节。Host 有改动，Linux 运行环境分片重新生成（xz 分片 SHA-256 `38ce1c315370eaac87d405259632286cfe201e2bc604bcced43319bfc7dc0aee`，底座内容不变）；`ide-python`、`ide-web`、PHP 与 `linux-dev-packages` 分片和 4.4.0 相同。五个分片已上传到 `v4.5.0-resources`，GitHub 给出的摘要与本地一致。
+
+### 改动
+
+- **按模型适配 Agent**：`host/src/agent/profile.rs` 按模型 id 分家族（Claude、GPT、Gemini、按 Claude Code 调教的国产模型、其他），给出各自的提示和工具（说明见 `docs/model-adaptation.md`）。GPT 用 `apply_patch`（OpenAI 官方 Responses 接口上为按语法约束的自由格式工具），计划工具按家族为 `todo_write`、`update_plan`、`write_todos`，在对话里显示为勾选清单；Fable 5.1 每轮工具结果后附 Anthropic 建议的批量调用提示；工具名大小写不符时照常运行。
+- **自动更新默认开启**：下载好的更新在关闭 Rainy 时静默安装（`--updated /S`，不重新打开；需要管理员权限的安装不在退出时启动），“设置 → 通用 → 自动更新”可关闭（`desktop.json` 的 `autoUpdate`）。
+- **Strata 用上已有的东西**：Rainy 自己没有 Strata 时自动使用用户自己安装的那份（不更新、不卸载）；“已下载的模型”可以选模型文件或文件夹就地使用；旧版留下的文件可以“使用这些模型”。
+- 修复：关闭窗口时在退出途中崩溃（4.0 起就有，导致 Host 和 Strata 没被正常停止、准备好的更新装不上）；改动栏漏掉 GBK 文件的修改。
+
+### 检查
+
+- **测试**：Vitest 142 项、`rainy` 98 项、`rainy-carrier` 262 项（5 项需真实环境，跳过）、`rainy-host` 114 项、`rainy-protocol` 15 项、脚本测试 36 项（4 项跳过）、两套类型检查，均通过；新代码无 clippy 警告。CI 在 `main` 上通过。
+- **按模型适配实测**（调试版、记录请求的假模型服务）：GPT-5.5（Chat Completions 和 Responses）的请求只带 `apply_patch`、`update_plan`，没有 `edit`、`write`；一次补丁改 4 个文件（CRLF 文件保留 CRLF，GBK 文件保留 GB18030，删除一个、新建一个），卡片按文件显示差异，整卡撤销后 4 个文件全部恢复；DeepSeek V4 Flash 用 `todo_write`、`edit`、`write` 和 Claude 风格提示；Gemini 3 Pro 用 `write_todos`，“已取消”项显示为 ✕；工具名写成 `Read` 照常读取，未知工具返回可用工具列表。
+- **自动更新实测**（调试版、本地更新源、一次性测试密钥签名的 `latest.yml`、记录参数的假安装程序）：启动后检查并下载 4.5.1，提示框说明关闭时会自动安装；点“稍后”后关闭窗口，安装程序以 `--updated /S` 启动；关掉开关后关闭窗口则不安装。
+- **Strata 实测**：在测试用的 `LOCALAPPDATA` 下按官方安装程序的布局放入 Strata 终端 0.1.54（按安装清单核对 SHA-256），Rainy 识别为“这台电脑上已安装的 Strata”，用它读出模型列表和本机硬件；`models import --plan` 对无效文件夹返回的问题说明能被 Rainy 解析。
+- **安装包 QA（QA 身份）**：44 项通过、2 项失败。两项失败都是“桌面和开始菜单快捷方式不变”这一检查：测试期间 WSL 重新生成了开始菜单里 Ubuntu 应用的快捷方式；真实 Rainy 的注册表项、安装目录里的程序和 setup.log 都没有变化。
+- **打包版实测**：用 4.4.0 安装包内容覆盖为 4.5.0 后启动，完整校验通过；自动检查更新访问 GitHub 正常；关闭窗口后进程和 Host 都正常结束，日志无崩溃。
+
+### 验收范围
+
+- 没有用真实的 OpenAI、Anthropic、Google、DeepSeek 等密钥验证各家模型在新提示和工具下的实际效果；官方 Responses 接口上的自由格式 `apply_patch` 和 Fable 5.1 的批量提示只有单元测试覆盖。
+- 没有真实的 Qwen GGUF 文件，“已下载的模型”认出并就地使用的成功路径没有实测；自动更新只在本地更新源上测过，真正的 4.5.0→后续版本要等下个版本发布后验证。
+
 ## 4.4.0（2026-10-29）
 
 被测产物为 `Rainy-4.4.0-windows-x64-setup.exe`（26,824,737 字节，SHA-256 `e093d3b4cfc235fa9dc0bda7d06f5b9696c65f9ff734ca9ad859b21d9bd104d8`），构建自提交 `5749e120be`。安装包含 479 个文件、67,273,238 字节。Linux 运行环境底座内容与 4.1 起相同（内容标识 `ceb190296cbf…`），本版 xz 分片 SHA-256 `22426b9a484c5a9b6916da42dfb4200aeb0ea00d2ec8518fee5d892e70701c7f`；`ide-python`、`ide-web`、PHP 与 `linux-dev-packages` 分片和 4.3.0 相同。
