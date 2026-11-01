@@ -4,6 +4,15 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.6 · 2026-11-01
+
+Long chats no longer lose details to summaries, and chats with screenshots or Chinese text stop compacting far too early.
+
+- **Context counted right**: a screenshot was counted as its base64 text, so chats with screenshots were compacted when they used a tenth of the window (in real chats, 60k-270k tokens were counted as 720k-760k). Images are now priced by their size, Chinese text at a token and a half a character, and within a task Rainy starts from the token count the provider reported.
+- **Old tool outputs leave the context first**: when the context fills up, the oldest command outputs and file reads are cleared, leaving a one-line note in their place, before anything is summarized.
+- **Nothing is lost**: the agent's new `recall` tool reads any earlier message, command output or pasted document back word for word, so an exact error line, path or rule survives however long the chat gets.
+- **When the context fills up** (Settings → General): Read back leaves an index of the earlier conversation instead of asking the model for a summary, with no extra request; Summary keeps the old way. Auto uses Read back for Claude, which in Rainy's tests on Haiku and Sonnet 5.5 kept every detail and cost 25-30 % less and took 27-45 % less time, and Summary for other models. [The comparison](docs/context-retrieval-research.zh.md).
+
 ## 4.5 · 2026-10-29
 
 The agent works with each model the way the model's own vendor tunes it, so GPT, Claude, Gemini and Chinese models get close to their results at home.

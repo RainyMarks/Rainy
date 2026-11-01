@@ -308,7 +308,7 @@ pub fn span_index(entries: &[TranscriptEntry], first: usize, last: usize, tokens
         TranscriptEntry::Assistant { message, .. } => {
             let text: Vec<&str> = message.content.iter().filter_map(|block| if let AssistantBlock::Text { text, .. } = block { Some(text.as_str()) } else { None }).collect();
             let text = text.join("\n");
-            (!text.trim().is_empty()).then(|| (*number, text))
+            (!text.trim().is_empty()).then_some((*number, text))
         }
         _ => None,
     });

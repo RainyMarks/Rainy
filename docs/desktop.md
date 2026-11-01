@@ -19,6 +19,10 @@ The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns 
 - [Strata local inference](#strata-local-inference) is back in Settings → Models.
 - Each MCP server in Settings → Skills & MCP lists its tools with a switch per tool.
 
+## What 4.6 changes
+
+- Context management keeps the record (`agent/budget.rs`, `agent/compaction.rs`, `agent/history.rs`, `agent/tools/recall.rs`): token estimates price images by their pixels and CJK text at 1.5 tokens a character and start from the provider's reported usage; old tool outputs are cleared before a span is compacted (`cleared` transcript entries); `recall` reads the chat's entries back verbatim; the `contextStrategy` preference picks a summary or a Host-built index for a compacted span (`auto`: index for Claude). The comparison behind the default is in [context-retrieval-research.zh.md](context-retrieval-research.zh.md).
+
 ## What 4.5 changes
 
 - Each model family gets its own agent's guidance, edit tool and plan tool, from `native/crates/host/src/agent/profile.rs` ([Per-model agent adaptation](model-adaptation.md)): GPT-5 and later edit with `apply_patch` and plan with `update_plan`, Gemini plans with `write_todos`, the others use `edit`, `write` and `todo_write`. Undo snapshots of `apply_patch` go by `<call id>#<n>`, one per file.
