@@ -780,7 +780,6 @@ impl Session {
                 cancel: cancel.clone(),
             });
             inner.error = None;
-            inner.reported = None;
             build_context(&inner.entries).into_iter().map(|item| item.message).collect()
         };
         self.set_status("running");
@@ -1269,11 +1268,10 @@ impl Session {
         self.publish_state();
     }
 
-    /// How this chat compacts a span: the `contextStrategy` preference; `auto` is a summary until a comparison on
-    /// real models shows which families do better reading a span back.
-    fn strategy(&self) -> Strategy {
+    /// How this chat compacts a span: the `contextStrategy` preference, else (`auto`) what suits the model's family.
+    fn strategy(&self, resolved: &Resolved) -> Strategy {
         let pref = self.services.settings.prefs().get("contextStrategy").and_then(Value::as_str).map(str::to_owned);
-        Strategy::from_pref(pref.as_deref(), Strategy::Summary)
+        Strategy::from_pref(pref.as_deref(), Profile::of(&resolved.model.id).context_strategy())
     }
 
     /// Free context once the chat nears its window (`tokens` expected): clear old tool outputs, oldest first, down to
@@ -1323,7 +1321,7 @@ impl Session {
         let tools = self.tools();
         let system = self.system_prompt(&tools);
         let specs: Vec<llm::ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
-        let strategy = self.strategy();
+        let strategy = self.strategy(resolved);
         let (items, entries, latest_user, share_cache, ratio) = {
             let inner = self.inner.lock().unwrap();
             let latest_user = inner.entries.iter().rev().find_map(|entry| if let TranscriptEntry::User { id, .. } = entry { Some(id.clone()) } else { None });

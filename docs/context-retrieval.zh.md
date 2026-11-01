@@ -1,6 +1,6 @@
 # 检索续接：用“查原文”代替“写摘要”的上下文管理方案
 
-状态：方案稿（2026-10-31），尚未实现。**2026-11-01 调研后修订了优先级**：先修 token 估算、再遮盖旧工具输出 + `recall`，“去掉摘要”放到 A/B 测试之后再定。详见 [context-retrieval-research.zh.md](context-retrieval-research.zh.md)。参考 mainplane（MIT）`pkg/harness/tools.go` 的 Context Management 段和 `pkg/connector/tui/commands.go` 的 `/continue`。
+状态：方案稿（2026-10-31），尚未实现。**2026-11-01 调研后修订了优先级**：先修 token 估算、再遮盖旧工具输出 + `recall`，“去掉摘要”放到 A/B 测试之后再定。详见 [context-retrieval-research.zh.md](context-retrieval-research.zh.md)。**已实现**：A/B 结果见调研文档第 8 节，Claude 默认检索原文。参考 mainplane（MIT）`pkg/harness/tools.go` 的 Context Management 段和 `pkg/connector/tui/commands.go` 的 `/continue`。
 
 ## 1. 要解决的问题
 

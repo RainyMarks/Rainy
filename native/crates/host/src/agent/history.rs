@@ -84,6 +84,19 @@ pub fn entry_text(entry: &TranscriptEntry) -> Option<String> {
     })
 }
 
+/// The longest start of `text` within about `tokens` tokens.
+fn fit(text: &str, tokens: u64) -> String {
+    if estimate_text(text) <= tokens {
+        return text.to_owned();
+    }
+    let (mut low, mut high) = (0, text.chars().count());
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        if estimate_text(truncate_chars(text, middle)) <= tokens { low = middle } else { high = middle - 1 }
+    }
+    truncate_chars(text, low).to_owned()
+}
+
 /// A line around its match, at most `width` characters.
 fn excerpt(line: &str, at: usize, width: usize) -> String {
     let line = line.trim_end();
@@ -217,7 +230,7 @@ pub fn read(entries: &[TranscriptEntry], numbers: &[usize], lines: Option<(usize
                 loop {
                     let candidate = format!("{}\n[... {} of {total} lines left out; pass lines (e.g. \"{}-{}\") to read them, or search with query ...]\n{}", all[..head].join("\n"), all.len() - head - tail, head + 1, all.len() - tail, all[all.len() - tail..].join("\n"));
                     if estimate_text(&candidate) <= share || head + tail <= 2 {
-                        break if head + tail <= 2 { truncate_chars(&text, (share * 3) as usize).to_owned() } else { candidate };
+                        break if head + tail <= 2 { fit(&text, share) } else { candidate };
                     }
                     head = head * 3 / 4;
                     tail = tail * 3 / 4;
@@ -353,9 +366,7 @@ pub fn span_index(entries: &[TranscriptEntry], first: usize, last: usize, tokens
             break;
         }
     }
-    if estimate_text(&index) > tokens {
-        index = truncate_chars(&index, (tokens * 3) as usize).to_owned();
-    }
+    index = fit(&index, tokens);
     if index.is_empty() { "(The span holds no user message, file change, command or error.)".into() } else { index }
 }
 
@@ -391,6 +402,7 @@ mod tests {
             "User messages:\n#1: Keep Python 3.11, not 3.12. Fix the build.\nFiles changed: src/main.rs (#7)\nFiles read: src/main.rs (#3)\nCommands:\n#5 cargo build (exit 101)\nErrors:\n#5 bash: error[E0425]: cannot find value `x` in this scope\nLast assistant message in the span (#9): Defined x; next: run the tests."
         );
         assert!(estimate_text(&span_index(&chat(), 1, 9, 30)) <= 30);
+        assert_eq!(fit("雨天雨天", 3), "雨天");
         assert_eq!(span_index(&chat(), 8, 8, 4000), "(The span holds no user message, file change, command or error.)");
     }
 

@@ -51,11 +51,11 @@ pub fn resolve_budget(context_window: u64, max_output: Option<u64>) -> HostResul
     })
 }
 
-/// ASCII characters, and UTF-8 bytes of all other characters.
+/// ASCII characters, and half-tokens of all other characters.
 #[derive(Clone, Copy, Default)]
 struct TextCost {
     ascii: u64,
-    other: u64,
+    halves: u64,
 }
 
 impl TextCost {
@@ -65,7 +65,8 @@ impl TextCost {
             if char.is_ascii() {
                 cost.ascii += 1;
             } else {
-                cost.other += char.len_utf8() as u64;
+                // A letter with an accent is a token, a CJK character one and a half, an emoji or rarer ideograph two.
+                cost.halves += char.len_utf8() as u64;
             }
         }
         cost
@@ -73,15 +74,16 @@ impl TextCost {
 
     fn add(&mut self, other: TextCost) {
         self.ascii += other.ascii;
-        self.other += other.other;
+        self.halves += other.halves;
     }
 
     fn tokens(self) -> u64 {
-        self.ascii.div_ceil(3) + self.other
+        self.ascii.div_ceil(3) + self.halves.div_ceil(2)
     }
 }
 
-/// A conservative multilingual count: an ASCII token per three characters, other text up to a token a byte.
+/// A conservative multilingual count: an ASCII token per three characters, a token and a half per CJK character
+/// (current tokenizers of Claude, GPT, DeepSeek and Qwen take about one, or less).
 pub fn estimate_text(text: &str) -> u64 {
     TextCost::of(text).tokens()
 }
@@ -322,7 +324,8 @@ mod tests {
     #[test]
     fn estimates_text() {
         assert_eq!(estimate_text("abcdef"), 2);
-        assert_eq!(estimate_text("雨天"), 6);
+        assert_eq!(estimate_text("雨天"), 3);
+        assert_eq!(estimate_text("café"), 2);
         assert_eq!(estimate_messages("", &[], &[]), estimate_messages("", &[], &[]));
         assert!(estimate_messages("system", &[], &[Message::user("hello")]) > estimate_messages("system", &[], &[]));
     }

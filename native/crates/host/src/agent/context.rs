@@ -113,11 +113,13 @@ pub fn build_context(entries: &[TranscriptEntry]) -> Vec<Item> {
                     items.splice(first..=last, [Item { entry_id: id.clone(), number: index + 1, message }]);
                 }
             }
-            TranscriptEntry::Cleared { entry_ids, .. } => {
+            TranscriptEntry::Cleared { ts, entry_ids, .. } => {
                 let cleared: HashSet<&str> = entry_ids.iter().map(String::as_str).collect();
                 for item in items.iter_mut().filter(|item| cleared.contains(item.entry_id.as_str())) {
                     if let Message::ToolResult(result) = &mut item.message {
                         result.content = vec![ResultContent::Text { text: cleared_output(item.number, &result.content) }];
+                        // Dated at the clearing, so a reply counted before it reads as stale (`llm::context_tokens`).
+                        result.timestamp = *ts;
                     }
                 }
             }
@@ -208,6 +210,10 @@ mod tests {
             cleared.content,
             vec![ResultContent::Text { text: "[Output cleared from context to save space (3 lines). recall with entries \"3\" returns it verbatim.]\nFirst line: error: E0425 cannot find value".into() }]
         );
+        assert_eq!(cleared.timestamp, 6.0);
+        // The reply after the cleared output was counted before the clearing, so its count no longer holds.
+        let messages: Vec<Message> = items.iter().map(|item| item.message.clone()).collect();
+        assert!(!super::super::llm::context_tokens(&messages).1);
         let Message::ToolResult(kept) = &items[4].message else { panic!() };
         assert_eq!(kept.content, vec![ResultContent::Text { text: "kept".into() }]);
         assert_eq!(cleared_ids(&entries), HashSet::from(["t1".to_owned()]));
