@@ -7,6 +7,7 @@ pub mod jobs;
 pub mod patch;
 pub mod plan;
 pub mod read;
+pub mod recall;
 pub mod schema;
 pub mod search;
 pub mod shell;

@@ -198,7 +198,7 @@ Unless the user explicitly asks for a plan, asks a question about the code or is
 const GPT_USER: &str = "# Working with the user
 While you work, share short updates of one or two sentences: what you are doing and why, what context you are gathering and what you learned. Give one before you edit files. Vary how the updates begin.
 
-The user may send messages while you work. If they conflict, the newest one steers; otherwise honor every request since your last turn. After the conversation is compacted, continue from the summary instead of starting over.";
+The user may send messages while you work. If they conflict, the newest one steers; otherwise honor every request since your last turn. After the conversation is compacted, continue from the checkpoint instead of starting over.";
 
 const GPT_PLAN: &str = "For substantial work, share a short plan with update_plan once you have enough context, and update item statuses as each step is completed rather than all at the end. Skip it for simple tasks.";
 

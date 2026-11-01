@@ -75,6 +75,11 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
         "stop_command" => t("toolStopCommand", &[("id", &string(args, "id").unwrap_or_default())]),
         "web_search" => t("toolWebSearch", &[("query", &string(args, "query").unwrap_or_default())]),
         "web_fetch" => t("toolWebFetch", &[("url", &string(args, "url").unwrap_or_default())]),
+        "recall" => match (string(args, "query").filter(|query| !query.trim().is_empty()), string(args, "entries")) {
+            (Some(query), _) => t("toolRecallSearch", &[("query", &query)]),
+            (None, Some(entries)) => t("toolRecallEntries", &[("entries", &entries)]),
+            (None, None) => t("toolRecall", &[]),
+        },
         _ => match name.strip_prefix("mcp__") {
             Some(rest) => rest.replacen("__", ": ", 1),
             None => name.to_owned(),
@@ -137,5 +142,7 @@ mod tests {
         let plan = json!({"plan": [{"step": "Read", "status": "completed"}, {"step": "Fix", "status": "in_progress"}]});
         assert_eq!(tool_title(zh, "update_plan", &args(plan)), "更新计划（1/2）");
         assert_eq!(tool_title(Locale::En, "todo_write", &args(json!({"todos": []}))), "Clear plan");
+        assert_eq!(tool_title(zh, "recall", &args(json!({"query": "E0425"}))), "查阅历史：E0425");
+        assert_eq!(tool_title(Locale::En, "recall", &args(json!({"entries": "40-45"}))), "Read back entries 40-45");
     }
 }

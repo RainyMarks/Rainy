@@ -208,9 +208,22 @@ pub enum TranscriptEntry {
         summary: String,
         tokens_before: f64,
         trigger: String,
-        /// How the checkpoint was asked for (`{ mode, usage }`).
+        /// How the checkpoint was made (`{ mode, usage }`): `mode` is `shared` or `separate` for a summary the model
+        /// wrote, `recall` for an index the Host built, whose `summary` points the model to `recall`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request: Option<Value>,
+    },
+    /// Tool outputs taken out of what the model sees to free context. The entries stay in the file: the model reads a
+    /// placeholder in their place and `recall` returns them. Versions before 4.6 skip this kind and see the outputs.
+    #[serde(rename_all = "camelCase")]
+    Cleared {
+        id: String,
+        ts: f64,
+        /// The tool result entries the model no longer sees.
+        entry_ids: Vec<String>,
+        tokens_before: f64,
+        tokens_after: f64,
+        trigger: String,
     },
     #[serde(rename_all = "camelCase")]
     Notice {
@@ -241,6 +254,7 @@ impl TranscriptEntry {
             | Self::ToolResult { id, .. }
             | Self::Context { id, .. }
             | Self::Compaction { id, .. }
+            | Self::Cleared { id, .. }
             | Self::Notice { id, .. }
             | Self::Turn { id, .. } => id,
         }

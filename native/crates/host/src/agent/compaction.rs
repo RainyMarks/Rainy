@@ -1,12 +1,16 @@
-//! Context compaction (3.x `compaction.ts`): an older span of a chat's context is replaced with a checkpoint the model
-//! writes.
+//! Freeing a chat's context (3.x `compaction.ts`): old tool outputs are cleared first, and when that is not enough an
+//! older span is replaced with a checkpoint, a summary the model writes or an index the Host builds. The chat file
+//! keeps everything, and the `recall` tool reads it back.
+
+use std::collections::HashSet;
 
 use rainy_protocol::chat::{AssistantBlock, TranscriptEntry, UsageSummary};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::budget::{Budget, estimate_messages, estimate_text, resolve_budget};
-use super::context::{Item, tool_pairs_balanced};
+use super::context::{Item, cleared_output, compaction_range, tool_pairs_balanced};
+use super::history;
 use super::llm::{self, Message, Request, ToolSpec};
 use super::models::{Models, Resolved};
 use crate::error::{HostError, HostResult};
@@ -17,6 +21,28 @@ use crate::locale::l;
 pub const SHARED_CACHE_WINDOW_MS: u64 = 54 * 60_000;
 /// A shared checkpoint may run this far past the requested size before the separate request replaces it.
 const SHARED_SUMMARY_SLACK: f64 = 1.5;
+/// A tool output is cleared only when that frees at least this many tokens beyond its placeholder.
+const CLEAR_MIN_SAVING: u64 = 150;
+
+/// How a span is compacted once clearing old tool outputs is not enough.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strategy {
+    /// The model writes a checkpoint; the record stays available to `recall` for what the summary leaves out.
+    Summary,
+    /// The Host indexes the span from the record, without a request, and the model reads it back with `recall`.
+    Recall,
+}
+
+impl Strategy {
+    /// The `contextStrategy` preference; `auto` and anything unknown take `default`.
+    pub fn from_pref(pref: Option<&str>, default: Self) -> Self {
+        match pref {
+            Some("summary") => Self::Summary,
+            Some("recall") => Self::Recall,
+            _ => default,
+        }
+    }
+}
 
 /// The checkpoint instruction; `shared` follows the whole conversation, tools still declared.
 fn directive(summary_tokens: u64, shared: bool) -> String {
@@ -80,6 +106,30 @@ pub fn select_span(items: &[Item], budget: &Budget, latest_user: Option<&str>, m
     None
 }
 
+/// Tool outputs to clear, oldest first, until that frees `need` tokens (by the local estimate), with what it frees.
+/// The latest step's outputs, which the model is about to read, and outputs no larger than their placeholder stay.
+/// When everything clearable frees less than `need`, all of it is returned.
+pub fn select_clearable(items: &[Item], cleared: &HashSet<String>, need: u64) -> (Vec<String>, u64) {
+    let keep_from = items.iter().rposition(|item| matches!(item.message, Message::Assistant(_))).unwrap_or(items.len());
+    let (mut ids, mut freed) = (Vec::new(), 0);
+    for item in &items[..keep_from] {
+        if freed >= need {
+            break;
+        }
+        let Message::ToolResult(result) = &item.message else { continue };
+        if cleared.contains(&item.entry_id) {
+            continue;
+        }
+        let tokens = item_tokens(item);
+        let placeholder = estimate_text(&cleared_output(item.number, &result.content)) + 16;
+        if tokens > placeholder + CLEAR_MIN_SAVING {
+            ids.push(item.entry_id.clone());
+            freed += tokens - placeholder;
+        }
+    }
+    (ids, freed)
+}
+
 /// What one compaction works from.
 pub struct CompactionRequest<'a> {
     pub models: &'a Models,
@@ -98,6 +148,9 @@ pub struct CompactionRequest<'a> {
     /// `auto`, `overflow` or `manual`.
     pub trigger: &'a str,
     pub cancel: CancellationToken,
+    pub strategy: Strategy,
+    /// The chat's entries, which a `recall` index is built from.
+    pub entries: &'a [TranscriptEntry],
 }
 
 /// A usage summary of one reply.
@@ -132,9 +185,10 @@ async fn ask(request: &CompactionRequest<'_>, llm_request: &Request<'_>) -> rain
     request.models.llm.stream(&request.resolved.model, llm_request, key, &request.cancel, &mut ignore).await
 }
 
-/// Summarize one span. While the previous request's cache is warm and the chat still fits, the checkpoint is asked for
-/// as a continuation of the chat, reading that cache; otherwise, or when that reply is unusable, from the span alone.
-/// Nothing when there is nothing worth compacting.
+/// Compact one span. With [`Strategy::Recall`] the checkpoint is an index of the span, made at once. Otherwise the
+/// model summarizes it: while the previous request's cache is warm and the chat still fits, as a continuation of the
+/// chat, reading that cache; otherwise, or when that reply is unusable, from the span alone. Nothing when there is
+/// nothing worth compacting.
 pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<TranscriptEntry>> {
     let budget = resolve_budget(request.resolved.setup.context_window, request.resolved.setup.max_tokens)?;
     let Some(span) = select_span(request.items, &budget, request.latest_user, request.trigger == "manual") else { return Ok(None) };
@@ -150,6 +204,13 @@ pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<Transc
         trigger: request.trigger.to_owned(),
         request: Some(json!({ "mode": mode, "usage": usage })),
     };
+    if request.strategy == Strategy::Recall {
+        let items = &request.items[span.0..=span.1];
+        if let Some((first, last)) = compaction_range(request.entries, &items[0].entry_id, &items[items.len() - 1].entry_id) {
+            let index = history::span_index(request.entries, first, last, budget.summary_tokens);
+            return Ok(Some(entry(items, index, "recall", UsageSummary::default())));
+        }
+    }
     let text_of = |reply: &rainy_protocol::chat::AssistantMessage| llm::reply_text(reply).trim().to_owned();
     let mut spent: Option<UsageSummary> = None;
     let shared_tokens = ((estimate_messages(request.system, request.tools, request.prefix) + 256) as f64 * request.estimate_ratio).ceil() as u64;
@@ -219,10 +280,52 @@ mod tests {
     fn keeps_the_latest_request() {
         let budget = resolve_budget(16_384, None).unwrap();
         let long = "word ".repeat(2000);
-        let items: Vec<Item> = (0..6).map(|index| Item { entry_id: format!("e{index}"), message: Message::user(long.clone()) }).collect();
+        let items: Vec<Item> = (0..6).map(|index| Item { entry_id: format!("e{index}"), number: index + 1, message: Message::user(long.clone()) }).collect();
         let span = select_span(&items, &budget, Some("e5"), false).unwrap();
         assert!(span.1 < 5);
         assert_eq!(span.0, 0);
         assert!(select_span(&items[..1], &budget, Some("e0"), true).is_none());
+    }
+
+    #[test]
+    fn reads_the_strategy_preference() {
+        assert_eq!(Strategy::from_pref(Some("recall"), Strategy::Summary), Strategy::Recall);
+        assert_eq!(Strategy::from_pref(Some("summary"), Strategy::Recall), Strategy::Summary);
+        assert_eq!(Strategy::from_pref(Some("auto"), Strategy::Summary), Strategy::Summary);
+        assert_eq!(Strategy::from_pref(None, Strategy::Recall), Strategy::Recall);
+    }
+
+    #[test]
+    fn clears_old_outputs_only() {
+        use rainy_protocol::chat::{AssistantMessage, ResultContent};
+        let reply = |id: &str| {
+            let mut message: AssistantMessage = serde_json::from_value(json!({ "role": "assistant", "content": [{ "type": "toolCall", "id": id, "name": "bash", "arguments": {} }], "api": "x", "provider": "p", "model": "m", "stopReason": "toolUse", "timestamp": 1, "usage": {} })).unwrap();
+            message.timestamp = 1.0;
+            Message::Assistant(message)
+        };
+        let result = |id: &str, text: String| {
+            Message::ToolResult(llm::ToolResult { tool_call_id: id.into(), tool_name: "bash".into(), content: vec![ResultContent::Text { text }], is_error: false, details: None, timestamp: 1.0 })
+        };
+        let messages = [
+            Message::user("start"),
+            reply("c1"),
+            result("c1", "x".repeat(6000)),
+            reply("c2"),
+            result("c2", "small".into()),
+            reply("c3"),
+            result("c3", "y".repeat(6000)),
+            reply("c4"),
+            result("c4", "z".repeat(30_000)),
+        ];
+        let items: Vec<Item> = messages.into_iter().enumerate().map(|(index, message)| Item { entry_id: format!("e{index}"), number: index + 1, message }).collect();
+        // The latest step's output stays even though it is the largest; the small one is not worth clearing.
+        let (ids, freed) = select_clearable(&items, &HashSet::new(), u64::MAX);
+        assert_eq!(ids, ["e2", "e6"]);
+        assert!(freed > 3000);
+        // Oldest first, only as many as needed.
+        let (ids, _) = select_clearable(&items, &HashSet::new(), 1000);
+        assert_eq!(ids, ["e2"]);
+        let (ids, _) = select_clearable(&items, &HashSet::from(["e2".to_owned()]), 1000);
+        assert_eq!(ids, ["e6"]);
     }
 }

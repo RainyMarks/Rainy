@@ -34,10 +34,18 @@ pub struct UiPreferences {
     /// Where images pasted into a Markdown document are saved: `assets`, `named` (`<name>.assets`) or `same`.
     #[serde(default = "default_markdown_images")]
     pub markdown_images: String,
+    /// How a full context is freed once old tool outputs are cleared: `auto` (by model family), `summary` (the model
+    /// writes a checkpoint) or `recall` (an index of the span, read back with the recall tool).
+    #[serde(default = "default_context_strategy")]
+    pub context_strategy: String,
 }
 
 fn default_markdown_images() -> String {
     "assets".into()
+}
+
+fn default_context_strategy() -> String {
+    "auto".into()
 }
 
 impl Default for UiPreferences {
@@ -62,6 +70,7 @@ impl Default for UiPreferences {
             markdown_focus: false,
             markdown_typewriter: false,
             markdown_images: default_markdown_images(),
+            context_strategy: default_context_strategy(),
         }
     }
 }

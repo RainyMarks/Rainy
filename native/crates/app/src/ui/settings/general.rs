@@ -51,6 +51,17 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
             ),
             row(
                 cx,
+                t("contextStrategyTitle"),
+                Some(t("contextStrategyDescription")),
+                segmented(
+                    "context-strategy",
+                    vec![("auto", t("contextStrategyAuto")), ("recall", t("contextStrategyRecall")), ("summary", t("contextStrategySummary"))],
+                    &prefs.context_strategy,
+                    |value, window, cx| set_prefs(json!({ "contextStrategy": value }), window, cx),
+                ),
+            ),
+            row(
+                cx,
                 t("usageTitle"),
                 Some(t("usageDescription")),
                 Switch::new("show-usage").checked(prefs.show_usage).on_click(|checked: &bool, window, cx| {

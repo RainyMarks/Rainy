@@ -11,10 +11,10 @@ use crate::settings::PermissionRules;
 
 /// Tools that only read; they run in every mode. `stop_command` only ends a command this chat started, and a `task`
 /// sub-agent only reads. The browser tools only reach the project's own server, in a window with no sign-ins. The plan
-/// tools only record the model's checklist.
+/// tools only record the model's checklist, and `recall` reads the chat's own history.
 const READ_TOOLS: &[&str] = &[
     "read", "grep", "glob", "web_search", "command_output", "stop_command", "task", "browser_open", "browser_read", "browser_act", "browser_screenshot", "todo_write", "update_plan",
-    "write_todos",
+    "write_todos", "recall",
 ];
 use super::changes::CHANGE_TOOLS;
 const SHELL_TOOLS: &[&str] = &["bash", "pwsh"];

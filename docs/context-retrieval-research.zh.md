@@ -1,0 +1,108 @@
+# 调研：“检索续接”对 Rainy 的 Agent 是不是好事
+
+日期：2026-11-01。配套方案稿：[context-retrieval.zh.md](context-retrieval.zh.md)。
+
+## 0. 结论先说
+
+1. **方向是对的，但 mainplane 那套具体做法没有被证明更好。** “保留完整记录、需要时按原文取回”有不少独立证据支持；“完全不写摘要、开新会话让模型自己 rg”目前只有作者自己的一次耗时/花费测量，没有任何任务质量评测。
+2. **对 Rainy 来说，最大的收益不在这里，而在一个现成的 bug：** 本机记录里 5 次自动压缩**全部是误触发**。原因是估算 token 时把截图的 base64 当成文字来数，真实只有 6–27 万 token 时就被估成了 72–76 万。从触发点看，当时设置的是 100 万窗口，压缩线是 70 万；修掉估算后，这 5 次压缩一次都不会发生。
+3. **值得做的是“混合方案”，分三步走：** 先修估算 → 再对旧的工具输出做“可还原的遮盖”（有论文和 Anthropic 数据支持）→ 最后才考虑“去掉摘要”，而且要先 A/B 测试再定默认。
+
+## 1. 本机真实数据（Rainy 自己的对话）
+
+数据来源：`%APPDATA%\RainyAgent\native-home\chats\`，共 6 个对话，统计脚本在 `tmp/ctx-research/`（只输出数字，不读内容）。样本很小，只能当线索。
+
+| 对话 | 模型 | 压缩次数 | 压缩时估算的上下文 | 压缩前一步的**真实**输入 | 每次压缩耗时 | 压缩花费 / 对话总花费 |
+|---|---|---|---|---|---|---|
+| 265f… | Opus 5.5 | 4 | 72–75 万 | 6.3 万 – 27.4 万 | 34–69 秒 | $1.41 / $22.4（6.3%） |
+| afa2… | Opus 5.5 | 1 | 76 万 | 7.1 万 | 63 秒 | $0.16 / $2.97（5.5%） |
+
+- 两个对话的工具结果里分别有 33 张、7 张截图，base64 共 374 万、281 万字符。
+- `budget.rs` 的 `estimate_messages` 把图片的 base64 当 ASCII 文本按“3 字符 1 token”计算：一张 500 KB 的截图被算成约 17 万 token，实际约 1–2 千。
+- 校准系数 `Calibration::factor()` **只会往上调、永远不低于 1**，所以高估永远纠正不回来。
+- 结果：在 50 万/100 万窗口的模型上，真实只用了 6 万多就开始压缩，而且一次对话压了 4 轮（摘要的摘要的摘要）。
+- 压缩本身的代价和推文对得上：缓存凉了那次 $1.00（推文 $1.99），缓存热的 $0.10–0.22（推文 $0.17），每次让人干等 34–69 秒（推文 29–38 秒）。
+
+## 2. mainplane 实际是怎么做的（核对源码后）
+
+- 达到上下文上限时，会话**直接失败并停止**，还会结束它在各 worker 上的进程（`pkg/harness/harness.go` 的 `Step`：`context %d exceeds limit %d`）。
+- 续接要**用户手动**在终端界面里输入 `/continue`（别名 `/compact`），它新建会话，并在输入框里放入 “You are continuing session X. Retrieve key context from it as you go.”（`pkg/connector/tui/commands.go`）。
+- 系统提示里讲清楚 `.log` 文件的位置和逐条记录的格式，让模型用 `rg` 搜（`pkg/harness/tools.go` 的 Context Management 段）。每个工具结果末尾附 `time … context …`，让模型知道还剩多少空间。
+- 推文的 “15 秒、$0.10 回到工作” 只量了新会话的头几步，**没有测任务完成率，也没有测后面是否因为缺信息而多走弯路**。
+
+所以它更像“会话满了，手动开新会话 + 给个指针”，不是任务进行中的自动续接。
+
+## 3. 外部证据
+
+### 支持“别依赖摘要、保留可还原的原文”
+
+| 来源 | 结论 |
+|---|---|
+| JetBrains《The Complexity Trap》（NeurIPS 2025 DL4Code 研讨会） | SWE-bench Verified 上，把旧的工具输出替换成占位符（observation masking），成本约减半，解题率与 LLM 摘要持平或略高；两者混合再省 7–11%。独立复评：5 组配置里 4 组最便宜，并指出摘要会让 Agent 跑得更久。 |
+| Anthropic 上下文管理（context editing + memory tool） | 内部 agentic search 评测：清理旧工具结果 +29%，再加记忆文件 +39%；100 轮评测 token 少用 84%（厂商自测）。 |
+| Manus 上下文工程经验 | 所有压缩都要“可还原”：删网页内容但留 URL，删文件内容但留路径；绝不做不可逆压缩。 |
+| Cursor《Dynamic context discovery》（2026-01） | 摘要时把完整聊天记录写成文件，摘要里给出引用，模型可用 grep 找回；长工具输出也写文件。**Cursor 是“摘要 + 原文”混合，不是去掉摘要。** |
+| Factory《Evaluating Context Compression》 | 结构化摘要 3.70 分 > Anthropic 3.44 > OpenAI 3.35；三者在“文件/产物追踪”上都很差（2.2–2.5/5），作者认为需要摘要之外的产物索引。 |
+| arXiv 2603.17781 | 连续 3 轮压缩后，20 条项目约束只剩 46%，而且是**悄悄退回到“合理默认值”**（比如 mTLS 变 JWT）。 |
+| arXiv 2610.31778 | 基准测试对压缩“出奇地友好”；真实任务里，第一次摘要平均就丢掉 3 条防作弊规则中的 1 条，即使提示词明确要求保留。 |
+| Chroma《Context Rot》 | 18 个模型都是输入越长越差，而且每一档长度都在降，不是到快满时才降。上下文不是越满越好。 |
+
+### 提醒“只删不留摘要”也有代价
+
+| 来源 | 结论 |
+|---|---|
+| arXiv 2608.16370 | 压缩到 5 倍时任务完成率没有显著变化，但 Agent 会多花很多步**重新获取被删掉的状态**；只看完成率会低估这个成本。 |
+| arXiv 2608.06503（TRACE） | 先进先出地直接删，token 最少，但中等和困难任务的步数明显变多。 |
+| Cursor / Codex / Claude Code 的实际选择 | 主流产品都还保留某种摘要：Cursor 是摘要 + 原文文件；Codex 用 OpenAI 的加密压缩（只限 OpenAI，且有卡住、504 的问题报告）；Anthropic 官方推荐服务端压缩 `compact_20260112`（只限 Claude）。 |
+
+## 4. 放到 Rainy 上逐项评估
+
+**会有明显提升的：**
+- **不必要的压缩**：修掉图片估算后，带截图的长对话基本不再误触发（本机样本 5/5）。省掉的是整次压缩：钱、30–70 秒等待，以及摘要丢失的信息。
+- **细节保真**：报错原文、路径、数字、用户原话可以原样找回。这正是 Factory 说的最弱项、2603.17781 说的约束丢失，也是你在长任务里最在意的。
+- **连环压缩**：265f… 压了 4 轮。用可还原的方式，“摘要的摘要”带来的漂移就不会累积。
+
+**提升有限的：**
+- **钱**：按 Opus 5.5 价格粗算，检索方式每多一次 `recall` 往返约 $0.03–0.05（读缓存 + 少量输出 + 结果写缓存），3–5 次就是 $0.15–0.25，和缓存热时的一次压缩（$0.10–0.22）差不多。只有缓存凉了（$1.00）才明显省钱。DeepSeek 这类缓存命中极便宜的服务，省钱几乎可以忽略。
+- **频率**：Rainy 常用模型的窗口是 50 万–100 万，修好估算后，大多数对话根本到不了阈值，这套机制只影响很长的任务。
+
+**有风险的：**
+- **“不知道自己忘了什么”**：模型只会去查它意识到缺的东西。完全去掉摘要，等于把“我现在做到哪了、为什么这样做”也交给检索，2608.16370 和 TRACE 都显示这会多走步。
+- **较弱模型**：DeepSeek、GLM 等能不能主动、正确地用 `recall`，没有数据，必须实测。
+
+## 5. 建议（按收益/成本排序）
+
+1. **先修 token 估算（0.5 天，收益最大）**
+   - 图片按固定成本计算（例如约 1.6k token，或按长×宽估算），不再数 base64 字符。
+   - 以服务商上一次报告的真实输入 token 为基准，只对新增部分做估算；校准系数允许往下调。
+   - 加回归测试：几十张截图的对话不应触发压缩。
+2. **遮盖旧的工具输出，并配 `recall`（1–1.5 天）**
+   - 超过阈值时，一次性把较早的工具结果换成 `[输出已移出上下文，recall #N 可取回原文]`，保留调用参数、模型的文字和用户消息。集中一次做，避免每步都让缓存失效。
+   - 这一步直接对应 Complexity Trap、Anthropic context editing 和 Manus 的做法，证据最充分；Rainy 已有的长输出落盘（`spill`）也是同一思路。
+   - `recall` 按方案稿 4.5 实现：Host 内查本对话，支持关键词和编号。
+3. **不够时才动对话本身，并先 A/B 测试（1 天 + 测试）**
+   - A：现有结构化摘要 + 历史原文可 `recall`（Cursor 式混合）。
+   - B：不写摘要，免费索引 + `recall`（mainplane 式）。
+   - 用同一批长任务比较：完成率、续接后多走的步数和花费、追问早期细节的正确率。哪个好就把哪个设为默认，按模型系列可以不同。
+4. **暂不做的**：mainplane 式“满了就失败、手动开新会话”；绑定单一厂商的服务端压缩（Claude 的 `compact_20260112`、OpenAI 的加密压缩），以后可以作为 Claude/GPT 的可选项。
+
+## 6. 局限
+
+- 本机只有 6 个对话、2 个发生过压缩，模型都是 Opus 5.5；其他机器、其他模型的情况未知。
+- 引用的外部数字多为厂商自测或 2026 年的新论文，部分没有同行评审；Complexity Trap 有独立复评。
+- 金额按 `catalog.rs` 里 Opus 5.5 的价格粗算，没有实测检索方式的真实开销，要靠第 3 步的 A/B 测试来补。
+
+## 7. 来源
+
+- mainplane 源码：<https://github.com/mainplane-ai/mainplane>（`pkg/harness/harness.go`、`pkg/harness/tools.go`、`pkg/connector/tui/commands.go`）
+- The Complexity Trap：<https://huggingface.co/papers/2508.21433>；代码 <https://github.com/JetBrains-Research/the-complexity-trap>；复评 <https://zenodo.org/records/23176605>
+- Anthropic 上下文管理：<https://claude.com/blog/context-management>；服务端压缩 <https://platform.claude.com/docs/en/build-with-claude/compaction>；context editing <https://platform.claude.com/docs/en/build-with-claude/context-editing>
+- Cursor：<https://cursor.com/blog/dynamic-context-discovery>
+- Factory：<https://factory.ai/news/evaluating-compression>
+- Manus 经验（二手整理）：<https://www.zenml.io/llmops-database/context-engineering-strategies-for-production-ai-agents>
+- Chroma Context Rot：<https://www.trychroma.com/research/context-rot>
+- arXiv 2603.17781：<https://arxiv.org/abs/2603.17781>
+- arXiv 2610.31778：<https://arxiv.org/html/2610.31778>
+- arXiv 2608.16370：<https://arxiv.org/abs/2608.16370>
+- arXiv 2608.06503（TRACE）：<https://arxiv.org/pdf/2608.06503>
+- Codex 压缩：<https://openai.com/index/unrolling-the-codex-agent-loop/>；问题报告 <https://github.com/openai/codex/issues/24618>

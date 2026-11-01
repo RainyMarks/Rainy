@@ -547,7 +547,7 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
                 work_steps += 1;
                 match tool_name.as_str() {
                     "read" => reads += 1,
-                    "grep" | "glob" => searches += 1,
+                    "grep" | "glob" | "recall" => searches += 1,
                     "write" | "edit" => changes += 1,
                     "apply_patch" => changes += details.as_ref().and_then(|details| details["files"].as_array()).map_or(1, |files| files.len().max(1)),
                     "bash" | "pwsh" => commands += 1,
@@ -591,9 +591,20 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
                     blocks.push(Block::Notice { level: level.clone().into(), text: text.clone().into() });
                 }
             }
-            TranscriptEntry::Compaction { tokens_before, trigger, .. } => {
-                let key = if trigger == "manual" { "chat.compactionManual" } else { "chat.compaction" };
+            TranscriptEntry::Compaction { tokens_before, trigger, request, .. } => {
+                let recall = request.as_ref().and_then(|request| request["mode"].as_str()) == Some("recall");
+                let key = match (trigger == "manual", recall) {
+                    (true, true) => "chat.compactionRecallManual",
+                    (false, true) => "chat.compactionRecall",
+                    (true, false) => "chat.compactionManual",
+                    (false, false) => "chat.compaction",
+                };
                 let text = i18n::format(locale, key, &[("tokens", &format_tokens(*tokens_before))]);
+                blocks.push(Block::Muted { text: text.into() });
+            }
+            TranscriptEntry::Cleared { entry_ids, tokens_before, tokens_after, .. } => {
+                let freed = format_tokens((tokens_before - tokens_after).max(0.0));
+                let text = i18n::format(locale, "chat.clearedOutputs", &[("count", &entry_ids.len()), ("tokens", &freed)]);
                 blocks.push(Block::Muted { text: text.into() });
             }
             TranscriptEntry::Context { label, reverted, .. } => {

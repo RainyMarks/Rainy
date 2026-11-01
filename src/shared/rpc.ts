@@ -75,6 +75,8 @@ export interface UiPreferences {
   markdownTypewriter: boolean
   /** Where images pasted or dropped into a Markdown document are saved: `assets` beside it, `<name>.assets`, or its own folder. */
   markdownImages: 'assets' | 'named' | 'same'
+  /** How a full chat context is freed once old tool outputs are cleared: by model family, a summary the model writes, or an index read back with the recall tool. */
+  contextStrategy: 'auto' | 'summary' | 'recall'
 }
 
 // ───────────────────────────── Chats ─────────────────────────────

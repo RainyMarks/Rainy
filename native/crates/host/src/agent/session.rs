@@ -17,10 +17,10 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::budget::{Budget, Calibration, estimate_messages, resolve_budget};
+use super::budget::{Budget, Calibration, Reported, estimate_messages, expected_tokens, resolve_budget};
 use super::changes::{self, change_text, line_counts, path_for_model, path_key};
-use super::compaction::{self, CompactionRequest, SHARED_CACHE_WINDOW_MS, add_usage, usage_of};
-use super::context::build_context;
+use super::compaction::{self, CompactionRequest, SHARED_CACHE_WINDOW_MS, Strategy, add_usage, usage_of};
+use super::context::{build_context, cleared_ids};
 use super::instructions::{load_baseline, loaded_from, render_additional, render_baseline};
 use super::llm::{self, Level, Message, Part, UserContent, context_overflow, text_parts};
 use super::mcp::McpManager;
@@ -35,6 +35,7 @@ use super::store::{ChatStore, MetaPatch, StoredChat};
 use super::subagent;
 use super::tools::browser::{Browser, Preview};
 use super::tools::jobs::Jobs;
+use super::tools::recall::{History, Recall};
 use super::tools::task::{Progress, Report, Subagents};
 use super::tools::web::{WebAccess, deepseek_key};
 use super::profile::Profile;
@@ -225,6 +226,10 @@ struct Inner {
     tool_updates: HashMap<String, u64>,
     calibration: Calibration,
     last_estimate: u64,
+    /// Messages, system prompt length and tools of the run's latest request.
+    last_sent: (usize, usize, usize),
+    /// What the provider counted for the run's latest request; `None` once the run's messages were rebuilt.
+    reported: Option<Reported>,
     /// Start time and key of the chat's latest request, to judge whether its prompt cache is warm.
     last_request: Option<(u64, String)>,
     context: Option<ContextUsage>,
@@ -286,6 +291,8 @@ impl Session {
                     tool_updates: HashMap::new(),
                     calibration: Calibration::default(),
                     last_estimate: 0,
+                    last_sent: (0, 0, 0),
+                    reported: None,
                     last_request: None,
                     context: None,
                     message_started: 0,
@@ -773,6 +780,7 @@ impl Session {
                 cancel: cancel.clone(),
             });
             inner.error = None;
+            inner.reported = None;
             build_context(&inner.entries).into_iter().map(|item| item.message).collect()
         };
         self.set_status("running");
@@ -824,7 +832,12 @@ impl Session {
             }
             (overflow, last)
         };
-        if overflow && matches!(self.compact(resolved, "overflow", None, None).await, Ok(Some(_))) {
+        // The provider refused the request as too long, so it counts as filling the whole window.
+        let budget = resolve_budget(resolved.model.context_window, Some(resolved.model.max_tokens));
+        if overflow
+            && let Ok(budget) = budget
+            && matches!(self.free_context(resolved, &budget, budget.context_window, "overflow", None, None).await, Ok(true))
+        {
             self.notice("overflow-retry", l("上下文超出模型窗口，已自动压缩并重试。", "The context exceeded the model window, so the chat was compacted and the request retried.")).await;
             if self.resume(state) {
                 return true;
@@ -861,6 +874,7 @@ impl Session {
         state.tools = self.tools();
         state.system = self.system_prompt(&state.tools);
         state.messages = history;
+        self.inner.lock().unwrap().reported = None;
         true
     }
 
@@ -1043,6 +1057,11 @@ impl Session {
             let actual = message.usage.input + message.usage.cache_read + message.usage.cache_write;
             let estimate = inner.last_estimate;
             inner.calibration.observe(estimate, actual as u64);
+            if actual > 0.0 && message.stop_reason != "error" && message.stop_reason != "aborted" {
+                let (sent, system_len, tools) = inner.last_sent;
+                // The next request repeats this one and the reply, so their counts stand in for the estimate.
+                inner.reported = Some(Reported { tokens: (actual + message.usage.output) as u64, covered: sent + 1, last_timestamp: message.timestamp, system_len, tools });
+            }
             if actual > 0.0
                 && let Some(context) = &mut inner.context
             {
@@ -1204,36 +1223,41 @@ impl Session {
         if refit {
             state.tools = self.tools();
             state.system = self.system_prompt(&state.tools);
+            self.inner.lock().unwrap().reported = None;
         }
         state.reasoning = latest.thinking;
         state.api_key = self.services.models.api_key(&latest.setup.provider);
         let Ok(budget) = resolve_budget(state.model.context_window, Some(state.model.max_tokens)) else { return };
         let specs = state.specs();
         let estimate = estimate_messages(&state.system, &specs, &state.messages);
-        let (ratio, running) = {
+        let (ratio, running, reported) = {
             let mut inner = self.inner.lock().unwrap();
             inner.last_estimate = estimate;
-            (inner.calibration.factor(), inner.run.is_some())
+            inner.last_sent = (state.messages.len(), state.system.len(), specs.len());
+            (inner.calibration.factor(), inner.run.is_some(), inner.reported)
         };
+        let mut tokens = expected_tokens(&state.system, &specs, &state.messages, reported.as_ref(), ratio);
         let key = request_key(&state.model, state.reasoning);
-        if (estimate as f64 * ratio).ceil() as u64 >= budget.compact_at && running {
-            match self.compact(&latest, "auto", Some(cancel.clone()), Some(&state.messages)).await {
-                Ok(Some(_)) => {
+        if tokens >= budget.compact_at && running {
+            match self.free_context(&latest, &budget, tokens, "auto", Some(cancel.clone()), Some(&state.messages)).await {
+                Ok(true) => {
                     let rebuilt: Vec<Message> = build_context(&self.inner.lock().unwrap().entries).into_iter().map(|item| item.message).collect();
+                    let estimate = estimate_messages(&state.system, &specs, &rebuilt);
+                    tokens = (estimate as f64 * ratio).ceil() as u64;
                     let mut inner = self.inner.lock().unwrap();
-                    inner.last_estimate = estimate_messages(&state.system, &specs, &rebuilt);
-                    inner.last_request = Some((now_ms(), key));
+                    inner.last_estimate = estimate;
+                    inner.last_sent = (rebuilt.len(), state.system.len(), specs.len());
+                    inner.reported = None;
                     state.messages = rebuilt;
-                    return;
                 }
-                Ok(None) => {}
-                Err(error) => log::warn!("[chat {}] compaction failed: {error}", self.id),
+                Ok(false) => {}
+                Err(error) => log::warn!("[chat {}] freeing context failed: {error}", self.id),
             }
         }
         {
             let mut inner = self.inner.lock().unwrap();
             inner.context = Some(ContextUsage {
-                tokens: (estimate as f64 * ratio).ceil(),
+                tokens: tokens as f64,
                 context_window: budget.context_window as f64,
                 input_limit: budget.input_limit as f64,
                 output_tokens: budget.output_tokens as f64,
@@ -1245,6 +1269,52 @@ impl Session {
         self.publish_state();
     }
 
+    /// How this chat compacts a span: the `contextStrategy` preference; `auto` is a summary until a comparison on
+    /// real models shows which families do better reading a span back.
+    fn strategy(&self) -> Strategy {
+        let pref = self.services.settings.prefs().get("contextStrategy").and_then(Value::as_str).map(str::to_owned);
+        Strategy::from_pref(pref.as_deref(), Strategy::Summary)
+    }
+
+    /// Free context once the chat nears its window (`tokens` expected): clear old tool outputs, oldest first, down to
+    /// half the compaction line, so the next steps do not clear again at once; when clearing cannot bring it well
+    /// below that line, compact a span instead, which covers those outputs too. Whether the conversation the model
+    /// sees changed.
+    async fn free_context(&self, resolved: &Resolved, budget: &Budget, tokens: u64, trigger: &str, cancel: Option<CancellationToken>, prefix: Option<&[Message]>) -> HostResult<bool> {
+        let (ids, freed) = {
+            let inner = self.inner.lock().unwrap();
+            let ratio = inner.calibration.factor();
+            let need = (tokens.saturating_sub(budget.compact_at / 2) as f64 / ratio).ceil() as u64;
+            let (ids, freed) = compaction::select_clearable(&build_context(&inner.entries), &cleared_ids(&inner.entries), need);
+            (ids, (freed as f64 * ratio) as u64)
+        };
+        let clear = |ids: Vec<String>| TranscriptEntry::Cleared {
+            id: uuid::Uuid::new_v4().to_string(),
+            ts: now_ms() as f64,
+            entry_ids: ids,
+            tokens_before: tokens as f64,
+            tokens_after: tokens.saturating_sub(freed) as f64,
+            trigger: trigger.to_owned(),
+        };
+        if !ids.is_empty() && tokens.saturating_sub(freed) <= budget.compact_at * 4 / 5 {
+            self.append(clear(ids)).await;
+            return Ok(true);
+        }
+        let compacted = self.compact(resolved, trigger, cancel, prefix).await;
+        if matches!(compacted, Ok(Some(_))) {
+            return Ok(true);
+        }
+        // Clearing still helps when no span could be compacted, or the summary request failed.
+        if ids.is_empty() {
+            return compacted.map(|_| false);
+        }
+        if let Err(error) = compacted {
+            log::warn!("[chat {}] compaction failed, clearing old tool outputs only: {error}", self.id);
+        }
+        self.append(clear(ids)).await;
+        Ok(true)
+    }
+
     /// Compact the chat's context with `resolved`; `prefix` is what the next request would send when a run holds it.
     /// The appended compaction entry, or `None` when nothing was worth compacting.
     async fn compact(&self, resolved: &Resolved, trigger: &str, cancel: Option<CancellationToken>, prefix: Option<&[Message]>) -> HostResult<Option<TranscriptEntry>> {
@@ -1253,11 +1323,14 @@ impl Session {
         let tools = self.tools();
         let system = self.system_prompt(&tools);
         let specs: Vec<llm::ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
-        let (items, latest_user, share_cache, ratio) = {
+        let strategy = self.strategy();
+        let (items, entries, latest_user, share_cache, ratio) = {
             let inner = self.inner.lock().unwrap();
             let latest_user = inner.entries.iter().rev().find_map(|entry| if let TranscriptEntry::User { id, .. } = entry { Some(id.clone()) } else { None });
             let warm = inner.last_request.as_ref().is_some_and(|(at, key)| *key == request_key(&resolved.model, resolved.thinking) && now_ms().saturating_sub(*at) < SHARED_CACHE_WINDOW_MS);
-            (build_context(&inner.entries), latest_user, warm, inner.calibration.factor())
+            // A recall index is built from the entries themselves.
+            let entries = if strategy == Strategy::Recall { inner.entries.clone() } else { Vec::new() };
+            (build_context(&inner.entries), entries, latest_user, warm, inner.calibration.factor())
         };
         let rebuilt: Vec<Message>;
         let prefix = match prefix {
@@ -1280,6 +1353,8 @@ impl Session {
             latest_user: latest_user.as_deref(),
             trigger,
             cancel: cancel.unwrap_or_default(),
+            strategy,
+            entries: &entries,
         })
         .await;
         if let Ok(Some(entry)) = &result {
@@ -1448,6 +1523,7 @@ impl Session {
         let resolved = self.resolved();
         let style = resolved.as_ref().map_or_else(ToolStyle::default, |resolved| tool_style(&resolved.model));
         let mut tools = core_tools(&context, self.services.env.windows, web, Some(subagents), style);
+        tools.push(Arc::new(Recall::new(context.clone(), Arc::new(ChatHistory(self.this.clone())))));
         if let Some(preview) = &self.services.preview {
             let vision = resolved.as_ref().is_some_and(|resolved| resolved.model.images);
             tools.extend(Browser::tools(&context, preview.clone(), vision));
@@ -1611,6 +1687,18 @@ impl Hooks for RunHooks {
 
     async fn prepare_request(&self, state: &mut State, cancel: &CancellationToken) {
         self.session.prepare_request(&self.resolved, state, cancel).await;
+    }
+}
+
+/// The record `recall` reads: the chat's entries as they stand.
+struct ChatHistory(Weak<Session>);
+
+impl History for ChatHistory {
+    fn look(&self, look: &mut dyn FnMut(&[TranscriptEntry]) -> String) -> String {
+        match self.0.upgrade() {
+            Some(session) => look(&session.inner.lock().unwrap().entries),
+            None => look(&[]),
+        }
     }
 }
 

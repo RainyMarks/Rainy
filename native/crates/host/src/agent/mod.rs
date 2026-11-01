@@ -2,6 +2,7 @@
 
 pub mod budget;
 pub mod compaction;
+pub mod history;
 pub mod context;
 pub mod llm;
 pub mod models;
