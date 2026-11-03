@@ -95,7 +95,7 @@ describe('useWorkspaceLookup', () => {
 
 describe('the map page', () => {
   const t = mapMessages.t
-  const page = (): JSX.Element => <ProjectMapView workspaceId={id} visible changes={[]} activity={{ active: [], recent: [] }}
+  const page = (): JSX.Element => <ProjectMapView workspaceId={id} visible sessionId={null} changes={[]} activity={{ active: [], recent: [] }}
     openFile={() => undefined} ask={() => undefined} />
 
   it('says it is loading, not that the project is missing, while the list loads', () => {

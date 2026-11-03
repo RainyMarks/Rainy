@@ -283,6 +283,15 @@ fn register(host: &Arc<Host>) {
                 maps.get(&workspace_id, params["refresh"] == true).await
             }
         });
+        let maps = host.maps.clone();
+        rpc.register("map.relations", move |params| {
+            let maps = maps.clone();
+            async move {
+                let workspace_id = params["workspaceId"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("workspaceId is required"))?.to_owned();
+                let path = params["path"].as_str().filter(|path| !path.is_empty()).ok_or_else(|| HostError::invalid("path is required"))?.to_owned();
+                maps.relations(&workspace_id, &path).await
+            }
+        });
     }
     {
         let search = Arc::new(search::TextSearch::new(host.projects.clone()));

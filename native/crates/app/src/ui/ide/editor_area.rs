@@ -91,6 +91,8 @@ pub struct EditorArea {
     /// The project map, shown in place of the open files, for the project it was opened for.
     map: Option<(String, Entity<WebPane>)>,
     map_shown: bool,
+    /// The chat the map page was told about last, so it follows the chat selected now.
+    map_session: Option<Option<String>>,
     /// The heading at the top of each rich editor, by file key.
     outline: HashMap<String, i64>,
     /// An export to start once the file's page is ready.
@@ -121,6 +123,12 @@ impl EditorArea {
                 this.follow_editors(cx);
                 cx.notify();
             }),
+            // The map lists the footprint and marks the changes of the chat selected now.
+            cx.observe(&Store::global(cx), |this, _, cx| {
+                if this.map_session.is_some() {
+                    this.send_session(false, cx);
+                }
+            }),
             // Choosing a tab or opening a file brings the files back in place of the map.
             cx.subscribe(&ide, |this, _, event: &crate::store::ide::IdeEvent, cx| {
                 if *event == crate::store::ide::IdeEvent::ActiveChanged && this.map_shown {
@@ -133,7 +141,7 @@ impl EditorArea {
                 }
             }),
         ];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, outline: HashMap::new(), pending_export: None, _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, map_session: None, outline: HashMap::new(), pending_export: None, _subscriptions: subscriptions }
     }
 
     /// The page of a file view, created on first use and again when the view or the file's version changes.
@@ -358,7 +366,7 @@ impl EditorArea {
                         self.run_page_action(action, window, cx);
                     }
                 }
-                Some(PageRequest::OpenKey(_) | PageRequest::Ask(_)) | None => {}
+                Some(PageRequest::OpenKey { .. } | PageRequest::Ask(_)) | None => {}
             },
             PaneEvent::Shortcut(shortcut) => {
                 if let Some(action) = viewers::shortcut_action(*shortcut, self.viewers.get(key).map_or("", |viewer| viewer.kind)) {
@@ -1104,6 +1112,7 @@ impl EditorArea {
             let pane = viewers::create_pane(viewers::map_url(&launch, &workspace.workspace_id), "map", window, cx);
             cx.subscribe_in(&pane, window, |this, _, event: &PaneEvent, window, cx| this.on_map(event, window, cx)).detach();
             self.map = Some((workspace.workspace_id.clone(), pane));
+            self.map_session = None;
         }
         cx.notify();
     }
@@ -1112,10 +1121,13 @@ impl EditorArea {
     fn on_map(&mut self, event: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             PaneEvent::Message(text) => match viewers::parse_message(text) {
-                Some(PageRequest::Ready) => self.send_session(cx),
-                Some(PageRequest::OpenKey(key)) => {
+                Some(PageRequest::Ready) => self.send_session(true, cx),
+                Some(PageRequest::OpenKey { key, line }) => {
                     self.map_shown = false;
-                    self.ide.update(cx, |ide, cx| ide.open(key, true, window, cx));
+                    self.ide.update(cx, |ide, cx| match line {
+                        Some(line) => ide.reveal(key, (line as u32).saturating_sub(1), 0, window, cx),
+                        None => ide.open(key, true, window, cx),
+                    });
                     cx.notify();
                 }
                 Some(PageRequest::Ask(text)) => crate::ui::ask_ai(text, window, cx),
@@ -1133,12 +1145,17 @@ impl EditorArea {
         }
     }
 
-    /// Tell the map which chat's changes to mark.
-    fn send_session(&self, cx: &App) {
+    /// Tell the map which chat's footprint to list and changes to mark: when the page is ready (`always`), and then
+    /// whenever another chat is selected.
+    fn send_session(&mut self, always: bool, cx: &App) {
         let Some((_, pane)) = &self.map else { return };
         let session = Store::global(cx).read(cx).selected.clone();
+        if !always && self.map_session.as_ref() == Some(&session) {
+            return;
+        }
         if let Some(view) = pane.read(cx).view() {
             view.execute(&viewers::set_session_script(session.as_deref()), |_| {});
+            self.map_session = Some(session);
         }
     }
 

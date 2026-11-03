@@ -10,7 +10,7 @@
 import type { StreamPatch } from './stream-patch.ts'
 import type { Accent, ColorScheme } from './appearance.ts'
 import type { IdeFilesRequest, IdeFilesResults, WorkspaceId } from './ide-files-protocol.ts'
-import type { MapExplanation, ProjectMap } from './map-protocol.ts'
+import type { FootprintTurn, MapExplanation, ProjectMap } from './map-protocol.ts'
 
 export type { WorkspaceId }
 
@@ -128,6 +128,8 @@ export interface HostMethods {
   'map.get': [{ workspaceId: WorkspaceId; refresh?: boolean | undefined }, ProjectMap]
   /** Ask the chat model to describe the project's parts; the answer is kept with the project. */
   'map.explain': [{ workspaceId: WorkspaceId }, MapExplanation]
+  /** What the chat's agent did in each of its recent turns, newest last. */
+  'map.footprint': [{ sessionId: SessionId }, { turns: FootprintTurn[] }]
   'ide': [IdeRequest, unknown]
 }
 

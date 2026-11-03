@@ -21,6 +21,7 @@ import { viewerMessages } from '../ide/viewers/messages.ts'
 import { outlinePosition, outlineTarget } from '../ide/outline-store.ts'
 import { localTarget, resolveDocumentPath } from '../chat/Markdown.tsx'
 import { getPrefs } from '../prefs.ts'
+import type { SessionId } from '../../shared/rpc.ts'
 import { useAiActivity } from '../map/activity.ts'
 import { useChanges } from '../review/changes-store.ts'
 import { ToastHost } from '../ui/index.ts'
@@ -35,7 +36,7 @@ type Message =
   | { type: 'open-url'; url: string }
   | { type: 'open-file'; path: string; rootId?: string | undefined; line?: number | undefined }
   | { type: 'request'; id: number; name: string; params: unknown }
-  | { type: 'open-key'; key: string }
+  | { type: 'open-key'; key: string; line?: number | undefined }
   | { type: 'ask'; text: string }
   | { type: 'outline'; index: number }
   | { type: 'notice'; tone: 'success' | 'error'; text: string }
@@ -296,8 +297,8 @@ function MapView({ workspaceId }: { workspaceId: WorkspaceId }): JSX.Element {
   const changes = useChanges(sessionId)
   const activity = useAiActivity()
   return <Suspense fallback={null}>
-    <ProjectMapView workspaceId={workspaceId} visible changes={changes} activity={activity}
-      openFile={(key) => { post({ type: 'open-key', key }) }} ask={(text) => { post({ type: 'ask', text }) }} />
+    <ProjectMapView workspaceId={workspaceId} visible sessionId={sessionId as SessionId | null} changes={changes} activity={activity}
+      openFile={(key, line) => { post({ type: 'open-key', key, line }) }} ask={(text) => { post({ type: 'ask', text }) }} />
   </Suspense>
 }
 

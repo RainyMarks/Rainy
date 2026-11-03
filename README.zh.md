@@ -173,11 +173,14 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 </tr>
 </table>
 
-### 项目地图：快速看懂一个陌生项目
+### 项目地图：陌生项目的上手导览
 
-画出项目由哪些部分组成、彼此怎么引用、用了什么技术栈；让 AI 用一句话讲清每个部分，并实时高亮 AI 正在读或改的文件。
+- **导览**：AI 读一遍项目（README、贡献说明、构建文件和核心文件里的函数与类），写出怎么运行、先读哪些文件、关键功能按什么顺序经过哪些代码、常见改动该去哪里改。里面的文件和行号点一下就打开；生成之后项目增删了文件，导览会提示可能过时。
+- **文件关系**（侧边栏）：编辑器里正在看的文件引用了哪些文件、被哪些文件引用、用了哪些依赖包，以及导览里关于它的说明。点一个文件就跳过去，面板跟着切换。
+- **AI 足迹**：按轮列出对话里的 AI 读了哪些文件、改了哪些、搜索了什么、运行了哪些命令。
+- **结构图**：项目各部分及其引用关系的图，或按大小排列的全部文件。
 
-![Rainy 自身源码的项目地图和 AI 讲解](assets/zh/map.png)
+![Rainy 自身源码的导览，左侧是编辑器里当前文件的引用关系](assets/zh/map.png)
 
 ### 还有这些
 
@@ -333,10 +336,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.7.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.8.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.7.2` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.8.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

@@ -173,11 +173,14 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 </tr>
 </table>
 
-### Project map: understand an unfamiliar project fast
+### Project map: a tour of an unfamiliar project
 
-See what a project is made of, how its parts import each other and which stack it uses; get a one-line AI explanation of each part, with the files the agent is reading or changing highlighted live.
+- **Tour**: the AI reads the project once (its README, contributor notes, build files and the declarations of its central files) and writes how to run it, which files to read first, how its key features flow through the code step by step, and where to make common changes. Every file and line in it opens with a click, and the tour says when files were added or removed since it was written.
+- **File relations** in the side pane: for the file open in the editor, which project files it imports and which import it, the packages it uses, and what the tour says about it. Click a file to go there; the pane follows.
+- **AI footprint**: turn by turn, which files the chat's agent read and changed, what it searched for and which commands it ran.
+- **Structure**: the parts of the project and their imports as a graph, or every file as blocks.
 
-![The project map of Rainy's own source with the AI explanation](assets/map.png)
+![The tour of Rainy's own source, with the file relations of the file open in the editor](assets/map.png)
 
 ### And more
 
@@ -333,10 +336,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.7.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.8.0/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `4.7.2` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `4.8.0` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host on its own, then prints a URL to open in a browser; the interface lives in `native/`: `cargo build -p rainy --offline` builds it and `bash native/scripts/run-ui.sh` starts it with a scratch data folder. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 

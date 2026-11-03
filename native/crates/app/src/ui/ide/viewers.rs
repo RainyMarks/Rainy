@@ -169,8 +169,8 @@ pub enum PageRequest {
     OpenUrl(String),
     OpenFile { path: String, root: Option<String>, line: Option<u64> },
     Call { id: u64, name: String, params: Value },
-    /// The project map opens a file by its editor key.
-    OpenKey(String),
+    /// The project map opens a file by its editor key, at a 1-based line when it names one.
+    OpenKey { key: String, line: Option<u64> },
     /// The project map asks the chat something.
     Ask(String),
     /// The heading at the top of the rich editor, in outline order; -1 above the first.
@@ -206,7 +206,7 @@ pub fn parse_message(text: &str) -> Option<PageRequest> {
             line: value["line"].as_u64(),
         },
         "request" => PageRequest::Call { id: value["id"].as_u64()?, name: value["name"].as_str()?.to_owned(), params: value["params"].clone() },
-        "open-key" => PageRequest::OpenKey(value["key"].as_str()?.to_owned()),
+        "open-key" => PageRequest::OpenKey { key: value["key"].as_str()?.to_owned(), line: value["line"].as_u64().filter(|line| *line > 0) },
         "ask" => PageRequest::Ask(value["text"].as_str()?.to_owned()),
         "outline" => PageRequest::Outline(value["index"].as_i64()?),
         "notice" => PageRequest::Notice { error: value["tone"] == "error", text: value["text"].as_str()?.to_owned() },

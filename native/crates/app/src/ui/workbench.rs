@@ -39,6 +39,7 @@ use crate::store::execution::Execution;
 use crate::store::ide::{RUN_LANGUAGES, RunMode, run_language};
 use crate::ui::ide::debug_marks::DebugMarks;
 use crate::ui::ide::outline::OutlineView;
+use crate::ui::ide::relations::RelationsView;
 use crate::ui::ide::{
     AttachFolder, CheckUpdates, ExportHtml, ExportPdf, FocusEditor, GitRefresh, MarkdownFocus, MarkdownSource, MarkdownTypewriter, SaveAll, SearchHistory,
     ShowOutline, ShowProblems, ToggleAgent, ToggleFiles,
@@ -60,7 +61,11 @@ enum Side {
     Git,
     History,
     Outline,
+    Relations,
 }
+
+/// Below this width, in logical pixels, the left pane's tabs show only their icons.
+const SIDE_TAB_NAMES_WIDTH: f32 = 360.;
 
 /// Pane sizes in logical pixels: the file pane's width, the AI pane's (0 follows the window) and the bottom panel's
 /// height.
@@ -111,6 +116,7 @@ pub struct Workbench {
     terminals: Entity<TerminalPanel>,
     cursor: Entity<CursorStatus>,
     outline: Entity<OutlineView>,
+    relations: Entity<RelationsView>,
     _marks: Entity<DebugMarks>,
     bottom_visible: bool,
     settings: Option<Entity<SettingsView>>,
@@ -161,6 +167,7 @@ impl Workbench {
         let editor = cx.new(|cx| EditorArea::new(ide.clone(), cx));
         let marks = cx.new(DebugMarks::new);
         let outline = cx.new(|cx| OutlineView::new(ide.clone(), editor.clone(), cx));
+        let relations = cx.new(|cx| RelationsView::new(ide.clone(), cx));
         let subscriptions = vec![
             cx.observe(&Execution::global(cx), |_, _, cx| cx.notify()),
             cx.observe_in(&store, window, |this, store, window, cx| {
@@ -257,6 +264,7 @@ impl Workbench {
             terminals,
             cursor,
             outline,
+            relations,
             _marks: marks,
             bottom_visible: false,
             settings: None,
@@ -820,14 +828,20 @@ impl Workbench {
             ),
         }
     }
-    fn side_tab(&self, id: &'static str, icon: gpui_kit::component::Icon, label: SharedString, value: Side, cx: &mut Context<Self>) -> Button {
+    /// A tab of the left pane: its icon and `shown` (the name, or in a narrow pane nothing or a count), with `name` as
+    /// the tooltip when it is not shown.
+    fn side_tab(
+        &self, id: &'static str, icon: gpui_kit::component::Icon, name: SharedString, shown: Option<SharedString>, value: Side, cx: &mut Context<Self>,
+    ) -> Button {
         let selected = self.side == value;
+        let named = shown.as_ref() == Some(&name);
         Button::new(id)
             .ghost()
             .when(selected, |this| this.custom(crate::theme::selected_button(cx)))
             .xsmall()
             .icon(icon)
-            .label(label)
+            .when_some(shown, |this, shown| this.label(shown))
+            .when(!named, |this| this.tooltip(name))
             .selected(selected)
             .on_click(cx.listener(move |this, _, window, cx| this.show_side(value, window, cx)))
     }
@@ -1046,20 +1060,21 @@ impl Workbench {
         cx.notify();
     }
 
-    fn render_side(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let files = self.side_tab("side-files", gpui_kit::component::Icon::new(IconName::Folder), tr(cx, "ide.ideExplorer"), Side::Files, cx);
-        let search = self.side_tab(
-            "side-search",
-            gpui_kit::component::Icon::new(IconName::Search),
-            tr(cx, "search.searchTitle"),
-            Side::Search,
-            cx,
-        );
+    /// `width`: the pane's, in logical pixels; a narrow pane shows its tabs as icons, so all of them fit.
+    fn render_side(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let compact = width < SIDE_TAB_NAMES_WIDTH;
+        let named = |name: SharedString| (!compact).then(|| name.clone());
+        let explorer = tr(cx, "ide.ideExplorer");
+        let files = self.side_tab("side-files", gpui_kit::component::Icon::new(IconName::Folder), explorer.clone(), named(explorer), Side::Files, cx);
+        let search_name = tr(cx, "search.searchTitle");
+        let search = self.side_tab("side-search", gpui_kit::component::Icon::new(IconName::Search), search_name.clone(), named(search_name), Side::Search, cx);
         let changes = self.git.read(cx).change_count();
-        let git_label: SharedString = if changes > 0 { format!("Git {}", changes.min(999)).into() } else { tr(cx, "git.gitTab") };
-        let git = self.side_tab("side-git", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::GitBranch), git_label, Side::Git, cx);
-        let history = self.side_tab("side-history", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Clock), tr(cx, "ide.ideHistory"), Side::History, cx);
-        // The outline is only an icon: the pane is narrow, and the four tabs before it have their names.
+        let git_name: SharedString = if changes > 0 { format!("Git {}", changes.min(999)).into() } else { tr(cx, "git.gitTab") };
+        let git_shown = if compact { (changes > 0).then(|| SharedString::from(changes.min(999).to_string())) } else { Some(git_name.clone()) };
+        let git = self.side_tab("side-git", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::GitBranch), git_name, git_shown, Side::Git, cx);
+        let history_name = tr(cx, "ide.ideHistory");
+        let history = self.side_tab("side-history", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Clock), history_name.clone(), named(history_name), Side::History, cx);
+        // The relations and the outline are only icons: the pane is narrow, and the four tabs before them have their names.
         let outline = Button::new("side-outline")
             .ghost()
             .when(self.side == Side::Outline, |this| this.custom(crate::theme::selected_button(cx)))
@@ -1068,12 +1083,21 @@ impl Workbench {
             .tooltip(tr(cx, "ide.ideOutline"))
             .selected(self.side == Side::Outline)
             .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Outline, window, cx)));
+        let relations = Button::new("side-relations")
+            .ghost()
+            .when(self.side == Side::Relations, |this| this.custom(crate::theme::selected_button(cx)))
+            .xsmall()
+            .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Network))
+            .tooltip(tr(cx, "ide.ideRelations"))
+            .selected(self.side == Side::Relations)
+            .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Relations, window, cx)));
         let content: AnyView = match self.side {
             Side::Files => self.files.clone().into(),
             Side::Search => self.search.clone().into(),
             Side::Git => self.git.clone().into(),
             Side::History => self.history.clone().into(),
             Side::Outline => self.outline.clone().into(),
+            Side::Relations => self.relations.clone().into(),
         };
         let theme = cx.theme();
         v_flex()
@@ -1095,6 +1119,7 @@ impl Workbench {
                     .child(git)
                     .child(history)
                     .child(div().flex_1())
+                    .child(relations)
                     .child(outline),
             )
             .child(div().flex_1().min_h_0().child(content))
@@ -1155,7 +1180,7 @@ impl Workbench {
         });
         if left {
             panes = panes.child(
-                resizable_panel().size(px(sizes.sidebar)).size_range(px(180.)..px(sidebar_max(width, agent))).fixed().child(self.render_side(cx)),
+                resizable_panel().size(px(sizes.sidebar)).size_range(px(180.)..px(sidebar_max(width, agent))).fixed().child(self.render_side(sizes.sidebar, cx)),
             );
         }
         let center = if self.bottom_visible && self.ide.read(cx).workspace.is_some() {

@@ -629,7 +629,21 @@
    "ideProfileInvalid": "请检查配置中的 JSON 数组、环境变量和必填路径。",
    "ideProfileNameTaken": "已有名为 {name} 的运行配置。",
    "ideRemoveWorkspace": "从项目列表移除",
-   "ideRemoveWorkspaceDescription": "将从项目列表移除 {title}，磁盘上的文件不会被删除。"
+   "ideRemoveWorkspaceDescription": "将从项目列表移除 {title}，磁盘上的文件不会被删除。",
+   "ideRelations": "文件关系",
+   "ideRelationsEmpty": "打开一个代码文件，这里会列出它引用了哪些文件、被哪些文件引用，以及导览里关于它的说明。",
+   "ideRelationsOutside": "这个文件不在项目的主文件夹里，没有引用关系可看。",
+   "ideRelationsUnknown": "项目扫描里没有这个文件（可能是新建的、被忽略的或不是代码）。",
+   "ideRelationsLoading": "正在分析引用关系…",
+   "ideRelationsLines": "{lines} 行",
+   "ideRelationsImports": "它引用了",
+   "ideRelationsImportedBy": "引用它的",
+   "ideRelationsPackages": "外部依赖包",
+   "ideRelationsMentions": "导览里提到",
+   "ideRelationsNone": "无",
+   "ideRelationsNoTour": "在项目地图里生成导览后，这里还会显示 AI 对这部分的说明。",
+   "ideRelationsAsk": "让 AI 讲解这个文件",
+   "ideRelationsAskText": "请讲解 `{path}`：它负责什么、主要的函数或类、谁调用它、它又依赖谁，以及改它时要注意什么。"
   },
   "en": {
    "ideAddFolder": "Add folder to workspace",
@@ -772,7 +786,21 @@
    "ideProfileInvalid": "Check JSON arrays, environment variables, and required paths.",
    "ideProfileNameTaken": "A run configuration named {name} already exists.",
    "ideRemoveWorkspace": "Remove from project list",
-   "ideRemoveWorkspaceDescription": "{title} will be removed from the project list. Files on disk are not deleted."
+   "ideRemoveWorkspaceDescription": "{title} will be removed from the project list. Files on disk are not deleted.",
+   "ideRelations": "File relations",
+   "ideRelationsEmpty": "Open a code file to see which files it imports, which files import it, and what the tour says about it.",
+   "ideRelationsOutside": "This file is outside the project's main folder; it has no relations to show.",
+   "ideRelationsUnknown": "The project scan does not include this file (it may be new, ignored or not code).",
+   "ideRelationsLoading": "Reading the imports…",
+   "ideRelationsLines": "{lines} lines",
+   "ideRelationsImports": "Imports",
+   "ideRelationsImportedBy": "Imported by",
+   "ideRelationsPackages": "Packages",
+   "ideRelationsMentions": "In the tour",
+   "ideRelationsNone": "None",
+   "ideRelationsNoTour": "Write the tour in the project map to also see what the AI says about this part here.",
+   "ideRelationsAsk": "Ask the AI about this file",
+   "ideRelationsAskText": "Explain `{path}`: what it is responsible for, its main functions or classes, who calls it, what it depends on, and what to watch for when changing it."
   }
  },
  "review": {

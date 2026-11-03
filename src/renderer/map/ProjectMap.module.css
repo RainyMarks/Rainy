@@ -80,6 +80,7 @@
 .warning { color: var(--map-warn-text); font-size: 12px; }
 .spacer { flex: 1; }
 .modes { min-width: 160px; }
+.tabs { min-width: 240px; }
 
 .stack {
   display: flex;

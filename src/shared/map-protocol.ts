@@ -39,6 +39,57 @@ export interface MapExplanation {
   readonly modules: Readonly<Record<string, string>>
   /** Provider and model that wrote it. */
   readonly model: string
+  /** How to install, run, test or build the project; may hold commands in backticks. Empty before 4.8. */
+  readonly run?: readonly string[] | undefined
+  /** Files to read first, in reading order. */
+  readonly start?: readonly TourPlace[] | undefined
+  /** What the project does, step by step. */
+  readonly flows?: readonly TourFlow[] | undefined
+  /** Likely changes and where to make them. */
+  readonly tasks?: readonly TourTask[] | undefined
+  /** Code, test and configuration files added and removed since it was written, when any were. */
+  readonly drift?: { readonly added: number; readonly removed: number } | undefined
+}
+
+/** A file or directory the tour points to, with what to find there. */
+export interface TourPlace {
+  readonly text: string
+  /** Path under the project's primary directory; absent when the model named no file that exists. */
+  readonly path?: string | undefined
+  /** 1-based line in that file. */
+  readonly line?: number | undefined
+}
+
+/** Something the project does, step by step. */
+export interface TourFlow {
+  readonly title: string
+  readonly steps: readonly TourPlace[]
+}
+
+/** A likely change and where to make it. */
+export interface TourTask {
+  readonly task: string
+  readonly places: readonly TourPlace[]
+}
+
+/** One thing the agent did in a turn. */
+export interface FootprintStep {
+  readonly action: 'read' | 'create' | 'edit' | 'delete' | 'search' | 'command' | 'web' | 'agent' | 'other'
+  /** A command's description, a search pattern, a query, a path or the tool's name. */
+  readonly label: string
+  /** Absolute path on the Host of the file or directory the step names. */
+  readonly path?: string | undefined
+  /** `true` once it succeeded, `false` when it failed, absent while it runs. */
+  readonly ok?: boolean | undefined
+}
+
+/** One request of the user and what the agent did for it. */
+export interface FootprintTurn {
+  readonly id: string
+  /** The start of the request. */
+  readonly text: string
+  readonly ts: number
+  readonly steps: readonly FootprintStep[]
 }
 
 /** Everything the map page draws. */

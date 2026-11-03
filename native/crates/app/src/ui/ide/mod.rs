@@ -12,6 +12,7 @@ pub mod folder_dialog;
 pub mod outline;
 pub mod git;
 pub mod quick_open;
+pub mod relations;
 pub mod run_dialog;
 pub mod search;
 pub mod terminal;

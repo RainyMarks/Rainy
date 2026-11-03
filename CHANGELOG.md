@@ -4,6 +4,17 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.8.0 · 2026-11-03
+
+The project map now helps you get started in a project.
+
+- **Project tour**: the AI reads the project's README, notes such as AGENTS.md, build files and the declarations of its central files (with line numbers), and writes how to run it, which files to read first, how its key features flow through the code, and where to make common changes. Every file and line opens in the editor with a click; paths and lines the AI got wrong are dropped, so no link points nowhere. When files were added or removed since, the tour says it may be out of date.
+- **File relations**: a new icon in the side pane shows which files the file in the editor imports, which import it, the packages it uses and what the tour says about it; click a file to go there, and the pane follows.
+- **AI footprint**: the project map lists, turn by turn, which files the AI read and changed, what it searched for and which commands it ran, read from the chat itself, so turns from before the map was opened are there too.
+- The architecture graph and file blocks moved to the Structure tab.
+- A narrow side pane shows its tabs as icons, so all of them fit.
+- The project map follows the chat selected now (it used to keep the one selected when the map opened).
+
 ## 4.7.2 · 2026-11-03
 
 A slimmer installer: from 27 MB to about 16 MB.

@@ -1,16 +1,19 @@
 /**
- * The project map: the project's architecture as boxes and imports, or every file as blocks, with the files the agent
- * is reading or changing highlighted as it works, and an AI explanation of the parts.
+ * The project map: the AI's tour of the project (how to run it, what to read first, how its key features flow through
+ * the code, where to make changes), the AI footprint (what the chat's agent read, changed and ran, turn by turn), and
+ * the structure (the architecture as boxes and imports, or every file as blocks, marked as the agent works).
  */
 import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent } from 'react'
 import clsx from 'clsx'
 import type { IdeWorkspace, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { mapView, nodeForPath, parentOf, type MapNode, type MapView } from '../../shared/map-graph.ts'
 import type { MapFileKind, ProjectMap } from '../../shared/map-protocol.ts'
-import type { ChatChange } from '../../shared/rpc.ts'
+import type { ChatChange, SessionId } from '../../shared/rpc.ts'
 import { useLocale } from '../i18n.ts'
 import { keyFromAbsolute } from '../ide/ide-paths.ts'
 import { Button, IconAction, IconRefreshOutlineRegular, IconSparkleRegular, SegmentedControl, toast } from '../ui/index.ts'
+import { FootprintView } from './Footprint.tsx'
+import { TourView } from './Tour.tsx'
 import type { AiActivity } from './activity.ts'
 import { fileColor } from './colors.ts'
 import { fitTransform, layoutForPane, MIN_SCALE, NODE_HEIGHT, NODE_WIDTH, type ViewTransform } from './layout.ts'
@@ -29,12 +32,14 @@ export interface ProjectMapProps {
   readonly workspaceId: WorkspaceId
   /** The map is on screen; it loads and follows changes only then. */
   readonly visible: boolean
+  /** The chat shown beside the map, whose footprint the map lists. */
+  readonly sessionId: SessionId | null
   /** Files the agent changed in the current chat and the user has not reviewed. */
   readonly changes: readonly ChatChange[]
   /** The agents' running and recent tool calls. */
   readonly activity: { readonly active: readonly AiActivity[]; readonly recent: readonly AiActivity[] }
-  /** Open a file of the project in the editor, by editor key. */
-  readonly openFile: (path: string) => void
+  /** Open a file of the project in the editor, by editor key, at a 1-based line when given. */
+  readonly openFile: (path: string, line?: number) => void
   /** Send a message to the AI. */
   readonly ask: (text: string) => void
 }
@@ -476,12 +481,13 @@ function ScopeBar({ scope, onJump, onBack, children, t }: {
  * @param props Project, visibility, the agents' changes and activity, and window actions.
  * @returns The map.
  */
-export function ProjectMapView({ workspaceId, visible, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
+export function ProjectMapView({ workspaceId, visible, sessionId, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
   const t = useMapT()
   const locale = useLocale()
   const lookup = useWorkspaceLookup(workspaceId)
   const workspace = lookup.status === 'ready' ? lookup.workspace : null
   const state = useProjectMap(workspace?.workspaceId ?? null, visible)
+  const [tab, setTab] = useState<'tour' | 'footprint' | 'structure'>('tour')
   const [mode, setMode] = useState<'architecture' | 'files'>('architecture')
   const [scope, setScope] = useState('')
   /** Scopes the user came from, so going back returns to the view they saw rather than to the parent directory. */
@@ -492,6 +498,18 @@ export function ProjectMapView({ workspaceId, visible, changes, activity, openFi
   const map = state.map
   useEffect(() => { setScope(''); setTrail([]); setSelected(undefined) }, [workspace?.workspaceId])
   const view = useMemo(() => map === undefined ? undefined : mapView(map, scope), [map, scope])
+  const directories = useMemo(() => {
+    const found = new Set<string>()
+    for (const file of map?.files ?? []) {
+      let path = file.path
+      for (let slash = path.lastIndexOf('/'); slash > 0; slash = path.lastIndexOf('/')) {
+        path = path.slice(0, slash)
+        if (found.has(path)) break
+        found.add(path)
+      }
+    }
+    return found
+  }, [map])
   const nodes = useMemo(() => view === undefined ? [] : shownNodes(view, all), [view, all])
   const marks = useMemo(() => aiMarks(workspace, changes, activity.active), [workspace, changes, activity.active])
   const nodeActivity = useMemo(() => {
@@ -551,8 +569,12 @@ export function ProjectMapView({ workspaceId, visible, changes, activity, openFi
   }
   const explain = (): void => {
     void explainMap(workspace.workspaceId).catch((error: unknown) => {
-      toast(t('mapExplainFailed', { message: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
+      toast(t('tourFailed', { message: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
     })
+  }
+  const showDirectory = (path: string): void => {
+    setTab('structure')
+    jump(path)
   }
   return (
     <div className={css.root} data-project-map>
@@ -562,12 +584,9 @@ export function ProjectMapView({ workspaceId, visible, changes, activity, openFi
           <span className={css.stats}>{t('mapStats', { files: map.files.length, codeFiles: codeFiles.length, lines: compact(codeLines) })}</span>
           {map.truncated && <span className={css.warning}>{t('mapTruncated')}</span>}
           <span className={css.spacer} />
-          <SegmentedControl id="project-map-mode" label={t('mapViews')} value={mode} className={css.modes}
-            options={[{ value: 'architecture', label: t('mapArchitecture') }, { value: 'files', label: t('mapFiles') }]}
-            onChange={(value) => { setMode(value) }} />
-          <Button size="sm" variant="outline" icon={<IconSparkleRegular size={14} />} disabled={state.explaining} onClick={explain}>
-            {state.explaining ? t('mapExplaining') : explanation === undefined ? t('mapExplain') : t('mapExplainAgain')}
-          </Button>
+          <SegmentedControl id="project-map-tab" label={t('mapViews')} value={tab} className={css.tabs}
+            options={[{ value: 'tour', label: t('tabTour') }, { value: 'footprint', label: t('tabFootprint') }, { value: 'structure', label: t('tabStructure') }]}
+            onChange={(value) => { setTab(value) }} />
           <IconAction label={t('mapRefresh')} disabled={state.loading} onClick={() => { loadMap(workspace.workspaceId, true) }}>
             <IconRefreshOutlineRegular size={16} className={state.loading ? css.spinning : undefined} />
           </IconAction>
@@ -582,14 +601,16 @@ export function ProjectMapView({ workspaceId, visible, changes, activity, openFi
             ))}
           </div>
         )}
-        {explanation !== undefined
-          ? <p className={css.summary} data-map-summary><span>{explanation.summary}</span>
-            <span className={css.muted}> · {t('mapExplainedBy', { model: explanation.model, time: new Date(explanation.generatedAt).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US') })}</span></p>
-          : <p className={clsx(css.summary, css.muted)}>{t('mapExplainHint')}</p>}
       </header>
-      <div className={css.body}>
+      {tab === 'tour' && <TourView explanation={explanation} explaining={state.explaining} isDirectory={path => directories.has(path)}
+        onGenerate={explain} onOpenFile={openFile} onShowDirectory={showDirectory} t={t} />}
+      {tab === 'footprint' && <FootprintView workspace={workspace} sessionId={sessionId} onOpenFile={openFile} t={t} />}
+      {tab === 'structure' && <div className={css.body}>
         <section className={css.main}>
           <ScopeBar scope={scope} onJump={jump} onBack={back} t={t}>
+            <SegmentedControl id="project-map-mode" label={t('mapViews')} value={mode} className={css.modes}
+              options={[{ value: 'architecture', label: t('mapArchitecture') }, { value: 'files', label: t('mapFiles') }]}
+              onChange={(value) => { setMode(value) }} />
             {mode === 'architecture' && (
               <label className={css.toggle}><input type="checkbox" checked={all} onChange={(event) => { setAll(event.target.checked) }} />{t('mapShowAll')}</label>
             )}
@@ -614,7 +635,7 @@ export function ProjectMapView({ workspaceId, visible, changes, activity, openFi
               workspace={workspace} now={now} onSelect={setSelected} onOpen={open} onOpenFile={openFile} ask={ask} t={t} />
             : <ActivityFeed workspace={workspace} activity={activity} changes={changes} now={now} onOpenFile={openFile} t={t} />}
         </aside>
-      </div>
+      </div>}
     </div>
   )
 }

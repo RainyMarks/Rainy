@@ -422,6 +422,11 @@ impl Agent {
         self.on("map.explain", |agent, params: WorkspaceRef| async move {
             agent.maps.explain(&params.workspace_id, &agent.services.models, &agent.services.settings.locale()).await
         });
+        self.on("map.footprint", |agent, params: SessionRef| async move {
+            let snapshot = agent.session(&params.session_id).await?.snapshot(None);
+            let turns = crate::map::footprint::footprint(&snapshot.entries, snapshot.streaming.as_ref(), &snapshot.summary.cwd);
+            Ok(json!({ "turns": turns }))
+        });
         for method in ["git.status", "git.stage", "git.unstage", "git.discard", "git.commit", "git.init", "git.message"] {
             let agent = self.clone();
             self.services.rpc.register(method, move |params| {
