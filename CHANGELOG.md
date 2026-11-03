@@ -4,6 +4,14 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.7 · 2026-11-02
+
+Long Claude chats start answering sooner; every model reads back by default; tool calls no longer stand out in the chat.
+
+- **Claude sends only what is new**: on Anthropic's own API, chats and sub-agents use Anthropic's new message threads: the first request sends the whole conversation, and each later step uploads only what was added since the previous reply, which the server continues from. Measured on Haiku 5.5 with the context growing from 10K to 140K tokens, the wait for each step's first output fell from 4.2 s to 2.4 s on average and a whole turn from 54–70 s to 33 s, at the same cost. When the chat is compacted, cleared or edited, the model or reasoning effort changes, or more than five minutes pass, Rainy sends the whole conversation again by itself; where Anthropic refuses a thread, requests go out whole as before. Relays and other providers are unaffected.
+- **Read back by default**: when the context fills up, every model now leaves an index and reads the record back when needed instead of writing a summary. On DeepSeek V4.1 Flash it kept every detail too and cost about 29% less on the turns that compacted ([comparison](docs/context-retrieval-research.zh.md)). Settings → General → When the context fills up offers Read back and Summary; a saved Auto reads back.
+- **Tool calls as one quiet line**: commands, file reads and history lookups are no longer bordered cards but a line of muted text like "Thought", part of the background; a spinner shows while one runs, a dot when it failed or waits for approval, and a click opens the details.
+
 ## 4.6 · 2026-11-01
 
 Long chats no longer lose details to summaries, and chats with screenshots or Chinese text stop compacting far too early.
