@@ -21,6 +21,7 @@ Rainy 是面向 Windows x64 的轻量 AI 工作台，用于办公、科研和编
 
 ## 4.6 的变化
 
+- 字体（`crates/app/src/fonts.rs`）：设置 → 外观里有系统自带的字体，以及选中时才从 `fonts-v1` 发行下载的开源字体（Inter、Geist、思源黑体、霞鹜文楷、JetBrains Mono、Fira Code、Geist Mono、霞鹜文楷等宽），按大小和 SHA-256 校验，存在 `<用户数据>\fonts`，只在被选用时加载，安装包里不带。
 - 上下文管理保留完整记录（`agent/budget.rs`、`agent/compaction.rs`、`agent/history.rs`、`agent/tools/recall.rs`）：估算 token 时图片按像素算、中文按每字 1.5 个 token 算，并以服务商报告的真实用量为基准；收起一段对话之前先把较早的工具输出移出上下文（对话文件里的 `cleared` 条目）；`recall` 原样查回对话里的条目；偏好 `contextStrategy` 决定收起的一段用 Host 生成的索引（默认）还是摘要。Claude 走 Anthropic 官方接口时只发送上次回复之后新增的内容（message threads，`agent/llm/thread.rs`）。默认值依据的对比见 [context-retrieval-research.zh.md](context-retrieval-research.zh.md)。
 
 ## 4.5 的变化

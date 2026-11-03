@@ -13,7 +13,7 @@
 
 [![下载 Windows 版](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.2-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
+[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.7-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -22,15 +22,36 @@
 
 [English](README.md) · **中文**
 
-[功能](#features) · [快速开始](#run) · [连接模型](#connect-a-model) · [隐私与安全](#privacy) · [文档](#docs) · [常见问题](#faq)
+[实测数据](#numbers) · [功能](#features) · [快速开始](#run) · [连接模型](#connect-a-model) · [隐私与安全](#privacy) · [文档](#docs) · [常见问题](#faq)
 
 </div>
 
 <br>
 
-![Rainy 通过 SSH 连接 Linux 服务器，AI 在服务器上运行了脚本并报告总价](assets/zh/workbench.png)
+![Agent 模式：用户说 report.py 少了 12 月，Rainy 读代码、改好一行、重新运行，并报告 12 月的销售额](assets/zh/workbench.png)
 
-<p align="center"><sub>通过 SSH 打开服务器上的项目，让 AI 在服务器上运行脚本，界面仍留在你的电脑上。</sub></p>
+<p align="center"><sub>说一句要做什么，Rainy 自己读代码、改文件、运行确认；步骤是一行行浅色文字，改动逐处可保留或撤销。</sub></p>
+
+<br>
+
+<a id="numbers"></a>
+## 实测数据
+
+下面每个数字都来自真实模型的对比测试，方法、原始数据和局限写在[上下文对比报告](docs/context-retrieval-research.zh.md)和[验收记录](docs/validation.md)里。
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/zh/stats-dark.svg">
+  <img src="assets/zh/stats-light.svg" width="900" alt="Rainy 4.7 的几个数字：安装包 27 MB；Claude 长对话每步等到首个输出快 43%；上下文快满时续接花费少 25% 到 30%；长对话里的早期细节 12 次实测全部答对">
+</picture>
+</p>
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/zh/bench-dark.svg">
+  <img src="assets/zh/bench-light.svg" width="900" alt="实测对比：Claude Haiku 5.5 长对话每步首个输出，常见做法 4.2 秒，Rainy 2.4 秒；上下文快满时续接一次的花费，以写摘要为 100，Rainy 在 Haiku 5.5 上是 75、Sonnet 5.5 上是 70、DeepSeek V4.1 Flash 上是 71">
+</picture>
+</p>
 
 <br>
 
@@ -40,9 +61,32 @@
 <tr>
 <td width="33%" valign="top">
 
+**长对话又快又省，细节不丢**
+
+上下文快满时不让模型写摘要，而是留一份索引、需要时查回原文：报错原文和规则条款不走样，花费少 25%–30%。Claude 走官方接口时每步只上传新增内容，首个输出快 43%。
+
+</td>
+<td width="33%" valign="top">
+
+**每个模型都用它“老家”的方式**
+
+Claude 用 Anthropic 的提示建议和 Claude Code 的工具，GPT 像在 Codex 里一样用 `apply_patch`，Gemini 按 Gemini CLI 的规则，DeepSeek、Kimi、Qwen 用 Claude Code 的工具；推理强度只列官方档位。
+
+</td>
+<td width="33%" valign="top">
+
 **能动手，也守规矩**
 
 AI 直接改文件、跑命令、上网查资料。默认在运行命令前先问你，改过的每一处都能逐条保留或撤销。
+
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+
+**轻：安装包 27 MB**
+
+原生界面（Rust + GPUI），不带 Electron，也不带 Node。编程工具、Linux 环境和额外字体都在用到时才下载。
 
 </td>
 <td width="33%" valign="top">
@@ -68,7 +112,8 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 <a id="agent-mode"></a>
 ### Agent 模式：对话居中，需要时再看代码
 
-- 打开就是 **Agent 模式**：和 AI 的对话在窗口正中，输入框在下面，权限、模型和上下文占用排在输入框下方；新对话在窗口中间问候你，并标出新对话所在的项目。
+- 打开就是 **Agent 模式**：和 AI 的对话在窗口正中，输入框是一条细长的条，模型、权限和上下文占用排在它右下方；新对话在窗口中间问候你，并标出新对话所在的项目。
+- 对话里，读文件、跑命令这些步骤和“已思考”一样是一行浅色文字，不抢正文；点一下才展开命令输出和改动。
 - 左侧是对话列表：**新对话**（Ctrl+N）、**搜索**（Ctrl+Alt+K）、当前项目，然后是置顶的对话和按项目分组、可以折叠的对话。正在运行的对话旁边转圈，等你批准的对话亮起圆点；右键或悬停时的 **···** 可以重命名、置顶、归档和删除。**Ctrl+B** 显示或隐藏侧边栏。
 - 标题栏右侧的按钮在右边打开**文件**（文件树和编辑器）、**终端**和本对话的**变更**；点工具卡片里的文件或审查一处改动，文件面板会自己打开。窗口变窄时侧边栏和面板先让位，对话始终保持能读的宽度。
 - 标题栏左边的两个按钮随时在 Agent 模式和 **IDE 模式**（文件、编辑器和 AI 面板并排的经典布局）之间切换，也可以按 **Ctrl+Shift+A**。切换不打断任何事：选中的对话、草稿、正在运行的任务、打开的文件和终端都原样保留；这台电脑会记住你的选择。
@@ -80,6 +125,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 - **逐处审查**：AI 改过的文件列在输入框上方，在编辑器里一处一处保留或撤销；GBK、UTF-16 文件改完仍是原编码。
 - **会自查**：开发服务器放在后台一直跑；改完网页后，AI 在本机预览窗口里打开成果，看页面、控制台报错和失败的请求，再告诉你结果。
 - **能分工**：费时的查找交给子 Agent，只带回一份报告，不占对话的上下文。
+- **长对话不丢细节**：上下文快满时，先把较早的工具输出移出上下文，再把较早的对话收成一份索引；模型用 `recall` 原样查回之前的任何消息、命令输出或粘贴的文档。
 - **可扩展**：`.rainy/skills` 放技能，设置里添加 MCP 服务；一键接入开源的 [Windows-MCP](https://github.com/CursorTouch/Windows-MCP)，让 AI 操作电脑上的窗口和应用。
 
 ![在编辑器里审查 AI 的修改，每处改动旁都有保留和撤销](assets/zh/review.png)
@@ -140,8 +186,9 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 | **资源管理器集成** | 可选，默认关闭：打开后右键文件或文件夹“通过 Rainy 打开”；.md 和代码等文本文件的“打开方式”里有 Rainy，也能设为默认应用。 |
 | **三种执行环境** | 默认 Windows 原生；需要 Linux 时切到 WSL2 或一台 SSH 服务器。 |
 | **项目记忆** | 开启后在空闲时整理项目要点，新对话开始时自动带上。 |
-| **上下文管理** | 实时显示上下文占用，快满时自动压缩；Claude 的提示词缓存保留一小时。 |
-| **轻量** | 安装包 27 MB；编程工具、PHP 和 Linux 运行环境都在用到时才下载。 |
+| **上下文管理** | 实时显示上下文占用；快满时先移出旧的工具输出，再留索引供模型查回原文；Claude 走官方接口时只上传新增内容（message threads），提示词缓存保留一小时。 |
+| **字体** | 界面和代码字体可以换：系统自带的微软雅黑、等线、Consolas、Cascadia Code，以及选中时才下载的开源字体 Inter、Geist、思源黑体、霞鹜文楷、JetBrains Mono、Fira Code、Geist Mono、霞鹜文楷等宽。 |
+| **轻量** | 安装包 27 MB；编程工具、PHP、Linux 运行环境和额外字体都在用到时才下载。 |
 | **适配任意屏幕** | 高缩放（如 225%）和小屏幕上自动适配，换显示器或改缩放后自动调整。 |
 | **细节** | 空白页飘着细雨，点一下泛起涟漪；可在 **设置 → 外观** 关闭。 |
 
@@ -212,9 +259,9 @@ Agent 会按模型家族换上它“老家”的用法：Claude 用 Anthropic �
 - **发行包可验证**：安装文件首次启动时按签名清单逐个校验。
 
 <a id="whats-new"></a>
-## 4.2 新变化
+## 4.7 新变化
 
-**Markdown 写什么存什么。** 所见即所得模式只改动你编辑过的行，CRLF 换行、引用式链接和不加转义的 `$` 都原样保留；支持 Typora 的 `[TOC]` 和 `==高亮==`，预览和导出能画 Mermaid 图，不再印出 HTML 注释。**看图、SVG 和十六进制视图回来了**；PDF 可以选中复制、原位缩放；对话各有草稿，可以搜索和归档，每张工具卡片都显示改动差异。[查看完整更新日志 →](CHANGELOG.zh.md)
+**Claude 的长对话开始回答更快。** 走 Anthropic 官方接口时只上传新增内容（message threads），每步等到首个输出平均从 4.2 秒降到 2.4 秒，花费不变。**所有模型默认检索原文**：上下文快满时不再写摘要，细节不丢，花费少 25%–30%。**界面更安静**：工具调用变成一行浅色文字，输入框变成细长的一条；外观设置新增 8 款开源字体，选中时才下载。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档
@@ -286,10 +333,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.7.0/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.7.1/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.7.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`4.7.1` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
 日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

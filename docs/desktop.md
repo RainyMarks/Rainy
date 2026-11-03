@@ -21,6 +21,7 @@ The [Chinese installation and configuration guide](desktop-setup.zh-CN.md) owns 
 
 ## What 4.6 changes
 
+- Fonts (`crates/app/src/fonts.rs`): Settings → Appearance offers Windows' own fonts and open-source ones (Inter, Geist, Noto Sans SC, LXGW WenKai, JetBrains Mono, Fira Code, Geist Mono, LXGW WenKai Mono) downloaded when chosen from the `fonts-v1` release, checked by size and SHA-256, kept in `<user data>\fonts` and loaded only while a preference names them, so the installer carries none.
 - Context management keeps the record (`agent/budget.rs`, `agent/compaction.rs`, `agent/history.rs`, `agent/tools/recall.rs`): token estimates price images by their pixels and CJK text at 1.5 tokens a character and start from the provider's reported usage; old tool outputs are cleared before a span is compacted (`cleared` transcript entries); `recall` reads the chat's entries back verbatim; the `contextStrategy` preference picks a Host-built index (the default) or a summary for a compacted span. Claude on Anthropic's own API sends only what was added after the previous reply (message threads, `agent/llm/thread.rs`). The comparison behind the default is in [context-retrieval-research.zh.md](context-retrieval-research.zh.md).
 
 ## What 4.5 changes

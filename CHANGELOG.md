@@ -4,6 +4,14 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.7.1 · 2026-11-03
+
+More good-looking fonts, and a slimmer message box.
+
+- **Eight open-source fonts**: Settings → Appearance has an interface font and a code font. Besides Windows' Segoe UI, Microsoft YaHei, DengXian, Consolas and Cascadia Code, choose Inter, Geist, Noto Sans SC and LXGW WenKai, and for code JetBrains Mono, Fira Code, Geist Mono and LXGW WenKai Mono. They download when chosen (0.2–26 MB, checked, applied at once), so the installer stays the same size.
+- **The message box is one slim bar**: as in Claude, the plus, the text and the send button share one centred line, and the bar grows as you write more. The model, its reasoning and the permission mode sit under its right end.
+- Tool lines show files in the project by their relative path, also when the model passed a full one; the English changes bar no longer says "1 files".
+
 ## 4.7 · 2026-11-02
 
 Long Claude chats start answering sooner; every model reads back by default; tool calls no longer stand out in the chat.
