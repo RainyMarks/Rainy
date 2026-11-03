@@ -4,6 +4,14 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.7.2 · 2026-11-03
+
+A slimmer installer: from 27 MB to about 17 MB.
+
+- **The Linux part downloads when used**: the Linux build WSL and SSH use (about 10 MB) is no longer in the installer; it downloads once, the first time a version starts on WSL or connects to an SSH server. People who use only Windows never download it.
+- **The native interface is 1.5 MB smaller**: `RainyAgent.exe` is built with full link-time optimisation, with the same features and speed.
+- **The viewer pages are 1.7 MB smaller**: Mermaid diagrams in Markdown no longer bring the ELK layout engine (a diagram asking for ELK uses the default layout), and a license text that several packages share is printed once.
+
 ## 4.7.1 · 2026-11-03
 
 More good-looking fonts, and a slimmer message box.

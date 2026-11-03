@@ -55,7 +55,7 @@ Rainy 3.0 不再包含 CTF 工具目录。旧版本下载的工具留在原安�
 
 “设置 → 工具”可下载和删除 Python 编程工具（`ide-python`，约 26 MB）、JavaScript / TypeScript 编程工具（`ide-web`，约 11 MB）和 PHP。Host 在每次需要时才查找这些工具，所以下载完立即可用，删除后会提示缺少：状态栏说明某种语言缺哪个下载并可点开“工具”页，格式化和调试给出同样的提示。PHP 用于 Windows 原生目标；“代码工作区”一节说明项目如何选择 PHP。Strata 不是这里的组件，见 [Strata 本地推理](#strata-local-inference)。
 
-WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB，解开后约 90 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 11 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的开发工具是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
+WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB，解开后约 90 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 10 MB）在某个版本第一次以 WSL 启动或连接 SSH 服务器时下载，安装包里两层都不带。底座没变的更新只下载新的应用层；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。每个版本解包为 `~/.rainy-agent/runtime/<应用层摘要>/`，其中的开发工具是指向 `base-<内容摘要>/` 的链接。下载失败时，对话框提供“重试”“改用 Windows 原生运行”和“退出”。改用 Windows 原生运行会把 Windows 记录为执行目标，与在设置中切换相同。以 WSL 启动约一分钟后，已安装的应用会删除旧版本解压在 `~/.rainy-agent/runtime` 中的运行环境和不再使用的底座，保留本版本、它的底座以及仍有进程在使用的运行环境。服务器如何获得运行环境见 [SSH 远程开发](#ssh-remote-development)。
 
 启动约 60 秒后，安装版会删除旧安装程序留在 `resources` 目录中的资源：`strata-runtime`、`php`、`linux-runtime.tar.gz`、`native-tools-metadata.json`、`native-tools-download.json`、`native-tools-catalog.json`、`native-tools-channel.signed.json` 和 `native-tools-public-keys.json`。
 
@@ -63,7 +63,7 @@ WSL 和 SSH 目标都使用 Linux 运行环境。Linux 运行环境分两层：�
 
 安装版在启动时检查 GitHub `RainyMarks/Rainy` 的稳定发行版，并在有新版本时后台下载核心更新。“帮助 → 检查更新”提供手动状态查看与重试。准备完成后可选择“稍后”或“重启安装”；只有确认、草稿保存和 Host 清理完成后才启动安装。保存失败会保留应用窗口。普通退出不会安装已下载的更新，更新器不会选择预发布版或降级已安装版本。
 
-自动更新替换核心应用并保留已安装的环境，不会重新下载 WSL 介质或 CPU/CUDA 环境组件；更新后首次以 WSL 或 SSH 启动时换上该版本的应用层，底座变化时才下载。CPU/CUDA 环境组件仍从匹配的离线发行文件导入。[验收记录](validation.md)按发布产物记录已经完成的更新检查。
+自动更新替换核心应用并保留已安装的环境，不会重新下载 WSL 介质或 CPU/CUDA 环境组件；更新后首次以 WSL 或 SSH 启动时下载该版本的应用层（约 10 MB），底座变化时才下载底座。CPU/CUDA 环境组件仍从匹配的离线发行文件导入。[验收记录](validation.md)按发布产物记录已经完成的更新检查。
 
 ## 资源管理器集成
 
