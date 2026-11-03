@@ -9,7 +9,7 @@ const app = resolve(import.meta.dirname, '..')
 const signatureDomain = 'RainyAgent/release-manifest/v1\0'
 /** The signed resources besides `windows-host`, in the order 3.x lists them. */
 export const SIGNED_RESOURCES = ['release-public-keys.json', 'environment-component-catalog.json', 'install-environment-component.py',
-  'linux-runtime.json', 'linux-app.tar.gz', 'install-runtime.py', 'optional-modules.json', 'icon.ico']
+  'linux-runtime.json', 'install-runtime.py', 'optional-modules.json', 'icon.ico']
 
 /**
  * Whether `path` lies outside `root` (not equal to it and not below it).

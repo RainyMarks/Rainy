@@ -23,6 +23,7 @@ pub const MAINTENANCE_DELAY: Duration = Duration::from_secs(60);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// The module holding the base of the Linux runtime.
 const LINUX_RUNTIME: &str = "linux-runtime";
+const LINUX_APP: &str = "linux-app";
 
 /// Folders this run uses.
 #[derive(Debug, Clone)]
@@ -175,12 +176,14 @@ fn shared_env(target: &ExecutionTarget) -> Vec<(String, String)> {
     env
 }
 
-/// This version's Linux runtime files. The base is the downloaded `linux-runtime` module, which may not be there yet;
-/// a development checkout stages it as `linux-runtime.tar.xz` beside the other resources.
+/// This version's Linux runtime files. The base and the application layer are the downloaded `linux-runtime` and
+/// `linux-app` modules, which may not be there yet; a development checkout stages them beside the other resources.
 pub fn runtime_files(paths: &Paths, modules: &Modules) -> RuntimeFiles {
+    let staged = paths.resources.join("linux-app.tar.gz");
+    let app = if !paths.packaged() && staged.is_file() { staged.clone() } else { modules.path(LINUX_APP).unwrap_or(staged) };
     RuntimeFiles {
         metadata: paths.resources.join("linux-runtime.json"),
-        app: paths.resources.join("linux-app.tar.gz"),
+        app,
         installer: paths.resources.join("install-runtime.py"),
         base: development_base(paths).or_else(|| modules.path(LINUX_RUNTIME).ok()),
     }
@@ -219,9 +222,10 @@ fn due(shown: &Mutex<Option<Instant>>, last: bool) -> bool {
     true
 }
 
-/// Download this version's Linux runtime base with its progress (`downloadLinuxRuntime`). After a failure the window
-/// asks: retry, run on Windows instead (`Ok(false)`), or quit, which stops startup.
-fn download_linux_runtime(modules: &Modules, locale: Locale, ask: &AskRuntime<'_>, progress: &(dyn Fn(Step) + Sync)) -> Result<bool> {
+/// Download a part of this version's Linux runtime (the base or the application layer) with its progress
+/// (`downloadLinuxRuntime`). After a failure the window asks: retry, run on Windows instead (`Ok(false)`), or quit,
+/// which stops startup.
+fn download_linux_runtime(modules: &Modules, id: &str, locale: Locale, ask: &AskRuntime<'_>, progress: &(dyn Fn(Step) + Sync)) -> Result<bool> {
     let shown = Mutex::new(None);
     let report = |done: u64, total: u64| {
         if due(&shown, done >= total) {
@@ -230,7 +234,7 @@ fn download_linux_runtime(modules: &Modules, locale: Locale, ask: &AskRuntime<'_
         }
     };
     loop {
-        match modules.install(LINUX_RUNTIME, &report) {
+        match modules.install(id, &report) {
             Ok(()) => return Ok(true),
             Err(error) => {
                 log::warn!("The Linux runtime was not downloaded: {error}");
@@ -249,11 +253,13 @@ fn download_linux_runtime(modules: &Modules, locale: Locale, ask: &AskRuntime<'_
 }
 
 /// The unpacked runtime is all a target needs; only the next version downloads an archive again.
-fn remove_linux_runtime(paths: &Paths, modules: &Modules, events: &CarrierEvents) {
-    if paths.packaged()
-        && let Err(error) = modules.remove(LINUX_RUNTIME)
-    {
-        events.write_log(&format!("The Linux runtime archive was not removed: {error}"));
+fn remove_linux_runtime(paths: &Paths, modules: &Modules, events: &CarrierEvents, ids: &[&str]) {
+    for id in ids {
+        if paths.packaged()
+            && let Err(error) = modules.remove(id)
+        {
+            events.write_log(&format!("The Linux runtime archive {id} was not removed: {error}"));
+        }
     }
 }
 
@@ -275,17 +281,24 @@ pub fn wsl_host(
     let mut files = runtime_files(paths, modules);
     let carrier_state = paths.user_data.join("carrier-state");
     std::fs::create_dir_all(&carrier_state)?;
+    // An installed version needs nothing; otherwise its application layer and, when the base changed, the base are
+    // downloaded, one after the other.
     let mut installed = wsl::install_runtime(distro, &files)?;
-    if installed == Installed::NeedsArchive {
-        if !download_linux_runtime(modules, locale, ask, progress)? {
+    for _ in 0..2 {
+        let id = match installed {
+            Installed::NeedsApp => LINUX_APP,
+            Installed::NeedsArchive => LINUX_RUNTIME,
+            Installed::Ready { .. } => break,
+        };
+        if !download_linux_runtime(modules, id, locale, ask, progress)? {
             return Ok(None);
         }
         starting();
-        files.base = Some(modules.path(LINUX_RUNTIME)?);
+        files = runtime_files(paths, modules);
         installed = wsl::install_runtime(distro, &files)?;
     }
     let Installed::Ready { host } = installed else { bail!(i18n::text(locale, "native.linuxMismatch")) };
-    remove_linux_runtime(paths, modules, events);
+    remove_linux_runtime(paths, modules, events, &[LINUX_RUNTIME, LINUX_APP]);
     let state = wsl::linux_paths(distro, &[&carrier_state])?.remove(0);
     let mut env = shared_env(target);
     env.push(("RAINY_CARRIER_STATE_ROOT".to_owned(), state));
@@ -564,7 +577,16 @@ fn ssh_host(
     let destination = ssh::destination_of(target)?;
     let name = ssh::name(&destination);
     progress(i18n::format(locale, "native.sshConnecting", &[("target", &target.label())]).into());
-    let files = runtime_files(paths, modules);
+    let mut files = runtime_files(paths, modules);
+    // The application layer goes to the server from here: it is downloaded once per version and kept for the next
+    // connections.
+    if !files.app.is_file() {
+        if !download_linux_runtime(modules, LINUX_APP, locale, ask, progress)? {
+            return Ok(None);
+        }
+        files = runtime_files(paths, modules);
+        progress(i18n::format(locale, "native.sshConnecting", &[("target", &target.label())]).into());
+    }
     let pieces = if std::env::var("RAINY_SSH_NO_FETCH").as_deref() == Ok("1") { json!([]) } else { modules.pieces(LINUX_RUNTIME) };
     let fraction = |done: u64, total: u64| (total > 0).then(|| done as f32 / total as f32);
     let report = |step: InstallProgress| {
@@ -602,7 +624,7 @@ fn ssh_host(
         let base = match development_base(paths) {
             Some(base) => base,
             None => {
-                if !download_linux_runtime(modules, locale, ask, progress)? {
+                if !download_linux_runtime(modules, LINUX_RUNTIME, locale, ask, progress)? {
                     return Ok(None);
                 }
                 modules.path(LINUX_RUNTIME)?
@@ -613,7 +635,7 @@ fn ssh_host(
     }
     let host = ssh::installed_paths(&destination, answer, uploaded)?;
     if uploaded {
-        remove_linux_runtime(paths, modules, &events);
+        remove_linux_runtime(paths, modules, &events, &[LINUX_RUNTIME]);
     }
     progress(i18n::text(locale, "native.starting").to_owned().into());
     let env = shared_env(target);

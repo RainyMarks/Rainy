@@ -2,11 +2,12 @@
 
 The runtime comes in two layers. The base (`linux-runtime.tar.xz`: the IDE tools in `app/resources/ide`) is downloaded
 and changes only when those change; it is identified by the digest of its content. The application layer
-(`linux-app.tar.gz`: the Rust Host `rainy-host`, the viewer page and the small resources) ships with every desktop
-version. A version installs as `<application digest>/`, which holds the application layer and links to `base-<id>/`, so
+(`linux-app.tar.gz`: the Rust Host `rainy-host`, the viewer page and the small resources) is downloaded too, for each
+desktop version, only when that version is not installed yet. A version installs as `<application digest>/`, which holds the application layer and links to `base-<id>/`, so
 an update whose base did not change unpacks a few megabytes and downloads nothing.
 
-`install-runtime.py BASE APP METADATA` installs this version; BASE may be missing when the base is already installed.
+`install-runtime.py BASE APP METADATA` installs this version; BASE may be missing when the base is already installed,
+and APP when this version is (`{"needsApp": true}` otherwise).
 `install-runtime.py --prune METADATA` removes what earlier versions left.
 `install-runtime.py --fetch METADATA PIECES` installs on an SSH server, the application layer arriving on standard input and
 the base downloaded there when needed.
@@ -227,6 +228,9 @@ def install(owned, base_archive, app_archive, metadata):
             return installed(target)
         if target.exists():
             raise RuntimeError('Incomplete runtime directory; preserved for diagnosis')
+        if not app_archive or not app_archive.is_file():
+            # The carrier downloads the application layer only when this version is not installed.
+            return {'needsApp': True}
         if not matches(app_archive, app):
             raise RuntimeError('The Rainy application files do not match this version')
         if not (base / '.complete').is_file():

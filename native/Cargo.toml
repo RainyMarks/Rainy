@@ -4,7 +4,7 @@ members = ["crates/protocol", "crates/carrier", "crates/app", "crates/host"]
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "4.7.1"
+version = "4.7.2"
 edition = "2024"
 publish = false
 license-file = "../LICENSE"
@@ -30,7 +30,8 @@ gpui-base = { path = "vendor/gpui-base" }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+# Fat LTO: about 1.5 MB smaller than thin LTO for RainyAgent.exe, at twice the build time.
+lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"

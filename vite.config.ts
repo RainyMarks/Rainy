@@ -27,10 +27,22 @@ const katexWoff2Only: Plugin = {
   },
 }
 
+/**
+ * Mermaid offers the ELK layout engine (elkjs, about 1.5 MB) for diagrams that ask for `layout: elk`; without its loader
+ * Mermaid falls back to its default dagre layout, as its own tiny build does. Rainy leaves ELK out.
+ */
+const mermaidWithoutElk: Plugin = {
+  name: 'rainy-mermaid-without-elk',
+  transform(code, id) {
+    if (!/mermaid[\\/]dist[\\/]chunks[\\/]mermaid\.core[\\/]/u.test(id) ||!code.includes('...elkLayoutLoaders()')) return null
+    return { code: code.replace('...elkLayoutLoaders()', ''), map: null }
+  },
+}
+
 export default defineConfig({
   root: resolve(import.meta.dirname, 'src/renderer'),
   base: '/',
-  plugins: [react(), katexWoff2Only, thirdPartyNotices('RainyAgent interface: third-party license and notice texts.')],
+  plugins: [react(), katexWoff2Only, mermaidWithoutElk, thirdPartyNotices('RainyAgent interface: third-party license and notice texts.')],
   resolve: { alias: codemirrorAlias() },
   build: {
     outDir: resolve(import.meta.dirname, 'dist/renderer'),

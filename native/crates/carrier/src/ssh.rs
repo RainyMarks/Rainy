@@ -499,6 +499,8 @@ fn installer_answer(stdout: &str) -> Result<ServerRuntime> {
     match crate::wsl::parse_installed(line)? {
         Installed::Ready { host } => Ok(ServerRuntime::Ready { host }),
         Installed::NeedsArchive => Ok(ServerRuntime::NeedsArchive { error: None }),
+        // The application layer goes over standard input, so the server always has it.
+        Installed::NeedsApp => bail!(localized("服务器没有收到 Rainy 的程序文件。", "The server did not receive Rainy's application files.")),
     }
 }
 

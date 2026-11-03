@@ -23,7 +23,7 @@ use crate::tarball::{self, TarError};
 /// The descriptor, in the resources folder.
 pub const DESCRIPTOR_FILE: &str = "optional-modules.json";
 /// Every module a descriptor may pin.
-pub const IDS: [&str; 5] = ["ide-python", "ide-web", "php", "linux-runtime", "linux-dev-packages"];
+pub const IDS: [&str; 6] = ["ide-python", "ide-web", "php", "linux-runtime", "linux-app", "linux-dev-packages"];
 const MARKER: &str = ".rainy-module.json";
 const DOWNLOADS: &str = ".downloads";
 /// JavaScript's `Number.MAX_SAFE_INTEGER`, the largest size the 3.x schema accepts.
@@ -32,7 +32,12 @@ const PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Modules the carrier fetches by itself; Settings neither lists them nor receives their progress.
 pub fn internal(id: &str) -> bool {
-    id == "linux-runtime" || id == "linux-dev-packages"
+    id == "linux-runtime" || id == "linux-app" || id == "linux-dev-packages"
+}
+
+/// Modules kept as an archive another installer consumes: the Linux runtime's base and its application layer.
+fn file_module(id: &str) -> bool {
+    id == "linux-runtime" || id == "linux-app"
 }
 
 /// A directory module is unpacked; a file module stays an archive that another installer consumes.
@@ -136,7 +141,7 @@ fn io_error(path: &Path, error: io::Error) -> ModuleError {
 
 /// Parse `optional-modules.json` as strictly as 3.x's schema: version 1, known and unique ids, the archive and piece
 /// name patterns, positive sizes that the pieces add up to, lowercase SHA-256 digests, a `vX.Y.Z-resources` release
-/// of RainyMarks on GitHub, a file module exactly for `linux-runtime`, and no other fields.
+/// of RainyMarks on GitHub, file modules exactly for `linux-runtime` and `linux-app`, and no other fields.
 pub fn parse_descriptor(text: &str) -> Result<Vec<Module>, ModuleError> {
     let invalid = |detail: String| Err(ModuleError::Invalid(detail));
     let descriptor: Descriptor = serde_json::from_str(text).map_err(|error| ModuleError::Invalid(error.to_string()))?;
@@ -170,7 +175,7 @@ pub fn parse_descriptor(text: &str) -> Result<Vec<Module>, ModuleError> {
         if module.pieces.iter().map(|piece| u128::from(piece.bytes)).sum::<u128>() != u128::from(module.bytes) {
             return invalid(format!("Piece sizes differ: {id}"));
         }
-        if (id == "linux-runtime") != (module.kind == Kind::File) {
+        if file_module(id) != (module.kind == Kind::File) {
             return invalid(format!("Unexpected module kind: {id}"));
         }
     }
@@ -718,7 +723,7 @@ mod tests {
             .enumerate()
             .map(|(index, chunk)| json!({ "file": format!("rainy-{}.{:03}", &hex(id.as_bytes())[..20], index + 1), "bytes": chunk.len(), "sha256": hex(chunk) }))
             .collect();
-        let kind = if id == "linux-runtime" { "file" } else { "directory" };
+        let kind = if file_module(id) { "file" } else { "directory" };
         json!({ "id": id, "kind": kind, "file": file, "bytes": archive.len(), "sha256": hex(archive), "unpackedBytes": 160_000, "baseUrl": BASE, "pieces": pieces })
     }
 

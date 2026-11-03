@@ -429,7 +429,6 @@ async function stage(target, version, release) {
     'environment-component-catalog.json': join(root, 'runtime/environment-component-catalog.json'),
     'install-environment-component.py': join(root, 'scripts/install-environment-component.py'),
     'linux-runtime.json': join(root, 'runtime/linux-runtime.json'),
-    'linux-app.tar.gz': join(root, 'runtime/linux-app.tar.gz'),
     'install-runtime.py': join(root, 'scripts/install-runtime.py'),
     'optional-modules.json': join(root, 'runtime/optional-modules.json'),
     'icon.ico': inputs.icon,
@@ -439,8 +438,10 @@ async function stage(target, version, release) {
     if (!await exists(path)) throw new Error(`Missing package input: ${path}`)
   }
   const linux = JSON.parse(await readFile(resources['linux-runtime.json'], 'utf8'))
-  const app = await sha(resources['linux-app.tar.gz'])
-  if (linux.app?.sha256 !== app || linux.app?.bytes !== (await stat(resources['linux-app.tar.gz'])).size) {
+  // The application layer is a downloaded module (`linux-app`); the metadata shipped here must name the one published.
+  const linuxApp = join(root, 'runtime/linux-app.tar.gz')
+  const app = await sha(linuxApp)
+  if (linux.app?.sha256 !== app || linux.app?.bytes !== (await stat(linuxApp)).size) {
     throw new Error('runtime/linux-app.tar.gz is not the application layer runtime/linux-runtime.json names; stage the Linux runtime again')
   }
   const host = JSON.parse(await readFile(join(inputs.windowsHost, 'runtime.json'), 'utf8'))

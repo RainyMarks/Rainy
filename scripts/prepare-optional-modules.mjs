@@ -59,6 +59,8 @@ export async function prepareOptionalModules(options) {
     const linux = await digest(linuxRuntime)
     if (linux.bytes !== linuxMetadata.bytes || linux.sha256 !== linuxMetadata.sha256) throw new Error('linux-runtime.json does not describe the staged archive')
     if (!Number.isSafeInteger(linuxMetadata.unpackedBytes)) throw new Error('linux-runtime.json does not record the unpacked size')
+    const linuxApp = await digest(join(app, 'runtime/linux-app.tar.gz'))
+    if (linuxApp.bytes !== linuxMetadata.app?.bytes || linuxApp.sha256 !== linuxMetadata.app?.sha256) throw new Error('linux-runtime.json does not describe the staged application layer')
     const published = async (id, sourceRoot, file) => {
       const transport = await packReleaseAssets({ sourceRoot, outputDirectory: join(options.pieces, id),
         files: [{ path: file, category: 'offline' }], releaseVersion: options.releaseVersion, baseUrl })
@@ -75,6 +77,9 @@ export async function prepareOptionalModules(options) {
       { id: 'php', kind: 'directory', ...await published('php', scratch, 'php.tar.gz'), unpackedBytes: await unpackedBytes(join(scratch, 'php.tar.gz')) },
       { id: 'linux-runtime', kind: 'file', ...await published('linux-runtime', join(app, 'runtime'), 'linux-runtime.tar.xz'),
         unpackedBytes: linuxMetadata.unpackedBytes },
+      // The application layer of WSL and SSH Hosts: downloaded when a version is not installed there yet.
+      { id: 'linux-app', kind: 'file', ...await published('linux-app', join(app, 'runtime'), 'linux-app.tar.gz'),
+        unpackedBytes: await unpackedBytes(join(app, 'runtime/linux-app.tar.gz')) },
       { id: 'linux-dev-packages', kind: 'directory', ...await published('linux-dev-packages', scratch, 'linux-dev-packages.tar.gz'),
         unpackedBytes: await unpackedBytes(join(scratch, 'linux-dev-packages.tar.gz')) },
     ].map(({ id, kind, file, bytes, sha256, unpackedBytes: unpacked, baseUrl: location, pieces }) =>

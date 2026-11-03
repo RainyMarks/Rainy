@@ -54,8 +54,10 @@ export function thirdPartyNotices(title: string): Plugin {
         const source = await packageOf(file, cache)
         if (source !== undefined) packages.set(`${source.name}@${source.version}`, source)
       }
-      const sections = [`${title}\n`]
+      const sections = [`${title}\n\nA license text that several packages ship is given in full once; later packages name the package it is printed under.\n`]
       const missing: string[] = []
+      // The package each license text was first printed under.
+      const printed = new Map<string, string>()
       for (const [id, source] of [...packages].sort(([left], [right]) => left.localeCompare(right))) {
         const files = (await readdir(source.directory, { withFileTypes: true }))
           .filter(entry => entry.isFile() && LICENSE_FILE.test(entry.name)).map(entry => entry.name).sort()
@@ -65,7 +67,16 @@ export function thirdPartyNotices(title: string): Plugin {
           else missing.push(id)
           continue
         }
-        for (const name of files) sections.push(`\n--- ${name} ---\n${await readFile(join(source.directory, name), 'utf8')}\n`)
+        for (const name of files) {
+          const text = await readFile(join(source.directory, name), 'utf8')
+          const first = printed.get(text.trim())
+          if (first !== undefined) {
+            sections.push(`\n--- ${name} ---\n(The same text as the license of ${first}, printed above.)\n`)
+            continue
+          }
+          printed.set(text.trim(), id)
+          sections.push(`\n--- ${name} ---\n${text}\n`)
+        }
       }
       if (missing.length > 0) this.error(`Bundled packages without a license file: ${missing.join(', ')}`)
       this.emitFile({ type: 'asset', fileName: 'THIRD_PARTY_NOTICES.txt', source: sections.join('') })

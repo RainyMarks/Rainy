@@ -29,7 +29,7 @@ async function resources(f) {
   await writeFile(join(f.root, 'windows-host/runtime.json'), JSON.stringify({ files: [
     { path: 'host.js', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
   ] }))
-  for (const name of ['environment-component-catalog.json', 'install-environment-component.py', 'linux-runtime.json', 'linux-app.tar.gz', 'install-runtime.py',
+  for (const name of ['environment-component-catalog.json', 'install-environment-component.py', 'linux-runtime.json', 'install-runtime.py',
     'optional-modules.json', 'icon.ico']) await writeFile(join(f.root, name), name)
 }
 
@@ -65,8 +65,8 @@ test('packaged resources receive a verifiable signature without a license manage
   assert(verify(null, Buffer.concat([Buffer.from('RainyAgent/release-manifest/v1\0'), bytes]), Object.values(f.keys.keys)[0],
     Buffer.from(envelope.signature, 'base64url')))
   const manifest = JSON.parse(bytes.toString())
-  assert.equal(manifest.files.length, 10)
-  assert.equal(result.files, 10)
+  assert.equal(manifest.files.length, 9)
+  assert.equal(result.files, 9)
   assert(manifest.files.every(row => !/private|issuer|license-verifier/u.test(row.path)))
 })
 

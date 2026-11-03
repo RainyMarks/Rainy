@@ -162,7 +162,7 @@ pub fn linux_paths(distro: &str, paths: &[&Path]) -> Result<Vec<String>> {
 pub struct RuntimeFiles {
     /// `linux-runtime.json`: digests of the base and the application layer.
     pub metadata: PathBuf,
-    /// `linux-app.tar.gz`: the Host, the interface and the small resources.
+    /// `linux-app.tar.gz`: the Host, the interface and the small resources; downloaded, so it may not be there yet.
     pub app: PathBuf,
     /// `install-runtime.py`.
     pub installer: PathBuf,
@@ -177,6 +177,8 @@ pub enum Installed {
     Ready { host: String },
     /// The base of this version is not installed and no archive was given; download it and try again.
     NeedsArchive,
+    /// This version is not installed and its application layer was not given; download it and try again.
+    NeedsApp,
 }
 
 /// Install (or find) this version's runtime in the distribution (`install-runtime.py BASE APP METADATA`).
@@ -197,6 +199,9 @@ pub fn parse_installed(text: &str) -> Result<Installed> {
     let value: Value = serde_json::from_str(line.trim()).map_err(|_| anyhow!("{} {}", invalid(), line.trim()))?;
     if value.get("needsArchive").is_some() {
         return Ok(Installed::NeedsArchive);
+    }
+    if value.get("needsApp").is_some() {
+        return Ok(Installed::NeedsApp);
     }
     match value.get("host").and_then(Value::as_str).filter(|path| path.starts_with('/')) {
         Some(host) => Ok(Installed::Ready { host: host.to_owned() }),
@@ -291,6 +296,7 @@ mod tests {
     #[test]
     fn parses_installer_answers() {
         assert_eq!(parse_installed("noise\n{\"needsArchive\": true}\n").unwrap(), Installed::NeedsArchive);
+        assert_eq!(parse_installed("{\"needsApp\": true}").unwrap(), Installed::NeedsApp);
         assert_eq!(
             parse_installed(r#"{"host": "/h/.rainy-agent/runtime/x/rainy-host"}"#).unwrap(),
             Installed::Ready { host: "/h/.rainy-agent/runtime/x/rainy-host".into() }

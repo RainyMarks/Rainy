@@ -987,7 +987,7 @@ mod tests {
     fn verifies_a_list_signed_like_3x() {
         let dir = tempfile::tempdir().unwrap();
         let resources = dir.path().join("resources");
-        let contents: [(&str, &[u8]); 15] = [
+        let contents: [(&str, &[u8]); 14] = [
             ("windows-host/runtime.json", b"{\"version\":1}"),
             ("windows-host/node/node.exe", b"MZ node"),
             ("windows-host/app/dist/host.js", b"console.log('host')\n"),
@@ -998,7 +998,6 @@ mod tests {
             ("environment-component-catalog.json", b"{}"),
             ("install-environment-component.py", b"print()"),
             ("linux-runtime.json", b"{}"),
-            ("linux-app.tar.gz", &[0x1f, 0x8b, 0x08]),
             ("install-runtime.py", b"print()"),
             ("optional-modules.json", b"{\"version\":1,\"modules\":[]}"),
             ("icon.ico", &[0, 0, 1, 0]),
@@ -1030,7 +1029,6 @@ mod tests {
             "environment-component-catalog.json",
             "install-environment-component.py",
             "linux-runtime.json",
-            "linux-app.tar.gz",
             "install-runtime.py",
             "optional-modules.json",
             "icon.ico",
