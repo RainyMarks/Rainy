@@ -456,7 +456,7 @@ mod tests {
         ];
         let messages = vec![Message::user("hi"), Message::Assistant(reply)];
         let tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), parameters: json!({ "type": "object" }), freeform: None }];
-        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false, no_cache: false, no_tool_calls: false };
+        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false, no_cache: false, no_tool_calls: false, thread: None };
         let (http, _) = super::request(&model, &request, Some("k"), "ua");
         let body = &http.body;
         assert_eq!(http.url, "https://api.deepseek.com/chat/completions");

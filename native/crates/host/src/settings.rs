@@ -202,7 +202,7 @@ pub fn default_prefs() -> Map<String, Value> {
         "locale": "zh", "theme": "system", "uiFontSize": 14, "codeFontSize": 13, "busyEnter": "queue", "stepDetail": "standard",
         "showUsage": true, "colorScheme": "graphite", "accent": "auto", "uiFont": "", "codeFont": "", "inlineCompletion": false,
         "completionModel": "", "autoKeepChanges": true, "rainEffects": true, "webSearch": true, "markdownFocus": false,
-        "markdownTypewriter": false, "markdownImages": "assets", "contextStrategy": "auto"
+        "markdownTypewriter": false, "markdownImages": "assets", "contextStrategy": "recall"
     }) else {
         unreachable!()
     };
@@ -267,7 +267,7 @@ pub fn valid_pref(key: &str, value: &Value) -> bool {
         "uiFont" | "codeFont" => value.as_str().is_some_and(|text| font_families(text).is_some()),
         "showUsage" | "inlineCompletion" | "autoKeepChanges" | "rainEffects" | "webSearch" | "markdownFocus" | "markdownTypewriter" => value.is_boolean(),
         "markdownImages" => one_of(value, &["assets", "named", "same"]),
-        "contextStrategy" => one_of(value, &["auto", "summary", "recall"]),
+        "contextStrategy" => one_of(value, &["recall", "summary", "auto"]),
         "completionModel" => value.as_str().is_some_and(|text| text.is_empty() || provider_id(text)),
         _ => false,
     }

@@ -10,10 +10,11 @@ pub mod completions;
 pub mod json;
 pub mod responses;
 pub(crate) mod sse;
+pub mod thread;
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
 use rainy_protocol::chat::{AssistantBlock, AssistantMessage, ResultContent, Usage};
@@ -190,12 +191,15 @@ pub struct Request<'a> {
     pub no_cache: bool,
     /// The tools stay declared but the model may not call them.
     pub no_tool_calls: bool,
+    /// The conversation's Claude message thread: a request to Anthropic's own API sends only what was added after
+    /// the previous reply ([`thread`]).
+    pub thread: Option<&'a thread::Slot>,
 }
 
 impl<'a> Request<'a> {
     /// A request with the defaults of a chat request.
     pub fn new(system: &'a str, messages: &'a [Message], tools: &'a [ToolSpec]) -> Self {
-        Self { system, messages, tools, reasoning: None, max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false }
+        Self { system, messages, tools, reasoning: None, max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false, thread: None }
     }
 }
 
@@ -407,6 +411,9 @@ pub fn max_tokens(model: &Model, request: &Request<'_>) -> u64 {
 /// A failure before the reply started.
 struct Failure {
     message: String,
+    /// The response's status and body, when the server answered.
+    status: Option<u16>,
+    body: String,
     /// The server may answer next time.
     retry: bool,
     /// The wait the server asked for.
@@ -455,8 +462,22 @@ impl Llm {
             Api::Responses => responses::request(model, request, api_key.as_deref(), &self.user_agent),
             Api::Anthropic => anthropic::request(model, request, api_key.as_deref(), output),
         };
-        let response = self.send(&http).await?;
+        let started = Instant::now();
+        let threaded = request.thread.filter(|_| thread::applies(model)).and_then(|slot| Some((slot, thread::plan(slot, &http)?)));
+        let (response, sent) = match &threaded {
+            Some((slot, plan)) => self.send_threaded(slot, plan, &http).await?,
+            None => (self.send(&http).await.map_err(|failure| failure.message)?, "whole"),
+        };
         emit(Event::Started, output);
+        // When the first block started, for the log.
+        let mut first_block = None;
+        let mut timed = |event: Event, message: &AssistantMessage| {
+            if first_block.is_none() && matches!(event, Event::BlockStarted(_)) {
+                first_block = Some(started.elapsed());
+            }
+            emit(event, message);
+        };
+        let emit = &mut timed;
         let mut events = sse::Events::default();
         let mut body = response.bytes_stream();
         loop {
@@ -476,12 +497,43 @@ impl Llm {
         for (name, data) in events.finish() {
             reader.event(&name, &data, output, emit)?;
         }
-        reader.finish(output, emit)
+        reader.finish(output, emit)?;
+        log::debug!("[llm] {} ({sent}): first block after {} ms", model.id, first_block.unwrap_or_else(|| started.elapsed()).as_millis());
+        if let Some((slot, plan)) = threaded
+            && output.stop_reason != "error"
+            && let Some(id) = output.rest.get("responseId").and_then(Value::as_str)
+        {
+            thread::stored(slot, plan, id);
+        }
+        Ok(())
+    }
+
+    /// Send a request planned on a thread: continue it, start it again with the whole conversation when it can't be
+    /// continued, or send the conversation without a thread when Anthropic refuses one. Also which was sent.
+    async fn send_threaded(&self, slot: &thread::Slot, plan: &thread::Plan, whole: &HttpRequest) -> Result<(reqwest::Response, &'static str), String> {
+        if let Some(continued) = &plan.continued {
+            match self.send(continued).await {
+                Ok(response) => return Ok((response, "thread continued")),
+                Err(failure) if failure.status.is_some_and(|status| thread::refusal(true, status, &failure.body) == thread::Refusal::Restart) => {
+                    log::info!("[llm] message thread not continued, starting it again: {}", failure.message);
+                }
+                Err(failure) => return Err(failure.message),
+            }
+        }
+        match self.send(&plan.created).await {
+            Ok(response) => Ok((response, "thread created")),
+            Err(failure) if failure.status.is_some_and(|status| thread::refusal(false, status, &failure.body) == thread::Refusal::Unthreaded) => {
+                log::warn!("[llm] message thread refused, the conversation goes on with whole requests: {}", failure.message);
+                thread::give_up(slot);
+                Ok((self.send(whole).await.map_err(|failure| failure.message)?, "whole"))
+            }
+            Err(failure) => Err(failure.message),
+        }
     }
 
     /// Send a request, retrying connection failures and overloaded servers before the reply starts.
-    async fn send(&self, http: &HttpRequest) -> Result<reqwest::Response, String> {
-        let url = url::Url::parse(&http.url).map_err(|error| error.to_string())?;
+    async fn send(&self, http: &HttpRequest) -> Result<reqwest::Response, Failure> {
+        let url = url::Url::parse(&http.url).map_err(|error| Failure { message: error.to_string(), status: None, body: String::new(), retry: false, delay: None })?;
         let client = self.network.client(&url).await;
         let mut attempt = 0;
         loop {
@@ -490,11 +542,12 @@ impl Llm {
                 Err(failure) => failure,
             };
             if attempt >= MAX_RETRIES || !failure.retry {
-                return Err(failure.message);
+                return Err(failure);
             }
             let delay = match failure.delay {
                 Some(delay) if delay > MAX_RETRY_DELAY => {
-                    return Err(format!("Server requested {}s retry delay (max: {}s). {}", delay.as_secs_f64().ceil(), MAX_RETRY_DELAY.as_secs(), failure.message));
+                    let message = format!("Server requested {}s retry delay (max: {}s). {}", delay.as_secs_f64().ceil(), MAX_RETRY_DELAY.as_secs(), failure.message);
+                    return Err(Failure { message, ..failure });
                 }
                 Some(delay) => delay,
                 None => {
@@ -514,9 +567,11 @@ impl Llm {
         }
         // The timeout ends with the response's headers, as the SDKs' does; a long stream after them is bounded by the
         // idle timeout between its events only.
-        let response = match tokio::time::timeout(REQUEST_TIMEOUT, builder.body(http.body.to_string()).send()).await {
-            Ok(sent) => sent.map_err(|error| Failure { message: transport_error(&error), retry: true, delay: None })?,
-            Err(_) => return Err(Failure { message: "Request timed out".into(), retry: true, delay: None }),
+        let text = http.body.to_string();
+        log::debug!("[llm] request of {} bytes", text.len());
+        let response = match tokio::time::timeout(REQUEST_TIMEOUT, builder.body(text).send()).await {
+            Ok(sent) => sent.map_err(|error| Failure { message: transport_error(&error), status: None, body: String::new(), retry: true, delay: None })?,
+            Err(_) => return Err(Failure { message: "Request timed out".into(), status: None, body: String::new(), retry: true, delay: None }),
         };
         let status = response.status();
         if status.is_success() {
@@ -531,7 +586,7 @@ impl Llm {
             _ => matches!(status.as_u16(), 408 | 409 | 429) || status.is_server_error(),
         };
         let text = tokio::time::timeout(STREAM_IDLE_TIMEOUT, response.text()).await.ok().and_then(Result::ok).unwrap_or_default();
-        Err(Failure { message: http_error(status.as_u16(), &text), retry, delay })
+        Err(Failure { message: http_error(status.as_u16(), &text), status: Some(status.as_u16()), body: text, retry, delay })
     }
 }
 

@@ -10,7 +10,6 @@
 //!
 //! A family's text never changes within a chat, so provider prompt caches stay warm.
 
-use super::compaction::Strategy;
 use super::tools::plan::Style;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,14 +92,6 @@ impl Profile {
             Family::Gemini => Style::Gemini,
             _ => Style::Claude,
         }
-    }
-
-    /// How a full context is compacted when the preference says `auto`. Claude reads a span back with `recall`: in
-    /// Rainy's comparison (docs/context-retrieval-research.zh.md) Haiku and Sonnet 5.5 kept every detail either way,
-    /// and reading back cost a quarter to a third less and waited a quarter to almost half less. Other families keep
-    /// the summary until they are compared.
-    pub fn context_strategy(self) -> Strategy {
-        if self.family == Family::Claude { Strategy::Recall } else { Strategy::Summary }
     }
 
     /// Text sent after each round of tool results; Anthropic recommends it for Fable 5.1, which otherwise tends to
@@ -273,8 +264,6 @@ mod tests {
         assert!(fable.guidance(true).contains("surgically edit"));
         assert!(Profile::of("claude-opus-5-5").batch_nudge().is_none());
         assert!(Profile::of("deepseek-v4").guidance(true).contains("code that only appears in your reply is not saved"));
-        assert_eq!(Profile::of("claude-sonnet-5-5").context_strategy(), Strategy::Recall);
-        assert_eq!(Profile::of("gpt-5.5").context_strategy(), Strategy::Summary);
         assert_eq!(Profile::of("gemini-3-pro").plan_style(), Style::Gemini);
         for id in ["gpt-5.5", "claude-opus-5-5", "gemini-3-pro", "qwen3.8-max", "llama-4"] {
             assert!(Profile::of(id).guidance(true).starts_with("You are Rainy"), "{id}");

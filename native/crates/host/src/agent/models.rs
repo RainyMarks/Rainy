@@ -495,6 +495,7 @@ impl Models {
             unmark_last_user: false,
             no_cache: false,
             no_tool_calls: false,
+            thread: None,
         };
         let cancel = options.cancel.clone().unwrap_or_default();
         let key = self.settings.api_key(&resolved.setup.provider);

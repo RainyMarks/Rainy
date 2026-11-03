@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(output.stop_reason, "toolUse");
         assert_eq!((output.usage.input, output.usage.cache_read), (30.0, 20.0));
         let messages = vec![Message::user("hi"), Message::Assistant(output)];
-        let request = Request { system: "sys", messages: &messages, tools: &[], reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false, no_cache: false, no_tool_calls: false };
+        let request = Request { system: "sys", messages: &messages, tools: &[], reasoning: Some(Level::High), max_tokens: None, session_id: Some("s"), unmark_last_user: false, no_cache: false, no_tool_calls: false, thread: None };
         let (http, _) = super::request(&model, &request, Some("k"), "ua");
         let input = http.body["input"].as_array().unwrap();
         assert_eq!(input[0]["role"], "developer");

@@ -34,13 +34,12 @@ pub enum Strategy {
 }
 
 impl Strategy {
-    /// The `contextStrategy` preference; `auto` and anything unknown take `default`.
-    pub fn from_pref(pref: Option<&str>, default: Self) -> Self {
-        match pref {
-            Some("summary") => Self::Summary,
-            Some("recall") => Self::Recall,
-            _ => default,
-        }
+    /// The `contextStrategy` preference: `summary`, or `recall` for anything else. Reading back was as accurate as a
+    /// summary in Rainy's comparison (docs/context-retrieval-research.zh.md) on Claude Haiku and Sonnet 5.5 and
+    /// DeepSeek V4.1 Flash, and cost a quarter to a third less on the turns that compacted; 4.6's `auto` is read as
+    /// `recall`.
+    pub fn from_pref(pref: Option<&str>) -> Self {
+        if pref == Some("summary") { Self::Summary } else { Self::Recall }
     }
 }
 
@@ -289,10 +288,10 @@ mod tests {
 
     #[test]
     fn reads_the_strategy_preference() {
-        assert_eq!(Strategy::from_pref(Some("recall"), Strategy::Summary), Strategy::Recall);
-        assert_eq!(Strategy::from_pref(Some("summary"), Strategy::Recall), Strategy::Summary);
-        assert_eq!(Strategy::from_pref(Some("auto"), Strategy::Summary), Strategy::Summary);
-        assert_eq!(Strategy::from_pref(None, Strategy::Recall), Strategy::Recall);
+        assert_eq!(Strategy::from_pref(Some("recall")), Strategy::Recall);
+        assert_eq!(Strategy::from_pref(Some("summary")), Strategy::Summary);
+        assert_eq!(Strategy::from_pref(Some("auto")), Strategy::Recall);
+        assert_eq!(Strategy::from_pref(None), Strategy::Recall);
     }
 
     #[test]

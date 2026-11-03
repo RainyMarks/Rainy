@@ -21,6 +21,8 @@ pub struct State {
     pub messages: Vec<Message>,
     pub session_id: Option<String>,
     pub api_key: Option<String>,
+    /// The conversation's Claude message thread, kept across runs.
+    pub thread: Option<Arc<llm::thread::Slot>>,
 }
 
 impl State {
@@ -228,7 +230,7 @@ pub async fn run<H: Hooks>(llm: &Llm, state: &mut State, prompts: Vec<(Message, 
         }
         hooks.prepare_request(state, cancel).await;
         let specs = state.specs();
-        let request = Request { reasoning: state.reasoning, session_id: state.session_id.as_deref(), ..Request::new(&state.system, &state.messages, &specs) };
+        let request = Request { reasoning: state.reasoning, session_id: state.session_id.as_deref(), thread: state.thread.as_deref(), ..Request::new(&state.system, &state.messages, &specs) };
         hooks.event(Event::ReplyStarted).await;
         let mut stream = |event: llm::Event, reply: &AssistantMessage| hooks.streaming(event, reply);
         let reply = llm.stream(&state.model, &request, state.api_key.clone(), cancel, &mut stream).await;

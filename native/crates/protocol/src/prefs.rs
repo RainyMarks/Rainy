@@ -34,8 +34,8 @@ pub struct UiPreferences {
     /// Where images pasted into a Markdown document are saved: `assets`, `named` (`<name>.assets`) or `same`.
     #[serde(default = "default_markdown_images")]
     pub markdown_images: String,
-    /// How a full context is freed once old tool outputs are cleared: `auto` (by model family), `summary` (the model
-    /// writes a checkpoint) or `recall` (an index of the span, read back with the recall tool).
+    /// How a full context is freed once old tool outputs are cleared: `recall` (an index of the span, read back with
+    /// the recall tool) or `summary` (the model writes a checkpoint). 4.6 also wrote `auto`, read as `recall`.
     #[serde(default = "default_context_strategy")]
     pub context_strategy: String,
 }
@@ -45,7 +45,7 @@ fn default_markdown_images() -> String {
 }
 
 fn default_context_strategy() -> String {
-    "auto".into()
+    "recall".into()
 }
 
 impl Default for UiPreferences {

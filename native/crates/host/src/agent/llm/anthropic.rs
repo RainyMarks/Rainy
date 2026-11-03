@@ -482,7 +482,7 @@ mod tests {
         second.content = vec![AssistantBlock::Text { text: "done".into(), text_signature: None, rest: Map::new() }];
         let messages = vec![Message::user("one"), Message::Assistant(first), Message::ToolResult(result), Message::Assistant(second), Message::user("two")];
         let tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }), freeform: None }];
-        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::Max), max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false };
+        let request = Request { system: "sys", messages: &messages, tools: &tools, reasoning: Some(Level::Max), max_tokens: None, session_id: None, unmark_last_user: false, no_cache: false, no_tool_calls: false, thread: None };
         let mut output = crate::agent::llm::empty_reply(&model);
         let (http, _) = super::request(&model, &request, Some("key"), &mut output);
         let body = &http.body;

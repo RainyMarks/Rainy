@@ -144,6 +144,7 @@ pub async fn run_subagent(llm: &Llm, input: Input, cancel: CancellationToken) ->
         messages: Vec::new(),
         session_id: None,
         api_key: input.api_key,
+        thread: Some(Arc::default()),
     };
     run::run(llm, &mut state, vec![(Message::user(input.prompt), ())], &hooks, &limit).await;
     timer.abort();

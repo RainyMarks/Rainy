@@ -55,8 +55,9 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                 Some(t("contextStrategyDescription")),
                 segmented(
                     "context-strategy",
-                    vec![("auto", t("contextStrategyAuto")), ("recall", t("contextStrategyRecall")), ("summary", t("contextStrategySummary"))],
-                    &prefs.context_strategy,
+                    vec![("recall", t("contextStrategyRecall")), ("summary", t("contextStrategySummary"))],
+                    // 4.6's `auto` reads back like `recall`.
+                    if prefs.context_strategy == "summary" { "summary" } else { "recall" },
                     |value, window, cx| set_prefs(json!({ "contextStrategy": value }), window, cx),
                 ),
             ),

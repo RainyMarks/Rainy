@@ -259,6 +259,8 @@ pub struct Session {
     /// Keeps transcript appends in order.
     writer: tokio::sync::Mutex<()>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// The chat's Claude message thread, continued by its next request within a few minutes.
+    thread: Arc<llm::thread::Slot>,
     this: Weak<Session>,
 }
 
@@ -311,6 +313,7 @@ impl Session {
                 jobs,
                 writer: tokio::sync::Mutex::new(()),
                 task: Mutex::new(None),
+                thread: Arc::default(),
                 this: this.clone(),
             }
         }))
@@ -792,6 +795,7 @@ impl Session {
             messages,
             session_id: Some(self.id.clone()),
             api_key: self.services.models.api_key(&resolved.setup.provider),
+            thread: Some(self.thread.clone()),
         };
         let prompts: Vec<(Message, Meta)> = prompts.into_iter().chain(injections).collect();
         let this = self.clone();
@@ -1268,10 +1272,9 @@ impl Session {
         self.publish_state();
     }
 
-    /// How this chat compacts a span: the `contextStrategy` preference, else (`auto`) what suits the model's family.
-    fn strategy(&self, resolved: &Resolved) -> Strategy {
-        let pref = self.services.settings.prefs().get("contextStrategy").and_then(Value::as_str).map(str::to_owned);
-        Strategy::from_pref(pref.as_deref(), Profile::of(&resolved.model.id).context_strategy())
+    /// How this chat compacts a span: the `contextStrategy` preference.
+    fn strategy(&self) -> Strategy {
+        Strategy::from_pref(self.services.settings.prefs().get("contextStrategy").and_then(Value::as_str))
     }
 
     /// Free context once the chat nears its window (`tokens` expected): clear old tool outputs, oldest first, down to
@@ -1321,7 +1324,7 @@ impl Session {
         let tools = self.tools();
         let system = self.system_prompt(&tools);
         let specs: Vec<llm::ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
-        let strategy = self.strategy(resolved);
+        let strategy = self.strategy();
         let (items, entries, latest_user, share_cache, ratio) = {
             let inner = self.inner.lock().unwrap();
             let latest_user = inner.entries.iter().rev().find_map(|entry| if let TranscriptEntry::User { id, .. } = entry { Some(id.clone()) } else { None });

@@ -792,17 +792,14 @@ fn render_thinking(
         .into_any_element()
 }
 
-fn state_dot(state: ToolState, cx: &App) -> AnyElement {
+/// What a tool line shows before its title: a spinner while it runs, a dot when it waits or failed, nothing once done.
+fn state_mark(state: ToolState, cx: &App) -> Option<AnyElement> {
+    let dot = |color: Hsla| div().size(px(6.)).flex_shrink_0().rounded_full().bg(color).into_any_element();
     match state {
-        ToolState::Running => Spinner::new().xsmall().into_any_element(),
-        _ => {
-            let color = match state {
-                ToolState::Done => cx.theme().success,
-                ToolState::Failed => cx.theme().danger,
-                _ => cx.theme().warning,
-            };
-            div().size(px(7.)).rounded_full().bg(color).into_any_element()
-        }
+        ToolState::Running => Some(Spinner::new().xsmall().into_any_element()),
+        ToolState::Waiting => Some(dot(cx.theme().warning)),
+        ToolState::Failed => Some(dot(cx.theme().danger)),
+        ToolState::Done => None,
     }
 }
 
@@ -896,29 +893,24 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
     let diff = result.and_then(|result| result.diff.as_ref());
     let exit = result.and_then(|result| result.exit.as_ref()).map(|exit| exit_label(exit, locale));
     let badge = |text: SharedString, color: Hsla| div().flex_shrink_0().text_xs().text_color(color).child(text);
+    // One quiet line, as thinking is: muted text on the chat's own background, details behind the chevron.
     v_flex()
         .w_full()
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.secondary)
-        .overflow_hidden()
+        .gap_1()
         .child(
             h_flex()
                 .id(ElementId::Name(format!("tool-head-{}", tool.call_id).into()))
-                .w_full()
-                .gap_2()
-                .px_3()
-                .py_1p5()
+                .max_w_full()
+                .gap_1p5()
                 .items_center()
                 .text_sm()
+                .text_color(muted)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.accent))
+                .hover(|style| style.text_color(theme.foreground))
                 .on_click(move |_, window, cx| toggle(key.clone(), row, window, cx))
-                .child(state_dot(tool.state, cx))
+                .children(state_mark(tool.state, cx))
                 .child(
                     div()
-                        .flex_1()
                         .min_w_0()
                         .overflow_hidden()
                         .text_ellipsis()
@@ -946,7 +938,7 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
                 .child(chevron(open)),
         )
         .when(open, |this| {
-            let mut body = v_flex().px_3().pb_2().gap_1().text_xs();
+            let mut body = v_flex().pl_5().border_l_1().border_color(theme.border).gap_1().text_xs().text_color(muted);
             let undoable = result.is_some_and(|result| result.undoable && !result.failed) && !tool.reverted;
             if tool.file.is_some() || undoable {
                 let mut line = h_flex().w_full().gap_2().items_center();
