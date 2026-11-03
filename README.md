@@ -7,7 +7,7 @@
 ### The AI workbench that gets things done, for office work, research and code
 
 An agent that edits your files, runs commands and checks its own work,<br>
-with an editor, Office previews and SSH remote development, in one 27 MB Windows app.
+with an editor, Office previews and SSH remote development, in one 16 MB Windows app.
 
 <br>
 
@@ -42,7 +42,7 @@ Every number below comes from comparisons with real models; the method, raw resu
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/stats-dark.svg">
-  <img src="assets/stats-light.svg" width="900" alt="Rainy 4.7 in numbers: a 27 MB installer; 43% less wait for each step's first output in long Claude chats; 25 to 30% lower cost of carrying on when the context is full; early details of long chats answered correctly in 12 of 12 runs">
+  <img src="assets/stats-light.svg" width="900" alt="Rainy 4.7 in numbers: a 16 MB installer; 43% less wait for each step's first output in long Claude chats; 25 to 30% lower cost of carrying on when the context is full; early details of long chats answered correctly in 12 of 12 runs">
 </picture>
 </p>
 
@@ -84,7 +84,7 @@ The agent edits files, runs commands and searches the web. It asks before comman
 <tr>
 <td width="33%" valign="top">
 
-**Light: a 27 MB installer**
+**Light: a 16 MB installer**
 
 A native interface (Rust and GPUI) with no Electron and no Node. Editor tools, the Linux runtime and extra fonts download only when you use them.
 
@@ -136,7 +136,7 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 - Pick a host from `~/.ssh/config`, or enter `user@host`.
 - The agent, terminals, run and debug, and language services work on the server's files; the interface stays on your PC.
 - It uses the OpenSSH client built into Windows, so your keys, ssh-agent and ProxyJump just work.
-- The first connection installs a runtime of about 27 MB in `~/.rainy-agent` on the server; later connections reach the workbench in seconds.
+- The first connection installs a runtime of about 37 MB in `~/.rainy-agent` (later versions download only their 10 MB application layer) on the server; later connections reach the workbench in seconds.
 
 ![The SSH remote development card in Settings, listing hosts from ~/.ssh/config](assets/ssh.png)
 
@@ -188,7 +188,7 @@ See what a project is made of, how its parts import each other and which stack i
 | **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
 | **Context management** | Shows how full the context is; before it runs out, older tool outputs leave it and an index lets the model read the record back. Claude on Anthropic's API uploads only what is new (message threads), and its prompt cache lasts an hour. |
 | **Fonts** | Change the interface and code fonts: Windows' Segoe UI, Microsoft YaHei, DengXian, Consolas and Cascadia Code, and open-source fonts downloaded when chosen: Inter, Geist, Noto Sans SC, LXGW WenKai, JetBrains Mono, Fira Code, Geist Mono and LXGW WenKai Mono. |
-| **Light** | A 27 MB installer; editor tools, PHP, the Linux runtime and extra fonts download only when needed. |
+| **Light** | A 16 MB installer; editor tools, PHP, the Linux runtime and extra fonts download only when needed. |
 | **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
 | **Details** | A light rain falls behind empty views and ripples where you click; turn it off in **Settings → Appearance**. |
 
@@ -208,7 +208,7 @@ Rainy downloads stable updates in the background and then offers **Later** or **
 | Item | Requirement |
 |---|---|
 | Operating system | Windows 10 / 11 x64 |
-| Disk space | About 67 MB installed |
+| Disk space | About 53 MB installed |
 | WSL (optional) | WSL2; the bundled Ubuntu development tools wizard supports Ubuntu 26.04 |
 | SSH server (optional) | x86_64 Linux with `python3` and glibc 2.17 or later; the runtime takes about 110 MB |
 | WebView2 | For PDF, Office and Markdown previews; Windows 11 includes it, Windows 10 installs it when asked |
@@ -217,7 +217,7 @@ Rainy downloads stable updates in the background and then offers **Later** or **
 
 | Component | Size | When |
 |---|---|---|
-| Linux runtime | about 27 MB | Automatically, the first time you use WSL or an SSH host |
+| Linux runtime | about 37 MB (27 MB base + 10 MB per version) | Automatically, the first time you use WSL or an SSH host; an update downloads only the 10 MB part unless the base changed |
 | Python tools | about 26 MB | **Settings → Tools**: Ruff, ty and debugpy, for editing and debugging Python |
 | JavaScript / TypeScript tools | about 11 MB | **Settings → Tools**: TypeScript 7 and js-debug |
 | Strata local models | depends on the GPU | **Settings → Tools**: Strata's newest release; models are downloaded separately |
@@ -333,10 +333,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.7.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.7.2/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `4.7.1` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
+Replace `Ubuntu` only when your WSL build distribution has another name, and `4.7.2` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
 For development, `pnpm run dev` builds the app and starts a Host on its own, then prints a URL to open in a browser; the interface lives in `native/`: `cargo build -p rainy --offline` builds it and `bash native/scripts/run-ui.sh` starts it with a scratch data folder. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
