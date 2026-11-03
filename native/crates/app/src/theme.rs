@@ -158,6 +158,8 @@ pub fn apply(prefs: &UiPreferences, window: Option<&mut Window>, cx: &mut App) {
         theme.dark_theme = dark;
     });
     Theme::change(mode, window, cx);
+    // A downloaded font is loaded before the theme names it.
+    crate::fonts::load_chosen(prefs, cx);
     Theme::update(cx, |theme| {
         theme.font_family = family(&prefs.ui_font, UI_FONT);
         theme.mono_font_family = family(&prefs.code_font, CODE_FONT);

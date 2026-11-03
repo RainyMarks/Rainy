@@ -254,7 +254,7 @@ impl ChangesBar {
                                 cx.notify();
                             }))
                     })
-                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(trf(cx, "review.changesTitle", &[("count", &self.changes.len())])))
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(if self.changes.len() == 1 { tr(cx, "review.changesTitleOne") } else { trf(cx, "review.changesTitle", &[("count", &self.changes.len())]) }))
                     .child(div().flex_shrink_0().text_xs().text_color(theme.success).child(format!("+{added}")))
                     .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}"))),
             )

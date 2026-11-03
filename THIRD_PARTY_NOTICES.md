@@ -12,6 +12,10 @@ The document previews and the Markdown editor, which the Host serves into WebVie
 
 The PDF viewer uses [pdf.js](https://github.com/mozilla/pdf.js) 2.16.105 (`pdfjs-dist`), whose two browser files ship in `resources/pdfjs/` with its Apache License 2.0 text, together with its character maps (`cmaps/`, Adobe's license in `cmaps/LICENSE`) and standard fonts (`standard_fonts/`: Foxit fonts under `LICENSE_FOXIT`, Liberation fonts under the SIL Open Font License in `LICENSE_LIBERATION`).
 
+## Fonts downloaded on request
+
+Rainy's installer carries no fonts of its own. Settings → Appearance offers open-source fonts that are downloaded only when the user chooses one, from Rainy's [fonts-v1](https://github.com/RainyMarks/Rainy/releases/tag/fonts-v1) release, which holds each font file unmodified (only renamed) with its license, and are checked against the size and SHA-256 recorded in the application: Inter, Geist and Geist Mono, JetBrains Mono, Fira Code and Noto Sans SC from [google/fonts](https://github.com/google/fonts), and LXGW WenKai and LXGW WenKai Mono 1.530 from [lxgw/LxgwWenKai](https://github.com/lxgw/LxgwWenKai). All are under the SIL Open Font License 1.1; Copyright their authors as stated in each `OFL-*.txt`. They are kept in `<user data>\fonts` and loaded only while a preference names them.
+
 ## Strata local models
 
 Rainy does not ship or redistribute Strata. Settings → Tools downloads [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT license) from that project's own GitHub releases when the user asks for it, checks it against the release's install manifest, GitHub's digest and Strata's signed feed, and lets Strata's own updater install its inference engine and later updates. Strata's components, including any GPU runtime libraries, come with Strata's own license and notice files. Models are downloaded from Hugging Face or ModelScope at the user's request under their publishers' licenses; Rainy distributes no model weights.

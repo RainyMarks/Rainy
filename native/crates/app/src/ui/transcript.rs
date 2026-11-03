@@ -350,6 +350,28 @@ fn result_view(result: &ResultEntry<'_>, locale: Locale) -> ResultView {
     }
 }
 
+/// A path inside the chat's folder as the line shows it, relative to the folder; others as they are.
+fn shown_path(cwd: &str, path: &str) -> Option<String> {
+    let folder = cwd.trim_end_matches(['/', '\\']);
+    if folder.is_empty() || path.len() <= folder.len() + 1 {
+        return None;
+    }
+    let (head, rest) = path.split_at(folder.len());
+    let same = head.eq_ignore_ascii_case(folder) || head == folder;
+    (same && rest.starts_with(['/', '\\'])).then(|| rest[1..].to_owned())
+}
+
+/// The arguments a tool line is titled from, with its paths shown relative to the chat's folder.
+fn titled_arguments(cwd: &str, arguments: &Map<String, Value>) -> Map<String, Value> {
+    let mut shown = arguments.clone();
+    for key in ["file_path", "path"] {
+        if let Some(relative) = arguments.get(key).and_then(Value::as_str).and_then(|path| shown_path(cwd, path)) {
+            shown.insert(key.to_owned(), Value::String(relative));
+        }
+    }
+    shown
+}
+
 /// A path as the Host reaches it: relative ones are in the chat's folder.
 fn host_path(cwd: &str, path: &str) -> String {
     let absolute = path.starts_with('/') || path.starts_with('\\') || path.as_bytes().get(1) == Some(&b':');
@@ -423,12 +445,12 @@ fn tool_row(
         .and_then(Value::as_str)
         .or_else(|| patched.as_ref().map(|files| files[0]))
         .filter(|path| !path.trim().is_empty())
-        .map(|path| (SharedString::from(path.to_owned()), SharedString::from(host_path(ctx.cwd, path))));
+        .map(|path| (SharedString::from(shown_path(ctx.cwd, path).unwrap_or_else(|| path.to_owned())), SharedString::from(host_path(ctx.cwd, path))));
     let reverted = reverted(ctx, id, result.as_deref());
     ToolRow {
         call_id: id.to_owned().into(),
         name: name.to_owned().into(),
-        title: tool_title(ctx.locale, name, arguments).into(),
+        title: tool_title(ctx.locale, name, &titled_arguments(ctx.cwd, arguments)).into(),
         command,
         state,
         output,
@@ -1411,6 +1433,18 @@ mod tests {
         let shifted = rebuild_rows(&window, Locale::Zh, &later);
         assert_eq!(shifted, build_rows(&window, Locale::Zh));
         assert!(Arc::ptr_eq(&shifted[1].blocks, &later[1].blocks));
+    }
+
+    #[test]
+    fn shows_paths_in_the_folder_relative_to_it() {
+        assert_eq!(shown_path(r"C:\Work\app", r"C:\Work\app\src\a.py").as_deref(), Some(r"src\a.py"));
+        assert_eq!(shown_path(r"C:\Work\app\", r"c:\work\app\a.py").as_deref(), Some("a.py"));
+        assert_eq!(shown_path("/home/me/app", "/home/me/app/a.py").as_deref(), Some("a.py"));
+        assert_eq!(shown_path(r"C:\Work\app", r"C:\Work\apple\a.py"), None);
+        assert_eq!(shown_path(r"C:\Work\app", "src/a.py"), None);
+        assert_eq!(shown_path("", "/a.py"), None);
+        let args = json!({ "file_path": r"C:\Work\app\report.py", "offset": 3 }).as_object().unwrap().clone();
+        assert_eq!(titled_arguments(r"C:\Work\app", &args)["file_path"], "report.py");
     }
 
     #[test]

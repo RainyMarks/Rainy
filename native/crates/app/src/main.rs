@@ -3,6 +3,7 @@
 
 mod assets;
 mod boot;
+mod fonts;
 mod i18n;
 mod launch;
 mod placement;
@@ -62,6 +63,7 @@ fn main() {
         cx.set_app_identity("dev.rainy.agent", "Rainy");
         gpui_kit::init(cx);
         let user_data = paths.user_data.clone();
+        fonts::init(&user_data, cx);
         let store = Store::init(paths, cx);
         let ide = store::ide::Ide::init(store.clone(), cx);
         store::language::LanguageServers::init(store.clone(), &ide, cx);

@@ -2,12 +2,15 @@
 //! counterpart here, so their switch is gone while the stored `rainEffects` stays).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::json;
 
 use super::{group, heading, row, segmented, set_prefs};
+use crate::fonts::{self, CHOICES, FontLibrary, Use};
+use crate::i18n::Locale;
 use crate::store::Store;
 use crate::theme::{scheme_accent, themes_for};
 use crate::ui::tr;
@@ -32,6 +35,67 @@ const ACCENTS: [(&str, &str); 7] = [
 ];
 /// `FONT_SIZE_RANGE` in the renderer.
 const FONT_SIZES: std::ops::RangeInclusive<f32> = 11.0..=20.0;
+
+/// A font menu: Windows' own fonts, then open-source ones downloaded when chosen (`fonts.rs`).
+fn font_row(used: Use, preference: &str, cx: &App) -> AnyElement {
+    let t = |key: &str| tr(cx, &format!("settings.{key}"));
+    let locale = Store::global(cx).read(cx).locale();
+    let name = |choice: &fonts::Choice| if locale == Locale::Zh { choice.zh } else { choice.en };
+    let library = cx.global::<FontLibrary>();
+    let current = fonts::first_family(preference).to_owned();
+    let downloading = library.downloading.as_ref();
+    let label: SharedString = match downloading.filter(|download| download.used == used) {
+        Some(download) => {
+            let shown = fonts::choice(download.family, used).map_or(download.family, name);
+            format!("{shown} · {}", i18n_format(cx, "settings.fontDownloading", &[("percent", &download.percent())])).into()
+        }
+        None => fonts::choice(&current, used).map_or_else(|| current.clone(), |choice| name(choice).to_owned()).into(),
+    };
+    let items: Vec<(SharedString, &'static fonts::Choice, bool)> = CHOICES
+        .iter()
+        .filter(|choice| choice.used == used && (choice.file.is_some() || library.available(choice)))
+        .map(|choice| {
+            let ready = library.available(choice);
+            let text = match &choice.file {
+                Some(file) if !ready => format!("{} · {}", name(choice), i18n_format(cx, "settings.fontDownload", &[("size", &fonts::megabytes(file.bytes))])),
+                _ => name(choice).to_owned(),
+            };
+            (text.into(), choice, ready)
+        })
+        .collect();
+    let picker = Button::new(ElementId::Name(format!("font-{}", used.pref()).into()))
+        .outline()
+        .small()
+        .label(label)
+        .dropdown_caret(true)
+        .disabled(downloading.is_some())
+        .dropdown_menu(move |mut menu, _, _| {
+            for (text, choice, ready) in &items {
+                let (choice, ready) = (*choice, *ready);
+                menu = menu.item(PopupMenuItem::new(text.clone()).checked(current == choice.family).on_click(move |_, window, cx| {
+                    if ready {
+                        set_prefs(json!({ used.pref(): choice.family }), window, cx);
+                    } else {
+                        fonts::download_font(choice, window, cx);
+                    }
+                }));
+            }
+            menu
+        });
+    let (title, description) = match used {
+        Use::Ui => ("uiFontTitle", "uiFontDescription"),
+        Use::Code => ("codeFontTitle", "codeFontDescription"),
+    };
+    let description = match &library.failed {
+        Some((failed, error)) if *failed == used => i18n_format(cx, "settings.fontFailed", &[("error", error)]).into(),
+        _ => t(description),
+    };
+    row(cx, t(title), Some(description), picker)
+}
+
+fn i18n_format(cx: &App, key: &str, vars: &[(&str, &dyn std::fmt::Display)]) -> String {
+    crate::i18n::format(Store::global(cx).read(cx).locale(), key, vars)
+}
 
 fn color(hex: &str) -> Hsla {
     let value = u32::from_str_radix(hex.trim_start_matches('#').get(..6).unwrap_or("808080"), 16).unwrap_or(0x808080);
@@ -175,6 +239,7 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                         .child(div().text_xs().text_color(theme.muted_foreground).child(t("fontSizeUnit")));
                     row(cx, t(title), Some(t(description)), stepper)
                 })
+                .chain([font_row(Use::Ui, &prefs.ui_font, cx), font_row(Use::Code, &prefs.code_font, cx)])
                 .chain(std::iter::once(
                     v_flex()
                         .px_4()

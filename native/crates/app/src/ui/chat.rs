@@ -158,7 +158,7 @@ impl ChatPane {
             });
         });
         let placeholder = tr(cx, "chat.placeholder");
-        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 12).submit_on_enter(true).placeholder(placeholder));
+        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 12).submit_on_enter(true).placeholder(placeholder));
         let pane = cx.weak_entity();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| match event {
@@ -1219,23 +1219,23 @@ impl ChatPane {
             )
     }
 
-    /// Agent mode's composer: images inside it above the text, attach at the bottom left and send or stop at the
-    /// bottom right; the pickers are under it (`render_composer_footer`).
+    /// Agent mode's composer, one slim bar as Claude's: attach on the left, the text in the middle, send or stop on the
+    /// right, and images above them; the bar grows with the text and the buttons stay on its last line. The pickers
+    /// are under it (`render_composer_footer`).
     fn render_composer_wide(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let busy = self.busy(cx);
         let creating = self.creating_here();
         let session = self.session_id(cx);
-        let attachments = (!self.attachments.is_empty()).then(|| self.render_attachments(cx));
+        let attachments = (!self.attachments.is_empty()).then(|| div().px_1().pt_1().child(self.render_attachments(cx)));
         let theme = cx.theme();
         v_flex()
             .id("composer")
             .flex_shrink_0()
             .mx_3()
-            .px_3()
-            .pt_3()
-            .pb_2()
-            .gap_2()
-            .rounded(theme.radius_lg * 1.25)
+            .px_2()
+            .py_2()
+            .gap_1()
+            .rounded(theme.radius_lg * 1.5)
             .border_1()
             .border_color(theme.input)
             .bg(theme.popover)
@@ -1243,21 +1243,22 @@ impl ChatPane {
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.border_color(cx.theme().ring))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.attach_paths(paths.paths().to_vec(), window, cx)))
             .children(attachments)
-            .child(Textarea::new(&self.composer).appearance(false))
             .child(
                 h_flex()
-                    .gap_1()
-                    .items_center()
+                    .gap_2()
+                    .items_end()
                     .child(
-                        Button::new("attach-image")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Plus)
-                            .tooltip(tr(cx, "agent.attach"))
-                            .on_click(cx.listener(|this, _, window, cx| this.choose_images(window, cx))),
+                        h_flex().h(px(COMPOSER_LINE)).items_center().child(
+                            Button::new("attach-image")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Plus)
+                                .tooltip(tr(cx, "agent.attach"))
+                                .on_click(cx.listener(|this, _, window, cx| this.choose_images(window, cx))),
+                        ),
                     )
-                    .child(div().flex_1())
-                    .child(if busy {
+                    .child(h_flex().flex_1().min_w_0().min_h(px(COMPOSER_LINE)).items_center().child(Textarea::new(&self.composer).appearance(false).py_0().w_full()))
+                    .child(h_flex().h(px(COMPOSER_LINE)).items_center().child(if busy {
                         Button::new("stop")
                             .small()
                             .icon(IconName::Square)
@@ -1275,12 +1276,12 @@ impl ChatPane {
                             .loading(creating)
                             .tooltip(i18n::text(locale, if creating { "chat.creating" } else { "chat.send" }))
                             .on_click(cx.listener(|this, _, window, cx| this.send(false, window, cx)))
-                    }),
+                    })),
             )
     }
 
-    /// Under Agent mode's composer: the permission mode on the left; the model, its reasoning and how full the
-    /// context is on the right. The model gives way in a narrow window; the ring never leaves it.
+    /// Under Agent mode's composer, on the right as in Claude: the model and its reasoning, the permission mode and how
+    /// full the context is. The model gives way in a narrow window; the mode and the ring never leave it.
     fn render_composer_footer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
         let model_picker = self.model_picker(locale, cx);
@@ -1314,9 +1315,9 @@ impl ChatPane {
             .mb_2()
             .gap_1()
             .items_center()
-            .child(div().flex_shrink_0().child(permission_picker))
             .child(div().flex_1())
             .child(h_flex().min_w_0().overflow_hidden().gap_1().child(model_picker))
+            .child(div().flex_shrink_0().child(permission_picker))
             .children(ring)
     }
 }
@@ -1352,6 +1353,9 @@ fn report_failure(request: impl Future<Output = Result<Value, RpcError>> + 'stat
         })
         .detach();
 }
+
+/// Height of one line of Agent mode's composer bar: its text and its buttons are centred in it.
+const COMPOSER_LINE: f32 = 32.;
 
 /// The card the model control opens.
 const CARD_WIDTH: f32 = 300.;
