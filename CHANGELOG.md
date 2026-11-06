@@ -4,6 +4,15 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.8.1 · 2026-11-06
+
+Two fixes for problems that showed up after updating.
+
+- **.cmd and .bat files run again on a double-click**: with "Offer Rainy for file types" on, earlier versions also offered Rainy for batch files and shell scripts and wrote that again on every start. Windows then asked which app should open them, and once Rainy was the choice, a double-click opened them as text in Rainy instead of running them. Rainy no longer registers `.bat`, `.cmd`, `.sh`, `.bash` or `.zsh`, takes back what earlier versions wrote for them, and when their default app was set to Rainy, gives them back to Windows so they run again. A different app you chose for them stays.
+- **Strata no longer downloads models you already have**: without a chosen folder, downloads went to whichever drive had the most free space at that moment, so after one model filled a drive the next look went to an empty folder on another drive and the model seemed gone. The download folder now stays where the models are and is saved with the first download. Model files from earlier downloads in any drive's `Strata-data` are found: finished ones offer "Use the downloaded files", unfinished ones "Continue downloading" with what is left, and neither starts over. Choosing a data folder's `models` folder, or one model's folder, under "Change" now means that data folder.
+- **Faster Strata downloads in mainland China**: with a Chinese interface, models come from ModelScope (the same files as Hugging Face) unless you chose a source.
+- Setting up model files that are already here no longer shows "0 of 66 GB" as a download.
+
 ## 4.8.0 · 2026-11-03
 
 The project map now helps you get started in a project.
