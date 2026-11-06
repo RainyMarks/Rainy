@@ -50,7 +50,12 @@ pub struct Settings {
     pub port: u16,
     /// The context to serve with; none: the one Strata picks for this computer.
     pub context: Option<u32>,
+    /// Where downloads come from once the person chose it ([`Self::source_chosen`]); before that
+    /// [`Status::settings`] holds the one that applies: ModelScope for a Chinese interface, else Hugging Face.
     pub source: Source,
+    /// The person picked the source. Rainy up to 4.8 saved Hugging Face with any other change, so a file without this
+    /// mark has the automatic one.
+    pub source_chosen: bool,
     /// The model to start.
     pub selected: Option<Choice>,
     /// Update to Strata's newest release by itself.
@@ -59,8 +64,34 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { data_dir: None, port: DEFAULT_PORT, context: None, source: Source::default(), selected: None, auto_update: true }
+        Self { data_dir: None, port: DEFAULT_PORT, context: None, source: Source::default(), source_chosen: false, selected: None, auto_update: true }
     }
+}
+
+impl Settings {
+    /// The source downloads use: the chosen one, else ModelScope for a Chinese interface (Hugging Face is slow or
+    /// unreachable in mainland China; the files are the same).
+    pub fn effective_source(&self) -> Source {
+        match self.source_chosen {
+            true => self.source,
+            false if crate::locale::chinese() => Source::Modelscope,
+            false => Source::Huggingface,
+        }
+    }
+}
+
+/// Model files in a data folder that Strata has no run config for: an earlier download, possibly unfinished, that a
+/// download of the same model picks up where they are instead of starting over.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundModel {
+    /// The catalog id (the model folder's name, in lower case).
+    pub id: String,
+    /// The data folder holding `models\<id>`.
+    pub data_dir: String,
+    /// Every GGUF there has Strata's finish mark and nothing is half downloaded.
+    pub complete: bool,
+    pub bytes: u64,
 }
 
 /// A model of the catalog: `--family` and `--model`.
@@ -132,7 +163,8 @@ pub enum JobKind {
     Install,
     Update,
     Uninstall,
-    Download { family: String, model: String },
+    /// `local`: the model's files are already here and only what is missing beside them is fetched.
+    Download { family: String, model: String, local: bool },
     Remove { id: String },
 }
 
@@ -196,6 +228,8 @@ pub struct Status {
     pub notice: Option<String>,
     /// Files of the Strata Rainy 3.x to 4.2 bundled (0.1.39), in bytes.
     pub legacy_bytes: u64,
+    /// Model files on this computer that Strata has not set up (see [`FoundModel`]).
+    pub found: Vec<FoundModel>,
 }
 
 /// A loaded, credential-free server for the selected Host to verify and save.
@@ -229,6 +263,9 @@ struct Inner {
     notice: Option<String>,
     data_free_gb: Option<f64>,
     legacy_bytes: u64,
+    /// The data folder when none is chosen, found once: see [`Manager::automatic_data_dir`].
+    automatic_data: Option<PathBuf>,
+    found: Vec<FoundModel>,
     closed: bool,
 }
 
@@ -304,6 +341,53 @@ fn folder_bytes(path: &Path) -> u64 {
             _ => 0,
         })
         .sum()
+}
+
+/// The data folder Strata's own settings remember (`data_dir` of `<APPDATA>\Strata\settings.json` of its processes):
+/// where its setup put the model files of the last download, when that folder is still there.
+fn remembered_data_dir(roaming: &Path) -> Option<PathBuf> {
+    let settings: Value = read_json(&roaming.join("Strata").join("settings.json"))?;
+    let folder = PathBuf::from(settings.get("data_dir")?.as_str().filter(|folder| !folder.is_empty())?);
+    folder.is_dir().then_some(folder)
+}
+
+fn has_extension(path: &Path, extension: &str) -> bool {
+    path.extension().is_some_and(|found| found.eq_ignore_ascii_case(extension))
+}
+
+/// The model folders of a data folder (`<data>\models\<tag>`) with GGUF files or downloads in progress: the tag in
+/// lower case (the catalog's id), whether every GGUF has its finish mark (`<file>.done`) and no part is left, and the
+/// bytes on disk.
+fn models_in(data: &Path) -> Vec<(String, bool, u64)> {
+    let Ok(entries) = fs::read_dir(data.join("models")) else { return Vec::new() };
+    let mut found: Vec<(String, bool, u64)> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let files: Vec<PathBuf> = fs::read_dir(entry.path()).ok()?.flatten().map(|file| file.path()).collect();
+            let ggufs: Vec<&PathBuf> = files.iter().filter(|file| has_extension(file, "gguf")).collect();
+            let parts = files.iter().any(|file| has_extension(file, "part"));
+            if ggufs.is_empty() && !parts {
+                return None;
+            }
+            let marked = |file: &PathBuf| {
+                let mut mark = file.as_os_str().to_owned();
+                mark.push(".done");
+                Path::new(&mark).is_file()
+            };
+            let complete = !parts && ggufs.iter().all(|file| marked(file));
+            let bytes = files.iter().filter(|file| has_extension(file, "gguf") || has_extension(file, "part")).map(|file| fs::metadata(file).map(|info| info.len()).unwrap_or(0)).sum();
+            Some((entry.file_name().to_string_lossy().to_lowercase(), complete, bytes))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The same folder, spelled either way.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let key = |path: &Path| path.to_string_lossy().trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase();
+    key(a) == key(b)
 }
 
 fn free_gb(path: &Path) -> Option<f64> {
@@ -420,7 +504,7 @@ impl Manager {
 
     /// `external`: the person's own Strata, run with their own folders.
     fn terminal_for(&self, control: control::Control, external: bool) -> Terminal {
-        let source = self.inner.lock().unwrap().settings.source;
+        let source = self.inner.lock().unwrap().settings.effective_source();
         let environment = if external { env::own_environment(&self.temporary(), source) } else { env::environment(&self.folders, &self.temporary(), source) };
         Terminal { python: control.python(), root: control.root, environment, log: self.folders.logs.join("terminal.log") }
     }
@@ -432,8 +516,102 @@ impl Manager {
 
     /// Where model downloads go; none when the person's own Strata keeps its own folder and they chose none here.
     fn data_dir(&self) -> Option<PathBuf> {
+        let (chosen, automatic) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.settings.data_dir.clone().map(PathBuf::from), inner.automatic_data.clone())
+        };
+        if chosen.is_some() {
+            return chosen;
+        }
+        if self.external() {
+            return None;
+        }
+        Some(automatic.unwrap_or_else(|| {
+            let folder = self.automatic_data_dir();
+            self.inner.lock().unwrap().automatic_data = Some(folder.clone());
+            folder
+        }))
+    }
+
+    /// The data folder when none is chosen. It stays where the models are: the folder Strata's setup remembers from the
+    /// last download, else a `Strata-data` folder that holds model files, and only on a computer without any the
+    /// default (the roomiest drive), which the first download then keeps ([`Self::keep_data_dir`]). Up to 4.8 the
+    /// default was worked out anew each time, so a download that filled one drive moved the next one to another.
+    fn automatic_data_dir(&self) -> PathBuf {
+        if let Some(remembered) = remembered_data_dir(&self.folders.roaming) {
+            return remembered;
+        }
+        self.data_candidates().into_iter().find(|folder| !models_in(folder).is_empty()).unwrap_or_else(|| env::default_data_dir(&self.folders))
+    }
+
+    /// Every data folder model files of Rainy's Strata may be in: the chosen one, the one Strata remembers, Strata's
+    /// default beside its install folder, the one inside the tool and `<drive>:\Strata-data` on every fixed drive.
+    fn data_candidates(&self) -> Vec<PathBuf> {
         let chosen = self.inner.lock().unwrap().settings.data_dir.clone().map(PathBuf::from);
-        chosen.or_else(|| (!self.external()).then(|| env::default_data_dir(&self.folders)))
+        let mut folders: Vec<PathBuf> = chosen.into_iter().chain(remembered_data_dir(&self.folders.roaming)).collect();
+        folders.extend(self.folders.install.parent().map(|strata| strata.join("Strata-data")));
+        folders.push(self.folders.root.join("Strata-data"));
+        folders.extend(env::fixed_drives().into_iter().map(|drive| PathBuf::from(format!("{drive}:\\Strata-data"))));
+        let mut unique: Vec<PathBuf> = Vec::new();
+        for folder in folders {
+            if !unique.iter().any(|known| same_folder(known, &folder)) {
+                unique.push(folder);
+            }
+        }
+        unique
+    }
+
+    /// Model files in the candidate data folders that Strata has no run config for, one entry per model: the
+    /// complete copy, else the largest.
+    fn find_models(&self) -> Vec<FoundModel> {
+        if self.external() || self.control().is_none() {
+            return Vec::new();
+        }
+        let configured: Vec<String> = fs::read_dir(&self.folders.install)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        name.strip_prefix("strata-").and_then(|rest| rest.strip_suffix(".json")).filter(|tag| !tag.ends_with(".shared-settings")).map(str::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut found: Vec<FoundModel> = Vec::new();
+        for folder in self.data_candidates() {
+            for (id, complete, bytes) in models_in(&folder) {
+                if configured.contains(&id) {
+                    continue;
+                }
+                let candidate = FoundModel { id, data_dir: folder.to_string_lossy().into_owned(), complete, bytes };
+                match found.iter_mut().find(|known| known.id == candidate.id) {
+                    Some(known) if (candidate.complete, candidate.bytes) > (known.complete, known.bytes) => *known = candidate,
+                    Some(_) => {}
+                    None => found.push(candidate),
+                }
+            }
+        }
+        found
+    }
+
+    /// Save the data folder downloads use now, so that it does not change under the models.
+    fn keep_data_dir(&self) {
+        if self.external() {
+            return;
+        }
+        let Some(folder) = self.data_dir() else { return };
+        let settings = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.settings.data_dir.is_some() {
+                return;
+            }
+            inner.settings.data_dir = Some(folder.to_string_lossy().into_owned());
+            inner.settings.clone()
+        };
+        if let Ok(text) = serde_json::to_string_pretty(&settings) {
+            let _ = write_record(&self.folders.root.join(SETTINGS_FILE), &(text + "\n"));
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -450,12 +628,13 @@ impl Manager {
             catalog_error: inner.catalog_error.clone(),
             update: inner.update.clone(),
             checking: inner.checking,
-            settings: inner.settings.clone(),
+            settings: Settings { source: inner.settings.effective_source(), ..inner.settings.clone() },
             data_dir: data_dir.map(|folder| folder.to_string_lossy().into_owned()).unwrap_or_default(),
             data_free_gb: inner.data_free_gb,
             error: inner.error.clone(),
             notice: inner.notice.clone(),
             legacy_bytes: inner.legacy_bytes,
+            found: inner.found.clone(),
         }
     }
 
@@ -464,11 +643,14 @@ impl Manager {
         let port = self.inner.lock().unwrap().settings.port;
         let health = health::read(port).ok();
         let installed = self.read_installed();
+        self.inner.lock().unwrap().automatic_data = None;
         let free = self.data_dir().and_then(|folder| free_gb(&folder));
         let legacy = folder_bytes(&self.user_data.join("modules").join("strata")) + folder_bytes(&self.user_data.join("strata"));
+        let found = self.find_models();
         {
             let mut inner = self.inner.lock().unwrap();
             inner.installed = installed;
+            inner.found = found;
             inner.data_free_gb = free;
             inner.legacy_bytes = legacy;
             match inner.server.phase {
@@ -501,15 +683,23 @@ impl Manager {
         if settings.port < 1024 || settings.context.is_some_and(|context| !(4096..=2_097_152).contains(&context)) {
             bail!(localized("请检查端口和上下文长度。", "Check the port and the context length."));
         }
-        let source_changed = {
+        let (source_changed, folder_changed) = {
             let mut inner = self.inner.lock().unwrap();
-            let changed = inner.settings.source != settings.source;
+            let changed = (inner.settings.effective_source() != settings.effective_source(), inner.settings.data_dir != settings.data_dir);
             inner.settings = settings.clone();
             changed
         };
         write_record(&self.folders.root.join(SETTINGS_FILE), &(serde_json::to_string_pretty(&settings)? + "\n"))?;
         if source_changed {
             self.end_session();
+        }
+        if folder_changed {
+            // Model files in the new folder show at once, as files to use rather than to download.
+            let found = self.find_models();
+            let free = self.data_dir().and_then(|folder| free_gb(&folder));
+            let mut inner = self.inner.lock().unwrap();
+            inner.found = found;
+            inner.data_free_gb = free;
         }
         self.notify();
         Ok(self.status())
@@ -906,14 +1096,31 @@ impl Manager {
 
     /// The data folder downloads may go to: Strata's management server accepts a new folder only when its name starts
     /// with `Strata`, so another folder gets a `Strata-data` folder inside.
+    /// A folder inside a data folder (its `models` folder, or one model's folder) means that data folder, so that
+    /// choosing where the models already are never starts an empty `Strata-data` beside them.
     pub fn data_folder_for(chosen: &Path) -> PathBuf {
-        let named = chosen.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.to_ascii_lowercase().starts_with("strata"));
-        if named { chosen.to_path_buf() } else { chosen.join("Strata-data") }
+        let named = |folder: &Path| folder.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.to_ascii_lowercase().starts_with("strata"));
+        if let Some(data) = chosen.ancestors().take(3).find(|folder| named(folder) && folder.join("models").is_dir()) {
+            return data.to_path_buf();
+        }
+        if named(chosen) { chosen.to_path_buf() } else { chosen.join("Strata-data") }
     }
 
-    /// Download a model of the catalog in the background; it resumes where an earlier download stopped.
+    /// Download a model of the catalog in the background; it resumes where an earlier download stopped, in whichever
+    /// data folder that download left its files ([`Status::found`]), and a finished one is only set up.
     pub fn download(self: &Arc<Self>, choice: Choice) -> Result<()> {
-        self.download_from(choice, None)
+        let found = {
+            let inner = self.inner.lock().unwrap();
+            let id = inner.catalog.as_ref().and_then(|catalog| catalog.size(&choice.family, &choice.model)).map(|(_, size)| size.id.to_lowercase());
+            id.and_then(|id| inner.found.iter().find(|found| found.id == id).cloned())
+        };
+        match found {
+            Some(found) => {
+                log::info!("Strata: {} {} continues from the files in {}", choice.family, choice.model, found.data_dir);
+                self.download_from(choice, None, Some(PathBuf::from(found.data_dir)), found.complete)
+            }
+            None => self.download_from(choice, None, None, false),
+        }
     }
 
     /// Set up model files the person already has (downloaded by an earlier Rainy, Strata's own app or by hand): Strata
@@ -926,13 +1133,16 @@ impl Manager {
         let answer = terminal.json(&["models", "import", &picked, "--plan", "--output", "json"], Duration::from_secs(600), &AtomicBool::new(false)).map_err(|error| anyhow!(error))?;
         let (choice, folder) = local_choice(&answer, &picked)?;
         log::info!("Strata: {picked} holds {} {}; setting it up from {}", choice.family, choice.model, folder.display());
-        self.download_from(choice, Some(folder))
+        self.download_from(choice, Some(folder), None, true)
     }
 
-    fn download_from(self: &Arc<Self>, choice: Choice, local: Option<PathBuf>) -> Result<()> {
-        let kind = JobKind::Download { family: choice.family.clone(), model: choice.model.clone() };
+    /// `local`: model files elsewhere to use where they are; `data`: the data folder to use instead of the usual one,
+    /// where an earlier download left this model's files; `present`: the model's files are all here already.
+    fn download_from(self: &Arc<Self>, choice: Choice, local: Option<PathBuf>, data: Option<PathBuf>, present: bool) -> Result<()> {
+        let kind = JobKind::Download { family: choice.family.clone(), model: choice.model.clone(), local: present };
         self.begin(kind, "model:check", true, move |this, cancel| {
-            let data = this.data_dir();
+            this.keep_data_dir();
+            let data = data.or_else(|| this.data_dir());
             let context = this.inner.lock().unwrap().settings.context;
             let mut arguments = json!({ "family": choice.family, "model": choice.model });
             if let Some(data) = &data {
@@ -984,7 +1194,7 @@ impl Manager {
                     Some("installed") => {
                         this.inner.lock().unwrap().catalog = None;
                         this.load_catalog();
-                        Ok(Some(if local.is_some() {
+                        Ok(Some(if present {
                             localized("已有的模型文件已设置好，可以启动了。", "The model files you had are set up and ready to start.")
                         } else {
                             localized("模型已下载完成，可以启动了。", "The model is downloaded and ready to start.")
@@ -1270,6 +1480,91 @@ mod tests {
         assert_eq!(Manager::data_folder_for(Path::new("D:\\Strata-data")), PathBuf::from("D:\\Strata-data"));
         assert_eq!(Manager::data_folder_for(Path::new("D:\\models")), PathBuf::from("D:\\models\\Strata-data"));
         assert_eq!(Manager::data_folder_for(Path::new("E:\\strata")), PathBuf::from("E:\\strata"));
+        // Choosing the models folder, or one model's folder, of a data folder means that data folder.
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Strata-data");
+        fs::create_dir_all(data.join("models").join("Q2_0")).unwrap();
+        assert_eq!(Manager::data_folder_for(&data.join("models")), data);
+        assert_eq!(Manager::data_folder_for(&data.join("models").join("Q2_0")), data);
+        assert_eq!(Manager::data_folder_for(&data), data);
+    }
+
+    /// A Strata Terminal Rainy downloaded, enough for [`Manager::control`].
+    fn fake_terminal(user_data: &Path) {
+        let terminal = user_data.join("tools").join("strata").join("control").join("0.1.57");
+        for folder in ["python", "strata_control", "tools"] {
+            fs::create_dir_all(terminal.join(folder)).unwrap();
+        }
+        for file in ["python/python.exe", "strata.py", "tools/strata_mcp.py"] {
+            fs::write(terminal.join(file), b"").unwrap();
+        }
+    }
+
+    #[test]
+    fn the_data_folder_stays_where_strata_put_the_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_data = dir.path().join("rainy");
+        fake_terminal(&user_data);
+        let folders = Folders::new(&user_data);
+        // Strata's setup remembers the folder of the last download; Rainy keeps using it, whatever drive has room now.
+        let remembered = dir.path().join("Strata-data");
+        fs::create_dir_all(&remembered).unwrap();
+        fs::create_dir_all(folders.roaming.join("Strata")).unwrap();
+        fs::write(folders.roaming.join("Strata").join("settings.json"), serde_json::to_string(&json!({ "data_dir": remembered })).unwrap()).unwrap();
+        let manager = Manager::with_own(&user_data, None, || {});
+        assert_eq!(manager.status().data_dir, remembered.to_string_lossy());
+        // Once a download starts the folder is saved, so it is the same after Strata's record is gone.
+        manager.keep_data_dir();
+        fs::remove_file(folders.roaming.join("Strata").join("settings.json")).unwrap();
+        let again = Manager::with_own(&user_data, None, || {});
+        assert_eq!(again.status().data_dir, remembered.to_string_lossy());
+    }
+
+    #[test]
+    fn finds_model_files_strata_has_not_set_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_data = dir.path().join("rainy");
+        fake_terminal(&user_data);
+        let folders = Folders::new(&user_data);
+        let data = folders.root.join("Strata-data");
+        // A finished download: every GGUF has its finish mark.
+        let done = data.join("models").join("Q2_0");
+        fs::create_dir_all(&done).unwrap();
+        for name in ["Q2_0-00001-of-00002.gguf", "Q2_0-00002-of-00002.gguf"] {
+            fs::write(done.join(name), vec![0u8; 100]).unwrap();
+            fs::write(done.join(format!("{name}.done")), b"").unwrap();
+        }
+        // One that stopped half-way.
+        let half = data.join("models").join("IQ2_XS");
+        fs::create_dir_all(&half).unwrap();
+        fs::write(half.join("IQ2_XS-00001-of-00003.gguf.part"), vec![0u8; 40]).unwrap();
+        // One Strata set up already (its run config exists): not offered again.
+        let set_up = data.join("models").join("IQ3_S");
+        fs::create_dir_all(&set_up).unwrap();
+        fs::write(set_up.join("IQ3_S-00001-of-00001.gguf"), b"x").unwrap();
+        fs::create_dir_all(&folders.install).unwrap();
+        fs::write(folders.install.join("strata-iq3_s.json"), b"{}").unwrap();
+        let manager = Manager::with_own(&user_data, None, || {});
+        // No other data folder holds models in this test, so the one with them is the automatic folder.
+        assert_eq!(manager.status().data_dir, data.to_string_lossy());
+        manager.refresh();
+        let found = manager.status().found;
+        let summary: Vec<(&str, bool, u64)> = found.iter().map(|found| (found.id.as_str(), found.complete, found.bytes)).collect();
+        assert!(summary.contains(&("q2_0", true, 200)) && summary.contains(&("iq2_xs", false, 40)), "{summary:?}");
+        assert!(!summary.iter().any(|(id, _, _)| *id == "iq3_s"));
+        assert!(found.iter().all(|found| found.data_dir == data.to_string_lossy()));
+    }
+
+    #[test]
+    fn the_download_source_follows_the_interface_until_chosen() {
+        let automatic = Settings::default();
+        crate::locale::set_chinese(true);
+        assert_eq!(automatic.effective_source(), Source::Modelscope);
+        let chosen = Settings { source: Source::Huggingface, source_chosen: true, ..Settings::default() };
+        assert_eq!(chosen.effective_source(), Source::Huggingface);
+        // A file of 4.8 or earlier saved Hugging Face without anyone choosing it.
+        let earlier: Settings = serde_json::from_str(r#"{"port": 8080, "source": "huggingface"}"#).unwrap();
+        assert_eq!(earlier.effective_source(), Source::Modelscope);
     }
 
     #[test]

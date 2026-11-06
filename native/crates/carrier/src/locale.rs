@@ -9,6 +9,11 @@ pub fn set_chinese(chinese: bool) {
     CHINESE.store(chinese, Ordering::Relaxed);
 }
 
+/// Whether the interface speaks Chinese.
+pub fn chinese() -> bool {
+    CHINESE.load(Ordering::Relaxed)
+}
+
 /// The message in the interface language.
 pub fn localized(chinese: &str, english: &str) -> String {
     if CHINESE.load(Ordering::Relaxed) { chinese } else { english }.to_owned()

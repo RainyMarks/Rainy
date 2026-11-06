@@ -88,6 +88,30 @@ fn roomiest_other_drive() -> Option<char> {
         .map(|(letter, _)| letter)
 }
 
+/// The letters of this computer's fixed drives, for the `Strata-data` folders an earlier download may have used.
+pub fn fixed_drives() -> Vec<char> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+        const DRIVE_FIXED: u32 = 3;
+        // SAFETY: no arguments; a bit mask of the drives.
+        let mask = unsafe { GetLogicalDrives() };
+        (0..26u8)
+            .filter(|bit| mask & (1 << bit) != 0)
+            .map(|bit| char::from(b'A' + bit))
+            .filter(|letter| {
+                let root: Vec<u16> = format!("{letter}:\\").encode_utf16().chain(Some(0)).collect();
+                // SAFETY: a NUL-terminated root path.
+                unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_FIXED }
+            })
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 fn ascii(path: &Path) -> bool {
     path.as_os_str().to_str().is_some_and(str::is_ascii)
 }

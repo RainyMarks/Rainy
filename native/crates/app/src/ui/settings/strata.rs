@@ -312,7 +312,12 @@ impl StrataCard {
     fn render_job(&self, job: &Job, catalog: Option<&Catalog>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut line = step_text(job, cx).to_string();
-        if job.total > 0 {
+        // Setting up files that are here already: Strata counts the whole model as its download, which is not fetched.
+        let local = matches!(job.kind, JobKind::Download { local: true, .. });
+        if local && let Some(detail) = job.detail.as_ref().filter(|detail| !detail.is_empty() && **detail != line) {
+            line.push_str(&format!(" · {detail}"));
+        }
+        if job.total > 0 && !local {
             let percent = (job.done as f64 / job.total as f64 * 100.0).min(100.0);
             line.push_str(&format!("  {} / {}（{percent:.0}%）", bytes_text(job.done), bytes_text(job.total)));
         }
@@ -320,9 +325,9 @@ impl StrataCard {
             JobKind::Install => tr(cx, "settings.strataInstalling"),
             JobKind::Update => tr(cx, "settings.strataUpdating"),
             JobKind::Uninstall => tr(cx, "settings.strataUninstalling"),
-            JobKind::Download { family, model } => {
+            JobKind::Download { family, model, local } => {
                 let title = catalog.and_then(|catalog| catalog.size(family, model)).map(|(family, size)| format!("{} {}", family.title, size.model)).unwrap_or_else(|| format!("{family} {model}"));
-                trf(cx, "settings.strataDownloading", &[("model", &title)])
+                trf(cx, if *local { "settings.strataSettingUp" } else { "settings.strataDownloading" }, &[("model", &title)])
             }
             JobKind::Remove { id } => {
                 let title = catalog
@@ -331,7 +336,7 @@ impl StrataCard {
                 trf(cx, "settings.strataRemoving", &[("model", &title)])
             }
         };
-        let percent = (job.total > 0).then(|| (job.done as f32 / job.total as f32 * 100.0).min(100.0));
+        let percent = (job.total > 0 && !local).then(|| (job.done as f32 / job.total as f32 * 100.0).min(100.0));
         v_flex()
             .gap_2()
             .p_3()
@@ -349,7 +354,7 @@ impl StrataCard {
             )
             .child(div().text_xs().text_color(theme.muted_foreground).child(line))
             .when_some(percent, |this, percent| this.child(Progress::new("strata-progress").xsmall().value(percent)))
-            .when(matches!(job.kind, JobKind::Download { .. }), |this| this.child(Self::muted(tr(cx, "settings.strataDownloadResumes"), cx)))
+            .when(matches!(job.kind, JobKind::Download { local: false, .. }), |this| this.child(Self::muted(tr(cx, "settings.strataDownloadResumes"), cx)))
             .into_any_element()
     }
 
@@ -509,13 +514,35 @@ impl StrataCard {
         if !size.installed {
             let choice = choice.clone();
             let title = status.catalog.as_ref().and_then(|catalog| catalog.size(&choice.family, &choice.model)).map(|(family, size)| format!("{} {}", family.title, size.model)).unwrap_or_else(|| format!("{} {}", choice.family, choice.model));
-            let (gb, folder, free) = (size.download_gb, status.data_dir.clone(), status.data_free_gb);
+            // Files an earlier download left (in any data folder): a finished one is only set up, an unfinished one
+            // continues where it is.
+            let found = status.found.iter().find(|found| found.id.eq_ignore_ascii_case(&size.id));
+            let whole = found.is_some_and(|found| found.complete && found.bytes as f64 >= size.download_gb * 1e9 * 0.9);
+            if whole {
+                return Button::new(SharedString::from(format!("strata-use-{id}")))
+                    .primary()
+                    .xsmall()
+                    .label(tr(cx, "settings.strataUseFound"))
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let choice = choice.clone();
+                        this.run(window, cx, move |store, cx| store.download_strata_model(choice, cx));
+                    }))
+                    .into_any_element();
+            }
+            let left = (size.download_gb - found.map_or(0.0, |found| found.bytes as f64 / 1e9)).max(0.1);
+            let folder = found.map_or_else(|| status.data_dir.clone(), |found| found.data_dir.clone());
+            let free = if found.is_some() { None } else { status.data_free_gb };
+            let label = match found {
+                Some(_) => trf(cx, "settings.strataResume", &[("size", &gb_text(left))]),
+                None => trf(cx, "settings.strataDownload", &[("size", &gb_text(left))]),
+            };
             return Button::new(SharedString::from(format!("strata-download-{id}")))
                 .primary()
                 .xsmall()
-                .label(trf(cx, "settings.strataDownload", &[("size", &gb_text(size.download_gb))]))
+                .label(label)
                 .disabled(busy)
-                .on_click(cx.listener(move |this, _, window, cx| this.confirm_download(choice.clone(), title.clone(), gb, folder.clone(), free, window, cx)))
+                .on_click(cx.listener(move |this, _, window, cx| this.confirm_download(choice.clone(), title.clone(), left, folder.clone(), free, window, cx)))
                 .into_any_element();
         }
         let (start, remove) = (choice.clone(), choice.clone());
@@ -655,7 +682,16 @@ impl StrataCard {
                         let entity = cx.entity().downgrade();
                         move |value, window, cx| {
                             let source = if value == "modelscope" { Source::Modelscope } else { Source::Huggingface };
-                            let _ = entity.update(cx, |this, cx| this.save(move |settings| settings.source = source, window, cx));
+                            let _ = entity.update(cx, |this, cx| {
+                                this.save(
+                                    move |settings| {
+                                        settings.source = source;
+                                        settings.source_chosen = true;
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            });
                         }
                     },
                 ))
