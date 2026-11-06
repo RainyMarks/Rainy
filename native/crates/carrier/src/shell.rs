@@ -55,8 +55,8 @@ impl FileType {
 }
 
 /// Text formats Rainy edits: documents, data and source code. Office files, PDFs and media are previews only and are left
-/// to the applications made for them.
-pub const FILE_TYPES: [FileType; 48] = [
+/// to the applications made for them, and scripts Windows runs on a double-click ([`RETIRED_EXTENSIONS`]) to Windows.
+pub const FILE_TYPES: [FileType; 46] = [
     FileType::new(&["md", "markdown", "mdown", "mkd"], "Markdown 文档", "Markdown Document"),
     FileType::new(&["mdx"], "MDX 文档", "MDX Document"),
     FileType::new(&["txt", "text"], "文本文档", "Text Document"),
@@ -96,9 +96,7 @@ pub const FILE_TYPES: [FileType; 48] = [
     FileType::new(&["dart"], "Dart 源文件", "Dart Source File"),
     FileType::new(&["scala"], "Scala 源文件", "Scala Source File"),
     FileType::new(&["sql"], "SQL 文件", "SQL File"),
-    FileType::new(&["sh", "bash", "zsh"], "Shell 脚本", "Shell Script"),
     FileType::new(&["ps1", "psm1"], "PowerShell 脚本", "PowerShell Script"),
-    FileType::new(&["bat", "cmd"], "批处理文件", "Batch File"),
     FileType::new(&["cmake"], "CMake 文件", "CMake File"),
     FileType::new(&["tex"], "LaTeX 文档", "LaTeX Document"),
     FileType::new(&["bib"], "BibTeX 文献库", "BibTeX Library"),
@@ -106,6 +104,60 @@ pub const FILE_TYPES: [FileType; 48] = [
     FileType::new(&["adoc"], "AsciiDoc 文档", "AsciiDoc Document"),
     FileType::new(&["diff", "patch"], "补丁文件", "Patch File"),
 ];
+
+/// Scripts a double-click runs (batch files, and shell scripts where Git for Windows is installed). Up to 4.8 Rainy was
+/// offered for them too; Windows then asked which app should open them, and once Rainy was picked, or became the choice,
+/// they opened as text in Rainy and stopped running. Every sync takes these entries back ([`retire_operations`]).
+pub const RETIRED_EXTENSIONS: [&str; 5] = ["bat", "cmd", "sh", "bash", "zsh"];
+
+/// Explorer's own record of the user's choices for an extension.
+fn file_exts(extension: &str) -> String {
+    format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{extension}")
+}
+
+/// Take back what 4.8 and earlier registered for [`RETIRED_EXTENSIONS`]: Rainy's ProgID and its place in "Open with",
+/// and a default-app choice of Rainy for them, so Windows runs them again on a double-click. A choice of any other app
+/// is left alone, and so are keys the user had (`memory.keep`).
+pub fn retire_operations(memory: &Memory) -> Vec<Operation> {
+    let keep: HashSet<String> = memory.keep.iter().map(|path| path.to_lowercase()).collect();
+    let mut operations = Vec::new();
+    for extension in RETIRED_EXTENSIONS {
+        let id = prog_id(extension);
+        let type_key = format!(r"{CLASSES}\.{extension}");
+        let list = format!(r"{type_key}\OpenWithProgids");
+        // The keys Rainy created for them go once empty, when the record says they were not the user's.
+        let ours = memory.recorded.file_types && !keep.contains(&list.to_lowercase());
+        let parents = if ours && !keep.contains(&type_key.to_lowercase()) { vec![type_key.clone()] } else { Vec::new() };
+        operations.extend([
+            Operation::RemoveKey { key: format!(r"{CLASSES}\{id}"), parents: Vec::new(), marker: None },
+            Operation::RemoveValue { key: list, name: id.clone(), parents, keep_key: !ours },
+            Operation::RemoveValue { key: format!(r"{APPLICATION}\SupportedTypes"), name: format!(".{extension}"), parents: Vec::new(), keep_key: true },
+            Operation::RemoveValue { key: format!(r"{CAPABILITIES}\FileAssociations"), name: format!(".{extension}"), parents: Vec::new(), keep_key: true },
+            Operation::RemoveValue { key: format!(r"{}\OpenWithProgids", file_exts(extension)), name: id.clone(), parents: Vec::new(), keep_key: true },
+        ]);
+        for choice in ["UserChoice", "UserChoiceLatest"] {
+            for chosen in [id.as_str(), r"Applications\RainyAgent.exe"] {
+                operations.push(Operation::RemoveKey { key: format!(r"{}\{choice}", file_exts(extension)), parents: Vec::new(), marker: Some(("ProgId".to_owned(), chosen.to_owned())) });
+            }
+        }
+    }
+    operations
+}
+
+/// Carry out [`retire_operations`]; a failure is logged, never in the way of the rest of a sync.
+fn retire(registry: &mut impl Registry, memory: &Memory) -> bool {
+    let mut changed = false;
+    for operation in retire_operations(memory) {
+        match carry_out(registry, &operation) {
+            Ok(done) => changed |= done,
+            Err(error) => log::warn!("Explorer integration: {error:#}"),
+        }
+    }
+    if changed {
+        registry.associations_changed();
+    }
+    changed
+}
 
 /// Every registered extension, without its dot.
 pub fn extensions() -> impl Iterator<Item = &'static str> {
@@ -402,7 +454,11 @@ fn carry_out(registry: &mut impl Registry, operation: &Operation) -> Result<bool
             {
                 return Ok(false);
             }
-            registry.delete_tree(key)?;
+            // Windows denies setting values on a default-app choice (`UserChoice`), which deleting a tree needs; a key
+            // without subkeys can still be deleted whole.
+            if let Err(error) = registry.delete_tree(key) {
+                registry.delete_key(key).map_err(|_| error)?;
+            }
             remove_empty_parents(registry, parents)?;
         }
         Operation::RemoveValue { key, name, parents, keep_key } => {
@@ -449,9 +505,10 @@ pub fn sync(
     memory: &Memory,
     mut remember: impl FnMut(&Memory) -> Result<()>,
 ) -> Result<Synced> {
+    let retired = retire(registry, memory);
     let status = read_status(&*registry)?;
     if current(&status, executable, language, wanted) {
-        return Ok(Synced { changed: false, memory: memory.clone() });
+        return Ok(Synced { changed: retired, memory: memory.clone() });
     }
     let registered = ShellIntegration { context_menu: status.context_menu_command.is_some(), file_types: status.file_type_command.is_some() };
     // A part whose write was cut short keeps the memory saved before that write: the keys it created since are Rainy's.
@@ -480,7 +537,7 @@ pub fn sync(
         context_menu: (registered.context_menu || status.context_menu_traces) && !elsewhere(status.context_menu_command.as_deref(), executable),
         file_types: (registered.file_types || status.file_type_traces) && !elsewhere(status.file_type_command.as_deref(), executable),
     };
-    let changed = apply(registry, &operations(executable, language, wanted, &before, present))?;
+    let changed = apply(registry, &operations(executable, language, wanted, &before, present))? || retired;
     // A part that is off now has nothing of Rainy's left; the next time it is turned on, it looks again.
     let off: Vec<String> = removable_keys(ShellIntegration { context_menu: !wanted.context_menu, file_types: !wanted.file_types })
         .iter()
@@ -503,7 +560,8 @@ pub fn unregister(registry: &mut impl Registry, executable: &str, memory: &Memor
         context_menu: !elsewhere(status.context_menu_command.as_deref(), executable),
         file_types: !elsewhere(status.file_type_command.as_deref(), executable),
     };
-    apply(registry, &operations(executable, Language::Chinese, ShellIntegration::default(), memory, present))
+    let retired = retire(registry, memory);
+    Ok(apply(registry, &operations(executable, Language::Chinese, ShellIntegration::default(), memory, present))? || retired)
 }
 
 /// The user's choice in desktop.json (`shellIntegrationPreference`): each part is on only when it is `true` under
@@ -975,6 +1033,68 @@ mod tests {
     }
 
     #[test]
+    fn scripts_that_run_on_a_double_click_are_never_offered() {
+        for retired in RETIRED_EXTENSIONS {
+            assert!(!extensions().any(|extension| extension == retired), "{retired}");
+        }
+        let planned = operations(EXE, Language::Chinese, on(false, true), &recorded(&[]), ShellIntegration::default());
+        assert!(!planned.iter().any(|operation| { let key = key(operation).to_lowercase(); key.contains(r"\.cmd") || key.contains("rainy.cmd") || key.contains(r"\.bat") }));
+    }
+
+    /// A computer 4.8 or earlier registered batch files on, where the user then picked Rainy to open .cmd files.
+    fn hit_by_4_8(hive: &mut Hive) {
+        for extension in ["bat", "cmd"] {
+            let id = prog_id(extension);
+            hive.set(&format!(r"{CLASSES}\{id}\shell\open\command"), "", &launch_command(EXE, "%1")).unwrap();
+            hive.set(&format!(r"{CLASSES}\.{extension}\OpenWithProgids"), &id, "").unwrap();
+            hive.set(&format!(r"{APPLICATION}\SupportedTypes"), &format!(".{extension}"), "").unwrap();
+            hive.set(&format!(r"{CAPABILITIES}\FileAssociations"), &format!(".{extension}"), &id).unwrap();
+            hive.set(&format!(r"{}\OpenWithProgids", file_exts(extension)), &id, "").unwrap();
+        }
+        hive.set(&format!(r"{}\UserChoice", file_exts("cmd")), "ProgId", "Rainy.cmd").unwrap();
+        hive.set(&format!(r"{}\UserChoice", file_exts("cmd")), "Hash", "x").unwrap();
+        // The user chose another editor for .bat files themselves: that stays.
+        hive.set(&format!(r"{}\UserChoice", file_exts("bat")), "ProgId", r"Applications\Code.exe").unwrap();
+    }
+
+    #[test]
+    fn a_sync_gives_batch_files_back_to_windows() {
+        let mut hive = Hive::default();
+        hit_by_4_8(&mut hive);
+        let synced = quietly(&mut hive, EXE, Language::Chinese, on(false, true), &recorded(&[]));
+        assert!(synced.changed && hive.notified > 0);
+        assert!(!hive.has(&format!(r"{}\UserChoice", file_exts("cmd"))));
+        assert_eq!(hive.text(&format!(r"{}\UserChoice", file_exts("bat")), "ProgId").as_deref(), Some(r"Applications\Code.exe"));
+        for extension in ["bat", "cmd"] {
+            assert!(!hive.has(&format!(r"{CLASSES}\{}", prog_id(extension))));
+            // Rainy made these keys (the record says so and they were not the user's): they go with its value.
+            assert!(!hive.has(&format!(r"{CLASSES}\.{extension}")), "{extension}");
+            assert_eq!(hive.text(&format!(r"{APPLICATION}\SupportedTypes"), &format!(".{extension}")), None);
+            assert_eq!(hive.text(&format!(r"{CAPABILITIES}\FileAssociations"), &format!(".{extension}")), None);
+            assert!(!hive.read(&format!(r"{}\OpenWithProgids", file_exts(extension)), &prog_id(extension)).unwrap().is_some());
+        }
+        // The other file types are registered as before, and a second sync has nothing to do.
+        assert!(hive.text(&format!(r"{CLASSES}\Rainy.md\shell\open\command"), "").is_some());
+        assert!(!quietly(&mut hive, EXE, Language::Chinese, on(false, true), &recorded(&[])).changed);
+    }
+
+    #[test]
+    fn batch_files_are_given_back_with_the_integration_off_and_on_uninstall() {
+        // Off: the part was turned off but 4.8's batch entries and the choice of Rainy remain.
+        let mut hive = Hive::default();
+        hit_by_4_8(&mut hive);
+        quietly(&mut hive, EXE, Language::Chinese, ShellIntegration::default(), &Memory::default());
+        assert!(!hive.has(&format!(r"{}\UserChoice", file_exts("cmd"))) && !hive.has(&format!(r"{CLASSES}\Rainy.cmd")));
+        // Without the record the user's .cmd key stays, emptied of Rainy's value.
+        assert!(hive.has(&format!(r"{CLASSES}\.cmd\OpenWithProgids")));
+        assert_eq!(hive.text(&format!(r"{CLASSES}\.cmd\OpenWithProgids"), "Rainy.cmd"), None);
+        let mut hive = Hive::default();
+        hit_by_4_8(&mut hive);
+        assert!(unregister(&mut hive, EXE, &recorded(&[])).unwrap());
+        assert!(!hive.has(&format!(r"{}\UserChoice", file_exts("cmd"))) && !hive.has(&format!(r"{CLASSES}\Rainy.bat")));
+    }
+
+    #[test]
     fn registers_the_context_menu_on_files_folders_and_backgrounds() {
         let planned = operations(EXE, Language::Chinese, on(true, false), &recorded(&[]), ALL);
         let commands: Vec<&Operation> = planned.iter().filter(|operation| matches!(operation, Operation::Set { key, .. } if key.ends_with(r"\command"))).collect();
@@ -1028,7 +1148,7 @@ mod tests {
         assert!(planned.contains(&set(r"Software\RegisteredApplications", "Rainy", r"Software\RainyMarks\Rainy\Capabilities")));
         assert!(planned.contains(&set(APP, "FriendlyAppName", "Rainy")));
         assert!(planned.contains(&set(r"Software\RainyMarks\Rainy\Capabilities", "ApplicationDescription", "Workbench for AI coding, Markdown writing and research")));
-        assert_eq!(planned.iter().filter(|operation| matches!(operation, Operation::Set { .. })).count(), 6 + 6 * 80);
+        assert_eq!(planned.iter().filter(|operation| matches!(operation, Operation::Set { .. })).count(), 6 + 6 * 75);
         // Never the extension's own default: Windows keeps the user's choice.
         assert!(!planned.iter().any(|operation| matches!(operation, Operation::Set { key, name, .. }
             if name.is_empty() && key.rsplit('\\').next().is_some_and(|last| last.starts_with('.')))));
@@ -1037,8 +1157,8 @@ mod tests {
     #[test]
     fn lists_text_formats_only_each_extension_once() {
         let all: Vec<&str> = extensions().collect();
-        assert_eq!(all.len(), 80);
-        assert_eq!(all.iter().collect::<HashSet<_>>().len(), 80);
+        assert_eq!(all.len(), 75);
+        assert_eq!(all.iter().collect::<HashSet<_>>().len(), 75);
         for extension in ["md", "markdown", "txt", "json", "py", "c", "cpp"] {
             assert!(all.contains(&extension));
         }
@@ -1274,7 +1394,7 @@ mod tests {
         }));
         assert!(removable_keys(on(true, false)).contains(&r"Software\Classes\Directory".to_owned()));
         assert_eq!(removable_keys(on(true, false)).len(), 6);
-        assert_eq!(removable_keys(on(false, true)).len(), 4 + 2 * 80);
+        assert_eq!(removable_keys(on(false, true)).len(), 4 + 2 * 75);
         assert!(removable_keys(OFF).is_empty());
         assert_eq!(memory(&map(json!({"explorerIntegration": {"keep": ["a", 1, "b"], "recorded": {"fileTypes": true}}}))), Memory {
             keep: vec!["a".into(), "b".into()],
@@ -1291,8 +1411,8 @@ mod tests {
         quietly(&mut registry, EXE, Language::Chinese, ALL, &none);
         let writes = registry.writes;
         assert!(quietly(&mut registry, EXE, Language::English, ALL, &none).changed);
-        // The three menu labels, the 80 type names and the description.
-        assert_eq!(registry.writes - writes, 3 + 80 + 1);
+        // The three menu labels, the 75 type names and the description.
+        assert_eq!(registry.writes - writes, 3 + 75 + 1);
         assert_eq!(registry.text(r"Software\Classes\Directory\shell\Rainy", "").as_deref(), Some("Open with Rainy"));
         assert_eq!(registry.text(r"Software\Classes\Rainy.rs", "").as_deref(), Some("Rust Source File"));
         // With only the file types on, the names follow the language too.
@@ -1390,7 +1510,7 @@ mod tests {
             .filter(|(_, operation)| matches!(operation, Operation::Set { key, name, .. } if name.is_empty() && key.rsplit('\\').next().is_some_and(|last| last.starts_with("Rainy."))))
             .map(|(index, _)| index)
             .collect();
-        assert_eq!(names.len(), 80);
+        assert_eq!(names.len(), 75);
         assert_eq!(planned.iter().position(|operation| *operation == set(markdown, "", "Markdown 文档")), names.last().copied());
     }
 
@@ -1576,6 +1696,27 @@ mod tests {
 
     /// The Win32 registry under a scratch key of the current user, removed afterwards. Nothing under Software\Classes is
     /// touched and Explorer is not told anything.
+    #[cfg(windows)]
+    #[test]
+    fn a_default_app_choice_windows_protects_is_still_taken_back() {
+        let scratch = format!(r"Software\RainyTest-choice-{}", std::process::id());
+        let choice = format!(r"{scratch}\.cmd\UserChoice");
+        let mut registry = CurrentUser;
+        registry.set(&choice, "ProgId", "Rainy.cmd").unwrap();
+        // Windows denies the user setting values on a UserChoice key; deleting it as a tree then fails.
+        let script = format!(
+            "$k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('{choice}',$true);$a=$k.GetAccessControl();$me=[Security.Principal.WindowsIdentity]::GetCurrent().Name;$a.AddAccessRule((New-Object Security.AccessControl.RegistryAccessRule($me,'SetValue','Deny')));$k.SetAccessControl($a);$k.Close()"
+        );
+        let denied = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).status().unwrap();
+        assert!(denied.success());
+        assert!(registry.set(&choice, "ProgId", "x").is_err(), "the deny rule should be in place");
+        let remove = Operation::RemoveKey { key: choice.clone(), parents: Vec::new(), marker: Some(("ProgId".into(), "Rainy.cmd".into())) };
+        assert!(carry_out(&mut registry, &remove).unwrap());
+        assert!(!registry.exists(&choice).unwrap());
+        registry.delete_tree(&scratch).unwrap();
+        assert!(!registry.exists(&scratch).unwrap());
+    }
+
     #[cfg(windows)]
     #[test]
     fn the_current_user_registry_reads_writes_and_deletes() {
