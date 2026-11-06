@@ -170,6 +170,7 @@ impl Files {
             "workspaces.attach" => return Ok(self.projects.attach(required("workspaceId")?, required("path")?, None)?.view()),
             "workspaces.removeRoot" => return Ok(self.projects.detach(required("workspaceId")?, required("rootId")?)?.view()),
             "workspaces.rename" => return Ok(self.projects.rename(required("workspaceId")?, required("title")?)?.view()),
+            "workspaces.pin" => return Ok(self.projects.pin(required("workspaceId")?, request["pinned"].as_bool().unwrap_or(true))?.view()),
             "workspaces.remove" => {
                 let id = required("workspaceId")?;
                 if self.projects.get(id).is_none() {

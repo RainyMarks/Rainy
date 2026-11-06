@@ -279,6 +279,36 @@ pub struct SessionSummary {
     pub status: SessionRunStatus,
     #[serde(default)]
     pub awaiting_approval: Option<bool>,
+    /// When the user last saw the chat (epoch ms); a later `updated_at` of an idle chat is a reply they have not seen.
+    /// None for chats of 4.8 and earlier until they are opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<f64>,
+    /// The Git worktree the chat works in, away from the project's own checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Worktree>,
+}
+
+impl SessionSummary {
+    /// A reply came after the user last saw the chat and nothing runs any more.
+    pub fn unread(&self) -> bool {
+        self.status == "idle" && self.read_at.is_some_and(|read| self.updated_at > read + 1000.0)
+    }
+}
+
+/// A chat's own Git worktree (the Codex app's "Worktree" mode): a detached checkout of the project's repository in the
+/// Host's `worktrees` folder, which the chat can turn into a branch or hand off to the project's checkout.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    /// The worktree's folder, the chat's working folder.
+    pub path: String,
+    /// The project's checkout it was made from.
+    pub repository: String,
+    /// The commit it started at.
+    pub base: String,
+    /// The branch made from it, once one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// A tool call waiting for the user.

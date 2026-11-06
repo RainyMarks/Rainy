@@ -275,6 +275,8 @@ pub struct Ide {
     closing: BTreeSet<String>,
     /// The chat to show for the project just opened, until the chat list has loaded.
     pending_session: Option<Option<String>>,
+    /// The project is being shown for a new chat: its last chat is not brought back when its state arrives.
+    fresh: bool,
     /// Lists the shown directories again a moment after the Host reports changed files.
     relist: Option<Task<()>>,
     /// Checks open files and listings every few seconds; asking also keeps the Host watching their folders.
@@ -339,6 +341,7 @@ impl Ide {
                 window: None,
                 closing: BTreeSet::new(),
                 pending_session: None,
+                fresh: false,
                 reveals: HashMap::new(),
                 relist: None,
                 poll: None,
@@ -463,6 +466,15 @@ impl Ide {
         self.select_task(workspace, window, cx).detach();
     }
 
+    /// Show a project for a new chat in it (the sidebar's "+" of a project): its last chat stays where it is.
+    pub fn select_for_new_chat(&mut self, workspace: IdeWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.as_ref().is_some_and(|current| current.workspace_id == workspace.workspace_id) {
+            return;
+        }
+        self.fresh = true;
+        self.select_task(workspace, window, cx).detach();
+    }
+
     /// `select`, done once the project's saved tabs are shown and their files read.
     fn select_task(&mut self, workspace: IdeWorkspace, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         if self.workspace.as_ref().is_some_and(|current| current.workspace_id == workspace.workspace_id) {
@@ -533,7 +545,7 @@ impl Ide {
                 this.active = active.filter(|key| tabs.contains(key)).or_else(|| tabs.first().cloned());
                 let last = this.state.as_ref().and_then(|state| state.data["lastSessionId"].as_str().map(str::to_owned));
                 // The chat list may still be loading; the chat is chosen once it has come.
-                this.pending_session = Some(last);
+                this.pending_session = if std::mem::take(&mut this.fresh) { None } else { Some(last) };
                 this.restore_session(cx);
                 cx.emit(IdeEvent::ActiveChanged);
                 cx.notify();
@@ -1493,6 +1505,29 @@ impl Ide {
         cx.notify();
     }
 
+    /// Rename a project, or keep it at the top of the sidebar: `workspaces.rename` or `workspaces.pin`.
+    pub fn change_workspace(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let request = self.request::<IdeWorkspace>(request, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(changed) => {
+                        for known in this.workspaces.iter_mut().chain(this.workspace.as_mut()) {
+                            if known.workspace_id == changed.workspace_id {
+                                known.title = changed.title.clone();
+                                known.pinned = changed.pinned;
+                            }
+                        }
+                    }
+                    Err(error) => this.error = Some(ide_error(this.locale(cx), &error)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn remove_workspace(&mut self, workspace_id: String, window: &mut Window, cx: &mut Context<Self>) {
         let request = self.request::<Value>(json!({ "op": "workspaces.remove", "workspaceId": workspace_id }), cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -1837,7 +1872,7 @@ mod tests {
 
     #[test]
     fn opens_a_launched_file_in_the_project_that_holds_it_most_closely() {
-        let project = |id: &str, path: &str, roots: Option<Vec<WorkspaceRoot>>| IdeWorkspace { workspace_id: id.into(), path: path.into(), title: id.into(), roots };
+        let project = |id: &str, path: &str, roots: Option<Vec<WorkspaceRoot>>| IdeWorkspace { workspace_id: id.into(), path: path.into(), title: id.into(), roots, pinned: false };
         let notes = project("notes", r"C:\Users\me\Notes", None);
         let daily = project("daily", r"C:\Users\me\Notes\daily", None);
         let linux = project("linux", "/home/me/src", None);

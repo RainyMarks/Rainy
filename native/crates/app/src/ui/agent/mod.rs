@@ -148,7 +148,7 @@ pub fn with_project_menu(button: Button, cx: &App) -> impl IntoElement + use<> {
 }
 
 /// Confirm, then remove a project from the list; its files stay on disk.
-fn confirm_remove(ide: Entity<Ide>, workspace_id: String, title: String, window: &mut Window, cx: &mut App) {
+pub(crate) fn confirm_remove(ide: Entity<Ide>, workspace_id: String, title: String, window: &mut Window, cx: &mut App) {
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let (ide, workspace_id) = (ide.clone(), workspace_id.clone());
         alert

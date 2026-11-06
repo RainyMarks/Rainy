@@ -1620,6 +1620,8 @@ pub fn summary_of(chat: &StoredChat, status: &str, awaiting_approval: bool) -> S
         pinned: chat.pinned,
         status: status.into(),
         awaiting_approval: awaiting_approval.then_some(true),
+        read_at: chat.read_at,
+        worktree: chat.worktree.clone(),
     }
 }
 

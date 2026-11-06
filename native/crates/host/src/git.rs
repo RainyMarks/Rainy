@@ -375,6 +375,105 @@ impl Git {
     }
 }
 
+/// A chat's own Git worktree: made, turned into a branch, handed off to the project's checkout and removed.
+impl Git {
+    fn at(path: &Path) -> Root {
+        Root { root_id: String::new(), path: path.to_string_lossy().into_owned(), title: String::new(), primary: true }
+    }
+
+    /// A detached worktree in `worktrees` of the repository holding `folder`, at its current commit and with its
+    /// uncommitted changes to tracked files (untracked and ignored files stay behind, as in the Codex app). Returns the
+    /// worktree and the chat's working folder in it (the same place below the repository's top as `folder`).
+    pub async fn worktree_add(&self, folder: &Path, worktrees: &Path) -> HostResult<(rainy_protocol::Worktree, String)> {
+        let here = Self::at(folder);
+        let not_repository = || HostError::new("not-git", l("这个项目不在 Git 仓库里，无法使用独立工作区。", "This project is not in a Git repository, so it cannot use a worktree."));
+        let top = self.text(&here, &["rev-parse", "--show-toplevel"]).await?.trim().to_owned();
+        if top.is_empty() {
+            return Err(not_repository());
+        }
+        let prefix = self.text(&here, &["rev-parse", "--show-prefix"]).await?.trim().to_owned();
+        let base = self.text(&here, &["rev-parse", "--verify", "HEAD"]).await?.trim().to_owned();
+        if base.is_empty() {
+            return Err(HostError::new("git-empty", l("仓库还没有任何提交，无法创建独立工作区。请先提交一次。", "The repository has no commit yet, so a worktree cannot start from one. Commit once first.")));
+        }
+        let changes = self.text(&here, &["stash", "create"]).await.unwrap_or_default().trim().to_owned();
+        std::fs::create_dir_all(worktrees)?;
+        let name = Path::new(&top).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let path = worktrees.join(format!("{name}-{}", &id[..8]));
+        let target = path.to_string_lossy().into_owned();
+        // A large repository takes a while to check out.
+        let added = self.git(&here, &["worktree", "add", "--detach", &target, &base], COMMIT_TIMEOUT, None).await.map_err(|()| Self::missing())?;
+        if added.code != Some(0) {
+            return Err(Self::failure(&added));
+        }
+        if !changes.is_empty() {
+            // The checkout's uncommitted changes come along; a worktree without them is still usable.
+            if let Err(error) = self.check(&Self::at(&path), &["stash", "apply", &changes]).await {
+                log::warn!("worktree {target}: the uncommitted changes did not apply: {}", error.message);
+            }
+        }
+        let below = prefix.trim_end_matches('/');
+        let cwd = if below.is_empty() { target.clone() } else { path.join(below).to_string_lossy().into_owned() };
+        Ok((rainy_protocol::Worktree { path: target, repository: folder.to_string_lossy().into_owned(), base, branch: None }, cwd))
+    }
+
+    /// Turn the worktree into branch `name`.
+    pub async fn worktree_branch(&self, worktree: &rainy_protocol::Worktree, name: &str) -> HostResult<()> {
+        let name = name.trim();
+        if name.is_empty() || name.starts_with('-') {
+            return Err(HostError::invalid(l("请输入分支名。", "Enter a branch name.")));
+        }
+        self.check(&Self::at(Path::new(&worktree.path)), &["check-ref-format", "--branch", name]).await?;
+        self.check(&Self::at(Path::new(&worktree.path)), &["switch", "-c", name]).await
+    }
+
+    /// Move everything the chat changed in the worktree, committed or not and new files included, into the project's
+    /// checkout as uncommitted changes, then remove the worktree. Nothing changes when the checkout's own changes are
+    /// in the way. Returns the number of changed files moved.
+    pub async fn worktree_hand_off(&self, worktree: &rainy_protocol::Worktree, scratch: &Path) -> HostResult<usize> {
+        let tree = Self::at(Path::new(&worktree.path));
+        let local = Self::at(Path::new(&worktree.repository));
+        self.check(&tree, &["add", "-A"]).await?;
+        let names = self.text(&tree, &["diff", "--cached", "--name-only", &worktree.base]).await?;
+        let count = names.lines().filter(|line| !line.trim().is_empty()).count();
+        if count > 0 {
+            let outcome = self.git(&tree, &["diff", "--cached", "--binary", "--no-color", &worktree.base], COMMAND_TIMEOUT, None).await.map_err(|()| Self::missing())?;
+            if outcome.code != Some(0) {
+                return Err(Self::failure(&outcome));
+            }
+            std::fs::create_dir_all(scratch)?;
+            let patch = scratch.join(format!("handoff-{}.patch", uuid::Uuid::new_v4().simple()));
+            std::fs::write(&patch, &outcome.stdout)?;
+            let file = patch.to_string_lossy().into_owned();
+            let checked = self.check(&local, &["apply", "--check", "--whitespace=nowarn", &file]).await;
+            let applied = match checked {
+                Ok(()) => self.check(&local, &["apply", "--whitespace=nowarn", &file]).await,
+                Err(error) => Err(HostError::new(
+                    "handoff-conflict",
+                    l(
+                        &format!("项目里有和这些改动冲突的修改，没有移交，什么都没改。请先提交或撤销项目里的改动，再移交。\n{}", error.message),
+                        &format!("The project's checkout has changes that conflict with these, so nothing was handed off or changed. Commit or discard the checkout's changes, then hand off again.\n{}", error.message),
+                    ),
+                )),
+            };
+            let _ = std::fs::remove_file(&patch);
+            applied?;
+        }
+        self.worktree_remove(worktree).await;
+        Ok(count)
+    }
+
+    /// Remove the worktree's folder and Git's record of it; a branch made from it stays.
+    pub async fn worktree_remove(&self, worktree: &rainy_protocol::Worktree) {
+        let local = Self::at(Path::new(&worktree.repository));
+        if self.check(&local, &["worktree", "remove", "--force", &worktree.path]).await.is_err() {
+            let _ = std::fs::remove_dir_all(&worktree.path);
+            let _ = self.check(&local, &["worktree", "prune"]).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +490,74 @@ mod tests {
             { "path": "new name.py", "from": "old.py", "staged": "renamed" },
             { "path": "n.txt", "unstaged": "untracked" },
         ]));
+    }
+
+    /// `git` in `dir` for the test's own setup.
+    fn run(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).current_dir(dir).output().expect("git");
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_worktree_is_made_turned_into_a_branch_and_handed_off() {
+        let dir = std::env::temp_dir().join(format!("rainy-worktree-{}", uuid::Uuid::new_v4().simple()));
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("sub").join("a.txt"), "one\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "first"]);
+        // An uncommitted change comes along into the worktree.
+        std::fs::write(repo.join("sub").join("a.txt"), "one\ntwo\n").unwrap();
+        let context = crate::agent::tools::test_context(&dir);
+        let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
+        let (worktree, cwd) = git.worktree_add(&repo.join("sub"), &dir.join("worktrees")).await.unwrap();
+        assert!(Path::new(&cwd).ends_with("sub") && Path::new(&cwd).join("a.txt").is_file());
+        assert_eq!(std::fs::read_to_string(Path::new(&cwd).join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\n");
+        // The chat works there: a commit and a new file.
+        std::fs::write(Path::new(&cwd).join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        git.worktree_branch(&worktree, "rainy/test").await.unwrap();
+        run(Path::new(&cwd), &["commit", "-q", "-am", "three"]);
+        std::fs::write(Path::new(&cwd).join("new.txt"), "new\n").unwrap();
+        assert!(git.worktree_branch(&worktree, "bad name").await.is_err());
+        // Handing off moves all of it into the checkout as uncommitted changes and removes the worktree.
+        std::fs::write(repo.join("sub").join("a.txt"), "one\n").unwrap();
+        let moved = git.worktree_hand_off(&worktree, &dir.join("worktrees")).await.unwrap();
+        assert_eq!(moved, 2);
+        assert_eq!(std::fs::read_to_string(repo.join("sub").join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\nthree\n");
+        assert!(repo.join("sub").join("new.txt").is_file());
+        assert!(!Path::new(&worktree.path).exists());
+        assert!(run(&repo, &["branch", "--list", "rainy/test"]).contains("rainy/test"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hand_off_into_conflicting_changes_changes_nothing() {
+        let dir = std::env::temp_dir().join(format!("rainy-worktree-{}", uuid::Uuid::new_v4().simple()));
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "first"]);
+        let context = crate::agent::tools::test_context(&dir);
+        let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
+        let (worktree, cwd) = git.worktree_add(&repo, &dir.join("worktrees")).await.unwrap();
+        // At the repository's top the chat works in the worktree's own folder, spelled without a trailing separator.
+        assert_eq!(cwd, worktree.path);
+        std::fs::write(Path::new(&cwd).join("a.txt"), "worktree\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "local\n").unwrap();
+        let error = git.worktree_hand_off(&worktree, &dir.join("worktrees")).await.unwrap_err();
+        assert_eq!(error.code, "handoff-conflict");
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "local\n");
+        assert!(Path::new(&worktree.path).exists());
+        // Not a repository: a clear refusal.
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        assert_eq!(git.worktree_add(&dir.join("plain"), &dir.join("worktrees")).await.unwrap_err().code, "not-git");
+        git.worktree_remove(&worktree).await;
+        assert!(!Path::new(&worktree.path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

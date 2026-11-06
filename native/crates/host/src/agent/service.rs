@@ -42,6 +42,10 @@ fn not_found_chat() -> HostError {
     HostError::new("not-found", l("对话不存在。", "This chat does not exist."))
 }
 
+fn no_worktree() -> HostError {
+    HostError::new("no-worktree", l("这个对话没有独立工作区。", "This chat has no worktree."))
+}
+
 fn no_model() -> HostError {
     HostError::new("no-model", l("还没有可用的模型。请先在“设置 → 模型”中添加一个模型。", "No model is set up yet. Add one in Settings → Models."))
 }
@@ -300,7 +304,13 @@ impl Agent {
                 Some(mode) => permission_mode(&mode)?,
                 None => agent.services.settings.default_permission(),
             };
-            let chat = agent.services.store.create(NewChat { workspace_id: params.workspace_id, cwd, parent: None, entries: Vec::new(), title: String::new(), model: None, permission: Some(permission) })?;
+            let (cwd, worktree) = if params.worktree {
+                let (worktree, inside) = agent.git.worktree_add(Path::new(&cwd), &agent.services.env.home.join("worktrees")).await?;
+                (inside, Some(worktree))
+            } else {
+                (cwd, None)
+            };
+            let chat = agent.services.store.create(NewChat { workspace_id: params.workspace_id, cwd, parent: None, entries: Vec::new(), title: String::new(), model: None, permission: Some(permission), worktree })?;
             let created = agent.summary(&chat.id)?;
             agent.services.rpc.emit("sessions.changed", &created);
             Ok(created)
@@ -324,12 +334,52 @@ impl Agent {
         self.on("sessions.pin", |agent, params: PinParams| async move {
             agent.set_meta(&params.session_id, MetaPatch { pinned: Some(params.pinned), ..MetaPatch::default() }).await
         });
+        self.on("sessions.read", |agent, params: SessionRef| async move {
+            let chat = agent.services.store.get(&params.session_id).ok_or_else(not_found_chat)?;
+            if chat.read_at.is_some_and(|read| read >= chat.updated_at) {
+                return agent.summary(&params.session_id);
+            }
+            let now = (crate::text::now_ms() as f64).max(chat.updated_at);
+            agent.set_meta(&params.session_id, MetaPatch { read_at: Some(now), ..MetaPatch::default() }).await
+        });
+        self.on("sessions.search", |agent, params: SearchParams| async move {
+            let words: Vec<String> = params.query.split_whitespace().map(str::to_lowercase).take(8).collect();
+            let store = agent.services.store.clone();
+            let found = tokio::task::spawn_blocking(move || store.search(&words, 40)).await.map_err(|error| HostError::other(error.to_string()))?;
+            Ok(found.into_iter().map(|(id, snippet)| json!({ "sessionId": id, "snippet": snippet })).collect::<Vec<_>>())
+        });
+        self.on("sessions.branch", |agent, params: BranchParams| async move {
+            let chat = agent.services.store.get(&params.session_id).ok_or_else(not_found_chat)?;
+            let mut worktree = chat.worktree.ok_or_else(no_worktree)?;
+            agent.git.worktree_branch(&worktree, &params.name).await?;
+            worktree.branch = Some(params.name.trim().to_owned());
+            agent.set_meta(&params.session_id, MetaPatch { worktree: Some(Some(worktree)), ..MetaPatch::default() }).await
+        });
+        self.on("sessions.handOff", |agent, params: SessionRef| async move {
+            let chat = agent.services.store.get(&params.session_id).ok_or_else(not_found_chat)?;
+            let worktree = chat.worktree.ok_or_else(no_worktree)?;
+            if agent.live(&params.session_id).is_some_and(|session| session.running()) {
+                return Err(HostError::new("busy", l("对话还在运行，请等它停下再移交。", "The chat is still running. Hand it off once it stops.")));
+            }
+            let files = agent.git.worktree_hand_off(&worktree, &agent.services.env.home.join("worktrees")).await?;
+            // The chat opens again in the project's checkout.
+            let live = agent.sessions.lock().unwrap().remove(&params.session_id);
+            if let Some(session) = live {
+                session.close().await;
+            }
+            let summary = agent.set_meta(&params.session_id, MetaPatch { cwd: Some(worktree.repository.clone()), worktree: Some(None), ..MetaPatch::default() }).await?;
+            Ok(json!({ "session": summary, "files": files }))
+        });
         self.on("sessions.delete", |agent, params: SessionRef| async move {
             let live = agent.sessions.lock().unwrap().remove(&params.session_id);
             if let Some(session) = live {
                 session.close().await;
             }
+            let worktree = agent.services.store.get(&params.session_id).and_then(|chat| chat.worktree);
             agent.services.store.delete(&params.session_id).await?;
+            if let Some(worktree) = worktree {
+                agent.git.worktree_remove(&worktree).await;
+            }
             agent.services.snapshots.remove(&params.session_id);
             agent.services.rpc.emit("sessions.removed", json!({ "sessionId": params.session_id }));
             Ok(Value::Null)
@@ -342,12 +392,14 @@ impl Agent {
             let title = if file.chat.title.is_empty() { l("新对话", "New chat") } else { file.chat.title.clone() };
             let chat = agent.services.store.create(NewChat {
                 workspace_id: file.chat.workspace_id.clone(),
-                cwd: file.chat.cwd.clone(),
+                // A branch of a chat in a worktree works in the project's checkout: the worktree stays the first chat's.
+                cwd: file.chat.worktree.as_ref().map_or_else(|| file.chat.cwd.clone(), |worktree| worktree.repository.clone()),
                 parent: Some(Parent { session_id: params.session_id, entry_id: params.entry_id }),
                 entries: file.entries[..=end].to_vec(),
                 title: l(&format!("{title}（分支）"), &format!("{title} (branch)")),
                 model: file.chat.model.clone(),
                 permission: Some(file.chat.permission.clone().unwrap_or_else(|| agent.services.settings.default_permission())),
+                worktree: None,
             })?;
             let created = agent.summary(&chat.id)?;
             agent.services.rpc.emit("sessions.changed", &created);
@@ -620,6 +672,22 @@ struct CreateParams {
     workspace_id: Option<String>,
     cwd: Option<String>,
     permission: Option<String>,
+    /// Work in a new Git worktree of the project instead of its checkout.
+    #[serde(default)]
+    worktree: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchParams {
+    query: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchParams {
+    session_id: String,
+    name: String,
 }
 
 #[derive(Deserialize)]

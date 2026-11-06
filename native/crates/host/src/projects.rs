@@ -34,6 +34,9 @@ pub struct Project {
     pub attached: Vec<Attached>,
     pub created_at: f64,
     pub opened_at: f64,
+    /// Kept at the top of the sidebar.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// One folder of a project, as the page sees it.
@@ -56,7 +59,7 @@ impl Project {
 
     /// The `workspaces.*` shape.
     pub fn view(&self) -> serde_json::Value {
-        serde_json::json!({ "workspaceId": self.id, "path": self.path, "title": self.title, "roots": self.roots() })
+        serde_json::json!({ "workspaceId": self.id, "path": self.path, "title": self.title, "roots": self.roots(), "pinned": self.pinned })
     }
 }
 
@@ -127,6 +130,7 @@ impl Projects {
                     attached: Vec::new(),
                     created_at: now,
                     opened_at: now,
+                    pinned: false,
                 });
                 projects.len() - 1
             }
@@ -188,6 +192,16 @@ impl Projects {
         let mut projects = self.projects.lock().unwrap();
         let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
         projects[index].title = trimmed.to_owned();
+        let project = projects[index].clone();
+        self.save(&projects)?;
+        Ok(project)
+    }
+
+    /// Keep a project at the top of the sidebar, or not.
+    pub fn pin(&self, id: &str, pinned: bool) -> HostResult<Project> {
+        let mut projects = self.projects.lock().unwrap();
+        let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
+        projects[index].pinned = pinned;
         let project = projects[index].clone();
         self.save(&projects)?;
         Ok(project)

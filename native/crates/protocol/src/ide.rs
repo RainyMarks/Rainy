@@ -22,6 +22,8 @@ pub struct IdeWorkspace {
     pub title: String,
     #[serde(default)]
     pub roots: Option<Vec<WorkspaceRoot>>,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 impl IdeWorkspace {

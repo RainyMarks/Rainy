@@ -174,6 +174,10 @@ pub struct Store {
     pub selections: u64,
     /// The permission mode picked for the next new chat; `None` starts it in the default from Settings.
     pub pending_permission: Option<String>,
+    /// The next new chat of a project works in its own Git worktree.
+    pub pending_worktree: bool,
+    /// Chats whose `sessions.read` is on its way.
+    reading: std::collections::HashSet<String>,
     /// Explorer's "Open with Rainy" and the file types Rainy is offered for.
     pub shell: shell::Shell,
     /// Rainy's own updates.
@@ -258,6 +262,8 @@ impl Store {
                 selected: None,
                 selections: 0,
                 pending_permission: None,
+                pending_worktree: false,
+                reading: Default::default(),
                 shell,
                 updates,
                 diagnostics: diagnostics::Diagnostics::default(),
@@ -555,6 +561,37 @@ impl Store {
         summaries.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
         self.summaries = summaries;
         cx.emit(StoreEvent::SummariesChanged);
+        self.mark_read(cx);
+    }
+
+    /// Record that the shown chat's replies were seen once it stops, so the sidebar marks only replies that came while
+    /// another chat was shown.
+    fn mark_read(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else { return };
+        let Some(summary) = self.summaries.iter().find(|summary| summary.id == id) else { return };
+        if summary.status != "idle" || summary.read_at.is_some_and(|read| read >= summary.updated_at) || !self.reading.insert(id.clone()) {
+            return;
+        }
+        let call = self.call("sessions.read", json!({ "sessionId": id }));
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            let _ = call.await;
+            let _ = this.update(cx, |store, _| store.reading.remove(&id));
+        })
+        .detach();
+    }
+
+    /// Chats whose messages hold every word of `query`, newest first, with a line around the match.
+    pub fn search_chats(&self, query: &str, cx: &mut Context<Self>) -> Task<Vec<(String, String)>> {
+        let call = self.call("sessions.search", json!({ "query": query }));
+        cx.spawn(async move |_: WeakEntity<Store>, _: &mut AsyncApp| {
+            let Ok(found) = call.await else { return Vec::new() };
+            found
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| Some((item["sessionId"].as_str()?.to_owned(), item["snippet"].as_str().unwrap_or_default().to_owned())))
+                .collect()
+        })
     }
 
     fn on_event(&mut self, name: &str, data: Value, cx: &mut Context<Self>) {
@@ -706,6 +743,7 @@ impl Store {
         }
         self.selected = id;
         cx.emit(StoreEvent::SelectionChanged);
+        self.mark_read(cx);
         cx.notify();
     }
 
@@ -800,6 +838,9 @@ impl Store {
         if let Some(mode) = &self.pending_permission {
             params["permission"] = json!(mode);
         }
+        if self.pending_worktree && workspace_id.is_some() {
+            params["worktree"] = json!(true);
+        }
         let request = self.call("sessions.create", params);
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             let summary = serde_json::from_value::<SessionSummary>(request.await?)
@@ -807,6 +848,7 @@ impl Store {
             let id = summary.id.clone();
             let _ = this.update(cx, |store, cx| {
                 store.pending_permission = None;
+                store.pending_worktree = false;
                 let mut next: Vec<SessionSummary> = store.summaries.iter().filter(|s| s.id != summary.id).cloned().collect();
                 next.push(summary);
                 store.set_summaries(next, cx);

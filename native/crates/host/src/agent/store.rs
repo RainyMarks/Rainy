@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rainy_protocol::chat::TranscriptEntry;
+use rainy_protocol::chat::{TranscriptEntry, Worktree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -45,6 +45,11 @@ pub struct StoredChat {
     /// The chat's own permission mode; absent means the default from Settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
+    /// When the user last saw the chat; see [`SessionSummary::read_at`](rainy_protocol::SessionSummary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Worktree>,
 }
 
 /// Metadata changes, recorded as `meta` lines; later lines win.
@@ -61,6 +66,14 @@ pub struct MetaPatch {
     pub model: Option<Option<ModelSelection>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
+    #[serde(rename = "readAt", skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<f64>,
+    /// The working folder, when the chat moves between its worktree and the project's checkout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// `Some(None)` ends the chat's worktree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Option<Worktree>>,
 }
 
 impl MetaPatch {
@@ -79,6 +92,15 @@ impl MetaPatch {
         }
         if let Some(permission) = &self.permission {
             chat.permission = Some(permission.clone());
+        }
+        if let Some(read_at) = self.read_at {
+            chat.read_at = Some(read_at);
+        }
+        if let Some(cwd) = &self.cwd {
+            chat.cwd = cwd.clone();
+        }
+        if let Some(worktree) = &self.worktree {
+            chat.worktree = worktree.clone();
         }
     }
 }
@@ -101,6 +123,7 @@ pub struct NewChat {
     pub title: String,
     pub model: Option<ModelSelection>,
     pub permission: Option<String>,
+    pub worktree: Option<Worktree>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -273,6 +296,8 @@ impl ChatStore {
             model: new.model,
             parent: new.parent,
             permission: new.permission,
+            read_at: Some(now),
+            worktree: new.worktree,
         };
         let mut header = json!({ "type": "header", "version": CHAT_FORMAT_VERSION, "id": chat.id, "workspaceId": chat.workspace_id, "cwd": chat.cwd, "createdAt": now });
         if let Some(parent) = &chat.parent {
@@ -284,6 +309,8 @@ impl ChatStore {
             title: (!chat.title.is_empty()).then(|| chat.title.clone()),
             model: chat.model.clone().map(Some),
             permission: chat.permission.clone(),
+            read_at: chat.read_at,
+            worktree: chat.worktree.clone().map(Some),
             ..MetaPatch::default()
         };
         let meta = serde_json::to_value(&meta).unwrap_or_default();
@@ -337,6 +364,8 @@ impl ChatStore {
             model: None,
             parent: serde_json::from_value(header["parent"].clone()).ok(),
             permission: None,
+            read_at: None,
+            worktree: None,
         };
         let (mut entries, mut kept, mut damaged) = (Vec::new(), Vec::new(), 0);
         for line in lines.filter(|line| !line.is_empty()) {
@@ -353,6 +382,9 @@ impl ChatStore {
                         pinned: record["pinned"].as_bool(),
                         model: record.get("model").map(|model| serde_json::from_value(model.clone()).ok()),
                         permission: record["permission"].as_str().filter(|mode| ["read-only", "ask", "auto"].contains(mode)).map(str::to_owned),
+                        read_at: record["readAt"].as_f64(),
+                        cwd: record["cwd"].as_str().filter(|cwd| !cwd.is_empty()).map(str::to_owned),
+                        worktree: record.get("worktree").map(|worktree| serde_json::from_value(worktree.clone()).ok()),
                     };
                     patch.apply(&mut chat);
                 }
@@ -506,11 +538,70 @@ impl ChatStore {
         Ok(())
     }
 
+    /// Chats whose title or messages (the user's and the replies' text) hold every word of `words` (lower case),
+    /// newest first, at most `limit`, each with a line around its first match. Reads the files: call it off the async
+    /// threads.
+    pub fn search(&self, words: &[String], limit: usize) -> Vec<(String, String)> {
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        for chat in self.list() {
+            if found.len() >= limit {
+                break;
+            }
+            let Ok(text) = std::fs::read(self.path(&chat.id)) else { continue };
+            let text = String::from_utf8_lossy(&text);
+            let mut texts: Vec<String> = vec![chat.title.clone()];
+            for line in text.split('\n') {
+                // Cheap filter before parsing: images make lines large, and most lines are not messages.
+                if !line.contains("\"entry\"") || !(line.contains("\"kind\":\"user\"") || line.contains("\"kind\":\"assistant\"")) {
+                    continue;
+                }
+                let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
+                let entry = &record["entry"];
+                match entry["kind"].as_str() {
+                    Some("user") => texts.extend(entry["text"].as_str().map(str::to_owned)),
+                    Some("assistant") => texts.extend(
+                        entry["message"]["content"].as_array().into_iter().flatten().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).map(str::to_owned),
+                    ),
+                    _ => {}
+                }
+            }
+            let lower: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
+            if !words.iter().all(|word| lower.iter().any(|text| text.contains(word.as_str()))) {
+                continue;
+            }
+            let snippet = texts.iter().zip(&lower).skip(1).find(|(_, lower)| lower.contains(words[0].as_str())).map(|(text, _)| snippet(text, &words[0])).unwrap_or_default();
+            found.push((chat.id, snippet));
+        }
+        found
+    }
+
     /// Write any pending index change now.
     pub fn flush(&self) -> HostResult<()> {
         self.state.lock().unwrap().index_pending = false;
         self.write_index()
     }
+}
+
+/// About 90 characters of `text` around the first place `word` (lower case) is, on one line.
+fn snippet(text: &str, word: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.to_lowercase().chars().collect();
+    let target: Vec<char> = word.chars().collect();
+    let at = if lower.len() == chars.len() { lower.windows(target.len().max(1)).position(|window| window == target.as_slice()).unwrap_or(0) } else { 0 };
+    let start = at.saturating_sub(30);
+    let end = (start + 90).min(chars.len());
+    let mut out: String = chars[start..end].iter().map(|c| if c.is_whitespace() { ' ' } else { *c }).collect();
+    out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if start > 0 {
+        out.insert(0, '…');
+    }
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -536,6 +627,34 @@ mod tests {
         assert_eq!((file.chat.title.as_str(), file.chat.permission.as_deref(), file.kept.as_slice()), ("T", Some("ask"), &["c1".to_owned()][..]));
         fresh.delete(&chat.id).await.unwrap();
         assert!(fresh.get(&chat.id).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn remembers_what_was_read_and_the_worktree_and_finds_messages() {
+        let dir = std::env::temp_dir().join(format!("rainy-chats-{}", uuid::Uuid::new_v4()));
+        let store = ChatStore::load(dir.clone()).unwrap();
+        let worktree = Worktree { path: "/h/worktrees/p-1".into(), repository: "/p".into(), base: "abc".into(), branch: None };
+        let chat = store.create(NewChat { cwd: "/h/worktrees/p-1".into(), worktree: Some(worktree.clone()), ..NewChat::default() }).unwrap();
+        assert!(chat.read_at.is_some());
+        let user: TranscriptEntry = serde_json::from_value(json!({ "kind": "user", "id": "e1", "ts": 1, "text": "请修复 Login 页面的样式" })).unwrap();
+        let reply: TranscriptEntry = serde_json::from_value(json!({ "kind": "assistant", "id": "e2", "ts": 2, "message": { "content": [{ "type": "text", "text": "已经把按钮改成圆角。" }] } })).unwrap();
+        store.append(&chat.id, &[user, reply]).await.unwrap();
+        let other = store.create(NewChat { cwd: "/p".into(), title: "无关".into(), ..NewChat::default() }).unwrap();
+        let words = |query: &str| query.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+        let found = store.search(&words("login 圆角"), 10);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, chat.id);
+        assert!(found[0].1.contains("Login"), "{}", found[0].1);
+        assert_eq!(store.search(&words("无关"), 10)[0].0, other.id);
+        assert!(store.search(&words("login 不存在的词"), 10).is_empty());
+        // Handing off: the chat moves to the checkout and ends its worktree; both survive a restart.
+        store.set_meta(&chat.id, MetaPatch { read_at: Some(5e12), cwd: Some("/p".into()), worktree: Some(None), ..MetaPatch::default() }).await.unwrap();
+        let file = ChatStore::load(dir.clone()).unwrap().read(&chat.id).await.unwrap();
+        assert_eq!((file.chat.read_at, file.chat.cwd.as_str(), file.chat.worktree), (Some(5e12), "/p", None));
+        store.set_meta(&chat.id, MetaPatch { worktree: Some(Some(Worktree { branch: Some("b".into()), ..worktree })), ..MetaPatch::default() }).await.unwrap();
+        let file = ChatStore::load(dir.clone()).unwrap().read(&chat.id).await.unwrap();
+        assert_eq!(file.chat.worktree.and_then(|worktree| worktree.branch).as_deref(), Some("b"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

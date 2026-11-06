@@ -1099,12 +1099,68 @@ impl ChatPane {
             })
     }
 
+    /// Where a new chat of a project runs: in the project's checkout, or in its own Git worktree (the Codex app's Local
+    /// and Worktree). A chat that runs in a worktree says so; its menu in the sidebar makes a branch or hands it off.
+    fn where_picker(&self, locale: Locale, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let worktree = self.session_id(cx).and_then(|id| self.store.read(cx).summaries.iter().find(|summary| summary.id == id).map(|summary| summary.worktree.clone()));
+        match worktree {
+            Some(Some(worktree)) => {
+                let label = worktree.branch.unwrap_or_else(|| i18n::text(locale, "agent.worktree").to_string());
+                Some(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .px_1()
+                        .items_center()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall())
+                        .child(label)
+                        .into_any_element(),
+                )
+            }
+            Some(None) => None,
+            None => {
+                // A new chat: only a project can have a worktree.
+                crate::store::ide::Ide::global(cx).read(cx).workspace.as_ref()?;
+                let worktree = self.store.read(cx).pending_worktree;
+                let store = self.store.clone();
+                Some(
+                    Button::new("where-picker")
+                        .ghost()
+                        .small()
+                        .when(worktree, |button| button.icon(Icon::new(gpui_kit::assets::IconName::GitBranch)))
+                        .label(i18n::text(locale, if worktree { "agent.worktree" } else { "agent.whereLocal" }))
+                        .tooltip(i18n::text(locale, "agent.whereWorktreeHint"))
+                        .dropdown_caret(true)
+                        .dropdown_menu(move |menu, _, _| {
+                            let (local, own) = (store.clone(), store.clone());
+                            menu.item(PopupMenuItem::new(i18n::text(locale, "agent.whereLocal")).checked(!worktree).on_click(move |_, _, cx| {
+                                local.update(cx, |store, cx| {
+                                    store.pending_worktree = false;
+                                    cx.notify();
+                                })
+                            }))
+                            .item(PopupMenuItem::new(i18n::text(locale, "agent.whereWorktree")).checked(worktree).on_click(move |_, _, cx| {
+                                own.update(cx, |store, cx| {
+                                    store.pending_worktree = true;
+                                    cx.notify();
+                                })
+                            }))
+                        })
+                        .into_any_element(),
+                )
+            }
+        }
+    }
+
     fn render_composer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let busy = self.busy(cx);
         let creating = self.creating_here();
         let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
         let model_picker = self.model_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
+        let where_picker = self.where_picker(locale, cx);
         let session = self.session_id(cx);
         let attachments = (!self.attachments.is_empty()).then(|| self.render_attachments(cx));
         let theme = cx.theme();
@@ -1136,7 +1192,7 @@ impl ChatPane {
                             .on_click(cx.listener(|this, _, window, cx| this.choose_images(window, cx))),
                     )
                     // The pickers give way in a narrow panel; the context share and the send button never leave it.
-                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().child(model_picker).child(permission_picker))
+                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().child(model_picker).child(permission_picker).children(where_picker))
                     .when_some(context, |this, context| {
                         let percent = if context.input_limit > 0.0 { (context.tokens / context.input_limit * 100.0).round() } else { 0.0 };
                         this.child(
@@ -1286,6 +1342,8 @@ impl ChatPane {
         let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
         let model_picker = self.model_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
+        // On the left, as in the Codex app: where the chat runs.
+        let where_picker = self.where_picker(locale, cx);
         let ring = context.map(|context| {
             let fraction = if context.input_limit > 0.0 { (context.tokens / context.input_limit) as f32 } else { 0. };
             let tip = trf(cx, "agent.contextUsage", &[
@@ -1315,6 +1373,7 @@ impl ChatPane {
             .mb_2()
             .gap_1()
             .items_center()
+            .children(where_picker)
             .child(div().flex_1())
             .child(h_flex().min_w_0().overflow_hidden().gap_1().child(model_picker))
             .child(div().flex_shrink_0().child(permission_picker))
