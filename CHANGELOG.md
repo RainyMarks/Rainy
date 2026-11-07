@@ -4,6 +4,16 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.9.0 · 2026-11-07
+
+Chats and projects are organized the way the Codex app does it.
+
+- **A sidebar by project**: only New chat and Search stay on top; the global project picker is gone. Below come the pinned chats, every project (also one without chats) and the chats outside any project. A project is one row that folds or unfolds its chats; under the pointer it offers a new chat in that project and its menu: rename, pin, add folder, archive all chats, remove from the list. Pinned projects come first and the rest follow their latest chat, so choosing a chat never moves them.
+- **New replies at a glance**: each chat shows how long ago it was active (now, 5m, 3h, 2d). A chat that finished replying while you looked at another one gets a dot and a bold title until you open it.
+- **Search inside chats**: besides titles and folders, search looks through your messages and the replies, with the matching line under each chat.
+- **Archived chats on their own**: "Archived" at the bottom of the sidebar opens a window to open, restore or delete them, instead of swapping the whole list.
+- **Worktrees**: a new chat in a Git project can run "In the project (local)" or in its "Own worktree", chosen at the bottom left of the composer. In a worktree the chat works in a separate copy of the project's repository (with your uncommitted changes), away from the files you are editing, and several can run side by side. When it is done, its menu creates a branch from the worktree or hands it off to the project: everything it changed, commits and new files included, comes into the project as uncommitted changes and the chat continues there; changes in the project that conflict leave everything as it was. Deleting the chat deletes its worktree.
+
 ## 4.8.1 · 2026-11-06
 
 Two fixes for problems that showed up after updating.
