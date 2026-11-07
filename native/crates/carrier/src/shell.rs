@@ -140,9 +140,17 @@ pub fn retire_operations(memory: &Memory) -> Vec<Operation> {
                 operations.push(Operation::RemoveKey { key: format!(r"{}\{choice}", file_exts(extension)), parents: Vec::new(), marker: Some(("ProgId".to_owned(), chosen.to_owned())) });
             }
         }
+        // Windows' record of the handlers it has seen appear for the type: it outlives the handlers themselves and
+        // keeps Rainy among the choices of "How do you want to open this file?".
+        for seen in [format!("{id}_.{extension}"), format!(r"Applications\RainyAgent.exe_.{extension}")] {
+            operations.push(Operation::RemoveValue { key: ASSOCIATION_TOASTS.to_owned(), name: seen, parents: Vec::new(), keep_key: true });
+        }
     }
     operations
 }
+
+/// Where Windows records the handlers it has seen appear for each file type (`<ProgID>_.<extension>`).
+const ASSOCIATION_TOASTS: &str = r"Software\Microsoft\Windows\CurrentVersion\ApplicationAssociationToasts";
 
 /// Carry out [`retire_operations`]; a failure is logged, never in the way of the rest of a sync.
 fn retire(registry: &mut impl Registry, memory: &Memory) -> bool {
@@ -1055,6 +1063,10 @@ mod tests {
         hive.set(&format!(r"{}\UserChoice", file_exts("cmd")), "Hash", "x").unwrap();
         // The user chose another editor for .bat files themselves: that stays.
         hive.set(&format!(r"{}\UserChoice", file_exts("bat")), "ProgId", r"Applications\Code.exe").unwrap();
+        // Windows' record of the handlers it saw appear, which outlives them; Windows' own entry stays.
+        for seen in ["Rainy.bat_.bat", r"Applications\RainyAgent.exe_.bat", "Rainy.cmd_.cmd", "batfile_.bat"] {
+            hive.set(ASSOCIATION_TOASTS, seen, "0").unwrap();
+        }
     }
 
     #[test]
@@ -1065,6 +1077,10 @@ mod tests {
         assert!(synced.changed && hive.notified > 0);
         assert!(!hive.has(&format!(r"{}\UserChoice", file_exts("cmd"))));
         assert_eq!(hive.text(&format!(r"{}\UserChoice", file_exts("bat")), "ProgId").as_deref(), Some(r"Applications\Code.exe"));
+        for seen in ["Rainy.bat_.bat", r"Applications\RainyAgent.exe_.bat", "Rainy.cmd_.cmd"] {
+            assert_eq!(hive.text(ASSOCIATION_TOASTS, seen), None, "{seen}");
+        }
+        assert_eq!(hive.text(ASSOCIATION_TOASTS, "batfile_.bat").as_deref(), Some("0"));
         for extension in ["bat", "cmd"] {
             assert!(!hive.has(&format!(r"{CLASSES}\{}", prog_id(extension))));
             // Rainy made these keys (the record says so and they were not the user's): they go with its value.
