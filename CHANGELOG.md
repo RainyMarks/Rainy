@@ -4,6 +4,10 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.9.1 · 2026-11-07
+
+- **No more "How do you want to open this file?" for .bat and .cmd**: 4.8.1 took back Rainy's registration for batch files, but Windows also keeps a record of the handlers it has seen appear for a type, which outlives them, so the prompt could still list Rainy. Rainy now removes its entries for `.bat`, `.cmd`, `.sh` and the other scripts from that record when it starts; Windows' own entries stay.
+
 ## 4.9.0 · 2026-11-07
 
 Chats and projects are organized the way the Codex app does it.
