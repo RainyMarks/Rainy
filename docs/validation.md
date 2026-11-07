@@ -1,5 +1,25 @@
 # Rainy 验收记录
 
+## 4.9.1（2026-11-07）
+
+被测产物为 `Rainy-4.9.1-windows-x64-setup.exe`（16,005,771 字节，SHA-256 `ea45000c91d3a48e48089b70eef8cdc0b56bedb8d3a23d1c19d6dc31019a7aae`），构建自提交 `cbfdc347d7`。安装包含 475 个文件、53,501,038 字节。六个可选分片已上传到 `v4.9.1-resources`，GitHub 给出的摘要与本地一致，内容与 4.9.0 相同。
+
+### 改动
+
+- **批处理文件的“打开方式”弹窗**（`carrier/src/shell.rs`）：用户反馈双击 `.bat` 仍弹出“你要以何种方式打开”，并列出 Rainy，而 Rainy 的登记已经全部撤下。原因是 Windows 在 `HKCU\Software\Microsoft\Windows\CurrentVersion\ApplicationAssociationToasts` 里记着见过的处理程序（`<ProgID>_.<扩展名>`），这份记录比处理程序本身留得久。每次同步现在也删除退役脚本类型的 `Rainy.<扩展名>_.<扩展名>` 和 `Applications\RainyAgent.exe_.<扩展名>`；Windows 自己的 `batfile_.bat` 等不动。
+- 用户这台电脑上另有一个排查时加的 `BatDirectRun.bat` / `BatDirectRun.cmd` 处理程序（打开命令为空），登记在 `.bat`、`.cmd` 的 `OpenWithProgids` 里，它本身也会触发弹窗。已在导出备份后删除，并清掉对应记录；这是本机修复，不在安装包里。
+
+### 检查
+
+- **测试**：`rainy-carrier` 269 项（5 项忽略）通过；“中招”注册表的测试加入了这份记录：Rainy 的条目删除，`batfile_.bat` 保留。
+- **本机修复后实测**：用与资源管理器双击相同的 ShellExecute 打开测试用 `.bat` 和 `.cmd`，两者都直接运行（写出了标记文件），没有弹窗；`AssocQueryString` 给出的打开命令是系统默认的 `"%1" %*`。
+- **打包版实测**：在真实注册表里放回一条 `Rainy.bat_.bat`，4.9.0 安装包内容覆盖为 4.9.1 后用临时用户数据启动；约 5 秒后这条记录被删除，`batfile_.bat`、`cmdfile_.cmd` 仍在，真实安装的右键菜单等没有变化；关闭后没有残留进程。调试版不写注册表（只有安装版会），所以这一项只能在打包版上验证。
+- **安装包 QA（QA 身份）**：46 项全部通过。
+
+### 验收范围
+
+- 只在这一台电脑上验证；Windows 是否还会因为别的程序新登记了 `.bat` 而弹窗，不在 Rainy 的控制范围内。
+
 ## 4.9.0（2026-11-07）
 
 被测产物为 `Rainy-4.9.0-windows-x64-setup.exe`（16,004,450 字节，SHA-256 `d575761f3dc2cea0efed286fc1637ed806bdb157d32035dff35ee4afb0e402b8`），构建自提交 `d31b4702b2`。安装包含 475 个文件、53,500,014 字节。六个可选分片已上传到 `v4.9.0-resources`，GitHub 给出的摘要与本地一致；Linux 应用层和运行环境分片随 Host 更新，底座内容不变。
