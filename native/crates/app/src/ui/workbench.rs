@@ -190,7 +190,7 @@ impl Workbench {
                     .map(|summary| summary.id.clone())
                     .collect();
                 // While Rainy is in the background, what finished or now waits for an approval is a notification.
-                if !window.is_window_active() && store.read(cx).prefs.notify {
+                if !crate::ui::notify::in_front() && store.read(cx).prefs.notify {
                     let zh = crate::ui::locale(cx) == crate::i18n::Locale::Zh;
                     for summary in &store.read(cx).summaries {
                         let was_running = this.running.contains(&summary.id);

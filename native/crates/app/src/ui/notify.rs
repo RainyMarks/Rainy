@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, HICON, HWND_MESSAGE, MSG,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HICON, HWND_MESSAGE, MSG,
     PostMessageW, RegisterClassW, WM_APP, WM_LBUTTONUP, WNDCLASSW,
 };
 
@@ -113,6 +113,9 @@ fn show_next(state: &mut State) {
                 );
             }
         }
+    }
+    if state.shown_icon {
+        log::info!("Notification shown for chat {}", note.chat);
     }
     state.shown = Some(note.chat);
 }
@@ -213,6 +216,17 @@ pub fn start(clicks: async_channel::Sender<String>) {
                 }
             }
         });
+}
+
+/// Whether the person is looking at Rainy: the foreground window is one of this process's. GPUI's active window is
+/// the thread's own, which a window that never came to the front can still be.
+pub fn in_front() -> bool {
+    // SAFETY: two queries about the foreground window; `process` is writable.
+    unsafe {
+        let window = GetForegroundWindow();
+        let mut process = 0u32;
+        !window.is_null() && GetWindowThreadProcessId(window, &mut process) != 0 && process == std::process::id()
+    }
 }
 
 /// Show a notification; a newer one replaces the one shown.
