@@ -153,6 +153,84 @@ pub struct ChatStore {
     /// One writer per chat file at a time.
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     index_lock: Mutex<()>,
+    /// What searches read of each chat file, kept so the next one reads only what was appended since.
+    searched: Mutex<HashMap<String, Searched>>,
+}
+
+/// The message texts read from a chat file for search, and how far it was read.
+#[derive(Default)]
+struct Searched {
+    /// Bytes read, up to the end of the last complete line.
+    read: u64,
+    /// The file's first bytes and when it was made: a file written anew (in place of another, as chat files are
+    /// written whole) is read again from the start.
+    head: Vec<u8>,
+    created: Option<std::time::SystemTime>,
+    texts: Vec<String>,
+    lower: Vec<String>,
+}
+
+impl Searched {
+    /// Bring the texts up to date with the file at `path`.
+    fn update(&mut self, path: &Path) -> std::io::Result<()> {
+        let mut file = std::fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        let (length, created) = (metadata.len(), metadata.created().ok());
+        let mut head = vec![0u8; length.min(64) as usize];
+        file.read_exact(&mut head)?;
+        let shared = self.head.len().min(head.len());
+        if length < self.read || created != self.created || head[..shared] != self.head[..shared] {
+            *self = Self::default();
+        }
+        (self.head, self.created) = (head, created);
+        if length == self.read {
+            return Ok(());
+        }
+        file.seek(SeekFrom::Start(self.read))?;
+        let mut added = Vec::new();
+        file.take(length - self.read).read_to_end(&mut added)?;
+        // A line still being written is read next time.
+        let Some(end) = added.iter().rposition(|byte| *byte == b'\n') else {
+            return Ok(());
+        };
+        self.read += end as u64 + 1;
+        for text in message_texts(&String::from_utf8_lossy(&added[..end])) {
+            self.lower.push(text.to_lowercase());
+            self.texts.push(text);
+        }
+        Ok(())
+    }
+}
+
+/// The user's messages and the replies' text in chat file lines.
+fn message_texts(lines: &str) -> Vec<String> {
+    let mut texts = Vec::new();
+    for line in lines.split('\n') {
+        // Cheap filter before parsing: images make lines large, and most lines are not messages.
+        if !line.contains("\"entry\"")
+            || !(line.contains("\"kind\":\"user\"") || line.contains("\"kind\":\"assistant\""))
+        {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let entry = &record["entry"];
+        match entry["kind"].as_str() {
+            Some("user") => texts.extend(entry["text"].as_str().map(str::to_owned)),
+            Some("assistant") => texts.extend(
+                entry["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| block["type"] == "text")
+                    .filter_map(|block| block["text"].as_str())
+                    .map(str::to_owned),
+            ),
+            _ => {}
+        }
+    }
+    texts
 }
 
 /// An entry as stored. 3.x wrote what pi-ai held, which a provider could leave in shapes entries do not take: a
@@ -227,7 +305,17 @@ impl ChatStore {
     /// Load the index, rebuilding it from the chat files when it is missing or unreadable.
     pub fn load(dir: PathBuf) -> HostResult<Arc<Self>> {
         create_private_dir(&dir)?;
-        let store = Arc::new(Self { dir, state: Mutex::new(State { chats: HashMap::new(), line_ended: HashSet::new(), index_pending: false }), locks: Mutex::default(), index_lock: Mutex::new(()) });
+        let store = Arc::new(Self {
+            dir,
+            state: Mutex::new(State {
+                chats: HashMap::new(),
+                line_ended: HashSet::new(),
+                index_pending: false,
+            }),
+            locks: Mutex::default(),
+            index_lock: Mutex::new(()),
+            searched: Mutex::default(),
+        });
         let index = read_json::<Value>(&store.dir.join("index.json"));
         let parsed = match index {
             Ok(Some(raw)) if raw["version"] == 1 => serde_json::from_value::<Vec<StoredChat>>(raw["chats"].clone()).ok(),
@@ -545,34 +633,32 @@ impl ChatStore {
         if words.is_empty() {
             return Vec::new();
         }
+        let chats = self.list();
+        let mut searched = self.searched.lock().unwrap();
+        searched.retain(|id, _| chats.iter().any(|chat| &chat.id == id));
         let mut found = Vec::new();
-        for chat in self.list() {
+        for chat in chats {
             if found.len() >= limit {
                 break;
             }
-            let Ok(text) = std::fs::read(self.path(&chat.id)) else { continue };
-            let text = String::from_utf8_lossy(&text);
-            let mut texts: Vec<String> = vec![chat.title.clone()];
-            for line in text.split('\n') {
-                // Cheap filter before parsing: images make lines large, and most lines are not messages.
-                if !line.contains("\"entry\"") || !(line.contains("\"kind\":\"user\"") || line.contains("\"kind\":\"assistant\"")) {
-                    continue;
-                }
-                let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
-                let entry = &record["entry"];
-                match entry["kind"].as_str() {
-                    Some("user") => texts.extend(entry["text"].as_str().map(str::to_owned)),
-                    Some("assistant") => texts.extend(
-                        entry["message"]["content"].as_array().into_iter().flatten().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).map(str::to_owned),
-                    ),
-                    _ => {}
-                }
-            }
-            let lower: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
-            if !words.iter().all(|word| lower.iter().any(|text| text.contains(word.as_str()))) {
+            let read = searched.entry(chat.id.clone()).or_default();
+            if read.update(&self.path(&chat.id)).is_err() {
                 continue;
             }
-            let snippet = texts.iter().zip(&lower).skip(1).find(|(_, lower)| lower.contains(words[0].as_str())).map(|(text, _)| snippet(text, &words[0])).unwrap_or_default();
+            let title = chat.title.to_lowercase();
+            if !words.iter().all(|word| {
+                title.contains(word.as_str())
+                    || read.lower.iter().any(|text| text.contains(word.as_str()))
+            }) {
+                continue;
+            }
+            let snippet = read
+                .texts
+                .iter()
+                .zip(&read.lower)
+                .find(|(_, lower)| lower.contains(words[0].as_str()))
+                .map(|(text, _)| snippet(text, &words[0]))
+                .unwrap_or_default();
             found.push((chat.id, snippet));
         }
         found
@@ -648,6 +734,26 @@ mod tests {
         assert!(found[0].1.contains("Login"), "{}", found[0].1);
         assert_eq!(store.search(&words("无关"), 10)[0].0, other.id);
         assert!(store.search(&words("login 不存在的词"), 10).is_empty());
+        // A later search reads only what was appended, and still finds it.
+        let read = store.searched.lock().unwrap()[&chat.id].read;
+        let later: TranscriptEntry = serde_json::from_value(
+            json!({ "kind": "user", "id": "e3", "ts": 3, "text": "再加一个暗色主题" }),
+        )
+        .unwrap();
+        store.append(&chat.id, &[later]).await.unwrap();
+        assert_eq!(store.search(&words("暗色"), 10)[0].0, chat.id);
+        let searched = store.searched.lock().unwrap();
+        assert!(searched[&chat.id].read > read);
+        assert_eq!(searched[&chat.id].texts.len(), 3);
+        drop(searched);
+        // A file written anew is read again from its start.
+        let path = store.path(&chat.id);
+        let original = std::fs::read_to_string(&path).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        write_atomic(&path, original.replace("请修复", "请检查").as_bytes()).unwrap();
+        assert!(store.search(&words("请修复"), 10).is_empty());
+        assert_eq!(store.search(&words("请检查"), 10)[0].0, chat.id);
+        assert_eq!(store.searched.lock().unwrap()[&chat.id].texts.len(), 3);
         // Handing off: the chat moves to the checkout and ends its worktree; both survive a restart.
         store.set_meta(&chat.id, MetaPatch { read_at: Some(5e12), cwd: Some("/p".into()), worktree: Some(None), ..MetaPatch::default() }).await.unwrap();
         let file = ChatStore::load(dir.clone()).unwrap().read(&chat.id).await.unwrap();
