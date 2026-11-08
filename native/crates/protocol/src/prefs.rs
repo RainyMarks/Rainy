@@ -38,6 +38,13 @@ pub struct UiPreferences {
     /// the recall tool) or `summary` (the model writes a checkpoint). 4.6 also wrote `auto`, read as `recall`.
     #[serde(default = "default_context_strategy")]
     pub context_strategy: String,
+    /// Windows notifications when a chat finishes or waits for an approval while Rainy is in the background.
+    #[serde(default = "default_notify")]
+    pub notify: bool,
+}
+
+fn default_notify() -> bool {
+    true
 }
 
 fn default_markdown_images() -> String {
@@ -71,6 +78,7 @@ impl Default for UiPreferences {
             markdown_typewriter: false,
             markdown_images: default_markdown_images(),
             context_strategy: default_context_strategy(),
+            notify: true,
         }
     }
 }

@@ -148,6 +148,8 @@ pub struct Workbench {
     ide_started: bool,
     /// Chats known to wait for an approval, so each new wait flashes the taskbar once.
     awaiting: HashSet<String>,
+    /// Chats that were running at the last look, for "finished" notifications.
+    running: HashSet<String>,
     /// The window's own focus, so shortcuts work while nothing inside it has the focus (after a dialog closed, say).
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -180,7 +182,37 @@ impl Workbench {
                 if awaiting.iter().any(|id| !this.awaiting.contains(id)) {
                     crate::ui::attention::flash(window);
                 }
+                let running: HashSet<String> = store
+                    .read(cx)
+                    .summaries
+                    .iter()
+                    .filter(|summary| matches!(summary.status.as_str(), "running" | "compacting"))
+                    .map(|summary| summary.id.clone())
+                    .collect();
+                // While Rainy is in the background, what finished or now waits for an approval is a notification.
+                if !window.is_window_active() && store.read(cx).prefs.notify {
+                    let zh = crate::ui::locale(cx) == crate::i18n::Locale::Zh;
+                    for summary in &store.read(cx).summaries {
+                        let was_running = this.running.contains(&summary.id);
+                        let newly_waiting =
+                            awaiting.contains(&summary.id) && !this.awaiting.contains(&summary.id);
+                        if let Some((title, text)) = crate::ui::notify::note_for(
+                            &summary.title,
+                            was_running,
+                            summary.status == "idle",
+                            newly_waiting,
+                            zh,
+                        ) {
+                            crate::ui::notify::show(crate::ui::notify::Note {
+                                title,
+                                text,
+                                chat: summary.id.clone(),
+                            });
+                        }
+                    }
+                }
                 this.awaiting = awaiting;
+                this.running = running;
                 crate::ui::update::taskbar(window, &store.read(cx).updates.phase);
                 cx.notify();
             }),
@@ -229,6 +261,12 @@ impl Workbench {
                     _ => {}
                 }
             }),
+            // Back in front, the notification of what happened meanwhile has served.
+            cx.observe_window_activation(window, |_, window, _| {
+                if window.is_window_active() {
+                    crate::ui::notify::dismiss();
+                }
+            }),
             // "Follow the system" follows a change of the Windows light or dark mode.
             cx.observe_window_appearance(window, |this, window, cx| {
                 let prefs = this.store.read(cx).prefs.clone();
@@ -237,6 +275,18 @@ impl Workbench {
                 }
             }),
         ];
+        // A click on a notification brings the window to the front with that chat.
+        let (clicks_tx, clicks) = async_channel::unbounded::<String>();
+        crate::ui::notify::start(clicks_tx);
+        cx.spawn_in(window, async move |_, cx| {
+            while let Ok(chat) = clicks.recv().await {
+                let _ = cx.update(|window, cx| {
+                    window.activate_window();
+                    crate::ui::history::show_chat(chat, window, cx);
+                });
+            }
+        })
+        .detach();
         // The questions `ssh` asks are shown here, one after another.
         let questions = store.read(cx).questions.clone();
         cx.spawn_in(window, async move |_, cx| {
@@ -283,6 +333,7 @@ impl Workbench {
             restoring_tabs: false,
             ide_started: false,
             awaiting: HashSet::new(),
+            running: HashSet::new(),
             focus: {
                 let focus = cx.focus_handle();
                 cx.set_global(WorkbenchFocus(focus.clone()));

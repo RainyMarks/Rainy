@@ -69,6 +69,14 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                     set_prefs(json!({ "showUsage": *checked }), window, cx);
                 }),
             ),
+            row(
+                cx,
+                t("notifyTitle"),
+                Some(t("notifyDescription")),
+                Switch::new("notify").checked(prefs.notify).on_click(|checked: &bool, window, cx| {
+                    set_prefs(json!({ "notify": *checked }), window, cx);
+                }),
+            ),
         ]))
         .child(markdown(&prefs, cx))
         .child(system_integration(store, cx))

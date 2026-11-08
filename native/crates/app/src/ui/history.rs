@@ -542,6 +542,22 @@ impl HistoryPanel {
     }
 }
 
+/// Show a chat, and its project when that is another known one (as a click on its row does).
+pub fn show_chat(id: String, window: &mut Window, cx: &mut App) {
+    let store = Store::global(cx);
+    let workspace =
+        store.read(cx).summaries.iter().find(|summary| summary.id == id).and_then(|summary| summary.workspace_id.clone());
+    store.update(cx, |store, cx| store.select(Some(id), cx));
+    let ide = Ide::global(cx);
+    let other = ide.read(cx).workspaces.iter().find(|candidate| {
+        workspace.as_deref() == Some(candidate.workspace_id.as_str())
+            && ide.read(cx).workspace.as_ref().is_none_or(|shown| shown.workspace_id != candidate.workspace_id)
+    });
+    if let Some(other) = other.cloned() {
+        ide.update(cx, |ide, cx| ide.select(other, window, cx));
+    }
+}
+
 /// Start a new chat in a project: show it, without bringing back its last chat, and empty the conversation.
 fn new_chat_in(workspace: IdeWorkspace, window: &mut Window, cx: &mut App) {
     Ide::global(cx).update(cx, |ide, cx| ide.select_for_new_chat(workspace, window, cx));
