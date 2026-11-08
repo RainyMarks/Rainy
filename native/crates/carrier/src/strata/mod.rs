@@ -376,12 +376,47 @@ fn models_in(data: &Path) -> Vec<(String, bool, u64)> {
                 Path::new(&mark).is_file()
             };
             let complete = !parts && ggufs.iter().all(|file| marked(file));
-            let bytes = files.iter().filter(|file| has_extension(file, "gguf") || has_extension(file, "part")).map(|file| fs::metadata(file).map(|info| info.len()).unwrap_or(0)).sum();
+            let bytes = files.iter().filter(|file| has_extension(file, "gguf") || has_extension(file, "part")).map(|file| downloaded_bytes(file)).sum();
             Some((entry.file_name().to_string_lossy().to_lowercase(), complete, bytes))
         })
         .collect();
     found.sort();
     found
+}
+
+/// The bytes a model file holds. Strata downloads a file in 32 MB pieces over several connections into `<name>.part`,
+/// which reaches as far as the furthest piece written, gaps included; `<name>.part.chunks` lists the finished pieces
+/// (`{"v": 1, "total", "chunk", "done": [[first, end), ...]}`), and only those count, as Strata's own `_load_pieces`
+/// counts them. A `.part` without that list came from one stream: its bytes are a run from the start.
+fn downloaded_bytes(file: &Path) -> u64 {
+    let length = fs::metadata(file).map(|info| info.len()).unwrap_or(0);
+    if !has_extension(file, "part") {
+        return length;
+    }
+    let mut list = file.as_os_str().to_owned();
+    list.push(".chunks");
+    let Some(record) = fs::read(&list)
+        .ok()
+        .and_then(|text| serde_json::from_slice::<Value>(&text).ok())
+    else {
+        return length;
+    };
+    let (Some(1), Some(total), Some(chunk), Some(done)) = (
+        record["v"].as_u64(),
+        record["total"].as_u64(),
+        record["chunk"].as_u64().filter(|chunk| *chunk > 0),
+        record["done"].as_array(),
+    ) else {
+        return length;
+    };
+    let pieces = total.div_ceil(chunk);
+    done.iter()
+        .filter_map(|range| Some((range.get(0)?.as_u64()?, range.get(1)?.as_u64()?.min(pieces))))
+        .flat_map(|(first, end)| first..end)
+        .map(|piece| (((piece + 1) * chunk).min(total), piece * chunk))
+        .filter(|(end, _)| *end <= length)
+        .map(|(end, start)| end - start)
+        .sum()
 }
 
 /// The same folder, spelled either way.
@@ -1580,5 +1615,209 @@ mod tests {
         manager.remove_legacy().unwrap();
         assert_eq!(manager.status().legacy_bytes, 0);
         assert!(!dir.path().join("modules").join("strata").exists() && !dir.path().join("strata").exists());
+    }
+
+    #[test]
+    fn counts_the_finished_pieces_of_an_unfinished_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("m.gguf.part");
+        let file = fs::File::create(&part).unwrap();
+        file.set_len(60).unwrap();
+        drop(file);
+        // Without a list the file is one run from the start.
+        assert_eq!(downloaded_bytes(&part), 60);
+        fs::write(
+            dir.path().join("m.gguf.part.chunks"),
+            r#"{"v": 1, "total": 95, "chunk": 10, "done": [[0, 3], [5, 7], [9, 10]]}"#,
+        )
+        .unwrap();
+        // Pieces 0-2 and 5; piece 6 and the last one (90-95) reach past what the file holds.
+        assert_eq!(downloaded_bytes(&part), 40);
+        let file = fs::OpenOptions::new().write(true).open(&part).unwrap();
+        file.set_len(95).unwrap();
+        drop(file);
+        assert_eq!(downloaded_bytes(&part), 30 + 20 + 5);
+        fs::write(dir.path().join("m.gguf.part.chunks"), "not json").unwrap();
+        assert_eq!(downloaded_bytes(&part), 95);
+        assert_eq!(downloaded_bytes(&dir.path().join("missing.gguf")), 0);
+    }
+
+    /// The real thing, run by hand: Strata's Terminal downloaded, the smallest model of the catalog downloaded to
+    /// RAINY_QA_STRATA_GB gigabytes (3) and cancelled, then a new manager, as after a restart, finds the unfinished
+    /// files and a second download continues from them rather than from zero. Everything goes to RAINY_QA_STRATA (a
+    /// scratch folder: user data and the data folder), which is removed at the end unless RAINY_QA_STRATA_KEEP is set.
+    /// `cargo test -p rainy-carrier real_partial -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_partial_download_is_found_and_resumed() {
+        let scratch = PathBuf::from(std::env::var("RAINY_QA_STRATA").expect("RAINY_QA_STRATA"));
+        let stop_at = (std::env::var("RAINY_QA_STRATA_GB")
+            .ok()
+            .and_then(|gb| gb.parse::<f64>().ok())
+            .unwrap_or(3.0)
+            * 1e9) as u64;
+        let (user_data, data) = (scratch.join("ud"), scratch.join("Strata-data"));
+        let say = |text: String| println!("[{:>6.1} s] {text}", START.elapsed().as_secs_f64());
+        static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+        let wait = |what: &str, limit: Duration, mut done: Box<dyn FnMut() -> bool + '_>| {
+            let until = Instant::now() + limit;
+            while !done() {
+                assert!(Instant::now() < until, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        };
+        let open = |label: &str| {
+            let manager = Manager::new(&user_data, || {});
+            let mut settings = manager.status().settings;
+            (settings.data_dir, settings.auto_update) =
+                (Some(data.to_string_lossy().into_owned()), false);
+            manager.save(settings).unwrap();
+            manager.refresh();
+            // As Settings → Tools installs it: the Terminal and the engine for this computer.
+            if manager
+                .status()
+                .installed
+                .is_none_or(|installed| installed.engine.is_none())
+            {
+                say(format!("{label}: installing Strata"));
+                manager.install().unwrap();
+                wait(
+                    "the installation",
+                    Duration::from_secs(60 * 60),
+                    Box::new(|| manager.status().job.is_none()),
+                );
+                let status = manager.status();
+                assert_eq!(status.error, None);
+                say(format!("installed: {:?}", status.installed));
+            }
+            manager.load_catalog();
+            wait(
+                "the catalog",
+                Duration::from_secs(600),
+                Box::new(|| {
+                    let status = manager.status();
+                    assert_eq!(status.catalog_error, None);
+                    status.catalog.is_some()
+                }),
+            );
+            manager
+        };
+        let manager = open("first start");
+        let catalog = manager.status().catalog.unwrap();
+        let (family, size) = catalog
+            .families
+            .iter()
+            .flat_map(|family| family.sizes.iter().map(move |size| (family, size)))
+            .min_by(|a, b| a.1.download_gb.total_cmp(&b.1.download_gb))
+            .unwrap();
+        let choice = Choice {
+            family: family.id.clone(),
+            model: size.model.clone(),
+        };
+        say(format!(
+            "smallest model: {} {} ({:.1} GB, id {})",
+            choice.family, choice.model, size.download_gb, size.id
+        ));
+        let id = size.id.to_lowercase();
+        manager.download(choice.clone()).unwrap();
+        let mut last = 0;
+        wait(
+            "the first download",
+            Duration::from_secs(3 * 60 * 60),
+            Box::new(|| {
+                let status = manager.status();
+                assert_eq!(status.error, None);
+                let job = status.job.expect("the download ended early");
+                if job.done / 500_000_000 != last / 500_000_000 {
+                    say(format!(
+                        "{} {:.2} / {:.2} GB",
+                        job.step,
+                        job.done as f64 / 1e9,
+                        job.total as f64 / 1e9
+                    ));
+                }
+                last = job.done;
+                job.done >= stop_at
+            }),
+        );
+        let cancelled_at = last;
+        say("cancelling".into());
+        manager.cancel();
+        wait(
+            "the cancel",
+            Duration::from_secs(120),
+            Box::new(|| manager.status().job.is_none()),
+        );
+        manager.close();
+        drop(manager);
+
+        // As after a restart: the unfinished download is found where it is.
+        let again = open("second start");
+        let found = again
+            .status()
+            .found
+            .into_iter()
+            .find(|found| found.id == id)
+            .expect("the unfinished download is not found");
+        say(format!(
+            "found {} in {}: {:.2} GB, complete {}",
+            found.id,
+            found.data_dir,
+            found.bytes as f64 / 1e9,
+            found.complete
+        ));
+        assert!(!found.complete);
+        // The finished pieces, not the length of the `.part` file, which runs ahead of them.
+        let near =
+            |bytes: u64| (bytes as f64 - cancelled_at as f64).abs() <= cancelled_at as f64 * 0.15;
+        assert!(
+            near(found.bytes),
+            "{} bytes found, {cancelled_at} downloaded",
+            found.bytes
+        );
+        assert_eq!(PathBuf::from(&found.data_dir), data);
+        // Downloading it again continues from those files.
+        again.download(choice).unwrap();
+        let mut first: Option<u64> = None;
+        wait(
+            "the resumed download",
+            Duration::from_secs(60 * 60),
+            Box::new(|| {
+                let status = again.status();
+                assert_eq!(status.error, None);
+                let job = status.job.expect("the resumed download ended early");
+                if job.step == "model:download" && job.done > 0 {
+                    let start = *first.get_or_insert_with(|| {
+                        say(format!("resumed at {:.2} GB", job.done as f64 / 1e9));
+                        job.done
+                    });
+                    return job.done >= start + 300_000_000;
+                }
+                false
+            }),
+        );
+        let start = first.unwrap();
+        // Strata's first figure may count pieces still being written; starting over would show next to nothing.
+        assert!(
+            start as f64 >= found.bytes as f64 * 0.9,
+            "the download started over: at {start} bytes, {} found",
+            found.bytes
+        );
+        say(format!(
+            "went on to {:.2} GB; cancelling",
+            again.status().job.map_or(0, |job| job.done) as f64 / 1e9
+        ));
+        again.cancel();
+        wait(
+            "the second cancel",
+            Duration::from_secs(120),
+            Box::new(|| again.status().job.is_none()),
+        );
+        again.close();
+        drop(again);
+        if std::env::var_os("RAINY_QA_STRATA_KEEP").is_none() {
+            std::fs::remove_dir_all(&scratch).unwrap();
+            say(format!("removed {}", scratch.display()));
+        }
     }
 }
