@@ -413,9 +413,85 @@ impl Git {
                 log::warn!("worktree {target}: the uncommitted changes did not apply: {}", error.message);
             }
         }
+        let copied = self.copy_included(Path::new(&top), &path).await;
+        if copied > 0 {
+            log::info!("worktree {target}: copied {copied} ignored files .worktreeinclude names");
+        }
         let below = prefix.trim_end_matches('/');
         let cwd = if below.is_empty() { target.clone() } else { path.join(below).to_string_lossy().into_owned() };
         Ok((rainy_protocol::Worktree { path: target, repository: folder.to_string_lossy().into_owned(), base, branch: None }, cwd))
+    }
+
+    /// Copy into a new worktree the files of the checkout that Git ignores and `.worktreeinclude` (patterns as in
+    /// `.gitignore`, at the repository's top) names: `.env` and the like, which a checkout does not bring. At most
+    /// [`MAX_FILES`]; files already there are kept. Returns how many were copied.
+    async fn copy_included(&self, top: &Path, worktree: &Path) -> usize {
+        if !top.join(".worktreeinclude").is_file() {
+            return 0;
+        }
+        let root = Self::at(top);
+        let Ok(named) = self
+            .git(
+                &root,
+                &[
+                    "ls-files",
+                    "-z",
+                    "--others",
+                    "--ignored",
+                    "--exclude-from=.worktreeinclude",
+                ],
+                STATUS_TIMEOUT,
+                None,
+            )
+            .await
+        else {
+            return 0;
+        };
+        let named = String::from_utf8_lossy(&named.stdout).into_owned();
+        if named.is_empty() {
+            return 0;
+        }
+        // Of those, the ones Git ignores: a file the checkout merely has not added yet is not copied.
+        let Ok(ignored) = self
+            .git(
+                &root,
+                &["check-ignore", "-z", "--stdin"],
+                STATUS_TIMEOUT,
+                Some(&named),
+            )
+            .await
+        else {
+            return 0;
+        };
+        let ignored = String::from_utf8_lossy(&ignored.stdout).into_owned();
+        let mut copied = 0;
+        for name in ignored
+            .split('\0')
+            .filter(|name| !name.is_empty())
+            .take(MAX_FILES)
+        {
+            let relative = Path::new(name);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+            {
+                continue;
+            }
+            let (from, to) = (top.join(relative), worktree.join(relative));
+            if to.exists() || !from.is_file() {
+                continue;
+            }
+            let copy = to
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::copy(&from, &to));
+            match copy {
+                Ok(_) => copied += 1,
+                Err(error) => log::warn!("worktree: {} was not copied: {error}", from.display()),
+            }
+        }
+        copied
     }
 
     /// Turn the worktree into branch `name`.
@@ -506,14 +582,24 @@ mod tests {
         std::fs::create_dir_all(repo.join("sub")).unwrap();
         run(&repo, &["init", "-q", "-b", "main"]);
         std::fs::write(repo.join("sub").join("a.txt"), "one\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), ".env\nbuild/\n").unwrap();
+        std::fs::write(repo.join(".worktreeinclude"), ".env\nnotes.txt\n").unwrap();
         run(&repo, &["add", "-A"]);
         run(&repo, &["commit", "-q", "-m", "first"]);
+        // Ignored files .worktreeinclude names come along; other ignored files and files not yet added do not.
+        std::fs::write(repo.join(".env"), "KEY=1\n").unwrap();
+        std::fs::create_dir_all(repo.join("build")).unwrap();
+        std::fs::write(repo.join("build").join("out.bin"), "x").unwrap();
+        std::fs::write(repo.join("notes.txt"), "draft\n").unwrap();
         // An uncommitted change comes along into the worktree.
         std::fs::write(repo.join("sub").join("a.txt"), "one\ntwo\n").unwrap();
         let context = crate::agent::tools::test_context(&dir);
         let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
         let (worktree, cwd) = git.worktree_add(&repo.join("sub"), &dir.join("worktrees")).await.unwrap();
         assert!(Path::new(&cwd).ends_with("sub") && Path::new(&cwd).join("a.txt").is_file());
+        let top = Path::new(&worktree.path);
+        assert_eq!(std::fs::read_to_string(top.join(".env")).unwrap(), "KEY=1\n");
+        assert!(!top.join("build").exists() && !top.join("notes.txt").exists());
         assert_eq!(std::fs::read_to_string(Path::new(&cwd).join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\n");
         // The chat works there: a commit and a new file.
         std::fs::write(Path::new(&cwd).join("a.txt"), "one\ntwo\nthree\n").unwrap();
