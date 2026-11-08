@@ -4,6 +4,15 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.10.0 · 2026-11-07
+
+- **Background notifications**: while Rainy is in the background, a chat that finishes or needs your approval sends a Windows notification; clicking it brings Rainy to the front with that chat. With Do Not Disturb on or a full-screen game running, the notification waits in the notification center and clicking it there works too. Turn it off in Settings → General → Background notifications.
+- **Faster downloads**: files of 8 MB and more (update installers, optional modules, Strata) are downloaded as six ranges at once; a cancelled download resumes every range where it stopped, and a server without ranges gets one connection as before. This helps most where a single connection is throttled (proxies, cross-border links).
+- **Faster message search**: after the first search, only what was added to each chat is read, instead of every chat file again.
+- **Worktrees bring `.env`**: put a `.worktreeinclude` (written like `.gitignore`) at the project's top, and a new worktree gets the files Git ignores that it names, such as `.env`.
+- **Drives attached after WSL started**: Windows drives connected after WSL started (external disks, `subst` drives) are now mounted and offered in the folder browser.
+- **Quitting without a pause**: quitting hides the windows first and stops the Host off the interface thread; an opened thinking block stays open when the reply is saved.
+
 ## 4.9.1 · 2026-11-07
 
 - **No more "How do you want to open this file?" for .bat and .cmd**: 4.8.1 took back Rainy's registration for batch files, but Windows also keeps a record of the handlers it has seen appear for a type, which outlives them, so the prompt could still list Rainy. Rainy now removes its entries for `.bat`, `.cmd`, `.sh` and the other scripts from that record when it starts; Windows' own entries stay.
