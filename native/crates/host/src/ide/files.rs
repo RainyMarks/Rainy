@@ -678,7 +678,9 @@ pub fn search(root: &Path, query: &str, requested: Option<usize>) -> Value {
 fn filesystem_roots() -> Vec<String> {
     if cfg!(not(windows)) {
         let home = crate::env::home_dir().display().to_string();
-        return if home == "/" { vec!["/".into()] } else { vec!["/".into(), home] };
+        let mut roots = if home == "/" { vec!["/".into()] } else { vec!["/".into(), home] };
+        roots.extend(wsl::drive_roots());
+        return roots;
     }
     let (sender, receiver) = std::sync::mpsc::channel();
     for letter in b'A'..=b'Z' {
@@ -754,9 +756,135 @@ pub fn create_directory(path: &str) -> HostResult<Value> {
     list_directories(Some(&target.to_string_lossy()), true)
 }
 
+/// Windows drives seen from WSL. WSL mounts them under `/mnt/<letter>` only when it starts, so a USB stick or a disk
+/// image attached later stays out of reach; the folder browser mounts those (the Host runs as root in Rainy's own
+/// distribution) and offers every mounted drive as a root.
+mod wsl {
+    use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// How long a look at the drives holds: the folder browser lists roots with every folder it opens.
+    const FRESH: Duration = Duration::from_secs(10);
+    static SEEN: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+
+    fn inside_wsl() -> bool {
+        cfg!(target_os = "linux") && (std::env::var_os("WSL_DISTRO_NAME").is_some() || Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists())
+    }
+
+    /// The drive mount points of a `/proc/self/mounts` text: `/mnt/<letter>` with a Windows file system.
+    pub fn mounted(mounts: &str) -> Vec<String> {
+        let mut found: Vec<String> = mounts
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let (_, point, kind) = (fields.next()?, fields.next()?, fields.next()?);
+                let letter = point.strip_prefix("/mnt/")?;
+                (letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) && matches!(kind, "drvfs" | "9p" | "virtiofs")).then(|| point.to_owned())
+            })
+            .collect();
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// The letters of Windows' drives, asked through interop (`cmd.exe`), in at most two seconds.
+    fn windows_letters() -> Vec<char> {
+        let script = "for %d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\ echo %d";
+        let Ok(mut child) = std::process::Command::new("/mnt/c/Windows/System32/cmd.exe")
+            .args(["/d", "/c", script])
+            .current_dir("/mnt/c")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return Vec::new();
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    let _ = child.kill();
+                    return Vec::new();
+                }
+            }
+        }
+        let mut text = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        }
+        text.lines().filter_map(|line| line.trim().chars().next()).filter(char::is_ascii_alphabetic).map(|c| c.to_ascii_lowercase()).collect()
+    }
+
+    fn root() -> bool {
+        std::fs::read_to_string("/proc/self/status").is_ok_and(|status| status.lines().any(|line| line.starts_with("Uid:") && line.split_whitespace().nth(1) == Some("0")))
+    }
+
+    /// Every Windows drive mounted under `/mnt`, after mounting the ones attached since WSL started.
+    pub fn drive_roots() -> Vec<String> {
+        if !inside_wsl() {
+            return Vec::new();
+        }
+        let mut seen = SEEN.lock().unwrap();
+        if let Some((when, roots)) = seen.as_ref()
+            && when.elapsed() < FRESH
+        {
+            return roots.clone();
+        }
+        let present = mounted(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default());
+        let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_default();
+        for letter in windows_letters() {
+            let point = format!("/mnt/{letter}");
+            if present.contains(&point) {
+                continue;
+            }
+            let drive = format!("{}:", letter.to_ascii_uppercase());
+            let script = format!("mkdir -p {point} && mount -t drvfs {drive} {point}");
+            // As root the Host mounts it itself; a user's Host asks WSL to run the mount as root, which needs no password.
+            let mut command = if root() {
+                let mut command = std::process::Command::new("sh");
+                command.args(["-c", &script]);
+                command
+            } else if !distro.is_empty() {
+                let mut command = std::process::Command::new("/mnt/c/Windows/System32/wsl.exe");
+                command.args(["-d", &distro, "-u", "root", "--exec", "sh", "-c", &script]).current_dir("/mnt/c");
+                command
+            } else {
+                continue;
+            };
+            match command.stdin(std::process::Stdio::null()).output() {
+                Ok(output) if output.status.success() => log::info!("mounted {drive} at {point}"),
+                Ok(output) => log::warn!("{drive} could not be mounted at {point}: {}", String::from_utf8_lossy(&output.stderr).trim()),
+                Err(error) => log::warn!("{drive} could not be mounted at {point}: {error}"),
+            }
+        }
+        let roots = mounted(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default());
+        *seen = Some((Instant::now(), roots.clone()));
+        roots
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_windows_drives_wsl_mounted() {
+        let mounts = "none /mnt/wsl tmpfs rw 0 0\nC:\\ /mnt/c 9p rw,dirsync 0 0\nD:\\ /mnt/d drvfs rw 0 0\n/dev/sdc / ext4 rw 0 0\nE: /mnt/e drvfs rw 0 0\ndrivers /usr/lib/wsl/drivers 9p ro 0 0\n";
+        assert_eq!(wsl::mounted(mounts), ["/mnt/c", "/mnt/d", "/mnt/e"]);
+    }
+
+    /// Run inside WSL with a drive attached after WSL started (`RAINY_QA_WSL_DRIVE=r`).
+    #[test]
+    #[ignore]
+    fn mounts_a_drive_attached_after_wsl_started() {
+        let letter = std::env::var("RAINY_QA_WSL_DRIVE").unwrap_or_else(|_| "r".into());
+        let roots = wsl::drive_roots();
+        assert!(roots.contains(&format!("/mnt/{letter}")), "{roots:?}");
+    }
 
     #[test]
     fn decodes_like_3x() {
