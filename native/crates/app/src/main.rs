@@ -74,14 +74,24 @@ fn main() {
         theme::apply(&prefs, None, cx);
 
         // Closing the window and restarting stop the Host and Strata off the interface thread before they quit
-        // (`Store::quit`, `Store::restart`); any other quit stops what is still running here. An install stops at its
-        // next chunk; waiting for it keeps the module folders whole.
+        // (`Store::quit`, `Store::restart`); any other quit (Windows shutting down, `cx.quit`) hides the windows at
+        // once and stops what is still running on a thread of its own, which quitting waits for. An install stops at
+        // its next chunk; waiting for it keeps the module folders whole.
         let quitting = store.clone();
         cx.on_app_quit(move |cx| {
             placement::save(cx);
+            store::hide_windows();
             let shutdown = quitting.update(cx, |store, _| store.shutdown());
-            shutdown.finish();
-            async {}
+            let (done, finished) = async_channel::bounded::<()>(1);
+            let stopping = std::thread::Builder::new().name("quit".into()).spawn(move || {
+                shutdown.finish();
+                let _ = done.try_send(());
+            });
+            async move {
+                if stopping.is_ok() {
+                    let _ = finished.recv().await;
+                }
+            }
         })
         .detach();
 

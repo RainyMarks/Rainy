@@ -488,7 +488,10 @@ fn assistant_blocks(
                     let live_key = format!("{}:{index}", message.timestamp);
                     ctx.thinking_since.filter(|(key, _)| live && *key == live_key).map(|(_, since)| since.elapsed().as_millis() as f64)
                 });
-                out.push(Block::Thinking { key: block_key.into(), text: thinking.clone().into(), redacted, live: live && index == last, duration_ms });
+                // The same key while the reply streams and once it is saved, so a block the user opened stays open when
+                // the reply ends (the streaming message and the saved one share their start time).
+                let key = if message.timestamp > 0.0 { format!("think:{}:{index}", message.timestamp) } else { block_key };
+                out.push(Block::Thinking { key: key.into(), text: thinking.clone().into(), redacted, live: live && index == last, duration_ms });
             }
             AssistantBlock::Text { text, .. } => {
                 if !text.trim().is_empty() {
@@ -1298,6 +1301,21 @@ mod tests {
         let rows = build_rows(&view(entries, streaming, "running"), Locale::Zh);
         assert!(rows[0].live);
         assert!(matches!(&rows[0].blocks[0], Block::Text { key, .. } if key == "stream:0"));
+    }
+
+    #[test]
+    fn a_thinking_block_keeps_its_key_when_the_reply_is_saved() {
+        let user = json!({"id": "u1", "kind": "user", "ts": 1, "text": "hi"});
+        let content = json!([{"type": "thinking", "thinking": "想一想"}, {"type": "text", "text": "好"}]);
+        let streaming = assistant("x", content.clone(), "pending")["message"].clone();
+        let live = build_rows(&view(json!([user.clone()]), streaming, "running"), Locale::Zh);
+        let saved = build_rows(&view(json!([user, assistant("a1", content, "stop")]), Value::Null, "idle"), Locale::Zh);
+        let key = |rows: &[TurnRow]| match &rows[0].blocks[0] {
+            Block::Thinking { key, .. } => key.clone(),
+            other => panic!("{other:?}"),
+        };
+        // A block the user opened while it streamed is open by the same key once saved.
+        assert_eq!(key(&live), key(&saved));
     }
 
     #[test]
