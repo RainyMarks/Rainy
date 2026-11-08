@@ -44,11 +44,23 @@ impl Reply {
         Self { headers: vec![("Location".into(), location.into())], ..Self::status(status) }
     }
 
-    /// The whole file, or the part a `Range: bytes=N-` asks for.
+    /// The whole file, or the part a `Range: bytes=N-` or `bytes=N-M` asks for.
     pub fn ranged(seen: &Seen, file: &[u8]) -> Self {
-        let start = seen.range.as_deref().and_then(|range| range.strip_prefix("bytes=")?.strip_suffix('-')?.parse::<usize>().ok());
-        match start {
-            Some(start) if start < file.len() => Self::partial(file[start..].to_vec(), &format!("bytes {start}-{}/{}", file.len() - 1, file.len())),
+        let span = seen.range.as_deref().and_then(|range| {
+            let (start, end) = range.strip_prefix("bytes=")?.split_once('-')?;
+            let start = start.parse::<usize>().ok()?;
+            let end = if end.is_empty() {
+                file.len().checked_sub(1)?
+            } else {
+                end.parse::<usize>().ok()?.min(file.len().checked_sub(1)?)
+            };
+            Some((start, end))
+        });
+        match span {
+            Some((start, end)) if start <= end => Self::partial(
+                file[start..=end].to_vec(),
+                &format!("bytes {start}-{end}/{}", file.len()),
+            ),
             _ => Self::ok(file.to_vec()),
         }
     }

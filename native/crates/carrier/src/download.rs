@@ -18,6 +18,10 @@ use sha2::{Digest as _, Sha256, Sha512};
 pub const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_REDIRECTS: u32 = 10;
 const CHUNK: usize = 256 * 1024;
+/// A single connection is often held to a fraction of the line (a proxy, a far-away mirror); several share it out.
+const CONNECTIONS: u64 = 6;
+/// Smaller files are not worth more than one connection.
+const PARALLEL_FROM: u64 = 8 * 1024 * 1024;
 
 /// Why a download failed. The texts are 3.x's (`release-download.ts`, `toolpack-files.ts`); the interface shows them
 /// in its language.
@@ -158,11 +162,22 @@ pub struct Options {
     pub allow_loopback_http: bool,
     /// Set from any thread to stop; what arrived stays in the `.partial` file.
     pub cancel: Arc<AtomicBool>,
+    /// How many connections a large file is received over at once.
+    pub connections: u64,
+    /// Files of at least this many bytes are received over several connections.
+    pub parallel_from: u64,
 }
 
 impl Options {
     pub fn new(cancel: Arc<AtomicBool>) -> Self {
-        Self { stall_timeout: STALL_TIMEOUT, resume: true, allow_loopback_http: false, cancel }
+        Self {
+            stall_timeout: STALL_TIMEOUT,
+            resume: true,
+            allow_loopback_http: false,
+            cancel,
+            connections: CONNECTIONS,
+            parallel_from: PARALLEL_FROM,
+        }
     }
 
     fn cancelled(&self) -> Result<(), DownloadError> {
@@ -180,6 +195,21 @@ pub fn download(url: &str, target: &Path, expected: &Expected, options: &Options
     }
     let partial = partial_path(target);
     check_path(&partial)?;
+    let contiguous = fs::symlink_metadata(&partial).is_ok();
+    if contiguous {
+        // A file being received over one connection, or one whose pieces were being joined: it goes on that way.
+        remove_pieces(target, options.connections);
+    } else if options.connections > 1 && expected.bytes >= options.parallel_from && options.resume {
+        match parallel(url, target, expected, options, progress) {
+            Ok(true) => return rename(&partial, target).map_err(|error| io_error(target, error)),
+            // The server sends whole files only.
+            Ok(false) => {
+                log::info!("{url} is not served in ranges; downloading it over one connection");
+                remove_pieces(target, options.connections);
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let mut offset = match fs::symlink_metadata(&partial) {
         Ok(metadata) if !metadata.is_file() => return Err(DownloadError::InvalidCache),
         // Left by a version whose file under the same name was larger: start over instead of failing every attempt.
@@ -217,10 +247,258 @@ pub fn download(url: &str, target: &Path, expected: &Expected, options: &Options
     rename(&partial, target).map_err(|error| io_error(target, error))
 }
 
+/// `<target>.partial.<index>`: one piece of a file received over several connections.
+fn piece_path(target: &Path, index: u64) -> PathBuf {
+    let mut name = partial_path(target).into_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
+
+fn remove_pieces(target: &Path, count: u64) {
+    for index in 0..count.max(1) {
+        let _ = fs::remove_file(piece_path(target, index));
+    }
+}
+
+/// The byte ranges of the pieces, `[start, end)`: `count` nearly equal ones. The same file always gets the same ones,
+/// so pieces left by a cancelled download are resumed where they stopped.
+fn pieces(bytes: u64, count: u64) -> Vec<(u64, u64)> {
+    let count = count.clamp(1, bytes.max(1));
+    (0..count)
+        .map(|index| (bytes * index / count, bytes * (index + 1) / count))
+        .collect()
+}
+
+/// Receive the file over several connections at once, each a range of it into a piece file of its own, whose length
+/// is how far it got; then join the pieces into `<target>.partial`, checking the digest on the way. False when the
+/// server does not send ranges.
+fn parallel(
+    url: &str,
+    target: &Path,
+    expected: &Expected,
+    options: &Options,
+    progress: &dyn Fn(u64, u64),
+) -> Result<bool, DownloadError> {
+    use std::sync::atomic::AtomicU64;
+
+    let ranges = pieces(expected.bytes, options.connections);
+    let paths: Vec<PathBuf> = (0..ranges.len() as u64)
+        .map(|index| piece_path(target, index))
+        .collect();
+    for path in &paths {
+        check_path(path)?;
+    }
+    let mut kept = 0;
+    for (path, (start, end)) in paths.iter().zip(&ranges) {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if !metadata.is_file() => return Err(DownloadError::InvalidCache),
+            Ok(metadata) if metadata.len() > end - start => {
+                fs::remove_file(path).map_err(|error| io_error(path, error))?
+            }
+            Ok(metadata) => kept += metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(path, error)),
+        }
+    }
+    // The pieces stop together: when the caller cancels, and when one of them fails for good.
+    let stop = Arc::new(AtomicBool::new(false));
+    let piece_options = Options {
+        cancel: stop.clone(),
+        ..options.clone()
+    };
+    let received = AtomicU64::new(kept);
+    progress(kept, expected.bytes);
+    let results: Vec<Result<(), DownloadError>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = paths
+            .iter()
+            .zip(&ranges)
+            .map(|(path, &(start, end))| {
+                let (stop, piece_options, received) = (&stop, &piece_options, &received);
+                scope.spawn(move || {
+                    let result = receive_piece(
+                        url,
+                        path,
+                        start,
+                        end,
+                        expected.bytes,
+                        piece_options,
+                        received,
+                    );
+                    if !matches!(result, Ok(()) | Err(DownloadError::Cancelled)) {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    result
+                })
+            })
+            .collect();
+        while !workers.iter().all(|worker| worker.is_finished()) {
+            if options.cancel.load(Ordering::Relaxed) {
+                stop.store(true, Ordering::Relaxed);
+            }
+            progress(received.load(Ordering::Relaxed), expected.bytes);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap_or(Err(DownloadError::Interrupted)))
+            .collect()
+    });
+    options.cancelled()?;
+    // What went wrong first, rather than the pieces stopped because of it.
+    if let Some(error) = results.iter().find_map(|result| {
+        result
+            .as_ref()
+            .err()
+            .filter(|error| **error != DownloadError::Cancelled)
+    }) {
+        return match error {
+            DownloadError::InvalidResume
+            | DownloadError::InvalidResponse
+            | DownloadError::Status(416) => Ok(false),
+            error => Err(error.clone()),
+        };
+    }
+    results.into_iter().collect::<Result<Vec<()>, _>>()?;
+    join_pieces(target, &paths, expected, options)?;
+    progress(expected.bytes, expected.bytes);
+    Ok(true)
+}
+
+/// Receive bytes `[start, end)` of a file of `total` bytes into `path`, from where it stopped; a connection that drops
+/// is tried again twice.
+fn receive_piece(
+    url: &str,
+    path: &Path,
+    start: u64,
+    end: u64,
+    total: u64,
+    options: &Options,
+    received: &std::sync::atomic::AtomicU64,
+) -> Result<(), DownloadError> {
+    let failed = |error| io_error(path, error);
+    let mut attempt = 0;
+    loop {
+        let done = match fs::metadata(path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(failed(error)),
+        };
+        if done >= end - start {
+            return Ok(());
+        }
+        let from = start + done;
+        let result = watched(&options.cancel, |live| {
+            let mut response = get(
+                url,
+                Span {
+                    start: from,
+                    end: Some(end - 1),
+                },
+                options,
+                live,
+            )?;
+            match response.status {
+                206 if response.content_range.as_deref()
+                    == Some(format!("bytes {from}-{}/{total}", end - 1).as_str()) => {}
+                206 | 200 => return Err(DownloadError::InvalidResume),
+                201..=299 => return Err(DownloadError::InvalidResponse),
+                status => return Err(DownloadError::Status(status)),
+            }
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(failed)?;
+            let (mut at, mut buffer) = (from, vec![0u8; CHUNK]);
+            loop {
+                options.cancelled()?;
+                let read = response.read(&mut buffer, options)?;
+                if read == 0 {
+                    break;
+                }
+                if at + read as u64 > end {
+                    return Err(DownloadError::TooLarge);
+                }
+                file.write_all(&buffer[..read]).map_err(failed)?;
+                at += read as u64;
+                received.fetch_add(read as u64, Ordering::Relaxed);
+            }
+            file.sync_all().map_err(failed)?;
+            if at < end {
+                Err(DownloadError::Interrupted)
+            } else {
+                Ok(())
+            }
+        });
+        match result {
+            Err(
+                DownloadError::Network(_) | DownloadError::Stalled(_) | DownloadError::Interrupted,
+            ) if attempt < 2 && !options.cancel.load(Ordering::Relaxed) => {
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Join the pieces into `<target>.partial` in order, hashing them on the way. The joined file grows only by whole,
+/// correct bytes, so a join that stops part-way leaves a `.partial` file a later attempt resumes over one connection.
+fn join_pieces(
+    target: &Path,
+    paths: &[PathBuf],
+    expected: &Expected,
+    options: &Options,
+) -> Result<(), DownloadError> {
+    let partial = partial_path(target);
+    let failed = |path: &Path, error| io_error(path, error);
+    let mut sink = HashSink::new(&expected.digest);
+    {
+        let mut first = File::open(&paths[0]).map_err(|error| failed(&paths[0], error))?;
+        hash_from(&mut first, u64::MAX, &mut sink, &options.cancel).map_err(|error| {
+            if options.cancel.load(Ordering::Relaxed) {
+                DownloadError::Cancelled
+            } else {
+                failed(&paths[0], error)
+            }
+        })?;
+    }
+    rename(&paths[0], &partial).map_err(|error| failed(&partial, error))?;
+    let mut joined = fs::OpenOptions::new()
+        .append(true)
+        .open(&partial)
+        .map_err(|error| failed(&partial, error))?;
+    let mut buffer = vec![0u8; CHUNK];
+    for path in &paths[1..] {
+        let mut piece = File::open(path).map_err(|error| failed(path, error))?;
+        loop {
+            options.cancelled()?;
+            let read = match io::Read::read(&mut piece, &mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(failed(path, error)),
+            };
+            joined
+                .write_all(&buffer[..read])
+                .map_err(|error| failed(&partial, error))?;
+            sink.update(&buffer[..read]);
+        }
+        drop(piece);
+        fs::remove_file(path).map_err(|error| failed(path, error))?;
+    }
+    joined.sync_all().map_err(|error| failed(&partial, error))?;
+    drop(joined);
+    if sink.finish() != expected.digest {
+        let _ = fs::remove_file(&partial);
+        return Err(DownloadError::Mismatch);
+    }
+    Ok(())
+}
+
 /// A small document such as `latest.yml`, read into memory; more than `limit` bytes fail.
 pub fn fetch(url: &str, limit: usize, options: &Options) -> Result<Vec<u8>, DownloadError> {
     watched(&options.cancel, |live| {
-        let mut response = get(url, 0, options, live)?;
+        let mut response = get(url, Span::WHOLE, options, live)?;
         match response.status {
             200 => {}
             201..=299 => return Err(DownloadError::InvalidResponse),
@@ -377,7 +655,7 @@ fn receive(
     live: &transport::Live,
     progress: &dyn Fn(u64, u64),
 ) -> Result<(), DownloadError> {
-    let mut response = get(url, offset, options, live)?;
+    let mut response = get(url, Span::from(offset), options, live)?;
     let mut offset = offset;
     match response.status {
         206 => {
@@ -434,12 +712,44 @@ fn receive(
     Ok(())
 }
 
-/// GET `url`, following redirects; a resumed download asks for the bytes from `offset` on.
-fn get<'a>(url: &str, offset: u64, options: &Options, live: &'a transport::Live) -> Result<transport::Response<'a>, DownloadError> {
+/// The bytes a request asks for: from `start` to `end`, inclusive, or to the end of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    start: u64,
+    end: Option<u64>,
+}
+
+impl Span {
+    const WHOLE: Self = Self {
+        start: 0,
+        end: None,
+    };
+
+    fn from(start: u64) -> Self {
+        Self { start, end: None }
+    }
+
+    /// The `Range` header's value; none for the whole file.
+    fn header(self) -> Option<String> {
+        match self.end {
+            Some(end) => Some(format!("bytes={}-{end}", self.start)),
+            None if self.start > 0 => Some(format!("bytes={}-", self.start)),
+            None => None,
+        }
+    }
+}
+
+/// GET `url`, following redirects, for the bytes of `span`.
+fn get<'a>(
+    url: &str,
+    span: Span,
+    options: &Options,
+    live: &'a transport::Live,
+) -> Result<transport::Response<'a>, DownloadError> {
     let mut address = Address::parse(url, options)?;
     for _ in 0..=MAX_REDIRECTS {
         options.cancelled()?;
-        let response = transport::request(&address, offset, options, live)?;
+        let response = transport::request(&address, span, options, live)?;
         if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
             return Ok(response);
         }
@@ -564,7 +874,7 @@ mod transport {
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError};
     use windows_sys::Win32::Networking::WinHttp::*;
 
-    use super::{Address, DownloadError, Options, is_loopback};
+    use super::{Address, DownloadError, Options, Span, is_loopback};
 
     use crate::text::wide;
 
@@ -747,7 +1057,12 @@ mod transport {
     }
 
     /// One GET without following redirects; no cookies are kept or sent.
-    pub(super) fn request<'a>(address: &Address, offset: u64, options: &Options, live: &'a Live) -> Result<Response<'a>, DownloadError> {
+    pub(super) fn request<'a>(
+        address: &Address,
+        span: Span,
+        options: &Options,
+        live: &'a Live,
+    ) -> Result<Response<'a>, DownloadError> {
         let session = session(address)?;
         let host = wide(address.host.trim_start_matches('[').trim_end_matches(']'));
         // SAFETY: a valid session and a NUL-terminated host name.
@@ -768,7 +1083,10 @@ mod transport {
         let handle = live.get()?;
         let features: u32 = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS;
         let timeout = options.stall_timeout.as_millis().min(i32::MAX as u128) as i32;
-        let range: Vec<u16> = if offset > 0 { format!("Range: bytes={offset}-\r\n").encode_utf16().collect() } else { Vec::new() };
+        let range: Vec<u16> = span
+            .header()
+            .map(|range| format!("Range: {range}\r\n").encode_utf16().collect())
+            .unwrap_or_default();
         // SAFETY: a live request handle; `features` and `range` outlive the calls.
         let sent = unsafe {
             WinHttpSetOption(handle, WINHTTP_OPTION_DISABLE_FEATURE, (&raw const features).cast(), 4) != 0
@@ -810,7 +1128,7 @@ mod transport {
 
 #[cfg(not(windows))]
 mod transport {
-    use super::{Address, DownloadError, Options};
+    use super::{Address, DownloadError, Options, Span};
 
     #[derive(Default)]
     pub(super) struct Live;
@@ -832,7 +1150,12 @@ mod transport {
         }
     }
 
-    pub(super) fn request<'a>(_address: &Address, _offset: u64, _options: &Options, _live: &'a Live) -> Result<Response<'a>, DownloadError> {
+    pub(super) fn request<'a>(
+        _address: &Address,
+        _span: Span,
+        _options: &Options,
+        _live: &'a Live,
+    ) -> Result<Response<'a>, DownloadError> {
         Err(DownloadError::Network("downloads need Windows".into()))
     }
 }
@@ -966,6 +1289,221 @@ mod tests {
             assert_eq!(fs::read(&target).unwrap(), data);
             assert_eq!(*first.lock().unwrap(), Some(120_000));
             assert_eq!(server.seen()[0].range.as_deref(), Some("bytes=120000-"));
+        }
+
+        fn parallel_options(connections: u64) -> Options {
+            Options {
+                connections,
+                parallel_from: 1,
+                ..options()
+            }
+        }
+
+        fn ranges_seen(server: &Server) -> Vec<Option<String>> {
+            let mut ranges: Vec<Option<String>> =
+                server.seen().into_iter().map(|seen| seen.range).collect();
+            ranges.sort();
+            ranges
+        }
+
+        /// One real file over one connection and over the default number, for the time each takes. Run by hand with
+        /// `RAINY_QA_DOWNLOAD="<https url> <bytes> <sha256 hex>"`: `cargo test -p rainy-carrier compares -- --ignored --nocapture`.
+        #[test]
+        #[ignore]
+        fn compares_one_connection_with_several() {
+            let setting = std::env::var("RAINY_QA_DOWNLOAD").expect("RAINY_QA_DOWNLOAD");
+            let parts: Vec<&str> = setting.split_whitespace().collect();
+            let expected = Expected {
+                bytes: parts[1].parse().unwrap(),
+                digest: Digest::sha256_hex(parts[2]).unwrap(),
+            };
+            for connections in [1, CONNECTIONS] {
+                let dir = tempfile::tempdir().unwrap();
+                let options = Options {
+                    connections,
+                    ..Options::new(Arc::new(AtomicBool::new(false)))
+                };
+                let started = Instant::now();
+                download(
+                    parts[0],
+                    &dir.path().join("file"),
+                    &expected,
+                    &options,
+                    &|_, _| {},
+                )
+                .unwrap();
+                let seconds = started.elapsed().as_secs_f64();
+                println!(
+                    "{connections} connection(s): {seconds:.1} s, {:.1} MB/s",
+                    expected.bytes as f64 / seconds / 1e6
+                );
+            }
+        }
+
+        #[test]
+        fn splits_the_same_file_the_same_way() {
+            assert_eq!(pieces(10, 3), [(0, 3), (3, 6), (6, 10)]);
+            assert_eq!(pieces(2, 6), [(0, 1), (1, 2)]);
+            assert_eq!(pieces(0, 4), [(0, 0)]);
+        }
+
+        #[test]
+        fn receives_a_large_file_over_several_connections() {
+            let data = body(1_000_000);
+            let served = data.clone();
+            let server = Server::start(move |seen| Reply::ranged(seen, &served));
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("file.bin");
+            let last = Mutex::new(0);
+            download(
+                &server.url("/file"),
+                &target,
+                &expected(&data),
+                &parallel_options(4),
+                &|done, total| {
+                    assert!(done <= total);
+                    *last.lock().unwrap() = done;
+                },
+            )
+            .unwrap();
+            assert_eq!(fs::read(&target).unwrap(), data);
+            assert_eq!(*last.lock().unwrap(), 1_000_000);
+            assert_eq!(
+                ranges_seen(&server),
+                [
+                    "bytes=0-249999",
+                    "bytes=250000-499999",
+                    "bytes=500000-749999",
+                    "bytes=750000-999999"
+                ]
+                .map(|range| Some(range.to_owned()))
+            );
+            assert_eq!(
+                fs::read_dir(dir.path()).unwrap().count(),
+                1,
+                "pieces were left behind"
+            );
+        }
+
+        #[test]
+        fn a_cancelled_parallel_download_resumes_each_piece() {
+            let data = body(800_000);
+            let served = data.clone();
+            let server = Server::start(move |seen| {
+                Reply::ranged(seen, &served).stall_after(50_000, Duration::from_secs(20))
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("file.bin");
+            let options = parallel_options(4);
+            let cancel = options.cancel.clone();
+            let result = download(
+                &server.url("/file"),
+                &target,
+                &expected(&data),
+                &options,
+                &|done, _| {
+                    if done >= 200_000 {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                },
+            );
+            assert_eq!(result, Err(DownloadError::Cancelled));
+            for index in 0..4 {
+                assert_eq!(
+                    fs::metadata(piece_path(&target, index)).unwrap().len(),
+                    50_000,
+                    "piece {index}"
+                );
+            }
+            let served = data.clone();
+            let server = Server::start(move |seen| Reply::ranged(seen, &served));
+            download(
+                &server.url("/file"),
+                &target,
+                &expected(&data),
+                &parallel_options(4),
+                &|_, _| {},
+            )
+            .unwrap();
+            assert_eq!(fs::read(&target).unwrap(), data);
+            assert_eq!(
+                ranges_seen(&server),
+                [
+                    "bytes=250000-399999",
+                    "bytes=450000-599999",
+                    "bytes=50000-199999",
+                    "bytes=650000-799999"
+                ]
+                .map(|range| Some(range.to_owned()))
+            );
+        }
+
+        #[test]
+        fn a_server_without_ranges_gets_one_connection() {
+            let data = body(300_000);
+            let served = data.clone();
+            let server = Server::start(move |_| Reply::ok(served.clone()));
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("file.bin");
+            download(
+                &server.url("/file"),
+                &target,
+                &expected(&data),
+                &parallel_options(3),
+                &|_, _| {},
+            )
+            .unwrap();
+            assert_eq!(fs::read(&target).unwrap(), data);
+            let seen = server.seen();
+            assert_eq!(seen.last().unwrap().range, None);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+
+        #[test]
+        fn a_join_that_stopped_part_way_resumes_over_one_connection() {
+            let data = body(300_000);
+            let served = data.clone();
+            let server = Server::start(move |seen| Reply::ranged(seen, &served));
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("file.bin");
+            // The first two pieces were joined, the third was being appended and is still there.
+            fs::write(partial_path(&target), &data[..200_000]).unwrap();
+            fs::write(piece_path(&target, 2), &data[200_000..]).unwrap();
+            download(
+                &server.url("/file"),
+                &target,
+                &expected(&data),
+                &parallel_options(3),
+                &|_, _| {},
+            )
+            .unwrap();
+            assert_eq!(fs::read(&target).unwrap(), data);
+            assert_eq!(ranges_seen(&server), [Some("bytes=200000-".to_owned())]);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+
+        #[test]
+        fn a_parallel_download_with_the_wrong_digest_fails() {
+            let data = body(300_000);
+            let served = data.clone();
+            let server = Server::start(move |seen| Reply::ranged(seen, &served));
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("file.bin");
+            let wrong = Expected {
+                bytes: 300_000,
+                digest: sha256(b"other"),
+            };
+            assert_eq!(
+                download(
+                    &server.url("/file"),
+                    &target,
+                    &wrong,
+                    &parallel_options(3),
+                    &|_, _| {}
+                ),
+                Err(DownloadError::Mismatch)
+            );
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         }
 
         #[test]
