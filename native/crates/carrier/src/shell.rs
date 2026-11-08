@@ -715,7 +715,7 @@ pub trait Registry {
 }
 
 #[cfg(windows)]
-pub use win32::{CurrentUser, open_default_apps};
+pub use win32::{CurrentUser, Redirected, open_default_apps};
 
 #[cfg(windows)]
 mod win32 {
@@ -734,6 +734,60 @@ mod win32 {
 
     /// HKEY_CURRENT_USER through the Win32 registry API.
     pub struct CurrentUser;
+
+    /// HKEY_CURRENT_USER with every key below `Software\RainyQA\<name>`: a development build run with
+    /// `RAINY_QA_REGISTRY=<name>` writes its Explorer integration there, so QA sees exactly what Rainy would register
+    /// while Windows acts on none of it.
+    pub struct Redirected {
+        prefix: String,
+    }
+
+    impl Redirected {
+        /// None for a name that is not letters, digits, `-` and `_`.
+        pub fn new(name: &str) -> Option<Self> {
+            let valid = !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+            valid.then(|| Self {
+                prefix: format!(r"Software\RainyQA\{name}\"),
+            })
+        }
+
+        fn key(&self, key: &str) -> String {
+            format!("{}{key}", self.prefix)
+        }
+    }
+
+    impl Registry for Redirected {
+        fn read(&self, key: &str, name: &str) -> Result<Option<String>> {
+            CurrentUser.read(&self.key(key), name)
+        }
+        fn exists(&self, key: &str) -> Result<bool> {
+            CurrentUser.exists(&self.key(key))
+        }
+        fn has_value(&self, key: &str, name: &str) -> Result<bool> {
+            CurrentUser.has_value(&self.key(key), name)
+        }
+        fn empty(&self, key: &str) -> Result<bool> {
+            CurrentUser.empty(&self.key(key))
+        }
+        fn set(&mut self, key: &str, name: &str, value: &str) -> Result<()> {
+            CurrentUser.set(&self.key(key), name, value)
+        }
+        fn delete_tree(&mut self, key: &str) -> Result<()> {
+            CurrentUser.delete_tree(&self.key(key))
+        }
+        fn delete_key(&mut self, key: &str) -> Result<()> {
+            CurrentUser.delete_key(&self.key(key))
+        }
+        fn delete_value(&mut self, key: &str, name: &str) -> Result<()> {
+            CurrentUser.delete_value(&self.key(key), name)
+        }
+        /// Windows is not told: nothing real changed.
+        fn associations_changed(&mut self) {}
+    }
 
     use crate::text::wide;
 
@@ -1731,6 +1785,94 @@ mod tests {
         assert!(!registry.exists(&choice).unwrap());
         registry.delete_tree(&scratch).unwrap();
         assert!(!registry.exists(&scratch).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_redirected_registry_keeps_a_whole_registration_below_its_key() {
+        let name = format!("test-{}", std::process::id());
+        let root = format!(r"Software\RainyQA\{name}");
+        // Dropped last, after the test's own key: the QA key goes too once nothing else is below it.
+        struct Parent;
+        impl Drop for Parent {
+            fn drop(&mut self) {
+                let _ = CurrentUser.delete_key(r"Software\RainyQA");
+            }
+        }
+        let _parent = Parent;
+        struct Scratch(String);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = CurrentUser.delete_tree(&self.0);
+            }
+        }
+        let _scratch = Scratch(root.clone());
+        assert!(
+            Redirected::new("a b").is_none()
+                && Redirected::new(r"..\x").is_none()
+                && Redirected::new("").is_none()
+        );
+        let mut registry = Redirected::new(&name).unwrap();
+        let executable = r"C:\QA\Rainy\RainyAgent.exe";
+        let wanted = ShellIntegration {
+            context_menu: true,
+            file_types: true,
+        };
+        let synced = sync(
+            &mut registry,
+            executable,
+            Language::English,
+            wanted,
+            &Memory::default(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(synced.changed);
+        // Everything Rainy registers is below the QA key: the menu, the type, the application.
+        for key in [
+            r"Software\Classes\*\shell\Rainy",
+            r"Software\Classes\Rainy.md",
+            r"Software\Classes\Applications\RainyAgent.exe",
+        ] {
+            assert!(
+                CurrentUser.exists(&format!(r"{root}\{key}")).unwrap(),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            CurrentUser
+                .read(&format!(r"{root}\Software\RegisteredApplications"), "Rainy")
+                .unwrap()
+                .as_deref(),
+            Some(r"Software\RainyMarks\Rainy\Capabilities")
+        );
+        // A second sync finds it current; turning both parts off takes it all back.
+        assert!(
+            !sync(
+                &mut registry,
+                executable,
+                Language::English,
+                wanted,
+                &synced.memory,
+                |_| Ok(())
+            )
+            .unwrap()
+            .changed
+        );
+        sync(
+            &mut registry,
+            executable,
+            Language::English,
+            ShellIntegration::default(),
+            &synced.memory,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(
+            !CurrentUser
+                .exists(&format!(r"{root}\Software\Classes\Rainy.md"))
+                .unwrap()
+        );
     }
 
     #[cfg(windows)]

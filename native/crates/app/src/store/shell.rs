@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::*;
-use rainy_carrier::shell::{self, Change, CurrentUser, Language, ShellIntegration};
+use rainy_carrier::shell::{self, Change, CurrentUser, Language, Redirected, ShellIntegration};
 use rainy_carrier::targets;
 
 use super::Store;
@@ -42,6 +42,8 @@ struct Registration {
     language: Mutex<Language>,
     /// Syncs run one after another.
     queue: Mutex<()>,
+    /// `RAINY_QA_REGISTRY` in a development build: the entries go below `HKCU\Software\RainyQA\<name>` instead.
+    qa: Option<String>,
 }
 
 impl Registration {
@@ -49,7 +51,10 @@ impl Registration {
     fn run(&self) -> anyhow::Result<()> {
         let _queue = self.queue.lock().unwrap();
         let language = *self.language.lock().unwrap();
-        let synced = shell::sync_saved(&mut CurrentUser, &self.settings, &self.executable, language);
+        let synced = match self.qa.as_deref().and_then(Redirected::new) {
+            Some(mut redirected) => shell::sync_saved(&mut redirected, &self.settings, &self.executable, language),
+            None => shell::sync_saved(&mut CurrentUser, &self.settings, &self.executable, language),
+        };
         let state = |on: bool| if on { "on" } else { "off" };
         match &synced {
             Ok(Some(wanted)) => {
@@ -67,8 +72,13 @@ impl Shell {
         let settings = paths.desktop_settings();
         let executable = std::env::current_exe().ok().and_then(|exe| exe.to_str().map(str::to_owned));
         let choice = targets::read_preferences(&settings).map(|preferences| shell::preference(&preferences)).unwrap_or_default();
+        // A development build registers nothing, unless QA asks it to write to a registry key of its own.
+        let qa = (!paths.packaged()).then(|| std::env::var("RAINY_QA_REGISTRY").ok()).flatten().filter(|name| Redirected::new(name).is_some());
+        if let Some(name) = &qa {
+            log::info!(r"Explorer integration goes to HKCU\Software\RainyQA\{name} (RAINY_QA_REGISTRY)");
+        }
         Self {
-            available: paths.packaged() && executable.is_some(),
+            available: (paths.packaged() || qa.is_some()) && executable.is_some(),
             choice,
             busy: false,
             scheduled: false,
@@ -78,6 +88,7 @@ impl Shell {
                 executable: executable.unwrap_or_default(),
                 language: Mutex::new(Language::Chinese),
                 queue: Mutex::new(()),
+                qa,
             }),
         }
     }
