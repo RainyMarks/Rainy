@@ -286,6 +286,22 @@ pub struct SessionSummary {
     /// The Git worktree the chat works in, away from the project's own checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Worktree>,
+    /// The swarm the chat belongs to: its coordinator, or one of its workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm: Option<SwarmLink>,
+    /// Orchestration: the chat's model plans and this model carries the plan out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrate: Option<crate::models::ModelSelection>,
+}
+
+/// A chat's place in a swarm (`/swarm`): the coordinator splits a task among worker chats, which talk over one board.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmLink {
+    /// The coordinator's chat id; the coordinator's own link names itself.
+    pub coordinator: String,
+    /// `coordinator`, or the worker's name without the `@`.
+    pub name: String,
 }
 
 impl SessionSummary {

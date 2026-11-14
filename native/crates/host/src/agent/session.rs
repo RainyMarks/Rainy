@@ -26,6 +26,7 @@ use super::llm::{self, Level, Message, Part, UserContent, context_overflow, text
 use super::mcp::McpManager;
 use super::memory::ProjectMemory;
 use super::models::{Models, Resolved};
+use super::orchestrate::{self, FRICTION_ERRORS, Phase};
 use super::permissions::{self, Decision, READ_ONLY_REASON, canonical_path, decide, denial_text};
 use super::prompt::{self, PromptInputs};
 use super::retry::{self, AUTO_RETRIES, is_passing_failure};
@@ -84,10 +85,14 @@ pub struct Services {
     pub preview: Option<Preview>,
     /// When a chat model request last started or a run last ended (epoch ms); project memory waits for quiet after it.
     pub model_activity: Arc<AtomicU64>,
+    /// Boards and inboxes of `/swarm` chats.
+    pub swarm: Arc<super::swarm::Hub>,
 }
 
 /// Title from the first message: control characters removed, at most five words and 40 bytes.
 pub fn fallback_title(text: &str) -> String {
+    // A swarm is named after its task.
+    let text = super::swarm::swarm_command(text).unwrap_or(text);
     let text = REFERENCE.replace_all(text, "@$1");
     let cleaned: String = text.chars().map(|char| if char.is_control() && (char as u32) < 0x80 { ' ' } else { char }).collect();
     let all: Vec<&str> = cleaned.split_whitespace().collect();
@@ -246,6 +251,12 @@ struct Inner {
     stop_after_step: bool,
     /// Calls refused by the user or by read-only mode; their entries say so for the page.
     refused: HashMap<String, &'static str>,
+    /// Orchestration: which model holds the turn, the phase the run's tools and prompt were made for, failed tool
+    /// calls in a row of the executor, and why the executor handed back.
+    phase: Phase,
+    phase_sent: Option<Phase>,
+    tool_errors: u32,
+    phase_note: Option<String>,
 }
 
 /// A loaded chat.
@@ -307,6 +318,10 @@ impl Session {
                     approvals: Vec::new(),
                     stop_after_step: false,
                     refused: HashMap::new(),
+                    phase: Phase::Plan,
+                    phase_sent: None,
+                    tool_errors: 0,
+                    phase_note: None,
                 }),
                 services,
                 observations: Arc::default(),
@@ -355,6 +370,71 @@ impl Session {
         self.services.models.resolve(self.own_model().as_ref())
     }
 
+    /// Orchestration's executor while it is still saved; `None` when the chat does not orchestrate.
+    fn executor(&self) -> Option<ModelSelection> {
+        let executor = self.chat().orchestrate?;
+        self.services.settings.get().models.iter().any(|model| model.provider == executor.provider && model.model == executor.model).then_some(executor)
+    }
+
+    /// The model of the current request: the executor while it holds an orchestrated turn, else the chat's model.
+    fn request_resolved(&self) -> Option<Resolved> {
+        let executing = self.inner.lock().unwrap().phase == Phase::Execute;
+        match self.executor().filter(|_| executing) {
+            Some(executor) => self.services.models.resolve(Some(&executor)).or_else(|| self.resolved()),
+            None => self.resolved(),
+        }
+    }
+
+    /// Hand the turn to the other model of an orchestrated chat; it takes over at the next request.
+    fn switch_phase(&self, phase: Phase, text: String) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.phase = phase;
+        inner.tool_errors = 0;
+        inner.phase_note = (phase == Phase::Plan).then_some(text);
+    }
+
+    /// Count the executor's failed calls; `true` when they reached the limit and the planner took the turn back.
+    fn friction(&self, failed: bool) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.phase != Phase::Execute {
+            return false;
+        }
+        inner.tool_errors = if failed { inner.tool_errors + 1 } else { 0 };
+        if inner.tool_errors < FRICTION_ERRORS {
+            return false;
+        }
+        inner.phase = Phase::Plan;
+        inner.tool_errors = 0;
+        inner.phase_note = Some(format!("its last {FRICTION_ERRORS} tool calls failed; see the results above."));
+        true
+    }
+
+    /// Turn orchestration on with `executor`, or off; a running chat takes it at its next request.
+    pub async fn set_orchestrate(&self, executor: Option<&ModelSelection>) -> HostResult<Option<ModelSelection>> {
+        let stored = match executor {
+            Some(selection) => Some(
+                self.services
+                    .models
+                    .resolve(Some(selection))
+                    .filter(|resolved| resolved.setup.provider == selection.provider && resolved.setup.model == selection.model)
+                    .ok_or_else(|| HostError::new("not-found", l("模型尚未配置。", "This model is not configured.")))?
+                    .selection(),
+            ),
+            None => None,
+        };
+        let chat = self.services.store.set_meta(&self.id, MetaPatch { orchestrate: Some(stored.clone()), ..MetaPatch::default() }).await?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.chat = chat;
+            if stored.is_none() {
+                inner.phase = Phase::Plan;
+            }
+        }
+        self.publish_state();
+        self.services.rpc.emit("sessions.changed", self.summary());
+        Ok(stored)
+    }
+
     /// Everything the page shows for this chat; `limit` keeps only the last entries (older ones load on demand).
     pub fn snapshot(&self, limit: Option<usize>) -> SessionSnapshot {
         let (model, permission, summary) = (self.selection(), self.permission(), self.summary());
@@ -401,6 +481,9 @@ impl Session {
             return Err(HostError::new("empty", l("消息不能为空。", "A message cannot be empty.")));
         }
         let resolved = self.resolved().ok_or_else(no_model)?;
+        if let Some(task) = super::swarm::swarm_command(text) {
+            self.start_swarm(task).await?;
+        }
         if !images.is_empty() && !resolved.model.images {
             return Err(HostError::new("images-unsupported", l("当前模型不支持图片输入。", "The current model does not accept images.")));
         }
@@ -436,6 +519,38 @@ impl Session {
         }
         self.start_run(std::iter::once((message, meta)).chain(references).collect()).await?;
         Ok(false)
+    }
+
+    /// `/swarm <task>`: make this chat the coordinator of a swarm; the message itself then goes to it as the task.
+    async fn start_swarm(&self, task: &str) -> HostResult<()> {
+        if task.is_empty() {
+            return Err(HostError::new("swarm", l("在 /swarm 后面写上要做的任务。", "Write the task after /swarm.")));
+        }
+        match self.chat().swarm {
+            Some(link) if link.coordinator == self.id => Ok(()),
+            Some(_) => Err(HostError::new("swarm", l("Swarm 的工作者不能再开一个 Swarm。", "A swarm's worker cannot start a swarm of its own."))),
+            None => {
+                let chat = self.services.store.set_meta(&self.id, MetaPatch { swarm: Some(Some(super::swarm::coordinator_link(&self.id))), ..MetaPatch::default() }).await?;
+                self.inner.lock().unwrap().chat = chat;
+                self.services.rpc.emit("sessions.changed", self.summary());
+                Ok(())
+            }
+        }
+    }
+
+    /// The text of the latest reply.
+    pub fn last_reply(&self) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.entries.iter().rev().find_map(|entry| match entry {
+            TranscriptEntry::Assistant { message, .. } => Some(llm::reply_text(message)).filter(|text| !text.trim().is_empty()),
+            _ => None,
+        })
+    }
+
+    /// The run status, whether a call waits for approval, and whether the user wrote while it runs.
+    pub fn swarm_state(&self) -> super::swarm::ChatState {
+        let inner = self.inner.lock().unwrap();
+        super::swarm::ChatState { status: inner.status.to_owned(), awaiting_approval: !inner.approvals.is_empty(), user_waiting: !inner.queue.is_empty() || !inner.steering.is_empty() }
     }
 
     /// Stop the run; queued and steered messages are discarded.
@@ -765,6 +880,15 @@ impl Session {
                 log::warn!("[review] {error}");
             }
         }
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if first_text.is_some() {
+                inner.phase = Phase::Plan;
+                inner.tool_errors = 0;
+                inner.phase_note = None;
+            }
+            inner.phase_sent = Some(inner.phase);
+        }
         let injections = self.first_request_context(&resolved).await?;
         let tools = self.tools();
         let mcp_tools: HashSet<String> = self.services.mcp.tools().iter().map(|tool| tool.spec().name.clone()).collect();
@@ -943,6 +1067,10 @@ impl Session {
         }
         let failed = self.inner.lock().unwrap().error.is_some();
         self.set_status(if failed { "error" } else { "idle" });
+        if self.chat().swarm.is_some() {
+            let (hub, chat) = (self.services.swarm.clone(), self.chat());
+            tokio::spawn(async move { hub.turn_ended(&chat, aborted).await });
+        }
         self.services.memory.resume();
         self.services.model_activity.store(now_ms(), Ordering::SeqCst);
         if aborted {
@@ -1042,6 +1170,16 @@ impl Session {
                 .await;
                 if changes::CHANGE_TOOLS.contains(&result.tool_name.as_str()) && !result.is_error {
                     self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                }
+                if self.executor().is_some() && self.friction(result.is_error) {
+                    self.notice(
+                        "orchestrate-replan",
+                        l(
+                            &format!("执行模型连续 {FRICTION_ERRORS} 次工具调用失败，交回规划模型。"),
+                            &format!("The executor's last {FRICTION_ERRORS} tool calls failed, so the planner takes the turn back."),
+                        ),
+                    )
+                    .await;
                 }
             }
             Event::TurnEnded => self.inject_touched_instructions(),
@@ -1220,8 +1358,14 @@ impl Session {
 
     async fn prepare_request(&self, initial: &Resolved, state: &mut State, cancel: &CancellationToken) {
         // The chat's model may have changed since the run started; another family works with other tools and text.
-        let latest = self.resolved().unwrap_or_else(|| initial.clone());
-        let refit = latest.model.id != state.model.id || tool_style(&latest.model) != tool_style(&state.model);
+        let latest = self.request_resolved().unwrap_or_else(|| initial.clone());
+        let orchestrated = self.chat().orchestrate.is_some();
+        let phase_changed = {
+            let mut inner = self.inner.lock().unwrap();
+            let phase = inner.phase;
+            inner.phase_sent.replace(phase) != Some(phase) && orchestrated
+        };
+        let refit = phase_changed || latest.model.id != state.model.id || tool_style(&latest.model) != tool_style(&state.model);
         state.model = latest.model.clone();
         if refit {
             state.tools = self.tools();
@@ -1521,15 +1665,35 @@ impl Session {
         let web = (self.services.settings.prefs().get("webSearch").and_then(Value::as_bool) == Some(true) && deepseek_key(&settings).is_some())
             .then(|| WebAccess { api_key: Arc::new(move || deepseek_key(&settings)), network: self.services.network.clone() });
         let subagents: Arc<dyn Subagents> = Arc::new(ChatSubagents { session: self.this.clone(), context: context.clone(), web: web.clone() });
-        let resolved = self.resolved();
+        let resolved = self.request_resolved();
         let style = resolved.as_ref().map_or_else(ToolStyle::default, |resolved| tool_style(&resolved.model));
         let mut tools = core_tools(&context, self.services.env.windows, web, Some(subagents), style);
         tools.push(Arc::new(Recall::new(context.clone(), Arc::new(ChatHistory(self.this.clone())))));
+        if let Some(executor) = self.executor() {
+            let session = self.this.clone();
+            let switch: orchestrate::Switch = Arc::new(move |phase, text| {
+                if let Some(session) = session.upgrade() {
+                    session.switch_phase(phase, text);
+                }
+            });
+            let planner = self.selection().map(|selection| selection.model).unwrap_or_default();
+            match self.inner.lock().unwrap().phase {
+                Phase::Plan => tools.push(Arc::new(orchestrate::HandOff::new(&executor.model, switch))),
+                Phase::Execute => tools.push(Arc::new(orchestrate::Replan::new(&planner, switch))),
+            }
+        }
         if let Some(preview) = &self.services.preview {
             let vision = resolved.as_ref().is_some_and(|resolved| resolved.model.images);
             tools.extend(Browser::tools(&context, preview.clone(), vision));
         }
         tools.extend(self.services.mcp.tools());
+        if let Some(link) = self.chat().swarm {
+            // The coordinator splits and judges the work; changing files is the workers' part.
+            if link.coordinator == self.id {
+                tools.retain(|tool| !changes::CHANGE_TOOLS.contains(&tool.spec().name.as_str()));
+            }
+            tools.extend(super::swarm::tools(&self.services.swarm, &link, &self.id));
+        }
         tools.sort_by(|left, right| left.spec().name.cmp(&right.spec().name));
         tools
     }
@@ -1545,7 +1709,15 @@ impl Session {
             let component = self.services.runtime.resolve(Path::new(&chat.cwd)).ok().and_then(|resolved| resolved.powershell);
             crate::process::resolve_powershell(env.pwsh_path.as_deref(), component.as_deref()).1
         });
-        prompt::build(&PromptInputs {
+        let orchestration = self.executor().map(|executor| {
+            let (phase, note) = {
+                let inner = self.inner.lock().unwrap();
+                (inner.phase, inner.phase_note.clone())
+            };
+            let planner = self.selection().map(|selection| selection.model).unwrap_or_default();
+            orchestrate::prompt_section(phase, &planner, &executor.model, note.as_deref())
+        });
+        let built = prompt::build(&PromptInputs {
             cwd: &chat.cwd,
             windows: env.windows,
             tools: &names,
@@ -1555,8 +1727,10 @@ impl Session {
             global_prompt: &self.services.settings.get().global_prompt,
             remote: env.kind() == "SSH",
             powershell_core,
-            profile: self.resolved().map_or_else(|| Profile::of(""), |resolved| Profile::of(&resolved.model.id)),
-        })
+            profile: self.request_resolved().map_or_else(|| Profile::of(""), |resolved| Profile::of(&resolved.model.id)),
+        });
+        let swarm = chat.swarm.as_ref().map(|link| super::swarm::prompt_section(link, &self.id)).unwrap_or_default();
+        built + &orchestration.unwrap_or_default() + &swarm
     }
 
     // ── persistence and events ──
@@ -1622,6 +1796,8 @@ pub fn summary_of(chat: &StoredChat, status: &str, awaiting_approval: bool) -> S
         awaiting_approval: awaiting_approval.then_some(true),
         read_at: chat.read_at,
         worktree: chat.worktree.clone(),
+        swarm: chat.swarm.clone(),
+        orchestrate: chat.orchestrate.clone(),
     }
 }
 
@@ -1750,6 +1926,7 @@ mod tests {
     #[test]
     fn titles_and_references() {
         assert_eq!(fallback_title("fix the build on windows please now"), "fix the build on windows…");
+        assert_eq!(fallback_title("/swarm port the parser"), "port the parser");
         assert_eq!(fallback_title("see @[old chat](rainy-session:abc-1) now"), "see @old chat now");
         let long = "很长的标题".repeat(10);
         assert!(fallback_title(&long).ends_with('…') && fallback_title(&long).len() <= 43);

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rainy_protocol::chat::{TranscriptEntry, Worktree};
+use rainy_protocol::chat::{SwarmLink, TranscriptEntry, Worktree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -50,6 +50,12 @@ pub struct StoredChat {
     pub read_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Worktree>,
+    /// Its place in a swarm (`/swarm`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm: Option<SwarmLink>,
+    /// Orchestration's executor: the chat's model plans and this one carries the plan out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrate: Option<ModelSelection>,
 }
 
 /// Metadata changes, recorded as `meta` lines; later lines win.
@@ -74,6 +80,11 @@ pub struct MetaPatch {
     /// `Some(None)` ends the chat's worktree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Option<Worktree>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swarm: Option<Option<SwarmLink>>,
+    /// `Some(None)` ends orchestration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchestrate: Option<Option<ModelSelection>>,
 }
 
 impl MetaPatch {
@@ -102,6 +113,12 @@ impl MetaPatch {
         if let Some(worktree) = &self.worktree {
             chat.worktree = worktree.clone();
         }
+        if let Some(swarm) = &self.swarm {
+            chat.swarm = swarm.clone();
+        }
+        if let Some(orchestrate) = &self.orchestrate {
+            chat.orchestrate = orchestrate.clone();
+        }
     }
 }
 
@@ -124,6 +141,7 @@ pub struct NewChat {
     pub model: Option<ModelSelection>,
     pub permission: Option<String>,
     pub worktree: Option<Worktree>,
+    pub swarm: Option<SwarmLink>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -386,6 +404,8 @@ impl ChatStore {
             permission: new.permission,
             read_at: Some(now),
             worktree: new.worktree,
+            swarm: new.swarm,
+            orchestrate: None,
         };
         let mut header = json!({ "type": "header", "version": CHAT_FORMAT_VERSION, "id": chat.id, "workspaceId": chat.workspace_id, "cwd": chat.cwd, "createdAt": now });
         if let Some(parent) = &chat.parent {
@@ -399,6 +419,7 @@ impl ChatStore {
             permission: chat.permission.clone(),
             read_at: chat.read_at,
             worktree: chat.worktree.clone().map(Some),
+            swarm: chat.swarm.clone().map(Some),
             ..MetaPatch::default()
         };
         let meta = serde_json::to_value(&meta).unwrap_or_default();
@@ -454,6 +475,8 @@ impl ChatStore {
             permission: None,
             read_at: None,
             worktree: None,
+            swarm: None,
+            orchestrate: None,
         };
         let (mut entries, mut kept, mut damaged) = (Vec::new(), Vec::new(), 0);
         for line in lines.filter(|line| !line.is_empty()) {
@@ -473,6 +496,8 @@ impl ChatStore {
                         read_at: record["readAt"].as_f64(),
                         cwd: record["cwd"].as_str().filter(|cwd| !cwd.is_empty()).map(str::to_owned),
                         worktree: record.get("worktree").map(|worktree| serde_json::from_value(worktree.clone()).ok()),
+                        swarm: record.get("swarm").map(|swarm| serde_json::from_value(swarm.clone()).ok()),
+                        orchestrate: record.get("orchestrate").map(|model| serde_json::from_value(model.clone()).ok()),
                     };
                     patch.apply(&mut chat);
                 }

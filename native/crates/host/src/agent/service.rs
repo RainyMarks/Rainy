@@ -65,6 +65,8 @@ pub struct Agent {
     maps: Arc<ProjectMaps>,
     /// The folder Settings → Skills last showed, for the status sent when an MCP server changes.
     extensions_cwd: Mutex<Option<String>>,
+    /// What swarms act on chats through; the hub holds it weakly.
+    swarm_chats: Mutex<Option<Arc<dyn super::swarm::Chats>>>,
 }
 
 impl Agent {
@@ -99,6 +101,7 @@ impl Agent {
             })
         };
         let snapshots = Arc::new(Snapshots::new(env.home.join("snapshots")));
+        let swarm = super::swarm::Hub::new(env.home.join("swarms"), store.clone(), host.rpc.clone());
         let services = Arc::new(Services {
             env: env.clone(),
             settings: host.settings.clone(),
@@ -114,6 +117,7 @@ impl Agent {
             network: host.network.clone(),
             preview,
             model_activity,
+            swarm,
         });
         let rpc = host.rpc.clone();
         let agent = Arc::new(Agent {
@@ -124,6 +128,7 @@ impl Agent {
             sessions: Arc::default(),
             opening: tokio::sync::Mutex::new(()),
             extensions_cwd: Mutex::new(None),
+            swarm_chats: Mutex::new(None),
         });
         {
             let sessions = agent.sessions.clone();
@@ -155,6 +160,9 @@ impl Agent {
             sweep_spill(&home.join("spill"));
             snapshots.sweep(RETENTION);
         });
+        let chats: Arc<dyn super::swarm::Chats> = Arc::new(SwarmChats(Arc::downgrade(&agent)));
+        agent.services.swarm.set_chats(Arc::downgrade(&chats));
+        *agent.swarm_chats.lock().unwrap() = Some(chats);
         agent.register();
         Ok(agent)
     }
@@ -310,7 +318,7 @@ impl Agent {
             } else {
                 (cwd, None)
             };
-            let chat = agent.services.store.create(NewChat { workspace_id: params.workspace_id, cwd, parent: None, entries: Vec::new(), title: String::new(), model: None, permission: Some(permission), worktree })?;
+            let chat = agent.services.store.create(NewChat { workspace_id: params.workspace_id, cwd, parent: None, entries: Vec::new(), title: String::new(), model: None, permission: Some(permission), worktree, swarm: None })?;
             let created = agent.summary(&chat.id)?;
             agent.services.rpc.emit("sessions.changed", &created);
             Ok(created)
@@ -400,6 +408,7 @@ impl Agent {
                 model: file.chat.model.clone(),
                 permission: Some(file.chat.permission.clone().unwrap_or_else(|| agent.services.settings.default_permission())),
                 worktree: None,
+                swarm: None,
             })?;
             let created = agent.summary(&chat.id)?;
             agent.services.rpc.emit("sessions.changed", &created);
@@ -432,6 +441,21 @@ impl Agent {
         });
         self.on("chat.unqueue", |agent, params: ItemParams| async move { Ok(agent.session(&params.session_id).await?.unqueue(&params.id)) });
         self.on("chat.setModel", |agent, params: SetModelParams| async move { agent.session(&params.session_id).await?.set_model(&params.selection).await });
+        self.on("swarm.get", |agent, params: SessionRef| async move {
+            let hub = &agent.services.swarm;
+            let Some(coordinator) = hub.coordinator_of(&params.session_id) else { return Ok(Value::Null) };
+            let title = agent.services.store.get(&coordinator).map(|chat| chat.title).unwrap_or_default();
+            Ok(json!({ "coordinatorId": coordinator, "title": title, "posts": hub.posts(&coordinator), "members": hub.members(&coordinator) }))
+        });
+        self.on("swarm.stop", |agent, params: SessionRef| async move {
+            if let Some(coordinator) = agent.services.swarm.coordinator_of(&params.session_id) {
+                agent.services.swarm.stop(&coordinator);
+            }
+            Ok(Value::Null)
+        });
+        self.on("chat.setOrchestrate", |agent, params: OrchestrateParams| async move {
+            agent.session(&params.session_id).await?.set_orchestrate(params.executor.as_ref()).await
+        });
         self.on("chat.compact", |agent, params: SessionRef| async move { Ok(json!({ "message": agent.session(&params.session_id).await?.compact_now().await? })) });
         self.on("chat.retry", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.retry().await.map(|()| Value::Null) });
         self.on("chat.stopCommand", |agent, params: ItemParams| async move { agent.session(&params.session_id).await?.stop_command(params.command_id()?).await });
@@ -736,6 +760,14 @@ struct SendParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct OrchestrateParams {
+    session_id: String,
+    /// `null` turns orchestration off.
+    executor: Option<ModelSelection>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SetModelParams {
     session_id: String,
     #[serde(flatten)]
@@ -889,4 +921,104 @@ struct MemoryEdit {
 struct MemoryNote {
     workspace_id: String,
     id: String,
+}
+
+/// The chats a swarm acts on: the agent's own operations on them.
+struct SwarmChats(std::sync::Weak<Agent>);
+
+impl SwarmChats {
+    fn agent(&self) -> HostResult<Arc<Agent>> {
+        self.0.upgrade().ok_or_else(|| HostError::new("closed", l("Host 正在关闭。", "The Host is closing.")))
+    }
+}
+
+impl super::swarm::Chats for SwarmChats {
+    fn create_worker(&self, coordinator: String, name: String, first: String, model: Option<ModelSelection>, isolated: bool) -> futures::future::BoxFuture<'static, HostResult<String>> {
+        let agent = self.agent();
+        Box::pin(async move {
+            let agent = agent?;
+            let lead = agent.services.store.get(&coordinator).ok_or_else(not_found_chat)?;
+            // Workers start from the project's checkout, also when the coordinator runs in a worktree of its own.
+            let base = lead.worktree.as_ref().map_or_else(|| lead.cwd.clone(), |worktree| worktree.repository.clone());
+            let (cwd, worktree) = if isolated {
+                let (worktree, inside) = agent.git.worktree_add(Path::new(&base), &agent.services.env.home.join("worktrees")).await?;
+                (inside, Some(worktree))
+            } else {
+                (base, None)
+            };
+            let lead_model = agent.live(&coordinator).and_then(|session| session.selection()).or(lead.model.clone());
+            let chat = agent.services.store.create(NewChat {
+                workspace_id: lead.workspace_id.clone(),
+                cwd,
+                parent: None,
+                entries: Vec::new(),
+                title: format!("@{name}"),
+                model: model.or(lead_model),
+                permission: Some(lead.permission.clone().unwrap_or_else(|| agent.services.settings.default_permission())),
+                worktree,
+                swarm: Some(rainy_protocol::chat::SwarmLink { coordinator: coordinator.clone(), name }),
+            })?;
+            agent.services.rpc.emit("sessions.changed", agent.summary(&chat.id)?);
+            agent.session(&chat.id).await?.send(&first, Vec::new(), false).await?;
+            Ok(chat.id)
+        })
+    }
+
+    fn deliver(&self, id: String, text: String) -> futures::future::BoxFuture<'static, HostResult<()>> {
+        let agent = self.agent();
+        Box::pin(async move {
+            agent?.session(&id).await?.send(&text, Vec::new(), true).await?;
+            Ok(())
+        })
+    }
+
+    fn land(&self, id: String) -> futures::future::BoxFuture<'static, HostResult<usize>> {
+        let agent = self.agent();
+        Box::pin(async move {
+            let agent = agent?;
+            let chat = agent.services.store.get(&id).ok_or_else(not_found_chat)?;
+            let worktree = chat.worktree.ok_or_else(no_worktree)?;
+            let files = agent.git.worktree_hand_off(&worktree, &agent.services.env.home.join("worktrees")).await?;
+            let live = agent.sessions.lock().unwrap().remove(&id);
+            if let Some(session) = live {
+                session.close().await;
+            }
+            agent.set_meta(&id, MetaPatch { cwd: Some(worktree.repository.clone()), worktree: Some(None), ..MetaPatch::default() }).await?;
+            Ok(files)
+        })
+    }
+
+    fn retire(&self, id: String, discard: bool) -> futures::future::BoxFuture<'static, HostResult<()>> {
+        let agent = self.agent();
+        Box::pin(async move {
+            let agent = agent?;
+            if let Some(session) = agent.live(&id) {
+                session.abort();
+            }
+            let chat = agent.services.store.get(&id).ok_or_else(not_found_chat)?;
+            if let (Some(worktree), true) = (&chat.worktree, discard) {
+                agent.git.worktree_remove(worktree).await;
+                agent.set_meta(&id, MetaPatch { cwd: Some(worktree.repository.clone()), worktree: Some(None), ..MetaPatch::default() }).await?;
+            }
+            agent.set_meta(&id, MetaPatch { archived: Some(true), ..MetaPatch::default() }).await?;
+            Ok(())
+        })
+    }
+
+    fn abort(&self, id: &str) {
+        if let Some(session) = self.0.upgrade().and_then(|agent| agent.live(id)) {
+            session.abort();
+        }
+    }
+
+    fn state(&self, id: &str) -> super::swarm::ChatState {
+        match self.0.upgrade().and_then(|agent| agent.live(id)) {
+            Some(session) => session.swarm_state(),
+            None => super::swarm::ChatState { status: "idle".into(), awaiting_approval: false, user_waiting: false },
+        }
+    }
+
+    fn last_reply(&self, id: &str) -> Option<String> {
+        self.0.upgrade().and_then(|agent| agent.live(id)).and_then(|session| session.last_reply())
+    }
 }
