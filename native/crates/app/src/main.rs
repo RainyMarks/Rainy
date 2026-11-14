@@ -51,7 +51,8 @@ fn main() {
     };
     rainy_carrier::logging::init(&user_data.join(rainy_carrier::logging::FILE_NAME));
     let locale = boot::saved_locale(&user_data);
-    report_startup_panics(locale);
+    store::ide::SKIP_LAST_CHAT.store(crashed_soon_after_start(&user_data), Ordering::Relaxed);
+    report_panics(locale, &user_data);
     let keys = if release::keyring().is_some() { "with release keys" } else { "without release keys" };
     log::info!("Rainy {} starting, {keys}", env!("CARGO_PKG_VERSION"));
     // One Rainy per profile: a later launch, as from Explorer, goes to the window already open and this process exits.
@@ -189,18 +190,46 @@ fn report_startup_failure(locale: Locale, detail: &str) {
     }
 }
 
-/// A release build aborts on a panic; one before the window is open is shown like any other failure to start. The log
-/// has it already.
-fn report_startup_panics(locale: Locale) {
-    if cfg!(debug_assertions) {
-        return;
+/// Written when Rainy panics soon after it started; the next start then leaves the last chat closed.
+const CRASH_MARK: &str = "crashed-at-start";
+/// A panic this soon after starting may well come from what was restored.
+const SOON_AFTER_START: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether the last run panicked soon after it started, which this call forgets: restoring its chat again could end
+/// the same way on every start, with no way to choose another one.
+fn crashed_soon_after_start(user_data: &std::path::Path) -> bool {
+    let mark = user_data.join(CRASH_MARK);
+    let crashed = mark.is_file();
+    if crashed {
+        let _ = std::fs::remove_file(&mark);
+        log::warn!("The last run ended in an error soon after it started; the last chat is not opened again");
     }
+    crashed
+}
+
+/// A release build aborts on a panic, so it is shown: one before the window is open like any other failure to start,
+/// a later one as an error that closes Rainy (without this the window just went away). The log has it already. A panic
+/// soon after starting leaves a mark for the next start (`crashed_soon_after_start`).
+fn report_panics(locale: Locale, user_data: &std::path::Path) {
+    let started = std::time::Instant::now();
+    let mark = user_data.join(CRASH_MARK);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
-        if STARTING.load(Ordering::Relaxed) {
-            error_box(i18n::text(locale, "native.startFailed"), &rainy_carrier::logging::panic_message(info));
+        let soon = started.elapsed() < SOON_AFTER_START;
+        if soon {
+            let _ = std::fs::write(&mark, b"");
         }
+        if cfg!(debug_assertions) {
+            return;
+        }
+        let detail = rainy_carrier::logging::panic_message(info);
+        let message = match (STARTING.load(Ordering::Relaxed), soon) {
+            (true, _) => "native.startFailed",
+            (false, true) => "native.crashedAtStart",
+            (false, false) => "native.crashed",
+        };
+        error_box(i18n::text(locale, message), &detail);
     }));
 }
 

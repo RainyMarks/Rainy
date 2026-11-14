@@ -4,6 +4,7 @@
 //! path in an attached root, so the editor state saved per project stays readable by Rainy 3.x.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::diff::{DiffFile, DiffState};
@@ -20,6 +21,10 @@ use crate::i18n::Locale;
 use crate::store::Store;
 
 const PREFIX: char = '\0';
+
+/// Set when the last run panicked soon after it started: the first project shown then leaves its last chat closed, since
+/// restoring it may be what ended that run (4.10.0 panicked on a tool path in one chat, on every start).
+pub static SKIP_LAST_CHAT: AtomicBool = AtomicBool::new(false);
 
 /// How often open files and listings are checked against the disk (3.x `editorPollMs`).
 const POLL: Duration = Duration::from_secs(10);
@@ -236,7 +241,10 @@ pub fn key_in(workspace: &IdeWorkspace, path: &str) -> Option<String> {
     roots.sort_by_key(|root| std::cmp::Reverse(root.path.len()));
     roots.into_iter().find_map(|root| {
         let prefix = format!("{}/", root.path.replace('\\', "/").trim_end_matches('/'));
-        fold(&candidate).starts_with(&fold(&prefix)).then(|| file_key(&candidate[prefix.len()..], Some(&root)))
+        // Compare the path's own first bytes: lower case can change a character's length (`K`, the Kelvin sign), so a
+        // match of the folded strings does not put a character boundary at the prefix's length.
+        let (head, rest) = candidate.split_at_checked(prefix.len())?;
+        (fold(head) == fold(&prefix)).then(|| file_key(rest, Some(&root)))
     })
 }
 
@@ -545,7 +553,8 @@ impl Ide {
                 this.active = active.filter(|key| tabs.contains(key)).or_else(|| tabs.first().cloned());
                 let last = this.state.as_ref().and_then(|state| state.data["lastSessionId"].as_str().map(str::to_owned));
                 // The chat list may still be loading; the chat is chosen once it has come.
-                this.pending_session = if std::mem::take(&mut this.fresh) { None } else { Some(last) };
+                let skip = std::mem::take(&mut this.fresh) | SKIP_LAST_CHAT.swap(false, Ordering::Relaxed);
+                this.pending_session = if skip { None } else { Some(last) };
                 this.restore_session(cx);
                 cx.emit(IdeEvent::ActiveChanged);
                 cx.notify();
@@ -1888,6 +1897,10 @@ mod tests {
         assert_eq!(key_in(&notes, r"C:\Users\me\Notesbook\x.md"), None);
         assert_eq!(key_in(&linux, "/home/me/src/main.rs").as_deref(), Some("main.rs"));
         assert_eq!(key_in(&linux, "/home/me/SRC/main.rs"), None);
+        // A prefix's length that falls inside a character of the path, and a character whose lower case is longer.
+        assert_eq!(key_in(&notes, r"C:\迅雷下载\撕裂者\a.md"), None);
+        assert_eq!(key_in(&project("k", r"C:\K", None), "C:\\\u{212A}\\a.md"), None);
+        assert_eq!(key_in(&project("z", r"C:\中文", None), r"c:\中文\笔记.md").as_deref(), Some("笔记.md"));
         assert_eq!(key_in(&attached, r"E:\Shared\a\b.md"), Some(file_key("a/b.md", attached.roots().get(1))));
         let all = [notes.clone(), daily.clone(), linux, attached];
         let (found, key) = holding_workspace(&all, r"C:\Users\me\Notes\daily\today.md").unwrap();

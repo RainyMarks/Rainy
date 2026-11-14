@@ -356,7 +356,9 @@ fn shown_path(cwd: &str, path: &str) -> Option<String> {
     if folder.is_empty() || path.len() <= folder.len() + 1 {
         return None;
     }
-    let (head, rest) = path.split_at(folder.len());
+    // The folder's length is in its own bytes: in a path elsewhere (`C:\迅雷下载\…` beside `C:\Users\ROG\Desktop`) it can
+    // fall inside a character, and slicing there panics.
+    let (head, rest) = path.split_at_checked(folder.len())?;
     let same = head.eq_ignore_ascii_case(folder) || head == folder;
     (same && rest.starts_with(['/', '\\'])).then(|| rest[1..].to_owned())
 }
@@ -1461,6 +1463,9 @@ mod tests {
         assert_eq!(shown_path(r"C:\Work\app", r"C:\Work\apple\a.py"), None);
         assert_eq!(shown_path(r"C:\Work\app", "src/a.py"), None);
         assert_eq!(shown_path("", "/a.py"), None);
+        // The folder's length falls inside `裂` of a path elsewhere; this panicked on every start of 4.10.0.
+        assert_eq!(shown_path(r"C:\Users\ROG\Desktop", r"C:\迅雷下载\撕裂者核弹-数据版\说明.txt"), None);
+        assert_eq!(shown_path(r"C:\Users\ROG\Desktop", r"C:\Users\ROG\Desktop\撕裂者\a.txt").as_deref(), Some(r"撕裂者\a.txt"));
         let args = json!({ "file_path": r"C:\Work\app\report.py", "offset": 3 }).as_object().unwrap().clone();
         assert_eq!(titled_arguments(r"C:\Work\app", &args)["file_path"], "report.py");
     }

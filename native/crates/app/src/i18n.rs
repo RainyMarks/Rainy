@@ -65,6 +65,8 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.exitCode", "退出代码：{code}", "Exit code: {code}"),
     ("native.restart", "重新启动", "Restart"),
     ("native.startFailed", "Rainy 启动失败", "Rainy could not start."),
+    ("native.crashed", "Rainy 出错，需要关闭。详细记录在用户数据文件夹的 rainy.log 里。", "Rainy ran into an error and has to close. rainy.log in the user data folder has the details."),
+    ("native.crashedAtStart", "Rainy 出错，需要关闭。下次启动时不会自动打开上次的对话；详细记录在用户数据文件夹的 rainy.log 里。", "Rainy ran into an error and has to close. The next start leaves the last chat closed; rainy.log in the user data folder has the details."),
     ("native.windowsHostMissing", "Windows 原生运行文件缺失，请安装完整发行包。", "The files for running natively on Windows are missing. Install the full Rainy package."),
     ("native.verifying", "首次启动，正在校验安装文件 {done} / {total}", "First start: verifying installed files {done} / {total}"),
     ("native.trustInvalid", "发行清单无效：{detail}", "The Rainy file list is not valid: {detail}"),
