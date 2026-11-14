@@ -1430,11 +1430,11 @@ fn report_failure(request: impl Future<Output = Result<Value, RpcError>> + 'stat
 const COMPOSER_LINE: f32 = 32.;
 
 /// The card the model control opens.
-const CARD_WIDTH: f32 = 300.;
-const CARD_PADDING: f32 = 14.;
+const CARD_WIDTH: f32 = 264.;
+const CARD_PADDING: f32 = 12.;
 const TRACK_WIDTH: f32 = CARD_WIDTH - 2. * CARD_PADDING;
-const TRACK_HEIGHT: f32 = 30.;
-const THUMB: f32 = 26.;
+const TRACK_HEIGHT: f32 = 20.;
+const THUMB: f32 = 16.;
 /// Sparkles on the filled part of the track: x as a share of the track, y from its top, diameter, blink period in
 /// milliseconds and phase. Fixed, so they twinkle in place instead of jumping on every draw.
 const SPARKLES: [(f32, f32, f32, u64, f32); 10] = [
@@ -1558,7 +1558,10 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
         .p(px(CARD_PADDING))
         .rounded(theme.radius_lg)
         .trigger(trigger)
-        .content(move |_, window, cx| model_card(&store, chat.as_ref(), window, cx))
+        .content(move |_, window, cx| {
+            let popover = cx.entity();
+            model_card(&store, chat.as_ref(), popover, window, cx)
+        })
         .into_any_element()
 }
 
@@ -1571,17 +1574,22 @@ struct CardState {
     pending: Option<(ModelSelection, usize, Instant)>,
     /// The model list shows instead of the slider.
     list: bool,
+    /// The orchestration page shows.
+    orchestrate: bool,
 }
 
 /// The card the control opens: the level slider for a model with reasoning levels, the list of saved models on
 /// request, and for a model without levels the list with a note.
-fn model_card(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn model_card(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, popover: Entity<gpui_kit::component::popover::PopoverState>, window: &mut Window, cx: &mut App) -> AnyElement {
     let card = window.use_keyed_state("model-card", cx, |_, _| CardState::default());
     let locale = store.read(cx).locale();
     let Some(state) = model_state(store, chat, cx) else {
         return div().text_sm().text_color(cx.theme().muted_foreground).child(i18n::text(locale, "chat.noModel")).into_any_element();
     };
     let session = chat.map(|chat| chat.read(cx).id.clone());
+    if card.read(cx).orchestrate {
+        return orchestrate_page(store, session, &state, &card, popover, locale, cx);
+    }
     if card.read(cx).list || !state.reasoning.adjustable() {
         return model_list(store, session, &state, &card, locale, cx);
     }
@@ -1632,10 +1640,10 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
             })
     };
     let header = h_flex()
-        .h(px(30.))
+        .h(px(24.))
         .items_center()
-        .child(div().w(px(24.)).flex_shrink_0().child(Icon::new(gpui_kit::assets::IconName::Zap).size_4().text_color(accent)))
-        .child(div().flex_1().min_w_0().text_center().text_xl().font_semibold().text_color(accent).child(label(levels[shown])))
+        .child(div().w(px(24.)).flex_shrink_0().child(Icon::new(gpui_kit::assets::IconName::Zap).size_3p5().text_color(accent)))
+        .child(div().flex_1().min_w_0().text_center().text_base().font_semibold().text_color(accent).child(label(levels[shown])))
         .child(h_flex().w(px(24.)).flex_shrink_0().justify_end().child(reset));
 
     let list = card.clone();
@@ -1662,7 +1670,7 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
     let fill = thumb + THUMB / 2.;
     let sparkle = theme.primary_foreground.opacity(if dark { 0.9 } else { 0.75 });
     let sparkles = SPARKLES.iter().enumerate().filter(|(_, (x, ..))| x * TRACK_WIDTH < fill - THUMB).map(|(index, &(x, y, size, period, phase))| {
-        div().absolute().left(px(x * TRACK_WIDTH)).top(px(y)).size(px(size)).rounded_full().bg(sparkle).with_animation(
+        div().absolute().left(px(x * TRACK_WIDTH)).top(px(y * TRACK_HEIGHT / 30.)).size(px(size * 0.8)).rounded_full().bg(sparkle).with_animation(
             ("reasoning-sparkle", index),
             Animation::new(Duration::from_millis(period)).repeat().with_max_fps(20.).with_easing(move |t| 0.5 - 0.5 * ((t + phase) * std::f32::consts::TAU).cos()),
             |dot, glow| dot.opacity(0.15 + 0.85 * glow),
@@ -1767,37 +1775,42 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
             .when(stop == shown, |this| this.font_medium())
             .child(label(*level))
     }));
-    let orchestrate = {
-        let list = card.clone();
-        let label: SharedString = match &state.executor {
-            Some((_, executor)) => i18n::format(locale, "chat.orchestrateOn", &[("executor", executor)]).into(),
-            None => i18n::text(locale, "chat.orchestrateOff").into(),
-        };
-        h_flex()
-            .id("reasoning-orchestrate")
-            .mt_2()
-            .pt_2()
-            .gap_1p5()
-            .items_center()
-            .border_t_1()
-            .border_color(theme.border)
-            .text_xs()
-            .text_color(muted)
-            .cursor_pointer()
-            .hover(move |style| style.text_color(strong))
-            .child(Icon::new(gpui_kit::assets::IconName::Workflow).xsmall())
-            .child(div().child(i18n::text(locale, "chat.orchestrate")))
-            .child(new_badge(locale, cx))
-            .child(div().flex_1().min_w_0().text_right().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
-            .child(Icon::new(IconName::ChevronRight).xsmall())
-            .on_click(move |_, _, cx| {
-                list.update(cx, |card, cx| {
-                    card.list = true;
-                    cx.notify();
-                });
-            })
+    let orchestrate = orchestrate_entry(state, card, locale, cx);
+    v_flex().gap_0p5().child(header).child(model).child(v_flex().pt_1p5().gap_1().child(track).child(names)).child(orchestrate).into_any_element()
+}
+
+/// The row under the slider and the model list that opens the orchestration page, with its current choice.
+fn orchestrate_entry(state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> impl IntoElement + use<> {
+    let theme = cx.theme();
+    let (muted, strong) = (theme.muted_foreground, theme.foreground);
+    let label: SharedString = match &state.executor {
+        Some((_, executor)) => i18n::format(locale, "chat.orchestrateOn", &[("executor", executor)]).into(),
+        None => i18n::text(locale, "chat.orchestrateOff").into(),
     };
-    v_flex().gap_1().child(header).child(model).child(v_flex().pt_2().gap_1p5().child(track).child(names)).child(orchestrate).into_any_element()
+    let open = card.clone();
+    h_flex()
+        .id("reasoning-orchestrate")
+        .mt_1p5()
+        .pt_1p5()
+        .gap_1p5()
+        .items_center()
+        .border_t_1()
+        .border_color(theme.border)
+        .text_xs()
+        .text_color(muted)
+        .cursor_pointer()
+        .hover(move |style| style.text_color(strong))
+        .child(Icon::new(gpui_kit::assets::IconName::Workflow).xsmall())
+        .child(div().flex_shrink_0().child(i18n::text(locale, "chat.orchestrate")))
+        .child(new_badge(locale, cx))
+        .child(div().flex_1().min_w_0().text_right().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
+        .child(Icon::new(IconName::ChevronRight).xsmall())
+        .on_click(move |_, _, cx| {
+            open.update(cx, |card, cx| {
+                card.orchestrate = true;
+                cx.notify();
+            });
+        })
 }
 
 /// The small "new" mark of a feature added in this version.
@@ -1809,25 +1822,49 @@ fn new_badge(locale: Locale, cx: &App) -> impl IntoElement + use<> {
 
 /// Orchestration under the model list: off, or one of the other saved models as the executor of the model in use,
 /// which then plans. The info mark explains the pair.
-fn orchestrate_rows(store: &Entity<Store>, session: Option<String>, state: &ModelState, models: &[ModelSetup], presets: &[rainy_protocol::ModelPreset], locale: Locale, cx: &App) -> AnyElement {
+fn orchestrate_page(
+    store: &Entity<Store>,
+    session: Option<String>,
+    state: &ModelState,
+    card: &Entity<CardState>,
+    popover: Entity<gpui_kit::component::popover::PopoverState>,
+    locale: Locale,
+    cx: &App,
+) -> AnyElement {
     let theme = cx.theme();
     let (hover, muted, accent) = (theme.accent, theme.muted_foreground, if theme.mode.is_dark() { theme.link } else { theme.primary });
-    let tip: SharedString = i18n::text(locale, "chat.orchestrateInfo").into();
+    let (models, presets) = store.read(cx).models.as_ref().map(|status| (status.models.clone(), status.presets.clone())).unwrap_or_default();
+    let back = card.clone();
     let header = h_flex()
         .h(px(26.))
-        .px_2()
-        .gap_1p5()
+        .gap_1()
         .items_center()
-        .child(Icon::new(gpui_kit::assets::IconName::Workflow).small().text_color(muted))
+        .child(Button::new("orchestrate-back").ghost().xsmall().icon(Icon::new(IconName::ChevronLeft)).on_click(move |_, _, cx| {
+            back.update(cx, |card, cx| {
+                card.orchestrate = false;
+                cx.notify();
+            });
+        }))
         .child(div().text_sm().font_semibold().child(i18n::text(locale, "chat.orchestrate")))
-        .child(new_badge(locale, cx))
-        .child(
-            div()
-                .id("orchestrate-info")
-                .flex_shrink_0()
-                .child(Icon::new(IconName::Info).xsmall().text_color(muted))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
-        );
+        .child(new_badge(locale, cx));
+    let about = div().px_1().pb_1().text_xs().text_color(muted).child(i18n::text(locale, "chat.orchestrateInfo"));
+    let others = models.iter().filter(|model| model.provider != state.current.provider || model.model != state.current.model).count();
+    if others == 0 {
+        // Orchestration needs a second model to execute; the user adds one in Settings.
+        let card = card.clone();
+        let add = Button::new("orchestrate-add-model").small().primary().label(i18n::text(locale, "chat.orchestrateAddModel")).on_click(move |_, window, cx| {
+            card.update(cx, |card, cx| {
+                card.orchestrate = false;
+                cx.notify();
+            });
+            popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+            if let Some(workbench) = cx.try_global::<crate::ui::workbench::WorkbenchHandle>().and_then(|handle| handle.0.upgrade()) {
+                workbench.update(cx, |workbench, cx| workbench.open_settings(crate::ui::settings::Section::Models, window, cx));
+            }
+        });
+        let need = div().px_1().text_sm().child(i18n::text(locale, "chat.orchestrateNeedModel"));
+        return v_flex().gap_1().child(header).child(about).child(need).child(h_flex().px_1().pt_1().child(add)).into_any_element();
+    }
     let current = state.executor.as_ref().map(|(executor, _)| executor.clone());
     let row = |id: usize, title: SharedString, detail: Option<String>, choice: Option<ModelSelection>| {
         let selected = current.as_ref().map(|executor| (&executor.provider, &executor.model)) == choice.as_ref().map(|choice| (&choice.provider, &choice.model));
@@ -1866,7 +1903,7 @@ fn orchestrate_rows(store: &Entity<Store>, session: Option<String>, state: &Mode
         let choice = ModelSelection { provider: model.provider.clone(), model: model.model.clone(), thinking: None };
         rows.push(row(index + 1, title, Some(format!("{} · {}", model.model, model.provider)), Some(choice)).into_any_element());
     }
-    v_flex().gap_0p5().pt_1().mt_1().border_t_1().border_color(theme.border).child(header).children(rows).into_any_element()
+    v_flex().gap_1().child(header).child(about).child(v_flex().id("orchestrate-rows").max_h(px(300.)).overflow_y_scroll().gap_0p5().children(rows)).into_any_element()
 }
 
 /// Turn orchestration on with `executor` as the executor, or off; before a new chat's first message it is kept for it.
@@ -1941,12 +1978,12 @@ fn model_list(store: &Entity<Store>, session: Option<String>, state: &ModelState
                 }
             })
     });
-    let orchestrate = (models.len() > 1).then(|| orchestrate_rows(store, session.clone(), state, &models, &presets, locale, cx));
     v_flex()
         .gap_1()
         .child(header)
         .children(note)
-        .child(v_flex().id("model-rows").max_h(px(420.)).overflow_y_scroll().gap_0p5().children(rows).children(orchestrate))
+        .child(v_flex().id("model-rows").max_h(px(300.)).overflow_y_scroll().gap_0p5().children(rows))
+        .child(orchestrate_entry(state, card, locale, cx))
         .into_any_element()
 }
 

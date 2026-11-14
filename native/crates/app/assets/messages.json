@@ -261,7 +261,9 @@
    "toolSwarmWait": "等待成员回报",
    "toolSwarmMembers": "查看成员",
    "toolSwarmLand": "合并 @{name} 的改动",
-   "toolSwarmRemove": "移除成员 @{name}"
+   "toolSwarmRemove": "移除成员 @{name}",
+   "orchestrateNeedModel": "编排需要第二个模型来执行。在“设置 → 模型”里再添加一个（比如更快或更便宜的模型），就能在这里选它。",
+   "orchestrateAddModel": "去添加模型"
   },
   "en": {
    "toolRead": "Read {path}",
@@ -438,7 +440,9 @@
    "toolSwarmWait": "Wait for the workers",
    "toolSwarmMembers": "List the workers",
    "toolSwarmLand": "Land @{name}'s changes",
-   "toolSwarmRemove": "Remove worker @{name}"
+   "toolSwarmRemove": "Remove worker @{name}",
+   "orchestrateNeedModel": "Orchestration needs a second model to execute. Add one in Settings → Models (a faster or cheaper one, say) and pick it here.",
+   "orchestrateAddModel": "Add a model"
   }
  },
  "git": {
