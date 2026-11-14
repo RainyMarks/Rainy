@@ -13,6 +13,8 @@ use crate::store::ide::Ide;
 use crate::ui::workbench::WorkbenchHandle;
 use crate::ui::{tr, trf};
 
+pub mod swarm;
+
 actions!(rainy, [AgentMode, IdeMode, ToggleMode, ToggleSidebar]);
 
 /// The window's layout.
@@ -43,7 +45,7 @@ impl Mode {
     }
 }
 
-/// What the panel on the right of Agent mode shows.
+/// What the panel of Agent mode shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     /// The file tree and the editor.
@@ -52,6 +54,8 @@ pub enum Tool {
     Terminal,
     /// The files the chat changed.
     Changes,
+    /// The board and members of the chat's swarm.
+    Swarm,
 }
 
 /// The widest the conversation's text gets, in logical pixels; a wider window centres it.

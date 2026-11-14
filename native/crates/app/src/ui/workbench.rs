@@ -117,6 +117,9 @@ pub struct Workbench {
     cursor: Entity<CursorStatus>,
     outline: Entity<OutlineView>,
     relations: Entity<RelationsView>,
+    swarm: Entity<agent::swarm::SwarmView>,
+    /// The swarm of the selected chat at the last look, so a chat that just became a coordinator opens its board.
+    selected_swarm: Option<(String, Option<String>)>,
     _marks: Entity<DebugMarks>,
     bottom_visible: bool,
     settings: Option<Entity<SettingsView>>,
@@ -170,6 +173,7 @@ impl Workbench {
         let marks = cx.new(DebugMarks::new);
         let outline = cx.new(|cx| OutlineView::new(ide.clone(), editor.clone(), cx));
         let relations = cx.new(|cx| RelationsView::new(ide.clone(), cx));
+        let swarm = cx.new(|cx| agent::swarm::SwarmView::new(store.clone(), cx));
         let subscriptions = vec![
             cx.observe(&Execution::global(cx), |_, _, cx| cx.notify()),
             cx.observe_in(&store, window, |this, store, window, cx| {
@@ -255,6 +259,7 @@ impl Workbench {
                         this.sidebar_peek = false;
                         cx.notify();
                     }
+                    StoreEvent::SummariesChanged | StoreEvent::SelectionChanged => this.follow_swarm(cx),
                     StoreEvent::HostExited(code) => crate::ui::ssh::host_exited(this.store.clone(), *code, window, cx),
                     StoreEvent::ResourcesDamaged(error) => resources_damaged(error, window, cx),
                     StoreEvent::Update(notice) => crate::ui::update::show(notice, window, cx),
@@ -315,6 +320,8 @@ impl Workbench {
             cursor,
             outline,
             relations,
+            swarm,
+            selected_swarm: None,
             _marks: marks,
             bottom_visible: false,
             settings: None,
@@ -404,7 +411,7 @@ impl Workbench {
         }
     }
 
-    /// Show a tool: in Agent mode in the panel on the right; in IDE mode the editor is always there, and the
+    /// Show a tool: in Agent mode in the panel beside the conversation; in IDE mode the editor is always there, and the
     /// terminals are in the bottom panel.
     pub fn show_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
         if !self.agent() {
@@ -439,6 +446,31 @@ impl Workbench {
         self.tool = None;
         self.dock_changes(cx);
         self.chat.update(cx, |chat, cx| chat.focus_composer(window, cx));
+        cx.notify();
+    }
+
+    /// Open the swarm's board when the selected chat just started a swarm; close it when the chat shown has none.
+    fn follow_swarm(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let now = store.selected.as_ref().map(|id| {
+            let coordinator = store.summaries.iter().find(|summary| summary.id == *id).and_then(agent::swarm::coordinator_of);
+            (id.clone(), coordinator)
+        });
+        let before = std::mem::replace(&mut self.selected_swarm, now.clone());
+        let Some((id, coordinator)) = now else { return };
+        if coordinator.is_some() && before.as_ref().is_some_and(|(was, had)| *was == id && had.is_none()) {
+            self.show_tool(Tool::Swarm, cx);
+        } else if coordinator.is_none() && self.tool == Some(Tool::Swarm) {
+            self.tool = None;
+            cx.notify();
+        }
+    }
+
+    /// Put Agent mode's panel on the other side of the conversation.
+    fn swap_panel(&mut self, cx: &mut Context<Self>) {
+        self.layout.panel_left = !self.layout.panel_left;
+        self.agent_panes = None;
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -630,6 +662,7 @@ impl Workbench {
     fn render_agent_title_bar(&self, fit: Fit, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let store = self.store.read(cx);
         let summary = store.selected.as_ref().and_then(|id| store.summaries.iter().find(|summary| summary.id == *id)).cloned();
+        let summary_swarm = summary.as_ref().is_some_and(|summary| summary.swarm.is_some());
         let toggle = |on: bool, button: Button| button.toggled(on).selected(on).when(on, |this| this.custom(crate::theme::selected_button(cx)));
         let sidebar = toggle(
             fit.sidebar.is_some() || self.sidebar_peek,
@@ -667,6 +700,7 @@ impl Workbench {
                 Button::new(id).ghost().small().icon(icon).tooltip(tr(cx, label)).on_click(cx.listener(move |this, _, window, cx| this.toggle_tool(value, window, cx))),
             )
         };
+        let swarm = summary_swarm.then(|| tool("tool-swarm", Icon::new(IconName::Network), "agent.toolSwarm", Tool::Swarm));
         let files = tool("tool-files", Icon::new(IconName::FolderOpen), "agent.toolFiles", Tool::Files);
         let terminal = tool("tool-terminal", Icon::new(IconName::SquareTerminal), "agent.toolTerminal", Tool::Terminal);
         let theme = cx.theme();
@@ -708,6 +742,7 @@ impl Workbench {
                         .flex_shrink_0()
                         .gap_1()
                         .items_center()
+                        .children(swarm.map(title_control))
                         .child(title_control(files))
                         .child(title_control(terminal))
                         .child(title_control(changes))
@@ -1265,18 +1300,22 @@ impl Workbench {
         let width = f32::from(window.viewport_size().width);
         let this = cx.entity().downgrade();
         let dragged = |now: Option<&Pixels>, before: f32| now.map(|size| f32::from(*size).round()).filter(|size| (size - before).abs() >= 1.);
+        // The panel beside the conversation, on the side the user keeps it: on the left, between the sidebar and the
+        // conversation as the files are in IDE mode, or on the right.
+        let left = self.layout.panel_left;
+        let panel_index = if left { usize::from(fit.sidebar.is_some()) } else { usize::from(fit.sidebar.is_some()) + 1 };
         let mut targets = Vec::new();
         if let Some(sidebar) = fit.sidebar {
             targets.push((0, sidebar));
         }
         if let Some(panel) = fit.panel {
-            targets.push((usize::from(fit.sidebar.is_some()) + 1, panel));
+            targets.push((panel_index, panel));
         }
-        let state = pane_group(&mut self.agent_panes, format!("agent-{}-{}", fit.sidebar.is_some(), fit.panel.is_some()), targets, window, cx);
+        let state = pane_group(&mut self.agent_panes, format!("agent-{}-{}-{left}", fit.sidebar.is_some(), fit.panel.is_some()), targets, window, cx);
         let mut panes = h_resizable("agent").with_state(&state).on_resize(move |state, _, cx| {
             let now = state.read(cx).sizes().clone();
             let sidebar = fit.sidebar.and_then(|before| dragged(now.first(), before));
-            let panel = fit.panel.and_then(|before| dragged(now.last(), before));
+            let panel = fit.panel.and_then(|before| dragged(now.get(panel_index), before));
             if sidebar.is_some() || panel.is_some() {
                 let _ = this.update(cx, |this, cx| this.agent_resized(sidebar, panel, cx));
             }
@@ -1286,17 +1325,34 @@ impl Workbench {
                 resizable_panel().size(px(sidebar)).size_range(px(agent::SIDEBAR_MIN)..px(agent::SIDEBAR_MAX)).fixed().child(self.render_agent_sidebar(cx)),
             );
         }
-        let rest = width - fit.sidebar.unwrap_or(0.) - fit.panel.unwrap_or(0.);
-        panes = panes.child(resizable_panel().size_range(px(rest.clamp(100., agent::CONVERSATION_MIN))..Pixels::MAX).child(self.chat.clone()));
-        if let Some(panel) = fit.panel {
+        let panel = fit.panel.map(|panel| {
             let most = (width - fit.sidebar.unwrap_or(0.) - agent::CONVERSATION_MIN).max(agent::PANEL_MIN);
             let content = self.render_tool_panel(panel, cx);
-            panes = panes.child(resizable_panel().size(px(panel)).size_range(px(agent::PANEL_MIN)..px(most)).fixed().child(content));
+            resizable_panel().size(px(panel)).size_range(px(agent::PANEL_MIN)..px(most)).fixed().child(content)
+        });
+        let rest = width - fit.sidebar.unwrap_or(0.) - fit.panel.unwrap_or(0.);
+        let conversation = resizable_panel().size_range(px(rest.clamp(100., agent::CONVERSATION_MIN))..Pixels::MAX).child(self.chat.clone());
+        if left {
+            if let Some(panel) = panel {
+                panes = panes.child(panel);
+            }
+            panes = panes.child(conversation);
+        } else {
+            panes = panes.child(conversation);
+            if let Some(panel) = panel {
+                panes = panes.child(panel);
+            }
         }
         if fit.sidebar.is_some() {
             self.sidebar_peek = false;
         }
         // Over the conversation only: a page in the panel is a window of its own, which nothing GPUI draws can cover.
+        // With the panel on the left the sidebar comes out at the conversation's left edge, beside the panel.
+        let (cover_left, cover_right) = match fit.panel {
+            Some(panel) if left => (panel, 0.),
+            Some(panel) => (0., panel),
+            None => (0., 0.),
+        };
         let peek = self.sidebar_peek.then(|| {
             let theme = cx.theme();
             let backdrop = theme.background.opacity(0.4);
@@ -1311,8 +1367,8 @@ impl Workbench {
                         .absolute()
                         .top_0()
                         .bottom_0()
-                        .left_0()
-                        .right(px(fit.panel.unwrap_or(0.)))
+                        .left(px(cover_left))
+                        .right(px(cover_right))
                         .bg(backdrop)
                         .occlude()
                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -1324,7 +1380,7 @@ impl Workbench {
                     div()
                         .absolute()
                         .top_0()
-                        .left_0()
+                        .left(px(cover_left))
                         .h_full()
                         .w(px(self.layout.sidebar_width))
                         .occlude()
@@ -1367,14 +1423,17 @@ impl Workbench {
             )
     }
 
-    /// Agent mode's panel on the right, `width` wide: a header with the tool's name and close, then the tool.
+    /// Agent mode's panel beside the conversation, `width` wide: a header with the tool's name, the side it is on and
+    /// close, then the tool.
     fn render_tool_panel(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let Some(tool) = self.tool else { return div().into_any_element() };
         let (icon, label) = match tool {
             Tool::Files => (Icon::new(IconName::FolderOpen), "agent.toolFiles"),
             Tool::Terminal => (Icon::new(IconName::SquareTerminal), "agent.toolTerminal"),
             Tool::Changes => (Icon::new(gpui_kit::assets::IconName::GitCompare), "agent.toolChanges"),
+            Tool::Swarm => (Icon::new(IconName::Network), "agent.toolSwarm"),
         };
+        let left = self.layout.panel_left;
         let ide = self.ide.read(cx);
         let tree = tool == Tool::Files && ide.workspace.is_some() && self.tool_tree.unwrap_or(width >= 560. || ide.tabs.is_empty());
         let tree_toggle = (tool == Tool::Files).then(|| {
@@ -1389,6 +1448,12 @@ impl Workbench {
                     cx.notify();
                 }))
         });
+        let side = Button::new("tool-side")
+            .ghost()
+            .xsmall()
+            .icon(if left { IconName::PanelRight } else { IconName::PanelLeft })
+            .tooltip(tr(cx, if left { "agent.panelToRight" } else { "agent.panelToLeft" }))
+            .on_click(cx.listener(|this, _, _, cx| this.swap_panel(cx)));
         let close = Button::new("tool-close")
             .ghost()
             .xsmall()
@@ -1415,11 +1480,13 @@ impl Workbench {
                 .into_any_element(),
             Tool::Terminal => self.terminals.clone().into_any_element(),
             Tool::Changes => self.chat.read(cx).changes().into_any_element(),
+            Tool::Swarm => self.swarm.clone().into_any_element(),
         };
         v_flex()
             .size_full()
             .bg(theme.background)
-            .border_l_1()
+            .when(left, |this| this.border_r_1())
+            .when(!left, |this| this.border_l_1())
             .border_color(theme.border)
             .child(
                 h_flex()
@@ -1434,6 +1501,7 @@ impl Workbench {
                     .child(icon.small().text_color(theme.muted_foreground))
                     .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(tr(cx, label)))
                     .children(tree_toggle)
+                    .child(side)
                     .child(close),
             )
             .child(div().flex_1().min_h_0().child(body))

@@ -304,6 +304,8 @@ pub struct Layout {
     pub sidebar: bool,
     pub sidebar_width: f32,
     pub panel_width: f32,
+    /// Agent mode's panel (files, terminal, changes, swarm) sits left of the conversation, as IDE mode's files do.
+    pub panel_left: bool,
 }
 
 pub const LAYOUT_FILE: &str = "layout.json";
@@ -311,7 +313,7 @@ pub const LAYOUT_FILE: &str = "layout.json";
 impl Default for Layout {
     /// A first start opens in Agent mode with the sidebar.
     fn default() -> Self {
-        Self { mode: Mode::Agent, sidebar: true, sidebar_width: agent::SIDEBAR, panel_width: 0. }
+        Self { mode: Mode::Agent, sidebar: true, sidebar_width: agent::SIDEBAR, panel_width: 0., panel_left: true }
     }
 }
 
@@ -329,6 +331,7 @@ fn parse_layout(text: &str) -> Layout {
         sidebar: value["sidebar"].as_bool().unwrap_or(default.sidebar),
         sidebar_width: width("sidebarWidth").map_or(default.sidebar_width, |width| width.clamp(agent::SIDEBAR_MIN, agent::SIDEBAR_MAX)),
         panel_width: width("panelWidth").unwrap_or(default.panel_width),
+        panel_left: value["panelLeft"].as_bool().unwrap_or(default.panel_left),
     }
 }
 
@@ -340,6 +343,7 @@ pub fn write_layout(user_data: &Path, layout: &Layout) -> anyhow::Result<()> {
         "sidebar": layout.sidebar,
         "sidebarWidth": layout.sidebar_width.round(),
         "panelWidth": layout.panel_width.round(),
+        "panelLeft": layout.panel_left,
     })
     .to_string()
         + "\n";
@@ -457,14 +461,14 @@ mod tests {
     fn keeps_the_layout_and_reads_a_damaged_record_as_the_default() {
         let folder = tempfile::tempdir().unwrap();
         assert_eq!(read_layout(folder.path()), Layout::default());
-        let layout = Layout { mode: Mode::Ide, sidebar: false, sidebar_width: 300., panel_width: 512. };
+        let layout = Layout { mode: Mode::Ide, sidebar: false, sidebar_width: 300., panel_width: 512., panel_left: false };
         write_layout(folder.path(), &layout).unwrap();
         assert_eq!(read_layout(folder.path()), layout);
         let names: Vec<_> = std::fs::read_dir(folder.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
         assert_eq!(names, [LAYOUT_FILE]);
         // Each field on its own: an unknown mode or a bad width keeps that field's default.
         let parsed = parse_layout(r#"{"mode":"editor","sidebar":false,"sidebarWidth":9000,"panelWidth":-3}"#);
-        assert_eq!(parsed, Layout { mode: Mode::Agent, sidebar: false, sidebar_width: agent::SIDEBAR_MAX, panel_width: 0. });
+        assert_eq!(parsed, Layout { mode: Mode::Agent, sidebar: false, sidebar_width: agent::SIDEBAR_MAX, panel_width: 0., panel_left: true });
         assert_eq!(parse_layout("not json"), Layout::default());
     }
 

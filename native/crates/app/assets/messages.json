@@ -245,7 +245,23 @@
    "loadOlderFailed": "无法加载更早的消息：{message}",
    "creating": "正在创建对话…",
    "showDetails": "详情",
-   "clipboardImage": "剪贴板中的图片"
+   "clipboardImage": "剪贴板中的图片",
+   "commandSwarm": "组建 Swarm：协调者拆分大任务，交给多个成员并行完成",
+   "new": "新",
+   "orchestrate": "编排模式",
+   "orchestrateOff": "关",
+   "orchestrateOn": "交给 {executor} 执行",
+   "orchestrateNone": "不编排，只用当前模型",
+   "orchestrateWith": "{planner} 规划 · {executor} 执行",
+   "orchestrateInfo": "当前模型负责规划：读代码、理清问题、写出计划，再交给执行模型改文件、跑命令和测试。执行模型遇到阻碍时会交回规划模型修订计划。两者共用同一段对话。",
+   "toolHandOff": "交给执行模型",
+   "toolReplan": "交回规划模型",
+   "toolSwarmAdd": "加入成员 @{name}",
+   "toolSwarmPost": "发到看板 → {to}",
+   "toolSwarmWait": "等待成员回报",
+   "toolSwarmMembers": "查看成员",
+   "toolSwarmLand": "合并 @{name} 的改动",
+   "toolSwarmRemove": "移除成员 @{name}"
   },
   "en": {
    "toolRead": "Read {path}",
@@ -406,7 +422,23 @@
    "loadOlderFailed": "Could not load earlier messages: {message}",
    "creating": "Creating the chat…",
    "showDetails": "Details",
-   "clipboardImage": "Pasted image"
+   "clipboardImage": "Pasted image",
+   "commandSwarm": "Start a swarm: a coordinator splits a large task among parallel workers",
+   "new": "New",
+   "orchestrate": "Orchestrator",
+   "orchestrateOff": "Off",
+   "orchestrateOn": "{executor} executes",
+   "orchestrateNone": "Off: the current model does everything",
+   "orchestrateWith": "{planner} plans · {executor} executes",
+   "orchestrateInfo": "The current model plans: it reads the code, settles what is unclear and writes the plan, then hands it to the executor, which edits files, runs commands and tests. When the executor meets friction it hands the turn back for a revised plan. Both share the same conversation.",
+   "toolHandOff": "Hand off to the executor",
+   "toolReplan": "Hand back to the planner",
+   "toolSwarmAdd": "Add worker @{name}",
+   "toolSwarmPost": "Post to the board → {to}",
+   "toolSwarmWait": "Wait for the workers",
+   "toolSwarmMembers": "List the workers",
+   "toolSwarmLand": "Land @{name}'s changes",
+   "toolSwarmRemove": "Remove worker @{name}"
   }
  },
  "git": {
@@ -1913,7 +1945,22 @@
    "attach": "添加图片或文件",
    "contextUsage": "上下文已用 {percent}%（{used} / {limit}）",
    "changesNone": "这个对话还没有改动文件",
-   "changesNoChat": "开始对话后，AI 改动的文件会列在这里"
+   "changesNoChat": "开始对话后，AI 改动的文件会列在这里",
+   "toolSwarm": "Swarm",
+   "panelToLeft": "面板放到左侧",
+   "panelToRight": "面板放到右侧",
+   "swarmBoard": "看板",
+   "swarmMembers": "成员 {count}",
+   "swarmStop": "全部停止",
+   "swarmNone": "这个对话不在 Swarm 里。在输入框里写 /swarm 加上任务，就会把它变成协调者。",
+   "swarmEmpty": "看板上还没有消息。",
+   "swarmAuto": "自动",
+   "swarmCoordinator": "协调者",
+   "swarmRunning": "工作中",
+   "swarmIdle": "空闲",
+   "swarmApproval": "等待批准",
+   "swarmError": "出错",
+   "swarmRetired": "已移除"
   },
   "en": {
    "modeAgent": "Agent mode",
@@ -1968,7 +2015,22 @@
    "attach": "Add images or files",
    "contextUsage": "Context {percent}% used ({used} / {limit})",
    "changesNone": "This chat has not changed any files",
-   "changesNoChat": "Once you start a chat, the files the AI changes are listed here"
+   "changesNoChat": "Once you start a chat, the files the AI changes are listed here",
+   "toolSwarm": "Swarm",
+   "panelToLeft": "Move the panel to the left",
+   "panelToRight": "Move the panel to the right",
+   "swarmBoard": "Board",
+   "swarmMembers": "Members {count}",
+   "swarmStop": "Stop all",
+   "swarmNone": "This chat is in no swarm. Type /swarm and a task in the composer to make it a coordinator.",
+   "swarmEmpty": "Nothing on the board yet.",
+   "swarmAuto": "auto",
+   "swarmCoordinator": "Coordinator",
+   "swarmRunning": "Working",
+   "swarmIdle": "Idle",
+   "swarmApproval": "Needs approval",
+   "swarmError": "Error",
+   "swarmRetired": "Removed"
   }
  }
 }

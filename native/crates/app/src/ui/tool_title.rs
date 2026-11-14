@@ -75,6 +75,17 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
         "stop_command" => t("toolStopCommand", &[("id", &string(args, "id").unwrap_or_default())]),
         "web_search" => t("toolWebSearch", &[("query", &string(args, "query").unwrap_or_default())]),
         "web_fetch" => t("toolWebFetch", &[("url", &string(args, "url").unwrap_or_default())]),
+        "hand_off" => t("toolHandOff", &[]),
+        "replan" => t("toolReplan", &[]),
+        "swarm_add" => t("toolSwarmAdd", &[("name", &string(args, "name").unwrap_or_default())]),
+        "swarm_post" => {
+            let to: Vec<String> = args.get("to").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(|to| format!("@{to}")).collect();
+            t("toolSwarmPost", &[("to", &to.join(" "))])
+        }
+        "swarm_wait" => t("toolSwarmWait", &[]),
+        "swarm_members" => t("toolSwarmMembers", &[]),
+        "swarm_land" => t("toolSwarmLand", &[("name", &string(args, "name").unwrap_or_default())]),
+        "swarm_remove" => t("toolSwarmRemove", &[("name", &string(args, "name").unwrap_or_default())]),
         "recall" => match (string(args, "query").filter(|query| !query.trim().is_empty()), string(args, "entries")) {
             (Some(query), _) => t("toolRecallSearch", &[("query", &query)]),
             (None, Some(entries)) => t("toolRecallEntries", &[("entries", &entries)]),

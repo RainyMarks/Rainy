@@ -17,8 +17,13 @@ pub const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 /// Encoded size above which an image is sent as JPEG even when it fits.
 const REENCODE_BYTES: usize = 3_500_000;
 
-/// Commands typed as `/name` alone.
-pub const COMMANDS: [(&str, &str); 2] = [("compact", "chat.commandCompact"), ("new", "chat.commandNew")];
+/// Commands typed after `/`.
+pub const COMMANDS: [(&str, &str); 3] = [("compact", "chat.commandCompact"), ("new", "chat.commandNew"), ("swarm", "chat.commandSwarm")];
+
+/// A command followed by text that goes to the chat (`/swarm <goal>`), rather than one that runs at once.
+pub fn takes_text(name: &str) -> bool {
+    name == "swarm"
+}
 
 /// What the text before the caret asks to complete.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -176,6 +176,8 @@ pub struct Store {
     pub pending_permission: Option<String>,
     /// The next new chat of a project works in its own Git worktree.
     pub pending_worktree: bool,
+    /// The executor model the next new chat is orchestrated with (`chat.setOrchestrate`).
+    pub pending_orchestrate: Option<rainy_protocol::ModelSelection>,
     /// Chats whose `sessions.read` is on its way.
     reading: std::collections::HashSet<String>,
     /// Explorer's "Open with Rainy" and the file types Rainy is offered for.
@@ -263,6 +265,7 @@ impl Store {
                 selections: 0,
                 pending_permission: None,
                 pending_worktree: false,
+                pending_orchestrate: None,
                 reading: Default::default(),
                 shell,
                 updates,
@@ -842,13 +845,22 @@ impl Store {
             params["worktree"] = json!(true);
         }
         let request = self.call("sessions.create", params);
+        let orchestrate = self.pending_orchestrate.clone();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let summary = serde_json::from_value::<SessionSummary>(request.await?)
+            let mut summary = serde_json::from_value::<SessionSummary>(request.await?)
                 .map_err(|error| RpcError { code: "invalid-response".into(), message: error.to_string(), data: None })?;
             let id = summary.id.clone();
+            // Orchestration picked before the first message is set before that message goes out.
+            if let Some(executor) = orchestrate
+                && let Ok(call) = this.update(cx, |store, _| store.call("chat.setOrchestrate", json!({ "sessionId": id, "executor": executor })))
+                && call.await.is_ok()
+            {
+                summary.orchestrate = Some(executor);
+            }
             let _ = this.update(cx, |store, cx| {
                 store.pending_permission = None;
                 store.pending_worktree = false;
+                store.pending_orchestrate = None;
                 let mut next: Vec<SessionSummary> = store.summaries.iter().filter(|s| s.id != summary.id).cloned().collect();
                 next.push(summary);
                 store.set_summaries(next, cx);

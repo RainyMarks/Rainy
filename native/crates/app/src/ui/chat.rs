@@ -630,9 +630,10 @@ impl ChatPane {
     fn accept_suggestion(&mut self, index: usize, run: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(suggestion) = self.suggestions.get(index).cloned() else { return };
         match suggestion {
-            Suggestion::Command { name, .. } if run => self.run_command(name, window, cx),
+            Suggestion::Command { name, .. } if run && !crate::ui::composer::takes_text(name) => self.run_command(name, window, cx),
             Suggestion::Command { name, .. } => {
-                let text = format!("/{name}");
+                // A command that takes text (`/swarm <goal>`) is written out with a space for it.
+                let text = if crate::ui::composer::takes_text(name) { format!("/{name} ") } else { format!("/{name}") };
                 let character = text.chars().count() as u32;
                 self.composer.update(cx, |state, cx| {
                     state.set_value(text, window, cx);
@@ -665,8 +666,20 @@ impl ChatPane {
         }
     }
 
-    /// `/compact` and `/new`.
+    /// `/compact` and `/new`; `/swarm` alone asks for its goal.
     fn run_command(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::ui::composer::takes_text(name) {
+            let text = format!("/{name} ");
+            let character = text.chars().count() as u32;
+            self.composer.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+                state.set_cursor_position(gpui_kit::component::input::Position { line: 0, character }, window, cx);
+            });
+            self.trigger = None;
+            self.suggestions.clear();
+            cx.notify();
+            return;
+        }
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
         self.trigger = None;
         self.suggestions.clear();
@@ -1448,6 +1461,8 @@ struct ModelState {
     reasoning: Reasoning,
     level: Option<Level>,
     name: SharedString,
+    /// The executor of an orchestrated chat (the model above plans), and its short name.
+    executor: Option<(ModelSelection, SharedString)>,
 }
 
 /// The model the composer sends with: the chat's, or the one new chats start with.
@@ -1461,7 +1476,16 @@ fn model_state(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx: &App
     let level = reasoning.choose(current.thinking.as_deref().or_else(|| profile.and_then(|profile| profile.thinking.as_deref())));
     let preset = models.presets.iter().find(|preset| preset.model.provider == current.provider && preset.model.model == current.model);
     let name = short_model_name(&current.model, preset.map(|preset| preset.name.as_str())).into();
-    Some(ModelState { current, reasoning, level, name })
+    let executor = match chat {
+        Some(chat) => chat.read(cx).view.as_ref().and_then(|view| view.snapshot.summary.orchestrate.clone()),
+        None => store.read(cx).pending_orchestrate.clone(),
+    }
+    .map(|executor| {
+        let preset = models.presets.iter().find(|preset| preset.model.provider == executor.provider && preset.model.model == executor.model);
+        let name = short_model_name(&executor.model, preset.map(|preset| preset.name.as_str())).into();
+        (executor, name)
+    });
+    Some(ModelState { current, reasoning, level, name, executor })
 }
 
 /// A level's label; a model that only switches reasoning calls its level On.
@@ -1507,7 +1531,13 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
     let locale = store.read(cx).locale();
     let state = model_state(store, chat, cx);
     let theme = cx.theme();
-    let name: SharedString = state.as_ref().map_or_else(|| i18n::text(locale, "chat.noModel").into(), |state| state.name.clone());
+    let name: SharedString = state.as_ref().map_or_else(
+        || i18n::text(locale, "chat.noModel").into(),
+        |state| match &state.executor {
+            Some((_, executor)) => format!("{} → {executor}", state.name).into(),
+            None => state.name.clone(),
+        },
+    );
     let level = state
         .as_ref()
         .filter(|state| state.reasoning.adjustable())
@@ -1737,7 +1767,120 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
             .when(stop == shown, |this| this.font_medium())
             .child(label(*level))
     }));
-    v_flex().gap_1().child(header).child(model).child(v_flex().pt_2().gap_1p5().child(track).child(names)).into_any_element()
+    let orchestrate = {
+        let list = card.clone();
+        let label: SharedString = match &state.executor {
+            Some((_, executor)) => i18n::format(locale, "chat.orchestrateOn", &[("executor", executor)]).into(),
+            None => i18n::text(locale, "chat.orchestrateOff").into(),
+        };
+        h_flex()
+            .id("reasoning-orchestrate")
+            .mt_2()
+            .pt_2()
+            .gap_1p5()
+            .items_center()
+            .border_t_1()
+            .border_color(theme.border)
+            .text_xs()
+            .text_color(muted)
+            .cursor_pointer()
+            .hover(move |style| style.text_color(strong))
+            .child(Icon::new(gpui_kit::assets::IconName::Workflow).xsmall())
+            .child(div().child(i18n::text(locale, "chat.orchestrate")))
+            .child(new_badge(locale, cx))
+            .child(div().flex_1().min_w_0().text_right().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
+            .child(Icon::new(IconName::ChevronRight).xsmall())
+            .on_click(move |_, _, cx| {
+                list.update(cx, |card, cx| {
+                    card.list = true;
+                    cx.notify();
+                });
+            })
+    };
+    v_flex().gap_1().child(header).child(model).child(v_flex().pt_2().gap_1p5().child(track).child(names)).child(orchestrate).into_any_element()
+}
+
+/// The small "new" mark of a feature added in this version.
+fn new_badge(locale: Locale, cx: &App) -> impl IntoElement + use<> {
+    let theme = cx.theme();
+    let color = if theme.mode.is_dark() { theme.link } else { theme.primary };
+    div().flex_shrink_0().px_1().rounded(theme.radius).bg(theme.primary.opacity(0.15)).text_xs().text_color(color).child(i18n::text(locale, "chat.new"))
+}
+
+/// Orchestration under the model list: off, or one of the other saved models as the executor of the model in use,
+/// which then plans. The info mark explains the pair.
+fn orchestrate_rows(store: &Entity<Store>, session: Option<String>, state: &ModelState, models: &[ModelSetup], presets: &[rainy_protocol::ModelPreset], locale: Locale, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let (hover, muted, accent) = (theme.accent, theme.muted_foreground, if theme.mode.is_dark() { theme.link } else { theme.primary });
+    let tip: SharedString = i18n::text(locale, "chat.orchestrateInfo").into();
+    let header = h_flex()
+        .h(px(26.))
+        .px_2()
+        .gap_1p5()
+        .items_center()
+        .child(Icon::new(gpui_kit::assets::IconName::Workflow).small().text_color(muted))
+        .child(div().text_sm().font_semibold().child(i18n::text(locale, "chat.orchestrate")))
+        .child(new_badge(locale, cx))
+        .child(
+            div()
+                .id("orchestrate-info")
+                .flex_shrink_0()
+                .child(Icon::new(IconName::Info).xsmall().text_color(muted))
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
+        );
+    let current = state.executor.as_ref().map(|(executor, _)| executor.clone());
+    let row = |id: usize, title: SharedString, detail: Option<String>, choice: Option<ModelSelection>| {
+        let selected = current.as_ref().map(|executor| (&executor.provider, &executor.model)) == choice.as_ref().map(|choice| (&choice.provider, &choice.model));
+        let (store, session) = (store.clone(), session.clone());
+        h_flex()
+            .id(("orchestrate-row", id))
+            .gap_2()
+            .px_2()
+            .py_1()
+            .items_center()
+            .rounded(theme.radius)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                    .when_some(detail, |this, detail| this.child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail))),
+            )
+            .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
+            .on_click(move |_, window, cx| {
+                if !selected {
+                    set_orchestrate(&store, session.clone(), choice.clone(), window, cx);
+                }
+            })
+    };
+    let mut rows = vec![row(0, i18n::text(locale, "chat.orchestrateNone").into(), None, None).into_any_element()];
+    for (index, model) in models.iter().enumerate() {
+        if model.provider == state.current.provider && model.model == state.current.model {
+            continue;
+        }
+        let preset = presets.iter().find(|preset| preset.model.provider == model.provider && preset.model.model == model.model).map(|preset| preset.name.as_str());
+        let short = short_model_name(&model.model, preset);
+        let title = i18n::format(locale, "chat.orchestrateWith", &[("planner", &state.name), ("executor", &short)]).into();
+        let choice = ModelSelection { provider: model.provider.clone(), model: model.model.clone(), thinking: None };
+        rows.push(row(index + 1, title, Some(format!("{} · {}", model.model, model.provider)), Some(choice)).into_any_element());
+    }
+    v_flex().gap_0p5().pt_1().mt_1().border_t_1().border_color(theme.border).child(header).children(rows).into_any_element()
+}
+
+/// Turn orchestration on with `executor` as the executor, or off; before a new chat's first message it is kept for it.
+fn set_orchestrate(store: &Entity<Store>, session: Option<String>, executor: Option<ModelSelection>, window: &mut Window, cx: &mut App) {
+    match session {
+        Some(session) => {
+            let request = store.read(cx).call("chat.setOrchestrate", json!({ "sessionId": session, "executor": executor }));
+            report_failure(request, window, cx);
+        }
+        None => store.update(cx, |store, cx| {
+            store.pending_orchestrate = executor;
+            cx.notify();
+        }),
+    }
 }
 
 /// The saved models, the one in use checked. A chosen model keeps the level, which the Host moves to the nearest one
@@ -1798,11 +1941,12 @@ fn model_list(store: &Entity<Store>, session: Option<String>, state: &ModelState
                 }
             })
     });
+    let orchestrate = (models.len() > 1).then(|| orchestrate_rows(store, session.clone(), state, &models, &presets, locale, cx));
     v_flex()
         .gap_1()
         .child(header)
         .children(note)
-        .child(v_flex().id("model-rows").max_h(px(260.)).overflow_y_scroll().gap_0p5().children(rows))
+        .child(v_flex().id("model-rows").max_h(px(420.)).overflow_y_scroll().gap_0p5().children(rows).children(orchestrate))
         .into_any_element()
 }
 
