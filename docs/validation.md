@@ -1,5 +1,35 @@
 # Rainy 验收记录
 
+## 4.11.0（2026-11-14）
+
+被测产物为 `Rainy-4.11.0-windows-x64-setup.exe`（16,117,835 字节，SHA-256 `38a14cfb8d29ee3231da96056141458cd2e8384a733c19a7d9c8660457adb600`），构建自提交 `cb0cec51ee`。六个可选分片已上传到 `v4.11.0-resources`，GitHub 给出的摘要与本地一致。
+
+### 改动
+
+- **Agent 模式的面板放在左边**：`placement::Layout` 新增 `panelLeft`（默认开），`layout.json` 记住它。`Workbench::render_agent_body` 按它排列“侧栏、面板、对话”或“侧栏、对话、面板”，拖动宽度时按面板实际所在的位置读尺寸；窄窗口里滑出的侧栏从对话的左边缘出来，不压在面板（可能是 WebView 子窗口）上。面板标题新增换边按钮。
+- **编排模式**（`host/src/agent/orchestrate.rs`）：对话可以记一个执行模型（`chat.setOrchestrate`，存进对话元数据 `orchestrate`）。规划阶段请求发给对话自己的模型并多一个 `hand_off` 工具；调用后进入执行阶段，`Session::prepare_request` 每次请求前按阶段重新选模型、重配工具和系统提示，执行阶段多一个 `replan`。执行模型调用 `replan`，或连续 3 次工具调用失败，就回到规划阶段，并在系统提示里带上原因。新一轮总从规划阶段开始。界面在模型菜单里列出“不编排”和“当前模型规划 · 其他模型执行”，按钮显示“规划 → 执行”；新对话的选择在建好对话、发第一条消息之前设上。
+- **Swarm**（`host/src/agent/swarm.rs`）：`/swarm <任务>` 把对话标成协调者（对话元数据 `swarm`）。协调者没有 `write`、`edit`、`apply_patch`，多出 `swarm_add`、`swarm_post`、`swarm_wait`、`swarm_members`、`swarm_land`、`swarm_remove`。成员是同一项目里的普通对话，最多 8 个，可在独立工作区里工作；看板存在 `swarms/<协调者>.jsonl`，每条消息发给收件人，新消息发出 `swarm.post` 事件。成员一轮结束，最后的回复自动发给协调者；协调者空闲时收到消息会开始新一轮，正在工作时收到的在它这轮结束后转交。`swarm.stop` 停下协调者和全部成员。对话标题取任务本身，不带 `/swarm`。
+- **Swarm 面板**（`app/src/ui/agent/swarm.rs`）：看板和成员两页，跟随所选对话所在的 Swarm；对话刚变成协调者时面板自动打开，选中不在 Swarm 里的对话时关闭。输入框的 `/` 命令列表加入 `/swarm`，选中后填入 `/swarm ` 等你写任务。
+
+### 检查
+
+- **测试**：`rainy` 106 项（1 项忽略）、`rainy-host` 143 项（1 项忽略）、`rainy-protocol` 15 项全部通过。新增：交接工具切换阶段并带上计划或原因、两个阶段的系统提示、`/swarm` 命令解析、看板摘要（成员回报标为 turn report）、按 `/swarm` 任务起标题、布局文件读写 `panelLeft`。
+- **界面实测**（调试版、独立 QA 配置、脚本控制的假模型，两个本地模型 qa-planner 和 qa-executor）：
+  - 文件面板开在对话左边，顺序为文件树、编辑区、对话；打开 README 后用换边按钮移到右边再移回，所见即所得编辑区（WebView）跟着移动，`layout.json` 记下 `panelLeft`。
+  - 模型菜单显示“编排模式”（带“新”标记和说明），新对话选“qa-planner 规划 · qa-executor 执行”后按钮显示“qa-planner → qa-executor”。发出任务后，假模型收到的请求依次为：qa-planner 调 `hand_off`，qa-executor 调 `replan`，qa-planner 再 `hand_off`，qa-executor 写入 plan.txt 并回复；规划阶段的工具里有 `hand_off`、执行阶段的有 `replan`。对话里显示为“交给执行模型、交回规划模型、交给执行模型、写入 plan.txt”。
+  - 输入 `/sw` 出现 `/swarm` 提示，回车填入 `/swarm `；发出任务后协调者依次加入 @alpha、@beta 并等待，两位成员各写一个文件并回复，回复自动出现在看板上（标“自动”），协调者收到两份回报后收尾。协调者的工具里没有 `write`。Swarm 面板自动在左边打开，成员页显示协调者和两位成员的状态，点 @alpha 跳到它的对话。
+  - 让成员每次请求等 40 秒，成员页显示三者“工作中”，点“全部停止”后都变为“空闲”，协调者显示“已停止”。
+  - 重启后对话、Swarm 按钮和布局都恢复；切到 IDE 模式和原来一样。
+  - 把 QA 项目建成 Git 仓库，任务要求成员用独立工作区：两位成员各在自己的工作区写文件，协调者依次调用 `swarm_land` 合入两人、`swarm_remove` 移除 @alpha。合入后 alpha.txt 和 beta.txt 作为未提交的改动出现在项目里，`git worktree list` 只剩项目本身；成员页里 @alpha 显示灰色“已移除”。成员对话的第一条消息显示为“[Swarm] 你是 @alpha，来自 @coordinator 的任务：”。
+- **安装包 QA（QA 身份）**：46 项全部通过，包括从 3.9.2 和 4.0.0 覆盖升级。
+
+### 验收范围
+
+- 编排和 Swarm 只用假模型验证了流程和界面，没有用真实模型做效果对比。
+- `swarm_remove` 带 `discard: true` 丢弃独立工作区里未合入的改动，没有实测。
+- 侧栏里成员对话和其他对话排在一起，没有按 Swarm 分组。
+- Swarm 面板只在 Agent 模式里有；IDE 模式里可以照常打开协调者和成员的对话。
+
 ## 4.10.1（2026-11-13）
 
 被测产物为 `Rainy-4.10.1-windows-x64-setup.exe`（16,026,739 字节，SHA-256 `c9ba83adde7a7049ffd7bcfb6d593cbbc73ee871de5bf45138216fb2bfcbd839`），构建自提交 `21ab5e51cd`。安装包含 475 个文件、53,570,168 字节。六个可选分片已上传到 `v4.10.1-resources`，GitHub 给出的摘要与本地一致。
