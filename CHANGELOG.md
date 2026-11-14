@@ -4,6 +4,11 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.11.2 · 2026-11-14
+
+- **The Orchestrator opens**: with only one model configured, the Orchestrator row of the reasoning card led to the model list with nothing to pick. It now opens a page of its own that explains how planning and executing are split; with other models you pick "A plans · B executes" there, and with one model it says a second one is needed and its **Add a model** button opens Settings → Models.
+- **A smaller reasoning card**: the card is narrower, the track slimmer and the level name a size smaller.
+
 ## 4.11.1 · 2026-11-14
 
 - **Selections wear the accent**: the chat you are looking at in the sidebar, the selected file in the file tree, the current section of Settings, and the selected row of the command palette, Quick Open, the outline, the terminal list and the composer's suggestions are tinted with the accent instead of gray. The editor tab shown has an accent line along its top. The color follows Settings → Appearance → Accent color, in light and dark themes.
