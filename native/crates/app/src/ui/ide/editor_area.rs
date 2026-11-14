@@ -674,7 +674,13 @@ impl EditorArea {
                     .border_r_1()
                     .border_color(theme.border)
                     .cursor_pointer()
-                    .when(active, |this| this.bg(theme.tab_active).text_color(theme.tab_active_foreground))
+                    .relative()
+                    .when(active, |this| {
+                        // The tab shown is marked with a line of the accent along its top.
+                        this.bg(theme.tab_active)
+                            .text_color(theme.tab_active_foreground)
+                            .child(div().absolute().top_0().left_0().right_0().h(px(2.)).bg(theme.primary))
+                    })
                     .when(!active, |this| this.text_color(theme.muted_foreground).hover(|style| style.bg(theme.list_hover)))
                     .child(Icon::new(file_icon(&name)).small())
                     .child(name)

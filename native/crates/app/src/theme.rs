@@ -77,6 +77,8 @@ fn colors(dark: bool, gray: &Ramp, accent: &Ramp) -> Vec<(&'static str, String)>
             ("progress_bar.background", a("400")), ("drag_border", a("400")), ("info.background", a("500")),
             ("window.border", g("800")), ("group_box.background", g("850")), ("group_box.foreground", g("100")),
             ("table.background", g("875")), ("switch.background", g("750")),
+            // The selected chat, file, row or section is tinted with the accent, as selected buttons are.
+            ("list.active.background", format!("{}38", a("500"))),
         ]
     } else {
         vec![
@@ -97,6 +99,7 @@ fn colors(dark: bool, gray: &Ramp, accent: &Ramp) -> Vec<(&'static str, String)>
             ("progress_bar.background", a("500")), ("drag_border", a("500")), ("info.background", a("500")),
             ("window.border", g("200")), ("group_box.background", g("25")), ("group_box.foreground", g("900")),
             ("table.background", g("00")), ("switch.background", g("200")),
+            ("list.active.background", format!("{}1f", a("500"))),
         ]
     }
 }
@@ -187,5 +190,14 @@ mod tests {
             }
         }
         assert_eq!(scheme_accent("forest"), "green");
+    }
+
+    #[test]
+    fn a_selected_row_is_tinted_with_the_accent() {
+        let palettes = palettes();
+        let (gray, violet) = (&palettes.schemes["graphite"], &palettes.accents["violet"]);
+        let selected = |dark: bool| colors(dark, gray, violet).into_iter().find(|(key, _)| *key == "list.active.background").map(|(_, value)| value);
+        assert_eq!(selected(false).as_deref(), Some("#8462dc1f"));
+        assert_eq!(selected(true).as_deref(), Some("#8462dc38"));
     }
 }
