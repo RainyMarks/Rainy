@@ -4,6 +4,12 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.10.1 · 2026-11-13
+
+- **Fixed Rainy closing a few seconds after it starts**: a chat with a tool call on a file outside the chat's folder whose path has Chinese characters (a chat in `C:\Users\…\Desktop` reading `C:\迅雷下载\…`) closed Rainy when it was shown, and since the chat opened again at the next start, every start ended the same way. Such paths now show as usual.
+- The same kind of fault is fixed where a file is matched to its project: a character whose lower case is longer (the Kelvin sign `K`) could close Rainy too.
+- **Errors are reported**: an unexpected error after the window is open now shows a message and goes to `rainy.log`, instead of the window just closing. After one within a minute of starting, the next start leaves the last chat closed so it cannot happen again and again.
+
 ## 4.10.0 · 2026-11-07
 
 - **Background notifications**: while Rainy is in the background, a chat that finishes or needs your approval sends a Windows notification; clicking it brings Rainy to the front with that chat. With Do Not Disturb on or a full-screen game running, the notification waits in the notification center and clicking it there works too. Turn it off in Settings → General → Background notifications.
