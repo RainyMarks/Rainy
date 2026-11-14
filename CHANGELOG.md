@@ -4,6 +4,13 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.11.0 · 2026-11-14
+
+- **Agent mode's panel moves to the left**: the files, terminal and changes panel opens on the left of the conversation by default, in the same order as IDE mode: file tree, editor, chat. A button on the panel's header moves it to the right, and Rainy remembers the choice.
+- **Orchestrator** (new): the model menu has an Orchestrator section. Pick "A plans · B executes" and the current model reads the code, settles what is unclear and writes a plan, then hands it to the other model, which edits files, runs commands and tests. When three tool calls in a row fail, or the executor finds the plan wrong, the turn goes back to the planner, which repairs the plan and hands it on again. Both models share one conversation, so nothing is lost at a handoff. A new chat can be set up before its first message.
+- **Swarm** (new): type `/swarm <task>` in the message box and the chat becomes a coordinator. It splits the task among up to 8 named workers, each a chat of its own working in parallel, optionally in its own Git worktree whose changes the coordinator lands in the project. Everyone posts to one board with @name, @coordinator or @all, and a worker's finished turn is reported to the coordinator on its own. The coordinator has no tools that edit files: it splits, checks and reports.
+- **Swarm panel**: a swarm chat has an extra title-bar button whose panel shows the Board, every post in order, and the Members, each working, idle, waiting for approval or failed; click one to open its chat. **Stop all** stops the coordinator and every worker. The panel opens by itself when a chat becomes a swarm.
+
 ## 4.10.1 · 2026-11-13
 
 - **Fixed Rainy closing a few seconds after it starts**: a chat with a tool call on a file outside the chat's folder whose path has Chinese characters (a chat in `C:\Users\…\Desktop` reading `C:\迅雷下载\…`) closed Rainy when it was shown, and since the chat opened again at the next start, every start ended the same way. Such paths now show as usual.
