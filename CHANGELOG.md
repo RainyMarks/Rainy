@@ -4,6 +4,11 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.11.3 · 2026-11-15
+
+- **Claude Fable 5.2 support**: Fable 5.2 and Mythos 5.2 were treated as Fable 5. Their reasoning levels now follow their own rules (five levels from Low to Max, High by default), a level change mid-chat keeps the cache, costs are estimated at the official prices ($8 input, $40 output, $0.20 cache reads per million tokens), and they no longer get the prompt additions meant only for Fable 5.1.
+- **Claude Sonnet 5.5 cache reads** are now priced at $0.10 per million tokens, so its cost estimates are lower.
+
 ## 4.11.2 · 2026-11-14
 
 - **The Orchestrator opens**: with only one model configured, the Orchestrator row of the reasoning card led to the model list with nothing to pick. It now opens a page of its own that explains how planning and executing are split; with other models you pick "A plans · B executes" there, and with one model it says a second one is needed and its **Add a model** button opens Settings → Models.
