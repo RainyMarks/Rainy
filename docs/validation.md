@@ -1,5 +1,26 @@
 # Rainy 验收记录
 
+## 4.11.3（2026-11-15）
+
+被测产物为 `Rainy-4.11.3-windows-x64-setup.exe`（16,119,336 字节，SHA-256 `2d29817a7e3d575323c5736c1f259b28d9cbc7936c351db42cfd5adb821503ee`），构建自提交 `f79ed34110`。六个可选分片已上传到 `v4.11.3-resources`，GitHub 给出的摘要与本地一致。
+
+### 问题
+
+Claude Fable 5.2（`claude-fable-5-2`，Anthropic 当前默认的 Fable 模型）和 Mythos 5.2 落进了 Fable 5 的规则：推理控制按 Fable 5 处理（不支持逐条消息调整强度），费用按 Fable 5 估算（输入/输出每百万 token 10/50 美元、读缓存 1.0 美元，实际是 8/40 美元、0.20 美元）。Claude Sonnet 5.5 的读缓存价已降到 0.10 美元，价格表里还是 0.2 美元。
+
+### 改动
+
+- **推理规则**（`protocol/src/models/reasoning.rs`）：Fable 5.2 和 Mythos 5.2 与 Fable 5.1 归为一类：低到最高五档，默认“高”，`effort_messages` 打开（中途换档用对话中的系统消息，不让缓存失效）。依据是 Anthropic 的迁移说明：5.2 的请求方式与 5.1 相同。
+- **价格**（`host/src/agent/llm/catalog.rs`）：`claude-fable-5-2` / `claude-mythos-5-2` 为 8 / 40 / 0.2 / 10；`claude-sonnet-5-5` 读缓存 0.2 → 0.1。
+- **模型指导**（`host/src/agent/profile.rs`）：新增 `Claude::Fable52`，只用通用的 Claude 指导，不带 Fable 5.1 专用的“局部修改”段落和每轮工具结果后的并行调用提示（Anthropic 说明 5.2 的提示建议取代了 5.1 的）。
+
+### 检查
+
+- **测试**：`rainy-protocol` 15 项、`rainy-host` 143 项（1 项忽略）通过；新增 Fable 5.2 的档位、控制方式、模型分类和指导文字用例。
+- **界面实测**（调试版，临时配置里有 `claude-fable-5-2` 和 `claude-fable-5` 两个 Anthropic 模型，未填密钥，未发请求）：模型按钮显示“Fable 5.2 高”；推理卡片显示“低、中、高、超高、最高”五档，滑块停在“高”，下方是编排入口。
+- **安装包 QA（QA 身份）**：46 项全部通过，包括从 3.9.2 和 4.0.0 覆盖升级。
+- **未验证**：没有用真实的 Fable 5.2 发请求（本机没有它的接口配置），价格表只对照 Anthropic 公布的价格核对过，没有单独的测试，费用显示也没有在界面里看过。
+
 ## 4.11.2（2026-11-14）
 
 被测产物为 `Rainy-4.11.2-windows-x64-setup.exe`（16,116,566 字节，SHA-256 `bab751aa8b612c43b14fbd6117396dca731b42cb872815e29c33921d67dd242b`），构建自提交 `4e1e9e4fbb`。六个可选分片已上传到 `v4.11.2-resources`，GitHub 给出的摘要与本地一致。
