@@ -304,7 +304,8 @@ fn claude(id: &str) -> Family {
     let managed = Control::Claude { adaptive: true, effort_messages: true };
     let adaptive = Control::Claude { adaptive: true, effort_messages: false };
     let budget = Control::Claude { adaptive: false, effort_messages: false };
-    if starts(&["claude-fable-5-1", "claude-mythos-5-1"]) {
+    // Fable 5.2 keeps Fable 5.1's request surface (always-on thinking, per-message effort, `high` default).
+    if starts(&["claude-fable-5-2", "claude-mythos-5-2", "claude-fable-5-1", "claude-mythos-5-1"]) {
         graded(LOW_TO_MAX, High, managed)
     } else if starts(&["claude-fable-5", "claude-mythos-5"]) {
         graded(LOW_TO_MAX, High, adaptive)
@@ -642,6 +643,7 @@ mod tests {
     fn knows_each_family() {
         let cases: &[Case] = &[
             (Api::Anthropic, "https://api.anthropic.com", "claude-opus-5-5", &["low", "medium", "high", "xhigh", "max"], Some("medium")),
+            (Api::Anthropic, "https://api.anthropic.com", "claude-fable-5-2", &["low", "medium", "high", "xhigh", "max"], Some("high")),
             (Api::Anthropic, "https://api.anthropic.com", "claude-sonnet-5", &["off", "low", "medium", "high", "xhigh", "max"], Some("high")),
             (Api::Anthropic, "https://api.anthropic.com", "claude-opus-4-6", &["off", "low", "medium", "high", "max"], Some("off")),
             (Api::Anthropic, "https://api.anthropic.com", "claude-haiku-4-5-20251001", &["off", "low", "medium", "high", "max"], Some("off")),
@@ -676,6 +678,7 @@ mod tests {
         let control = |api, url, model| reasoning(&profile(api, url, model)).control;
         assert_eq!(control(Api::Anthropic, "https://api.anthropic.com", "claude-opus-5-5"), Control::Claude { adaptive: true, effort_messages: true });
         assert_eq!(control(Api::Anthropic, "https://api.anthropic.com", "claude-fable-5"), Control::Claude { adaptive: true, effort_messages: false });
+        assert_eq!(control(Api::Anthropic, "https://api.anthropic.com", "claude-fable-5-2"), Control::Claude { adaptive: true, effort_messages: true });
         assert_eq!(control(Api::Anthropic, "https://api.deepseek.com/anthropic", "deepseek-v4-pro"), Control::Thinking { keep: false });
         assert_eq!(control(Api::Completions, "https://api.deepseek.com", "deepseek-flash"), Control::Thinking { keep: false });
         assert_eq!(control(Api::Completions, "https://open.bigmodel.cn/api/paas/v4", "glm-5.2"), Control::Thinking { keep: true });

@@ -12,9 +12,10 @@ const fn cost(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Cos
 pub fn claude_price(id: &str) -> Option<Cost> {
     Some(match id {
         "claude-opus-5-5" => cost(4.0, 20.0, 0.2, 5.0),
-        "claude-sonnet-5-5" => cost(2.0, 10.0, 0.2, 2.5),
+        "claude-sonnet-5-5" => cost(2.0, 10.0, 0.1, 2.5),
         // The rate for prompts up to 100K tokens; longer ones cost five times as much.
         "claude-haiku-5-5" => cost(0.1, 0.5, 0.01, 0.125),
+        "claude-fable-5-2" | "claude-mythos-5-2" => cost(8.0, 40.0, 0.2, 10.0),
         "claude-fable-5-1" | "claude-mythos-5-1" => cost(10.0, 50.0, 0.25, 12.5),
         "claude-opus-5" => cost(5.0, 25.0, 0.5, 6.25),
         "claude-fable-5" | "claude-mythos-5" => cost(10.0, 50.0, 1.0, 12.5),

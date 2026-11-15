@@ -25,6 +25,9 @@ pub enum Family {
 /// Claude models whose prompting guidance differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Claude {
+    /// Fable 5.2 and Mythos 5.2: Anthropic's 5.2 guidance replaces 5.1's prompt additions, so they get the plain
+    /// Claude text.
+    Fable52,
     /// Fable 5.1 and Mythos 5.1.
     Fable51,
     Fable5,
@@ -53,7 +56,9 @@ impl Profile {
         if let Some(at) = id.find("claude-") {
             // Bedrock prefixes the vendor (`anthropic.claude-…`) and OpenRouter writes versions with dots.
             let claude = id[at..].replace('.', "-");
-            let model = if ["claude-fable-5-1", "claude-mythos-5-1"].iter().any(|prefix| claude.starts_with(prefix)) {
+            let model = if ["claude-fable-5-2", "claude-mythos-5-2"].iter().any(|prefix| claude.starts_with(prefix)) {
+                Claude::Fable52
+            } else if ["claude-fable-5-1", "claude-mythos-5-1"].iter().any(|prefix| claude.starts_with(prefix)) {
                 Claude::Fable51
             } else if ["claude-fable-5", "claude-mythos-5"].iter().any(|prefix| claude.starts_with(prefix)) {
                 Claude::Fable5
@@ -238,6 +243,8 @@ mod tests {
     fn detects_families() {
         let family = |id: &str| Profile::of(id).family;
         assert_eq!(Profile::of("claude-fable-5-1").claude, Some(Claude::Fable51));
+        assert_eq!(Profile::of("anthropic/claude-fable-5.2").claude, Some(Claude::Fable52));
+        assert_eq!(Profile::of("claude-mythos-5-2").claude, Some(Claude::Fable52));
         assert_eq!(Profile::of("anthropic/claude-opus-5.5").claude, Some(Claude::Opus));
         assert_eq!(Profile::of("us.anthropic.claude-haiku-5-5-20261001-v1:0").claude, Some(Claude::Haiku));
         assert_eq!(Profile::of("claude-sonnet-4-6").claude, Some(Claude::Older));
@@ -263,6 +270,8 @@ mod tests {
         assert!(!fable.patches() && fable.plan_style() == Style::Claude && fable.batch_nudge().is_some());
         assert!(fable.guidance(true).contains("surgically edit"));
         assert!(Profile::of("claude-opus-5-5").batch_nudge().is_none());
+        let fable52 = Profile::of("claude-fable-5-2");
+        assert!(fable52.batch_nudge().is_none() && !fable52.guidance(true).contains("surgically edit"));
         assert!(Profile::of("deepseek-v4").guidance(true).contains("code that only appears in your reply is not saved"));
         assert_eq!(Profile::of("gemini-3-pro").plan_style(), Style::Gemini);
         for id in ["gpt-5.5", "claude-opus-5-5", "gemini-3-pro", "qwen3.8-max", "llama-4"] {
