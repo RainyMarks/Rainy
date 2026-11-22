@@ -1,5 +1,34 @@
 # Rainy 验收记录
 
+## 4.11.4（2026-11-22）
+
+被测产物为 `Rainy-4.11.4-windows-x64-setup.exe`（16,126,991 字节，SHA-256 `1f0bd17b661c4627fa07e9e33fed236f5c945c0f0156e16a019f04c3238bd5d3`），构建自提交 `db17592952`。六个可选分片已上传到 `v4.11.4-resources`，GitHub 给出的摘要与本地一致。
+
+### 问题
+
+- 打开 C/C++ 文件而执行环境里没有 clangd 时，后台用固定的 `Invalid editor language request` 关闭语言连接，状态栏只显示“C 语言服务不可用”，悬停是这句英文，用户不知道缺什么、去哪里准备。其他启动失败（项目不在当前执行环境等）也都是这句。
+- Swarm 成员的对话在侧栏里和普通对话按时间混排，成员一多就找不到哪些属于哪个 Swarm。
+- Swarm 面板只在 Agent 模式的工具栏里，IDE 模式看不到看板和成员。
+- 从 Swarm 对话新建一个还没保存的对话时，`follow_swarm` 因为“没有选中的对话”直接返回，Swarm 面板留在原处，显示“这个对话不在 Swarm 里”。
+
+### 改动
+
+- **语言服务**（`host/src/ide/language.rs`）：找不到 clangd 时以 4405 关闭，原因为 `program-missing:clangd`；其他失败把错误文字（按界面语言）作为原因，按 WebSocket 关闭帧的 123 字节上限在字符边界截断。界面（`app/src/ui/workbench.rs`、`i18n.rs`）把 `program-missing:` 显示成“{语言}：找不到 {程序}，点这里到“设置 → 运行环境”准备”，悬停说明 Windows C/C++ 组件、Ubuntu 开发工具和自行安装三种办法，点击打开“设置 → 运行环境”。
+- **侧栏**（`app/src/ui/history.rs`）：`nest_workers` 把每个协调者在同一组里的成员挪到它下面（按创建时间），缩进一级；协调者行有折叠箭头（折叠状态和分组折叠共用一个集合，点击不会打开协调者对话）；协调者不在同一组（置顶、归档、已删除、别的项目）的成员留在原位；“显示全部”的数量仍按全部对话计算，只按顶层条目截断。
+- **IDE 模式**（`app/src/ui/workbench.rs`）：左侧窗格新增 `Side::Swarm`，当前对话属于 Swarm 时显示图标标签，内容是同一个 Swarm 视图；对话刚变成 Swarm 时自动切过去；对话不属于 Swarm（包括未保存的新对话）时收起 Agent 模式的面板，IDE 左侧退回“历史”。Swarm 图标改为 Lucide `users`（嵌入 `assets.rs`）；Swarm 视图的标题栏允许换行，成员名可截断。
+
+### 检查
+
+- **测试**：`rainy` 108 项（1 项忽略）、`rainy-carrier` 277 项（7 项忽略）、`rainy-host` 144 项（1 项忽略）、`rainy-protocol` 15 项通过；新增关闭原因截断（中文、123 字节）和 Swarm 成员分组（成员排到协调者下、按创建时间、协调者不在组内的成员保持原位）两个用例。
+- **界面实测**（调试版，临时配置，假模型 `tmp/swarm-qa/fake.py`，测试项目为新建的 Git 仓库）：
+  - `/swarm 隔离 丢弃 创建两个文件`：两位隔离成员各自写文件；协调者合入 beta、用 `swarm_remove discard: true` 移除 alpha。项目里只有 `beta.txt`，没有 `alpha.txt`；`git worktree list` 只剩主工作区，没有残留分支；配置里的 `worktrees` 目录为空；alpha 的对话进入“已归档 (1)”，成员页显示 1 位。
+  - 侧栏：协调者对话下缩进显示 @beta，点箭头收起后只剩协调者，标题栏仍是原来的对话（没有被点开）。
+  - IDE 模式：左侧标签栏出现 Swarm 图标，点开是看板；新建对话后 Swarm 标签消失、左侧退回（修复前停在空的 Swarm 页，即上面第四个问题）。
+  - clangd：本机 PATH 里没有 clangd，打开 `main.c` 后状态栏显示“C：找不到 clangd，点这里到“设置 → 运行环境”准备”，点击打开“设置 → 运行环境”。
+  - 英文界面、约 960×650 的窗口：状态栏显示 “C: clangd not found, click to prepare it in Settings → Runtime”；把左侧窗格拖到最窄，Swarm 标题栏的 Board / Members 1 / Stop all 仍完整显示。
+- **安装包 QA（QA 身份）**：46 项全部通过，包括从 3.9.2 和 4.0.0 覆盖升级。
+- **未验证**：悬停提示的文字只核对了代码，没有在界面里看到浮层；WSL 和 SSH 执行环境下的 clangd 提示、IDE Swarm 标签没有实测；Git 工作区对话仍只在 Windows 后台测过；没有用真实模型检查 Swarm 的协作质量。
+
 ## 4.11.3（2026-11-15）
 
 被测产物为 `Rainy-4.11.3-windows-x64-setup.exe`（16,119,336 字节，SHA-256 `2d29817a7e3d575323c5736c1f259b28d9cbc7936c351db42cfd5adb821503ee`），构建自提交 `f79ed34110`。六个可选分片已上传到 `v4.11.3-resources`，GitHub 给出的摘要与本地一致。
