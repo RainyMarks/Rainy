@@ -4,6 +4,13 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.11.4 · 2026-11-22
+
+- **A missing clangd is named**: opening a C/C++ file on a computer without clangd showed only "C language service unavailable", with "Invalid editor language request" on hover. The status bar now says clangd was not found, a click opens Settings → Runtime, and the hover explains how to get it: import the Windows C/C++ component (it includes clangd) on Windows, use Prepare Ubuntu development tools on WSL or a server, or install clangd yourself and add it to PATH. When a language service fails for another reason, the hover shows that reason.
+- **Swarm members sit under their coordinator**: in the sidebar, the chats of a swarm's members are no longer mixed with other chats; they are indented under the coordinator's chat in the order they joined, and an arrow on the coordinator's row folds or unfolds them.
+- **Swarms in IDE mode**: the swarm panel was only in Agent mode. In IDE mode the left pane now has a Swarm tab while the chat shown belongs to a swarm, with the same board and members; it opens by itself when a chat becomes a swarm. The swarm icon is now a group of people, so it no longer looks like IDE mode's relations icon.
+- **No leftover swarm panel after a new chat**: starting a new chat from a swarm chat closes the swarm panel instead of leaving a page that says the chat is not in a swarm.
+
 ## 4.11.3 · 2026-11-15
 
 - **Claude Fable 5.2 support**: Fable 5.2 and Mythos 5.2 were treated as Fable 5. Their reasoning levels now follow their own rules (five levels from Low to Max, High by default), a level change mid-chat keeps the cache, costs are estimated at the official prices ($8 input, $40 output, $0.20 cache reads per million tokens), and they no longer get the prompt additions meant only for Fable 5.1.
