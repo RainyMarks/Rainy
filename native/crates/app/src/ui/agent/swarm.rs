@@ -165,7 +165,7 @@ impl SwarmView {
             .cursor_pointer()
             .hover(|style| style.bg(cx.theme().list_hover))
             .child(div().size(px(8.)).flex_none().rounded_full().bg(color))
-            .child(div().flex_none().text_sm().font_semibold().child(if lead { tr(cx, "agent.swarmCoordinator").to_string() } else { format!("@{name}") }))
+            .child(div().min_w_0().truncate().text_sm().font_semibold().child(if lead { tr(cx, "agent.swarmCoordinator").to_string() } else { format!("@{name}") }))
             .when(member.worktree.is_some(), |this| this.child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall().text_color(cx.theme().muted_foreground)))
             .child(div().flex_1().min_w_0().truncate().text_xs().text_color(cx.theme().muted_foreground).child(if lead { member.title.clone() } else { String::new() }))
             .child(div().flex_none().text_xs().text_color(cx.theme().muted_foreground).child(tr(cx, state)))
@@ -199,8 +199,10 @@ impl Render for SwarmView {
                 cx.background_spawn(async move { drop(call.await) }).detach();
             }))
         };
+        // Wraps in IDE mode's narrow left pane rather than pushing the stop button out.
         let header = h_flex()
             .flex_none()
+            .flex_wrap()
             .px_2()
             .py_1()
             .gap_1()

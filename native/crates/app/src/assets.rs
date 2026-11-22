@@ -7,7 +7,7 @@ use gpui_kit::{AssetSource, SharedString};
 
 icon_assets!(ExtraIcons, [
     Archive, Brain, Bug, CirclePlus, CircleStop, Clock, CodeXml, FilePen, FilePlus, FileSearch, FolderPlus, GitBranch, GitCompare, ListTree, MessageSquarePlus,
-    Paperclip, Pin, PinOff, Play, RotateCcw, Send, Shield, ShieldAlert, ShieldCheck, Sparkles, Square, SquarePen, Terminal, Trash, Workflow, Wrench, Zap,
+    Paperclip, Pin, PinOff, Play, RotateCcw, Send, Shield, ShieldAlert, ShieldCheck, Sparkles, Square, SquarePen, Terminal, Trash, Users, Workflow, Wrench, Zap,
 ]);
 
 const BRAND: &[(&str, &[u8])] = &[("brand/rainy-mark.svg", include_bytes!("../assets/brand/rainy-mark.svg"))];

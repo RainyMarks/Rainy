@@ -62,6 +62,8 @@ enum Side {
     History,
     Outline,
     Relations,
+    /// The board and members of the selected chat's swarm.
+    Swarm,
 }
 
 /// Below this width, in logical pixels, the left pane's tabs show only their icons.
@@ -259,7 +261,7 @@ impl Workbench {
                         this.sidebar_peek = false;
                         cx.notify();
                     }
-                    StoreEvent::SummariesChanged | StoreEvent::SelectionChanged => this.follow_swarm(cx),
+                    StoreEvent::SummariesChanged | StoreEvent::SelectionChanged => this.follow_swarm(window, cx),
                     StoreEvent::HostExited(code) => crate::ui::ssh::host_exited(this.store.clone(), *code, window, cx),
                     StoreEvent::ResourcesDamaged(error) => resources_damaged(error, window, cx),
                     StoreEvent::Update(notice) => crate::ui::update::show(notice, window, cx),
@@ -449,20 +451,33 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Open the swarm's board when the selected chat just started a swarm; close it when the chat shown has none.
-    fn follow_swarm(&mut self, cx: &mut Context<Self>) {
+    /// Open the swarm's board when the selected chat just started a swarm (Agent mode's panel, the left pane's tab in IDE
+    /// mode); close it when the chat shown has none.
+    fn follow_swarm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
         let now = store.selected.as_ref().map(|id| {
             let coordinator = store.summaries.iter().find(|summary| summary.id == *id).and_then(agent::swarm::coordinator_of);
             (id.clone(), coordinator)
         });
         let before = std::mem::replace(&mut self.selected_swarm, now.clone());
-        let Some((id, coordinator)) = now else { return };
+        // A new chat not saved yet is no chat of a swarm either.
+        let (id, coordinator) = now.unwrap_or_default();
         if coordinator.is_some() && before.as_ref().is_some_and(|(was, had)| *was == id && had.is_none()) {
-            self.show_tool(Tool::Swarm, cx);
-        } else if coordinator.is_none() && self.tool == Some(Tool::Swarm) {
-            self.tool = None;
-            cx.notify();
+            if self.agent() {
+                self.show_tool(Tool::Swarm, cx);
+            } else {
+                self.show_side(Side::Swarm, window, cx);
+            }
+        } else if coordinator.is_none() {
+            if self.tool == Some(Tool::Swarm) {
+                self.tool = None;
+                cx.notify();
+            }
+            // The chats it was chosen from.
+            if self.side == Side::Swarm {
+                self.side = Side::History;
+                cx.notify();
+            }
         }
     }
 
@@ -700,7 +715,7 @@ impl Workbench {
                 Button::new(id).ghost().small().icon(icon).tooltip(tr(cx, label)).on_click(cx.listener(move |this, _, window, cx| this.toggle_tool(value, window, cx))),
             )
         };
-        let swarm = summary_swarm.then(|| tool("tool-swarm", Icon::new(IconName::Network), "agent.toolSwarm", Tool::Swarm));
+        let swarm = summary_swarm.then(|| tool("tool-swarm", Icon::new(gpui_kit::assets::IconName::Users), "agent.toolSwarm", Tool::Swarm));
         let files = tool("tool-files", Icon::new(IconName::FolderOpen), "agent.toolFiles", Tool::Files);
         let terminal = tool("tool-terminal", Icon::new(IconName::SquareTerminal), "agent.toolTerminal", Tool::Terminal);
         let theme = cx.theme();
@@ -787,11 +802,17 @@ impl Workbench {
             let servers = crate::store::language::LanguageServers::global(cx);
             let servers = servers.read(cx);
             let (name, phase) = servers.phase_of(&key)?;
-            let (label, reason, missing) = match phase {
-                crate::store::language::ServerPhase::Starting => (trf(cx, "native.languageStarting", &[("language", &name)]), None, false),
+            let (label, reason, opens) = match phase {
+                crate::store::language::ServerPhase::Starting => (trf(cx, "native.languageStarting", &[("language", &name)]), None, None),
                 // Its tools are not downloaded: a click opens the page that downloads them.
-                crate::store::language::ServerPhase::Failed(reason) if reason.as_ref() == "tools-missing" => (trf(cx, "native.languageToolsMissing", &[("language", &name)]), None, true),
-                crate::store::language::ServerPhase::Failed(reason) => (trf(cx, "native.languageFailed", &[("language", &name)]), Some(reason.clone()), false),
+                crate::store::language::ServerPhase::Failed(reason) if reason.as_ref() == "tools-missing" => (trf(cx, "native.languageToolsMissing", &[("language", &name)]), None, Some(Section::Tools)),
+                // The server is a program of the execution target (clangd): a click opens the page that prepares it.
+                crate::store::language::ServerPhase::Failed(reason) if reason.starts_with("program-missing:") => {
+                    let program = &reason["program-missing:".len()..];
+                    let label = trf(cx, "native.languageProgramMissing", &[("language", &name), ("program", &program)]);
+                    (label, Some(trf(cx, "native.languageProgramMissingHint", &[("program", &program)]).into()), Some(Section::Runtime))
+                }
+                crate::store::language::ServerPhase::Failed(reason) => (trf(cx, "native.languageFailed", &[("language", &name)]), Some(reason.clone()), None),
                 crate::store::language::ServerPhase::Ready => return None,
             };
             Some(
@@ -802,7 +823,7 @@ impl Workbench {
                     .text_ellipsis()
                     .whitespace_nowrap()
                     .child(label)
-                    .when(missing, |this| this.cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::Tools, window, cx))))
+                    .when_some(opens, |this, section| this.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.open_settings(section, window, cx))))
                     .when_some(reason, |this, reason| this.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(reason.clone()).build(window, cx))),
             )
         });
@@ -1177,7 +1198,19 @@ impl Workbench {
             .tooltip(tr(cx, "ide.ideRelations"))
             .selected(self.side == Side::Relations)
             .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Relations, window, cx)));
+        // The swarm of the selected chat, beside the relations: only while the chat belongs to one.
+        let swarm = self.selected_swarm.as_ref().is_some_and(|(_, coordinator)| coordinator.is_some()).then(|| {
+            Button::new("side-swarm")
+                .ghost()
+                .when(self.side == Side::Swarm, |this| this.custom(crate::theme::selected_button(cx)))
+                .xsmall()
+                .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Users))
+                .tooltip(tr(cx, "agent.toolSwarm"))
+                .selected(self.side == Side::Swarm)
+                .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Swarm, window, cx)))
+        });
         let content: AnyView = match self.side {
+            Side::Swarm => self.swarm.clone().into(),
             Side::Files => self.files.clone().into(),
             Side::Search => self.search.clone().into(),
             Side::Git => self.git.clone().into(),
@@ -1205,6 +1238,7 @@ impl Workbench {
                     .child(git)
                     .child(history)
                     .child(div().flex_1())
+                    .children(swarm)
                     .child(relations)
                     .child(outline),
             )
@@ -1431,7 +1465,7 @@ impl Workbench {
             Tool::Files => (Icon::new(IconName::FolderOpen), "agent.toolFiles"),
             Tool::Terminal => (Icon::new(IconName::SquareTerminal), "agent.toolTerminal"),
             Tool::Changes => (Icon::new(gpui_kit::assets::IconName::GitCompare), "agent.toolChanges"),
-            Tool::Swarm => (Icon::new(IconName::Network), "agent.toolSwarm"),
+            Tool::Swarm => (Icon::new(gpui_kit::assets::IconName::Users), "agent.toolSwarm"),
         };
         let left = self.layout.panel_left;
         let ide = self.ide.read(cx);

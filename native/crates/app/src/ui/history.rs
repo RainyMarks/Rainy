@@ -164,8 +164,10 @@ impl HistoryPanel {
     /// A chat in the sidebar: a dot for a reply not seen yet, its title, a branch icon when it works in its own
     /// worktree, then how long ago it was active (a spinner while it works, a dot while it waits for an approval), and
     /// its menu button under the pointer; a search adds the line of a message that matched. Choosing a chat of another
-    /// known project shows that project, so its files, the new chats and file links all belong to the chat.
-    fn render_sidebar_row(&self, summary: &SessionSummary, folder: Option<SharedString>, snippet: Option<String>, nested: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// known project shows that project, so its files, the new chats and file links all belong to the chat. `depth`
+    /// indents it (1 in a project, one more for a swarm worker under its coordinator); `workers` is whether the
+    /// coordinator's workers listed under it are folded, and adds the arrow that folds them.
+    fn render_sidebar_row(&self, summary: &SessionSummary, folder: Option<SharedString>, snippet: Option<String>, depth: usize, workers: Option<bool>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let id = summary.id.clone();
         let active = self.store.read(cx).selected.as_deref() == Some(summary.id.as_str());
@@ -205,6 +207,26 @@ impl HistoryPanel {
             // The unread dot keeps its place, so titles line up whether or not it shows.
             .child(div().w(px(6.)).h(px(6.)).flex_shrink_0().rounded_full().when(unread, |dot| dot.bg(theme.primary)))
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().when(unread, |title| title.font_weight(FontWeight::MEDIUM)).child(title))
+            .when_some(workers, |this, folded| {
+                let key = swarm_key(&summary.id);
+                this.child(
+                    div()
+                        .id(ElementId::Name(format!("swarm-fold-{}", summary.id).into()))
+                        .flex_shrink_0()
+                        .rounded(theme.radius)
+                        .text_color(theme.muted_foreground)
+                        .hover(|style| style.text_color(theme.foreground))
+                        .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // Folding the workers does not open the coordinator.
+                            cx.stop_propagation();
+                            if !this.folded.remove(&key) {
+                                this.folded.insert(key.clone());
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
             .when(summary.worktree.is_some(), |this| {
                 this.child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
             })
@@ -221,8 +243,7 @@ impl HistoryPanel {
             .id(ElementId::Name(format!("chat-{id}").into()))
             .w_full()
             .flex_shrink_0()
-            .when(nested, |this| this.pl_4())
-            .when(!nested, |this| this.pl_1())
+            .pl(px(4. + 12. * depth as f32))
             .pr_1()
             .rounded(theme.radius)
             .text_sm()
@@ -459,7 +480,7 @@ impl HistoryPanel {
             let mut shown: HashSet<String> = HashSet::new();
             for summary in sorted(summaries.iter().filter(|summary| found(summary, &untitled, words))) {
                 shown.insert(summary.id.clone());
-                rows.push(self.render_sidebar_row(summary, Some(folder_name(summary, &titles)), None, false, cx));
+                rows.push(self.render_sidebar_row(summary, Some(folder_name(summary, &titles)), None, 0, None, cx));
             }
             let hits: Vec<(&SessionSummary, String)> = self
                 .content_hits
@@ -470,7 +491,7 @@ impl HistoryPanel {
             if !hits.is_empty() {
                 rows.push(self.render_label(tr(cx, "agent.foundInMessages"), cx));
                 for (summary, snippet) in hits {
-                    rows.push(self.render_sidebar_row(summary, Some(folder_name(summary, &titles)), Some(snippet), false, cx));
+                    rows.push(self.render_sidebar_row(summary, Some(folder_name(summary, &titles)), Some(snippet), 0, None, cx));
                 }
             }
             return rows;
@@ -482,7 +503,7 @@ impl HistoryPanel {
             if !self.folded.contains("pinned") {
                 for summary in &tree.pinned {
                     let folder = summary.workspace_id.is_some().then(|| folder_name(summary, &titles));
-                    rows.push(self.render_sidebar_row(summary, folder, None, false, cx));
+                    rows.push(self.render_sidebar_row(summary, folder, None, 0, None, cx));
                 }
             }
         }
@@ -508,14 +529,26 @@ impl HistoryPanel {
         div().w_full().flex_shrink_0().px_2().pt_3().pb_1().text_xs().text_color(cx.theme().muted_foreground).child(text).into_any_element()
     }
 
-    /// A group's chats up to [`GROUP_LIMIT`], then the entry that shows all of them or fewer again.
+    /// A group's chats up to [`GROUP_LIMIT`], each swarm coordinator with its workers under it (they do not count
+    /// towards the limit), then the entry that shows all of them or fewer again.
     fn render_limited(&self, key: &str, chats: &[&SessionSummary], nested: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let total = chats.len();
+        let entries = nest_workers(chats);
+        let chats = &entries;
+        let depth = usize::from(nested);
         let all = self.unlimited.contains(key);
         let shown = if all { chats.len() } else { chats.len().min(GROUP_LIMIT) };
-        let mut rows: Vec<AnyElement> = chats[..shown].iter().map(|summary| self.render_sidebar_row(summary, None, None, nested, cx)).collect();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (summary, workers) in &chats[..shown] {
+            let folded = self.folded.contains(&swarm_key(&summary.id));
+            rows.push(self.render_sidebar_row(summary, None, None, depth, (!workers.is_empty()).then_some(folded), cx));
+            if !folded {
+                rows.extend(workers.iter().map(|worker| self.render_sidebar_row(worker, None, None, depth + 1, None, cx)));
+            }
+        }
         if chats.len() > GROUP_LIMIT {
             let key = key.to_owned();
-            let label = if all { tr(cx, "agent.showFewer") } else { trf(cx, "agent.showAll", &[("count", &chats.len())]) };
+            let label = if all { tr(cx, "agent.showFewer") } else { trf(cx, "agent.showAll", &[("count", &total)]) };
             let theme = cx.theme();
             rows.push(
                 div()
@@ -625,6 +658,31 @@ fn ago_from(now_ms: f64, updated_ms: f64, zh: bool) -> String {
         _ => (days / 365, "年", "y"),
     };
     if zh { format!("{number}{zh_unit}") } else { format!("{number}{en_unit}") }
+}
+
+/// The folding key of a swarm coordinator's workers in the sidebar.
+fn swarm_key(coordinator: &str) -> String {
+    format!("swarm:{coordinator}")
+}
+
+/// A group's chats in their order, each with the swarm workers it coordinates, oldest first, taken from their own
+/// places. A worker whose coordinator is not in the group (pinned, archived, deleted or in another project) keeps its
+/// place.
+fn nest_workers<'a>(chats: &[&'a SessionSummary]) -> Vec<(&'a SessionSummary, Vec<&'a SessionSummary>)> {
+    let leads: HashSet<&str> = chats.iter().filter(|chat| chat.swarm.as_ref().is_none_or(|link| link.coordinator == chat.id)).map(|chat| chat.id.as_str()).collect();
+    let lead_of = |chat: &SessionSummary| chat.swarm.as_ref().map(|link| link.coordinator.clone()).filter(|lead| *lead != chat.id && leads.contains(lead.as_str()));
+    let mut entries: Vec<(&'a SessionSummary, Vec<&'a SessionSummary>)> = chats.iter().filter(|chat| lead_of(chat).is_none()).map(|chat| (*chat, Vec::new())).collect();
+    for &chat in chats {
+        if let Some(lead) = lead_of(chat)
+            && let Some((_, workers)) = entries.iter_mut().find(|(entry, _)| entry.id == lead)
+        {
+            workers.push(chat);
+        }
+    }
+    for (_, workers) in &mut entries {
+        workers.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
+    }
+    entries
 }
 
 /// A project in the sidebar and its chats (newest first, pinned ones aside); `workspace` is none for a project no
@@ -1108,5 +1166,21 @@ mod tests {
         assert!(found(&one, "新对话", &words("登录")));
         assert!(found(&one, "新对话", &words("rainy 修复")));
         assert!(!found(&one, "新对话", &words("rainy 注册")));
+    }
+
+    #[test]
+    fn swarm_workers_follow_their_coordinator() {
+        let member = |id: &str, updated: f64, created: f64, lead: &str| {
+            let mut summary = chat(id, None, "C:\\home", updated, false);
+            summary.created_at = created;
+            summary.swarm = Some(rainy_protocol::SwarmLink { coordinator: lead.into(), name: if id == lead { lead.into() } else { id.into() } });
+            summary
+        };
+        // Newest first: worker w2 works, the coordinator waits, w1 is quiet; o's coordinator is not in the list.
+        let list = [member("w2", 9., 3., "lead"), chat("x", None, "C:\\home", 8., false), member("lead", 7., 1., "lead"), member("w1", 6., 2., "lead"), member("o", 5., 4., "gone")];
+        let chats: Vec<&SessionSummary> = list.iter().collect();
+        let nested = nest_workers(&chats);
+        let shape: Vec<(&str, Vec<&str>)> = nested.iter().map(|(chat, workers)| (chat.id.as_str(), workers.iter().map(|worker| worker.id.as_str()).collect())).collect();
+        assert_eq!(shape, [("x", vec![]), ("lead", vec!["w1", "w2"]), ("o", vec![])]);
     }
 }
