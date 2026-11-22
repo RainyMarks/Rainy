@@ -29,6 +29,21 @@ const MAX_CONNECTIONS: usize = 8;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Close code telling the editor to connect again: the project's interpreter environment changed.
 pub const RESTART_CODE: u16 = 1012;
+/// Close code and reason prefix of a connection whose language server is not installed in the execution target (clangd
+/// is not bundled); the reason is `program-missing:<program>` and the interface points at Settings → Runtime.
+pub const PROGRAM_MISSING_CODE: u16 = 4405;
+pub const PROGRAM_MISSING: &str = "program-missing";
+/// The longest reason a WebSocket close frame carries (RFC 6455: 125 payload bytes, 2 of them the code).
+const MAX_CLOSE_REASON: usize = 123;
+
+/// `text` cut to a close frame's reason at a character boundary.
+fn close_reason(text: &str) -> String {
+    let mut end = text.len().min(MAX_CLOSE_REASON);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
 
 struct Spec {
     root: PathBuf,
@@ -145,7 +160,8 @@ impl Languages {
             "python" => vec![Tools::require(self.tools.ty(), Kit::Python)?.display().to_string(), "server".into()],
             "javascript" | "typescript" => vec![Tools::require(self.tools.tsc(), Kit::Web)?.display().to_string(), "--lsp".into(), "--stdio".into()],
             "c" | "cpp" => {
-                let clangd = crate::process::resolve_executable("clangd", Some(&child_env(&environment))).ok_or_else(|| crate::process::executable_missing("clangd"))?;
+                // The error's message is the program, which the close reason names.
+                let clangd = crate::process::resolve_executable("clangd", Some(&child_env(&environment))).ok_or_else(|| HostError::new(PROGRAM_MISSING, "clangd"))?;
                 let mut argv = vec![clangd.display().to_string(), "--background-index=0".into()];
                 if let Some(directory) = self.compile_commands(workspace_id, &root) {
                     argv.push(format!("--compile-commands-dir={}", directory.display()));
@@ -172,7 +188,7 @@ impl Languages {
     pub async fn accept(self: Arc<Self>, socket: WebSocket, url: Url) {
         let query: std::collections::HashMap<String, String> = url.query_pairs().map(|(name, value)| (name.into_owned(), value.into_owned())).collect();
         let (mut sink, mut stream) = socket.split();
-        let close = |code: u16, reason: &'static str| Message::Close(Some(CloseFrame { code, reason: reason.into() }));
+        let close = |code: u16, reason: &str| Message::Close(Some(CloseFrame { code, reason: close_reason(reason).into() }));
         let valid_keys = query.keys().all(|key| ["workspaceId", "language", "rootId"].contains(&key.as_str()));
         let (Some(workspace_id), Some(language)) = (query.get("workspaceId").filter(|_| valid_keys), query.get("language")) else {
             let _ = sink.send(close(1008, "Invalid editor language request")).await;
@@ -186,9 +202,15 @@ impl Languages {
                 let _ = sink.send(close(super::tools::MISSING_CODE, super::tools::MISSING_REASON)).await;
                 return;
             }
+            // The interface names the program and points at Settings → Runtime.
+            Err(error) if error.code == PROGRAM_MISSING => {
+                let _ = sink.send(close(PROGRAM_MISSING_CODE, &format!("{PROGRAM_MISSING}:{}", error.message))).await;
+                return;
+            }
+            // The status bar shows the reason, in the interface language.
             Err(error) => {
                 log::info!("IDE language request rejected: {}", error.message);
-                let _ = sink.send(close(1008, "Invalid editor language request")).await;
+                let _ = sink.send(close(1008, &error.message)).await;
                 return;
             }
         };
@@ -358,6 +380,15 @@ impl Languages {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_reasons_fit_a_frame_and_keep_whole_characters() {
+        assert_eq!(close_reason("program-missing:clangd"), "program-missing:clangd");
+        let chinese = "找不到当前执行环境中的项目".repeat(10);
+        let cut = close_reason(&chinese);
+        assert!(cut.len() <= MAX_CLOSE_REASON && cut.len() > MAX_CLOSE_REASON - 3);
+        assert!(chinese.starts_with(&cut));
+    }
 
     #[test]
     fn binds_initialization_and_refuses_outside_documents() {

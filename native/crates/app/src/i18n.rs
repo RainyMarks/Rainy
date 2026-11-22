@@ -41,6 +41,12 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.languageStarting", "{language} 语言服务启动中", "{language} language service starting"),
     ("native.languageFailed", "{language} 语言服务不可用", "{language} language service unavailable"),
     ("native.languageToolsMissing", "{language}：点这里到“设置 → 工具”下载编程工具", "{language}: click to download its tools in Settings → Tools"),
+    ("native.languageProgramMissing", "{language}：找不到 {program}，点这里到“设置 → 运行环境”准备", "{language}: {program} not found, click to prepare it in Settings → Runtime"),
+    (
+        "native.languageProgramMissingHint",
+        "Windows 上导入“Windows C/C++”组件（含 {program}），WSL 或服务器上用“准备 Ubuntu 开发工具”；也可以自己安装 {program} 并加入 PATH。",
+        "On Windows import the Windows C/C++ component (it includes {program}); on WSL or a server use Prepare Ubuntu development tools. You can also install {program} yourself and add it to PATH.",
+    ),
     ("native.switchConfirm", "切换到 {target} 后 Rainy 会重新启动。已有对话保留在原来的执行环境。", "Rainy restarts in {target}. Existing chats stay in their execution environment."),
     ("native.switch", "切换", "Switch"),
     ("native.busyBeforeSwitch", "执行环境里还有任务在运行，请先结束再切换。", "Tasks are still running in this execution environment. Finish them before you switch."),
