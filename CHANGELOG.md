@@ -4,6 +4,21 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.11.5 · 2026-11-23
+
+- **Settings → Security**: a new page that manages per-project Allow and Deny rules (commands, paths and tools, with `*` and `**` wildcards; Deny wins) and trusted workspaces. Only trusted workspaces run the repository's lifecycle hooks (`.rainy/hooks.json`, which can block a tool call before it runs and run commands after a call or when a chat ends); `AGENTS.md` and project skills load in every workspace as before.
+- **Ask mode asks in two more cases**: reading a file outside the project and running a command in a folder outside it now show the approval bar first. The preview browser only opens the project's server on this machine (localhost, 127.0.0.1); use web fetch for other addresses.
+- **Review changes hunk by hunk**: the diff view accepts or reverts single change hunks and has a side-by-side view.
+- **Context breakdown**: clicking the context meter beside the composer shows how much the system prompt, project instructions, MCP tools, built-in tools, history and recall index take.
+- **Send terminal output to the chat**: the terminal can send the selection or its latest output to the current chat.
+- **The agent sees diagnostics**: new read-only tools `lsp_diagnostics`, `symbol_outline` and `module_deps`; after editing a file the agent is told about new errors.
+- **SSH reconnects in place**: when the remote backend stopped with the connection, Reconnect restores it in the same window without restarting the app. GBK-encoded Chinese output in the terminal is no longer garbled.
+- **Lighter previews**: at most 4 Markdown, PDF, Word and Excel preview pages stay open; an older one reopens when you return to it. Excel files are parsed off the main thread.
+- **Safer worktree hand-off**: when the project has changes of its own, handing off a Git worktree chat or an isolated swarm member tries a three-way merge and changes nothing if that fails. New worktrees still bring the project's uncommitted changes, and a hand-off moves only what the chat changed.
+- **Limits for swarms and sub-agents**: a swarm stops all members after 40 member turns, 20 million tokens or $20, the coordinator reports, and the count starts over with your next message; a single sub-agent ends early after 1.5 million tokens. Cached context is not counted.
+- **Damaged key file recovered**: when `Local State`, which protects saved API keys, is damaged or Windows says this account can no longer open its key (for example after an administrator reset the password), Rainy backs it up, creates a new key and asks you to enter the keys again. When Windows data protection only fails for a while, nothing is changed and the next start tries again.
+- **Install and update**: while a program still runs from the install folder (including scripts there started through PowerShell or cmd), setup waits for it or fails clearly instead of overwriting files in use; a failed update restores the previous version. Rainy installed for all users no longer installs updates on quit (that needs administrator rights); update it by hand.
+
 ## 4.11.4 · 2026-11-22
 
 - **A missing clangd is named**: opening a C/C++ file on a computer without clangd showed only "C language service unavailable", with "Invalid editor language request" on hover. The status bar now says clangd was not found, a click opens Settings → Runtime, and the hover explains how to get it: import the Windows C/C++ component (it includes clangd) on Windows, use Prepare Ubuntu development tools on WSL or a server, or install clangd yourself and add it to PATH. When a language service fails for another reason, the hover shows that reason.
