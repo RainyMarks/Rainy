@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rainy_protocol::chat::{ImageContent, SessionSummary};
+use rainy_protocol::chat::{ExternalAgentConfig, ExternalBackendRef, ImageContent, SessionSummary};
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::complete;
+use super::external::{ExternalManager, check_backend_ref, external_provider_id};
 use super::inline::{EditRequest, InlineAssist, SuggestRequest};
 use super::llm::{Level, Llm, reply_text};
 use super::mcp::McpManager;
@@ -102,6 +103,7 @@ impl Agent {
         };
         let snapshots = Arc::new(Snapshots::new(env.home.join("snapshots")));
         let swarm = super::swarm::Hub::new(env.home.join("swarms"), store.clone(), host.rpc.clone());
+        let external = ExternalManager::new(host.settings.clone(), env.windows);
         let services = Arc::new(Services {
             env: env.clone(),
             settings: host.settings.clone(),
@@ -121,6 +123,7 @@ impl Agent {
             languages: host.ide.get().map(|ide| ide.languages.clone()),
             ide_tools: host.ide.get().map(|ide| ide.tools.clone()),
             maps: host.maps.clone(),
+            external,
         });
         let rpc = host.rpc.clone();
         let agent = Arc::new(Agent {
@@ -175,6 +178,7 @@ impl Agent {
         self.inline.close();
         let sessions = self.live_sessions();
         futures::future::join_all(sessions.iter().map(|session| session.close())).await;
+        self.services.external.close().await;
         self.services.memory.close().await;
         self.services.mcp.close().await;
         if let Err(error) = self.services.store.flush() {
@@ -298,10 +302,37 @@ impl Agent {
 
     fn register(self: &Arc<Self>) {
         self.register_models();
+        self.register_external();
         self.register_sessions();
         self.register_chat();
         self.register_tools();
         self.register_settings();
+    }
+
+    fn register_external(self: &Arc<Self>) {
+        self.on("external.status", |agent, _: Value| async move { Ok(agent.services.external.status()) });
+        self.on("external.probe", |agent, params: ExternalProbeParams| async move {
+            let cwd = match params.cwd.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                Some(raw) => {
+                    let path = PathBuf::from(raw);
+                    if !path.is_dir() {
+                        return Err(HostError::invalid(l("探测目录不存在或不是有效文件夹。", "The probe directory does not exist or is not a valid folder.")));
+                    }
+                    path
+                }
+                None => agent.services.env.home.clone(),
+            };
+            agent
+                .services
+                .external
+                .probe(params.kind.as_deref(), params.binary.as_deref(), params.args.as_deref(), &cwd)
+                .await
+        });
+        self.on("external.configure", |agent, params: ExternalConfigureParams| async move {
+            let status = agent.services.external.configure(params.config, params.remove).await?;
+            agent.services.rpc.emit("external.changed", &status);
+            Ok(status)
+        });
     }
 
     fn register_models(self: &Arc<Self>) {
@@ -338,7 +369,20 @@ impl Agent {
             } else {
                 (cwd, None)
             };
-            let chat = agent.services.store.create(NewChat { workspace_id: params.workspace_id, cwd, parent: None, entries: Vec::new(), title: String::new(), model: None, permission: Some(permission), worktree, swarm: None })?;
+            let external_backend = match params.external_backend {
+                Some(backend) => Some(check_backend_ref(&backend)?),
+                None => None,
+            };
+            let model = match (&external_backend, params.model) {
+                (Some(backend), Some(selection)) => Some(ModelSelection {
+                    provider: external_provider_id(&backend.kind),
+                    model: if selection.model.trim().is_empty() { "default".into() } else { selection.model.trim().to_owned() },
+                    thinking: selection.thinking.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+                }),
+                (Some(_), None) => None,
+                (None, sel) => sel,
+            };
+            let chat = agent.services.store.create(NewChat { workspace_id: params.workspace_id, cwd, parent: None, entries: Vec::new(), title: String::new(), model, permission: Some(permission), worktree, swarm: None, external_backend })?;
             let created = agent.summary(&chat.id)?;
             agent.services.rpc.emit("sessions.changed", &created);
             Ok(created)
@@ -442,6 +486,7 @@ impl Agent {
                 permission: Some(file.chat.permission.clone().unwrap_or_else(|| agent.services.settings.default_permission())),
                 worktree: None,
                 swarm: None,
+                external_backend: file.chat.external_backend.clone(),
             })?;
             let created = agent.summary(&chat.id)?;
             agent.services.rpc.emit("sessions.changed", &created);
@@ -789,6 +834,27 @@ struct CreateParams {
     /// Work in a new Git worktree of the project instead of its checkout.
     #[serde(default)]
     worktree: bool,
+    #[serde(default)]
+    external_backend: Option<ExternalBackendRef>,
+    #[serde(default)]
+    model: Option<ModelSelection>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalProbeParams {
+    kind: Option<String>,
+    binary: Option<String>,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalConfigureParams {
+    config: ExternalAgentConfig,
+    #[serde(default)]
+    remove: bool,
 }
 
 #[derive(Deserialize)]
@@ -1061,6 +1127,7 @@ impl super::swarm::Chats for SwarmChats {
                 permission: Some(lead.permission.clone().unwrap_or_else(|| agent.services.settings.default_permission())),
                 worktree,
                 swarm: Some(rainy_protocol::chat::SwarmLink { coordinator: coordinator.clone(), name }),
+                external_backend: None,
             })?;
             agent.services.rpc.emit("sessions.changed", agent.summary(&chat.id)?);
             agent.session(&chat.id).await?.send(&first, Vec::new(), false).await?;

@@ -6,16 +6,18 @@ and changes only when those change; it is identified by the digest of its conten
 desktop version, only when that version is not installed yet. A version installs as `<application digest>/`, which holds the application layer and links to `base-<id>/`, so
 an update whose base did not change unpacks a few megabytes and downloads nothing.
 
-`install-runtime.py BASE APP METADATA` installs this version; BASE may be missing when the base is already installed,
+`install-runtime.py [--home DIR] BASE APP METADATA` installs this version; BASE may be missing when the base is already installed,
 and APP when this version is (`{"needsApp": true}` otherwise).
-`install-runtime.py --prune METADATA` removes what earlier versions left.
-`install-runtime.py --probe METADATA [--prune]` checks whether this version is already installed on an SSH server
+`install-runtime.py [--home DIR] --prune METADATA` removes what earlier versions left.
+`install-runtime.py [--home DIR] --probe METADATA [--prune]` checks whether this version is already installed on an SSH server
 without streaming any archive (`{"host": ...}` or `{"needsApp": true, "needsBase": bool}`), optionally pruning older
 runtimes on the same connection when already installed.
-`install-runtime.py --fetch METADATA PIECES [--prune]` installs on an SSH server, the application layer arriving on
+`install-runtime.py [--home DIR] --fetch METADATA PIECES [--prune]` installs on an SSH server, the application layer arriving on
 standard input and the base downloaded there when needed.
-`install-runtime.py --receive METADATA [--prune]` installs on an SSH server from the application layer followed by the
+`install-runtime.py [--home DIR] --receive METADATA [--prune]` installs on an SSH server from the application layer followed by the
 base archive on standard input.
+
+`--home DIR` (or the `RAINY_HOME` environment variable) overrides the default `~/.rainy-agent` parent of `runtime/`.
 
 METADATA is a path to `linux-runtime.json`, or its JSON text (the SSH modes, which pass every argument inline):
 {sha256, bytes} of the base archive, `content` (the base's identity), `app: {sha256, bytes}`, and the Rainy version.
@@ -387,18 +389,61 @@ def remote(owned, mode, metadata, pieces, do_prune=False):
         shutil.rmtree(folder, ignore_errors=True)
 
 
+def resolve_rainy_home(home_arg=None):
+    """Resolve Rainy's private directory from `--home`, `RAINY_HOME`, or `~/.rainy-agent`."""
+    raw = home_arg if home_arg is not None else os.environ.get('RAINY_HOME')
+    if raw is None or not raw.strip():
+        return Path.home() / '.rainy-agent'
+    text = raw.strip()
+    if '\0' in text or '\r' in text or '\n' in text:
+        raise RuntimeError('Invalid RAINY_HOME path: control characters are not allowed')
+    if not text.startswith('/'):
+        raise RuntimeError('Invalid RAINY_HOME path: must be an absolute Linux path')
+    parts = [part for part in text.split('/') if part]
+    if any(part == '..' for part in parts):
+        raise RuntimeError('Invalid RAINY_HOME path: ".." segments are not allowed')
+    cleaned = '/' + '/'.join(parts) if parts else '/'
+    if cleaned == '/':
+        raise RuntimeError('Invalid RAINY_HOME path: root directory is not allowed')
+    return Path(cleaned)
+
+
+def extract_home_arg(argv):
+    """Strip an optional `--home PATH` or `--home=PATH` flag from argv and return `(home_arg, rest)`."""
+    home_arg = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == '--home':
+            if i + 1 >= len(argv):
+                raise RuntimeError('Missing value for --home')
+            home_arg = argv[i + 1]
+            i += 2
+        elif arg.startswith('--home='):
+            home_arg = arg[len('--home='):]
+            i += 1
+        else:
+            rest.append(arg)
+            i += 1
+    return home_arg, rest
+
+
 if __name__ == '__main__':
-    owned = Path.home() / '.rainy-agent/runtime'
+    home_arg, args = extract_home_arg(sys.argv[1:])
+    if not args:
+        raise RuntimeError('Missing install-runtime mode argument')
+    owned = resolve_rainy_home(home_arg) / 'runtime'
     owned.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if sys.argv[1] == '--prune':
-        print(json.dumps({'removed': prune(owned, read_metadata(sys.argv[2]))}))
-    elif sys.argv[1] == '--probe':
-        do_prune = '--prune' in sys.argv[3:]
-        print(json.dumps(probe(owned, read_metadata(sys.argv[2]), do_prune)))
-    elif sys.argv[1] in ('--fetch', '--receive'):
-        extra = [arg for arg in sys.argv[3:] if arg != '--prune']
-        do_prune = '--prune' in sys.argv[3:]
+    if args[0] == '--prune':
+        print(json.dumps({'removed': prune(owned, read_metadata(args[1]))}))
+    elif args[0] == '--probe':
+        do_prune = '--prune' in args[2:]
+        print(json.dumps(probe(owned, read_metadata(args[1]), do_prune)))
+    elif args[0] in ('--fetch', '--receive'):
+        extra = [arg for arg in args[2:] if arg != '--prune']
+        do_prune = '--prune' in args[2:]
         pieces = json.loads(extra[0]) if extra else []
-        print(json.dumps(remote(owned, sys.argv[1], read_metadata(sys.argv[2]), pieces, do_prune)))
+        print(json.dumps(remote(owned, args[0], read_metadata(args[1]), pieces, do_prune)))
     else:
-        print(json.dumps(install(owned, Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(), read_metadata(sys.argv[3]))))
+        print(json.dumps(install(owned, Path(args[0]).resolve(), Path(args[1]).resolve(), read_metadata(args[2]))))

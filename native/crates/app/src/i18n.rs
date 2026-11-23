@@ -658,4 +658,40 @@ mod tests {
             "args 里的 ${HOME} 是占位符，导入后请点“编辑”换成真实的值"
         );
     }
+
+    #[test]
+    fn all_messages_have_paired_locales_and_symmetric_placeholders() {
+        use std::collections::BTreeSet;
+        fn placeholders(template: &str) -> BTreeSet<String> {
+            let mut out = BTreeSet::new();
+            let mut rest = template;
+            while let Some(open) = rest.find('{') {
+                let after = &rest[open + 1..];
+                if let Some(close) = after.find('}')
+                    && after[..close].chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    out.insert(after[..close].to_owned());
+                    rest = &after[close + 1..];
+                } else {
+                    rest = after;
+                }
+            }
+            out
+        }
+        let (zh, en) = tables();
+        assert_eq!(zh.len(), en.len(), "zh and en key counts differ");
+        for (key, zh_val) in zh {
+            let en_val = en.get(key).unwrap_or_else(|| panic!("missing en key: {key}"));
+            assert!(!zh_val.trim().is_empty(), "empty zh value for {key}");
+            assert!(!en_val.trim().is_empty(), "empty en value for {key}");
+            assert_eq!(
+                placeholders(zh_val),
+                placeholders(en_val),
+                "asymmetric placeholders for {key}: zh={zh_val:?} en={en_val:?}"
+            );
+        }
+        for key in en.keys() {
+            assert!(zh.contains_key(key), "missing zh key: {key}");
+        }
+    }
 }

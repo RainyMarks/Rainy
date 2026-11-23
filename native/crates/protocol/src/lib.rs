@@ -5,18 +5,22 @@
 //! names in camelCase; fields this interface does not read yet are left out, and serde ignores them.
 
 pub mod chat;
+pub mod experiments;
 pub mod frames;
 pub mod ide;
 pub mod map;
+pub mod metrics;
 pub mod models;
 pub mod prefs;
 pub mod search;
 pub mod stream;
 
 pub use chat::*;
+pub use experiments::*;
 pub use frames::*;
 pub use ide::*;
 pub use map::*;
+pub use metrics::*;
 pub use models::*;
 pub use prefs::*;
 pub use search::*;

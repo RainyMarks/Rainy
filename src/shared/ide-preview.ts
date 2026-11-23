@@ -2,6 +2,8 @@
 
 /** Path of the Host route that streams workspace file bytes to the page (`host/src/ide/raw.rs`). */
 const IDE_RAW_ROUTE = '/rainy/ide/raw'
+/** Path of the Host streaming upload route (`host/src/ide/raw.rs`). */
+export const IDE_UPLOAD_ROUTE = '/rainy/ide/upload'
 /** Path of the Host one-shot route that streams a converted Office PDF (`host/src/ide/office_pdf.rs`). */
 export const IDE_OFFICE_PDF_ROUTE = '/rainy/ide/office-pdf'
 
@@ -15,6 +17,18 @@ export function ideRawUrl(file: { workspaceId: string; rootId?: string | undefin
   if (file.rootId !== undefined) query.set('r', file.rootId)
   if (file.version !== undefined) query.set('v', file.version)
   return `${IDE_RAW_ROUTE}?${query.toString()}`
+}
+
+/**
+ * Same-origin URL for streaming a file upload into a workspace (`POST /rainy/ide/upload`).
+ * @param file Target project, optional mounted directory, project-relative path and overwrite flag.
+ * @returns A relative URL on the Host origin.
+ */
+export function ideUploadUrl(file: { workspaceId: string; rootId?: string | undefined; path: string; overwrite?: boolean | undefined }): string {
+  const query = new URLSearchParams({ w: file.workspaceId, p: file.path })
+  if (file.rootId !== undefined) query.set('r', file.rootId)
+  if (file.overwrite === true) query.set('overwrite', '1')
+  return `${IDE_UPLOAD_ROUTE}?${query.toString()}`
 }
 
 /**

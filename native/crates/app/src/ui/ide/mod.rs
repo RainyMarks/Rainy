@@ -5,6 +5,7 @@ pub mod cursor_status;
 pub mod debug_marks;
 pub mod editor_commands;
 pub mod editor_area;
+pub mod experiments;
 pub mod hunk_diff;
 pub mod viewers;
 pub mod word_count;

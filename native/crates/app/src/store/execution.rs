@@ -281,14 +281,42 @@ impl Execution {
                 }
             })
             .detach();
-            cx.subscribe(&store, |this: &mut Execution, _, event: &StoreEvent, cx| {
-                if let StoreEvent::Host { name, data } = event
-                    && name == "ide.hint"
-                    && data.get("kind").and_then(Value::as_str) == Some("execution")
-                    && data.get("workspaceId").and_then(Value::as_str) == this.workspace_id.as_deref()
+            cx.subscribe(&store, |this: &mut Execution, _, event: &StoreEvent, cx| match event {
+                StoreEvent::Host { name, data }
+                    if name == "ide.hint"
+                        && data.get("kind").and_then(Value::as_str) == Some("execution")
+                        && data.get("workspaceId").and_then(Value::as_str) == this.workspace_id.as_deref() =>
                 {
                     this.poll(cx);
                 }
+                StoreEvent::HostReconnected(_) => {
+                    this.cursor = 0;
+                    this.truncated = false;
+                    this.polling = false;
+                    this.again = false;
+                    this.debug_id = None;
+                    this.pause = None;
+                    this.epoch += 1;
+                    for term in &mut this.terminals {
+                        if term.running() {
+                            term.phase = "exited".into();
+                        }
+                    }
+                    for run in &mut this.runs {
+                        if run.running() {
+                            run.phase = "exited".into();
+                        }
+                    }
+                    for debug in &mut this.debugs {
+                        if debug.running() {
+                            debug.phase = "terminated".into();
+                        }
+                    }
+                    cx.emit(ExecutionEvent::TerminalsChanged);
+                    cx.emit(ExecutionEvent::DebugChanged);
+                    this.poll(cx);
+                }
+                _ => {}
             })
             .detach();
             Execution {

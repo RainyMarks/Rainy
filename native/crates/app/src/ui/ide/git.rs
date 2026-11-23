@@ -93,6 +93,14 @@ impl GitView {
                         this.refresh_soon(window, cx);
                     }
                 }
+                StoreEvent::HostReconnected(_) => {
+                    this.status = None;
+                    this.error = None;
+                    this.messages.clear();
+                    if this.polling || this.visible {
+                        this.refresh(window, cx);
+                    }
+                }
                 // The interface language may have changed.
                 StoreEvent::PrefsChanged => {
                     let placeholder = tr(cx, "git.gitMessagePlaceholder");

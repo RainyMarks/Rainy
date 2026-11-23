@@ -150,6 +150,7 @@ impl HistoryPanel {
                 this.child(Icon::new(gpui_kit::assets::IconName::Archive).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
             })
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+            .when_some(external_badge(summary, cx), |this, badge| this.child(badge))
             .when_some(folder, |this, folder| {
                 this.child(
                     div().max_w(px(96.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(folder),
@@ -207,6 +208,7 @@ impl HistoryPanel {
             // The unread dot keeps its place, so titles line up whether or not it shows.
             .child(div().w(px(6.)).h(px(6.)).flex_shrink_0().rounded_full().when(unread, |dot| dot.bg(theme.primary)))
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().when(unread, |title| title.font_weight(FontWeight::MEDIUM)).child(title))
+            .when_some(external_badge(summary, cx), |this, badge| this.child(badge))
             .when_some(workers, |this, folded| {
                 let key = swarm_key(&summary.id);
                 this.child(
@@ -573,6 +575,38 @@ impl HistoryPanel {
         }
         rows
     }
+}
+
+/// Subtle pill badge identifying chats driven by an external CLI agent (`Codex`, `AGY`, `ACP`).
+fn external_badge(summary: &SessionSummary, cx: &App) -> Option<AnyElement> {
+    let backend = summary.external_backend.as_ref()?;
+    let label: SharedString = match backend.kind.as_str() {
+        "codex" => tr(cx, "external.badgeCodex"),
+        "antigravity" => tr(cx, "external.badgeAgy"),
+        _ => backend
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| SharedString::from(s.chars().take(10).collect::<String>()))
+            .unwrap_or_else(|| tr(cx, "external.badgeAcp")),
+    };
+    let theme = cx.theme();
+    Some(
+        div()
+            .flex_shrink_0()
+            .px_1()
+            .py(px(1.))
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.muted.opacity(0.65))
+            .text_size(px(10.))
+            .line_height(px(12.))
+            .text_color(theme.muted_foreground)
+            .child(label)
+            .into_any_element(),
+    )
 }
 
 /// Show a chat, and its project when that is another known one (as a click on its row does).

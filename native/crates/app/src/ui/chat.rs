@@ -20,7 +20,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::StyledExt as _;
 use rainy_protocol::reasoning::{Level, Reasoning};
-use rainy_protocol::{ContextBreakdown, ImageContent, ModelSelection, ModelSetup, PendingApproval, QueuedMessage, RpcError};
+use rainy_protocol::{
+    ContextBreakdown, ExternalAgentStatus, ExternalBackendRef, ImageContent, ModelSelection, ModelSetup, PendingApproval, QueuedMessage, RpcError,
+};
 use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
@@ -197,6 +199,13 @@ impl ChatPane {
                         this.default_permission = mode.to_owned();
                         cx.notify();
                     }
+                }
+                StoreEvent::HostReconnected(_) => {
+                    this.breakdown = None;
+                    this.breakdown_loading = None;
+                    this.follow_selected(window, cx);
+                    this.read_default_permission(cx);
+                    cx.notify();
                 }
                 StoreEvent::SummariesChanged
                 | StoreEvent::Host { .. }
@@ -1055,9 +1064,13 @@ impl ChatPane {
             "outside-workdir" => i18n::text(locale, "native.approvalOutsideWorkdir").to_owned(),
             "mcp" => i18n::text(locale, "chat.approvalMcp").to_owned(),
             "web" => i18n::format(locale, "chat.approvalWeb", &[("url", &path)]),
+            "file-change" => i18n::text(locale, "external.approvalFileChange").to_owned(),
+            "permission" => i18n::text(locale, "external.approvalPermission").to_owned(),
             _ => i18n::text(locale, "chat.approvalCommand").to_owned(),
         };
-        let detail_path = (!path.trim().is_empty() && matches!(approval.reason.as_str(), "outside-read" | "outside-workdir" | "outside-write")).then(|| path.clone());
+        let detail_path = (!path.trim().is_empty()
+            && matches!(approval.reason.as_str(), "outside-read" | "outside-workdir" | "outside-write" | "file-change"))
+        .then(|| path.clone());
         let decide = |decision: &'static str| {
             let tool_call_id = approval.tool_call_id.clone();
             cx.listener(move |this, _, window, cx| this.answer(tool_call_id.clone(), decision, window, cx))
@@ -1259,10 +1272,31 @@ impl ChatPane {
         }
     }
 
+    /// Whether the active (or pending new) chat runs on an external CLI agent rather than Rainy's built-in engine.
+    fn is_external_chat(&self, cx: &App) -> bool {
+        if let Some(chat) = &self.chat {
+            let model = chat.read(cx);
+            if let Some(view) = &model.view {
+                return view.snapshot.summary.external_backend.is_some();
+            }
+            return self
+                .store
+                .read(cx)
+                .summaries
+                .iter()
+                .find(|s| s.id == model.id)
+                .is_some_and(|s| s.external_backend.is_some());
+        }
+        self.store.read(cx).pending_external.is_some()
+    }
+
     fn render_composer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let busy = self.busy(cx);
         let creating = self.creating_here();
-        let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
+        let is_external = self.is_external_chat(cx);
+        let context = (!is_external)
+            .then(|| self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone())))
+            .flatten();
         let model_picker = self.model_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
         let where_picker = self.where_picker(locale, cx);
@@ -1470,11 +1504,16 @@ impl ChatPane {
 
     /// full the context is. The model gives way in a narrow window; the mode and the ring never leave it.
     fn render_composer_footer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let chat_meta = self.chat.as_ref().and_then(|chat| {
-            let model = chat.read(cx);
-            let view = model.view.as_ref()?;
-            Some((model.id.clone(), view.revision, view.snapshot.context.clone()?))
-        });
+        let is_external = self.is_external_chat(cx);
+        let chat_meta = (!is_external)
+            .then(|| {
+                self.chat.as_ref().and_then(|chat| {
+                    let model = chat.read(cx);
+                    let view = model.view.as_ref()?;
+                    Some((model.id.clone(), view.revision, view.snapshot.context.clone()?))
+                })
+            })
+            .flatten();
         let model_picker = self.model_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
         // On the left, as in the Codex app: where the chat runs.
@@ -1679,7 +1718,7 @@ fn report_failure(request: impl Future<Output = Result<Value, RpcError>> + 'stat
 const COMPOSER_LINE: f32 = 32.;
 
 /// The card the model control opens.
-const CARD_WIDTH: f32 = 264.;
+const CARD_WIDTH: f32 = 280.;
 const CARD_PADDING: f32 = 12.;
 const TRACK_WIDTH: f32 = CARD_WIDTH - 2. * CARD_PADDING;
 const TRACK_HEIGHT: f32 = 20.;
@@ -1704,19 +1743,182 @@ const SLIDE: SpringConfig = SpringConfig::new(420., 41., 1.);
 const PENDING: Duration = Duration::from_secs(3);
 
 /// What the model control shows: the selection the composer sends with, what its model offers for reasoning and the
-/// level requests use now.
+/// level requests use now. Works for both built-in models and external CLI agents (`external:<kind>`).
 struct ModelState {
     current: ModelSelection,
-    reasoning: Reasoning,
+    levels: Vec<Level>,
+    default_level: Option<Level>,
+    toggle_reasoning: bool,
+    always_reasons: bool,
     level: Option<Level>,
     name: SharedString,
+    /// Present when this chat (or pending new chat) targets an external CLI agent.
+    external: Option<ExternalBackendRef>,
+    /// Compact badge label for external agents (`Codex`, `AGY`, `ACP`, or custom label).
+    external_badge: Option<SharedString>,
     /// The executor of an orchestrated chat (the model above plans), and its short name.
     executor: Option<(ModelSelection, SharedString)>,
 }
 
+impl ModelState {
+    fn adjustable(&self) -> bool {
+        self.levels.len() > 1
+    }
+
+    fn reasons(&self) -> bool {
+        self.always_reasons || self.levels.iter().any(|level| *level != Level::Off)
+    }
+
+    fn toggle(&self) -> bool {
+        self.toggle_reasoning
+    }
+}
+
+fn external_badge_label(backend: &ExternalBackendRef, locale: Locale) -> SharedString {
+    match backend.kind.as_str() {
+        "codex" => i18n::text(locale, "external.badgeCodex").into(),
+        "antigravity" => i18n::text(locale, "external.badgeAgy").into(),
+        _ => backend
+            .label
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+            .map(|label| label.to_owned().into())
+            .unwrap_or_else(|| i18n::text(locale, "external.badgeAcp").into()),
+    }
+}
+
+fn external_ref_from_status(agent: &ExternalAgentStatus) -> ExternalBackendRef {
+    ExternalBackendRef {
+        kind: agent.kind.clone(),
+        binary: agent.binary.clone(),
+        args: agent.args.clone(),
+        label: Some(agent.label.clone()),
+    }
+}
+
+fn external_default_selection(agent: &ExternalAgentStatus, model_id: Option<&str>) -> ModelSelection {
+    let model = model_id
+        .map(str::to_owned)
+        .or_else(|| agent.default_model.clone())
+        .or_else(|| agent.models.iter().find(|m| m.is_default == Some(true)).map(|m| m.id.clone()))
+        .or_else(|| agent.models.first().map(|m| m.id.clone()))
+        .unwrap_or_else(|| "default".to_owned());
+    let thinking = agent
+        .models
+        .iter()
+        .find(|m| m.id == model)
+        .and_then(|m| m.default_effort.clone())
+        .or_else(|| agent.default_thinking.clone());
+    ModelSelection { provider: format!("external:{}", agent.kind), model, thinking }
+}
+
+fn external_model_display(model_id: &str, agent: Option<&ExternalAgentStatus>, backend: &ExternalBackendRef, locale: Locale) -> String {
+    if let Some(info) = agent.and_then(|a| a.models.iter().find(|m| m.id == model_id))
+        && let Some(name) = info.display_name.as_deref().filter(|name| !name.trim().is_empty())
+    {
+        return name.to_owned();
+    }
+    if model_id == "default" || model_id.trim().is_empty() {
+        return agent
+            .map(|a| a.label.clone())
+            .or_else(|| backend.label.clone().filter(|s| !s.trim().is_empty()))
+            .unwrap_or_else(|| i18n::text(locale, "external.defaultModel").to_owned());
+    }
+    short_model_name(model_id, None)
+}
+
+fn parse_external_levels(efforts: &[String]) -> Vec<Level> {
+    let mut levels: Vec<Level> = efforts
+        .iter()
+        .filter_map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "none" | "off" => Some(Level::Off),
+            other => Level::parse(other),
+        })
+        .collect();
+    levels.sort();
+    levels.dedup();
+    levels
+}
+
+fn resolve_external_level(levels: &[Level], requested: Option<&str>, default_level: Option<Level>) -> Option<Level> {
+    if levels.is_empty() {
+        return None;
+    }
+    let parsed = requested.and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" => Some(Level::Off),
+        other => Level::parse(other),
+    });
+    if let Some(level) = parsed.or(default_level) {
+        if levels.contains(&level) {
+            return Some(level);
+        }
+        return levels.iter().copied().min_by_key(|candidate| (*candidate as i32 - level as i32).abs());
+    }
+    levels.first().copied()
+}
+
 /// The model the composer sends with: the chat's, or the one new chats start with.
 fn model_state(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx: &App) -> Option<ModelState> {
-    let models = store.read(cx).models.as_ref()?;
+    let data = store.read(cx);
+    let locale = data.locale();
+    let external = match chat {
+        Some(chat) => {
+            let model = chat.read(cx);
+            model
+                .view
+                .as_ref()
+                .and_then(|view| view.snapshot.summary.external_backend.clone())
+                .or_else(|| data.summaries.iter().find(|s| s.id == model.id).and_then(|s| s.external_backend.clone()))
+        }
+        None => data.pending_external.clone(),
+    };
+    if let Some(backend) = external {
+        let agent = data.external_agents.iter().find(|a| a.kind == backend.kind);
+        let chat_model = chat.and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.model.clone()));
+        let current = match chat {
+            Some(_) => chat_model.unwrap_or_else(|| match agent {
+                Some(agent) => external_default_selection(agent, None),
+                None => ModelSelection {
+                    provider: format!("external:{}", backend.kind),
+                    model: "default".to_owned(),
+                    thinking: None,
+                },
+            }),
+            None => data.pending_external_model.clone().unwrap_or_else(|| match agent {
+                Some(agent) => external_default_selection(agent, None),
+                None => ModelSelection {
+                    provider: format!("external:{}", backend.kind),
+                    model: "default".to_owned(),
+                    thinking: None,
+                },
+            }),
+        };
+        let info = agent.and_then(|a| a.models.iter().find(|m| m.id == current.model));
+        let levels = info.map(|m| parse_external_levels(&m.reasoning_efforts)).unwrap_or_default();
+        let default_level = info
+            .and_then(|m| m.default_effort.as_deref())
+            .or_else(|| agent.and_then(|a| a.default_thinking.as_deref()))
+            .and_then(Level::parse)
+            .filter(|lvl| levels.contains(lvl))
+            .or_else(|| levels.first().copied());
+        let level = resolve_external_level(&levels, current.thinking.as_deref(), default_level);
+        let display = external_model_display(&current.model, agent, &backend, locale);
+        let badge = external_badge_label(&backend, locale);
+        return Some(ModelState {
+            current,
+            levels,
+            default_level,
+            toggle_reasoning: false,
+            always_reasons: false,
+            level,
+            name: display.into(),
+            external: Some(backend),
+            external_badge: Some(badge),
+            executor: None,
+        });
+    }
+
+    let models = data.models.as_ref()?;
     let chat_model = chat.and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.model.clone()));
     let current = chat_model.or_else(|| models.selected.clone())?;
     let profile = models.model(&current.provider).filter(|profile| profile.model == current.model);
@@ -1727,14 +1929,25 @@ fn model_state(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx: &App
     let name = short_model_name(&current.model, preset.map(|preset| preset.name.as_str())).into();
     let executor = match chat {
         Some(chat) => chat.read(cx).view.as_ref().and_then(|view| view.snapshot.summary.orchestrate.clone()),
-        None => store.read(cx).pending_orchestrate.clone(),
+        None => data.pending_orchestrate.clone(),
     }
     .map(|executor| {
         let preset = models.presets.iter().find(|preset| preset.model.provider == executor.provider && preset.model.model == executor.model);
         let name = short_model_name(&executor.model, preset.map(|preset| preset.name.as_str())).into();
         (executor, name)
     });
-    Some(ModelState { current, reasoning, level, name, executor })
+    Some(ModelState {
+        current,
+        levels: reasoning.levels().collect(),
+        default_level: reasoning.default,
+        toggle_reasoning: reasoning.toggle(),
+        always_reasons: reasoning.always,
+        level,
+        name,
+        external: None,
+        external_badge: None,
+        executor,
+    })
 }
 
 /// A level's label; a model that only switches reasoning calls its level On.
@@ -1780,6 +1993,7 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
     let locale = store.read(cx).locale();
     let state = model_state(store, chat, cx);
     let theme = cx.theme();
+    let badge = state.as_ref().and_then(|state| state.external_badge.clone());
     let name: SharedString = state.as_ref().map_or_else(
         || i18n::text(locale, "chat.noModel").into(),
         |state| match &state.executor {
@@ -1789,14 +2003,28 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
     );
     let level = state
         .as_ref()
-        .filter(|state| state.reasoning.adjustable())
-        .and_then(|state| state.level.map(|level| thinking_label(locale, level, state.reasoning.toggle())));
+        .filter(|state| state.adjustable())
+        .and_then(|state| state.level.map(|level| thinking_label(locale, level, state.toggle())));
     // The name gives way first, so a narrow composer keeps the level and the other buttons.
     let trigger = Button::new("model-control").ghost().small().dropdown_caret(true).tooltip(i18n::text(locale, "chat.modelTitle")).min_w_0().flex_shrink(1.).child(
         h_flex()
             .min_w_0()
             .gap_1p5()
             .items_center()
+            .when_some(badge, |this, badge| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .px_1()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.secondary)
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(badge),
+                )
+            })
             .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
             .when_some(level, |this, level| this.child(div().flex_shrink_0().text_color(theme.muted_foreground).child(level))),
     );
@@ -1833,15 +2061,33 @@ struct CardState {
 fn model_card(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, popover: Entity<gpui_kit::component::popover::PopoverState>, window: &mut Window, cx: &mut App) -> AnyElement {
     let card = window.use_keyed_state("model-card", cx, |_, _| CardState::default());
     let locale = store.read(cx).locale();
-    let Some(state) = model_state(store, chat, cx) else {
+    let state = model_state(store, chat, cx);
+    let session = chat.map(|chat| chat.read(cx).id.clone());
+    let Some(state) = state else {
+        // Even with no built-in model configured yet, still allow picking detected external CLI agents.
+        let has_external = !store.read(cx).external_agents.is_empty();
+        if has_external {
+            let placeholder = ModelState {
+                current: ModelSelection { provider: String::new(), model: String::new(), thinking: None },
+                levels: Vec::new(),
+                default_level: None,
+                toggle_reasoning: false,
+                always_reasons: false,
+                level: None,
+                name: i18n::text(locale, "chat.noModel").into(),
+                external: None,
+                external_badge: None,
+                executor: None,
+            };
+            return model_list(store, session, &placeholder, &card, popover, locale, cx);
+        }
         return div().text_sm().text_color(cx.theme().muted_foreground).child(i18n::text(locale, "chat.noModel")).into_any_element();
     };
-    let session = chat.map(|chat| chat.read(cx).id.clone());
-    if card.read(cx).orchestrate {
+    if card.read(cx).orchestrate && state.external.is_none() {
         return orchestrate_page(store, session, &state, &card, popover, locale, cx);
     }
-    if card.read(cx).list || !state.reasoning.adjustable() {
-        return model_list(store, session, &state, &card, locale, cx);
+    if card.read(cx).list || !state.adjustable() {
+        return model_list(store, session, &state, &card, popover, locale, cx);
     }
     level_slider(store, session, &state, &card, locale, cx)
 }
@@ -1862,18 +2108,18 @@ fn send_level(store: &Entity<Store>, session: Option<String>, card: &Entity<Card
 fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let dark = theme.mode.is_dark();
-    let levels: Vec<Level> = state.reasoning.levels().collect();
+    let levels = state.levels.clone();
     let count = levels.len();
     let sent = state.level.and_then(|level| levels.iter().position(|known| *known == level)).unwrap_or(0);
     let view = card.read(cx);
     let pending = view.pending.as_ref().filter(|(before, _, at)| *before == state.current && at.elapsed() < PENDING).map(|(_, stop, _)| *stop);
     let shown = view.drag.or(pending).unwrap_or(sent).min(count - 1);
-    let toggle = state.reasoning.toggle();
+    let toggle = state.toggle();
     let label = move |level: Level| thinking_label(locale, level, toggle);
     // The accent as text: the lighter step reads better on a dark card.
     let accent = if dark { theme.link } else { theme.primary };
 
-    let default = state.reasoning.choose(None);
+    let default = state.default_level;
     let default_stop = default.and_then(|level| levels.iter().position(|known| *known == level));
     let reset = {
         let (store, session, card, current) = (store.clone(), session.clone(), card.clone(), state.current.clone());
@@ -1901,11 +2147,23 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
     let model = h_flex()
         .id("reasoning-model")
         .justify_center()
-        .gap_0p5()
+        .gap_1()
         .text_sm()
         .text_color(muted)
         .cursor_pointer()
         .hover(move |style| style.text_color(strong))
+        .when_some(state.external_badge.clone(), |this, badge| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .px_1()
+                    .rounded(theme.radius)
+                    .bg(theme.secondary)
+                    .text_xs()
+                    .text_color(muted)
+                    .child(badge),
+            )
+        })
         .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(state.name.clone()))
         .child(Icon::new(IconName::ChevronRight).xsmall())
         .on_click(move |_, _, cx| {
@@ -2025,8 +2283,8 @@ fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelSta
             .when(stop == shown, |this| this.font_medium())
             .child(label(*level))
     }));
-    let orchestrate = orchestrate_entry(state, card, locale, cx);
-    v_flex().gap_0p5().child(header).child(model).child(v_flex().pt_1p5().gap_1().child(track).child(names)).child(orchestrate).into_any_element()
+    let orchestrate = state.external.is_none().then(|| orchestrate_entry(state, card, locale, cx));
+    v_flex().gap_0p5().child(header).child(model).child(v_flex().pt_1p5().gap_1().child(track).child(names)).children(orchestrate).into_any_element()
 }
 
 /// The row under the slider and the model list that opens the orchestration page, with its current choice.
@@ -2170,12 +2428,28 @@ fn set_orchestrate(store: &Entity<Store>, session: Option<String>, executor: Opt
     }
 }
 
-/// The saved models, the one in use checked. A chosen model keeps the level, which the Host moves to the nearest one
-/// that model offers. Above the list, a model without levels says so.
-fn model_list(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> AnyElement {
+/// The saved models and external CLI agents, cleanly grouped into Built-in vs External Agents.
+/// For a new chat, users switch freely between built-in models and external agents; inside an existing
+/// chat, switching models within the active engine updates it in place while picking the other engine
+/// starts a new chat cleanly.
+fn model_list(
+    store: &Entity<Store>,
+    session: Option<String>,
+    state: &ModelState,
+    card: &Entity<CardState>,
+    popover: Entity<gpui_kit::component::popover::PopoverState>,
+    locale: Locale,
+    cx: &App,
+) -> AnyElement {
     let theme = cx.theme();
-    let adjustable = state.reasoning.adjustable();
-    let (models, presets) = store.read(cx).models.as_ref().map(|status| (status.models.clone(), status.presets.clone())).unwrap_or_default();
+    let adjustable = state.adjustable();
+    let store_ref = store.read(cx);
+    let (models, presets) = store_ref
+        .models
+        .as_ref()
+        .map(|status| (status.models.clone(), status.presets.clone()))
+        .unwrap_or_default();
+    let external_agents = store_ref.external_agents.clone();
     let back = card.clone();
     let header = h_flex()
         .h(px(26.))
@@ -2190,54 +2464,394 @@ fn model_list(store: &Entity<Store>, session: Option<String>, state: &ModelState
             }))
         })
         .child(div().text_sm().font_semibold().child(i18n::text(locale, "chat.modelsTitle")));
-    let note = (!adjustable).then(|| {
-        let key = if state.reasoning.reasons() { "chat.thinkingFixed" } else { "chat.thinkingNone" };
+    let note = (!adjustable && !state.current.provider.is_empty()).then(|| {
+        let key = if state.reasons() { "chat.thinkingFixed" } else { "chat.thinkingNone" };
         div().px_1().text_xs().text_color(theme.muted_foreground).child(i18n::text(locale, key))
     });
-    let (hover, muted, accent) = (theme.accent, theme.muted_foreground, if theme.mode.is_dark() { theme.link } else { theme.primary });
-    let rows = models.iter().enumerate().map(|(index, model)| {
-        let selected = model.provider == state.current.provider && model.model == state.current.model;
-        let choice = ModelSelection { provider: model.provider.clone(), model: model.model.clone(), thinking: state.current.thinking.clone() };
-        let preset = presets.iter().find(|preset| preset.model.provider == model.provider && preset.model.model == model.model).map(|preset| preset.name.as_str());
-        let (store, session, card) = (store.clone(), session.clone(), card.clone());
-        h_flex()
-            .id(("model-row", index))
-            .gap_2()
-            .px_2()
-            .py_1p5()
-            .items_center()
-            .rounded(theme.radius)
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(short_model_name(&model.model, preset)))
-                    .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(format!("{} · {}", model.model, model.provider))),
-            )
-            .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
-            .on_click(move |_, window, cx| {
-                card.update(cx, |card, cx| {
-                    card.list = false;
-                    card.pending = None;
-                    cx.notify();
-                });
-                if !selected {
-                    set_model(&store, session.clone(), choice.clone(), window, cx);
+    let (hover, muted, accent, border_color) = (
+        theme.accent,
+        theme.muted_foreground,
+        if theme.mode.is_dark() { theme.link } else { theme.primary },
+        theme.border,
+    );
+    let active_external_kind = state.external.as_ref().map(|ext| ext.kind.as_str());
+    let mut rows: Vec<AnyElement> = Vec::new();
+    let mut row_idx: usize = 0;
+
+    // Helper for compact section heading inside the model popover.
+    let section_header = |title: &'static str, first: bool| -> AnyElement {
+        div()
+            .when(!first, |this| this.mt_1p5().pt_1p5().border_t_1().border_color(border_color))
+            .px_1()
+            .pb_0p5()
+            .text_xs()
+            .font_medium()
+            .text_color(muted)
+            .child(title)
+            .into_any_element()
+    };
+
+    // If the active chat is an external-agent session, surface its own models right at the top.
+    if let Some(kind) = active_external_kind
+        && session.is_some()
+        && let Some(agent) = external_agents.iter().find(|a| a.kind == kind)
+        && !agent.models.is_empty()
+    {
+        rows.push(section_header(i18n::text(locale, "external.groupAgents"), true));
+        for ext_model in &agent.models {
+            let idx = row_idx;
+            row_idx += 1;
+            let provider = format!("external:{}", agent.kind);
+            let selected = state.current.provider == provider && state.current.model == ext_model.id;
+            let choice = ModelSelection {
+                provider,
+                model: ext_model.id.clone(),
+                thinking: ext_model.default_effort.clone().or_else(|| state.current.thinking.clone()),
+            };
+            let title = ext_model
+                .display_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| short_model_name(&ext_model.id, None));
+            let detail = format!("{} · {}", agent.label, ext_model.id);
+            let (store, session, card) = (store.clone(), session.clone(), card.clone());
+            rows.push(
+                h_flex()
+                    .id(("ext-cur-model", idx))
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .items_center()
+                    .rounded(theme.radius)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                            .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail)),
+                    )
+                    .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
+                    .on_click(move |_, window, cx| {
+                        card.update(cx, |card, cx| {
+                            card.list = false;
+                            card.pending = None;
+                            cx.notify();
+                        });
+                        if !selected {
+                            set_model(&store, session.clone(), choice.clone(), window, cx);
+                        }
+                    })
+                    .into_any_element(),
+            );
+        }
+    }
+
+    // Group 1: Built-in models.
+    if !models.is_empty() {
+        let is_first = rows.is_empty();
+        rows.push(section_header(i18n::text(locale, "external.groupBuiltIn"), is_first));
+        let in_external_session = session.is_some() && active_external_kind.is_some();
+        for model in &models {
+            let idx = row_idx;
+            row_idx += 1;
+            let selected = active_external_kind.is_none() && model.provider == state.current.provider && model.model == state.current.model;
+            let choice = ModelSelection { provider: model.provider.clone(), model: model.model.clone(), thinking: state.current.thinking.clone() };
+            let preset = presets
+                .iter()
+                .find(|preset| preset.model.provider == model.provider && preset.model.model == model.model)
+                .map(|preset| preset.name.as_str());
+            let (store, session, card, popover) = (store.clone(), session.clone(), card.clone(), popover.clone());
+            let subtitle = if in_external_session {
+                i18n::format(locale, "external.newChatWith", &[("name", &short_model_name(&model.model, preset))])
+            } else {
+                format!("{} · {}", model.model, model.provider)
+            };
+            rows.push(
+                h_flex()
+                    .id(("model-row", idx))
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .items_center()
+                    .rounded(theme.radius)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(short_model_name(&model.model, preset)))
+                            .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(subtitle)),
+                    )
+                    .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
+                    .on_click(move |_, window, cx| {
+                        card.update(cx, |card, cx| {
+                            card.list = false;
+                            card.pending = None;
+                            cx.notify();
+                        });
+                        if in_external_session {
+                            store.update(cx, |store, cx| {
+                                store.clear_pending_external(cx);
+                                store.select(None, cx);
+                            });
+                            set_model(&store, None, choice.clone(), window, cx);
+                            popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                        } else if !selected {
+                            set_model(&store, session.clone(), choice.clone(), window, cx);
+                        }
+                    })
+                    .into_any_element(),
+            );
+        }
+    }
+
+    // Group 2: External Agents (Codex / Antigravity / custom ACP).
+    let visible_agents: Vec<&ExternalAgentStatus> = external_agents.iter().filter(|agent| agent.enabled).collect();
+    if !visible_agents.is_empty() {
+        let is_first = rows.is_empty();
+        rows.push(section_header(i18n::text(locale, "external.groupAgents"), is_first));
+        if session.is_some() && active_external_kind.is_none() {
+            rows.push(
+                div()
+                    .px_1()
+                    .pb_0p5()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(i18n::text(locale, "external.switchNeedsNewChat"))
+                    .into_any_element(),
+            );
+        }
+        for agent in visible_agents {
+            // Skip repeating the active external session's own models (already listed at top).
+            if session.is_some() && active_external_kind == Some(agent.kind.as_str()) {
+                continue;
+            }
+            if !agent.installed {
+                let idx = row_idx;
+                row_idx += 1;
+                let popover = popover.clone();
+                rows.push(
+                    h_flex()
+                        .id(("ext-missing", idx))
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .items_center()
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().text_sm().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(agent.label.clone()))
+                                .child(div().text_xs().text_color(muted).child(i18n::text(locale, "external.notInstalled"))),
+                        )
+                        .child(Icon::new(IconName::ChevronRight).xsmall().text_color(muted))
+                        .on_click(move |_, window, cx| {
+                            popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                            if let Some(workbench) = cx.try_global::<crate::ui::workbench::WorkbenchHandle>().and_then(|handle| handle.0.upgrade()) {
+                                workbench.update(cx, |workbench, cx| workbench.open_settings(crate::ui::settings::Section::Models, window, cx));
+                            }
+                        })
+                        .into_any_element(),
+                );
+                continue;
+            }
+
+            let backend_ref = external_ref_from_status(agent);
+            let badge = external_badge_label(&backend_ref, locale);
+            let starts_new = session.is_some();
+
+            if !starts_new && !agent.models.is_empty() {
+                // In a new chat, show each model offered by this installed external agent.
+                for ext_model in &agent.models {
+                    let idx = row_idx;
+                    row_idx += 1;
+                    let selected = active_external_kind == Some(agent.kind.as_str()) && state.current.model == ext_model.id;
+                    let selection = external_default_selection(agent, Some(&ext_model.id));
+                    let title = ext_model
+                        .display_name
+                        .as_deref()
+                        .filter(|name| !name.trim().is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| short_model_name(&ext_model.id, None));
+                    let detail = format!("{} · {}", agent.label, ext_model.id);
+                    let (store, card, backend_ref) = (store.clone(), card.clone(), backend_ref.clone());
+                    rows.push(
+                        h_flex()
+                            .id(("ext-model-row", idx))
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .items_center()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(hover))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px_1()
+                                    .rounded(theme.radius)
+                                    .border_1()
+                                    .border_color(border_color)
+                                    .bg(theme.secondary)
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(badge.clone()),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                                    .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail)),
+                            )
+                            .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
+                            .on_click(move |_, _, cx| {
+                                card.update(cx, |card, cx| {
+                                    card.list = false;
+                                    card.pending = None;
+                                    cx.notify();
+                                });
+                                store.update(cx, |store, cx| {
+                                    store.pending_external = Some(backend_ref.clone());
+                                    store.pending_external_model = Some(selection.clone());
+                                    store.pending_orchestrate = None;
+                                    cx.notify();
+                                });
+                            })
+                            .into_any_element(),
+                    );
                 }
-            })
-    });
+            } else {
+                // Single row per external agent (either no model catalog reported, or switching from an existing chat -> new chat).
+                let idx = row_idx;
+                row_idx += 1;
+                let selected = !starts_new && active_external_kind == Some(agent.kind.as_str());
+                let selection = external_default_selection(agent, None);
+                let title: SharedString = if starts_new {
+                    i18n::format(locale, "external.newChatWith", &[("name", &agent.label)]).into()
+                } else {
+                    agent.label.clone().into()
+                };
+                let model_label = if selection.model == "default" {
+                    i18n::text(locale, "external.defaultModel").to_owned()
+                } else {
+                    selection.model.clone()
+                };
+                let subtitle = agent
+                    .version
+                    .as_deref()
+                    .map(|ver| format!("{ver} · {model_label}"))
+                    .unwrap_or(model_label);
+                let (store, card, popover, backend_ref) = (store.clone(), card.clone(), popover.clone(), backend_ref.clone());
+                rows.push(
+                    h_flex()
+                        .id(("ext-agent-row", idx))
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .items_center()
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .px_1()
+                                .rounded(theme.radius)
+                                .border_1()
+                                .border_color(border_color)
+                                .bg(theme.secondary)
+                                .text_xs()
+                                .text_color(muted)
+                                .child(badge),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                                .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(subtitle)),
+                        )
+                        .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
+                        .on_click(move |_, window, cx| {
+                            card.update(cx, |card, cx| {
+                                card.list = false;
+                                card.pending = None;
+                                cx.notify();
+                            });
+                            store.update(cx, |store, cx| {
+                                store.pending_external = Some(backend_ref.clone());
+                                store.pending_external_model = Some(selection.clone());
+                                store.pending_orchestrate = None;
+                                if starts_new {
+                                    store.select(None, cx);
+                                }
+                                cx.notify();
+                            });
+                            if starts_new {
+                                popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                            }
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+    }
+
+    // Settings shortcut for external agents & models.
+    let popover_settings = popover.clone();
+    let configure_row = h_flex()
+        .id("external-configure-link")
+        .mt_1()
+        .pt_1()
+        .border_t_1()
+        .border_color(border_color)
+        .px_1()
+        .gap_1p5()
+        .items_center()
+        .text_xs()
+        .text_color(muted)
+        .cursor_pointer()
+        .hover(move |style| style.text_color(theme.foreground))
+        .child(Icon::new(IconName::Settings).xsmall())
+        .child(div().flex_1().child(i18n::text(locale, "external.configureInSettings")))
+        .child(Icon::new(IconName::ChevronRight).xsmall())
+        .on_click(move |_, window, cx| {
+            popover_settings.update(cx, |popover, cx| popover.dismiss(window, cx));
+            if let Some(workbench) = cx.try_global::<crate::ui::workbench::WorkbenchHandle>().and_then(|handle| handle.0.upgrade()) {
+                workbench.update(cx, |workbench, cx| workbench.open_settings(crate::ui::settings::Section::Models, window, cx));
+            }
+        });
+
+    let orchestrate = state.external.is_none().then(|| orchestrate_entry(state, card, locale, cx));
     v_flex()
         .gap_1()
         .child(header)
         .children(note)
-        .child(v_flex().id("model-rows").max_h(px(300.)).overflow_y_scroll().gap_0p5().children(rows))
-        .child(orchestrate_entry(state, card, locale, cx))
+        .child(v_flex().id("model-rows").max_h(px(320.)).overflow_y_scroll().gap_0p5().children(rows))
+        .children(orchestrate)
+        .child(configure_row)
         .into_any_element()
 }
 
 fn set_model(store: &Entity<Store>, session: Option<String>, choice: ModelSelection, window: &mut Window, cx: &mut App) {
+    if session.is_none() && choice.provider.starts_with("external:") {
+        store.update(cx, |store, cx| {
+            store.pending_external_model = Some(choice);
+            cx.notify();
+        });
+        return;
+    }
+    if session.is_none() {
+        store.update(cx, |store, cx| store.clear_pending_external(cx));
+    }
     let request = match session {
         Some(session) => {
             let mut params = serde_json::to_value(&choice).unwrap_or_default();
@@ -2590,5 +3204,30 @@ mod tests {
         assert_eq!(merge_text("你好".into(), "  \n".into()), "你好");
         assert_eq!(merge_text("你好".into(), "再见".into()), "你好\n再见");
         assert!(merge_images(Vec::new(), Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn unprobed_external_agent_defaults_to_default_sentinel() {
+        let status = ExternalAgentStatus {
+            kind: "codex".into(),
+            label: "Codex".into(),
+            enabled: true,
+            installed: true,
+            binary: None,
+            args: Vec::new(),
+            binary_path: Some("/usr/bin/codex".into()),
+            version: None,
+            models: Vec::new(),
+            default_model: None,
+            default_thinking: None,
+            install_hint: None,
+            login_hint: None,
+            error: None,
+        };
+        let sel = external_default_selection(&status, None);
+        assert_eq!(sel.provider, "external:codex");
+        assert_eq!(sel.model, "default");
+        let backend = external_ref_from_status(&status);
+        assert_eq!(external_model_display(&sel.model, Some(&status), &backend, Locale::En), "Codex");
     }
 }

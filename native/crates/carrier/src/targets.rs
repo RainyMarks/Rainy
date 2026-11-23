@@ -3,6 +3,7 @@
 //! `desktop.json` in the user data folder is shared with Rainy 3.x: fields this version does not know are kept as they
 //! are, and every change is written atomically.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -11,6 +12,283 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::locale::localized;
+
+/// Default OpenSSH `ServerAliveInterval` in seconds (10s × 3 = 30s drop detection).
+pub const DEFAULT_KEEPALIVE_INTERVAL: u16 = 10;
+/// Default OpenSSH `ServerAliveCountMax`.
+pub const DEFAULT_KEEPALIVE_COUNT_MAX: u8 = 3;
+const MAX_REMOTE_PATH_LEN: usize = 512;
+const MAX_NOTES_CHARS: usize = 2000;
+
+fn default_remote_host() -> String {
+    "127.0.0.1".to_owned()
+}
+
+/// Whether `host` is safe to interpolate into OpenSSH `-L 127.0.0.1:<local>:<host>:<remote>`.
+pub(crate) fn valid_remote_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 255 || host.starts_with('-') {
+        return false;
+    }
+    if let Some(inner) = host.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+        return !inner.is_empty() && inner.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.');
+    }
+    let mut chars = host.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric()) && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+/// One local SSH port forwarding rule (`-L 127.0.0.1:<local_port>:<remote_host>:<remote_port>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortForwardRule {
+    /// Stable identifier for UI tracking (auto-filled when omitted).
+    #[serde(default)]
+    pub id: String,
+    pub local_port: u16,
+    pub remote_port: u16,
+    #[serde(default = "default_remote_host")]
+    pub remote_host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub auto_start: bool,
+}
+
+impl PortForwardRule {
+    pub fn new(local_port: u16, remote_port: u16) -> Self {
+        let mut rule = Self {
+            id: String::new(),
+            local_port,
+            remote_port,
+            remote_host: default_remote_host(),
+            label: None,
+            auto_start: false,
+        };
+        rule.id = rule.default_id();
+        rule
+    }
+
+    pub fn default_id(&self) -> String {
+        let host = if self.remote_host.trim().is_empty() { "127.0.0.1" } else { self.remote_host.trim() };
+        format!("{}->{host}:{}", self.local_port, self.remote_port)
+    }
+
+    /// Loopback URL to open this forwarded service in the local browser.
+    pub fn local_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.local_port)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.local_port == 0 || self.remote_port == 0 {
+            bail!(localized("转发端口必须是 1 到 65535 之间的整数。", "Forwarded ports must be whole numbers from 1 to 65535."));
+        }
+        if !valid_remote_host(&self.remote_host) {
+            bail!(localized("远程转发主机地址无效。", "The remote forwarding host address is not valid."));
+        }
+        if self.label.as_deref().is_some_and(|label| label.chars().any(|c| c.is_control())) {
+            bail!(localized("端口转发名称不能包含控制字符。", "A port forward label cannot contain control characters."));
+        }
+        Ok(())
+    }
+
+    pub fn normalized(&self) -> Result<Self> {
+        let remote_host = {
+            let trimmed = self.remote_host.trim();
+            if trimmed.is_empty() { default_remote_host() } else { trimmed.to_owned() }
+        };
+        let label = self.label.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+        let id = self.id.trim().to_owned();
+        let mut normalized = Self {
+            id,
+            local_port: self.local_port,
+            remote_port: self.remote_port,
+            remote_host,
+            label,
+            auto_start: self.auto_start,
+        };
+        if normalized.id.is_empty() {
+            normalized.id = normalized.default_id();
+        }
+        normalized.validate()?;
+        Ok(normalized)
+    }
+}
+
+/// Per-host SSH research workbench profile persisted under `desktop.json`'s `sshHostProfiles`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostProfile {
+    /// Custom remote Rainy home directory (e.g. `/root/kube-user/.rainy-agent`) forwarded via `RAINY_HOME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rainy_home: Option<String>,
+    /// Default remote workspace folder opened for this host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_workspace: Option<String>,
+    /// Bookmarked remote folders shown in the folder picker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<String>,
+    /// Extra remote environment variables (e.g. `HF_ENDPOINT`, `PIP_INDEX_URL`) encoded into `RAINY_SSH_EXTRA_ENV`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Override OpenSSH `ServerAliveInterval` in seconds (default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_interval: Option<u16>,
+    /// Override OpenSSH `ServerAliveCountMax` (default 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_count_max: Option<u8>,
+    /// Saved `-L` port forward presets for TensorBoard / Jupyter / Web services.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwards: Vec<PortForwardRule>,
+    /// Short host notes (e.g. GPU sharing or cgroup limits) shown in UI and forwarded via `RAINY_SSH_NOTES`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+fn normalize_remote_path(raw: &str, forbid_parent_dir: bool, forbid_root: bool, zh: &str, en: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.len() > MAX_REMOTE_PATH_LEN || trimmed.chars().any(|c| matches!(c, '\0' | '\r' | '\n')) {
+        bail!(localized(&format!("{zh} 必须是以 / 开头的有效 Linux 绝对路径。"), &format!("{en} must be a valid absolute Linux path starting with '/'.")));
+    }
+    if forbid_parent_dir && trimmed.split('/').any(|part| part == "..") {
+        bail!(localized(&format!("{zh} 不能包含 \"..\" 路径段。"), &format!("{en} cannot contain '..' path segments.")));
+    }
+    let clean = if trimmed.len() > 1 { trimmed.trim_end_matches('/') } else { trimmed };
+    let clean = if clean.is_empty() { "/" } else { clean };
+    if forbid_root && clean == "/" {
+        bail!(localized(&format!("{zh} 不能为根目录 \"/\"。"), &format!("{en} cannot be the root directory '/'.")));
+    }
+    Ok(clean.to_owned())
+}
+
+fn valid_extra_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let ok = (1..=128).contains(&name.len())
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    ok && !name.to_ascii_uppercase().starts_with("RAINY_")
+}
+
+fn sanitize_notes(raw: &str) -> Option<String> {
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let cleaned: String = normalized
+        .chars()
+        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(MAX_NOTES_CHARS).collect())
+}
+
+impl SshHostProfile {
+    pub fn is_empty(&self) -> bool {
+        self.rainy_home.as_deref().map(str::trim).unwrap_or_default().is_empty()
+            && self.default_workspace.as_deref().map(str::trim).unwrap_or_default().is_empty()
+            && self.bookmarks.is_empty()
+            && self.env.is_empty()
+            && self.keepalive_interval.is_none()
+            && self.keepalive_count_max.is_none()
+            && self.forwards.is_empty()
+            && self.notes.as_deref().map(str::trim).unwrap_or_default().is_empty()
+    }
+
+    /// Effective `(ServerAliveInterval, ServerAliveCountMax)` clamped to safe bounds.
+    pub fn keepalive(&self) -> (u16, u8) {
+        let interval = self.keepalive_interval.unwrap_or(DEFAULT_KEEPALIVE_INTERVAL).clamp(1, 600);
+        let count = self.keepalive_count_max.unwrap_or(DEFAULT_KEEPALIVE_COUNT_MAX).clamp(1, 60);
+        (interval, count)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.normalized().map(|_| ())
+    }
+
+    pub fn normalized(&self) -> Result<Self> {
+        let rainy_home = match self.rainy_home.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+            Some(path) => Some(normalize_remote_path(path, true, true, "持久化目录 (RAINY_HOME)", "Persistent Rainy home (RAINY_HOME)")?),
+            None => None,
+        };
+        let default_workspace = match self.default_workspace.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+            Some(path) => Some(normalize_remote_path(path, false, false, "默认工作目录", "Default workspace")?),
+            None => None,
+        };
+        let mut bookmarks = Vec::new();
+        for raw in &self.bookmarks {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let path = normalize_remote_path(trimmed, false, false, "收藏目录", "Bookmarked path")?;
+            if !bookmarks.iter().any(|existing| existing == &path) {
+                bookmarks.push(path);
+            }
+        }
+        let mut env = BTreeMap::new();
+        for (key, value) in &self.env {
+            let key = key.trim();
+            if !valid_extra_env_name(key) {
+                bail!(localized(
+                    &format!("环境变量名称“{key}”无效（仅允许字母、数字与下划线，且不能以 RAINY_ 开头）。"),
+                    &format!("Environment variable name \"{key}\" is not valid (use letters, digits and underscores, and do not start with RAINY_)."),
+                ));
+            }
+            if value.contains('\0') {
+                bail!(localized("环境变量值不能包含空字节。", "Environment variable values cannot contain NUL bytes."));
+            }
+            env.insert(key.to_owned(), value.clone());
+        }
+        if let Some(interval) = self.keepalive_interval
+            && !(1..=600).contains(&interval)
+        {
+            bail!(localized("SSH 保活间隔必须在 1 到 600 秒之间。", "SSH keepalive interval must be between 1 and 600 seconds."));
+        }
+        if let Some(count) = self.keepalive_count_max
+            && !(1..=60).contains(&count)
+        {
+            bail!(localized("SSH 保活重试次数必须在 1 到 60 次之间。", "SSH keepalive max count must be between 1 and 60."));
+        }
+        let mut forwards = Vec::with_capacity(self.forwards.len());
+        for rule in &self.forwards {
+            forwards.push(rule.normalized()?);
+        }
+        let notes = self.notes.as_deref().and_then(sanitize_notes);
+        Ok(Self {
+            rainy_home,
+            default_workspace,
+            bookmarks,
+            env,
+            keepalive_interval: self.keepalive_interval,
+            keepalive_count_max: self.keepalive_count_max,
+            forwards,
+            notes,
+        })
+    }
+
+    /// Environment variables forwarded to the remote `rainy-host` process.
+    pub fn host_env_vars(&self) -> Vec<(String, String)> {
+        let mut vars = Vec::new();
+        if let Some(home) = self.rainy_home.as_deref().map(str::trim).filter(|text| !text.is_empty())
+            && let Ok(clean) = normalize_remote_path(home, true, true, "RAINY_HOME", "RAINY_HOME")
+        {
+            vars.push(("RAINY_HOME".to_owned(), clean));
+        }
+        if let Some(notes) = self.notes.as_deref().and_then(sanitize_notes) {
+            vars.push(("RAINY_SSH_NOTES".to_owned(), notes));
+        }
+        let safe_env: BTreeMap<&str, &str> = self
+            .env
+            .iter()
+            .filter(|(k, v)| valid_extra_env_name(k.trim()) && !v.contains('\0'))
+            .map(|(k, v)| (k.trim(), v.as_str()))
+            .collect();
+        if !safe_env.is_empty()
+            && let Ok(encoded) = serde_json::to_string(&safe_env)
+        {
+            vars.push(("RAINY_SSH_EXTRA_ENV".to_owned(), encoded));
+        }
+        vars
+    }
+}
 
 /// One destination the Host runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +443,68 @@ pub fn save_locale(path: &Path, locale: &str) -> Result<()> {
     update_preferences(path, |_| Map::from_iter([("locale".to_owned(), Value::String(locale.to_owned()))]))
 }
 
+/// Read all saved per-host SSH research profiles from `desktop.json`; malformed entries are skipped.
+pub fn ssh_host_profiles(preferences: &Map<String, Value>) -> BTreeMap<String, SshHostProfile> {
+    let mut profiles = BTreeMap::new();
+    let Some(entries) = preferences.get("sshHostProfiles").and_then(Value::as_object) else {
+        return profiles;
+    };
+    for (target_id, raw) in entries {
+        if !target_id.starts_with("ssh:") || target_id.len() <= 4 {
+            continue;
+        }
+        if let Ok(profile) = serde_json::from_value::<SshHostProfile>(raw.clone())
+            && let Ok(normalized) = profile.normalized()
+            && !normalized.is_empty()
+        {
+            profiles.insert(target_id.clone(), normalized);
+        }
+    }
+    profiles
+}
+
+/// Read one SSH host's profile, or defaults when none is stored.
+pub fn ssh_host_profile(preferences: &Map<String, Value>, target_id: &str) -> SshHostProfile {
+    ssh_host_profiles(preferences).remove(target_id).unwrap_or_default()
+}
+
+/// Save or update one SSH host's research profile in `desktop.json`. An empty profile removes the entry.
+pub fn save_ssh_host_profile(path: &Path, target_id: &str, profile: &SshHostProfile) -> Result<()> {
+    if !target_id.starts_with("ssh:") || target_id.len() <= 4 {
+        bail!(localized("保存的 SSH 主机标识无效。", "The SSH host target id is not valid."));
+    }
+    let normalized = profile.normalized()?;
+    let encoded = (!normalized.is_empty()).then(|| serde_json::to_value(&normalized)).transpose()?;
+    edit_preferences(path, |preferences| {
+        let mut map = preferences.get("sshHostProfiles").and_then(Value::as_object).cloned().unwrap_or_default();
+        match encoded {
+            Some(value) => {
+                map.insert(target_id.to_owned(), value);
+            }
+            None => {
+                map.remove(target_id);
+            }
+        }
+        if map.is_empty() {
+            preferences.remove("sshHostProfiles");
+        } else {
+            preferences.insert("sshHostProfiles".into(), Value::Object(map));
+        }
+    })
+}
+
+/// Remove one SSH host's research profile from `desktop.json`.
+pub fn remove_ssh_host_profile(path: &Path, target_id: &str) -> Result<()> {
+    edit_preferences(path, |preferences| {
+        if let Some(map) = preferences.get_mut("sshHostProfiles").and_then(Value::as_object_mut) {
+            map.remove(target_id);
+            if map.is_empty() {
+                preferences.remove("sshHostProfiles");
+            }
+        }
+    })
+}
+
 /// Registered WSL 2 distributions, without starting any (`listExecutionTargets`).
 #[cfg(windows)]
 pub fn wsl_distributions() -> Vec<ExecutionTarget> {
@@ -280,5 +620,77 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("desktop.json.damaged")).unwrap(), vec![0u8; 300]);
         save_locale(&path, "zh").unwrap();
         assert_eq!(read_preferences(&path).unwrap()["locale"], "zh");
+    }
+
+    #[test]
+    fn ssh_host_profiles_round_trip_and_stay_compatible_with_3x() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.json");
+        // Legacy 3.x desktop.json has no sshHostProfiles field at all.
+        std::fs::write(&path, r#"{"sshHosts": [{"destination": "leaper"}], "locale": "zh"}"#).unwrap();
+        let legacy = read_preferences(&path).unwrap();
+        assert!(ssh_host_profiles(&legacy).is_empty());
+        assert_eq!(ssh_host_profile(&legacy, "ssh:leaper"), SshHostProfile::default());
+        assert_eq!(SshHostProfile::default().keepalive(), (10, 3));
+
+        let profile = SshHostProfile {
+            rainy_home: Some("/root/kube-user/.rainy-agent/".into()),
+            default_workspace: Some("/root/kube-user/work/".into()),
+            bookmarks: vec!["/root/kube-user".into(), "/root/kube-user/".into(), "/data".into()],
+            env: BTreeMap::from([("HF_ENDPOINT".into(), "https://hf-mirror.com".into())]),
+            keepalive_interval: Some(15),
+            keepalive_count_max: Some(4),
+            forwards: vec![PortForwardRule {
+                id: String::new(),
+                local_port: 6006,
+                remote_port: 6006,
+                remote_host: "127.0.0.1".into(),
+                label: Some("TensorBoard".into()),
+                auto_start: true,
+            }],
+            notes: Some("2号卡常被占\r\n限36核192G\x07".into()),
+        };
+        save_ssh_host_profile(&path, "ssh:leaper", &profile).unwrap();
+        let saved = read_preferences(&path).unwrap();
+        // Legacy sshHosts and locale remain untouched.
+        assert_eq!(saved["sshHosts"][0]["destination"], "leaper");
+        assert_eq!(saved["locale"], "zh");
+        let loaded = ssh_host_profile(&saved, "ssh:leaper");
+        assert_eq!(loaded.rainy_home.as_deref(), Some("/root/kube-user/.rainy-agent"));
+        assert_eq!(loaded.default_workspace.as_deref(), Some("/root/kube-user/work"));
+        assert_eq!(loaded.bookmarks, vec!["/root/kube-user", "/data"]);
+        assert_eq!(loaded.keepalive(), (15, 4));
+        assert_eq!(loaded.forwards.len(), 1);
+        assert_eq!(loaded.forwards[0].id, "6006->127.0.0.1:6006");
+        assert_eq!(loaded.forwards[0].local_url(), "http://127.0.0.1:6006");
+        assert_eq!(loaded.notes.as_deref(), Some("2号卡常被占\n限36核192G"));
+
+        let env_vars: BTreeMap<String, String> = loaded.host_env_vars().into_iter().collect();
+        assert_eq!(env_vars.get("RAINY_HOME").map(String::as_str), Some("/root/kube-user/.rainy-agent"));
+        assert_eq!(env_vars.get("RAINY_SSH_NOTES").map(String::as_str), Some("2号卡常被占\n限36核192G"));
+        let decoded_env: BTreeMap<String, String> = serde_json::from_str(&env_vars["RAINY_SSH_EXTRA_ENV"]).unwrap();
+        assert_eq!(decoded_env.get("HF_ENDPOINT").map(String::as_str), Some("https://hf-mirror.com"));
+
+        // Saving an empty profile removes the entry and cleans up the empty map.
+        save_ssh_host_profile(&path, "ssh:leaper", &SshHostProfile::default()).unwrap();
+        let cleaned = read_preferences(&path).unwrap();
+        assert!(cleaned.get("sshHostProfiles").is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_profile_and_forward_rules() {
+        assert!(SshHostProfile { rainy_home: Some("relative/home".into()), ..Default::default() }.validate().is_err());
+        assert!(SshHostProfile { rainy_home: Some("/root/../etc".into()), ..Default::default() }.validate().is_err());
+        assert!(SshHostProfile { rainy_home: Some("/".into()), ..Default::default() }.validate().is_err());
+        assert!(SshHostProfile { rainy_home: Some("///".into()), ..Default::default() }.validate().is_err());
+        assert!(SshHostProfile { rainy_home: Some("/".into()), ..Default::default() }.host_env_vars().is_empty());
+        assert!(SshHostProfile { env: BTreeMap::from([("RAINY_PORT".into(), "1".into())]), ..Default::default() }.validate().is_err());
+        assert!(SshHostProfile { env: BTreeMap::from([("1BAD".into(), "x".into())]), ..Default::default() }.validate().is_err());
+        assert!(SshHostProfile { keepalive_interval: Some(0), ..Default::default() }.validate().is_err());
+        assert!(PortForwardRule::new(0, 6006).validate().is_err());
+        assert!(PortForwardRule::new(6006, 0).validate().is_err());
+        assert!(PortForwardRule { remote_host: "-oProxyCommand=x".into(), ..PortForwardRule::new(6006, 6006) }.validate().is_err());
+        assert!(PortForwardRule { remote_host: "127.0.0.1:9999".into(), ..PortForwardRule::new(6006, 6006) }.validate().is_err());
+        assert!(PortForwardRule { remote_host: "[::1]".into(), ..PortForwardRule::new(6006, 6006) }.validate().is_ok());
     }
 }

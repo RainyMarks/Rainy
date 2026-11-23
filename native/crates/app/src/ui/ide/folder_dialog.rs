@@ -38,8 +38,14 @@ impl FolderBrowser {
                 }
             }
         })];
+        let store = Store::global(cx);
+        let initial_path = store
+            .read(cx)
+            .current_ssh_profile()
+            .and_then(|profile| profile.default_workspace)
+            .filter(|path| !path.trim().is_empty());
         let mut browser = Self {
-            store: Store::global(cx),
+            store,
             listing: None,
             loading: false,
             error: None,
@@ -47,7 +53,7 @@ impl FolderBrowser {
             path,
             _subscriptions: subscriptions,
         };
-        browser.load(None, window, cx);
+        browser.load(initial_path, window, cx);
         browser
     }
 
@@ -93,6 +99,41 @@ impl Render for FolderBrowser {
         let roots = self.listing.as_ref().map(|listing| listing.roots.clone()).unwrap_or_default();
         let entries = self.listing.as_ref().map(|listing| listing.entries.clone()).unwrap_or_default();
         let current = self.current();
+        let mut bookmark_items: Vec<(String, String)> = Vec::new();
+        if let Some(profile) = self.store.read(cx).current_ssh_profile() {
+            if let Some(ws) = profile.default_workspace.filter(|s| !s.trim().is_empty()) {
+                bookmark_items.push((tr(cx, "ssh.bookmarkDefaultWorkspace").to_string(), ws));
+            }
+            for bm in profile.bookmarks {
+                let trimmed = bm.trim();
+                if !trimmed.is_empty() && !bookmark_items.iter().any(|(_, path)| path == trimmed) {
+                    let label = trimmed
+                        .rsplit('/')
+                        .find(|seg| !seg.is_empty())
+                        .unwrap_or(trimmed)
+                        .to_owned();
+                    bookmark_items.push((label, trimmed.to_owned()));
+                }
+            }
+        }
+        let bookmarks_bar = (!bookmark_items.is_empty()).then(|| {
+            h_flex()
+                .gap_1p5()
+                .flex_wrap()
+                .items_center()
+                .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "ssh.bookmarksHeader")))
+                .children(bookmark_items.into_iter().enumerate().map(|(index, (label, target))| {
+                    let selected = current.as_deref() == Some(target.as_str());
+                    let tip: SharedString = target.clone().into();
+                    let btn = Button::new(("ssh-bookmark", index))
+                        .xsmall()
+                        .icon(IconName::Folder)
+                        .label(label)
+                        .tooltip(tip)
+                        .on_click(cx.listener(move |this, _, window, cx| this.load(Some(target.clone()), window, cx)));
+                    if selected { btn.primary() } else { btn.outline() }
+                }))
+        });
         let locations = v_flex()
             .w(px(160.))
             .flex_shrink_0()
@@ -151,6 +192,7 @@ impl Render for FolderBrowser {
         v_flex()
             .gap_3()
             .h(px(440.))
+            .children(bookmarks_bar)
             .child(
                 h_flex()
                     .gap_2()

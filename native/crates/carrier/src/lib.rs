@@ -22,6 +22,7 @@ pub mod proxy;
 pub mod rpc;
 pub mod shell;
 pub mod ssh;
+pub mod ssh_tunnel;
 pub mod strata;
 pub mod tarball;
 pub mod targets;
@@ -37,4 +38,4 @@ mod test_server;
 
 pub use control::{HostCommand, HostEvents, HostProcess, HostReady, HostStopped};
 pub use rpc::{ConnectionState, RpcClient, RpcEvent};
-pub use targets::ExecutionTarget;
+pub use targets::{ExecutionTarget, PortForwardRule, SshHostProfile};

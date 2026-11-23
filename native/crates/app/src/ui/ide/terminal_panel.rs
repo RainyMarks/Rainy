@@ -16,6 +16,7 @@ use crate::store::execution::{Execution, ExecutionEvent, OperationKind};
 use crate::store::ide::{Ide, IdeEvent, file_name};
 use crate::store::language::LanguageServers;
 use crate::store::{Store, StoreEvent};
+use crate::ui::ide::experiments::ExperimentsView;
 use crate::ui::ide::terminal::TerminalView;
 use crate::ui::{tr, trf};
 
@@ -61,12 +62,14 @@ fn format_terminal_quote(raw: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
     Terminal,
+    Experiments,
     Problems,
     Debug,
 }
 
 pub struct TerminalPanel {
     execution: Entity<Execution>,
+    experiments: Entity<ExperimentsView>,
     views: Vec<Entity<TerminalView>>,
     /// Operations closed here; the Host may still list them until they exit.
     closed: HashSet<String>,
@@ -84,9 +87,11 @@ pub struct TerminalPanel {
 impl TerminalPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let execution = Execution::global(cx);
+        let experiments = cx.new(|cx| ExperimentsView::new(window, cx));
         let watch = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "ide.ideAddWatch")));
         let console = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "ide.ideConsole")));
         let subscriptions = vec![
+            cx.observe(&experiments, |_, _, cx| cx.notify()),
             cx.subscribe(&execution, |this, _, event: &ExecutionEvent, cx| match event {
                 ExecutionEvent::TerminalsChanged => this.sync(cx),
                 ExecutionEvent::Started(id) => {
@@ -131,6 +136,7 @@ impl TerminalPanel {
         ];
         let mut panel = Self {
             execution,
+            experiments,
             views: Vec::new(),
             closed: HashSet::new(),
             selected: None,
@@ -194,6 +200,7 @@ impl TerminalPanel {
         }
         self.starting = true;
         self.tab = BottomTab::Terminal;
+        self.experiments.update(cx, |exp, cx| exp.set_active(false, cx));
         cx.notify();
         let task = self.execution.update(cx, |execution, cx| execution.start_terminal(100, 24, cx));
         cx.spawn_in(window, async move |this, cx| {
@@ -244,6 +251,7 @@ impl TerminalPanel {
 
     pub fn show(&mut self, tab: BottomTab, cx: &mut Context<Self>) {
         self.tab = tab;
+        self.experiments.update(cx, |exp, cx| exp.set_active(tab == BottomTab::Experiments, cx));
         cx.notify();
     }
 
@@ -349,6 +357,12 @@ impl TerminalPanel {
                 .on_click(cx.listener(move |this, _, _, cx| this.show(which, cx)))
         };
         let problems_label: SharedString = if problems > 0 { format!("{} {problems}", tr(cx, "ide.ideProblems")).into() } else { tr(cx, "ide.ideProblems") };
+        let exp_running = self.experiments.read(cx).running_count();
+        let exp_label: SharedString = if exp_running > 0 {
+            format!("{} {exp_running}", tr(cx, "experiments.tabTitle")).into()
+        } else {
+            tr(cx, "experiments.tabTitle")
+        };
         h_flex()
             .h(px(32.))
             .flex_shrink_0()
@@ -358,6 +372,7 @@ impl TerminalPanel {
             .border_b_1()
             .border_color(theme.border)
             .child(tab("bottom-terminal", tr(cx, "ide.ideTerminal"), BottomTab::Terminal, cx))
+            .child(tab("bottom-experiments", exp_label, BottomTab::Experiments, cx))
             .child(tab("bottom-problems", problems_label, BottomTab::Problems, cx))
             .child(tab("bottom-debug", tr(cx, "ide.ideDebug"), BottomTab::Debug, cx))
     }
@@ -812,6 +827,7 @@ impl Render for TerminalPanel {
         let header = self.render_header(cx);
         let body = match self.tab {
             BottomTab::Terminal => self.render_terminals(cx),
+            BottomTab::Experiments => self.experiments.clone().into_any_element(),
             BottomTab::Problems => self.render_problems(cx),
             BottomTab::Debug => self.render_debug(cx),
         };

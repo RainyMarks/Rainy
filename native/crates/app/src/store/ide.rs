@@ -336,6 +336,7 @@ impl Ide {
                 // The chat shown last in a project comes back with it.
                 crate::store::StoreEvent::SelectionChanged if this.workspace.is_some() => this.schedule_state_save(cx),
                 crate::store::StoreEvent::SummariesChanged => this.restore_session(cx),
+                crate::store::StoreEvent::HostReconnected(rpc) => this.on_host_reconnected(rpc, cx),
                 _ => {}
             })
             .detach();
@@ -422,6 +423,12 @@ impl Ide {
         }));
         let list = self.request::<Vec<IdeWorkspace>>(json!({ "op": "workspaces.list" }), cx);
         let selection = self.request::<WorkspaceSelection>(json!({ "op": "state.selection.read" }), cx);
+        let default_workspace = self
+            .store
+            .read(cx)
+            .current_ssh_profile()
+            .and_then(|profile| profile.default_workspace)
+            .filter(|path| !path.trim().is_empty());
         cx.spawn_in(window, async move |this, cx| {
             let (list, selection) = (list.await, selection.await);
             let shown = this.update_in(cx, |this, window, cx| {
@@ -431,18 +438,91 @@ impl Ide {
                 }
                 let selected = selection.ok().and_then(|selection| selection.workspace_id);
                 let shown = selected
-                    .and_then(|id| this.workspaces.iter().find(|w| w.workspace_id == id).cloned())
+                    .as_ref()
+                    .and_then(|id| this.workspaces.iter().find(|w| w.workspace_id == *id).cloned())
                     .map(|workspace| this.select_task(workspace, window, cx));
                 cx.notify();
-                shown
+                (shown, selected.is_none() && this.workspaces.is_empty())
             });
-            if let Ok(Some(shown)) = shown {
+            if let Ok((Some(shown), _)) = shown {
                 shown.await;
+            } else if let Ok((None, true)) = shown
+                && let Some(default_path) = default_workspace
+            {
+                let open = this.update_in(cx, |this, window, cx| this.open_folder_task(default_path, window, cx));
+                if let Ok(open) = open {
+                    let _ = open.await;
+                }
             }
             let _ = this.update(cx, |this, cx| {
                 this.restored = true;
                 cx.emit(IdeEvent::Restored);
             });
+        })
+        .detach();
+    }
+
+    /// Re-synchronize workspaces, directory listings, and open files after an in-place Host swap or SSH reconnect.
+    fn on_host_reconnected(&mut self, rpc: &rainy_carrier::RpcClient, cx: &mut Context<Self>) {
+        self.save_task = None;
+        self.relist = None;
+        self.workspaces.clear();
+        self.workspace = None;
+        self.listings.clear();
+        self.expanded.clear();
+        self.tabs.clear();
+        self.diff_tabs.clear();
+        self.views.clear();
+        self.diffs.clear();
+        self.active = None;
+        self.files.clear();
+        self.state = None;
+        self.recovery.clear();
+        self.reveals.clear();
+        self.reads.clear();
+        self.layout = None;
+        self.error = None;
+        self.loading = false;
+        cx.emit(IdeEvent::WorkspaceChanged);
+        cx.notify();
+
+        let Some(handle) = self.window else { return };
+        let list = rpc.request::<Vec<IdeWorkspace>>("ide", json!({ "op": "workspaces.list" }));
+        let selection = rpc.request::<WorkspaceSelection>("ide", json!({ "op": "state.selection.read" }));
+        let default_workspace = self
+            .store
+            .read(cx)
+            .current_ssh_profile()
+            .and_then(|profile| profile.default_workspace)
+            .filter(|path| !path.trim().is_empty());
+        cx.spawn(async move |this: WeakEntity<Ide>, cx: &mut AsyncApp| {
+            let (list, selection) = (list.await, selection.await);
+            let Some(ide) = this.upgrade() else { return };
+            let next = handle.update(cx, |_, window, cx| {
+                ide.update(cx, |this, cx| {
+                    match list {
+                        Ok(workspaces) => this.workspaces = workspaces,
+                        Err(error) => this.error = Some(ide_error(this.locale(cx), &error)),
+                    }
+                    let selected = selection.ok().and_then(|selection| selection.workspace_id);
+                    let chosen = selected.and_then(|id| this.workspaces.iter().find(|w| w.workspace_id == id).cloned());
+                    let shown = chosen.map(|workspace| this.select_task(workspace, window, cx));
+                    cx.notify();
+                    (shown, this.workspace.is_none() && this.workspaces.is_empty())
+                })
+            });
+            if let Ok((Some(shown), _)) = next {
+                shown.await;
+            } else if let Ok((None, true)) = next
+                && let Some(default_path) = default_workspace
+            {
+                let open = handle.update(cx, |_, window, cx| {
+                    ide.update(cx, |this, cx| this.open_folder_task(default_path, window, cx))
+                });
+                if let Ok(open) = open {
+                    let _ = open.await;
+                }
+            }
         })
         .detach();
     }

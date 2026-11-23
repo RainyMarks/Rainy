@@ -1,14 +1,20 @@
 //! The project's file tree (`FileTree.tsx`): every mounted folder, its expanded directories, click to open.
 
+use std::path::PathBuf;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use rainy_protocol::FileEntry;
+use rainy_carrier::text::percent_encode as encode;
+use rainy_protocol::{FileEntry, FileUploadResult};
 
+use crate::store::Store;
 use crate::store::ide::{Ide, IdeEvent, file_key, file_name, parent_key, split_key};
+use crate::ui::ide::experiments::format_size;
 use crate::ui::ide::{choose_folder, file_icon};
 use crate::ui::prompt::prompt_text;
 use crate::ui::{tr, trf};
@@ -142,14 +148,213 @@ fn ask_delete(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut App) 
         .detach();
 }
 
-/// The menu of a tree row: create inside a folder (or beside a file), rename, delete, refresh.
-fn row_menu(menu: PopupMenu, ide: Entity<Ide>, key: String, directory: bool, cx: &App) -> PopupMenu {
+/// Build `/rainy/ide/upload?w=...&p=...&overwrite=...` for streaming a local file into `directory_key`.
+fn upload_route(workspace_id: &str, directory_key: &str, file_name: &str, overwrite: bool) -> String {
+    let (root, dir_rel) = split_key(directory_key);
+    let target_rel = if dir_rel.is_empty() {
+        file_name.to_owned()
+    } else {
+        format!("{}/{file_name}", dir_rel.trim_end_matches('/'))
+    };
+    let mut route = format!(
+        "/rainy/ide/upload?w={}&p={}&overwrite={}",
+        encode(workspace_id),
+        encode(&target_rel),
+        if overwrite { "1" } else { "0" }
+    );
+    if let Some(root) = root {
+        route.push_str(&format!("&r={}", encode(root)));
+    }
+    route
+}
+
+/// Build `/rainy/ide/raw?w=...&p=...` for streaming a remote file down to local disk.
+fn download_route(workspace_id: &str, key: &str) -> String {
+    let (root, rel) = split_key(key);
+    let mut route = format!("/rainy/ide/raw?w={}&p={}", encode(workspace_id), encode(rel));
+    if let Some(root) = root {
+        route.push_str(&format!("&r={}", encode(root)));
+    }
+    route
+}
+
+/// Upload one local file to `directory_key`, asking for confirmation on HTTP 409 conflict.
+fn upload_one(ide: Entity<Ide>, directory_key: String, local_path: PathBuf, overwrite: bool, window: &mut Window, cx: &mut App) {
+    let Some(workspace_id) = ide.read(cx).workspace.as_ref().map(|w| w.workspace_id.clone()) else { return };
+    let Some(rpc) = Store::global(cx).read(cx).rpc.clone() else { return };
+    let name = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_owned());
+    let route = upload_route(&workspace_id, &directory_key, &name, overwrite);
+    let notice = trf(cx, "ssh.uploading", &[("name", &name)]);
+    window.push_notification(Notification::info(notice), cx);
+    let local_upload = local_path.clone();
+    window
+        .spawn(cx, async move |cx| {
+            let result = cx
+                .background_spawn(async move { rpc.post_file(&route, "application/octet-stream", &local_upload).await })
+                .await;
+            let _ = cx.update(|window, cx| match result {
+                Ok((200..=299, body)) => {
+                    let bytes = serde_json::from_slice::<FileUploadResult>(&body)
+                        .map(|r| r.bytes)
+                        .unwrap_or_else(|_| std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0));
+                    let size = format_size(bytes);
+                    let text = trf(cx, "ssh.uploaded", &[("name", &name), ("size", &size)]);
+                    window.push_notification(Notification::success(text), cx);
+                    ide.update(cx, |ide, cx| ide.refresh(window, cx));
+                }
+                Ok((409, _)) if !overwrite => {
+                    let (ide_c, dir_c, path_c, name_c) = (ide.clone(), directory_key.clone(), local_path.clone(), name.clone());
+                    window.open_alert_dialog(cx, move |alert, _, cx| {
+                        let (ide_ok, dir_ok, path_ok) = (ide_c.clone(), dir_c.clone(), path_c.clone());
+                        alert
+                            .title(tr(cx, "ssh.uploadExistsTitle"))
+                            .description(trf(cx, "ssh.uploadExistsBody", &[("name", &name_c)]))
+                            .ok_text(tr(cx, "ssh.uploadOverwrite"))
+                            .cancel_text(tr(cx, "chat.cancel"))
+                            .show_cancel(true)
+                            .on_ok(move |_, window, cx| {
+                                upload_one(ide_ok.clone(), dir_ok.clone(), path_ok.clone(), true, window, cx);
+                                true
+                            })
+                    });
+                }
+                Ok((status, body)) => {
+                    let detail = String::from_utf8_lossy(&body).trim().to_owned();
+                    let err = if detail.is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {detail}") };
+                    let text = trf(cx, "ssh.uploadFailed", &[("name", &name), ("error", &err)]);
+                    window.push_notification(Notification::error(text), cx);
+                }
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    let text = trf(cx, "ssh.uploadFailed", &[("name", &name), ("error", &detail)]);
+                    window.push_notification(Notification::error(text), cx);
+                }
+            });
+        })
+        .detach();
+}
+
+/// Prompt for one or more local files and stream them into the remote `directory_key`.
+fn ask_upload(ide: Entity<Ide>, directory_key: String, window: &mut Window, cx: &mut App) {
+    let chosen = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: true,
+        prompt: Some(tr(cx, "ssh.uploadFiles")),
+    });
+    window
+        .spawn(cx, async move |cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else { return };
+            let _ = cx.update(|window, cx| {
+                for path in paths {
+                    upload_one(ide.clone(), directory_key.clone(), path, false, window, cx);
+                }
+            });
+        })
+        .detach();
+}
+
+/// Default local destination directory for remote file downloads.
+fn dirs_downloads() -> PathBuf {
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let base = PathBuf::from(home);
+        let downloads = base.join("Downloads");
+        if downloads.is_dir() {
+            return downloads;
+        }
+        if base.is_dir() {
+            return base;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Prompt for a local save destination and stream the remote file down via `/rainy/ide/raw`.
+fn ask_download(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut App) {
+    let Some(workspace_id) = ide.read(cx).workspace.as_ref().map(|w| w.workspace_id.clone()) else { return };
+    let Some(rpc) = Store::global(cx).read(cx).rpc.clone() else { return };
+    let name = file_name(&key).to_owned();
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext)
+        .filter(|ext| !ext.is_empty() && !ext.contains(['/', '\\', ' ']))
+        .unwrap_or("")
+        .to_owned();
+    let filter_label = tr(cx, "ssh.saveAllFiles").to_string();
+    let title = tr(cx, "ssh.downloadFile").to_string();
+    let folder = dirs_downloads();
+    let route = download_route(&workspace_id, &key);
+    let picked = crate::ui::save_dialog::save(
+        window,
+        crate::ui::save_dialog::SaveDialog {
+            title,
+            folder,
+            name: name.clone(),
+            type_name: filter_label,
+            extension: ext,
+        },
+    );
+    window
+        .spawn(cx, async move |cx| {
+            let Ok(Ok(Some(dest))) = picked.recv().await else { return };
+            let _ = cx.update(|window, cx| {
+                let text = trf(cx, "ssh.downloading", &[("name", &name)]);
+                window.push_notification(Notification::info(text), cx);
+            });
+            let dest_write = dest.clone();
+            let result = cx
+                .background_spawn(async move { rpc.get_to_file(&route, &dest_write).await })
+                .await;
+            let _ = cx.update(|window, cx| match result {
+                Ok(200..=299) => {
+                    let path_str = dest.display().to_string();
+                    let text = trf(cx, "ssh.downloaded", &[("name", &name), ("path", &path_str)]);
+                    window.push_notification(Notification::success(text), cx);
+                }
+                Ok(status) => {
+                    let _ = std::fs::remove_file(&dest);
+                    let err = format!("HTTP {status}");
+                    let text = trf(cx, "ssh.downloadFailed", &[("name", &name), ("error", &err)]);
+                    window.push_notification(Notification::error(text), cx);
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&dest);
+                    let detail = format!("{error:#}");
+                    let text = trf(cx, "ssh.downloadFailed", &[("name", &name), ("error", &detail)]);
+                    window.push_notification(Notification::error(text), cx);
+                }
+            });
+        })
+        .detach();
+}
+
+/// The menu of a tree row: create inside a folder (or beside a file), remote upload/download, rename, delete, refresh.
+fn row_menu(mut menu: PopupMenu, ide: Entity<Ide>, key: String, directory: bool, cx: &App) -> PopupMenu {
     let target = if directory { key.clone() } else { parent_key(&key) };
-    let (new_file, new_folder, rename, delete, refresh) = (ide.clone(), ide.clone(), ide.clone(), ide.clone(), ide);
-    let (file_dir, folder_dir, renamed, deleted) = (target.clone(), target, key.clone(), key);
-    menu.item(PopupMenuItem::new(tr(cx, "ide.ideNewFile")).on_click(move |_, window, cx| ask_create(new_file.clone(), file_dir.clone(), false, window, cx)))
-        .item(PopupMenuItem::new(tr(cx, "ide.ideNewFolder")).on_click(move |_, window, cx| ask_create(new_folder.clone(), folder_dir.clone(), true, window, cx)))
-        .separator()
+    let is_remote = Store::global(cx).read(cx).is_remote();
+    let (new_file, new_folder, rename, delete, refresh) = (ide.clone(), ide.clone(), ide.clone(), ide.clone(), ide.clone());
+    let (file_dir, folder_dir, renamed, deleted) = (target.clone(), target.clone(), key.clone(), key.clone());
+    menu = menu
+        .item(PopupMenuItem::new(tr(cx, "ide.ideNewFile")).on_click(move |_, window, cx| ask_create(new_file.clone(), file_dir.clone(), false, window, cx)))
+        .item(PopupMenuItem::new(tr(cx, "ide.ideNewFolder")).on_click(move |_, window, cx| ask_create(new_folder.clone(), folder_dir.clone(), true, window, cx)));
+    if is_remote {
+        let (upload_ide, upload_dir) = (ide.clone(), target);
+        menu = menu.separator().item(
+            PopupMenuItem::new(tr(cx, "ssh.uploadFiles"))
+                .on_click(move |_, window, cx| ask_upload(upload_ide.clone(), upload_dir.clone(), window, cx)),
+        );
+        if !directory {
+            let (dl_ide, dl_key) = (ide.clone(), key);
+            menu = menu.item(
+                PopupMenuItem::new(tr(cx, "ssh.downloadFile"))
+                    .on_click(move |_, window, cx| ask_download(dl_ide.clone(), dl_key.clone(), window, cx)),
+            );
+        }
+    }
+    menu.separator()
         .item(PopupMenuItem::new(tr(cx, "ide.ideRename")).on_click(move |_, window, cx| ask_rename(rename.clone(), renamed.clone(), window, cx)))
         .item(PopupMenuItem::new(tr(cx, "ide.ideDelete")).on_click(move |_, window, cx| ask_delete(delete.clone(), deleted.clone(), window, cx)))
         .separator()
@@ -274,10 +479,11 @@ impl Render for FileTree {
         .track_scroll(&self.scroll)
         .flex_1();
         let has_workspace = title.is_some();
-        let (new_file, new_folder, refresh) = (self.ide.clone(), self.ide.clone(), self.ide.clone());
+        let is_remote = Store::global(cx).read(cx).is_remote();
+        let (new_file, new_folder, upload_root_ide, refresh) = (self.ide.clone(), self.ide.clone(), self.ide.clone(), self.ide.clone());
         // New entries go to the top of the primary folder; the row menus create elsewhere.
         let root = String::new();
-        let (file_root, folder_root) = (root.clone(), root);
+        let (file_root, folder_root, upload_root) = (root.clone(), root.clone(), root);
         v_flex()
             .size_full()
             .bg(theme.sidebar)
@@ -299,6 +505,16 @@ impl Render for FileTree {
                         .child(Button::new("tree-new-folder").ghost().xsmall().icon(Icon::new(gpui_kit::assets::IconName::FolderPlus)).tooltip(tr(cx, "ide.ideNewFolder")).on_click(
                             move |_, window, cx| ask_create(new_folder.clone(), folder_root.clone(), true, window, cx),
                         ))
+                        .when(is_remote, |this| {
+                            this.child(
+                                Button::new("tree-upload")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowUp)
+                                    .tooltip(tr(cx, "ssh.uploadFiles"))
+                                    .on_click(move |_, window, cx| ask_upload(upload_root_ide.clone(), upload_root.clone(), window, cx)),
+                            )
+                        })
                         .child(Button::new("tree-refresh").ghost().xsmall().icon(IconName::RefreshCw).tooltip(tr(cx, "ide.ideRefresh")).on_click(
                             move |_, window, cx| refresh.update(cx, |ide, cx| ide.refresh(window, cx)),
                         ))

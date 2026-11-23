@@ -41,6 +41,16 @@ pub struct Workspace {
     pub root_id: String,
 }
 
+/// Validated destination for a streamed upload (`POST /rainy/ide/upload`).
+#[derive(Debug, Clone)]
+pub struct UploadTarget {
+    pub workspace_id: String,
+    pub root_id: String,
+    pub path: String,
+    pub destination: PathBuf,
+    pub temp_path: PathBuf,
+}
+
 struct Observation {
     absolute: PathBuf,
     target: PathBuf,
@@ -191,6 +201,7 @@ impl Files {
         match op {
             "files.list" => self.list(&workspace, path()?),
             "files.read" => self.read(&workspace, path()?),
+            "files.tail" => self.tail(&workspace, path()?, request["offset"].as_u64(), request["maxBytes"].as_u64()),
             "files.search" => Ok(search(&workspace.root, text("query").unwrap_or_default(), request["limit"].as_u64().map(|limit| limit as usize))),
             "files.diff" => self.diff(&workspace, path()?),
             "files.changes" => {
@@ -328,6 +339,113 @@ impl Files {
         };
         let (file, size) = ifs::open_stable(&observation.target, &target.version)?;
         Ok((file, size, observation.version))
+    }
+
+    /// Incrementally tail the end of a workspace file (for live-following >5 MiB training logs).
+    pub fn tail(&self, workspace: &Workspace, path: &str, offset: Option<u64>, max_bytes: Option<u64>) -> HostResult<Value> {
+        let observed = self.observe(workspace, path, false, false)?;
+        if observed.target_info.as_ref().map(|info| info.kind) != Some(Kind::File) {
+            return Err(ifs::not_file());
+        }
+        let chunk = crate::experiments::read_tail_chunk(&observed.target, offset, max_bytes)?;
+        let result = rainy_protocol::ide::FileTailResult {
+            workspace_id: workspace.workspace_id.clone(),
+            path: path.to_owned(),
+            text: chunk.text,
+            offset: chunk.offset,
+            next_offset: chunk.next_offset,
+            total_bytes: chunk.total_bytes,
+            truncated: chunk.truncated,
+            reset: chunk.reset,
+        };
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Validate a workspace upload path and reserve a sibling staging path in the same directory.
+    pub fn prepare_upload(&self, workspace_id: &str, root_id: Option<&str>, path: &str, overwrite: bool) -> HostResult<UploadTarget> {
+        let workspace = self.resolve_workspace(workspace_id, root_id)?;
+        let absolute = self.checked_path(&workspace, path, false)?;
+        let resolved = ifs::resolve(&absolute)?;
+        if !contains(&workspace.root, &resolved) {
+            return Err(HostError::new("outside-workspace", l("目标位置在所选项目之外。", "The destination points outside the selected workspace.")));
+        }
+        if let Some(existing) = ifs::lstat(&absolute)? {
+            if existing.kind == Kind::Symlink {
+                return Err(HostError::new("outside-workspace", l("不允许通过上传覆盖符号链接。", "Uploading over a symbolic link is not allowed.")));
+            }
+            if existing.kind != Kind::File {
+                return Err(ifs::not_file());
+            }
+            if !overwrite {
+                return Err(ifs::exists());
+            }
+        }
+        let parent = realpath(absolute.parent().unwrap_or(&workspace.root))?;
+        if !contains(&workspace.root, &parent) {
+            return Err(HostError::new("outside-workspace", l("目标位置在所选项目之外。", "The destination points outside the selected workspace.")));
+        }
+        let name = absolute.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let temp_path = parent.join(format!(".{name}.{}.upload.tmp", uuid::Uuid::new_v4().simple()));
+        Ok(UploadTarget {
+            workspace_id: workspace.workspace_id,
+            root_id: workspace.root_id,
+            path: path.to_owned(),
+            destination: absolute,
+            temp_path,
+        })
+    }
+
+    /// Atomically publish a streamed staging file after re-verifying workspace boundaries under the workspace lock.
+    pub fn commit_upload(&self, target: &UploadTarget, overwrite: bool, bytes: u64) -> HostResult<rainy_protocol::ide::FileUploadResult> {
+        let lock = self.lock(&target.workspace_id);
+        let _guard = lock.lock().unwrap();
+        let workspace = self.resolve_workspace(&target.workspace_id, Some(target.root_id.as_str()).filter(|r| !r.is_empty()))?;
+        let destination = self.checked_path(&workspace, &target.path, false)?;
+        let resolved = ifs::resolve(&destination)?;
+        if !contains(&workspace.root, &resolved) {
+            return Err(HostError::new("outside-workspace", l("目标位置在所选项目之外。", "The destination points outside the selected workspace.")));
+        }
+        let existing = ifs::lstat(&destination)?;
+        if let Some(info) = &existing {
+            if info.kind == Kind::Symlink {
+                return Err(HostError::new("outside-workspace", l("不允许通过上传覆盖符号链接。", "Uploading over a symbolic link is not allowed.")));
+            }
+            if info.kind != Kind::File {
+                return Err(ifs::not_file());
+            }
+            if !overwrite {
+                return Err(ifs::exists());
+            }
+        }
+        #[cfg(unix)]
+        if overwrite && existing.is_some() {
+            if let Ok(meta) = std::fs::metadata(&destination) {
+                let _ = std::fs::set_permissions(&target.temp_path, meta.permissions());
+            }
+        }
+        if overwrite {
+            crate::store::rename_retrying(&target.temp_path, &destination)?;
+        } else {
+            match std::fs::hard_link(&target.temp_path, &destination) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&target.temp_path);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(ifs::exists()),
+                Err(_) => {
+                    if std::fs::symlink_metadata(&destination).is_ok() {
+                        return Err(ifs::exists());
+                    }
+                    crate::store::rename_retrying(&target.temp_path, &destination)?;
+                }
+            }
+        }
+        let observed = self.observe(&workspace, &target.path, false, false)?;
+        Ok(rainy_protocol::ide::FileUploadResult {
+            workspace_id: target.workspace_id.clone(),
+            path: target.path.clone(),
+            bytes,
+            version: observed.version,
+        })
     }
 
     fn check_text(&self, content: &str) -> HostResult<()> {
@@ -1002,5 +1120,43 @@ mod tests {
         let new_file = tokio::task::spawn_blocking(move || f2.diff(&w2, "new.txt")).await.unwrap().unwrap();
         assert_eq!(new_file["status"], "added");
         assert_eq!(new_file["base"], "");
+    }
+
+    #[test]
+    fn tails_workspace_logs_and_blocks_upload_traversal_and_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("train.log"), "step 1\nstep 2\n").unwrap();
+
+        let projects = Arc::new(Projects::load(dir.path().join("projects.json")).unwrap());
+        let added = projects.open(root.to_str().unwrap(), None).unwrap();
+        let files = Files::new(projects, |_, _, _| {}, |_| BTreeMap::new());
+        let ws = files.resolve_workspace(&added.id, None).unwrap();
+
+        let tailed = files.tail(&ws, "train.log", Some(7), Some(1024)).unwrap();
+        assert_eq!(tailed["text"], "step 2\n");
+        assert_eq!(tailed["nextOffset"], 14);
+
+        // Path traversal must be rejected before staging.
+        assert!(files.prepare_upload(&added.id, None, "../escape.bin", false).is_err());
+        assert!(files.prepare_upload(&added.id, None, "/abs/path.bin", false).is_err());
+
+        // Upload new file succeeds; second upload without overwrite fails with already-exists; overwrite replaces atomically.
+        let target = files.prepare_upload(&added.id, None, "data.bin", false).unwrap();
+        std::fs::write(&target.temp_path, b"payload-v1").unwrap();
+        let committed = files.commit_upload(&target, false, 10).unwrap();
+        assert_eq!(committed.bytes, 10);
+        assert_eq!(std::fs::read(root.join("data.bin")).unwrap(), b"payload-v1");
+
+        let dup = files.prepare_upload(&added.id, None, "data.bin", false);
+        assert_eq!(dup.unwrap_err().code, "already-exists");
+
+        let target2 = files.prepare_upload(&added.id, None, "data.bin", true).unwrap();
+        std::fs::write(&target2.temp_path, b"payload-v2-longer").unwrap();
+        let committed2 = files.commit_upload(&target2, true, 17).unwrap();
+        assert_eq!(committed2.bytes, 17);
+        assert_ne!(committed2.version, committed.version);
+        assert_eq!(std::fs::read(root.join("data.bin")).unwrap(), b"payload-v2-longer");
     }
 }

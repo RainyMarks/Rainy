@@ -101,24 +101,22 @@ pub fn ask(request: AskpassRequest, window: &mut Window, cx: &mut App) {
     }
 }
 
-/// The Host ended while Rainy used it: an SSH connection reconnects in place without restarting, any other Host restarts.
+/// The Host ended while Rainy used it: SSH runs silent backoff reconnect first (`1s -> 3s -> 8s`) without a blocking
+/// modal; local/WSL Hosts show the restart alert immediately.
 pub fn host_exited(store: Entity<Store>, code: Option<i32>, window: &mut Window, cx: &mut App) {
     let target = store.read(cx).target.clone();
-    let is_ssh = matches!(target, Some(ExecutionTarget::Ssh { .. }));
-    let (title, description, action) = match &target {
-        Some(target @ ExecutionTarget::Ssh { .. }) => (
-            trf(cx, "native.sshLost", &[("target", &target.label())]),
-            tr(cx, "native.sshLostReconnectDetail"),
-            tr(cx, "native.reconnect"),
-        ),
-        _ => {
-            let reason = match code {
-                Some(code) => trf(cx, "native.exitCode", &[("code", &code)]),
-                None => tr(cx, "native.processKilled"),
-            };
-            (tr(cx, "native.hostStopped"), trf(cx, "native.hostStoppedDetail", &[("reason", &reason)]), tr(cx, "native.restart"))
-        }
+    if matches!(target, Some(ExecutionTarget::Ssh { .. })) {
+        let handle = window.window_handle();
+        store.update(cx, |store, cx| store.start_ssh_auto_reconnect(handle, cx));
+        return;
+    }
+    let reason = match code {
+        Some(code) => trf(cx, "native.exitCode", &[("code", &code)]),
+        None => tr(cx, "native.processKilled"),
     };
+    let title = tr(cx, "native.hostStopped");
+    let description = trf(cx, "native.hostStoppedDetail", &[("reason", &reason)]);
+    let action = tr(cx, "native.restart");
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let store = store.clone();
         alert
@@ -127,14 +125,74 @@ pub fn host_exited(store: Entity<Store>, code: Option<i32>, window: &mut Window,
             .ok_text(action.clone())
             .cancel_text(tr(cx, "native.later"))
             .show_cancel(true)
-            .on_ok(move |_, window, cx| {
-                let handle = window.window_handle();
-                if is_ssh {
-                    store.update(cx, |store, cx| store.reconnect_ssh(handle, cx));
-                } else {
-                    store.update(cx, |store, cx| store.restart(cx));
-                }
+            .on_ok(move |_, _, cx| {
+                store.update(cx, |store, cx| store.restart(cx));
                 true
             })
+    });
+}
+
+/// Shown after silent SSH backoff reconnect is exhausted or rejected by authentication: lets the user retry,
+/// hot-swap back to local Windows, or dismiss and keep reading the window.
+pub fn host_exited_exhausted(window: &mut Window, cx: &mut App, detail: String) {
+    let store = Store::global(cx);
+    let target_label = store
+        .read(cx)
+        .target
+        .as_ref()
+        .map(|target| target.label().to_owned())
+        .unwrap_or_default();
+    let title = trf(cx, "native.sshLost", &[("target", &target_label)]);
+    let body = trf(cx, "ssh.reconnectExhaustedDetail", &[("error", &detail)]);
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let retry_store = store.clone();
+        let local_store = store.clone();
+        dialog
+            .title(title.clone())
+            .w(px(460.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().text_color(cx.theme().foreground).child(tr(cx, "ssh.reconnectExhausted")))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .max_h(px(120.))
+                            .overflow_hidden()
+                            .child(body.clone()),
+                    ),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        Button::new("ssh-exhausted-later")
+                            .outline()
+                            .label(tr(cx, "native.later"))
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("ssh-exhausted-local")
+                            .outline()
+                            .label(tr(cx, "ssh.switchLocal"))
+                            .on_click(move |_, window, cx| {
+                                let handle = window.window_handle();
+                                window.close_dialog(cx);
+                                local_store.update(cx, |store, cx| {
+                                    store.swap_target_in_place(ExecutionTarget::windows(), handle, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("ssh-exhausted-retry")
+                            .primary()
+                            .label(tr(cx, "ssh.retryNow"))
+                            .on_click(move |_, window, cx| {
+                                let handle = window.window_handle();
+                                window.close_dialog(cx);
+                                retry_store.update(cx, |store, cx| store.reconnect_ssh(handle, cx));
+                            }),
+                    ),
+            )
     });
 }

@@ -25,7 +25,7 @@ use lsp_types::{
 use rainy_carrier::lsp::{self, Answer, LspClient, LspIncoming, file_uri, uri_key, uri_path};
 use serde_json::{Value, json};
 
-use crate::store::Store;
+use crate::store::{Store, StoreEvent};
 use crate::store::ide::{Ide, IdeEvent};
 
 /// Pause after an edit before the server gets the new text.
@@ -141,6 +141,12 @@ impl LanguageServers {
                 }
             })
             .detach();
+            cx.subscribe(&store, |this: &mut Self, _, event: &StoreEvent, cx| {
+                if matches!(event, StoreEvent::HostReconnected(_)) {
+                    this.reconnect_all(cx);
+                }
+            })
+            .detach();
             LanguageServers {
             store,
             connections: HashMap::new(),
@@ -233,6 +239,27 @@ impl LanguageServers {
         self.documents.clear();
         self.retry_at.clear();
         self.phases.clear();
+        cx.notify();
+    }
+
+    /// Close old LSP sockets pointing at the previous Host port and reopen live documents on the new Host.
+    pub fn reconnect_all(&mut self, cx: &mut Context<Self>) {
+        for (_, connection) in self.connections.drain() {
+            connection.client.close();
+        }
+        self.retry_at.clear();
+        self.phases.clear();
+        let mut live_keys = Vec::new();
+        for (key, document) in &mut self.documents {
+            document.synced = None;
+            document.sync = None;
+            if document.editor.upgrade().is_some() {
+                live_keys.push(key.clone());
+            }
+        }
+        for key in live_keys {
+            self.open_document(&key, cx);
+        }
         cx.notify();
     }
 

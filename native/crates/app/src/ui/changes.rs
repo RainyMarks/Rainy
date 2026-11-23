@@ -36,7 +36,7 @@ pub struct ChangesBar {
 impl ChangesBar {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![cx.subscribe(&store, |this, store, event: &StoreEvent, cx| match event {
-            StoreEvent::SelectionChanged => {
+            StoreEvent::SelectionChanged | StoreEvent::HostReconnected(_) => {
                 this.session = store.read(cx).selected.clone();
                 this.changes.clear();
                 this.load(cx);

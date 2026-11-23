@@ -26,5 +26,6 @@ pub mod session;
 pub mod subagent;
 pub mod swarm;
 pub mod complete;
+pub mod external;
 pub mod inline;
 pub mod service;

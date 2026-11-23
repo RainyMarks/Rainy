@@ -7,6 +7,7 @@ mod control;
 mod credentials;
 mod env;
 mod error;
+mod experiments;
 mod git;
 mod ide;
 mod locale;
@@ -24,6 +25,7 @@ mod server;
 mod settings;
 mod store;
 mod strata;
+mod sysinfo;
 mod text;
 
 use std::sync::Arc;
@@ -76,6 +78,8 @@ pub struct Host {
     pub control: ControlInput,
     pub ide: std::sync::OnceLock<Arc<ide::Ide>>,
     pub maps: Arc<map::ProjectMaps>,
+    pub sysinfo: Arc<sysinfo::SysInfo>,
+    pub experiments: Arc<experiments::Experiments>,
 }
 
 fn main() {
@@ -143,7 +147,9 @@ async fn start() -> Result<()> {
     });
     let runtime = Runtime::new(env.clone(), projects.clone(), registry.clone(), activity.clone())?;
     let maps = Arc::new(map::ProjectMaps::new(projects.clone(), env.home.join("maps")));
-    let host = Arc::new(Host { env: env.clone(), settings, network, projects, registry, activity, rpc, server, runtime, control, ide: std::sync::OnceLock::new(), maps });
+    let sysinfo = Arc::new(sysinfo::SysInfo::new());
+    let experiments = Arc::new(experiments::Experiments::open(&env.home));
+    let host = Arc::new(Host { env: env.clone(), settings, network, projects, registry, activity, rpc, server, runtime, control, ide: std::sync::OnceLock::new(), maps, sysinfo, experiments });
     let _ = host.ide.set(ide::Ide::new(&host));
 
     register(&host);
@@ -322,6 +328,106 @@ fn register(host: &Arc<Host>) {
                 }
             });
         }
+    }
+    {
+        let host = host.clone();
+        rpc.register("host.metrics", move |params| {
+            let host = host.clone();
+            async move {
+                let mut watch_paths: Vec<String> = params
+                    .get("watchPaths")
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default();
+                if watch_paths.is_empty() {
+                    if let Some(first) = host.projects.list().first() {
+                        watch_paths.push(first.path.clone());
+                    }
+                }
+                let include_gpu_processes = params.get("includeGpuProcesses").and_then(Value::as_bool).unwrap_or(false);
+                let metrics = host.sysinfo.collect(&host.env, watch_paths, include_gpu_processes).await;
+                Ok(serde_json::to_value(metrics)?)
+            }
+        });
+    }
+    {
+        let host = host.clone();
+        rpc.register("host.ports", move |_| {
+            let host = host.clone();
+            async move {
+                let ports = host.sysinfo.listening_ports(host.server.port()).await;
+                Ok(serde_json::to_value(ports)?)
+            }
+        });
+    }
+    {
+        let experiments = host.experiments.clone();
+        rpc.register("experiments.list", move |_| {
+            let experiments = experiments.clone();
+            async move {
+                let result = tokio::task::spawn_blocking(move || experiments.list())
+                    .await
+                    .map_err(|error| HostError::other(error.to_string()))??;
+                Ok(serde_json::to_value(result)?)
+            }
+        });
+    }
+    {
+        let experiments = host.experiments.clone();
+        rpc.register("experiments.start", move |params| {
+            let experiments = experiments.clone();
+            async move {
+                let parsed: rainy_protocol::experiments::ExperimentStartParams =
+                    serde_json::from_value(params).map_err(|error| HostError::invalid(format!("Invalid experiment start request: {error}")))?;
+                let record = tokio::task::spawn_blocking(move || experiments.start(parsed))
+                    .await
+                    .map_err(|error| HostError::other(error.to_string()))??;
+                Ok(serde_json::to_value(record)?)
+            }
+        });
+    }
+    {
+        let experiments = host.experiments.clone();
+        rpc.register("experiments.stop", move |params| {
+            let experiments = experiments.clone();
+            async move {
+                let id = params["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("id is required"))?.to_owned();
+                let force = params["force"].as_bool().unwrap_or(false);
+                let record = tokio::task::spawn_blocking(move || experiments.stop(&id, force))
+                    .await
+                    .map_err(|error| HostError::other(error.to_string()))??;
+                Ok(serde_json::to_value(record)?)
+            }
+        });
+    }
+    {
+        let experiments = host.experiments.clone();
+        rpc.register("experiments.remove", move |params| {
+            let experiments = experiments.clone();
+            async move {
+                let id = params["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("id is required"))?.to_owned();
+                let id_copy = id.clone();
+                let removed = tokio::task::spawn_blocking(move || experiments.remove(&id_copy))
+                    .await
+                    .map_err(|error| HostError::other(error.to_string()))??;
+                Ok(json!({ "id": id, "removed": removed }))
+            }
+        });
+    }
+    {
+        let experiments = host.experiments.clone();
+        rpc.register("experiments.tail", move |params| {
+            let experiments = experiments.clone();
+            async move {
+                let id = params["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("id is required"))?.to_owned();
+                let offset = params["offset"].as_u64();
+                let max_bytes = params["maxBytes"].as_u64();
+                let result = tokio::task::spawn_blocking(move || experiments.tail(&id, offset, max_bytes))
+                    .await
+                    .map_err(|error| HostError::other(error.to_string()))??;
+                Ok(serde_json::to_value(result)?)
+            }
+        });
     }
     {
         let host_socket = host.rpc.clone();

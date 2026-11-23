@@ -110,7 +110,12 @@ pub fn build(inputs: &PromptInputs<'_>) -> String {
         };
         format!("Working directory: {cwd}. {shell}")
     } else if inputs.remote {
-        format!("Working directory: {cwd}. Commands execute in Bash on a remote Linux server reached over SSH; files and paths are on that server.")
+        let mut section = format!("Working directory: {cwd}. Commands execute in Bash on a remote Linux server reached over SSH; files and paths are on that server.");
+        if let Some(summary) = crate::sysinfo::remote_prompt_context() {
+            section.push('\n');
+            section.push_str(&summary);
+        }
+        section
     } else {
         format!("Working directory: {cwd}. Commands execute in Bash on Linux (WSL).")
     });
@@ -144,5 +149,24 @@ mod tests {
         assert!(prompt.contains("<untrusted-mcp-instructions server=\"db\">\nUse SQL.\n</untrusted-mcp-instructions>"));
         assert!(prompt.contains("Additional project directories: [\"/x\"]."));
         assert!(prompt.ends_with("Be brief.\n\nWorking directory: /w. Commands execute in Bash on Linux (WSL)."));
+    }
+
+    #[test]
+    fn remote_prompt_describes_ssh_and_appends_static_limits() {
+        let tools: Vec<String> = vec!["read".into(), "bash".into()];
+        let prompt = build(&PromptInputs {
+            cwd: "/root/kube-user/proj",
+            windows: false,
+            tools: &tools,
+            mcp_instructions: &[],
+            extra_roots: &[],
+            skills: "",
+            global_prompt: "",
+            remote: true,
+            powershell_core: None,
+            profile: Profile::of("claude-opus-5-5"),
+        });
+        assert!(prompt.contains("Working directory: /root/kube-user/proj. Commands execute in Bash on a remote Linux server reached over SSH"));
+        assert!(prompt.contains("Remote environment limits:"));
     }
 }

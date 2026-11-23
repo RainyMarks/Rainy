@@ -509,6 +509,50 @@ fn prune_windows_host(paths: &Paths) {
     }
 }
 
+/// Read the saved per-host research profile for an SSH target, if configured.
+pub fn ssh_profile(paths: &Paths, target: &ExecutionTarget) -> Option<targets::SshHostProfile> {
+    if !matches!(target, ExecutionTarget::Ssh { .. }) {
+        return None;
+    }
+    let preferences = targets::read_preferences(&paths.desktop_settings()).unwrap_or_default();
+    let profile = targets::ssh_host_profile(&preferences, target.id());
+    (!profile.is_empty()).then_some(profile)
+}
+
+/// Start the Host for a specific `target` (Windows, WSL, or SSH). When the Linux runtime could not be downloaded and
+/// the user chose to run on Windows instead, the Windows Host starts and Windows is recorded for later launches.
+pub fn start_target(
+    paths: &Paths,
+    target: ExecutionTarget,
+    events: Arc<CarrierEvents>,
+    askpass: Option<&Arc<Askpass>>,
+    modules: &Modules,
+    ask: &AskRuntime<'_>,
+    progress: &(dyn Fn(Step) + Sync),
+) -> Result<Started> {
+    let prepared = match &target {
+        ExecutionTarget::Windows { .. } => Some((windows_host(paths)?, None)),
+        ExecutionTarget::Wsl { .. } => wsl_host(paths, &target, modules, &events, ask, progress)?,
+        ExecutionTarget::Ssh { .. } => {
+            let askpass = askpass.with_context(|| i18n::text(saved_locale(&paths.user_data), "native.sshAskpassFailed"))?;
+            if let Some((host, prune)) = ssh_host(paths, &target, events.clone(), askpass, modules, ask, progress)? {
+                return Ok(Started { target, host, prune });
+            }
+            None
+        }
+    };
+    let Some((command, prune)) = prepared else {
+        progress(i18n::text(saved_locale(&paths.user_data), "native.starting").to_owned().into());
+        let host = start_host(&windows_host(paths)?, &events)?;
+        let fallback = ExecutionTarget::windows();
+        if let Err(error) = targets::save_target(&paths.desktop_settings(), &fallback) {
+            log::warn!("The execution target was not saved: {error:#}");
+        }
+        return Ok(Started { target: fallback, host, prune: None });
+    };
+    Ok(Started { host: start_host(&command, &events)?, target, prune })
+}
+
 /// The target this launch uses, and its Host once it is ready. When the Linux runtime could not be downloaded and the
 /// user chose to run on Windows instead, the Windows Host starts and Windows is recorded for later launches.
 pub fn start(
@@ -521,27 +565,7 @@ pub fn start(
 ) -> Result<Started> {
     let preferences = targets::recover_preferences(&paths.desktop_settings())?;
     let saved = targets::saved_target(&preferences).unwrap_or_else(|_| ExecutionTarget::windows());
-    let prepared = match &saved {
-        ExecutionTarget::Windows { .. } => Some((windows_host(paths)?, None)),
-        ExecutionTarget::Wsl { .. } => wsl_host(paths, &saved, modules, &events, ask, progress)?,
-        ExecutionTarget::Ssh { .. } => {
-            let askpass = askpass.with_context(|| i18n::text(saved_locale(&paths.user_data), "native.sshAskpassFailed"))?;
-            if let Some((host, prune)) = ssh_host(paths, &saved, events.clone(), askpass, modules, ask, progress)? {
-                return Ok(Started { target: saved, host, prune });
-            }
-            None
-        }
-    };
-    let Some((command, prune)) = prepared else {
-        progress(i18n::text(saved_locale(&paths.user_data), "native.starting").to_owned().into());
-        let host = start_host(&windows_host(paths)?, &events)?;
-        let target = ExecutionTarget::windows();
-        if let Err(error) = targets::save_target(&paths.desktop_settings(), &target) {
-            log::warn!("The execution target was not saved: {error:#}");
-        }
-        return Ok(Started { target, host, prune: None });
-    };
-    Ok(Started { host: start_host(&command, &events)?, target: saved, prune })
+    start_target(paths, saved, events, askpass, modules, ask, progress)
 }
 
 /// Start a Windows or WSL Host; one that stops before it is ready is explained with the last lines it (or wsl.exe)
@@ -582,6 +606,7 @@ fn ssh_host(
 ) -> Result<Option<(HostProcess, Option<Prune>)>> {
     let locale = saved_locale(&paths.user_data);
     let destination = ssh::destination_of(target)?;
+    let profile = ssh_profile(paths, target);
     let name = ssh::name(&destination);
     progress(i18n::format(locale, "native.sshConnecting", &[("target", &target.label())]).into());
     let mut files = runtime_files(paths, modules);
@@ -614,7 +639,7 @@ fn ssh_host(
 
     // Fast path: zero-upload probe first; if this version's runtime is already on the server, skip downloading
     // and uploading `linux-app.tar.gz` completely and prune old versions on the same connection.
-    let probe = run_ssh(&|env| ssh::probe_runtime(&destination, &files, env, paths.packaged(), &log))?;
+    let probe = run_ssh(&|env| ssh::probe_runtime_with_profile(&destination, &files, env, paths.packaged(), profile.as_ref(), &log))?;
     let (host, pruned_during_probe) = match probe {
         RuntimeProbe::Ready { host } => (host, true),
         RuntimeProbe::Unsupported(system) => return Err(ssh::unsupported_error(&destination, &system)),
@@ -640,7 +665,7 @@ fn ssh_host(
                     },
                 })
             };
-            let mut answer = installer(&|env| ssh::fetch_runtime(&destination, &files, &pieces, env, &report, &log))?;
+            let mut answer = installer(&|env| ssh::fetch_runtime_with_profile(&destination, &files, &pieces, env, profile.as_ref(), &report, &log))?;
             let mut uploaded = false;
             if let ServerRuntime::NeedsArchive { error } = &answer {
                 if let Some(error) = error {
@@ -655,7 +680,7 @@ fn ssh_host(
                         modules.path(LINUX_RUNTIME)?
                     }
                 };
-                answer = installer(&|env| ssh::receive_runtime(&destination, &files, &base, env, &report, &log))?;
+                answer = installer(&|env| ssh::receive_runtime_with_profile(&destination, &files, &base, env, profile.as_ref(), &report, &log))?;
                 uploaded = true;
             }
             let host = ssh::installed_paths(&destination, answer, uploaded)?;
@@ -670,18 +695,19 @@ fn ssh_host(
     let env = shared_env(target);
     let recent_events = events.clone();
     let clear_events = events.clone();
-    let process = ssh::start_host_process(
+    let process = ssh::start_host_process_with_profile(
         &destination,
         &host,
         &env,
+        profile.as_ref(),
         askpass,
         events.clone(),
         &move || recent_events.recent(),
         &move || clear_events.clear_recent(),
     )?;
     let prune = (paths.packaged() && !pruned_during_probe).then(|| {
-        let (askpass, destination, files, events) = (askpass.clone(), destination.clone(), files.clone(), events.clone());
-        Box::new(move || match ssh::prune_runtimes(&destination, &files, askpass.session().env()) {
+        let (askpass, destination, files, events, profile) = (askpass.clone(), destination.clone(), files.clone(), events.clone(), profile.clone());
+        Box::new(move || match ssh::prune_runtimes_with_profile(&destination, &files, askpass.session().env(), profile.as_ref()) {
             Ok(removed) if !removed.is_empty() => events.write_log(&format!("Removed {} Linux runtimes that earlier versions installed", removed.len())),
             Ok(_) => {}
             Err(error) => events.write_log(&format!("Earlier Linux runtimes were not removed: {error:#}")),
@@ -700,15 +726,17 @@ pub fn reconnect_ssh(
     previous: Option<(&str, u32)>,
 ) -> Result<ReconnectOutcome> {
     let destination = ssh::destination_of(target)?;
+    let profile = ssh_profile(paths, target);
     let files = runtime_files(paths, modules);
     let env = shared_env(target);
     let recent_events = events.clone();
     let clear_events = events.clone();
     let log_events = events.clone();
-    ssh::reconnect_host(
+    ssh::reconnect_host_with_profile(
         &destination,
         &files,
         &env,
+        profile.as_ref(),
         askpass,
         events,
         previous,

@@ -213,11 +213,13 @@ pub struct SettingsData {
     pub proxy: Option<ProxySettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<crate::agent::hooks::HookRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_agents: Vec<rainy_protocol::chat::ExternalAgentConfig>,
 }
 
 impl Default for SettingsData {
     fn default() -> Self {
-        Self { version: 1, models: Vec::new(), selected: None, global_prompt: String::new(), mcp_servers: Vec::new(), ui: Map::new(), workbench: None, security: None, proxy: None, hooks: Vec::new() }
+        Self { version: 1, models: Vec::new(), selected: None, global_prompt: String::new(), mcp_servers: Vec::new(), ui: Map::new(), workbench: None, security: None, proxy: None, hooks: Vec::new(), external_agents: Vec::new() }
     }
 }
 
@@ -382,6 +384,12 @@ fn check_data(data: &SettingsData) -> HostResult<()> {
     for hook in &data.hooks {
         crate::agent::hooks::check_rule(hook)?;
     }
+    if data.external_agents.len() > 32 {
+        return Err(HostError::invalid(l("外部代理配置数量超过上限。", "Too many external agent entries.")));
+    }
+    for ext in &data.external_agents {
+        crate::agent::external::check_external_agent(ext)?;
+    }
     Ok(())
 }
 
@@ -419,6 +427,12 @@ fn salvage(raw: Option<Value>) -> SettingsData {
             .take(crate::agent::hooks::MAX_HOOKS)
             .filter_map(|item| serde_json::from_value(item).ok())
             .filter(|hook| crate::agent::hooks::check_rule(hook).is_ok())
+            .collect(),
+        external_agents: each("externalAgents")
+            .into_iter()
+            .take(32)
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .filter(|ext| crate::agent::external::check_external_agent(ext).is_ok())
             .collect(),
         ..SettingsData::default()
     };
@@ -835,5 +849,39 @@ mod tests {
         assert!(reloaded.is_workspace_trusted(Some("w"), Some(&project_dir)));
         reloaded.set_workspace_trusted(&project_dir.to_string_lossy(), false).unwrap();
         assert!(!reloaded.is_workspace_trusted(Some("w"), Some(&project_dir)));
+    }
+
+    #[test]
+    fn persists_and_salvages_external_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings::load(dir.path(), None).unwrap();
+        settings
+            .update(|data| {
+                data.external_agents.push(rainy_protocol::chat::ExternalAgentConfig {
+                    kind: "codex".into(),
+                    enabled: true,
+                    binary: Some("/usr/local/bin/codex".into()),
+                    args: Vec::new(),
+                    label: None,
+                    default_model: Some("gpt-5.3-codex".into()),
+                    default_thinking: Some("high".into()),
+                });
+                Ok(())
+            })
+            .unwrap();
+        let reloaded = Settings::load(dir.path(), None).unwrap();
+        assert_eq!(reloaded.get().external_agents.len(), 1);
+        assert_eq!(reloaded.get().external_agents[0].kind, "codex");
+        // Salvage drops invalid custom ACP entries while preserving valid ones.
+        let salvaged = salvage(Some(json!({
+            "version": 1,
+            "externalAgents": [
+                { "kind": "antigravity", "enabled": true, "args": ["acp"] },
+                { "kind": "BAD KIND!", "enabled": true },
+                { "kind": "custom-acp", "enabled": true }
+            ]
+        })));
+        assert_eq!(salvaged.external_agents.len(), 1);
+        assert_eq!(salvaged.external_agents[0].kind, "antigravity");
     }
 }

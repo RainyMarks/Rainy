@@ -60,6 +60,7 @@ pub struct ModelsPage {
     failure: Option<SharedString>,
     busy: bool,
     loaded: bool,
+    external_agents: Entity<super::external_agents::ExternalAgentsCard>,
     proxy: Entity<super::models_extra::ProxyCard>,
     _subscriptions: Vec<Subscription>,
 }
@@ -73,13 +74,15 @@ impl ModelsPage {
         let placeholder = tr(cx, "settings.settingsGlobalPromptPlaceholder");
         let prompt = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).placeholder(placeholder));
         let subscriptions = vec![cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
-            if *event == StoreEvent::PrefsChanged {
+            if matches!(event, StoreEvent::PrefsChanged) {
                 this.load_saved(window, cx);
             }
             cx.notify();
         })];
+        let external_agents = cx.new(|cx| super::external_agents::ExternalAgentsCard::new(store.clone(), window, cx));
         let proxy = cx.new(|cx| super::models_extra::ProxyCard::new(store.clone(), window, cx));
         let mut page = Self {
+            external_agents,
             proxy,
             provider: input(window, cx),
             model: input(window, cx),
@@ -741,6 +744,7 @@ impl Render for ModelsPage {
             )
             .children(list)
             .child(form)
+            .child(self.external_agents.clone())
             .child(
                 h_flex()
                     .gap_3()

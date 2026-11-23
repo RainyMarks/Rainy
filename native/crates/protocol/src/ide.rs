@@ -411,6 +411,32 @@ pub struct OfficePdfRegistration {
     pub expires_in_secs: u64,
 }
 
+/// Incremental tail slice of a workspace file (`ide` op `files.tail`), used for live-following large training logs.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTailResult {
+    pub workspace_id: String,
+    pub path: String,
+    pub text: String,
+    pub offset: u64,
+    pub next_offset: u64,
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub reset: bool,
+}
+
+/// Response of `POST /rainy/ide/upload`: confirms the uploaded workspace file's path, size and version.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadResult {
+    pub workspace_id: String,
+    pub path: String,
+    pub bytes: u64,
+    pub version: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

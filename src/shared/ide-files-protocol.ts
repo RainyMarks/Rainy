@@ -55,6 +55,26 @@ export interface OfficePdfRegistration {
   readonly expiresInSecs: number
 }
 
+/** Incremental tail slice of a workspace file (`ide` op `files.tail`), used for live-following large training logs. */
+export interface FileTailResult {
+  readonly workspaceId: WorkspaceId
+  readonly path: string
+  readonly text: string
+  readonly offset: number
+  readonly nextOffset: number
+  readonly totalBytes: number
+  readonly truncated: boolean
+  readonly reset: boolean
+}
+
+/** Response of `POST /rainy/ide/upload`: confirms the uploaded workspace file's path, size and version. */
+export interface FileUploadResult {
+  readonly workspaceId: WorkspaceId
+  readonly path: string
+  readonly bytes: number
+  readonly version: string
+}
+
 /** File operations pages send through the `ide` RPC method. */
 export type IdeFilesRequest =
   | { readonly op: 'workspaces.list' }
@@ -62,6 +82,8 @@ export type IdeFilesRequest =
   | { readonly op: 'files.mkdir'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string }
   /** A new file with binary content, such as an image pasted into a Markdown document; `base64` holds its bytes. */
   | { readonly op: 'files.createBinary'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly base64: string }
+  /** Incremental tail slice of a workspace file, for live-following large training logs. */
+  | { readonly op: 'files.tail'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly offset?: number | undefined; readonly maxBytes?: number | undefined }
   | { readonly op: 'officePdf.register'; readonly path: string; readonly deleteAfterRead?: boolean | undefined }
 
 /** Successful results keyed by request operation. */
@@ -70,5 +92,6 @@ export interface IdeFilesResults {
   'files.list': IdeDirectory
   'files.mkdir': IdeFileEntry
   'files.createBinary': IdeFileEntry
+  'files.tail': FileTailResult
   'officePdf.register': OfficePdfRegistration
 }

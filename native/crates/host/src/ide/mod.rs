@@ -74,6 +74,11 @@ impl Ide {
             "/rainy/ide/raw",
             Arc::new(move |request, url| Box::pin(raw::serve(raw_files.clone(), activity.clone(), request, url))),
         );
+        let (upload_files, upload_server, upload_activity) = (ide.files.clone(), host.server.clone(), host.activity.clone());
+        host.server.route(
+            "/rainy/ide/upload",
+            Arc::new(move |request, url| Box::pin(raw::serve_upload(upload_files.clone(), upload_server.clone(), upload_activity.clone(), request, url))),
+        );
         let (pdf_store, server) = (ide.office_pdf.clone(), host.server.clone());
         host.server.route(
             "/rainy/ide/office-pdf",

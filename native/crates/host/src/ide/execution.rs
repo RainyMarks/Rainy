@@ -385,13 +385,18 @@ impl Execution {
         let root = self.workspace_root(workspace_id, request["rootId"].as_str(), files)?;
         let cwd = workspace_path(&root, request["cwd"].as_str().unwrap_or("."), Some("directory"))?;
         let runtime = self.runtime.resolve_workspace(workspace_id).ok();
-        let environment = runtime.as_ref().map(|runtime| runtime.environment.clone()).unwrap_or_default();
+        // Apply per-host SSH env preset first so project-selected interpreter PATH overrides stay authoritative.
+        let mut environment = crate::experiments::ssh_extra_env();
+        if let Some(runtime) = &runtime {
+            environment.extend(runtime.environment.clone());
+        }
         let argv = if cfg!(windows) {
             let (shell, _) = resolve_powershell(self.pwsh_path.as_deref(), runtime.as_ref().and_then(|runtime| runtime.powershell.as_deref()));
             vec![shell.display().to_string(), "-NoLogo".into(), "-NoProfile".into()]
         } else {
             let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/bash".into());
-            vec![executable(Some(&shell).filter(|shell| shell.starts_with('/')).map(String::as_str), "bash", &environment)?, "--noprofile".into(), "--norc".into(), "-i".into()]
+            let resolved = executable(Some(&shell).filter(|shell| shell.starts_with('/')).map(String::as_str), "bash", &environment)?;
+            unix_terminal_argv(&resolved)
         };
         self.reserve()?;
         let snapshot = json!({ "workspaceId": workspace_id, "cwd": cwd, "phase": "starting" });
@@ -612,9 +617,28 @@ impl Execution {
     }
 }
 
+fn unix_terminal_argv(shell: &str) -> Vec<String> {
+    // Keep interactive rc/profile loading intact so conda, CUDA and mirror env vars survive, and avoid bash-only
+    // flags (`--noprofile`, `--norc`) that cause zsh and fish to fail on startup.
+    let name = std::path::Path::new(shell).file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
+    match name.as_str() {
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ash" => vec![shell.to_owned(), "-i".into()],
+        _ => vec![shell.to_owned(), "-i".into()],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unix_terminal_argv_keeps_user_rc_and_supports_zsh_and_fish() {
+        for shell in ["/bin/bash", "/usr/bin/zsh", "/usr/bin/fish", "/bin/sh"] {
+            let argv = unix_terminal_argv(shell);
+            assert_eq!(argv, vec![shell.to_owned(), "-i".to_owned()]);
+            assert!(!argv.iter().any(|arg| arg == "--noprofile" || arg == "--norc"));
+        }
+    }
 
     #[test]
     fn dimension_rejects_overflow_and_zero() {

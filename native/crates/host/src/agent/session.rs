@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use rainy_protocol::chat::{
-    AssistantBlock, AssistantMessage, ChatChange, ContextBreakdown, ContextBreakdownSegments, ContextUsage, ImageContent, PendingApproval, QueuedMessage, ResultContent, RetryWait, RevertFailure,
-    RevertResult, SessionSnapshot, SessionStateEvent, SessionSummary, TranscriptEntry, UsageSummary,
+    AssistantBlock, AssistantMessage, ChatChange, ContextBreakdown, ContextBreakdownSegments, ContextUsage, ExternalBackendRef, ImageContent, PendingApproval, QueuedMessage, ResultContent,
+    RetryWait, RevertFailure, RevertResult, SessionSnapshot, SessionStateEvent, SessionSummary, TranscriptEntry, UsageSummary,
 };
 use regex::Regex;
 use serde_json::{Value, json};
@@ -21,6 +21,7 @@ use super::budget::{Budget, Calibration, Reported, estimate_breakdown, estimate_
 use super::changes::{self, change_text, line_counts, path_for_model, path_key};
 use super::compaction::{self, CompactionRequest, SHARED_CACHE_WINDOW_MS, Strategy, add_usage, usage_of};
 use super::context::{build_context, cleared_ids, model_user_text};
+use super::external::{ApprovalDecision, ExternalEvent, ExternalManager, ExternalTurnHandle, TurnRequest, external_provider_id};
 use super::hooks::{self, HookContext, PreHookOutcome};
 use super::instructions::{load_baseline, loaded_from, render_additional, render_baseline};
 use super::llm::{self, Level, Message, Part, UserContent, context_overflow, text_parts};
@@ -95,6 +96,8 @@ pub struct Services {
     pub ide_tools: Option<crate::ide::tools::Tools>,
     /// Shared ProjectMap index (used by `module_deps`).
     pub maps: Arc<crate::map::ProjectMaps>,
+    /// External CLI agent harness (`codex app-server --stdio`, `agy acp`, custom ACP).
+    pub external: Arc<ExternalManager>,
 }
 
 /// Title from the first message: control characters removed, at most five words and 40 bytes.
@@ -195,6 +198,7 @@ pub enum Meta {
 /// this step.
 enum Answer {
     Allow,
+    AllowSession,
     Refuse { text: String, stop: bool, by: Option<&'static str> },
 }
 
@@ -269,6 +273,12 @@ struct Inner {
     phase_sent: Option<Phase>,
     tool_errors: u32,
     phase_note: Option<String>,
+    /// Live control handle when an external CLI agent turn is running.
+    external_turn: Option<ExternalTurnHandle>,
+    /// Latest unified diff reported by an external agent (e.g. Codex `turn/diff/updated`).
+    external_diff: Option<String>,
+    /// Queued user prompts for an external agent chat, keyed by `QueuedMessage::id`.
+    external_pending: HashMap<String, (String, Vec<ImageContent>)>,
 }
 
 /// A loaded chat.
@@ -340,6 +350,9 @@ impl Session {
                     refused: HashMap::new(),
                     phase_sent: None,
                     tool_errors: 0,
+                    external_turn: None,
+                    external_diff: None,
+                    external_pending: HashMap::new(),
                 }),
                 services,
                 observations: Arc::default(),
@@ -374,12 +387,31 @@ impl Session {
 
     /// The chat's own model while it is still saved; after it is removed or renamed the chat follows the default.
     fn own_model(&self) -> Option<ModelSelection> {
-        let own = self.chat().model?;
+        let chat = self.chat();
+        if let Some(backend) = chat.external_backend {
+            if let Some(own) = chat.model {
+                return Some(own);
+            }
+            let configured = self.services.settings.get().external_agents.into_iter().find(|c| c.kind == backend.kind);
+            return Some(ModelSelection {
+                provider: external_provider_id(&backend.kind),
+                model: configured
+                    .as_ref()
+                    .and_then(|c| c.default_model.clone())
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| "default".into()),
+                thinking: configured.and_then(|c| c.default_thinking),
+            });
+        }
+        let own = chat.model?;
         self.services.settings.get().models.iter().any(|model| model.provider == own.provider && model.model == own.model).then_some(own)
     }
 
     /// The model this chat uses: its own choice, else the default.
     pub fn selection(&self) -> Option<ModelSelection> {
+        if self.chat().external_backend.is_some() {
+            return self.own_model();
+        }
         self.own_model().or_else(|| self.services.settings.get().selected)
     }
 
@@ -462,6 +494,12 @@ impl Session {
 
     /// Turn orchestration on with `executor`, or off; a running chat takes it at its next request.
     pub async fn set_orchestrate(&self, executor: Option<&ModelSelection>) -> HostResult<Option<ModelSelection>> {
+        if self.chat().external_backend.is_some() && executor.is_some() {
+            return Err(HostError::invalid(l(
+                "外部 Agent 对话由外部 CLI 自主编排，不支持双模型协作模式。",
+                "External agent chats are orchestrated by the external CLI and do not support dual-model orchestration.",
+            )));
+        }
         let stored = match executor {
             Some(selection) => Some(
                 self.services
@@ -495,6 +533,12 @@ impl Session {
 
     /// Detailed per-segment token breakdown for `session.contextBreakdown` / `usage_ring`.
     pub fn context_breakdown(&self) -> HostResult<ContextBreakdown> {
+        if self.chat().external_backend.is_some() {
+            return Err(HostError::new(
+                "unsupported",
+                l("外部 Agent 对话的上下文由外部 CLI 自行管理，暂不提供分段统计。", "Context for external agent chats is managed by the external CLI; per-segment breakdown is unavailable."),
+            ));
+        }
         let resolved = self.request_resolved().or_else(|| self.resolved()).ok_or_else(no_model)?;
         let budget = resolve_budget(resolved.setup.context_window, resolved.setup.max_tokens)?;
         let tools = self.tools();
@@ -580,6 +624,9 @@ impl Session {
         }
         if self.inner.lock().unwrap().closing {
             return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+        }
+        if let Some(backend) = self.chat().external_backend {
+            return self.send_external(backend, text, images, steer).await;
         }
         let resolved = self.resolved().ok_or_else(no_model)?;
         if let Some(task) = super::swarm::swarm_command(text) {
@@ -712,11 +759,12 @@ impl Session {
 
     /// Stop the run; queued and steered messages are discarded.
     pub fn abort(&self) {
-        {
+        let external_turn = {
             let mut inner = self.inner.lock().unwrap();
             inner.queue.clear();
             inner.pending.clear();
             inner.steering.clear();
+            inner.external_pending.clear();
             if let Some(run) = &mut inner.run {
                 run.aborted = true;
                 run.cancel.cancel();
@@ -724,6 +772,12 @@ impl Session {
             if let Some(wake) = inner.retry_wake.take() {
                 let _ = wake.send(false);
             }
+            inner.external_turn.clone()
+        };
+        if let Some(turn) = external_turn
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            handle.spawn(async move { turn.interrupt().await });
         }
         self.publish_state();
     }
@@ -737,6 +791,20 @@ impl Session {
         if self.running() {
             return Err(busy("请等待当前任务结束后再重试。", "Wait for the current task to finish before retrying."));
         }
+        if let Some(backend) = self.chat().external_backend {
+            let last_user = {
+                let inner = self.inner.lock().unwrap();
+                inner.entries.iter().rev().find_map(|entry| match entry {
+                    TranscriptEntry::User { text, images, .. } => Some((text.clone(), images.clone().unwrap_or_default())),
+                    _ => None,
+                })
+            };
+            let Some((text, images)) = last_user else {
+                return Err(HostError::new("invalid", l("没有需要重试的请求。", "There is no request to retry.")));
+            };
+            self.start_external_run(backend, text, images, false).await?;
+            return Ok(());
+        }
         let history = build_context(&self.inner.lock().unwrap().entries);
         if history.last().is_none_or(|item| matches!(item.message, Message::Assistant(_))) {
             return Err(HostError::new("invalid", l("没有需要重试的请求。", "There is no request to retry.")));
@@ -748,7 +816,7 @@ impl Session {
     pub fn unqueue(&self, id: &str) -> Vec<QueuedMessage> {
         let queue = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.pending.remove(id).is_some() {
+            if inner.pending.remove(id).is_some() || inner.external_pending.remove(id).is_some() {
                 inner.queue.retain(|item| item.id != id);
             }
             inner.queue.clone()
@@ -763,11 +831,15 @@ impl Session {
             return Err(HostError::invalid("Unknown permission mode."));
         }
         let chat = self.services.store.set_meta(&self.id, MetaPatch { permission: Some(mode.to_owned()), ..MetaPatch::default() }).await?;
-        let waiting: Vec<String> = {
+        let (waiting, external_turn): (Vec<String>, Option<ExternalTurnHandle>) = {
             let mut inner = self.inner.lock().unwrap();
             inner.chat = chat;
-            inner.approvals.iter().map(|item| item.approval.tool_call_id.clone()).collect()
+            (inner.approvals.iter().map(|item| item.approval.tool_call_id.clone()).collect(), inner.external_turn.clone())
         };
+        if let Some(turn) = external_turn {
+            let mode = mode.to_owned();
+            tokio::spawn(async move { turn.update_permission(&mode).await });
+        }
         for id in waiting {
             match mode {
                 "auto" => self.settle(&id, Answer::Allow),
@@ -784,7 +856,8 @@ impl Session {
     pub fn approve(&self, tool_call_id: &str, decision: &str, reason: Option<&str>) -> HostResult<()> {
         let approval = self.inner.lock().unwrap().approvals.iter().find(|item| item.approval.tool_call_id == tool_call_id).map(|item| item.approval.clone());
         let approval = approval.ok_or_else(|| HostError::new("not-found", l("这个操作已不在等待批准。", "This action is no longer waiting for approval.")))?;
-        if decision == "always" {
+        let is_external = self.chat().external_backend.is_some();
+        if decision == "always" && !is_external {
             let workspace = self.chat().workspace_id;
             let (Some(rule), Some(workspace)) = (approval.rule.as_deref(), workspace) else {
                 return Err(HostError::new("invalid", l("这个操作只能单次允许。", "This action can only be allowed once.")));
@@ -793,13 +866,30 @@ impl Session {
             self.services.settings.set_permission_rule(&workspace, command, rule, true)?;
         }
         let said = reason.unwrap_or_default().trim();
-        let answer = if decision == "deny" { refusal(denial_text(said), said.is_empty(), Some("user")) } else { Answer::Allow };
+        let answer = match decision {
+            "deny" => refusal(denial_text(said), said.is_empty(), Some("user")),
+            "always" if is_external => Answer::AllowSession,
+            _ => Answer::Allow,
+        };
         self.settle(tool_call_id, answer);
         Ok(())
     }
 
     /// Choose the model for this chat's next requests; a running chat takes it at its next request.
     pub async fn set_model(&self, selection: &ModelSelection) -> HostResult<ModelSelection> {
+        if let Some(backend) = self.chat().external_backend {
+            let model_id = selection.model.trim();
+            let stored = ModelSelection {
+                provider: external_provider_id(&backend.kind),
+                model: if model_id.is_empty() { "default".into() } else { model_id.to_owned() },
+                thinking: selection.thinking.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+            };
+            let chat = self.services.store.set_meta(&self.id, MetaPatch { model: Some(Some(stored.clone())), ..MetaPatch::default() }).await?;
+            self.inner.lock().unwrap().chat = chat;
+            self.publish_state();
+            self.services.rpc.emit("sessions.changed", self.summary());
+            return Ok(stored);
+        }
         let resolved = self
             .services
             .models
@@ -829,6 +919,12 @@ impl Session {
 
     /// Compact the chat now (`/compact`); a message for the user.
     pub async fn compact_now(&self) -> HostResult<String> {
+        if self.chat().external_backend.is_some() {
+            return Err(HostError::invalid(l(
+                "外部 Agent 对话的上下文压缩由外部 CLI 自行处理。",
+                "Context compaction for external agent chats is managed by the external CLI.",
+            )));
+        }
         if self.running() {
             return Err(busy("请等待当前任务结束后再压缩。", "Wait for the current task to finish before compacting."));
         }
@@ -864,6 +960,9 @@ impl Session {
             let _ = task.await;
         }
         self.jobs.close().await;
+        if self.chat().external_backend.is_some() {
+            self.services.external.close_session(&self.id).await;
+        }
     }
 
     // ── changes ──
@@ -881,7 +980,11 @@ impl Session {
 
     fn pending_changes(&self) -> Vec<changes::Group> {
         let inner = self.inner.lock().unwrap();
-        changes::pending(&inner.entries, &inner.kept, &inner.chat.cwd)
+        if inner.chat.external_backend.is_some() {
+            changes::pending_external(&inner.entries, &inner.kept, &inner.chat.cwd, inner.external_diff.as_deref())
+        } else {
+            changes::pending(&inner.entries, &inner.kept, &inner.chat.cwd)
+        }
     }
 
     /// Undo file changes of this chat by their change ids, newest first; a file that changed after the call is left alone.
@@ -944,11 +1047,23 @@ impl Session {
     fn read_changes(&self) -> Vec<ChatChange> {
         use std::io::Read as _;
         let lineage = self.lineage();
-        let cwd = self.chat().cwd;
+        let chat = self.chat();
+        let cwd = chat.cwd;
+        let is_external = chat.external_backend.is_some();
         let mut result = Vec::new();
         for group in self.pending_changes() {
             let first = &group.calls[0];
-            let before = if first.created { Some(None) } else { self.services.snapshots.original(&lineage, &first.id) };
+            let before = if first.created {
+                Some(None)
+            } else {
+                self.services.snapshots.original(&lineage, &first.id).or_else(|| {
+                    if is_external {
+                        changes::git_head_content(Path::new(&cwd), Path::new(&group.path)).map(Some)
+                    } else {
+                        None
+                    }
+                })
+            };
             // A file larger than the compared text is read only far enough to tell.
             let current = std::fs::File::open(&group.path).ok().and_then(|file| {
                 let mut bytes = Vec::new();
@@ -995,10 +1110,22 @@ impl Session {
             .find(|group| path_key(&group.path) == key)
             .ok_or_else(|| HostError::new("not-found", l("这个文件没有待审查的改动。", "This file has no changes to review.")))?;
         let first = &group.calls[0];
+        let chat = self.chat();
+        let is_external = chat.external_backend.is_some();
         let base = if first.created {
             Some(String::new())
         } else {
-            self.services.snapshots.original(&self.lineage(), &first.id).and_then(|before| before.map_or(Some(String::new()), |bytes| change_text(&bytes)))
+            self.services
+                .snapshots
+                .original(&self.lineage(), &first.id)
+                .or_else(|| {
+                    if is_external {
+                        changes::git_head_content(Path::new(&chat.cwd), Path::new(&group.path)).map(Some)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|before| before.map_or(Some(String::new()), |bytes| change_text(&bytes)))
         };
         let base = base.ok_or_else(|| HostError::new("unavailable", l("改动前的内容没有保留，无法对比。", "The content before the change is not kept, so it cannot be compared.")))?;
         Ok((base, std::fs::read(&group.path).ok().and_then(|bytes| change_text(&bytes))))
@@ -1140,6 +1267,453 @@ impl Session {
                 None => break,
             }
         }
+    }
+
+    // ── external CLI agent run ──
+
+    /// Send a user message to an external CLI agent (`codex app-server --stdio` or ACP such as `agy acp`).
+    async fn send_external(self: &Arc<Self>, backend: ExternalBackendRef, text: &str, images: Vec<ImageContent>, steer: bool) -> HostResult<bool> {
+        if super::swarm::swarm_command(text).is_some() {
+            return Err(HostError::invalid(l(
+                "外部 Agent 对话不支持 Rainy 内置 /swarm，请切换到内置模型对话使用。",
+                "External agent chats do not support Rainy's built-in /swarm. Switch to a built-in model chat instead.",
+            )));
+        }
+        let mut steer = steer;
+        if self.running() {
+            let waiting: Vec<String> = self.inner.lock().unwrap().approvals.iter().map(|item| item.approval.tool_call_id.clone()).collect();
+            if !waiting.is_empty() {
+                steer = true;
+            }
+            for id in waiting {
+                self.settle(&id, refusal(SUPERSEDED, false, Some("user")));
+            }
+            if steer && images.is_empty() {
+                let live_turn = self.inner.lock().unwrap().external_turn.clone();
+                if let Some(handle) = live_turn
+                    && matches!(handle.steer(text).await, Ok(true))
+                {
+                    self.append(TranscriptEntry::User {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        ts: now_ms() as f64,
+                        text: text.to_owned(),
+                        images: None,
+                    })
+                    .await;
+                    return Ok(false);
+                }
+            }
+            let queue_id = uuid::Uuid::new_v4().to_string();
+            let image_count = images.len() as u32;
+            {
+                let mut inner = self.inner.lock().unwrap();
+                inner.queue.push(QueuedMessage { id: queue_id.clone(), text: text.to_owned(), mode: "queue".into(), image_count });
+                inner.external_pending.insert(queue_id, (text.to_owned(), images));
+            }
+            self.publish_state();
+            return Ok(true);
+        }
+        self.start_external_run(backend, text.to_owned(), images, true).await?;
+        Ok(false)
+    }
+
+    async fn start_external_run(self: &Arc<Self>, backend: ExternalBackendRef, text: String, images: Vec<ImageContent>, append_user: bool) -> HostResult<()> {
+        if self.inner.lock().unwrap().closing {
+            return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+        }
+        self.services.activity.assert_can_start()?;
+        if self.chat().title.is_empty() {
+            let chat = self.services.store.set_default_title(&self.id, &fallback_title(&text)).await?;
+            self.inner.lock().unwrap().chat = chat;
+        }
+        if append_user && self.services.settings.prefs().get("autoKeepChanges").and_then(Value::as_bool) == Some(true) {
+            let ids: Vec<String> = self.pending_changes().into_iter().flat_map(|group| group.calls.into_iter().map(|call| call.id)).collect();
+            if let Err(error) = self.keep(&ids).await {
+                log::warn!("[review] {error}");
+            }
+        }
+        let cancel = CancellationToken::new();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.closing {
+                return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+            }
+            inner.run = Some(RunInfo {
+                started: now_ms(),
+                from: inner.entries.len(),
+                requests: 0,
+                usage: UsageSummary::default(),
+                aborted: false,
+                overflow_retried: false,
+                retries: 0,
+                cancel: cancel.clone(),
+            });
+            inner.error = None;
+            inner.external_diff = None;
+        }
+        self.set_status("running");
+        self.services.memory.interrupt();
+        let this = self.clone();
+        let task = tokio::spawn(async move { this.drive_external(backend, text, images, append_user, cancel).await });
+        *self.task.lock().unwrap() = Some(task);
+        Ok(())
+    }
+
+    async fn drive_external(self: Arc<Self>, backend: ExternalBackendRef, mut text: String, mut images: Vec<ImageContent>, mut append_user: bool, mut cancel: CancellationToken) {
+        loop {
+            if append_user {
+                let stored_images = (!images.is_empty()).then(|| images.clone());
+                self.append(TranscriptEntry::User {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    ts: now_ms() as f64,
+                    text: text.clone(),
+                    images: stored_images,
+                })
+                .await;
+            }
+            let temp_images = self.write_external_images(&images);
+            let chat = self.chat();
+            let sel = self.selection();
+            let req = TurnRequest {
+                backend: backend.clone(),
+                cwd: PathBuf::from(&chat.cwd),
+                thread_id: chat.external_thread_id.clone(),
+                prompt: model_user_text(&text),
+                image_paths: temp_images.clone(),
+                model: sel.as_ref().map(|s| s.model.clone()),
+                thinking: sel.as_ref().and_then(|s| s.thinking.clone()),
+                permission: self.permission(),
+            };
+            let provider = external_provider_id(&backend.kind);
+            let model_name = req.model.clone().unwrap_or_else(|| "default".into());
+
+            let started = self.services.external.start_turn(&self.id, req, cancel.clone()).await;
+            let (handle, mut rx) = match started {
+                Ok(pair) => pair,
+                Err(err) => {
+                    for path in &temp_images {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    let mut reply = external_reply(&provider, &model_name);
+                    reply.stop_reason = if err.code == "aborted" { "aborted".into() } else { "error".into() };
+                    if err.code != "aborted" {
+                        reply.error_message = Some(err.message.clone());
+                        self.inner.lock().unwrap().error = Some(err.message);
+                    }
+                    self.on_reply(&reply).await;
+                    let _ = self.finish_external_run(&provider, &model_name).await;
+                    return;
+                }
+            };
+            self.inner.lock().unwrap().external_turn = Some(handle);
+            {
+                let mut inner = self.inner.lock().unwrap();
+                inner.stream_sent = None;
+                inner.message_started = now_ms();
+                inner.thinking_started.clear();
+                inner.thinking_ms.clear();
+            }
+            self.services.model_activity.store(now_ms(), Ordering::SeqCst);
+
+            let mut reply = external_reply(&provider, &model_name);
+            let mut active_tool_ids: HashSet<String> = HashSet::new();
+
+            while let Some(event) = rx.recv().await {
+                match event {
+                    ExternalEvent::ThreadReady { thread_id } => {
+                        if self.chat().external_thread_id.as_deref() != Some(thread_id.as_str())
+                            && let Ok(updated) = self.services.store.set_meta(&self.id, MetaPatch { external_thread_id: Some(Some(thread_id)), ..MetaPatch::default() }).await
+                        {
+                            self.inner.lock().unwrap().chat = updated;
+                            self.services.rpc.emit("sessions.changed", self.summary());
+                        }
+                    }
+                    ExternalEvent::ThinkingDelta(delta) => {
+                        if delta.is_empty() {
+                            continue;
+                        }
+                        if let Some(AssistantBlock::Thinking { thinking, .. }) = reply.content.last_mut() {
+                            thinking.push_str(&delta);
+                            self.on_stream(llm::Event::Updated, &reply);
+                        } else {
+                            let idx = reply.content.len();
+                            reply.content.push(AssistantBlock::Thinking { thinking: delta, thinking_signature: None, redacted: None, rest: serde_json::Map::new() });
+                            self.on_stream(llm::Event::BlockStarted(idx), &reply);
+                        }
+                    }
+                    ExternalEvent::TextDelta(delta) => {
+                        if delta.is_empty() {
+                            continue;
+                        }
+                        if let Some(AssistantBlock::Text { text, .. }) = reply.content.last_mut() {
+                            text.push_str(&delta);
+                            self.on_stream(llm::Event::Updated, &reply);
+                        } else {
+                            if let Some(last_idx) = reply.content.len().checked_sub(1)
+                                && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
+                            {
+                                self.on_stream(llm::Event::BlockEnded(last_idx), &reply);
+                            }
+                            let idx = reply.content.len();
+                            reply.content.push(AssistantBlock::Text { text: delta, text_signature: None, rest: serde_json::Map::new() });
+                            self.on_stream(llm::Event::BlockStarted(idx), &reply);
+                        }
+                    }
+                    ExternalEvent::ToolStarted { id, name, args } => {
+                        if let Some(last_idx) = reply.content.len().checked_sub(1)
+                            && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
+                        {
+                            self.on_stream(llm::Event::BlockEnded(last_idx), &reply);
+                        }
+                        let arguments = match args.clone() {
+                            Value::Object(map) => map,
+                            other => {
+                                let mut map = serde_json::Map::new();
+                                if !other.is_null() {
+                                    map.insert("input".into(), other);
+                                }
+                                map
+                            }
+                        };
+                        let idx = reply.content.len();
+                        reply.content.push(AssistantBlock::ToolCall { id: id.clone(), name: name.clone(), arguments, rest: serde_json::Map::new() });
+                        active_tool_ids.insert(id.clone());
+                        self.on_stream(llm::Event::BlockStarted(idx), &reply);
+                        self.inner.lock().unwrap().running_tools.insert(id.clone(), now_ms());
+                        self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "start", "args": args }));
+                    }
+                    ExternalEvent::ToolProgress { id, name, partial } => {
+                        let now = now_ms();
+                        let should_emit = {
+                            let mut inner = self.inner.lock().unwrap();
+                            if now.saturating_sub(inner.tool_updates.get(&id).copied().unwrap_or(0)) >= TOOL_UPDATE_THROTTLE_MS {
+                                inner.tool_updates.insert(id.clone(), now);
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if should_emit {
+                            self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "update", "partial": partial }));
+                        }
+                    }
+                    ExternalEvent::ToolCompleted { id, name, output, is_error, details } => {
+                        if active_tool_ids.contains(&id) && !reply.content.is_empty() {
+                            reply.stop_reason = "toolUse".into();
+                            self.on_reply(&reply).await;
+                            active_tool_ids.clear();
+                            let current_model = reply.model.clone();
+                            reply = external_reply(&provider, &current_model);
+                            let mut inner = self.inner.lock().unwrap();
+                            inner.stream_sent = None;
+                            inner.message_started = now_ms();
+                            inner.thinking_started.clear();
+                            inner.thinking_ms.clear();
+                        }
+                        let started = {
+                            let mut inner = self.inner.lock().unwrap();
+                            inner.tool_updates.remove(&id);
+                            inner.running_tools.remove(&id)
+                        };
+                        self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "end" }));
+                        let has_files = details.as_ref().and_then(|d| d.get("files")).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+                        self.append(TranscriptEntry::ToolResult {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            ts: now_ms() as f64,
+                            tool_call_id: id,
+                            tool_name: name.clone(),
+                            content: vec![ResultContent::Text { text: output }],
+                            is_error,
+                            details,
+                            duration_ms: started.map(|s| now_ms().saturating_sub(s) as f64),
+                        })
+                        .await;
+                        if (has_files || changes::CHANGE_TOOLS.contains(&name.as_str())) && !is_error {
+                            self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                        }
+                    }
+                    ExternalEvent::ApprovalRequested { approval, respond } => {
+                        let session = self.clone();
+                        let cancel_child = cancel.clone();
+                        tokio::spawn(async move {
+                            let ans = session.wait_for_approval(approval, &cancel_child).await;
+                            let decision = match ans {
+                                Answer::Allow => ApprovalDecision::Allow,
+                                Answer::AllowSession => ApprovalDecision::AllowSession,
+                                Answer::Refuse { .. } => ApprovalDecision::Deny,
+                            };
+                            if let Ok(mut slot) = respond.lock()
+                                && let Some(tx) = slot.take()
+                            {
+                                let _ = tx.send(decision);
+                            }
+                        });
+                    }
+                    ExternalEvent::DiffUpdated { diff } => {
+                        self.inner.lock().unwrap().external_diff = Some(diff);
+                        self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                    }
+                    ExternalEvent::UsageUpdated(usage) => {
+                        reply.usage.input = usage.input;
+                        reply.usage.output = usage.output;
+                        reply.usage.cache_read = usage.cache_read;
+                        reply.usage.cache_write = usage.cache_write;
+                        reply.usage.reasoning = usage.reasoning;
+                    }
+                    ExternalEvent::Notice { code, text } => {
+                        self.notice(&code, text).await;
+                    }
+                    ExternalEvent::TurnFinished { stop_reason, error, usage, model } => {
+                        if let Some(m) = model.filter(|m| !m.is_empty()) {
+                            reply.model = m;
+                        }
+                        if let Some(u) = usage {
+                            reply.usage.input = u.input;
+                            reply.usage.output = u.output;
+                            reply.usage.cache_read = u.cache_read;
+                            reply.usage.cache_write = u.cache_write;
+                            reply.usage.reasoning = u.reasoning;
+                        }
+                        if !reply.content.is_empty() || stop_reason == "error" {
+                            reply.stop_reason = stop_reason.clone();
+                            reply.error_message = error.clone();
+                            if stop_reason == "error"
+                                && let Some(err) = error
+                            {
+                                self.inner.lock().unwrap().error = Some(err);
+                            }
+                            self.on_reply(&reply).await;
+                        } else if stop_reason == "aborted" {
+                            if let Some(run) = &mut self.inner.lock().unwrap().run {
+                                run.aborted = true;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            for path in &temp_images {
+                let _ = std::fs::remove_file(path);
+            }
+            self.inner.lock().unwrap().external_turn = None;
+            self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+
+            match self.finish_external_run(&provider, &reply.model).await {
+                Some((next_text, next_images)) => {
+                    let next_cancel = CancellationToken::new();
+                    let closing = {
+                        let mut inner = self.inner.lock().unwrap();
+                        if inner.closing {
+                            true
+                        } else {
+                            inner.run = Some(RunInfo {
+                                started: now_ms(),
+                                from: inner.entries.len(),
+                                requests: 0,
+                                usage: UsageSummary::default(),
+                                aborted: false,
+                                overflow_retried: false,
+                                retries: 0,
+                                cancel: next_cancel.clone(),
+                            });
+                            inner.error = None;
+                            false
+                        }
+                    };
+                    if closing {
+                        self.set_status("idle");
+                        break;
+                    }
+                    text = next_text;
+                    images = next_images;
+                    append_user = true;
+                    cancel = next_cancel;
+                }
+                None => break,
+            }
+        }
+    }
+
+    async fn finish_external_run(&self, provider: &str, model: &str) -> Option<(String, Vec<ImageContent>)> {
+        let run = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.streaming = None;
+            inner.stream_sent = None;
+            inner.running_tools.clear();
+            inner.stop_after_step = false;
+            inner.refused.clear();
+            inner.external_turn = None;
+            inner.run.take()
+        };
+        let aborted = run.as_ref().is_some_and(|r| r.aborted);
+        if let Some(run) = run {
+            if run.aborted {
+                self.notice("stopped", l("已停止。", "Stopped.")).await;
+            } else if run.requests > 0 {
+                self.append(TranscriptEntry::Turn {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    ts: now_ms() as f64,
+                    duration_ms: now_ms().saturating_sub(run.started) as f64,
+                    usage: run.usage,
+                    provider: provider.to_owned(),
+                    model: model.to_owned(),
+                    requests: f64::from(run.requests),
+                })
+                .await;
+            }
+        }
+        self.services.memory.resume();
+        self.services.model_activity.store(now_ms(), Ordering::SeqCst);
+
+        let next = if aborted {
+            None
+        } else {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.closing {
+                None
+            } else {
+                let next_id = inner.queue.iter().find(|item| inner.external_pending.contains_key(&item.id)).map(|item| item.id.clone());
+                next_id.and_then(|id| {
+                    inner.queue.retain(|item| item.id != id);
+                    inner.external_pending.remove(&id)
+                })
+            }
+        };
+        if next.is_some() {
+            self.publish_state();
+            return next;
+        }
+        let failed = self.inner.lock().unwrap().error.is_some();
+        self.set_status(if failed { "error" } else { "idle" });
+        None
+    }
+
+    fn write_external_images(&self, images: &[ImageContent]) -> Vec<PathBuf> {
+        use base64::Engine as _;
+        if images.is_empty() {
+            return Vec::new();
+        }
+        let dir = self.services.env.home.join("spill").join(&self.id);
+        if crate::store::create_private_dir(&dir).is_err() {
+            return Vec::new();
+        }
+        let mut paths = Vec::new();
+        for img in images {
+            let ext = match img.mime_type.as_str() {
+                "image/png" => "png",
+                "image/gif" => "gif",
+                "image/webp" => "webp",
+                _ => "jpg",
+            };
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&img.data) {
+                let path = dir.join(format!("ext-img-{}.{ext}", uuid::Uuid::new_v4()));
+                if std::fs::write(&path, bytes).is_ok() {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
     }
 
     /// After a failed request: compact and ask again when the context overflowed, or wait and ask again when the
@@ -1564,7 +2138,7 @@ impl Session {
                 workdir: text("workdir"),
             };
             match self.wait_for_approval(approval, cancel).await {
-                Answer::Allow => {}
+                Answer::Allow | Answer::AllowSession => {}
                 Answer::Refuse { text, stop, by } => {
                     let mut inner = self.inner.lock().unwrap();
                     if let Some(by) = by {
@@ -2171,6 +2745,24 @@ pub fn summary_of(chat: &StoredChat, status: &str, awaiting_approval: bool) -> S
         worktree: chat.worktree.clone(),
         swarm: chat.swarm.clone(),
         orchestrate: chat.orchestrate.clone(),
+        external_backend: chat.external_backend.clone(),
+        external_thread_id: chat.external_thread_id.clone(),
+    }
+}
+
+fn external_reply(provider: &str, model: &str) -> AssistantMessage {
+    let mut rest = serde_json::Map::new();
+    rest.insert("role".into(), json!("assistant"));
+    AssistantMessage {
+        content: Vec::new(),
+        api: provider.to_owned(),
+        provider: provider.to_owned(),
+        model: model.to_owned(),
+        usage: Default::default(),
+        stop_reason: "pending".into(),
+        error_message: None,
+        timestamp: now_ms() as f64,
+        rest,
     }
 }
 
@@ -2395,6 +2987,7 @@ mod tests {
         });
         let snapshots = Arc::new(Snapshots::new(root.join("snapshots")));
         let swarm = super::super::swarm::Hub::new(root.join("swarms"), store.clone(), rpc.clone());
+        let external = ExternalManager::new(settings.clone(), env.windows);
         Arc::new(Services {
             env,
             settings,
@@ -2414,6 +3007,7 @@ mod tests {
             languages: None,
             ide_tools: None,
             maps,
+            external,
         })
     }
 

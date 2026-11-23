@@ -156,6 +156,137 @@ pub fn pending(entries: &[TranscriptEntry], kept: &HashSet<String>, cwd: &str) -
     groups
 }
 
+/// Extract file paths mentioned in a unified diff (e.g. Codex `turn/diff/updated`).
+pub fn diff_paths(unified_diff: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in unified_diff.lines() {
+        let candidate = line
+            .strip_prefix("+++ b/")
+            .or_else(|| line.strip_prefix("+++ ").filter(|p| *p != "/dev/null"));
+        if let Some(raw) = candidate {
+            let trimmed = raw.split('\t').next().unwrap_or(raw).trim();
+            if !trimmed.is_empty() && trimmed != "/dev/null" && !paths.iter().any(|p| p == trimmed) {
+                paths.push(trimmed.to_owned());
+            }
+        }
+    }
+    paths
+}
+
+fn git_cmd(cwd: &Path, args: &[&str]) -> Option<std::process::Output> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(crate::process::scrubbed_env())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut buf = Vec::new();
+        let _ = stdout.take(4 * 1024 * 1024 + 1).read_to_end(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok()?;
+    status.success().then_some(std::process::Output { status, stdout: out, stderr: Vec::new() })
+}
+
+/// Read `HEAD:<rel>` bytes of a file in a Git repository for external-agent side-by-side Diff review.
+pub fn git_head_content(cwd: &Path, path: &Path) -> Option<Vec<u8>> {
+    let top_out = git_cmd(cwd, &["rev-parse", "--show-toplevel"])?;
+    let top = PathBuf::from(String::from_utf8_lossy(&top_out.stdout).trim());
+    let rel = crate::paths::relative_to(&top, path)?;
+    let spec = format!("HEAD:{}", rel.replace('\\', "/"));
+    let out = git_cmd(&top, &["show", &spec])?;
+    (out.stdout.len() <= 4 * 1024 * 1024).then_some(out.stdout)
+}
+
+/// Merge dirty Git files and unified-diff paths into an external chat's pending review groups (`undoable: false`).
+pub fn pending_external(entries: &[TranscriptEntry], kept: &HashSet<String>, cwd: &str, external_diff: Option<&str>) -> Vec<Group> {
+    let mut groups = pending(entries, kept, cwd);
+    let mut seen: HashSet<String> = groups.iter().map(|g| path_key(&g.path)).collect();
+    let cwd_path = Path::new(cwd);
+
+    // 1) Paths explicitly reported in the backend's unified diff.
+    if let Some(diff) = external_diff {
+        for rel in diff_paths(diff) {
+            let abs = if Path::new(&rel).is_absolute() { PathBuf::from(&rel) } else { crate::paths::normalize(&cwd_path.join(&rel)) };
+            let abs_str = abs.to_string_lossy().into_owned();
+            let id = format!("ext-diff:{rel}");
+            if kept.contains(&id) || !seen.insert(path_key(&abs_str)) {
+                continue;
+            }
+            let created = git_head_content(cwd_path, &abs).is_none();
+            groups.push(Group { path: abs_str, calls: vec![Call { id, created, undoable: false }] });
+        }
+    }
+
+    // 2) Git workspace dirty files (catches edits made via shell commands or ACP tools without fileChange events).
+    if let Some(out) = git_cmd(cwd_path, &["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."])
+        && let Some(top_out) = git_cmd(cwd_path, &["rev-parse", "--show-toplevel"])
+    {
+        let top = PathBuf::from(String::from_utf8_lossy(&top_out.stdout).trim());
+        let text = String::from_utf8_lossy(&out.stdout);
+        let fields: Vec<&str> = text.split('\0').collect();
+        let mut idx = 0;
+        while idx < fields.len() {
+            let field = fields[idx];
+            let (rel, created) = if field.starts_with("1 ") {
+                let parts: Vec<&str> = field.split(' ').collect();
+                let rel = parts.get(8..).map(|s| s.join(" ")).unwrap_or_default();
+                let xy = parts.get(1).copied().unwrap_or("..");
+                (rel, xy.starts_with('A'))
+            } else if field.starts_with("2 ") {
+                let parts: Vec<&str> = field.split(' ').collect();
+                let rel = parts.get(9..).map(|s| s.join(" ")).unwrap_or_default();
+                idx += 1;
+                (rel, false)
+            } else if let Some(rel) = field.strip_prefix("? ") {
+                (rel.to_owned(), true)
+            } else {
+                idx += 1;
+                continue;
+            };
+            idx += 1;
+            if rel.is_empty() {
+                continue;
+            }
+            let abs = crate::paths::normalize(&top.join(&rel));
+            let abs_str = abs.to_string_lossy().into_owned();
+            let id = format!("ext-git:{rel}");
+            if kept.contains(&id) || !seen.insert(path_key(&abs_str)) {
+                continue;
+            }
+            groups.push(Group { path: abs_str, calls: vec![Call { id, created, undoable: false }] });
+        }
+    }
+
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +328,11 @@ mod tests {
         let ids: Vec<&str> = groups[0].calls.iter().map(|call| call.id.as_str()).collect();
         assert_eq!(ids, ["w", "p#0"]);
         assert!(groups[0].calls[0].created && groups[0].calls[1].undoable);
+    }
+
+    #[test]
+    fn extracts_paths_from_unified_diff() {
+        let diff = "--- /dev/null\n+++ b/src/new.rs\t2026-11-23\n@@ -0,0 +1 @@\n+fn a() {}\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n--- a/removed.txt\n+++ /dev/null\n";
+        assert_eq!(diff_paths(diff), vec!["src/new.rs", "README.md"]);
     }
 }

@@ -2,6 +2,7 @@
 
 mod appearance;
 mod extensions;
+mod external_agents;
 mod general;
 mod memory;
 mod models;

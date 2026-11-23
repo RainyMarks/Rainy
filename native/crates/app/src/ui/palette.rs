@@ -21,7 +21,8 @@ use crate::ui::ide::{
     AiEditSelection, CloseFile, CommandPalette, DebugFile, FindInFiles, NewChat, OpenFolder, OpenRuntimeSettings, OpenSettings, QuickOpen,
     ReplaceInFiles, RunFile, RunProfiles, SaveFile, ShowExplorer, ShowMap, ShowSourceControl, StopRun, ToggleBreakpoint, ToggleTerminal,
 };
-use crate::ui::tr;
+use crate::ui::{tr, trf};
+use rainy_carrier::{ExecutionTarget, ssh, targets};
 
 type Run = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -75,7 +76,7 @@ fn commands(cx: &App) -> Vec<Command> {
         enabled,
         run,
     };
-    vec![
+    let mut list = vec![
         entry("catFile", tr(cx, "ide.ideOpenFolder"), "Ctrl+Alt+O", true, action(OpenFolder)),
         entry("catFile", tr(cx, "ide.ideAddFolder"), "", workspace, action(AttachFolder)),
         entry("catFile", tr(cx, "ide.ideQuickOpen"), "Ctrl+P", workspace, action(QuickOpen)),
@@ -133,7 +134,52 @@ fn commands(cx: &App) -> Vec<Command> {
         entry("catSettings", tr(cx, "app.cmdThemeSystem"), "", true, prefs(json!({ "theme": "system" }))),
         entry("catSettings", tr(cx, "app.cmdLanguage"), "", true, prefs(json!({ "locale": locale }))),
         entry("catHelp", tr(cx, "native.checkUpdates"), "", true, action(CheckUpdates)),
-    ]
+    ];
+    // Dynamic execution target hot-swap commands (Windows, WSL, and configured/saved SSH hosts).
+    let store = Store::global(cx);
+    let current_id = store.read(cx).target.as_ref().map(|t| t.id().to_owned());
+    let desktop_prefs = targets::read_preferences(&store.read(cx).paths.desktop_settings()).unwrap_or_default();
+    let mut local_targets = vec![ExecutionTarget::windows()];
+    local_targets.extend(targets::wsl_distributions());
+    for target in local_targets {
+        let is_current = current_id.as_deref() == Some(target.id());
+        let label = trf(cx, "ssh.paletteSwitchTarget", &[("target", &target.label())]);
+        let store_c = store.clone();
+        let target_c = target.clone();
+        list.push(entry(
+            "catSettings",
+            label,
+            "",
+            !is_current,
+            Rc::new(move |window, cx| crate::ui::workbench::confirm_switch(store_c.clone(), target_c.clone(), window, cx)),
+        ));
+    }
+    let summaries = ssh::config_host_summaries();
+    for host in ssh::hosts(&desktop_prefs) {
+        let target = host.target;
+        let is_current = current_id.as_deref() == Some(target.id());
+        let alias = match &target {
+            ExecutionTarget::Ssh { destination, .. } => destination.as_str(),
+            _ => target.label(),
+        };
+        let detail = summaries
+            .iter()
+            .find(|s| s.alias == alias)
+            .and_then(|s| s.host_name.as_deref())
+            .map(|hn| format!("{} ({hn})", target.label()))
+            .unwrap_or_else(|| target.label().to_owned());
+        let label = trf(cx, "ssh.paletteConnectSsh", &[("target", &detail)]);
+        let store_c = store.clone();
+        let target_c = target.clone();
+        list.push(entry(
+            "catSettings",
+            label,
+            "",
+            !is_current,
+            Rc::new(move |window, cx| crate::ui::workbench::confirm_switch(store_c.clone(), target_c.clone(), window, cx)),
+        ));
+    }
+    list
 }
 
 pub struct Palette {

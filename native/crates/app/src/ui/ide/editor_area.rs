@@ -19,10 +19,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use rainy_carrier::ExecutionTarget;
+use rainy_protocol::FileTailResult;
 use serde_json::{Value, json};
 
-use crate::store::Store;
+use crate::store::{Store, StoreEvent};
 use crate::store::ide::{Ide, file_name, split_key};
+use crate::ui::ide::experiments::{append_bounded_text, format_size};
 use crate::ui::ide::viewers::{self, PageRequest};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
 use crate::ui::ide::{AiEditSelection, MarkdownPreview, MarkdownSplit, choose_folder, editor_commands, file_icon};
@@ -81,6 +83,18 @@ enum Picture {
     Failed(SharedString, Option<SharedString>),
 }
 
+/// Active live-tail state for an oversized (>5 MiB) log or text file (`ide` `files.tail`).
+struct FileTail {
+    key: String,
+    offset: Option<u64>,
+    text: String,
+    total_bytes: u64,
+    reset: bool,
+    paused: bool,
+    scroll: ScrollHandle,
+    _task: Task<()>,
+}
+
 /// What the editor area asks of the window around it.
 pub enum EditorAreaEvent {
     /// Add an image a page made to the AI composer.
@@ -117,6 +131,8 @@ pub struct EditorArea {
     pending_export: Option<(String, &'static str)>,
     /// True to show interactive per-hunk diff review (Accept/Revert Hunk); false for side-by-side Diff view.
     diff_hunk_mode: bool,
+    /// Live incremental tail for an oversized text/log file.
+    file_tail: Option<FileTail>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -138,21 +154,39 @@ use rainy_carrier::text::percent_encode as encode;
 
 impl EditorArea {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
+        let store = Store::global(cx);
         let subscriptions = vec![
             cx.observe(&ide, |this, _, cx| {
                 this.follow_editors(cx);
                 cx.notify();
             }),
             // The map lists the footprint and marks the changes of the chat selected now.
-            cx.observe(&Store::global(cx), |this, _, cx| {
+            cx.observe(&store, |this, _, cx| {
                 if this.map_session.is_some() {
                     this.send_session(false, cx);
                 }
             }),
+            // Recreate all WebView2 panes and images against the new Host origin & session cookie after reconnect/swap.
+            cx.subscribe(&store, |this, _, event: &StoreEvent, cx| {
+                if matches!(event, StoreEvent::HostReconnected(_)) {
+                    this.viewers.clear();
+                    this.pictures.clear();
+                    this.map = None;
+                    this.map_session = None;
+                    this.file_tail = None;
+                    cx.notify();
+                }
+            }),
             // Choosing a tab or opening a file brings the files back in place of the map.
-            cx.subscribe(&ide, |this, _, event: &crate::store::ide::IdeEvent, cx| {
-                if *event == crate::store::ide::IdeEvent::ActiveChanged && this.map_shown {
-                    this.map_shown = false;
+            cx.subscribe(&ide, |this, ide, event: &crate::store::ide::IdeEvent, cx| {
+                if *event == crate::store::ide::IdeEvent::ActiveChanged {
+                    if this.map_shown {
+                        this.map_shown = false;
+                    }
+                    let active = ide.read(cx).active.as_deref();
+                    if this.file_tail.as_ref().is_some_and(|tail| Some(tail.key.as_str()) != active) {
+                        this.file_tail = None;
+                    }
                     cx.notify();
                 }
                 // Pages address their project; another project's file under the same key gets a page of its own.
@@ -160,10 +194,13 @@ impl EditorArea {
                     this.viewers.clear();
                     this.saved_scroll.clear();
                     this.pictures.clear();
+                    this.map = None;
+                    this.map_session = None;
+                    this.file_tail = None;
                 }
             }),
         ];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), viewer_tick: 0, saved_scroll: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, map_session: None, outline: HashMap::new(), pending_export: None, diff_hunk_mode: true, _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), viewer_tick: 0, saved_scroll: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, map_session: None, outline: HashMap::new(), pending_export: None, diff_hunk_mode: true, file_tail: None, _subscriptions: subscriptions }
     }
 
     fn next_viewer_tick(&mut self) -> u64 {
@@ -1228,12 +1265,16 @@ impl EditorArea {
                 _ => centered(Spinner::new().small(), &theme).into_any_element(),
             };
         }
+        if reason == "too-large" && self.file_tail.as_ref().is_some_and(|tail| tail.key == key) {
+            return self.render_file_tail(cx);
+        }
         let notice = match reason.as_str() {
             "too-large" => tr(cx, "viewers.readOnlyLarge"),
             "unsupported-encoding" => tr(cx, "viewers.notUtf8"),
             _ => tr(cx, "ide.ideReadOnly"),
         };
-        let (handle, shown) = (self.ide.clone(), key.clone());
+        let is_too_large = reason == "too-large";
+        let (handle, shown, tail_key) = (self.ide.clone(), key.clone(), key.clone());
         v_flex()
             .size_full()
             .child(
@@ -1249,6 +1290,15 @@ impl EditorArea {
                     .border_color(theme.border)
                     .child(Icon::new(IconName::Info).small())
                     .child(div().flex_1().min_w_0().child(notice))
+                    .when(is_too_large, |this| {
+                        this.child(
+                            Button::new("live-tail")
+                                .primary()
+                                .xsmall()
+                                .label(tr(cx, "experiments.fileTailButton"))
+                                .on_click(cx.listener(move |this, _, _, cx| this.start_file_tail(tail_key.clone(), cx))),
+                        )
+                    })
                     // The hex page reads the whole file in ranges; the text below is only its beginning.
                     .child(Button::new("view-hex").outline().xsmall().label(tr(cx, "viewers.viewAsHex")).on_click(move |_, _, cx| {
                         handle.update(cx, |ide, cx| ide.set_view(&shown, Some("hex"), cx));
@@ -1268,6 +1318,204 @@ impl EditorArea {
                         .children(preview.text.lines().map(|line| div().child(line.to_owned())).collect::<Vec<_>>()),
                 )
             })
+            .into_any_element()
+    }
+
+    /// Start incremental `ide` `files.tail` streaming for an oversized text/log file.
+    fn start_file_tail(&mut self, key: String, cx: &mut Context<Self>) {
+        let scroll = ScrollHandle::new();
+        let key_loop = key.clone();
+        let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                let request = this
+                    .update(cx, |this, cx| {
+                        let tail = this.file_tail.as_ref()?;
+                        if tail.key != key_loop {
+                            return None;
+                        }
+                        if tail.paused {
+                            return Some(None);
+                        }
+                        let workspace_id = this.ide.read(cx).workspace.as_ref()?.workspace_id.clone();
+                        let (root, path) = split_key(&key_loop);
+                        let mut params = json!({
+                            "op": "files.tail",
+                            "workspaceId": workspace_id,
+                            "path": path,
+                            "maxBytes": 65_536u64,
+                        });
+                        if let Some(root) = root {
+                            params["rootId"] = json!(root);
+                        }
+                        if let Some(offset) = tail.offset {
+                            params["offset"] = json!(offset);
+                        }
+                        let call = Store::global(cx).read(cx).call("ide", params);
+                        Some(Some(call))
+                    })
+                    .ok()
+                    .flatten();
+
+                match request {
+                    None => break,
+                    Some(None) => {}
+                    Some(Some(call)) => {
+                        if let Ok(Ok(res)) = call.await.map(serde_json::from_value::<FileTailResult>) {
+                            let _ = this.update(cx, |this, cx| {
+                                let Some(tail) = this.file_tail.as_mut().filter(|t| t.key == key_loop) else { return };
+                                if res.reset {
+                                    tail.text.clear();
+                                    tail.reset = true;
+                                }
+                                if !res.text.is_empty() {
+                                    append_bounded_text(&mut tail.text, &res.text);
+                                    if !tail.paused {
+                                        tail.scroll.scroll_to_bottom();
+                                    }
+                                }
+                                tail.offset = Some(res.next_offset);
+                                tail.total_bytes = res.total_bytes;
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+        });
+        self.file_tail = Some(FileTail {
+            key,
+            offset: None,
+            text: String::new(),
+            total_bytes: 0,
+            reset: false,
+            paused: false,
+            scroll,
+            _task: task,
+        });
+        cx.notify();
+    }
+
+    fn render_file_tail(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(tail) = &self.file_tail else { return div().into_any_element() };
+        let theme = cx.theme().clone();
+        let paused = tail.paused;
+        let reset = tail.reset;
+        let size_str = format_size(tail.total_bytes);
+        let lines: Vec<AnyElement> = tail
+            .text
+            .lines()
+            .map(|line| div().whitespace_nowrap().child(line.to_owned()).into_any_element())
+            .collect();
+        let empty = lines.is_empty();
+        let scroll = tail.scroll.clone();
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_1p5()
+                    .gap_2()
+                    .items_center()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(if paused { theme.warning } else { theme.success }))
+                    .child(div().flex_1().min_w_0().truncate().child(trf(cx, "experiments.fileTailInfo", &[("size", &size_str)])))
+                    .child(
+                        Button::new("file-tail-pause")
+                            .ghost()
+                            .xsmall()
+                            .label(tr(cx, if paused { "experiments.tailResume" } else { "experiments.tailPause" }))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(tail) = this.file_tail.as_mut() {
+                                    tail.paused = !tail.paused;
+                                    if !tail.paused {
+                                        tail.scroll.scroll_to_bottom();
+                                    }
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("file-tail-clear")
+                            .ghost()
+                            .xsmall()
+                            .label(tr(cx, "experiments.tailClear"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(tail) = this.file_tail.as_mut() {
+                                    tail.text.clear();
+                                    tail.reset = false;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("file-tail-quote")
+                            .ghost()
+                            .xsmall()
+                            .label(tr(cx, "experiments.tailSendToChat"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(tail) = &this.file_tail {
+                                    let trimmed = tail.text.trim();
+                                    if !trimmed.is_empty() {
+                                        let all: Vec<&str> = trimmed.lines().collect();
+                                        let slice = if all.len() > 60 { &all[all.len() - 60..] } else { &all[..] };
+                                        let mut quoted = String::from("> ```text\n");
+                                        for line in slice {
+                                            quoted.push_str("> ");
+                                            quoted.push_str(line);
+                                            quoted.push('\n');
+                                        }
+                                        quoted.push_str("> ```");
+                                        crate::ui::insert_into_composer(quoted, window, cx);
+                                    }
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("file-tail-stop")
+                            .outline()
+                            .xsmall()
+                            .label(tr(cx, "experiments.fileTailStop"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.file_tail = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(reset, |this| {
+                this.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .bg(theme.warning.opacity(0.10))
+                        .text_xs()
+                        .text_color(crate::theme::warning_text(cx))
+                        .child(tr(cx, "experiments.tailResetNotice")),
+                )
+            })
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_flex()
+                            .id("file-tail-body")
+                            .size_full()
+                            .overflow_scroll()
+                            .track_scroll(&scroll)
+                            .p_3()
+                            .font_family(theme.mono_font_family.clone())
+                            .text_size(theme.mono_font_size)
+                            .when(empty, |this| this.child(div().text_color(theme.muted_foreground).child(tr(cx, "experiments.tailEmpty"))))
+                            .children(lines),
+                    )
+                    .vertical_scrollbar(&scroll),
+            )
             .into_any_element()
     }
 
@@ -1689,11 +1937,19 @@ impl EditorArea {
         }
     }
 
-    fn render_map(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (workspace, pane) = self.map.as_ref()?;
-        if !self.map_shown || self.ide.read(cx).workspace.as_ref().map(|shown| &shown.workspace_id) != Some(workspace) {
+    fn render_map(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.map_shown {
             return None;
         }
+        let current_ws = self.ide.read(cx).workspace.as_ref().map(|shown| shown.workspace_id.clone())?;
+        if self.map.as_ref().is_none_or(|(id, _)| *id != current_ws) {
+            let launch = Store::global(cx).read(cx).launch_url()?;
+            let pane = viewers::create_pane(viewers::map_url(&launch, &current_ws), "map", window, cx);
+            cx.subscribe_in(&pane, window, |this, _, event: &PaneEvent, window, cx| this.on_map(event, window, cx)).detach();
+            self.map = Some((current_ws.clone(), pane));
+            self.map_session = None;
+        }
+        let (_, pane) = self.map.as_ref()?;
         let theme = cx.theme().clone();
         Some(
             v_flex()
@@ -1820,7 +2076,7 @@ impl Render for EditorArea {
                 window.request_animation_frame();
             }
         }
-        let map = self.render_map(cx);
+        let map = self.render_map(window, cx);
         let ide = self.ide.read(cx);
         let body = if let Some(map) = map {
             map

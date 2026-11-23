@@ -11,7 +11,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::DialogFooter;
-use rainy_carrier::{ExecutionTarget, targets};
+use rainy_carrier::{ExecutionTarget, ssh, targets};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, ResizableState, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
@@ -25,11 +25,13 @@ use rainy_carrier::trust::TrustError;
 use crate::placement::Layout;
 use crate::store::ide::{Ide, IdeEvent, PaneLayout};
 use crate::boot::RuntimeChoice;
-use crate::store::{Phase, RuntimePrompt, Store, StoreEvent};
+use crate::store::{Phase, RuntimePrompt, SshAutoReconnect, Store, StoreEvent};
 use crate::theme;
 use crate::ui::agent::{self, AgentMode, Fit, IdeMode, Mode, ToggleMode, ToggleSidebar, Tool};
 use crate::ui::chat::ChatPane;
 use crate::ui::history::{ChatActions, HistoryPanel};
+use crate::ui::metrics::MetricsView;
+use crate::ui::tunnels::TunnelsView;
 use crate::ui::ide::editor_area::{EditorArea, close_tab};
 use crate::ui::ide::file_tree::FileTree;
 use crate::ui::ide::git::GitView;
@@ -120,6 +122,8 @@ pub struct Workbench {
     outline: Entity<OutlineView>,
     relations: Entity<RelationsView>,
     swarm: Entity<agent::swarm::SwarmView>,
+    metrics: Entity<MetricsView>,
+    tunnels: Entity<TunnelsView>,
     /// The swarm of the selected chat at the last look, so a chat that just became a coordinator opens its board.
     selected_swarm: Option<(String, Option<String>)>,
     _marks: Entity<DebugMarks>,
@@ -180,6 +184,8 @@ impl Workbench {
         let outline = cx.new(|cx| OutlineView::new(ide.clone(), editor.clone(), cx));
         let relations = cx.new(|cx| RelationsView::new(ide.clone(), cx));
         let swarm = cx.new(|cx| agent::swarm::SwarmView::new(store.clone(), cx));
+        let metrics = cx.new(|cx| MetricsView::new(store.clone(), ide.clone(), window, cx));
+        let tunnels = cx.new(|cx| TunnelsView::new(store.clone(), window, cx));
         let subscriptions = vec![
             cx.observe(&Execution::global(cx), |_, _, cx| cx.notify()),
             cx.observe_in(&store, window, |this, store, window, cx| {
@@ -276,11 +282,14 @@ impl Workbench {
                     _ => {}
                 }
             }),
-            // Back in front, the notification of what happened meanwhile has served.
-            cx.observe_window_activation(window, |_, window, _| {
-                if window.is_window_active() {
+            // Back in front, dismiss stale background notifications and resume remote metrics polling;
+            // in the background, pause metrics polling immediately.
+            cx.observe_window_activation(window, |this, window, cx| {
+                let active = window.is_window_active();
+                if active {
                     crate::ui::notify::dismiss();
                 }
+                this.metrics.update(cx, |metrics, cx| metrics.set_window_active(active, cx));
             }),
             // "Follow the system" follows a change of the Windows light or dark mode.
             cx.observe_window_appearance(window, |this, window, cx| {
@@ -336,6 +345,8 @@ impl Workbench {
             outline,
             relations,
             swarm,
+            metrics,
+            tunnels,
             selected_swarm: None,
             _marks: marks,
             bottom_visible: false,
@@ -815,8 +826,115 @@ impl Workbench {
             .max_w(px(200.))
             .label(target)
             .tooltip(tr(cx, "native.switchTarget"))
-            .dropdown_menu(move |menu, _, _| target_menu(menu, handle.clone(), current.clone()));
+            .dropdown_menu(move |menu, _, cx| target_menu(menu, handle.clone(), current.clone(), cx));
         (dot, button)
+    }
+
+    /// Low-key non-blocking top banner shown while an in-place target swap or silent SSH backoff reconnect is active.
+    fn render_ssh_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let store = self.store.read(cx);
+        let target_label = store
+            .target
+            .as_ref()
+            .map(|t| t.label().to_owned())
+            .unwrap_or_default();
+        let theme = cx.theme().clone();
+
+        if let Some(swapping) = store.swapping_target.clone() {
+            return Some(
+                h_flex()
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .bg(theme.secondary)
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_xs()
+                    .text_color(theme.foreground)
+                    .child(Spinner::new().xsmall())
+                    .child(div().flex_1().min_w_0().truncate().child(trf(cx, "ssh.swapping", &[("target", &swapping)])))
+                    .into_any_element(),
+            );
+        }
+
+        match &store.ssh_reconnect {
+            SshAutoReconnect::Idle => None,
+            SshAutoReconnect::Waiting { attempt, max, retry_at, .. } => {
+                let secs = retry_at.saturating_duration_since(std::time::Instant::now()).as_secs().max(1);
+                let text = trf(
+                    cx,
+                    "ssh.reconnectingWait",
+                    &[("target", &target_label), ("seconds", &secs), ("attempt", attempt), ("max", max)],
+                );
+                Some(self.ssh_reconnect_strip(text, false, true, theme.warning, cx))
+            }
+            SshAutoReconnect::Attempting { attempt, max } => {
+                let text = trf(
+                    cx,
+                    "ssh.reconnectingBanner",
+                    &[("target", &target_label), ("attempt", attempt), ("max", max)],
+                );
+                Some(self.ssh_reconnect_strip(text, true, false, theme.warning, cx))
+            }
+            SshAutoReconnect::Exhausted { .. } => {
+                let text = trf(cx, "ssh.reconnectFailedBanner", &[("target", &target_label)]);
+                Some(self.ssh_reconnect_strip(text, false, true, theme.danger, cx))
+            }
+        }
+    }
+
+    fn ssh_reconnect_strip(
+        &self,
+        text: SharedString,
+        spinning: bool,
+        show_retry: bool,
+        accent: Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        h_flex()
+            .h(px(28.))
+            .flex_shrink_0()
+            .px_3()
+            .gap_2()
+            .items_center()
+            .bg(accent.opacity(0.10))
+            .border_b_1()
+            .border_color(accent.opacity(0.35))
+            .text_xs()
+            .child(if spinning {
+                Spinner::new().xsmall().into_any_element()
+            } else {
+                div().size(px(7.)).flex_shrink_0().rounded_full().bg(accent).into_any_element()
+            })
+            .child(div().flex_1().min_w_0().truncate().text_color(theme.foreground).child(text))
+            .when(show_retry, |this| {
+                this.child(
+                    Button::new("banner-ssh-retry")
+                        .outline()
+                        .xsmall()
+                        .label(tr(cx, "ssh.retryNow"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let handle = window.window_handle();
+                            this.store.update(cx, |store, cx| store.retry_ssh_now(handle, cx));
+                        })),
+                )
+            })
+            .child(
+                Button::new("banner-ssh-local")
+                    .ghost()
+                    .xsmall()
+                    .label(tr(cx, "ssh.switchLocal"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let handle = window.window_handle();
+                        this.store.update(cx, |store, cx| {
+                            store.swap_target_in_place(ExecutionTarget::windows(), handle, cx);
+                        });
+                    })),
+            )
+            .into_any_element()
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -872,8 +990,10 @@ impl Workbench {
                 .on_click(cx.listener(|this, _, window, cx| this.show_side(Side::Git, window, cx)))
         });
         let (dot, target) = self.render_target("target", cx);
+        let is_ssh = self.store.read(cx).is_ssh();
+        let is_remote = self.store.read(cx).is_remote();
         let theme = cx.theme();
-        // What does not fit in a narrow window is cut: the branch and the language state give way first.
+        // What does not fit in a narrow window is cut: the branch, metrics and language state give way first.
         h_flex()
             .h(px(24.))
             .flex_shrink_0()
@@ -888,8 +1008,10 @@ impl Workbench {
             .border_color(theme.status_bar_border)
             .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(dot))
             .child(target)
+            .when(is_ssh, |this| this.child(self.tunnels.clone()))
             .children(branch)
             .child(div().flex_1())
+            .when(is_remote, |this| this.child(div().min_w_0().flex_shrink_1().overflow_hidden().child(self.metrics.clone())))
             .children(language)
             .child(div().flex_shrink_0().child(self.cursor.clone()))
             .child(div().flex_shrink_0().whitespace_nowrap().child(format!("Rainy {version}")))
@@ -1453,6 +1575,7 @@ impl Workbench {
     /// The chat sidebar: the list (`HistoryPanel`), then settings and the execution environment at the bottom.
     fn render_agent_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (dot, target) = self.render_target("sidebar-target", cx);
+        let is_ssh = self.store.read(cx).is_ssh();
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -1478,6 +1601,7 @@ impl Workbench {
                             .on_click(cx.listener(|this, _, window, cx| this.open_settings(Section::General, window, cx))),
                     )
                     .child(div().flex_1())
+                    .when(is_ssh, |this| this.child(self.tunnels.clone()))
                     .child(h_flex().min_w_0().gap_1().items_center().text_xs().text_color(theme.muted_foreground).child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(dot)).child(target)),
             )
     }
@@ -1605,11 +1729,13 @@ fn pane_group(slot: &mut Option<PaneGroup>, key: String, targets: Vec<(usize, f3
     }
 }
 
-/// The execution environments to switch to, the current one checked; switching asks, then restarts.
-fn target_menu(mut menu: PopupMenu, store: Entity<Store>, current: Option<String>) -> PopupMenu {
-    let mut choices = vec![ExecutionTarget::windows()];
-    choices.extend(targets::wsl_distributions());
-    for choice in choices {
+/// The execution environments to switch to, grouped into Local/WSL and SSH remote hosts.
+/// Choosing a target hot-swaps in place without restarting the application.
+fn target_menu(mut menu: PopupMenu, store: Entity<Store>, current: Option<String>, cx: &App) -> PopupMenu {
+    let mut local_choices = vec![ExecutionTarget::windows()];
+    local_choices.extend(targets::wsl_distributions());
+    menu = menu.label(tr(cx, "ssh.menuLocalGroup"));
+    for choice in local_choices {
         let checked = current.as_deref() == Some(choice.id());
         let store = store.clone();
         menu = menu.item(PopupMenuItem::new(choice.label().to_owned()).checked(checked).on_click(move |_, window, cx| {
@@ -1618,7 +1744,47 @@ fn target_menu(mut menu: PopupMenu, store: Entity<Store>, current: Option<String
             }
         }));
     }
-    menu
+    let prefs = targets::read_preferences(&store.read(cx).paths.desktop_settings()).unwrap_or_default();
+    let ssh_hosts = ssh::hosts(&prefs);
+    let summaries = ssh::config_host_summaries();
+    menu = menu.separator().label(tr(cx, "ssh.menuSshGroup"));
+    for host in ssh_hosts {
+        let choice = host.target;
+        let checked = current.as_deref() == Some(choice.id());
+        let alias = match &choice {
+            ExecutionTarget::Ssh { destination, .. } => destination.as_str(),
+            _ => choice.label(),
+        };
+        let detail = summaries.iter().find(|s| s.alias == alias).and_then(|s| {
+            let mut parts = Vec::new();
+            if let Some(hn) = &s.host_name {
+                if let Some(user) = &s.user {
+                    parts.push(format!("{user}@{hn}"));
+                } else {
+                    parts.push(hn.clone());
+                }
+            }
+            if let Some(port) = s.port {
+                parts.push(format!(":{port}"));
+            }
+            (!parts.is_empty()).then(|| parts.join(""))
+        });
+        let label = match detail {
+            Some(detail) if detail != choice.label() => format!("{}  ({detail})", choice.label()),
+            _ => choice.label().to_owned(),
+        };
+        let store = store.clone();
+        menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(move |_, window, cx| {
+            if !checked {
+                confirm_switch(store.clone(), choice.clone(), window, cx);
+            }
+        }));
+    }
+    menu.separator().item(PopupMenuItem::new(tr(cx, "ssh.menuManageSsh")).on_click(|_, window, cx| {
+        if let Some(workbench) = cx.try_global::<WorkbenchHandle>().and_then(|handle| handle.0.upgrade()) {
+            workbench.update(cx, |workbench, cx| workbench.open_settings(Section::Runtime, window, cx));
+        }
+    }))
 }
 
 /// The workbench's own focus, for commands that run after a dialog closed.
@@ -1666,8 +1832,9 @@ impl Render for Workbench {
                 }
             });
         }
-        let theme = cx.theme();
         let settings = self.settings.clone();
+        let ssh_banner = self.render_ssh_banner(cx);
+        let theme = cx.theme();
         v_flex()
             .relative()
             .size_full()
@@ -1823,6 +1990,7 @@ impl Render for Workbench {
             .font_family(theme.font_family.clone())
             .text_size(theme.font_size)
             .child(title_bar)
+            .children(ssh_banner)
             .child(div().flex_1().min_h_0().flex().overflow_hidden().child(body))
             .children(status_bar)
             .children(settings.clone())
@@ -1900,14 +2068,14 @@ fn runtime_download_failed(prompt: RuntimePrompt, window: &mut Window, cx: &mut 
     });
 }
 
-/// Ask, then switch the execution environment and restart.
+/// Ask, then hot-swap the execution environment in place without restarting.
 pub(crate) fn confirm_switch(store: Entity<Store>, target: ExecutionTarget, window: &mut Window, cx: &mut App) {
     let label = target.label().to_owned();
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let (store, target) = (store.clone(), target.clone());
         alert
             .title(tr(cx, "native.switchTarget"))
-            .description(trf(cx, "native.switchConfirm", &[("target", &label)]))
+            .description(trf(cx, "ssh.swapConfirm", &[("target", &label)]))
             .ok_text(tr(cx, "native.switch"))
             .cancel_text(tr(cx, "chat.cancel"))
             .show_cancel(true)

@@ -9,10 +9,10 @@
  */
 import type { StreamPatch } from './stream-patch.ts'
 import type { Accent, ColorScheme } from './appearance.ts'
-import type { IdeFilesRequest, IdeFilesResults, OfficePdfRegistration, WorkspaceId } from './ide-files-protocol.ts'
+import type { FileTailResult, FileUploadResult, IdeFilesRequest, IdeFilesResults, OfficePdfRegistration, WorkspaceId } from './ide-files-protocol.ts'
 import type { FootprintTurn, MapExplanation, ProjectMap } from './map-protocol.ts'
 
-export type { OfficePdfRegistration, WorkspaceId }
+export type { FileTailResult, FileUploadResult, OfficePdfRegistration, WorkspaceId }
 
 /** Chat identifier: a UUID string. */
 export type SessionId = string
@@ -92,11 +92,75 @@ export interface UiPreferences {
 
 // ───────────────────────────── Chats ─────────────────────────────
 
+/** Model selected for a chat or future chats (`rainy-protocol::models::ModelSelection`). */
+export interface ModelSelection {
+  provider: string
+  model: string
+  thinking?: string | null | undefined
+}
+
+/** External CLI agent backend attached to a chat (`codex`, `antigravity` or generic `acp`). */
+export interface ExternalBackendRef {
+  /** `codex`, `antigravity` or `acp`. */
+  kind: string
+  binary?: string | null | undefined
+  args?: string[] | undefined
+  label?: string | null | undefined
+}
+
+/** One model exposed by an external agent CLI (`external.status` / `external.probe`). */
+export interface ExternalModelInfo {
+  id: string
+  displayName?: string | null | undefined
+  reasoningEfforts?: string[] | undefined
+  defaultEffort?: string | null | undefined
+  isDefault?: boolean | null | undefined
+}
+
+/** User configuration for one external CLI agent stored in `settings.json` (`external.configure`). */
+export interface ExternalAgentConfig {
+  /** `codex`, `antigravity` or `acp`. */
+  kind: string
+  enabled?: boolean | undefined
+  binary?: string | null | undefined
+  args?: string[] | undefined
+  label?: string | null | undefined
+  defaultModel?: string | null | undefined
+  defaultThinking?: string | null | undefined
+}
+
+/** Detection and configuration snapshot of one external agent (`external.status` / `external.probe`). */
+export interface ExternalAgentStatus {
+  kind: string
+  label: string
+  enabled: boolean
+  installed: boolean
+  binary?: string | null | undefined
+  args?: string[] | undefined
+  binaryPath?: string | null | undefined
+  version?: string | null | undefined
+  models?: ExternalModelInfo[] | undefined
+  defaultModel?: string | null | undefined
+  defaultThinking?: string | null | undefined
+  installHint?: string | null | undefined
+  loginHint?: string | null | undefined
+  error?: string | null | undefined
+}
+
+/** Response of `external.status`, `external.probe`, `external.configure` and payload of `external.changed`. */
+export interface ExternalStatusResponse {
+  agents: ExternalAgentStatus[]
+}
+
 /** A chat of the history list, as far as the project map reads it. */
 export interface SessionSummary {
   id: SessionId
   /** The chat's working directory, which relative tool paths start from. */
   cwd: string
+  /** External CLI agent backend driving this chat (`codex`, `antigravity` or `acp`), when set. */
+  externalBackend?: ExternalBackendRef | null | undefined
+  /** External thread or session identifier (`threadId` / ACP `sessionId`) used to resume across restarts. */
+  externalThreadId?: string | null | undefined
 }
 
 export type SessionRunStatus = 'idle' | 'running' | 'compacting' | 'error'
@@ -126,7 +190,7 @@ export interface ChatChange {
 export interface PendingApproval {
   toolCallId: string
   toolName: string
-  reason: 'command' | 'outside-write' | 'outside-read' | 'outside-workdir' | 'mcp' | 'web'
+  reason: 'command' | 'outside-write' | 'outside-read' | 'outside-workdir' | 'mcp' | 'web' | 'file-change' | 'permission'
   rule?: string | null | undefined
   path?: string | null | undefined
   workdir?: string | null | undefined
@@ -264,6 +328,128 @@ export interface ExecutionPoll {
   status: ExecutionStatus
 }
 
+// ───────────────────────────── Host Metrics & Ports ─────────────────────────────
+// Shared shapes mirrored with `native/crates/protocol/src/metrics.rs`.
+
+/** One compute process currently occupying memory on a GPU. */
+export interface GpuProcess {
+  pid: number
+  processName: string
+  usedMemoryMib: number
+  user?: string | null | undefined
+  uid?: number | null | undefined
+}
+
+/** Instantaneous status of one NVIDIA GPU reported by `nvidia-smi`. */
+export interface GpuInfo {
+  index: number
+  name: string
+  utilizationPercent?: number | null | undefined
+  memoryUsedMib: number
+  memoryTotalMib: number
+  temperatureC?: number | null | undefined
+  processes?: GpuProcess[] | undefined
+}
+
+/** Container cgroup v1/v2 CPU and memory limits, when enforced on Linux. */
+export interface CgroupLimits {
+  /** `1` for cgroup v1, `2` for cgroup v2. */
+  version: number
+  cpuQuotaCores?: number | null | undefined
+  memoryLimitBytes?: number | null | undefined
+  memoryCurrentBytes?: number | null | undefined
+}
+
+/** Available and total filesystem space for one watched path or mount point. */
+export interface DiskUsage {
+  path: string
+  mount?: string | null | undefined
+  availableBytes: number
+  totalBytes: number
+}
+
+/** Response of `host.metrics`: lightweight CPU, memory, cgroup, GPU and disk snapshot. */
+export interface HostMetrics {
+  collectedAt: number
+  hostname: string
+  platform: string
+  cpuCount: number
+  effectiveCpuCores: number
+  cpuPercent?: number | null | undefined
+  loadAvg1m?: number | null | undefined
+  memoryUsedBytes: number
+  memoryTotalBytes: number
+  hostMemoryTotalBytes: number
+  cgroup?: CgroupLimits | null | undefined
+  gpus?: GpuInfo[] | undefined
+  disks?: DiskUsage[] | undefined
+}
+
+/** One TCP port currently listening on the Host (`host.ports`), used to offer one-click SSH `-L` forwarding. */
+export interface ListeningPort {
+  port: number
+  address: string
+  pid?: number | null | undefined
+  processName?: string | null | undefined
+  label?: string | null | undefined
+}
+
+/** Response of `host.ports`. */
+export interface HostPortsResponse {
+  ports: ListeningPort[]
+}
+
+// ───────────────────────────── Detached Experiments ─────────────────────────────
+// Shared shapes mirrored with `native/crates/protocol/src/experiments.rs`.
+
+/** Lifecycle state of a detached background experiment. */
+export type ExperimentStatus = 'running' | 'exited' | 'stopped' | 'unknown'
+
+/** One persisted detached experiment entry (`experiments.list`, `experiments.start`, `experiments.stop`). */
+export interface ExperimentRecord {
+  id: string
+  name: string
+  command: string
+  cwd: string
+  logPath: string
+  status: ExperimentStatus
+  pid?: number | null | undefined
+  pgid?: number | null | undefined
+  procStartTicks?: number | null | undefined
+  uid?: number | null | undefined
+  cudaVisibleDevices?: string | null | undefined
+  startedAt: number
+  endedAt?: number | null | undefined
+  exitCode?: number | null | undefined
+}
+
+/** Request payload for `experiments.start`. */
+export interface ExperimentStartParams {
+  name?: string | null | undefined
+  cwd: string
+  command: string
+  cudaVisibleDevices?: string | null | undefined
+  env?: Record<string, string> | undefined
+  logPath?: string | null | undefined
+}
+
+/** Incremental log tail chunk returned by `experiments.tail`. */
+export interface ExperimentTailResult {
+  id: string
+  logPath: string
+  text: string
+  offset: number
+  nextOffset: number
+  totalBytes: number
+  truncated: boolean
+  reset: boolean
+}
+
+/** Response of `experiments.list`. */
+export interface ExperimentListResponse {
+  experiments: ExperimentRecord[]
+}
+
 // ───────────────────────────── Method table ─────────────────────────────
 
 /** The file operations of the `ide` method that pages make. */
@@ -277,10 +463,32 @@ export type IdeResponse = IdeFilesResults[IdeRequest['op']]
 export interface HostMethods {
   'prefs.get': [void, UiPreferences]
   'sessions.list': [{ workspaceId?: WorkspaceId | null | undefined; archived?: boolean | undefined }, SessionSummary[]]
+  /** Create a chat, optionally bound to an external CLI agent backend. */
+  'sessions.create': [{ workspaceId?: WorkspaceId | null | undefined; cwd?: string | undefined; permission?: 'read-only' | 'ask' | 'auto' | undefined; worktree?: boolean | undefined; model?: ModelSelection | null | undefined; externalBackend?: ExternalBackendRef | null | undefined }, SessionSummary]
   /** Files the chat's agent changed that are not yet kept or undone. */
   'chat.changes': [{ sessionId: SessionId }, ChatChange[]]
   /** Detailed token usage breakdown for a chat's next request. */
   'session.contextBreakdown': [{ sessionId: SessionId }, ContextBreakdown]
+  /** Configuration and cached probe status of external CLI agents. */
+  'external.status': [Record<string, never>, ExternalStatusResponse]
+  /** Probe external CLI binaries and models on demand. */
+  'external.probe': [{ kind?: string | undefined; binary?: string | undefined; args?: string[] | undefined; cwd?: string | undefined }, ExternalStatusResponse]
+  /** Update or remove one external CLI agent entry in `settings.json`. */
+  'external.configure': [{ config: ExternalAgentConfig; remove?: boolean | undefined }, ExternalStatusResponse]
+  /** Lightweight CPU, memory, cgroup, GPU and disk metrics snapshot. */
+  'host.metrics': [{ watchPaths?: string[] | undefined; includeGpuProcesses?: boolean | undefined }, HostMetrics]
+  /** TCP ports currently listening on the Host for one-click SSH forwarding. */
+  'host.ports': [Record<string, never>, HostPortsResponse]
+  /** Detached background experiments registered on the Host. */
+  'experiments.list': [Record<string, never>, ExperimentListResponse]
+  /** Start a detached background experiment that outlives Host restarts. */
+  'experiments.start': [ExperimentStartParams, ExperimentRecord]
+  /** Stop a detached background experiment after verifying its process identity. */
+  'experiments.stop': [{ id: string; force?: boolean | undefined }, ExperimentRecord]
+  /** Remove a detached experiment entry from the Host registry. */
+  'experiments.remove': [{ id: string }, { id: string; removed: boolean }]
+  /** Read an incremental log tail slice for one detached experiment. */
+  'experiments.tail': [{ id: string; offset?: number | undefined; maxBytes?: number | undefined }, ExperimentTailResult]
   /** The project map; a recent one is reused unless `refresh` is set. */
   'map.get': [{ workspaceId: WorkspaceId; refresh?: boolean | undefined }, ProjectMap]
   /** Ask the chat model to describe the project's parts; the answer is kept with the project. */
@@ -312,6 +520,8 @@ export interface HostEvents {
   'session.state': { sessionId: SessionId; status: SessionRunStatus }
   /** A chat was created or its summary changed. */
   'sessions.changed': SessionSummary
+  /** External CLI agent configuration or probe status changed. */
+  'external.changed': ExternalStatusResponse
   'prefs.changed': UiPreferences
 }
 export type HostEvent = keyof HostEvents

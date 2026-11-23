@@ -53,7 +53,9 @@ fn in_apartment<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
 
 /// The dialog with everything set but not shown.
 fn prepared(dialog: &SaveDialog) -> windows::core::Result<IFileSaveDialog> {
-    let (type_name, spec) = (HSTRING::from(dialog.type_name.as_str()), HSTRING::from(format!("*.{}", dialog.extension)));
+    let ext = dialog.extension.trim().trim_start_matches('.');
+    let spec_str = if ext.is_empty() || ext == "*" { "*.*".to_owned() } else { format!("*.{ext}") };
+    let (type_name, spec) = (HSTRING::from(dialog.type_name.as_str()), HSTRING::from(spec_str.as_str()));
     // SAFETY: COM calls in this thread's apartment; the strings outlive the calls, which copy them.
     unsafe {
         let file: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
@@ -61,7 +63,9 @@ fn prepared(dialog: &SaveDialog) -> windows::core::Result<IFileSaveDialog> {
         file.SetTitle(&HSTRING::from(dialog.title.as_str()))?;
         file.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(type_name.as_ptr()), pszSpec: PCWSTR(spec.as_ptr()) }])?;
         file.SetFileTypeIndex(1)?;
-        file.SetDefaultExtension(&HSTRING::from(dialog.extension.as_str()))?;
+        if !ext.is_empty() && ext != "*" {
+            file.SetDefaultExtension(&HSTRING::from(ext))?;
+        }
         match SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dialog.folder.as_path()), None) {
             Ok(folder) => file.SetFolder(&folder)?,
             Err(error) => log::warn!("The save dialog does not open in {}: {error}", dialog.folder.display()),

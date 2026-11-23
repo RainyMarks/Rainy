@@ -23,7 +23,7 @@ use crate::text::sha256_hex;
 
 pub const LANGUAGES: [&str; 5] = ["python", "node", "php", "c", "cpp"];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CANDIDATES: usize = 16;
+const MAX_CANDIDATES: usize = 32;
 const PROBE_CONCURRENCY: usize = 4;
 
 const PYTHON_PROBE: &str = r#"import sys,json,platform,importlib
@@ -42,10 +42,10 @@ def cpu():
  torch=importlib.import_module('torch'); x=torch.ones(2,requires_grad=True); (x*x).sum().backward()
 def cuda():
  torch=importlib.import_module('torch')
- if not torch.cuda.is_available(): raise RuntimeError('CUDA is not available in this environment')
- x=torch.ones((2,2),device='cuda',requires_grad=True); result=(x@x).sum(); result.backward(); value=result.item()
- if value!=8: raise RuntimeError('CUDA computation returned an unexpected result')
- if x.grad.sum().item()!=16: raise RuntimeError('CUDA backward computation returned an unexpected result')
+ ver=getattr(getattr(torch,'version',None),'cuda',None)
+ if not ver: raise RuntimeError('PyTorch was built without CUDA support')
+ count=torch.cuda.device_count()
+ if count<=0: raise RuntimeError('No CUDA device is visible in this environment')
 def vision():
  torch=importlib.import_module('torch'); module=importlib.import_module('torchvision')
  module.ops.nms(torch.tensor([[0.,0.,2.,2.],[0.,0.,1.,1.]]),torch.tensor([0.9,0.8]),0.5)
@@ -360,8 +360,8 @@ impl Runtime {
                 add("python", python_in(Path::new(prefix.trim())), "conda");
             }
         }
-        for prefix in ["miniforge3", "miniconda3", "anaconda3"] {
-            add("python", python_in(&home.join(prefix)), "conda");
+        for (candidate_path, source) in extra_research_python_candidates(&home, !cfg!(windows)) {
+            add("python", candidate_path, source);
         }
         if cfg!(windows) {
             let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData").join("Local"));
@@ -580,6 +580,45 @@ impl Runtime {
 
 use futures::StreamExt as _;
 
+fn extra_research_python_candidates(home: &Path, unix: bool) -> Vec<(PathBuf, &'static str)> {
+    let conda_python = |prefix: &Path| if unix { prefix.join("bin").join("python") } else { prefix.join("python.exe") };
+    let venv_python = |prefix: &Path| if unix { prefix.join("bin").join("python") } else { prefix.join("Scripts").join("python.exe") };
+    let scan_envs = |out: &mut Vec<(PathBuf, &'static str)>, parent: PathBuf, source: &'static str, is_venv: bool| {
+        let Ok(entries) = std::fs::read_dir(&parent) else { return };
+        for entry in entries.flatten().take(MAX_CANDIDATES) {
+            let path = entry.path();
+            if path.is_dir() {
+                out.push((if is_venv { venv_python(&path) } else { conda_python(&path) }, source));
+            }
+        }
+    };
+
+    let mut out = Vec::new();
+    let mut conda_roots: Vec<PathBuf> = ["miniforge3", "miniconda3", "anaconda3", "mambaforge"].iter().map(|p| home.join(p)).collect();
+    if unix {
+        conda_roots.push(PathBuf::from("/opt/conda"));
+        conda_roots.push(PathBuf::from("/usr/local/conda"));
+    }
+    for root in conda_roots {
+        out.push((conda_python(&root), "conda"));
+        scan_envs(&mut out, root.join("envs"), "conda", false);
+    }
+
+    scan_envs(&mut out, home.join(".venvs"), "venv", true);
+
+    let uv_root = if unix {
+        home.join(".local").join("share").join("uv").join("python")
+    } else {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+            .join("uv")
+            .join("python")
+    };
+    scan_envs(&mut out, uv_root, "uv", false);
+    out
+}
+
 fn load_selection_file(path: &Path) -> SelectionFile {
     match read_json::<SelectionFile>(path) {
         Ok(Some(state)) => state,
@@ -631,5 +670,27 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with("runtime-environments.json.damaged-"))
             .collect();
         assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn python_probe_checks_cuda_metadata_without_allocating_gpu_memory() {
+        assert!(PYTHON_PROBE.contains("torch.cuda.device_count()"));
+        assert!(PYTHON_PROBE.contains("'cuda'"));
+        assert!(!PYTHON_PROBE.contains("device='cuda'"), "PYTHON_PROBE must never allocate CUDA tensors or contexts");
+    }
+
+    #[test]
+    fn discovers_research_conda_mambaforge_venvs_and_uv_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("mambaforge/envs/train/bin")).unwrap();
+        std::fs::create_dir_all(home.join(".venvs/ctf-research/bin")).unwrap();
+        std::fs::create_dir_all(home.join(".local/share/uv/python/cpython-3.12/bin")).unwrap();
+
+        let unix_candidates = extra_research_python_candidates(home, true);
+        assert!(unix_candidates.iter().any(|(p, s)| *s == "conda" && p == &home.join("mambaforge/envs/train/bin/python")));
+        assert!(unix_candidates.iter().any(|(p, s)| *s == "venv" && p == &home.join(".venvs/ctf-research/bin/python")));
+        assert!(unix_candidates.iter().any(|(p, s)| *s == "uv" && p == &home.join(".local/share/uv/python/cpython-3.12/bin/python")));
+        assert!(unix_candidates.iter().any(|(p, s)| *s == "conda" && p == Path::new("/opt/conda/bin/python")));
     }
 }

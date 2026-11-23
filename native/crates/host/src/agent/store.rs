@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rainy_protocol::chat::{SwarmLink, TranscriptEntry, Worktree};
+use rainy_protocol::chat::{ExternalBackendRef, SwarmLink, TranscriptEntry, Worktree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -62,6 +62,12 @@ pub struct StoredChat {
     /// Persisted note explaining why the executor handed back to the planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrate_note: Option<String>,
+    /// External CLI agent backend owning this chat (`codex`, `antigravity`, `acp`), absent for native chats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_backend: Option<ExternalBackendRef>,
+    /// External backend's persisted thread/session id for resuming across turns and Host restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_thread_id: Option<String>,
 }
 
 /// Metadata changes, recorded as `meta` lines; later lines win.
@@ -95,6 +101,10 @@ pub struct MetaPatch {
     pub orchestrate_phase: Option<Option<String>>,
     #[serde(rename = "orchestrateNote", skip_serializing_if = "Option::is_none")]
     pub orchestrate_note: Option<Option<String>>,
+    #[serde(rename = "externalBackend", skip_serializing_if = "Option::is_none")]
+    pub external_backend: Option<Option<ExternalBackendRef>>,
+    #[serde(rename = "externalThreadId", skip_serializing_if = "Option::is_none")]
+    pub external_thread_id: Option<Option<String>>,
 }
 
 impl MetaPatch {
@@ -135,6 +145,12 @@ impl MetaPatch {
         if let Some(note) = &self.orchestrate_note {
             chat.orchestrate_note = note.clone();
         }
+        if let Some(backend) = &self.external_backend {
+            chat.external_backend = backend.clone();
+        }
+        if let Some(thread_id) = &self.external_thread_id {
+            chat.external_thread_id = thread_id.clone();
+        }
     }
 }
 
@@ -158,6 +174,7 @@ pub struct NewChat {
     pub permission: Option<String>,
     pub worktree: Option<Worktree>,
     pub swarm: Option<SwarmLink>,
+    pub external_backend: Option<ExternalBackendRef>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -427,6 +444,8 @@ impl ChatStore {
             orchestrate: None,
             orchestrate_phase: None,
             orchestrate_note: None,
+            external_backend: new.external_backend,
+            external_thread_id: None,
         };
         let mut header = json!({ "type": "header", "version": CHAT_FORMAT_VERSION, "id": chat.id, "workspaceId": chat.workspace_id, "cwd": chat.cwd, "createdAt": now });
         if let Some(parent) = &chat.parent {
@@ -441,6 +460,7 @@ impl ChatStore {
             read_at: chat.read_at,
             worktree: chat.worktree.clone().map(Some),
             swarm: chat.swarm.clone().map(Some),
+            external_backend: chat.external_backend.clone().map(Some),
             ..MetaPatch::default()
         };
         let meta = serde_json::to_value(&meta).unwrap_or_default();
@@ -500,6 +520,8 @@ impl ChatStore {
             orchestrate: None,
             orchestrate_phase: None,
             orchestrate_note: None,
+            external_backend: None,
+            external_thread_id: None,
         };
         let (mut entries, mut kept, mut damaged) = (Vec::new(), Vec::new(), 0);
         for line in lines.filter(|line| !line.is_empty()) {
@@ -525,6 +547,8 @@ impl ChatStore {
                             .get("orchestratePhase")
                             .map(|phase| phase.as_str().filter(|p| matches!(*p, "plan" | "execute")).map(str::to_owned)),
                         orchestrate_note: record.get("orchestrateNote").map(|note| note.as_str().map(str::to_owned)),
+                        external_backend: record.get("externalBackend").map(|b| serde_json::from_value(b.clone()).ok()),
+                        external_thread_id: record.get("externalThreadId").map(|id| id.as_str().map(str::to_owned)),
                     };
                     patch.apply(&mut chat);
                 }
@@ -822,6 +846,16 @@ mod tests {
         store.set_meta(&chat.id, MetaPatch { worktree: Some(Some(Worktree { branch: Some("b".into()), ..worktree })), ..MetaPatch::default() }).await.unwrap();
         let file = ChatStore::load(dir.clone()).unwrap().read(&chat.id).await.unwrap();
         assert_eq!(file.chat.worktree.and_then(|worktree| worktree.branch).as_deref(), Some("b"));
+        // External backend & thread id persist across index rebuilds and chat reloads.
+        let ext = ExternalBackendRef { kind: "codex".into(), binary: Some("/bin/codex".into()), args: Vec::new(), label: None };
+        let ext_chat = store.create(NewChat { cwd: "/p".into(), external_backend: Some(ext.clone()), ..NewChat::default() }).unwrap();
+        store.set_meta(&ext_chat.id, MetaPatch { external_thread_id: Some(Some("thread-99".into())), ..MetaPatch::default() }).await.unwrap();
+        store.flush().unwrap();
+        let _ = std::fs::remove_file(dir.join("index.json"));
+        let rebuilt = ChatStore::load(dir.clone()).unwrap();
+        let loaded = rebuilt.read(&ext_chat.id).await.unwrap();
+        assert_eq!(loaded.chat.external_backend, Some(ext));
+        assert_eq!(loaded.chat.external_thread_id.as_deref(), Some("thread-99"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

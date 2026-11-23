@@ -8,6 +8,7 @@ pub mod composer;
 pub mod chat;
 pub mod history;
 pub mod markdown;
+pub mod metrics;
 pub mod notify;
 pub mod palette;
 pub mod prompt;
@@ -17,6 +18,7 @@ pub mod settings;
 pub mod ssh;
 pub mod tool_title;
 pub mod transcript;
+pub mod tunnels;
 pub mod update;
 pub mod workbench;
 

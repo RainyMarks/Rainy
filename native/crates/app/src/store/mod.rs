@@ -12,14 +12,17 @@ pub mod update;
 
 use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use rainy_carrier::askpass::{Askpass, Question};
+use rainy_carrier::ssh_tunnel::{PortForwardRule, TunnelManager, TunnelState, TunnelStatus};
+use rainy_carrier::targets::SshHostProfile;
 use rainy_carrier::trust::{Integrity, TrustError};
 use rainy_carrier::{ConnectionState, HostProcess, RpcClient, RpcEvent};
 use rainy_protocol::{
-    AppInfo, ModelsStatus, RpcError, SessionEntryEvent, SessionSnapshot, SessionStateEvent, SessionSummary,
-    SessionToolEvent, UiPreferences, parse_stream_event,
+    AppInfo, ExternalAgentStatus, ExternalBackendRef, ExternalStatusResponse, HostMetrics, ModelSelection, ModelsStatus, RpcError,
+    SessionEntryEvent, SessionSnapshot, SessionStateEvent, SessionSummary, SessionToolEvent, UiPreferences, parse_stream_event,
 };
 use serde_json::{Value, json};
 
@@ -57,12 +60,36 @@ impl ChatModel {
     }
 }
 
-/// What changed, for views that only care about part of the state.
+/// Silent SSH reconnect backoff state (`1s -> 3s -> 8s`, 3 attempts before alerting).
 #[derive(Debug, Clone, PartialEq)]
+pub enum SshAutoReconnect {
+    Idle,
+    Waiting {
+        attempt: u8,
+        max: u8,
+        retry_at: Instant,
+        last_error: Option<String>,
+    },
+    Attempting {
+        attempt: u8,
+        max: u8,
+    },
+    Exhausted {
+        last_error: String,
+    },
+}
+
+/// Backoff delays (in seconds) between automatic SSH reconnect attempts.
+const SSH_RECONNECT_BACKOFFS_SECS: [u64; 3] = [1, 3, 8];
+
+/// What changed, for views that only care about part of the state.
+#[derive(Clone)]
 pub enum StoreEvent {
     PrefsChanged,
     SummariesChanged,
     SelectionChanged,
+    /// The active Host was replaced or reconnected in place; every subsystem (IDE, LSP, Execution, WebPane) refreshes.
+    HostReconnected(RpcClient),
     /// A Host event other views follow (`ide.hint`, `memory.changed`, …).
     Host { name: String, data: Value },
     /// The Host ended while the interface was using it; the exit code, if it had one.
@@ -92,19 +119,21 @@ pub struct Shutdown {
     host: Option<Arc<HostProcess>>,
     modules: Arc<rainy_carrier::modules::Modules>,
     strata: Option<Arc<rainy_carrier::strata::Manager>>,
+    tunnels: Arc<TunnelManager>,
 }
 
 impl Shutdown {
-    /// Stop the Host (asked first, killed after its grace period) and the Strata server Rainy started at the same time,
-    /// and wait for a component operation to stop at its next chunk; whether none still runs. Blocks for up to about ten
-    /// seconds.
+    /// Stop the Host (asked first, killed after its grace period), active SSH port-forwarding tunnels, and the Strata
+    /// server Rainy started at the same time, and wait for a component operation to stop at its next chunk; whether
+    /// none still runs. Blocks for up to about ten seconds.
     pub fn finish(self) -> bool {
         let stop = |name: &str, run: Box<dyn FnOnce() + Send>| std::thread::Builder::new().name(name.to_owned()).spawn(run).ok();
+        let tunnels = stop("stop-tunnels", Box::new(move || self.tunnels.stop_all()));
         let host = self.host.and_then(|host| stop("stop-host", Box::new(move || host.stop())));
         // The model server Rainy started does not outlive it; a server it did not start is left running.
         let strata = self.strata.and_then(|strata| stop("stop-strata", Box::new(move || strata.close())));
         let idle = self.modules.wait_idle(MODULES_TIMEOUT);
-        for thread in [host, strata].into_iter().flatten() {
+        for thread in [tunnels, host, strata].into_iter().flatten() {
             let _ = thread.join();
         }
         idle
@@ -168,6 +197,12 @@ pub struct Store {
     pub info: Option<AppInfo>,
     pub prefs: UiPreferences,
     pub models: Option<ModelsStatus>,
+    /// Detected & configured external CLI agents (`codex`, `antigravity`, custom `acp`).
+    pub external_agents: Vec<ExternalAgentStatus>,
+    /// External agent chosen for the next new chat (`None` uses built-in models).
+    pub pending_external: Option<ExternalBackendRef>,
+    /// Model & reasoning selection for the next new external-agent chat.
+    pub pending_external_model: Option<ModelSelection>,
     pub summaries: Vec<SessionSummary>,
     pub chats: HashMap<String, Entity<ChatModel>>,
     /// Monotonic access counter per cached chat for bounded LRU eviction.
@@ -193,8 +228,26 @@ pub struct Store {
     pub diagnostics: diagnostics::Diagnostics,
     /// Credential protection alerts raised before the window subscribed.
     pending_credential_alerts: Vec<boot::CredentialAlert>,
-    /// True while an in-place SSH reconnect is under way.
+    /// Standalone dynamic SSH `-L` port forwarding manager (never interrupts the primary Host).
+    pub tunnels: Arc<TunnelManager>,
+    /// Last known snapshot of active SSH port-forwarding rules.
+    pub tunnel_status: TunnelStatus,
+    /// Latest polled remote hardware/cgroup/GPU/disk metrics snapshot.
+    pub host_metrics: Option<HostMetrics>,
+    /// Non-blocking silent SSH reconnect state (`1s -> 3s -> 8s`).
+    pub ssh_reconnect: SshAutoReconnect,
+    /// Signal channel to wake the backoff sleep immediately when the user clicks "Retry now".
+    ssh_retry_now: Option<async_channel::Sender<()>>,
+    /// Background task driving the silent SSH auto-reconnect loop.
+    ssh_reconnect_task: Option<Task<()>>,
+    /// Target label currently being swapped to in place.
+    pub swapping_target: Option<SharedString>,
+    /// True while an in-place target swap or SSH reconnect is under way.
     reconnecting: bool,
+    /// True after `install_connected_host` until the new RPC socket reports `Open` (cookie ready).
+    pending_reconnected: bool,
+    /// Monotonic generation incremented on every Host start/swap to ignore stale exit callbacks.
+    host_generation: u64,
     _tasks: Vec<Task<()>>,
 }
 
@@ -246,6 +299,8 @@ impl Store {
         let manager = Arc::new(rainy_carrier::modules::Modules::new(&paths.resources, &paths.user_data, move |state| {
             let _ = module_tx.try_send(state.clone());
         }));
+        let tunnels = Arc::new(TunnelManager::new(askpass.clone()));
+        let tunnel_status = TunnelStatus { target: None, rules: Vec::new(), state: TunnelState::Stopped };
         let store = cx.new(|cx| {
             let mut store = Store {
                 paths,
@@ -268,6 +323,9 @@ impl Store {
                 info: None,
                 prefs: UiPreferences::default(),
                 models: None,
+                external_agents: Vec::new(),
+                pending_external: None,
+                pending_external_model: None,
                 summaries: Vec::new(),
                 chats: HashMap::new(),
                 chat_used: HashMap::new(),
@@ -282,7 +340,16 @@ impl Store {
                 updates,
                 diagnostics: diagnostics::Diagnostics::default(),
                 pending_credential_alerts: Vec::new(),
+                tunnels,
+                tunnel_status,
+                host_metrics: None,
+                ssh_reconnect: SshAutoReconnect::Idle,
+                ssh_retry_now: None,
+                ssh_reconnect_task: None,
+                swapping_target: None,
                 reconnecting: false,
+                pending_reconnected: false,
+                host_generation: 0,
                 _tasks: Vec::new(),
             };
             cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
@@ -342,7 +409,48 @@ impl Store {
         (events, exit_rx)
     }
 
+    fn spawn_exit_watcher(&self, generation: u64, exit_rx: async_channel::Receiver<Option<i32>>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            if let Ok(code) = exit_rx.recv().await {
+                cx.update(|_| crate::web::preview::close());
+                let _ = this.update(cx, |store, cx| {
+                    if !store.stopping && store.host_generation == generation && store.host.is_some() {
+                        // Nothing answers any more: requests fail at once instead of waiting for a reconnect that
+                        // never comes, also after "Later" in the dialog.
+                        if let Some(rpc) = &store.rpc {
+                            rpc.close();
+                        }
+                        cx.emit(StoreEvent::HostExited(code));
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn spawn_rpc_pump(&self, generation: u64, events: async_channel::Receiver<RpcEvent>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            while let Ok(event) = events.recv().await {
+                let active = this
+                    .update(cx, |store, cx| {
+                        if store.host_generation != generation {
+                            return false;
+                        }
+                        store.handle(event, cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !active {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn start(&mut self, cx: &mut Context<Self>) {
+        self.host_generation = self.host_generation.wrapping_add(1);
+        let generation = self.host_generation;
         let paths = self.paths.clone();
         let (events, exit_rx) = self.wire_carrier_events(cx);
         let (progress_tx, progress_rx) = async_channel::unbounded::<boot::Step>();
@@ -373,22 +481,7 @@ impl Store {
             }
         })
         .detach();
-        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            if let Ok(code) = exit_rx.recv().await {
-                cx.update(|_| crate::web::preview::close());
-                let _ = this.update(cx, |store, cx| {
-                    if !store.stopping && store.host.is_some() {
-                        // Nothing answers any more: requests fail at once instead of waiting for a reconnect that
-                        // never comes, also after "Later" in the dialog.
-                        if let Some(rpc) = &store.rpc {
-                            rpc.close();
-                        }
-                        cx.emit(StoreEvent::HostExited(code));
-                    }
-                });
-            }
-        })
-        .detach();
+        self.spawn_exit_watcher(generation, exit_rx, cx);
         // Startup steps (starting WSL, installing the runtime) are shown while they run.
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             while let Ok(step) = progress_rx.recv().await {
@@ -416,6 +509,7 @@ impl Store {
             let (rpc, events) = match connected {
                 Ok(pair) => pair,
                 Err(error) => {
+                    cx.background_spawn(async move { host.stop(); }).detach();
                     let _ = this.update(cx, |store, cx| {
                         store.phase = Phase::Failed(format!("{error:#}").into());
                         cx.notify();
@@ -424,18 +518,18 @@ impl Store {
                 }
             };
             let _ = this.update(cx, |store, cx| {
+                let is_ssh = matches!(target, ExecutionTarget::Ssh { .. });
                 store.host = Some(host);
                 store.target = Some(target);
                 store.rpc = Some(rpc);
                 store.integrity = integrity.map(Arc::new);
                 store.prune = prune;
+                store.spawn_rpc_pump(generation, events, cx);
+                if is_ssh {
+                    store.start_auto_tunnels(cx);
+                }
                 cx.notify();
             });
-            while let Ok(event) = events.recv().await {
-                if this.update(cx, |store, cx| store.handle(event, cx)).is_err() {
-                    break;
-                }
-            }
         });
         self._tasks.push(task);
     }
@@ -443,6 +537,89 @@ impl Store {
     /// The Host's launch address, which exchanges its token for the session cookie; pages in WebView2 start there.
     pub fn launch_url(&self) -> Option<String> {
         self.host.as_ref().map(|host| host.ready().url.clone())
+    }
+
+    /// Whether the active execution target is remote (SSH or WSL).
+    pub fn is_remote(&self) -> bool {
+        matches!(self.target, Some(ExecutionTarget::Ssh { .. } | ExecutionTarget::Wsl { .. }))
+    }
+
+    /// Whether the active execution target is an SSH server.
+    pub fn is_ssh(&self) -> bool {
+        matches!(self.target, Some(ExecutionTarget::Ssh { .. }))
+    }
+
+    /// Research profile configured for the currently active SSH target, if any.
+    pub fn current_ssh_profile(&self) -> Option<SshHostProfile> {
+        let target = self.target.as_ref()?;
+        boot::ssh_profile(&self.paths, target)
+    }
+
+    /// Clear any pending external-agent selection so the next new chat uses built-in models.
+    pub fn clear_pending_external(&mut self, cx: &mut Context<Self>) {
+        if self.pending_external.is_some() || self.pending_external_model.is_some() {
+            self.pending_external = None;
+            self.pending_external_model = None;
+            cx.notify();
+        }
+    }
+
+    /// Apply a new set of dynamic `-L` port-forwarding rules for the active SSH target without interrupting the Host.
+    pub fn apply_tunnel_rules(
+        &mut self,
+        rules: Vec<PortForwardRule>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<TunnelStatus, String>> {
+        let Some(target @ ExecutionTarget::Ssh { .. }) = self.target.clone() else {
+            return cx.spawn(async move |_, _| Err("not-ssh".into()));
+        };
+        let destination = match rainy_carrier::ssh::destination_of(&target) {
+            Ok(dest) => dest,
+            Err(error) => {
+                let msg = format!("{error:#}");
+                return cx.spawn(async move |_, _| Err(msg));
+            }
+        };
+        let tunnels = self.tunnels.clone();
+        let profile = self.current_ssh_profile();
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            let result = cx
+                .background_spawn(async move { tunnels.apply_rules(&destination, rules, profile.as_ref()) })
+                .await;
+            match result {
+                Ok(status) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.tunnel_status = status.clone();
+                        cx.notify();
+                    });
+                    Ok(status)
+                }
+                Err(error) => {
+                    let msg = format!("{error:#}");
+                    let snapshot = this
+                        .update(cx, |store, cx| {
+                            let mut st = store.tunnels.status();
+                            st.state = TunnelState::Error(msg.clone());
+                            store.tunnel_status = st.clone();
+                            cx.notify();
+                            st
+                        })
+                        .ok();
+                    let _ = snapshot;
+                    Err(msg)
+                }
+            }
+        })
+    }
+
+    /// Start any `auto_start` port-forwarding rules configured in the active SSH host's profile.
+    pub fn start_auto_tunnels(&mut self, cx: &mut Context<Self>) {
+        let Some(profile) = self.current_ssh_profile() else { return };
+        let auto_rules: Vec<PortForwardRule> = profile.forwards.into_iter().filter(|rule| rule.auto_start).collect();
+        if auto_rules.is_empty() {
+            return;
+        }
+        self.apply_tunnel_rules(auto_rules, cx).detach();
     }
 
     /// A minute after the workbench is first ready, as 3.x did: the daily recheck of the installed files, then removing
@@ -479,6 +656,9 @@ impl Store {
     /// second call has nothing left to stop.
     pub fn shutdown(&mut self) -> Shutdown {
         self.stopping = true;
+        self.ssh_reconnect_task = None;
+        self.ssh_retry_now = None;
+        self.ssh_reconnect = SshAutoReconnect::Idle;
         crate::web::preview::close();
         // A download stops; what it received is kept for the next attempt.
         self.modules.manager.close();
@@ -486,7 +666,12 @@ impl Store {
         if let Some(rpc) = self.rpc.take() {
             rpc.close();
         }
-        Shutdown { host: self.host.take(), modules: self.modules.manager.clone(), strata: self.strata.manager.clone() }
+        Shutdown {
+            host: self.host.take(),
+            modules: self.modules.manager.clone(),
+            strata: self.strata.manager.clone(),
+            tunnels: self.tunnels.clone(),
+        }
     }
 
     /// Quit as 3.x did: the editor's unsaved text is stored, the Host and the Strata server Rainy started stop, then Rainy
@@ -536,6 +721,12 @@ impl Store {
                 let reopened = state == ConnectionState::Open;
                 self.connection = state;
                 if reopened {
+                    if self.pending_reconnected {
+                        self.pending_reconnected = false;
+                        if let Some(rpc) = self.rpc.clone() {
+                            cx.emit(StoreEvent::HostReconnected(rpc));
+                        }
+                    }
                     self.on_open(cx);
                 }
                 cx.notify();
@@ -547,11 +738,13 @@ impl Store {
     /// The socket opened (first time or after a reconnect): load everything the interface shows.
     fn on_open(&mut self, cx: &mut Context<Self>) {
         let Some(rpc) = self.rpc.clone() else { return };
+        let generation = self.host_generation;
         let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             let info = rpc.request::<AppInfo>("app.info", Value::Null).await;
             let prefs = rpc.request::<UiPreferences>("prefs.get", Value::Null).await;
             let models = rpc.request::<ModelsStatus>("models.status", Value::Null).await;
             let summaries = rpc.request::<Vec<SessionSummary>>("sessions.list", json!({})).await;
+            let external = rpc.request::<ExternalStatusResponse>("external.status", json!({})).await;
             for (method, error) in [
                 ("app.info", info.as_ref().err()),
                 ("prefs.get", prefs.as_ref().err()),
@@ -562,7 +755,13 @@ impl Store {
                     log::warn!("{method} failed: {} {}", error.code, error.message);
                 }
             }
+            if let Err(error) = &external {
+                log::debug!("external.status unavailable: {} {}", error.code, error.message);
+            }
             let _ = this.update(cx, |store, cx| {
+                if store.host_generation != generation {
+                    return;
+                }
                 match (&info, &prefs) {
                     (Ok(_), Ok(_)) => {
                         store.phase = Phase::Ready;
@@ -585,6 +784,9 @@ impl Store {
                 }
                 if let Ok(summaries) = summaries {
                     store.set_summaries(summaries, cx);
+                }
+                if let Ok(external) = external {
+                    store.external_agents = external.agents;
                 }
                 // Chats open before a reconnect may have missed events.
                 let open: Vec<String> = store.chats.keys().cloned().collect();
@@ -703,6 +905,13 @@ impl Store {
                     self.models = Some(models);
                     cx.notify();
                 }
+            }
+            "external.changed" => {
+                if let Ok(status) = serde_json::from_value::<ExternalStatusResponse>(data.clone()) {
+                    self.external_agents = status.agents;
+                    cx.notify();
+                }
+                cx.emit(StoreEvent::Host { name: name.to_owned(), data });
             }
             _ => cx.emit(StoreEvent::Host { name: name.to_owned(), data }),
         }
@@ -852,8 +1061,314 @@ impl Store {
         cx.emit(StoreEvent::PrefsChanged);
     }
 
-    /// Reconnect an SSH Host in place without restarting `RainyAgent.exe`.
-    /// Falls back to a full restart only when the server needs a fresh runtime installation.
+    /// Return true when an SSH failure should alert the user immediately instead of retrying in the background.
+    fn is_non_retryable_ssh_error(detail: &str) -> bool {
+        let lower = detail.to_ascii_lowercase();
+        [
+            "permission denied",
+            "authentication failed",
+            "host key verification failed",
+            "bad configuration",
+            "cancelled",
+            "canceled",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    }
+
+    /// Install a freshly connected Host/RPC pair, refresh all subsystems via `StoreEvent::HostReconnected`,
+    /// and restore or auto-start SSH port-forwarding tunnels.
+    #[allow(clippy::too_many_arguments)]
+    fn install_connected_host(
+        &mut self,
+        generation: u64,
+        target: ExecutionTarget,
+        host: Arc<HostProcess>,
+        rpc: RpcClient,
+        rpc_events: async_channel::Receiver<RpcEvent>,
+        exit_rx: async_channel::Receiver<Option<i32>>,
+        same_target: bool,
+        restore_tunnels: Vec<PortForwardRule>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reconnecting = false;
+        self.swapping_target = None;
+        self.ssh_reconnect = SshAutoReconnect::Idle;
+        self.ssh_retry_now = None;
+        self.ssh_reconnect_task = None;
+        self.host = Some(host);
+        self.target = Some(target.clone());
+        self.rpc = Some(rpc);
+        self.pending_reconnected = true;
+        if !same_target {
+            self.summaries.clear();
+            self.chats.clear();
+            self.chat_used.clear();
+            self.reading.clear();
+            self.selected = None;
+            self.selections += 1;
+            self.models = None;
+            self.external_agents.clear();
+            self.pending_external = None;
+            self.pending_external_model = None;
+            self.host_metrics = None;
+            self.tunnel_status = TunnelStatus { target: None, rules: Vec::new(), state: TunnelState::Stopped };
+            cx.emit(StoreEvent::SummariesChanged);
+            cx.emit(StoreEvent::SelectionChanged);
+        }
+        self.spawn_exit_watcher(generation, exit_rx, cx);
+        self.spawn_rpc_pump(generation, rpc_events, cx);
+        if matches!(target, ExecutionTarget::Ssh { .. }) {
+            if same_target && !restore_tunnels.is_empty() {
+                self.apply_tunnel_rules(restore_tunnels, cx).detach();
+            } else {
+                self.start_auto_tunnels(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Cancel any background silent SSH reconnect countdown without touching the active Host.
+    pub fn cancel_ssh_auto_reconnect(&mut self, cx: &mut Context<Self>) {
+        self.ssh_reconnect_task = None;
+        self.ssh_retry_now = None;
+        if self.ssh_reconnect != SshAutoReconnect::Idle {
+            self.ssh_reconnect = SshAutoReconnect::Idle;
+            cx.notify();
+        }
+    }
+
+    /// Wake a sleeping SSH reconnect countdown immediately, or start a fresh reconnect if idle/exhausted.
+    pub fn retry_ssh_now(&mut self, window: AnyWindowHandle, cx: &mut Context<Self>) {
+        match &self.ssh_reconnect {
+            SshAutoReconnect::Waiting { .. } => {
+                if let Some(tx) = &self.ssh_retry_now {
+                    let _ = tx.try_send(());
+                }
+            }
+            SshAutoReconnect::Attempting { .. } => {}
+            SshAutoReconnect::Idle | SshAutoReconnect::Exhausted { .. } => {
+                self.reconnect_ssh(window, cx);
+            }
+        }
+    }
+
+    /// Non-blocking silent SSH reconnect with `1s -> 3s -> 8s` backoff. Alerts the user via dialog only if
+    /// interactive auth fails or all 3 attempts are exhausted.
+    pub fn start_ssh_auto_reconnect(&mut self, window: AnyWindowHandle, cx: &mut Context<Self>) {
+        if self.quitting || self.stopping || self.reconnecting {
+            return;
+        }
+        if matches!(self.ssh_reconnect, SshAutoReconnect::Waiting { .. } | SshAutoReconnect::Attempting { .. }) {
+            return;
+        }
+        let Some(target @ ExecutionTarget::Ssh { .. }) = self.target.clone() else {
+            return;
+        };
+        let Some(askpass) = self.askpass.clone() else {
+            self.restart(cx);
+            return;
+        };
+        let saved_tunnels = self.tunnel_status.rules.clone();
+        let tunnels = self.tunnels.clone();
+        self.tunnel_status = TunnelStatus { target: None, rules: Vec::new(), state: TunnelState::Stopped };
+        cx.background_spawn(async move { tunnels.stop_all() }).detach();
+
+        if let Some(rpc) = self.rpc.take() {
+            rpc.close();
+        }
+        let previous = self
+            .host
+            .take()
+            .and_then(|host| host.remote_ssh().map(|remote| (remote.host.clone(), host.ready().pid)));
+        self.connection = ConnectionState::Closed;
+
+        let (wake_tx, wake_rx) = async_channel::bounded::<()>(1);
+        self.ssh_retry_now = Some(wake_tx);
+        let start_generation = self.host_generation;
+        let paths = self.paths.clone();
+        let modules = self.modules.manager.clone();
+        let locale = self.locale();
+        let label = target.label().to_owned();
+
+        let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            let max = SSH_RECONNECT_BACKOFFS_SECS.len() as u8;
+            let mut last_error: Option<String> = None;
+
+            for (idx, delay_secs) in SSH_RECONNECT_BACKOFFS_SECS.iter().copied().enumerate() {
+                let attempt = (idx + 1) as u8;
+                let retry_at = Instant::now() + Duration::from_secs(delay_secs);
+                let alive = this
+                    .update(cx, |store, cx| {
+                        if store.stopping || store.quitting || store.host_generation != start_generation {
+                            return false;
+                        }
+                        store.ssh_reconnect = SshAutoReconnect::Waiting {
+                            attempt,
+                            max,
+                            retry_at,
+                            last_error: last_error.clone(),
+                        };
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    return;
+                }
+
+                // Wait until `retry_at` or an immediate wake signal from "Retry now", ticking so the countdown updates.
+                while Instant::now() < retry_at {
+                    if wake_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    let remaining = retry_at.saturating_duration_since(Instant::now());
+                    cx.background_executor().timer(remaining.min(Duration::from_millis(250))).await;
+                    let still_same = this
+                        .update(cx, |store, cx| {
+                            if store.stopping || store.quitting || store.host_generation != start_generation {
+                                return false;
+                            }
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !still_same {
+                        return;
+                    }
+                }
+                while wake_rx.try_recv().is_ok() {}
+
+                let prepared = this
+                    .update(cx, |store, cx| {
+                        if store.stopping || store.quitting || store.host_generation != start_generation {
+                            return None;
+                        }
+                        store.reconnecting = true;
+                        store.connection = ConnectionState::Connecting;
+                        store.ssh_reconnect = SshAutoReconnect::Attempting { attempt, max };
+                        cx.notify();
+                        Some(store.wire_carrier_events(cx))
+                    })
+                    .ok()
+                    .flatten();
+                let Some((events, exit_rx)) = prepared else {
+                    return;
+                };
+
+                let (paths_c, target_c, askpass_c, modules_c, prev_c) =
+                    (paths.clone(), target.clone(), askpass.clone(), modules.clone(), previous.clone());
+                let outcome = cx
+                    .background_spawn(async move {
+                        let prev_ref = prev_c.as_ref().map(|(h, pid)| (h.as_str(), *pid));
+                        boot::reconnect_ssh(&paths_c, &target_c, events, &askpass_c, &modules_c, prev_ref)
+                    })
+                    .await;
+
+                match outcome {
+                    Ok(rainy_carrier::ssh::ReconnectOutcome::Connected(host)) => {
+                        let host = Arc::new(host);
+                        match RpcClient::connect(host.ready()) {
+                            Ok((rpc, rpc_events)) => {
+                                let installed = this
+                                    .update(cx, |store, cx| {
+                                        if store.stopping || store.quitting || store.host_generation != start_generation {
+                                            return false;
+                                        }
+                                        store.host_generation = store.host_generation.wrapping_add(1);
+                                        let next_gen = store.host_generation;
+                                        store.install_connected_host(
+                                            next_gen,
+                                            target.clone(),
+                                            host,
+                                            rpc,
+                                            rpc_events,
+                                            exit_rx,
+                                            true,
+                                            saved_tunnels.clone(),
+                                            cx,
+                                        );
+                                        true
+                                    })
+                                    .unwrap_or(false);
+                                if installed {
+                                    let _ = window.update(cx, |_, window, cx| {
+                                        use gpui_kit::component::WindowExt as _;
+                                        let text = crate::i18n::format(locale, "native.sshReconnected", &[("target", &label)]);
+                                        window.push_notification(
+                                            gpui_kit::component::notification::Notification::success(text),
+                                            cx,
+                                        );
+                                    });
+                                }
+                                return;
+                            }
+                            Err(error) => {
+                                cx.background_spawn(async move { host.stop(); }).detach();
+                                last_error = Some(format!("{error:#}"));
+                            }
+                        }
+                    }
+                    Ok(rainy_carrier::ssh::ReconnectOutcome::NeedsInstall { .. }) => {
+                        last_error = Some(crate::i18n::text(locale, "ssh.needsInstall").to_owned());
+                        let _ = this.update(cx, |store, cx| {
+                            store.reconnecting = false;
+                            store.connection = ConnectionState::Closed;
+                            cx.notify();
+                        });
+                        break;
+                    }
+                    Ok(rainy_carrier::ssh::ReconnectOutcome::Unsupported(system)) => {
+                        last_error = Some(system);
+                        let _ = this.update(cx, |store, cx| {
+                            store.reconnecting = false;
+                            store.connection = ConnectionState::Closed;
+                            cx.notify();
+                        });
+                        break;
+                    }
+                    Err(error) => {
+                        let detail = format!("{error:#}");
+                        let stop_now = Self::is_non_retryable_ssh_error(&detail);
+                        last_error = Some(detail);
+                        let _ = this.update(cx, |store, cx| {
+                            store.reconnecting = false;
+                            store.connection = ConnectionState::Closed;
+                            cx.notify();
+                        });
+                        if stop_now {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let detail = last_error.unwrap_or_else(|| crate::i18n::text(locale, "app.connectionLost").to_owned());
+            let should_alert = this
+                .update(cx, |store, cx| {
+                    if store.stopping || store.quitting || store.host_generation != start_generation {
+                        return false;
+                    }
+                    store.reconnecting = false;
+                    store.connection = ConnectionState::Closed;
+                    store.ssh_retry_now = None;
+                    store.ssh_reconnect = SshAutoReconnect::Exhausted { last_error: detail.clone() };
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if should_alert {
+                let _ = window.update(cx, |_, window, cx| {
+                    crate::ui::ssh::host_exited_exhausted(window, cx, detail);
+                });
+            }
+        });
+        self.ssh_reconnect_task = Some(task);
+        cx.notify();
+    }
+
+    /// Reconnect the current SSH Host in place without restarting `RainyAgent.exe`.
+    /// Falls back to an in-place target start when the server needs a fresh runtime installation.
     pub fn reconnect_ssh(&mut self, window: AnyWindowHandle, cx: &mut Context<Self>) {
         if self.reconnecting || self.quitting {
             return;
@@ -866,9 +1381,17 @@ impl Store {
             self.restart(cx);
             return;
         };
+        self.cancel_ssh_auto_reconnect(cx);
         self.reconnecting = true;
+        self.host_generation = self.host_generation.wrapping_add(1);
+        let generation = self.host_generation;
         let locale = self.locale();
         let label = target.label().to_owned();
+        let saved_tunnels = self.tunnel_status.rules.clone();
+        let tunnels = self.tunnels.clone();
+        self.tunnel_status = TunnelStatus { target: None, rules: Vec::new(), state: TunnelState::Stopped };
+        cx.background_spawn(async move { tunnels.stop_all() }).detach();
+
         if let Some(rpc) = self.rpc.take() {
             rpc.close();
         }
@@ -877,6 +1400,7 @@ impl Store {
             .take()
             .and_then(|host| host.remote_ssh().map(|remote| (remote.host.clone(), host.ready().pid)));
         self.connection = ConnectionState::Connecting;
+        self.ssh_reconnect = SshAutoReconnect::Attempting { attempt: 1, max: 1 };
         cx.notify();
         let _ = window.update(cx, |_, window, cx| {
             use gpui_kit::component::WindowExt as _;
@@ -886,9 +1410,12 @@ impl Store {
         let (events, exit_rx) = self.wire_carrier_events(cx);
         let paths = self.paths.clone();
         let modules = self.modules.manager.clone();
-        let reconnecting = cx.background_spawn(async move {
-            let prev_ref = previous.as_ref().map(|(h, pid)| (h.as_str(), *pid));
-            boot::reconnect_ssh(&paths, &target, events, &askpass, &modules, prev_ref)
+        let reconnecting = cx.background_spawn({
+            let target = target.clone();
+            async move {
+                let prev_ref = previous.as_ref().map(|(h, pid)| (h.as_str(), *pid));
+                boot::reconnect_ssh(&paths, &target, events, &askpass, &modules, prev_ref)
+            }
         });
         let label_done = label.clone();
         let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
@@ -898,7 +1425,8 @@ impl Store {
                 Ok(rainy_carrier::ssh::ReconnectOutcome::NeedsInstall { .. }) => {
                     let _ = this.update(cx, |store, cx| {
                         store.reconnecting = false;
-                        store.restart(cx);
+                        store.ssh_reconnect = SshAutoReconnect::Idle;
+                        store.swap_target_in_place(target.clone(), window, cx);
                     });
                     return;
                 }
@@ -906,6 +1434,7 @@ impl Store {
                     let _ = this.update(cx, |store, cx| {
                         store.reconnecting = false;
                         store.connection = ConnectionState::Closed;
+                        store.ssh_reconnect = SshAutoReconnect::Exhausted { last_error: system.clone() };
                         cx.notify();
                     });
                     let _ = window.update(cx, |_, window, cx| {
@@ -920,6 +1449,7 @@ impl Store {
                     let _ = this.update(cx, |store, cx| {
                         store.reconnecting = false;
                         store.connection = ConnectionState::Closed;
+                        store.ssh_reconnect = SshAutoReconnect::Exhausted { last_error: detail.clone() };
                         cx.notify();
                     });
                     let _ = window.update(cx, |_, window, cx| {
@@ -933,10 +1463,12 @@ impl Store {
             let (rpc, rpc_events) = match RpcClient::connect(host.ready()) {
                 Ok(pair) => pair,
                 Err(error) => {
+                    cx.background_spawn(async move { host.stop(); }).detach();
                     let detail = format!("{error:#}");
                     let _ = this.update(cx, |store, cx| {
                         store.reconnecting = false;
                         store.connection = ConnectionState::Closed;
+                        store.ssh_reconnect = SshAutoReconnect::Exhausted { last_error: detail.clone() };
                         cx.notify();
                     });
                     let _ = window.update(cx, |_, window, cx| {
@@ -947,38 +1479,207 @@ impl Store {
                     return;
                 }
             };
-            // Watch exits of the new Host process as well.
-            let watcher = this.clone();
-            cx.spawn(async move |cx| {
-                if let Ok(code) = exit_rx.recv().await {
-                    cx.update(|_| crate::web::preview::close());
-                    let _ = watcher.update(cx, |store, cx| {
-                        if !store.stopping && store.host.is_some() {
-                            if let Some(rpc) = &store.rpc {
-                                rpc.close();
-                            }
-                            cx.emit(StoreEvent::HostExited(code));
-                        }
-                    });
-                }
-            })
-            .detach();
             let _ = this.update(cx, |store, cx| {
-                store.reconnecting = false;
-                store.host = Some(host);
-                store.rpc = Some(rpc);
-                cx.notify();
+                if store.host_generation != generation {
+                    return;
+                }
+                store.install_connected_host(generation, target, host, rpc, rpc_events, exit_rx, true, saved_tunnels, cx);
             });
             let _ = window.update(cx, |_, window, cx| {
                 use gpui_kit::component::WindowExt as _;
                 let text = crate::i18n::format(locale, "native.sshReconnected", &[("target", &label_done)]);
                 window.push_notification(gpui_kit::component::notification::Notification::success(text), cx);
             });
-            while let Ok(event) = rpc_events.recv().await {
-                if this.update(cx, |store, cx| store.handle(event, cx)).is_err() {
-                    break;
+        });
+        self._tasks.push(task);
+    }
+
+    /// Hot-swap the execution target (Windows <-> WSL <-> SSH) in place without restarting `RainyAgent.exe`.
+    /// Flushes unsaved editor state, stops old tunnels & Host, starts the new Host, and refreshes every subsystem.
+    pub fn swap_target_in_place(&mut self, target: ExecutionTarget, window: AnyWindowHandle, cx: &mut Context<Self>) {
+        if self.reconnecting || self.quitting {
+            return;
+        }
+        let same_target = self.target.as_ref() == Some(&target);
+        let settings = self.paths.desktop_settings();
+        let current_host = self.host.clone();
+        let host_alive = current_host.as_ref().is_some_and(|host| !host.has_exited());
+        let has_rpc = self.rpc.is_some() && host_alive;
+        let locale = self.locale();
+        let label = target.label().to_owned();
+
+        self.cancel_ssh_auto_reconnect(cx);
+        let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            // Check whether the current Host is mid-turn before tearing it down.
+            if host_alive && let Some(host) = current_host.clone() {
+                let busy = cx.background_spawn({
+                    let host = host.clone();
+                    async move { host.inspect_activity("freeze").unwrap_or(false) }
+                })
+                .await;
+                if busy {
+                    cx.background_spawn(async move { host.inspect_activity("resume") }).detach();
+                    let text = crate::i18n::text(locale, "native.busyBeforeSwitch");
+                    let _ = window.update(cx, |_, window, cx| {
+                        use gpui_kit::component::WindowExt as _;
+                        window.push_notification(gpui_kit::component::notification::Notification::warning(text), cx);
+                    });
+                    return;
                 }
             }
+
+            // Flush unsaved IDE state while the old Host is still reachable.
+            if has_rpc {
+                let flush = cx.update(|cx| ide::Ide::global(cx).update(cx, |ide, cx| ide.flush_now(cx)));
+                let _ = flush.with_timeout(QUIT_FLUSH_TIMEOUT, cx.background_executor()).await;
+            }
+
+            if let Err(error) = rainy_carrier::targets::save_target(&settings, &target) {
+                log::warn!("The execution target was not saved: {error:#}");
+            }
+
+            let prepared = this
+                .update(cx, |store, cx| {
+                    if store.reconnecting || store.quitting {
+                        return None;
+                    }
+                    store.reconnecting = true;
+                    store.swapping_target = Some(label.clone().into());
+                    store.host_generation = store.host_generation.wrapping_add(1);
+                    let generation = store.host_generation;
+                    store.connection = ConnectionState::Connecting;
+                    store.host_metrics = None;
+                    let saved_tunnels = if same_target { store.tunnel_status.rules.clone() } else { Vec::new() };
+                    store.tunnel_status = TunnelStatus { target: None, rules: Vec::new(), state: TunnelState::Stopped };
+                    if let Some(rpc) = store.rpc.take() {
+                        rpc.close();
+                    }
+                    let old_host = store.host.take();
+                    let tunnels = store.tunnels.clone();
+                    let (events, exit_rx) = store.wire_carrier_events(cx);
+                    let paths = store.paths.clone();
+                    let askpass = store.askpass.clone();
+                    let modules = store.modules.manager.clone();
+                    let prompt = store.prompt.clone();
+                    cx.notify();
+                    Some((generation, old_host, tunnels, saved_tunnels, events, exit_rx, paths, askpass, modules, prompt))
+                })
+                .ok()
+                .flatten();
+            let Some((generation, old_host, tunnels, saved_tunnels, events, exit_rx, paths, askpass, modules, prompt)) = prepared else {
+                return;
+            };
+
+            let _ = window.update(cx, |_, window, cx| {
+                use gpui_kit::component::WindowExt as _;
+                let text = crate::i18n::format(locale, "ssh.swapping", &[("target", &label)]);
+                window.push_notification(gpui_kit::component::notification::Notification::info(text), cx);
+            });
+
+            // Stop old tunnels and old Host off the UI thread before launching the new target.
+            cx.background_spawn(async move {
+                tunnels.stop_all();
+                if let Some(old_host) = old_host {
+                    old_host.stop();
+                }
+            })
+            .await;
+
+            let (progress_tx, progress_rx) = async_channel::unbounded::<boot::Step>();
+            let label_for_progress = label.clone();
+            cx.spawn({
+                let this = this.clone();
+                async move |cx| {
+                    while let Ok(step) = progress_rx.recv().await {
+                        let _ = this.update(cx, |store, cx| {
+                            if store.host_generation == generation && store.reconnecting {
+                                store.swapping_target = Some(format!("{label_for_progress} · {}", step.text).into());
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+            })
+            .detach();
+
+            let target_start = target.clone();
+            let started = cx
+                .background_spawn(async move {
+                    let report = |step: boot::Step| {
+                        let _ = progress_tx.try_send(step);
+                    };
+                    let ask = |error: String| {
+                        let (reply, answer) = mpsc::channel();
+                        if prompt.send_blocking(RuntimePrompt { error, reply }).is_err() {
+                            return boot::RuntimeChoice::Quit;
+                        }
+                        answer.recv().unwrap_or(boot::RuntimeChoice::Quit)
+                    };
+                    boot::start_target(&paths, target_start, events, askpass.as_ref(), &modules, &ask, &report)
+                        .map(|started| (started.target, Arc::new(started.host)))
+                })
+                .await;
+
+            let (new_target, host) = match started {
+                Ok(pair) => pair,
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    let _ = this.update(cx, |store, cx| {
+                        if store.host_generation != generation {
+                            return;
+                        }
+                        store.reconnecting = false;
+                        store.swapping_target = None;
+                        store.connection = ConnectionState::Closed;
+                        store.target = Some(target.clone());
+                        if matches!(target, ExecutionTarget::Ssh { .. }) {
+                            store.ssh_reconnect = SshAutoReconnect::Exhausted { last_error: detail.clone() };
+                        }
+                        cx.notify();
+                    });
+                    let _ = window.update(cx, |_, window, cx| {
+                        use gpui_kit::component::WindowExt as _;
+                        let text = crate::i18n::format(locale, "ssh.swapFailed", &[("target", &label), ("error", &detail)]);
+                        window.push_notification(gpui_kit::component::notification::Notification::error(text), cx);
+                    });
+                    return;
+                }
+            };
+
+            let (rpc, rpc_events) = match RpcClient::connect(host.ready()) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    cx.background_spawn(async move { host.stop(); }).detach();
+                    let detail = format!("{error:#}");
+                    let _ = this.update(cx, |store, cx| {
+                        if store.host_generation != generation {
+                            return;
+                        }
+                        store.reconnecting = false;
+                        store.swapping_target = None;
+                        store.connection = ConnectionState::Closed;
+                        cx.notify();
+                    });
+                    let _ = window.update(cx, |_, window, cx| {
+                        use gpui_kit::component::WindowExt as _;
+                        let text = crate::i18n::format(locale, "ssh.swapFailed", &[("target", &label), ("error", &detail)]);
+                        window.push_notification(gpui_kit::component::notification::Notification::error(text), cx);
+                    });
+                    return;
+                }
+            };
+
+            let _ = this.update(cx, |store, cx| {
+                if store.host_generation != generation {
+                    return;
+                }
+                store.install_connected_host(generation, new_target, host, rpc, rpc_events, exit_rx, same_target, saved_tunnels, cx);
+            });
+            let _ = window.update(cx, |_, window, cx| {
+                use gpui_kit::component::WindowExt as _;
+                let text = crate::i18n::format(locale, "ssh.swapped", &[("target", &label)]);
+                window.push_notification(gpui_kit::component::notification::Notification::success(text), cx);
+            });
         });
         self._tasks.push(task);
     }
@@ -1007,33 +1708,9 @@ impl Store {
         .detach();
     }
 
-    /// Remember `target` and restart into it; refused while the Host is busy.
+    /// Remember `target` and hot-swap into it in place; refused while the Host is busy.
     pub fn switch_target(&mut self, target: ExecutionTarget, window: AnyWindowHandle, cx: &mut Context<Self>) {
-        let settings = self.paths.desktop_settings();
-        let host = self.host.clone();
-        let locale = self.locale();
-        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
-            let busy = match host.clone() {
-                Some(host) => cx.background_spawn(async move { host.inspect_activity("freeze").unwrap_or(false) }).await,
-                None => false,
-            };
-            if busy {
-                if let Some(host) = host {
-                    cx.background_spawn(async move { host.inspect_activity("resume") }).detach();
-                }
-                let text = crate::i18n::text(locale, "native.busyBeforeSwitch");
-                let _ = window.update(cx, |_, window, cx| {
-                    use gpui_kit::component::WindowExt as _;
-                    window.push_notification(gpui_kit::component::notification::Notification::warning(text), cx)
-                });
-                return;
-            }
-            if let Err(error) = rainy_carrier::targets::save_target(&settings, &target) {
-                log::warn!("The execution target was not saved: {error:#}");
-            }
-            let _ = this.update(cx, |store, cx| store.restart(cx));
-        })
-        .detach();
+        self.swap_target_in_place(target, window, cx);
     }
 
     /// Start a chat in a project, or outside any project, in the mode picked for it (`pending_permission`, used up
@@ -1047,8 +1724,22 @@ impl Store {
         if self.pending_worktree && workspace_id.is_some() {
             params["worktree"] = json!(true);
         }
+        let external = self.pending_external.clone();
+        let external_model = self.pending_external_model.clone();
+        if let Some(backend) = &external
+            && let Ok(val) = serde_json::to_value(backend)
+        {
+            params["externalBackend"] = val;
+        }
+        if external.is_some()
+            && let Some(model) = &external_model
+            && let Ok(val) = serde_json::to_value(model)
+        {
+            params["model"] = val;
+        }
         let request = self.call("sessions.create", params);
-        let orchestrate = self.pending_orchestrate.clone();
+        // Orchestration applies only to built-in model chats.
+        let orchestrate = if external.is_some() { None } else { self.pending_orchestrate.clone() };
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
             let mut summary = serde_json::from_value::<SessionSummary>(request.await?)
                 .map_err(|error| RpcError { code: "invalid-response".into(), message: error.to_string(), data: None })?;
@@ -1064,6 +1755,8 @@ impl Store {
                 store.pending_permission = None;
                 store.pending_worktree = false;
                 store.pending_orchestrate = None;
+                store.pending_external = None;
+                store.pending_external_model = None;
                 let mut next: Vec<SessionSummary> = store.summaries.iter().filter(|s| s.id != summary.id).cloned().collect();
                 next.push(summary);
                 store.set_summaries(next, cx);

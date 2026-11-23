@@ -292,6 +292,103 @@ pub struct SessionSummary {
     /// Orchestration: the chat's model plans and this model carries the plan out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrate: Option<crate::models::ModelSelection>,
+    /// External CLI agent backend driving this chat (`codex`, `antigravity` or `acp`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_backend: Option<ExternalBackendRef>,
+    /// External thread or session identifier (`threadId` / ACP `sessionId`) used to resume across restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_thread_id: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// External CLI agent backend attached to a chat (`codex`, `antigravity` or generic `acp`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalBackendRef {
+    /// `codex`, `antigravity` or `acp`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// One model exposed by an external agent CLI (`external.status` / `external.probe`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalModelInfo {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_default: Option<bool>,
+}
+
+/// User configuration for one external CLI agent stored in `settings.json` (`external.configure`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentConfig {
+    /// `codex`, `antigravity` or `acp`.
+    pub kind: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking: Option<String>,
+}
+
+/// Detection and configuration snapshot of one external agent (`external.status` / `external.probe`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentStatus {
+    pub kind: String,
+    pub label: String,
+    pub enabled: bool,
+    pub installed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ExternalModelInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response of `external.status`, `external.probe`, `external.configure` and payload of `external.changed`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalStatusResponse {
+    #[serde(default)]
+    pub agents: Vec<ExternalAgentStatus>,
 }
 
 /// A chat's place in a swarm (`/swarm`): the coordinator splits a task among worker chats, which talk over one board.
@@ -520,4 +617,64 @@ pub struct RevertFailure {
 pub struct RevertResult {
     pub reverted: Vec<serde_json::Value>,
     pub failed: Vec<RevertFailure>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_summary_stays_compatible_with_older_chats_and_external_backends() {
+        let legacy: SessionSummary = serde_json::from_value(json!({
+            "id": "s1",
+            "workspaceId": null,
+            "cwd": "/proj",
+            "title": "Old chat",
+            "createdAt": 1.0,
+            "updatedAt": 2.0,
+            "archived": false,
+            "pinned": false,
+            "status": "idle"
+        }))
+        .unwrap();
+        assert!(legacy.external_backend.is_none());
+        assert!(legacy.external_thread_id.is_none());
+        let encoded_legacy = serde_json::to_value(&legacy).unwrap();
+        assert!(encoded_legacy.get("externalBackend").is_none());
+        assert!(encoded_legacy.get("externalThreadId").is_none());
+
+        let ext: SessionSummary = serde_json::from_value(json!({
+            "id": "s2",
+            "workspaceId": "w1",
+            "cwd": "/proj",
+            "title": "Codex chat",
+            "createdAt": 1.0,
+            "updatedAt": 2.0,
+            "archived": false,
+            "pinned": false,
+            "status": "idle",
+            "externalBackend": { "kind": "codex", "binary": "codex", "args": [] },
+            "externalThreadId": "thr_123"
+        }))
+        .unwrap();
+        assert_eq!(ext.external_backend.as_ref().map(|b| b.kind.as_str()), Some("codex"));
+        assert_eq!(ext.external_thread_id.as_deref(), Some("thr_123"));
+
+        let cfg: ExternalAgentConfig = serde_json::from_value(json!({ "kind": "antigravity" })).unwrap();
+        assert!(cfg.enabled);
+        let status: ExternalStatusResponse = serde_json::from_value(json!({
+            "agents": [{
+                "kind": "codex",
+                "label": "Codex",
+                "enabled": true,
+                "installed": true,
+                "version": "0.170.0",
+                "models": [{ "id": "gpt-5.3-codex", "reasoningEfforts": ["low", "high"], "isDefault": true }]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(status.agents.len(), 1);
+        assert_eq!(status.agents[0].models[0].id, "gpt-5.3-codex");
+    }
 }
