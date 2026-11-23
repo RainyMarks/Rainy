@@ -20,7 +20,8 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const host = join(app, 'native/target/release/rainy-host.exe')
+// RAINY_PROFILE=qa stages the Host native/scripts/build-hosts.sh built with the QA profile (QA packages only).
+const host = join(app, 'native/target', process.env.RAINY_PROFILE || 'release', 'rainy-host.exe')
 const destination = join(app, 'runtime/windows-host')
 
 async function digest(path) {

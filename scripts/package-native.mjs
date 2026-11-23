@@ -418,9 +418,11 @@ async function shippedHistory(entries, record) {
 }
 
 async function stage(target, version, release) {
+  // RAINY_PROFILE=qa takes Rainy.exe from native/target/qa (native/scripts/build-release.sh); main() allows it for --qa only.
+  const profile = process.env.RAINY_PROFILE || 'release'
   const inputs = {
-    exe: join(native, 'target/release/Rainy.exe'),
-    loader: join(native, 'target/release/WebView2Loader.dll'),
+    exe: join(native, 'target', profile, 'Rainy.exe'),
+    loader: join(native, 'target', profile, 'WebView2Loader.dll'),
     windowsHost: join(root, 'runtime/windows-host'),
     icon: join(native, 'crates/app/assets/brand/rainy.ico'),
   }
@@ -480,6 +482,9 @@ function latestYml(version, name, sha512, size) {
 async function main() {
   const started = Date.now()
   const option = options(process.argv.slice(2))
+  if (!option.qa && (process.env.RAINY_PROFILE || 'release') !== 'release') {
+    throw new Error(`RAINY_PROFILE=${process.env.RAINY_PROFILE} is for QA packages (--qa) only; a published package is built with the release profile`)
+  }
   const version = await nativeVersion()
   const [major, minor, patch] = version.split(/[.-]/u)
   const out = option.qa ? join(option.qaRoot, 'out') : join(root, 'release')

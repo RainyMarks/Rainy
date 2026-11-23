@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the optimised Rainy.exe in native/target/release. GPUI precompiles its shaders with fxc.exe in release
 # builds; without a Windows SDK, scripts/fxc.cs stands in for it, built with the C# compiler every Windows has.
+# RAINY_PROFILE=qa builds the faster QA profile into native/target/qa instead (never for a published package).
 set -euo pipefail
+profile="${RAINY_PROFILE:-release}"
 native="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:/c/msys64/ucrt64/bin:$PATH"
 fxc="$native/target/tools/fxc.exe"
@@ -12,4 +14,4 @@ if [ ! -f "$fxc" ] || [ "$native/scripts/fxc.cs" -nt "$fxc" ]; then
 fi
 export GPUI_FXC_PATH="$(cygpath -w "$fxc")"
 cd "$native"
-cargo build -p rainy --release --offline "$@"
+cargo build -p rainy --profile "$profile" --offline "$@"

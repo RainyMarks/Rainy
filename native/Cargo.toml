@@ -36,7 +36,16 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# QA and review builds (RAINY_PROFILE=qa in native/scripts/build-*.sh, output in target/qa): release optimisation, but
+# thin LTO on every core instead of one fat-LTO thread. Packages that are published always use [profile.release].
+[profile.qa]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [profile.dev]
-# GPUI is unusably slow without optimisation; keep our own crates debuggable.
+# GPUI is unusably slow without optimisation; keep our own crates debuggable. Dependencies keep line tables only (file
+# and line in backtraces): full debug info made the debug Rainy.exe about 1.2 GB and every relink slow.
 [profile.dev.package."*"]
 opt-level = 2
+debug = "line-tables-only"
