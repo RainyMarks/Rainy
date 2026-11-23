@@ -117,7 +117,13 @@ stage_build() {
 
 stage_resources() {
   need "$notes/v$version-resources.md"
-  ls "release/resources-$version"/*/*.001 > /dev/null 2>&1 || fail "no pieces in release/resources-$version"
+  local -a pieces=()
+  local saved_nullglob
+  saved_nullglob="$(shopt -p nullglob || true)"
+  shopt -s nullglob
+  pieces=("release/resources-$version"/*/*.[0-9][0-9][0-9])
+  eval "$saved_nullglob"
+  [ "${#pieces[@]}" -gt 0 ] || fail "no pieces in release/resources-$version"
   check_authors
   git push -q origin "$branch"
   local commit
@@ -128,15 +134,20 @@ stage_resources() {
       --title "Rainy $version resources" --notes-file "$notes/v$version-resources.md"
   fi
   # Uploads can die silently: each piece is tried three times, and the digests are compared at the end.
-  local file try
-  for file in "release/resources-$version"/*/*.001; do
+  local file try uploaded
+  for file in "${pieces[@]}"; do
+    uploaded=0
     for try in 1 2 3; do
-      node "$tools/upload-release-asset.mjs" "$repo" "v$version-resources" "$file" > /dev/null 2>&1 && break
+      if node "$tools/upload-release-asset.mjs" "$repo" "v$version-resources" "$file" > /dev/null 2>&1; then
+        uploaded=1
+        break
+      fi
       echo "retrying $(basename "$file")"
     done
+    [ "$uploaded" -eq 1 ] || fail "failed to upload $(basename "$file") after 3 attempts"
   done
   gh release view "v$version-resources" --repo "$repo" --json assets --jq '.assets[] | "\(.digest[7:71]) \(.name)"' | sort > tmp/resources-remote.txt
-  for file in "release/resources-$version"/*/*.001; do echo "$(sha256sum "$file" | cut -c1-64) $(basename "$file")"; done | sort > tmp/resources-local.txt
+  for file in "${pieces[@]}"; do echo "$(sha256sum "$file" | cut -c1-64) $(basename "$file")"; done | sort > tmp/resources-local.txt
   diff tmp/resources-local.txt tmp/resources-remote.txt || fail "the uploaded pieces differ from the built ones"
   say "$(wc -l < tmp/resources-local.txt) pieces uploaded and matching"
 }

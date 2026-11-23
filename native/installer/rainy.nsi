@@ -669,9 +669,27 @@ Section "-Rainy"
       StrCpy $keepShortcuts "true"
     ${EndIf}
   ${EndIf}
+  ; Move the previous executable aside before deleting anything: verifies it is not locked and lets .onInstFailed
+  ; restore it if replacing files stops halfway through.
+  ${If} ${FileExists} "$INSTDIR\${APP_EXE}"
+    ${If} ${FileExists} "$INSTDIR\${APP_EXE}.prev"
+      Delete "$INSTDIR\${APP_EXE}.prev"
+    ${EndIf}
+    ClearErrors
+    Rename "$INSTDIR\${APP_EXE}" "$INSTDIR\${APP_EXE}.prev"
+    ${If} ${Errors}
+      !insertmacro rainyLog "Stopped: $INSTDIR\${APP_EXE} could not be moved aside before update"
+      MessageBox MB_OK|MB_ICONSTOP "$(rainyFileBusy)$INSTDIR\${APP_EXE}" /SD IDOK
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
+  ${EndIf}
   !insertmacro rainyRemoveReplaced
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD}\*.*"
+  ${If} ${FileExists} "$INSTDIR\${APP_EXE}.prev"
+    Delete "$INSTDIR\${APP_EXE}.prev"
+  ${EndIf}
   WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
   !insertmacro rainyWriteRegistry
   !ifndef QA
@@ -689,6 +707,14 @@ Section "-Rainy"
 SectionEnd
 
 Function .onInstFailed
+  ${IfNot} ${FileExists} "$INSTDIR\${APP_EXE}"
+  ${AndIf} ${FileExists} "$INSTDIR\${APP_EXE}.prev"
+    ClearErrors
+    Rename "$INSTDIR\${APP_EXE}.prev" "$INSTDIR\${APP_EXE}"
+    ${IfNot} ${Errors}
+      !insertmacro rainyLog "Restored previous $INSTDIR\${APP_EXE} after failed setup"
+    ${EndIf}
+  ${EndIf}
   !insertmacro rainyLog "Setup did not complete"
 FunctionEnd
 
@@ -757,7 +783,36 @@ Function un.onInit
         SetErrorLevel 0x666666
         Quit
       ${EndIf}
-      !insertmacro rainyElevate
+      ; Run the elevated uninstall; once it finishes successfully, clean up any remaining HKCU Explorer entries
+      ; in the original non-elevated user's hive (covers UAC elevation under a different administrator account).
+      ${Do}
+        UAC::_ 0
+        ${If} $0 = 0
+        ${AndIf} $1 = 3
+          ${Continue}
+        ${EndIf}
+        ${Break}
+      ${Loop}
+      ${If} $0 = 0
+        ${If} $1 = 1
+          ${If} $2 = 0
+          ${AndIf} $updated != "true"
+            !insertmacro rainyRemoveShellFallback
+            System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+          ${EndIf}
+          ${If} $2 = 0x666666
+            MessageBox MB_OK|MB_ICONSTOP "$(rainyElevationFailed)" /SD IDOK
+            SetErrorLevel 1
+          ${Else}
+            SetErrorLevel $2
+          ${EndIf}
+          Quit
+        ${EndIf}
+      ${Else}
+        MessageBox MB_OK|MB_ICONSTOP "$(rainyElevationFailed)" /SD IDOK
+        SetErrorLevel 1
+        Quit
+      ${EndIf}
     ${EndIf}
   ${Else}
     SetShellVarContext current

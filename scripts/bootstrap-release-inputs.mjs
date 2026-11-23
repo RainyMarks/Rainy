@@ -46,18 +46,43 @@ async function writeVerified(stream, target, expected) {
   }
 }
 
+const PLATFORMS = new Set(['all', 'windows', 'windows-core', 'linux'])
+const WINDOWS_CORE_INPUTS = new Set([
+  'build-inputs/ide-resources.tar.gz',
+  'environment-components/windows-basic.json',
+  'environment-components/windows-basic.tar.gz',
+  'environment/media-verification.json',
+])
+
+/**
+ * Filter non-installer manifest entries by target platform so Windows-only or core builds avoid fetching multi-GB
+ * offline archives for other platforms. Defaults to `'all'` for backwards compatibility.
+ * @param {object[]} files Validated manifest `files` entries.
+ * @param {string} [platform='all'] One of `'all'`, `'windows'`, `'windows-core'`, or `'linux'`.
+ * @returns {object[]} Selected manifest entries.
+ */
+export function selectReleaseInputs(files, platform = 'all') {
+  if (!PLATFORMS.has(platform)) throw new Error(`Unknown platform: ${platform} (expected all, windows, windows-core, or linux)`)
+  const nonInstaller = files.filter(item => item.category !== 'installer')
+  if (platform === 'all') return nonInstaller
+  if (platform === 'windows-core') return nonInstaller.filter(item => WINDOWS_CORE_INPUTS.has(item.path))
+  if (platform === 'windows') return nonInstaller.filter(item => !item.path.startsWith('environment-components/linux-'))
+  return nonInstaller.filter(item => !item.path.startsWith('environment-components/windows-'))
+}
+
 /**
  * Verify prepared files or download and reassemble pinned transport pieces with bounded memory.
- * @param {{manifest:object,outputDirectory:string,inputsDirectory?:string,baseUrl?:string}} options A validated source manifest and optional local inputs.
- * @returns {Promise<void>} Resolves after all offline and build inputs match their original hashes.
+ * @param {{manifest:object,outputDirectory:string,inputsDirectory?:string,baseUrl?:string,platform?:string}} options A validated source manifest and optional local inputs.
+ * @returns {Promise<void>} Resolves after all selected offline and build inputs match their original hashes.
  */
 export async function restoreReleaseInputs(options) {
   const manifest = validateReleaseManifest(options.manifest)
   if (options.inputsDirectory && options.baseUrl) throw new Error('Choose --inputs-dir or --base-url')
   const baseUrl = options.baseUrl ?? manifest.baseUrl
   if (baseUrl !== manifest.baseUrl) throw new Error('Release URL differs from the source-pinned manifest')
+  const selected = selectReleaseInputs(manifest.files, options.platform ?? 'all')
   await mkdir(options.outputDirectory, { recursive: true })
-  for (const entry of manifest.files.filter(item => item.category !== 'installer')) {
+  for (const entry of selected) {
     const target = await releaseTarget(options.outputDirectory, entry.path)
     await mkdir(dirname(target), { recursive: true })
     if (await matches(target, entry)) continue
@@ -155,29 +180,35 @@ export async function writeReleaseComponentCatalog(path, components) {
 
 /**
  * Populate ignored locations consumed by package.ps1 from hash-pinned release files.
- * @param {{appDirectory:string,manifest:object,inputsDirectory?:string,baseUrl?:string}} options Checkout and authenticated input inventory.
+ * @param {{appDirectory:string,manifest:object,inputsDirectory?:string,baseUrl?:string,platform?:string}} options Checkout and authenticated input inventory.
  * @returns {Promise<string>} Prepared offline directory for -ReuseNativeToolsRelease and -ComponentSource.
  */
 export async function bootstrapReleaseInputs(options) {
   const manifest = validateReleaseManifest(options.manifest)
+  const platform = options.platform ?? 'all'
+  const selected = selectReleaseInputs(manifest.files, platform)
   const app = resolve(options.appDirectory)
   const packageInfo = JSON.parse(await readFile(join(app, 'package.json'), 'utf8'))
   if (packageInfo.version !== manifest.releaseVersion) throw new Error('Release input version differs from the desktop package')
-  const required = ['build-inputs/ide-resources.tar.gz', 'environment-components/windows-basic.tar.gz', 'environment/media-verification.json']
-  for (const path of required) if (!manifest.files.some(entry => entry.path === path && entry.category !== 'installer')) throw new Error(`Required build input is absent: ${path}`)
+  const required = platform === 'linux'
+    ? ['build-inputs/ide-resources.tar.gz', 'environment/media-verification.json']
+    : ['build-inputs/ide-resources.tar.gz', 'environment-components/windows-basic.tar.gz', 'environment/media-verification.json']
+  for (const path of required) if (!selected.some(entry => entry.path === path)) throw new Error(`Required build input is absent: ${path}`)
   const offline = join(app, `release/offline-${manifest.releaseVersion}`)
-  await restoreReleaseInputs({ ...options, outputDirectory: offline })
+  await restoreReleaseInputs({ ...options, platform, outputDirectory: offline })
   // The IDE tools themselves come from prepare-ide-tools.py; the archive still carries the offline Ubuntu packages.
   await extractBuildInput(join(offline, 'build-inputs/ide-resources.tar.gz'), join(app, 'resources/ide'), 'system-packages')
-  await extractBuildInput(join(offline, 'environment-components/windows-basic.tar.gz'), join(app, 'runtime/component-stage/windows-basic'))
+  if (selected.some(entry => entry.path === 'environment-components/windows-basic.tar.gz')) {
+    await extractBuildInput(join(offline, 'environment-components/windows-basic.tar.gz'), join(app, 'runtime/component-stage/windows-basic'))
+  }
   const catalog = []
-  for (const entry of manifest.files.filter(item => /^environment-components\/[^/]+\.json$/u.test(item.path))) {
+  for (const entry of selected.filter(item => /^environment-components\/[^/]+\.json$/u.test(item.path))) {
     const descriptor = JSON.parse(await readFile(join(offline, entry.path), 'utf8'))
-    const archive = manifest.files.find(item => item.path === `environment-components/${descriptor.file}`)
+    const archive = selected.find(item => item.path === `environment-components/${descriptor.file}`)
     if (!archive || descriptor.bytes !== archive.bytes || descriptor.sha256 !== archive.sha256) throw new Error(`Component descriptor differs from release inputs: ${entry.path}`)
     catalog.push(descriptor)
   }
-  for (const entry of manifest.files.filter(item => item.path.startsWith('environment/'))) {
+  for (const entry of selected.filter(item => item.path.startsWith('environment/'))) {
     const target = await releaseTarget(join(app, 'runtime'), entry.path)
     await mkdir(dirname(target), { recursive: true })
     if (!(await matches(target, entry))) await copyFile(join(offline, entry.path), target, 1)
@@ -189,11 +220,11 @@ export async function bootstrapReleaseInputs(options) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const args = process.argv.slice(2)
-  if (args.length % 2) throw new Error('Usage: bootstrap-release-inputs.mjs --manifest FILE [--inputs-dir DIR | --base-url PINNED_URL]')
+  if (args.length % 2) throw new Error('Usage: bootstrap-release-inputs.mjs --manifest FILE [--inputs-dir DIR | --base-url PINNED_URL] [--platform all|windows|windows-core|linux]')
   const values = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, index) => [args[index * 2], args[index * 2 + 1]]))
-  for (const name of Object.keys(values)) if (!['--manifest', '--inputs-dir', '--base-url'].includes(name)) throw new Error(`Unknown option: ${name}`)
+  for (const name of Object.keys(values)) if (!['--manifest', '--inputs-dir', '--base-url', '--platform'].includes(name)) throw new Error(`Unknown option: ${name}`)
   if (!values['--manifest']) throw new Error('--manifest must name the source-pinned release manifest')
   const offline = await bootstrapReleaseInputs({ appDirectory: resolve(import.meta.dirname, '..'),
-    manifest: JSON.parse(await readFile(values['--manifest'], 'utf8')), inputsDirectory: values['--inputs-dir'], baseUrl: values['--base-url'] })
+    manifest: JSON.parse(await readFile(values['--manifest'], 'utf8')), inputsDirectory: values['--inputs-dir'], baseUrl: values['--base-url'], platform: values['--platform'] })
   console.log(`Verified build inputs: ${offline}`)
 }

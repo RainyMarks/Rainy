@@ -4,7 +4,7 @@ The runtime holds `rainy-host` (the Rust Host, built for glibc 2.17 by native/sc
 license files, `dist/renderer` and `resources`, whose `ide/` has the Linux IDE tools of
 `prepare-ide-tools.py --platform linux-x64`) and `runtime.json`. It is written into --output as two layers split by
 install-runtime.py's rules: the base `linux-runtime.tar.xz` (the IDE tools; downloaded, identified by its content) and
-the application layer `linux-app.tar.gz` (everything else; ships in the installer), with `linux-runtime.json`
+the application layer `linux-app.tar.gz` (everything else; downloaded on demand as the optional `linux-app` module), with `linux-runtime.json`
 ({sha256, bytes, unpackedBytes} of the base, its `content` identity, `app: {sha256, bytes}` and the version).
 """
 import argparse
@@ -31,10 +31,10 @@ for path, hint in ((host, 'run native/scripts/build-hosts.sh'), (app / 'dist/ren
                    (app / 'resources/ide/manifest.json', 'run prepare-ide-tools.py --platform linux-x64')):
     if not path.is_file():
         raise RuntimeError(f'{path} is missing: {hint}')
-tools = json.loads((app / 'resources/ide/manifest.json').read_text())
+tools = json.loads((app / 'resources/ide/manifest.json').read_text(encoding='utf-8'))
 if tools.get('version') != 2 or tools.get('platform') != 'linux-x64':
     raise RuntimeError('resources/ide holds no Linux IDE tools')
-version = json.loads((app / 'package.json').read_text())['version']
+version = json.loads((app / 'package.json').read_text(encoding='utf-8'))['version']
 staging = Path(tempfile.mkdtemp(prefix='rainy-runtime-', dir='/var/tmp'))
 
 shutil.copy2(host, staging / 'rainy-host')
@@ -61,9 +61,9 @@ shutil.copytree(app / 'resources', target / 'resources', ignore=ignore_resources
 ide = target / 'resources/ide'
 for executable in [*(ide / 'bin').iterdir(), ide / 'typescript/lib/tsc']:
     executable.chmod(0o755)
-(staging / 'runtime.json').write_text(json.dumps({'schemaVersion': 2, 'version': version}, indent=2) + '\n')
+(staging / 'runtime.json').write_text(json.dumps({'schemaVersion': 2, 'version': version}, indent=2) + '\n', encoding='utf-8')
 if args.skip_pack:
-    (output / 'staging-path.txt').write_text(str(staging) + '\n')
+    (output / 'staging-path.txt').write_text(str(staging) + '\n', encoding='utf-8')
     print(json.dumps({'staging': str(staging), 'packed': False}), flush=True)
     raise SystemExit(0)
 
@@ -90,13 +90,13 @@ def pack(path, keep, mode, **options):
     return {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size}, unpacked
 
 
-# The base is downloaded, so it gets xz (about a third smaller than gzip); the application layer ships in the installer,
-# which compresses it again, and unpacks at every update, so it stays gzip.
+# The base is downloaded, so it gets xz (about a third smaller than gzip); the application layer is downloaded on demand
+# as the `linux-app` module and unpacked at each version update, so it stays gzip for fast extraction.
 base, unpacked = pack(output / 'linux-runtime.tar.xz', layers.in_base, 'w:xz', preset=6)
 application, _ = pack(output / 'linux-app.tar.gz', layers.in_app_layer, 'w:gz', compresslevel=6)
 content = layers.content_digest(staging)
 (output / 'linux-runtime.json').write_text(json.dumps({**base, 'unpackedBytes': unpacked, 'content': content, 'app': application, 'version': version},
-                                                      indent=2) + '\n')
-(output / 'staging-path.txt').write_text(str(staging) + '\n')
+                                                      indent=2) + '\n', encoding='utf-8')
+(output / 'staging-path.txt').write_text(str(staging) + '\n', encoding='utf-8')
 print(json.dumps({'archiveBytes': base['bytes'], 'sha256': base['sha256'], 'content': content, 'appBytes': application['bytes'],
                   'staging': str(staging)}), flush=True)

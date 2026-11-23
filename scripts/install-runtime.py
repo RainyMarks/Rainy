@@ -9,10 +9,13 @@ an update whose base did not change unpacks a few megabytes and downloads nothin
 `install-runtime.py BASE APP METADATA` installs this version; BASE may be missing when the base is already installed,
 and APP when this version is (`{"needsApp": true}` otherwise).
 `install-runtime.py --prune METADATA` removes what earlier versions left.
-`install-runtime.py --fetch METADATA PIECES` installs on an SSH server, the application layer arriving on standard input and
-the base downloaded there when needed.
-`install-runtime.py --receive METADATA` installs on an SSH server from the application layer followed by the base archive on
-standard input.
+`install-runtime.py --probe METADATA [--prune]` checks whether this version is already installed on an SSH server
+without streaming any archive (`{"host": ...}` or `{"needsApp": true, "needsBase": bool}`), optionally pruning older
+runtimes on the same connection when already installed.
+`install-runtime.py --fetch METADATA PIECES [--prune]` installs on an SSH server, the application layer arriving on
+standard input and the base downloaded there when needed.
+`install-runtime.py --receive METADATA [--prune]` installs on an SSH server from the application layer followed by the
+base archive on standard input.
 
 METADATA is a path to `linux-runtime.json`, or its JSON text (the SSH modes, which pass every argument inline):
 {sha256, bytes} of the base archive, `content` (the base's identity), `app: {sha256, bytes}`, and the Rainy version.
@@ -52,7 +55,7 @@ def in_base(relative):
 
 
 def read_metadata(value):
-    metadata = json.loads(value if value.lstrip().startswith('{') else Path(value).read_text())
+    metadata = json.loads(value if value.lstrip().startswith('{') else Path(value).read_text(encoding='utf-8'))
     for digest in (metadata.get('sha256', ''), metadata.get('content', ''), metadata.get('app', {}).get('sha256', '')):
         if not DIGEST.fullmatch(digest):
             raise RuntimeError('Invalid Rainy runtime digest')
@@ -93,7 +96,7 @@ def content_digest(root):
         directories[:] = [name for name in directories if not (here / name).is_symlink()
                           and in_base(name if relative_dir == '.' else f'{relative_dir}/{name}')]
         for entry in entries:
-            digest.update(entry.encode() + b'\n')
+            digest.update(entry.encode('utf-8') + b'\n')
     return digest.hexdigest()
 
 
@@ -111,7 +114,7 @@ def running_runtimes(owned):
             except OSError:
                 pass
         try:
-            paths.extend(Path(f'/proc/{pid}/cmdline').read_bytes().decode(errors='replace').split('\0'))
+            paths.extend(Path(f'/proc/{pid}/cmdline').read_bytes().decode('utf-8', errors='replace').split('\0'))
         except OSError:
             pass
         for path in paths:
@@ -134,7 +137,7 @@ def prune(owned, metadata):
     is pruned now."""
     removed = []
     current = metadata['app']['sha256']
-    with (owned / '.install.lock').open('a') as lock:
+    with (owned / '.install.lock').open('a', encoding='utf-8') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -184,7 +187,7 @@ def extract(archive, destination):
         with plain.open('wb') as output:
             result = subprocess.run(['xz', '--decompress', '--stdout', str(archive)], stdout=output, stderr=subprocess.PIPE)
         if result.returncode:
-            raise RuntimeError('This Python has no lzma module and xz failed: ' + result.stderr.decode(errors='replace').strip())
+            raise RuntimeError('This Python has no lzma module and xz failed: ' + result.stderr.decode('utf-8', errors='replace').strip())
         unpack(plain, destination)
     finally:
         shutil.rmtree(plain.parent, ignore_errors=True)
@@ -222,7 +225,7 @@ def install(owned, base_archive, app_archive, metadata):
     identity = metadata['content']
     target = owned / app['sha256']
     base = owned / ('base-' + identity)
-    with (owned / '.install.lock').open('a') as lock:
+    with (owned / '.install.lock').open('a', encoding='utf-8') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (target / '.complete').is_file():
             return installed(target)
@@ -241,7 +244,7 @@ def install(owned, base_archive, app_archive, metadata):
                 extract(base_archive, staging)
                 if not (staging / BASE_IN_APP[0] / 'manifest.json').is_file():
                     raise RuntimeError('Rainy runtime is missing its IDE tools')
-                (staging / '.complete').write_text(identity + '\n')
+                (staging / '.complete').write_text(identity + '\n', encoding='utf-8')
                 staging.rename(base)
             else:
                 # The carrier downloads the base only when no installed one has this content.
@@ -256,7 +259,7 @@ def install(owned, base_archive, app_archive, metadata):
                 link = staging / kept
                 link.parent.mkdir(parents=True, exist_ok=True)
                 link.symlink_to('../' * len(kept.split('/')) + f'{base.name}/{kept}')
-        (staging / '.complete').write_text(app['sha256'] + '\n')
+        (staging / '.complete').write_text(app['sha256'] + '\n', encoding='utf-8')
         staging.rename(target)
     return installed(target)
 
@@ -316,7 +319,29 @@ def read_exactly(stream, count, path):
             left -= len(block)
 
 
-def remote(owned, mode, metadata, pieces):
+def probe(owned, metadata, do_prune=False):
+    """Check whether this version is already installed on an SSH server without streaming any archive."""
+    if platform.system() != 'Linux' or platform.machine() not in ('x86_64', 'amd64'):
+        return {'unsupported': f'{platform.system()} {platform.machine()}'}
+    target = owned / metadata['app']['sha256']
+    base = owned / ('base-' + metadata['content'])
+    with (owned / '.install.lock').open('a', encoding='utf-8') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if (target / '.complete').is_file():
+            result = installed(target)
+        elif target.exists():
+            raise RuntimeError('Incomplete runtime directory; preserved for diagnosis')
+        else:
+            return {'needsApp': True, 'needsBase': not (base / '.complete').is_file()}
+    if do_prune:
+        try:
+            prune(owned, metadata)
+        except Exception:
+            pass
+    return result
+
+
+def remote(owned, mode, metadata, pieces, do_prune=False):
     """Install on an SSH server. Standard input starts with the application layer; with --receive the base follows."""
     if platform.system() != 'Linux' or platform.machine() not in ('x86_64', 'amd64'):
         sys.stdin.buffer.read()
@@ -336,6 +361,11 @@ def remote(owned, mode, metadata, pieces):
             return {'needsArchive': True, 'error': 'the application layer did not arrive intact'}
         result = install(owned, base_archive, app_archive, metadata)
         if mode == '--receive' or 'needsArchive' not in result:
+            if do_prune and 'host' in result:
+                try:
+                    prune(owned, metadata)
+                except Exception:
+                    pass
             return result
         if not pieces:
             return result
@@ -344,9 +374,15 @@ def remote(owned, mode, metadata, pieces):
         except Exception as error:  # Any network failure leaves the upload from the desktop.
             return {'needsArchive': True, 'error': f'{type(error).__name__}: {error}'}
         try:
-            return install(owned, base_archive, app_archive, metadata)
+            result = install(owned, base_archive, app_archive, metadata)
         finally:
             shutil.rmtree(download, ignore_errors=True)
+        if do_prune and 'host' in result:
+            try:
+                prune(owned, metadata)
+            except Exception:
+                pass
+        return result
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
@@ -356,7 +392,13 @@ if __name__ == '__main__':
     owned.mkdir(mode=0o700, parents=True, exist_ok=True)
     if sys.argv[1] == '--prune':
         print(json.dumps({'removed': prune(owned, read_metadata(sys.argv[2]))}))
+    elif sys.argv[1] == '--probe':
+        do_prune = '--prune' in sys.argv[3:]
+        print(json.dumps(probe(owned, read_metadata(sys.argv[2]), do_prune)))
     elif sys.argv[1] in ('--fetch', '--receive'):
-        print(json.dumps(remote(owned, sys.argv[1], read_metadata(sys.argv[2]), json.loads(sys.argv[3]) if len(sys.argv) > 3 else [])))
+        extra = [arg for arg in sys.argv[3:] if arg != '--prune']
+        do_prune = '--prune' in sys.argv[3:]
+        pieces = json.loads(extra[0]) if extra else []
+        print(json.dumps(remote(owned, sys.argv[1], read_metadata(sys.argv[2]), pieces, do_prune)))
     else:
         print(json.dumps(install(owned, Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(), read_metadata(sys.argv[3]))))

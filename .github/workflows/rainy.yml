@@ -57,3 +57,45 @@ jobs:
       - name: Host and protocol tests
         working-directory: native
         run: cargo test --locked -p rainy-host -p rainy-protocol
+
+  windows-rust:
+    # Covers the Windows-only desktop interface and carrier crates (rainy, rainy-carrier) plus Windows branches of rainy-host.
+    name: Rust Windows / windows-2022
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up MSYS2 UCRT64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils
+          path-type: inherit
+      - name: Install Rust GNU toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+          rustup default stable-x86_64-pc-windows-gnu
+      - name: Cache Cargo dependencies and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            native/target/
+          key: ${{ runner.os }}-cargo-gnu-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gnu-
+      - name: Windows workspace tests (GNU)
+        shell: pwsh
+        working-directory: native
+        run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
+          windres --version
+          gcc --version
+          cargo test --locked -p rainy -p rainy-carrier -p rainy-host -p rainy-protocol

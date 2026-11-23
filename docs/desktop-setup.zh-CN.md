@@ -9,7 +9,7 @@
 1. 运行 `Rainy-4.11.4-windows-x64-setup.exe` 安装核心。完整离线部署请保留 `environment/`、`environment-components/` 及校验清单。安装包可选择目录，Windows Authenticode 签名情况以最终产物记录为准。
 2. 从旧版本升级时，旧版下载的 CTF 工具留在原安装位置（安装目录的 `tools` 文件夹或 `%APPDATA%\RainyAgent\native-tools`），Rainy 3.0 不再管理它们；不再需要时可自行删除这些文件夹。
 3. 从桌面 Rainy 快捷方式启动，无需设备码、激活码或授权管理器。已有保存的 WSL 目标继续保留；新安装先使用 Windows。运行环境页可以选择已有 WSL，或点击准备环境并选择外置 `environment/` 目录创建专用 Ubuntu。需要系统组件时明确请求管理员确认；若提示重启，保存其他工作、自行重启后再次打开应用。首次启动会校验全部发行资源，之后启动直接打开；已记录的 WSL 目标跳过环境检查窗口。
-4. Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 11 MB）随安装包附带。底座没变的更新直接换上新的应用层，不下载；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。下载失败时可选择“重试”“改用 Windows 原生运行”（记录为执行目标，与在设置中切换相同）或“退出”。
+4. Linux 运行环境分两层：底座（Linux 开发工具：Ruff、ty、TypeScript 原生编译器、debugpy 和 js-debug，下载约 27 MB）只在这些内容变化时才需要联网下载，启动页显示进度；应用层（`rainy-host`、预览页面和小资源，约 10 MB）为按需下载的可选模块（`linux-app`），不随安装包附带，在某个版本首次以 WSL 启动或连接尚未安装该版本的 SSH 服务器时下载。底座没变的更新只下载新的应用层；第一次升级到分层版本时，内容相同的旧版运行环境会以硬链接复用为底座，也不下载。下载失败时可选择“重试”“改用 Windows 原生运行”（记录为执行目标，与在设置中切换相同）或“退出”。
 5. 若原发行版丢失，恢复向导保留原名称供处理。执行目标切换前保存草稿，运行中或排队中的任务、程序、调试和终端会阻止切换。项目公开身份与项目记忆在 Windows 与 WSL 之间保留，旧聊天及其运行状态留在原 Host，重新选择原目标即可访问。
 6. 通过“文件 → 打开文件夹”创建或打开项目；初次启动不会自动创建桌面项目。“添加文件夹”挂载额外根目录。Windows 原生目标直接使用 Windows 路径；WSL 目标映射至发行版路径。图片和无原生路径的粘贴内容仍走上传流程。
 7. 打开顶部设置中的“模型”，可通过 Strata 卡片下载引擎（首次使用时），再选择自己的主模型与配套 MTP 权重并启动。连接其他服务时，填写供应商、服务地址、协议及可选密钥后即可点击“发现模型”，无需预先知道模型 ID 或上下文长度；选定或手填模型 ID，设置实际上下文长度并保存，再执行“验证流式与工具调用”。模型发现不保存配置，也不能替代这项诊断。
@@ -17,7 +17,7 @@
 
 WSL 系统组件安装、管理员确认和 Windows 重启续装按具体发行产物分别验收；控制器模拟测试不能替代这些系统操作。已完成项目与剩余限制见[验收记录](validation.md)。
 
-模型不可用时显示请求错误，由用户选择另一个模型；没有自动云端回退。过载、限流、断线或超时这类临时失败会在倒计时后自动重试最多三次，错误处的“重试”可再次请求而不重发消息。会话标题来自首条消息，不产生标题模型调用。安装版在启动时静默检查 GitHub `RainyMarks/Rainy` 的稳定版并后台下载核心更新；“帮助 → 检查更新”提供手动状态和重试。下载完成后选择“稍后”或“重启安装”。只有确认、草稿保存和 Host 清理完成后才启动安装；保存失败保留窗口，普通退出不会安装。自动更新不选择预发布版或降级，也不重新下载 WSL 介质或科学计算组件；更新后首次以 WSL 或 SSH 启动时会安装新版本的 Linux 运行环境。
+模型不可用时显示请求错误，由用户选择另一个模型；没有自动云端回退。过载、限流、断线或超时这类临时失败会在倒计时后自动重试最多三次，错误处的“重试”可再次请求而不重发消息。会话标题来自首条消息，不产生标题模型调用。安装版在启动时静默检查 GitHub `RainyMarks/Rainy` 的稳定版并后台下载核心更新；“帮助 → 检查更新”提供手动状态和重试。下载完成后选择“稍后”或“重启安装”。只有确认、草稿保存和 Host 清理完成后才启动安装；保存失败保留窗口。开启“设置 → 通用 → 自动更新”（默认开启）时，面向当前用户的安装会在关闭应用时静默安装；面向所有用户（`HKLM`）的安装会跳过退出安装以避免关窗后突弹 UAC 提权提示，留待下次启动时重启安装。自动更新不选择预发布版或降级，也不重新下载 WSL 介质或科学计算组件；更新后首次以 WSL 或 SSH 启动时会按需安装新版本的 Linux 运行环境。
 
 窗口控制与单行顶部工具栏共用区域。拖动顶部空白处可移动窗口，双击可最大化或还原；编辑和缩放的键盘快捷键仍可使用。窗口按上次关闭时的大小、位置和最大化状态重新打开；首次启动时若屏幕容纳不下默认大小则直接最大化。
 
@@ -49,7 +49,7 @@ SSH 远程开发让智能体、终端、运行调试和语言服务在 Linux 服
 1. 打开“设置 → 运行环境 → SSH 远程开发”。`~/.ssh/config` 中的主机会自动列出；其他主机填写 `user@host` 或别名及端口，点击“连接并添加”。Rainy 先测试一次连接（登录、Linux x86_64 和 `python3`），通过后才保存。也可在命令面板中选择“连接到 SSH 主机…”。
 2. 首次连接新服务器时，Rainy 显示主机密钥指纹，确认后写入 `~/.ssh/known_hosts`；密钥变化时拒绝连接并说明原因。需要密码、密钥口令或一次性验证码时，Rainy 弹出小窗口询问；输入内容只在本次运行期间保存在内存中，不写入磁盘。
 3. 点击“切换到此主机”，或在执行目标列表中选择该主机。Rainy 重启并进入新目标。
-4. 首次连接会安装本版本的 Linux 运行环境（归档约 280 MB）：服务器先自行从 GitHub 下载并逐片校验；失败或一分钟后速度仍低于 256 KiB/s 时，改由本机下载后通过 SSH 上传。之后启动直接复用，测试中约 2 秒进入工作台。
+4. 首次连接会安装本版本的分层 Linux 运行环境（底座约 27 MB，仅在工具变化时下载；应用层约 10 MB）：连接时先执行无流探活（`--probe`），服务器已有当前版本时零字节上传直接复用；需要安装底座时，服务器先自行从 GitHub 下载并逐片校验，失败或一分钟后速度仍低于 256 KiB/s 时改由本机下载后通过 SSH 上传。测试中复用启动约 2 秒进入工作台。旧版本运行环境随探活/安装同连接清理，或后台以非交互 `BatchMode=yes` 静默清理，不会延迟弹出 OTP。
 
 使用说明：
 
@@ -58,7 +58,7 @@ SSH 远程开发让智能体、终端、运行调试和语言服务在 Linux 服
 - 模型请求从服务器的网络发出，模型设置和 API 密钥按执行目标分别保存；本机的 Strata 本地模型无法从服务器访问，请配置服务器能访问的模型地址。
 - 项目、对话和项目记忆保存在服务器上，切换回本机时不会带过来。
 - Host 只监听服务器的 127.0.0.1，通过 `ssh -L` 转发到本机同一端口，不在公网接口上监听。
-- 连接断开时，点击“重新连接”会重新打开 Rainy，对话历史保留在服务器上。启动失败时可选择“重试”“改用 Windows 原生运行”或“退出”。
+- 连接断开时，点击“重新连接”会优先原窗口免重启重连（必要时重新打开 Rainy），对话历史保留在服务器上；远端 Host 未能正常退出时，Rainy 会按远端 PID 非交互清理进程树。启动失败时可选择“重试”“改用 Windows 原生运行”或“退出”。
 
 ## Strata 本地模型
 
@@ -102,7 +102,7 @@ Strata 服务在 Windows loopback 上运行。WSL Host 只有在能访问该地�
 
 ## AI 权限与撤销
 
-每个对话可以在输入框旁切换权限：“只读”只能读取和搜索文件；“询问”（默认）在项目内直接读写，运行命令、调用 MCP 工具和写入项目外的文件前先显示审批条，可选择允许、总是允许或拒绝，拒绝时可以告诉 AI 改用什么做法；“完全自动”不再询问。“总是允许”按项目记录命令前缀或 MCP 工具，只匹配不含 `;`、`|`、`>`、`$(` 等的简单命令，可在“设置 → 安全”中查看和移除，也可在那里设置新对话的默认权限。等待批准时窗口不在前台会发出系统通知，历史列表显示“等待批准”。
+每个对话可以在输入框旁切换权限：“只读”只能读取和搜索文件；“询问”（默认）在项目内直接读写，运行命令、调用 MCP 工具、读取工作区外文件、使用工作区外工作目录和写入项目外的文件前先显示审批条，可选择允许、总是允许或拒绝，拒绝时可以告诉 AI 改用什么做法；“完全自动”放行未被显式拒绝规则拦截的操作。“总是允许”与最高优先级“拒绝（Deny）”规则支持按项目配置命令/路径通配符，可在“设置 → 安全”中查看、增删并管理受信任工作区（同时控制项目内指令、`.rainy/skills` 与 `.rainy/hooks.json` 声明式生命周期钩子）和新对话的默认权限。等待批准时窗口不在前台会发出系统通知，历史列表显示“等待批准”。
 
 AI 的写入和编辑会保存修改前的内容（单个文件不超过 16 MiB，随对话删除，30 天后清理）。每张改动卡片可“撤销此修改”，每轮可“撤销本轮修改”；文件之后又被改动过时不会覆盖。命令行造成的改动不在撤销范围内。
 
@@ -126,7 +126,7 @@ node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.j
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-4.11.4/environment-components
 ```
 
-[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、WSL 和运行环境输入。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，用 `prepare-ide-tools.py` 按固定版本准备 Windows 与 Linux 的开发工具（Ruff、ty、TypeScript 原生编译器、debugpy、js-debug），运行 `build.ts --release` 构建预览页面，由 `native/scripts/build-hosts.sh` 构建 Windows 的 `rainy-host.exe` 和 Linux 的 `rainy-host`（cargo-zigbuild，glibc 2.17），`stage-windows.mjs` 与 `stage-linux.py` 分别暂存两个 Host 运行环境，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。构建需要 GNU 工具链的 Rust、`cargo-zigbuild` 和 Zig。`-ComponentSource` 指向恢复到 `release/offline-4.11.4` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
+[bootstrap-release-inputs.mjs](../scripts/bootstrap-release-inputs.mjs)按仓库中的[输入清单](../toolpacks/build-inputs.v1.json)从固定版本的资源存档下载发行分片、重组并校验原始文件，恢复 Git 不保存的 IDE、WSL 和运行环境输入（默认拉取全部输入，也可传 `--platform windows`、`--platform windows-core` 或 `--platform linux` 按平台按需拉取）。已有完整输入目录可通过 `--inputs-dir` 指定，仍需通过清单校验。打包入口 [package.ps1](../scripts/package.ps1)校验环境媒体和组件归档，用 `prepare-ide-tools.py` 按固定版本准备 Windows 与 Linux 的开发工具（Ruff、ty、TypeScript 原生编译器、debugpy、js-debug），运行 `build.ts --release` 构建预览页面，由 `native/scripts/build-hosts.sh` 构建 Windows 的 `rainy-host.exe` 和 Linux 的 `rainy-host`（cargo-zigbuild，glibc 2.17），`stage-windows.mjs` 与 `stage-linux.py` 分别暂存两个 Host 运行环境，再由 `native/scripts/build-release.sh` 构建带发行公钥的 `RainyAgent.exe`，`package-native.mjs` 把它和 Host、`WebView2Loader.dll` 一起暂存、签名资源清单并生成 NSIS 安装包。构建需要 GNU 工具链的 Rust、`cargo-zigbuild` 和 Zig。`-ComponentSource` 指向恢复到 `release/offline-4.11.4` 的 `environment-components`。`-Distribution` 必须匹配准备好的 WSL 构建发行版名称。最终产物与干净 checkout 的实测情况由[验收记录](validation.md)记录，以上命令不代表已经完成该项验收。
 
 Windows 与 Linux Host 都由 `cargo` 从仓库源码构建，依赖版本由 `native/Cargo.lock` 固定。
 
