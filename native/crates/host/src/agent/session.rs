@@ -2075,8 +2075,9 @@ impl Session {
         let project = chat.workspace_id.as_deref().and_then(|workspace| self.services.projects.get(workspace));
         let extra_roots: Vec<String> = project.map(|project| project.roots().into_iter().filter(|root| !root.primary).map(|root| root.path).collect()).unwrap_or_default();
         let names: Vec<String> = tools.iter().map(|tool| tool.spec().name.clone()).collect();
-        let trusted = self.workspace_trusted(&chat);
-        let skills = skills::section(&skills::discover_for(Some(Path::new(&chat.cwd)), trusted));
+        // Project skills load in every workspace like AGENTS.md (text the model may read, fenced as untrusted data);
+        // only hooks, which run commands, wait for the workspace to be trusted.
+        let skills = skills::section(&skills::discover(Some(Path::new(&chat.cwd))));
         let powershell_core = env.windows.then(|| {
             let component = self.services.runtime.resolve(Path::new(&chat.cwd)).ok().and_then(|resolved| resolved.powershell);
             crate::process::resolve_powershell(env.pwsh_path.as_deref(), component.as_deref()).1
@@ -2467,8 +2468,8 @@ mod tests {
             .unwrap();
         let session = Session::open(services.clone(), &chat.id).await.unwrap();
 
-        // Untrusted workspace skips project skills and hooks; trusting enables both.
-        assert!(!session.system_prompt(&session.tools()).contains("project/demo"));
+        // Project skills load in any workspace, like AGENTS.md; hooks, which run commands, wait for trust.
+        assert!(session.system_prompt(&session.tools()).contains("project/demo"));
         assert!(session.effective_hooks().is_empty());
         services.settings.set_workspace_trusted(&workdir.to_string_lossy(), true).unwrap();
         assert!(session.system_prompt(&session.tools()).contains("project/demo"));

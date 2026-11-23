@@ -13,6 +13,7 @@ use super::compaction::usage_of;
 use super::llm::{self, Llm, Message, reply_text};
 use super::models::Resolved;
 use super::run::{self, Blocked, Event, Hooks, State};
+use super::swarm::fresh_tokens;
 use super::tools::Tool;
 use super::tools::task::{Progress, Report};
 
@@ -20,8 +21,10 @@ use super::tools::task::{Progress, Report};
 pub const MAX_STEPS: usize = 24;
 /// How long one sub-agent may run.
 pub const MAX_TIME: Duration = Duration::from_secs(5 * 60);
-/// Cumulative input+output tokens a single sub-agent may consume before circuit-breaking.
-pub const MAX_TOKENS: u64 = 400_000;
+/// Fresh tokens (uncached input, output, cache writes) a single sub-agent may consume before circuit-breaking. Cache reads
+/// are left out: every step re-reads the whole context from the cache, so counting them would stop ordinary sub-agents
+/// long before MAX_STEPS. This only catches runaway reads (24 steps without caching over a ~60k context stay below it).
+pub const MAX_TOKENS: u64 = 1_500_000;
 /// Tool calls kept in the progress list shown on the card.
 const ACTIVITY_KEPT: usize = 12;
 
@@ -99,8 +102,7 @@ impl Hooks for SubHooks {
                         track.text = said;
                     }
                     let used = usage_of(message);
-                    let billable = (used.input + used.output + used.cache_read + used.cache_write).max(0.0) as u64;
-                    track.tokens = track.tokens.saturating_add(billable);
+                    track.tokens = track.tokens.saturating_add(fresh_tokens(&used));
                     emit_usage = Some(used);
                     if track.steps >= MAX_STEPS {
                         track.stopped = Some("steps");

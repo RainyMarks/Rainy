@@ -220,13 +220,11 @@ impl Agent {
 
     fn extensions_status(&self, cwd: Option<&str>) -> Value {
         let trusted = cwd.is_some_and(|dir| self.services.settings.is_workspace_trusted(None, Some(Path::new(dir))));
-        let project_skills_skipped = !trusted && cwd.is_some_and(|dir| skills::has_project_skills(Path::new(dir)));
         json!({
-            "skills": skills::discover_for(cwd.map(Path::new), trusted),
+            "skills": skills::discover(cwd.map(Path::new)),
             "servers": self.services.settings.get().mcp_servers,
             "status": self.services.mcp.status(),
             "trusted": trusted,
-            "projectSkillsSkipped": project_skills_skipped,
         })
     }
 

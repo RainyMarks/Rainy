@@ -1,5 +1,6 @@
 # Whether a process still runs from the Rainy installation (3.x customCheckAppRunning, with a wait): its executable lies
-# under one of the normalized install roots, or it directly runs a script/binary under one (including -EncodedCommand).
+# under one of the normalized install roots, or its command line names a script/binary under one (also inside a quoted
+# command string or -EncodedCommand).
 # Strict directory-prefix matching avoids false positives on external editors or terminals merely mentioning the folder.
 # Nothing is ever ended.
 # Exit 0 when none does, 2 when one still does after WaitSeconds (printed as "Busy: <pid> <name>"), 1 when the check failed.
@@ -43,6 +44,17 @@ function Matches-RootPrefix([string]$candidate, [string[]]$roots, [bool]$require
   }
   return $false
 }
+# A path under one of the roots ending in an executable extension anywhere in the text, also inside a quoted command
+# string (powershell -Command "... C:\Rainy\x.ps1", cmd /c "..."), where whole-token matching misses it.
+function Contains-RootExecutable([string]$text, [string[]]$roots) {
+  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+  $lower = $text.Replace('/', '\').ToLowerInvariant()
+  $exts = ($script:ExecutableExts | ForEach-Object { [regex]::Escape($_) }) -join '|'
+  foreach ($root in $roots) {
+    if ([regex]::IsMatch($lower, [regex]::Escape($root + '\') + '[^"''<>|\s]*?(' + $exts + ')(?![\w.])')) { return $true }
+  }
+  return $false
+}
 function Find-Busy([string[]]$roots) {
   foreach ($row in Get-CimInstance Win32_Process) {
     if ($row.ProcessId -eq $PID -or $row.ProcessId -eq $InstallerPid) { continue }
@@ -53,15 +65,11 @@ function Find-Busy([string[]]$roots) {
     $raw = [string]$row.CommandLine
     $tokens = Extract-PathTokens $raw
     if ($tokens.Count -gt 0 -and (Matches-RootPrefix $tokens[0] $roots $false)) { return $row }
-    for ($i = 1; $i -lt $tokens.Count; $i++) {
-      if (Matches-RootPrefix $tokens[$i] $roots $true) { return $row }
-    }
+    if (Contains-RootExecutable $raw $roots) { return $row }
     if ($raw -match '-(?i:EncodedCommand|enc|ec)\s+([A-Za-z0-9+/=]+)') {
       try { $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1])) } catch { $decoded = '' }
       $decoded = $decoded.Replace(([string][char]39 + [char]39), [string][char]39)
-      foreach ($tok in (Extract-PathTokens $decoded)) {
-        if (Matches-RootPrefix $tok $roots $true) { return $row }
-      }
+      if (Contains-RootExecutable $decoded $roots) { return $row }
     }
   }
   return $null

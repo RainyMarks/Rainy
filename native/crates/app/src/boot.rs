@@ -797,7 +797,7 @@ impl HostEvents for CarrierEvents {
             }
             Err(error) => {
                 let message = error.localized_message();
-                self.write_log(&format!("DPAPI credential protection failed (refusing silent plaintext fallback): {error:#}"));
+                self.write_log(&format!("DPAPI credential protection failed; API keys entered in this run stay unencrypted until a later run: {error:#}"));
                 if let Some(tx) = self.credential_alert.lock().unwrap().as_ref() {
                     let _ = tx.try_send(CredentialAlert::Error(message));
                 }

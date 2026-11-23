@@ -78,8 +78,9 @@ pub struct CredentialKey {
     pub warnings: Vec<CredentialWarning>,
 }
 
-/// Structured failure when DPAPI protection itself cannot be established.
-/// Returning an error prevents silent downgrade to plaintext `.credentials.json`.
+/// Structured failure when DPAPI protection cannot be established for this run. Existing files are left untouched; the
+/// Host then keeps API keys entered meanwhile in its private `.credentials.json` and seals them on the next run that has
+/// the key, which the interface says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialError {
     /// Reading or writing credential files failed due to an I/O error.
@@ -95,16 +96,16 @@ impl CredentialError {
     pub fn localized_message(&self) -> String {
         match self {
             Self::Io { path, detail } => localized(
-                &format!("无法读写凭据保护文件 {}（{detail}），已拒绝降级为明文存储 API 密钥。", path.display()),
-                &format!("Could not access credential protection file {} ({detail}); refused to fall back to plaintext API key storage.", path.display()),
+                &format!("无法读写凭据保护文件 {}（{detail}）。", path.display()),
+                &format!("Could not access the credential protection file {} ({detail}).", path.display()),
             ),
             Self::ProtectionUnavailable { detail } => localized(
-                &format!("Windows 数据保护（DPAPI）不可用（{detail}），已拒绝降级为明文存储 API 密钥。"),
-                &format!("Windows data protection (DPAPI) is unavailable ({detail}); refused to fall back to plaintext API key storage."),
+                &format!("Windows 数据保护（DPAPI）暂时不可用（{detail}）。"),
+                &format!("Windows data protection (DPAPI) is unavailable for now ({detail})."),
             ),
             Self::Crypto { detail } => localized(
-                &format!("凭据加密初始化失败（{detail}），已拒绝降级为明文存储 API 密钥。"),
-                &format!("Credential encryption failed ({detail}); refused to fall back to plaintext API key storage."),
+                &format!("凭据加密初始化失败（{detail}）。"),
+                &format!("Credential encryption failed ({detail})."),
             ),
         }
     }
@@ -154,7 +155,7 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>> {
         }
     };
     if ok == 0 {
-        return Err(anyhow!("Windows data protection failed: {}", std::io::Error::last_os_error()));
+        return Err(anyhow::Error::new(std::io::Error::last_os_error()).context("Windows data protection failed"));
     }
     // SAFETY: Windows returned `cbData` bytes at `pbData`, which stay valid until LocalFree.
     let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
@@ -172,8 +173,10 @@ impl Protector for Dpapi {
     }
 }
 
-/// The Chromium OSCrypt key from `Local State`, created when the file has none, or safely backed up and recreated
-/// under DPAPI when the existing `Local State` is damaged. Never silently falls back to plaintext.
+/// The Chromium OSCrypt key from `Local State`, created when the file has none, or backed up and recreated under DPAPI
+/// when the existing key can never be opened again: the file is damaged, or Windows says the protected key is invalid
+/// for this account (an administrator reset the password, a profile copied from another account). Any other DPAPI
+/// failure may pass, so it is an error and nothing is touched; the next run tries again.
 fn os_crypt_key(
     user_data: &Path,
     protector: &dyn Protector,
@@ -202,10 +205,11 @@ fn os_crypt_key(
                         }
                         Some(Value::String(encoded)) => match decode_os_crypt_key(encoded, protector) {
                             Ok(key) => return Ok((key, None)),
-                            Err(reason) => {
+                            Err(KeyProblem::Lost(reason)) => {
                                 state = parsed;
                                 damaged = Some(reason);
                             }
+                            Err(KeyProblem::Unavailable(detail)) => return Err(CredentialError::ProtectionUnavailable { detail }),
                         },
                         Some(_) => {
                             state = parsed;
@@ -260,11 +264,35 @@ fn os_crypt_key(
     Ok((key, warning))
 }
 
-fn decode_os_crypt_key(encoded: &str, protector: &dyn Protector) -> std::result::Result<[u8; 32], String> {
-    let blob = STANDARD.decode(encoded).map_err(|error| format!("Local State key is not base64: {error}"))?;
-    let blob = blob.strip_prefix(DPAPI_PREFIX).ok_or_else(|| "Local State key is not DPAPI-protected".to_owned())?;
-    let key = protector.unprotect(blob).map_err(|error| error.to_string())?;
-    key.try_into().map_err(|_| "Local State key has the wrong length".to_owned())
+/// Why the `Local State` key could not be opened.
+enum KeyProblem {
+    /// It can never be opened again; a new key has to replace it.
+    Lost(String),
+    /// Windows could not open it this time; it may work on the next run.
+    Unavailable(String),
+}
+
+/// DPAPI errors that mean the protected data can never be opened by this account: NTE_BAD_KEY_STATE (the account's
+/// master key changed, e.g. after an administrator password reset or for a profile copied from another account),
+/// NTE_BAD_DATA and ERROR_INVALID_DATA (the blob is damaged).
+fn dpapi_key_lost(error: &anyhow::Error) -> bool {
+    const NTE_BAD_KEY_STATE: u32 = 0x8009_000B;
+    const NTE_BAD_DATA: u32 = 0x8009_0005;
+    const ERROR_INVALID_DATA: u32 = 13;
+    const HRESULT_INVALID_DATA: u32 = 0x8007_000D;
+    error.chain().filter_map(|cause| cause.downcast_ref::<std::io::Error>()).filter_map(std::io::Error::raw_os_error).any(|code| {
+        matches!(code as u32, NTE_BAD_KEY_STATE | NTE_BAD_DATA | ERROR_INVALID_DATA | HRESULT_INVALID_DATA)
+    })
+}
+
+fn decode_os_crypt_key(encoded: &str, protector: &dyn Protector) -> std::result::Result<[u8; 32], KeyProblem> {
+    let blob = STANDARD.decode(encoded).map_err(|error| KeyProblem::Lost(format!("Local State key is not base64: {error}")))?;
+    let blob = blob.strip_prefix(DPAPI_PREFIX).ok_or_else(|| KeyProblem::Lost("Local State key is not DPAPI-protected".to_owned()))?;
+    let key = protector.unprotect(blob).map_err(|error| {
+        let detail = format!("{error:#}");
+        if dpapi_key_lost(&error) { KeyProblem::Lost(detail) } else { KeyProblem::Unavailable(detail) }
+    })?;
+    key.try_into().map_err(|_| KeyProblem::Lost("Local State key has the wrong length".to_owned()))
 }
 
 /// OSCrypt `EncryptString`.
@@ -294,10 +322,10 @@ fn valid_key(key: &str) -> bool {
 
 /// Load or safely recover the DPAPI-protected credential key.
 ///
-/// Unlike 3.x, a damaged `Local State` or DPAPI failure never silently downgrades API keys to plaintext:
-/// - When `Local State` is damaged but Windows DPAPI is available, the damaged file is backed up and a fresh
-///   DPAPI-protected key is created with an explicit [`CredentialWarning`].
-/// - When DPAPI itself is unavailable or I/O fails, returns `Err(CredentialError)` without modifying existing files.
+/// - When `Local State` is damaged or its key can never be opened again (see [`os_crypt_key`]) but Windows DPAPI works,
+///   the old file is backed up and a fresh DPAPI-protected key is created with an explicit [`CredentialWarning`].
+/// - When DPAPI fails otherwise or I/O fails, returns `Err(CredentialError)` without modifying existing files; the
+///   interface says that API keys entered in this run stay unencrypted until a later run seals them.
 pub fn load_credential_key(
     user_data: &Path,
     protector: &dyn Protector,
@@ -306,7 +334,7 @@ pub fn load_credential_key(
     let (os_key, mut warnings) = match os_crypt_key(user_data, protector, log) {
         Ok((key, warning)) => (key, warning.into_iter().collect::<Vec<_>>()),
         Err(error) => {
-            log(&format!("DPAPI credential protection failed (refusing plaintext fallback): {error}"));
+            log(&format!("DPAPI credential protection failed; nothing was changed: {error}"));
             return Err(error);
         }
     };
@@ -410,7 +438,19 @@ mod tests {
             Ok(data.iter().map(|b| b ^ 0x5a).collect())
         }
         fn unprotect(&self, _data: &[u8]) -> Result<Vec<u8>> {
-            bail!("password reset broke DPAPI blob")
+            // NTE_BAD_KEY_STATE, what CryptUnprotectData reports after an administrator reset the account password.
+            Err(anyhow::Error::new(std::io::Error::from_raw_os_error(0x8009_000Bu32 as i32)).context("Windows data protection failed"))
+        }
+    }
+
+    struct BusyUnprotect;
+    impl Protector for BusyUnprotect {
+        fn protect(&self, data: &[u8]) -> Result<Vec<u8>> {
+            Ok(data.iter().map(|b| b ^ 0x5a).collect())
+        }
+        fn unprotect(&self, _data: &[u8]) -> Result<Vec<u8>> {
+            // RPC_S_SERVER_UNAVAILABLE: a failure that may pass.
+            Err(anyhow::Error::new(std::io::Error::from_raw_os_error(1722)).context("Windows data protection failed"))
         }
     }
 
@@ -482,6 +522,19 @@ mod tests {
         let reset = load_credential_key(dir.path(), &FailingUnprotect, &|_| {}).unwrap();
         assert_ne!(reset.key, recovered.key);
         assert!(reset.warnings.iter().any(|w| matches!(w, CredentialWarning::LocalStateRecovered { .. })));
+    }
+
+    #[test]
+    fn keeps_the_key_when_dpapi_fails_for_a_while() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap();
+        let state = fs::read(dir.path().join(LOCAL_STATE)).unwrap();
+        let err = load_credential_key(dir.path(), &BusyUnprotect, &|_| {}).unwrap_err();
+        assert!(matches!(err, CredentialError::ProtectionUnavailable { .. }));
+        // Nothing was rotated or set aside, so the next run opens the same key.
+        assert_eq!(fs::read(dir.path().join(LOCAL_STATE)).unwrap(), state);
+        assert!(!fs::read_dir(dir.path()).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".unreadable")));
+        assert_eq!(credential_key(dir.path(), &Fake, &|_| {}).unwrap().as_deref(), Some(first.as_str()));
     }
 
     #[test]

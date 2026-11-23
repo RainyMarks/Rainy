@@ -381,8 +381,8 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ),
     (
         "native.credentialErrorDetail",
-        "Windows 密钥保护（DPAPI）当前不可用，Rainy 不会以明文保存 API 密钥：{detail}",
-        "Windows credential protection (DPAPI) is unavailable; Rainy will not save API keys in plain text: {detail}",
+        "{detail}之前加密保存的 API 密钥这次读不出来，但不会丢失，重启 Rainy 后再试。这次运行中新填写的 API 密钥会暂时以明文保存在你的用户目录里，下次加密可用时自动重新加密。",
+        "{detail} API keys saved encrypted cannot be read in this run but are not lost; restart Rainy later. API keys entered in this run are kept unencrypted in your user folder and encrypted on the next start that can.",
     ),
     // SSH reconnect without restarting the whole app
     (
@@ -460,8 +460,8 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.securityTrustedTitle", "受信任工作区", "Trusted workspaces"),
     (
         "native.securityTrustedDescription",
-        "只有受信任工作区会自动加载仓库内的指令（AGENTS.md / CLAUDE.md）、项目技能与生命周期钩子。",
-        "Only trusted workspaces automatically load repository instructions (AGENTS.md / CLAUDE.md), project skills, and lifecycle hooks.",
+        "只有受信任的工作区会运行仓库里的生命周期钩子（.rainy/hooks.json）。仓库里的指令（AGENTS.md / CLAUDE.md）和项目技能在任何工作区都会加载，权限规则照常生效。",
+        "Only trusted workspaces run the repository's lifecycle hooks (.rainy/hooks.json). Repository instructions (AGENTS.md / CLAUDE.md) and project skills load in every workspace; permission rules still apply.",
     ),
     ("native.securityCurrentTrusted", "当前工作区：已信任", "Active workspace: Trusted"),
     ("native.securityCurrentUntrusted", "当前工作区：未信任", "Active workspace: Untrusted"),

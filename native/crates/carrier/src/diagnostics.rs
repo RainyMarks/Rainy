@@ -848,7 +848,8 @@ mod tests {
     #[test]
     fn describes_this_computer() {
         let windows = windows_version();
-        assert!(windows.starts_with("Windows 1") && windows.contains("(10.0.") && windows.ends_with(", x64)"), "{windows}");
+        // "Windows 11 Pro 25H2 (…)" here, "Windows Server 2022 Datacenter 21H2 (…)" on the CI runner.
+        assert!(windows.starts_with("Windows ") && windows.contains("(10.0.") && windows.ends_with(", x64)"), "{windows}");
         let memory = memory();
         let numbers: Vec<_> = memory.split([' ', ',']).filter_map(|word| word.parse::<u64>().ok()).collect();
         assert!(memory.ends_with(" GiB free") && numbers.len() == 2 && numbers[0] >= numbers[1] && numbers[0] > 0, "{memory}");

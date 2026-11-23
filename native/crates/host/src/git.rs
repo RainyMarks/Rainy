@@ -391,6 +391,9 @@ impl Git {
     }
 }
 
+/// Refs keeping the stash commits worktrees started from, named after the worktree's folder.
+const BASE_REFS: &str = "refs/rainy/worktrees/";
+
 /// Untracked build artifacts and transient junk that `worktree_hand_off` skips even if a repository lacks `.gitignore`.
 fn is_untracked_junk(relative: &str) -> bool {
     const JUNK_DIRS: &[&str] = &[
@@ -434,15 +437,13 @@ impl Git {
         Root { root_id: String::new(), path: path.to_string_lossy().into_owned(), title: String::new(), primary: true }
     }
 
-    /// A detached worktree in `worktrees` of the repository holding `folder`, created from clean `HEAD` so dirty
-    /// uncommitted changes in the main checkout are not duplicated into the worktree and do not conflict on hand-off.
-    /// Ignored files named by `.worktreeinclude` (such as `.env`) are still copied.
+    /// A detached worktree in `worktrees` of the repository holding `folder`, at its current commit and with its
+    /// uncommitted changes to tracked files (untracked and ignored files stay behind, as in the Codex app; ignored files
+    /// `.worktreeinclude` names are copied). When those changes come along, the worktree's `base` is the stash commit
+    /// holding them, so a hand-off moves only what the chat changed and does not apply the checkout's own changes twice;
+    /// a ref under [`BASE_REFS`] keeps that commit from Git's garbage collection until the worktree is removed. Returns
+    /// the worktree and the chat's working folder in it (the same place below the repository's top as `folder`).
     pub async fn worktree_add(&self, folder: &Path, worktrees: &Path) -> HostResult<(rainy_protocol::Worktree, String)> {
-        self.worktree_add_with_dirty(folder, worktrees, false).await
-    }
-
-    /// Create a detached worktree from `HEAD`, optionally carrying over the checkout's uncommitted tracked changes.
-    pub async fn worktree_add_with_dirty(&self, folder: &Path, worktrees: &Path, include_dirty: bool) -> HostResult<(rainy_protocol::Worktree, String)> {
         let here = Self::at(folder);
         let not_repository = || HostError::new("not-git", l("这个项目不在 Git 仓库里，无法使用独立工作区。", "This project is not in a Git repository, so it cannot use a worktree."));
         let top = self.text(&here, &["rev-parse", "--show-toplevel"]).await?.trim().to_owned();
@@ -450,15 +451,11 @@ impl Git {
             return Err(not_repository());
         }
         let prefix = self.text(&here, &["rev-parse", "--show-prefix"]).await?.trim().to_owned();
-        let base = self.text(&here, &["rev-parse", "--verify", "HEAD"]).await?.trim().to_owned();
+        let mut base = self.text(&here, &["rev-parse", "--verify", "HEAD"]).await?.trim().to_owned();
         if base.is_empty() {
             return Err(HostError::new("git-empty", l("仓库还没有任何提交，无法创建独立工作区。请先提交一次。", "The repository has no commit yet, so a worktree cannot start from one. Commit once first.")));
         }
-        let changes = if include_dirty {
-            self.text(&here, &["stash", "create"]).await.unwrap_or_default().trim().to_owned()
-        } else {
-            String::new()
-        };
+        let changes = self.text(&here, &["stash", "create"]).await.unwrap_or_default().trim().to_owned();
         std::fs::create_dir_all(worktrees)?;
         let name = Path::new(&top).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
         let id = uuid::Uuid::new_v4().simple().to_string();
@@ -470,8 +467,13 @@ impl Git {
             return Err(Self::failure(&added));
         }
         if !changes.is_empty() {
-            if let Err(error) = self.check(&Self::at(&path), &["stash", "apply", &changes]).await {
-                log::warn!("worktree {target}: the uncommitted changes did not apply: {}", error.message);
+            // The checkout's uncommitted changes come along; a worktree without them is still usable.
+            match self.check(&Self::at(&path), &["stash", "apply", &changes]).await {
+                Ok(()) => match self.check(&here, &["update-ref", &Self::base_ref(&path), &changes]).await {
+                    Ok(()) => base = changes,
+                    Err(error) => log::warn!("worktree {target}: the start with uncommitted changes was not kept: {}", error.message),
+                },
+                Err(error) => log::warn!("worktree {target}: the uncommitted changes did not apply: {}", error.message),
             }
         }
         let copied = self.copy_included(Path::new(&top), &path).await;
@@ -696,9 +698,15 @@ impl Git {
         ))
     }
 
+    /// The ref keeping a worktree's starting stash commit (see [`Self::worktree_add`]).
+    fn base_ref(worktree: &Path) -> String {
+        format!("{BASE_REFS}{}", worktree.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
+    }
+
     /// Remove the worktree's folder and Git's record of it; a branch made from it stays.
     pub async fn worktree_remove(&self, worktree: &rainy_protocol::Worktree) {
         let local = Self::at(Path::new(&worktree.repository));
+        let _ = self.check(&local, &["update-ref", "-d", &Self::base_ref(Path::new(&worktree.path))]).await;
         if self.check(&local, &["worktree", "remove", "--force", &worktree.path]).await.is_err() {
             let _ = std::fs::remove_dir_all(&worktree.path);
             let _ = self.check(&local, &["worktree", "prune"]).await;
@@ -747,8 +755,9 @@ mod tests {
         std::fs::create_dir_all(repo.join("build")).unwrap();
         std::fs::write(repo.join("build").join("out.bin"), "x").unwrap();
         std::fs::write(repo.join("notes.txt"), "draft\n").unwrap();
-        // Main checkout has dirty changes; clean HEAD worktree creation does not duplicate them into the worktree.
+        // The checkout's uncommitted change comes along, and the worktree starts from it.
         std::fs::write(repo.join("sub").join("a.txt"), "one\ndirty-local\n").unwrap();
+        let head = run(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
         let context = crate::agent::tools::test_context(&dir);
         let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
         let (worktree, cwd) = git.worktree_add(&repo.join("sub"), &dir.join("worktrees")).await.unwrap();
@@ -756,9 +765,12 @@ mod tests {
         let top = Path::new(&worktree.path);
         assert_eq!(std::fs::read_to_string(top.join(".env")).unwrap(), "KEY=1\n");
         assert!(!top.join("build").exists() && !top.join("notes.txt").exists());
-        assert_eq!(std::fs::read_to_string(Path::new(&cwd).join("a.txt")).unwrap().replace("\r\n", "\n"), "one\n");
+        assert_eq!(std::fs::read_to_string(Path::new(&cwd).join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ndirty-local\n");
+        assert_ne!(worktree.base, head);
+        let kept = format!("refs/rainy/worktrees/{}", top.file_name().unwrap().to_string_lossy());
+        assert_eq!(run(&repo, &["rev-parse", &kept]).trim(), worktree.base);
         // The chat works there: a commit, a real new file, and untracked build junk that must be excluded on hand-off.
-        std::fs::write(Path::new(&cwd).join("a.txt"), "one\nthree\n").unwrap();
+        std::fs::write(Path::new(&cwd).join("a.txt"), "one\ndirty-local\nthree\n").unwrap();
         git.worktree_branch(&worktree, "rainy/test").await.unwrap();
         run(Path::new(&cwd), &["commit", "-q", "-am", "three"]);
         std::fs::write(Path::new(&cwd).join("new.txt"), "new\n").unwrap();
@@ -766,11 +778,12 @@ mod tests {
         std::fs::write(top.join("target/debug/artifact.o"), "junk").unwrap();
         std::fs::write(Path::new(&cwd).join("scratch.tmp"), "junk").unwrap();
         assert!(git.worktree_branch(&worktree, "bad name").await.is_err());
-        // Handing off moves real changes into the checkout (excluding junk) and removes the worktree.
-        std::fs::write(repo.join("sub").join("a.txt"), "one\n").unwrap();
+        // Handing off moves only the chat's changes into the checkout, which still has its own (excluding junk), and
+        // removes the worktree and the ref keeping its start.
         let moved = git.worktree_hand_off(&worktree, &dir.join("worktrees")).await.unwrap();
         assert_eq!(moved, 2);
-        assert_eq!(std::fs::read_to_string(repo.join("sub").join("a.txt")).unwrap().replace("\r\n", "\n"), "one\nthree\n");
+        assert_eq!(std::fs::read_to_string(repo.join("sub").join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ndirty-local\nthree\n");
+        assert!(run(&repo, &["for-each-ref", "refs/rainy/"]).trim().is_empty());
         assert!(repo.join("sub").join("new.txt").is_file());
         assert!(!repo.join("target").exists(), "untracked build junk must not be handed off");
         assert!(!repo.join("sub").join("scratch.tmp").exists(), "untracked .tmp junk must not be handed off");

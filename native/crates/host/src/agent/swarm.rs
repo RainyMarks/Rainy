@@ -39,10 +39,18 @@ const REPORT_CHARS: usize = 4000;
 /// Grace window after spawning or messaging a worker during which `swarm_wait` treats it as active even before its
 /// async `start_run` transitions status to `"running"`.
 const STARTING_GRACE: Duration = Duration::from_secs(5);
-/// Default circuit-breaker caps per swarm run window (reset when the user sends a new message to the coordinator).
+/// Default circuit-breaker caps per swarm run window (reset when the user sends a new message to the coordinator). They
+/// catch runaway swarms, not ordinary work: tokens are fresh tokens only (see `fresh_tokens`), the token cap matters
+/// mostly for models without a price, and the cost cap for priced ones.
 pub const DEFAULT_MAX_TURNS: u32 = 40;
-pub const DEFAULT_MAX_TOKENS: u64 = 2_000_000;
-pub const DEFAULT_MAX_COST_USD: f64 = 10.0;
+pub const DEFAULT_MAX_TOKENS: u64 = 20_000_000;
+pub const DEFAULT_MAX_COST_USD: f64 = 20.0;
+
+/// Tokens a run newly consumed: uncached input, output and cache writes. Cache reads are left out — every model call
+/// re-reads the whole context, so they grow with the square of a turn's length while costing a tenth of input.
+pub fn fresh_tokens(usage: &UsageSummary) -> u64 {
+    (usage.input + usage.output + usage.cache_write).max(0.0) as u64
+}
 
 /// One message on a swarm's board.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -143,32 +151,31 @@ impl BudgetGuard {
     pub fn record_turn(&mut self, usage: Option<&UsageSummary>) -> Option<String> {
         self.turns = self.turns.saturating_add(1);
         if let Some(usage) = usage {
-            let billable = (usage.input + usage.output + usage.cache_read + usage.cache_write).max(0.0) as u64;
-            self.tokens = self.tokens.saturating_add(billable);
+            self.tokens = self.tokens.saturating_add(fresh_tokens(usage));
             if let Some(cost) = usage.cost.filter(|c| c.is_finite() && *c > 0.0) {
                 self.cost_usd += cost;
             }
         }
         if self.turns >= self.max_turns {
             let reason = l(
-                &format!("Swarm 熔断：已达到最大工作者轮次上限（{} 轮）。", self.max_turns),
-                &format!("Swarm circuit breaker tripped: reached the maximum worker turn limit ({} turns).", self.max_turns),
+                &format!("Swarm 熔断：已达到最大工作者轮次上限（{} 轮）。用户发来新消息后重新计数。", self.max_turns),
+                &format!("Swarm circuit breaker tripped: reached the maximum worker turn limit ({} turns). It starts over when the user sends a new message.", self.max_turns),
             );
             self.tripped = Some(reason.clone());
             return Some(reason);
         }
         if self.tokens >= self.max_tokens {
             let reason = l(
-                &format!("Swarm 熔断：累计 Token 用量（{}）已达到上限（{}）。", self.tokens, self.max_tokens),
-                &format!("Swarm circuit breaker tripped: cumulative token usage ({}) reached the limit ({}).", self.tokens, self.max_tokens),
+                &format!("Swarm 熔断：累计 Token 用量（{}）已达到上限（{}）。用户发来新消息后重新计数。", self.tokens, self.max_tokens),
+                &format!("Swarm circuit breaker tripped: cumulative token usage ({}) reached the limit ({}). It starts over when the user sends a new message.", self.tokens, self.max_tokens),
             );
             self.tripped = Some(reason.clone());
             return Some(reason);
         }
         if self.cost_usd >= self.max_cost_usd {
             let reason = l(
-                &format!("Swarm 熔断：累计费用（${:.2}）已达到上限（${:.2}）。", self.cost_usd, self.max_cost_usd),
-                &format!("Swarm circuit breaker tripped: cumulative cost (${:.2}) reached the limit (${:.2}).", self.cost_usd, self.max_cost_usd),
+                &format!("Swarm 熔断：累计费用（${:.2}）已达到上限（${:.2}）。用户发来新消息后重新计数。", self.cost_usd, self.max_cost_usd),
+                &format!("Swarm circuit breaker tripped: cumulative cost (${:.2}) reached the limit (${:.2}). It starts over when the user sends a new message.", self.cost_usd, self.max_cost_usd),
             );
             self.tripped = Some(reason.clone());
             return Some(reason);
@@ -1020,6 +1027,12 @@ mod tests {
         let mut by_tokens = BudgetGuard { max_tokens: 1000, ..BudgetGuard::default() };
         let usage = UsageSummary { input: 700.0, output: 400.0, ..UsageSummary::default() };
         assert!(by_tokens.record_turn(Some(&usage)).is_some());
+
+        // Cache reads are not fresh tokens: a long turn re-reading its context does not trip the token cap.
+        let mut cached = BudgetGuard { max_tokens: 1000, ..BudgetGuard::default() };
+        let reread = UsageSummary { input: 300.0, output: 200.0, cache_read: 5_000_000.0, cache_write: 100.0, ..UsageSummary::default() };
+        assert!(cached.record_turn(Some(&reread)).is_none());
+        assert_eq!(cached.tokens, 600);
 
         let mut by_cost = BudgetGuard { max_cost_usd: 1.0, ..BudgetGuard::default() };
         let pricey = UsageSummary { input: 10.0, output: 10.0, cost: Some(1.5), ..UsageSummary::default() };
