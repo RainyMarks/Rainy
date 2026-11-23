@@ -220,7 +220,7 @@ pub fn prune_runtimes(distro: &str, files: &RuntimeFiles) -> Result<Vec<String>>
 
 /// Ends the process `argv[1]` and everything it started, with SIGKILL, while `/proc/<pid>/cmdline` still begins with
 /// the Host's path `argv[2]`, so a pid the system gave to another process since is left alone (3.x `forceStop`).
-const FORCE_STOP: &str = r#"import os,signal,sys
+pub(crate) const FORCE_STOP: &str = r#"import os,signal,sys
 pid,host=int(sys.argv[1]),os.fsencode(sys.argv[2])
 def argv(p):
     try:

@@ -18,7 +18,7 @@ use serde_json::{Map, Value, json};
 
 use crate::i18n::{self, Locale};
 use crate::store::Store;
-use crate::store::chat::{ChatView, RunningTool, Turn, assistant_text, group_turns};
+use crate::store::chat::{ChatView, RunningTool, TurnRange, assistant_text};
 use crate::store::ide::Ide;
 use crate::ui::tool_title::{is_command, patch_files, tool_title};
 use crate::ui::{format_duration, format_tokens, tr, trf};
@@ -386,7 +386,7 @@ struct Context<'a> {
     running: &'a BTreeMap<String, RunningTool>,
     waiting: HashSet<&'a str>,
     /// Calls the user undid, from the `context` entries that record it.
-    reverted: HashSet<&'a str>,
+    reverted: &'a HashSet<String>,
     thinking_since: Option<&'a (String, std::time::Instant)>,
 }
 
@@ -512,8 +512,8 @@ fn assistant_blocks(
     }
 }
 
-fn turn_key<'a>(turn: &Turn<'a>) -> &'a str {
-    match turn.user {
+fn turn_key<'a>(entries: &'a [TranscriptEntry], range: &TurnRange) -> &'a str {
+    match range.user.and_then(|idx| entries.get(idx)) {
         Some(TranscriptEntry::User { id, .. }) => id,
         _ => "lead",
     }
@@ -521,11 +521,13 @@ fn turn_key<'a>(turn: &Turn<'a>) -> &'a str {
 
 /// Whether an earlier row of the turn comes out the same: the same entries, and none of its calls is running,
 /// waiting, or undone since.
-fn unchanged(row: &TurnRow, turn: &Turn<'_>, ctx: &Context<'_>) -> bool {
+fn unchanged(row: &TurnRow, entries: &[TranscriptEntry], range: &TurnRange, ctx: &Context<'_>) -> bool {
     let ids = &row.source.entries;
+    let user = range.user.and_then(|idx| entries.get(idx));
+    let items = &entries[range.items.clone()];
     !row.source.live
-        && ids.len() == usize::from(turn.user.is_some()) + turn.items.len()
-        && turn.user.into_iter().chain(turn.items.iter().copied()).zip(ids.iter()).all(|(entry, id)| entry.id() == id.as_ref())
+        && ids.len() == usize::from(user.is_some()) + items.len()
+        && user.into_iter().chain(items.iter()).zip(ids.iter()).all(|(entry, id)| entry.id() == id.as_ref())
         && row.blocks.iter().all(|block| match block {
             Block::Tool(tool) => {
                 let id = tool.call_id.as_ref();
@@ -539,10 +541,19 @@ fn unchanged(row: &TurnRow, turn: &Turn<'_>, ctx: &Context<'_>) -> bool {
 }
 
 /// One turn; `live` while the chat works on it, `stream` the reply streaming into it.
-fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: bool, stream: Option<&AssistantMessage>, reuse: Option<&Reuse<'_>>) -> TurnRow {
+fn build_turn(
+    ctx: &Context<'_>,
+    chat: &SharedString,
+    user_entry: Option<&TranscriptEntry>,
+    items: &[TranscriptEntry],
+    key: &str,
+    live: bool,
+    stream: Option<&AssistantMessage>,
+    reuse: Option<&Reuse<'_>>,
+) -> TurnRow {
     let locale = ctx.locale;
     let mut results: HashMap<&str, ResultEntry<'_>> = HashMap::new();
-    for item in &turn.items {
+    for item in items {
         if let TranscriptEntry::ToolResult { id, tool_call_id, tool_name, content, is_error, details, .. } = item {
             results.entry(tool_call_id.as_str()).or_insert(ResultEntry { id, call_id: tool_call_id, tool_name, content, is_error: *is_error, details: details.as_ref() });
         }
@@ -553,7 +564,7 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
     // The answer is the last reply when it called no tools, or when it failed or stopped.
     let answer = (!live)
         .then(|| {
-            turn.items.iter().rev().find_map(|item| match item {
+            items.iter().rev().find_map(|item| match item {
                 TranscriptEntry::Assistant { id, message, .. } => Some((id.as_str(), message)),
                 _ => None,
             })
@@ -566,7 +577,7 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
         .map(|(id, _)| id);
     let mut answer_from = None;
     let (mut work_steps, mut reads, mut searches, mut changes, mut commands, mut others) = (0, 0, 0, 0, 0, 0);
-    for item in &turn.items {
+    for item in items {
         match item {
             TranscriptEntry::Assistant { id, .. } if Some(id.as_str()) == answer => {}
             TranscriptEntry::Assistant { .. } => work_steps += 1,
@@ -596,7 +607,7 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
     .map(|(count, key)| i18n::format(locale, key, &[("count", &count)]))
     .collect::<Vec<_>>()
     .join(" · ");
-    for item in &turn.items {
+    for item in items {
         match item {
             TranscriptEntry::Assistant { id, message, thinking_ms, .. } => {
                 if Some(id.as_str()) == answer {
@@ -653,7 +664,7 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
             TranscriptEntry::User { .. } | TranscriptEntry::ToolResult { .. } => {}
         }
     }
-    let user = match turn.user {
+    let user = match user_entry {
         Some(TranscriptEntry::User { text, images, .. }) => Some((text.clone().into(), images.as_ref().map_or(0, Vec::len))),
         _ => None,
     };
@@ -662,9 +673,9 @@ fn build_turn(ctx: &Context<'_>, chat: &SharedString, turn: &Turn<'_>, live: boo
         assistant_blocks(ctx, &results, None, "stream", stream, true, true, None, &mut blocks);
         answer_from = blocks.len();
     }
-    let entries = turn.user.into_iter().chain(turn.items.iter().copied()).map(|entry| SharedString::from(entry.id().to_owned())).collect();
+    let entries = user_entry.into_iter().chain(items.iter()).map(|entry| SharedString::from(entry.id().to_owned())).collect();
     TurnRow {
-        key: turn_key(turn).to_owned().into(),
+        key: key.to_owned().into(),
         user,
         blocks: blocks.into(),
         live,
@@ -686,45 +697,38 @@ fn rows_from(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Vec<TurnR
         cwd: &snapshot.summary.cwd,
         running: &view.tools,
         waiting: snapshot.approvals.iter().map(|approval| approval.tool_call_id.as_str()).collect(),
-        reverted: snapshot
-            .entries
-            .iter()
-            .filter_map(|entry| match entry {
-                TranscriptEntry::Context { reverted: Some(ids), .. } => Some(ids),
-                _ => None,
-            })
-            .flatten()
-            .map(String::as_str)
-            .collect(),
+        reverted: view.reverted_ids(),
         thinking_since: view.thinking_since.as_ref(),
     };
     let busy = view.busy();
-    let turns = group_turns(&snapshot.entries);
-    let count = turns.len();
+    let ranges = view.turn_ranges();
+    let count = ranges.len();
     let mut by_key: Option<HashMap<&str, &TurnRow>> = None;
     let mut rows = Vec::with_capacity(count.max(1));
-    for (index, turn) in turns.iter().enumerate() {
+    for (index, range) in ranges.iter().enumerate() {
         let last = index + 1 == count;
         let live = busy && last;
         let stream = snapshot.streaming.as_ref().filter(|_| last);
-        let key = turn_key(turn);
+        let key = turn_key(&snapshot.entries, range);
         // Rows stay at their index while a chat grows; loading older messages shifts them.
         let prior = previous
             .get(index)
             .filter(|row| row.key.as_ref() == key)
             .or_else(|| by_key.get_or_insert_with(|| previous.iter().map(|row| (row.key.as_ref(), row)).collect()).get(key).copied())
             .filter(|row| row.source.chat == chat && row.source.locale == locale);
-        if let Some(prior) = prior.filter(|prior| !live && stream.is_none() && unchanged(prior, turn, &ctx)) {
+        if let Some(prior) = prior.filter(|prior| !live && stream.is_none() && unchanged(prior, &snapshot.entries, range, &ctx)) {
             rows.push(prior.clone());
             continue;
         }
         let reuse = prior.map(Reuse::of);
-        rows.push(build_turn(&ctx, &chat, turn, live, stream, reuse.as_ref()));
+        let user_entry = range.user.and_then(|idx| snapshot.entries.get(idx));
+        let items = &snapshot.entries[range.items.clone()];
+        rows.push(build_turn(&ctx, &chat, user_entry, items, key, live, stream, reuse.as_ref()));
     }
     if rows.is_empty()
         && let Some(stream) = &snapshot.streaming
     {
-        rows.push(build_turn(&ctx, &chat, &Turn { user: None, items: Vec::new() }, true, Some(stream), None));
+        rows.push(build_turn(&ctx, &chat, None, &[], "lead", true, Some(stream), None));
     }
     rows
 }

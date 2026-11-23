@@ -55,6 +55,15 @@ pub fn error_text(cx: &App, error: &rainy_protocol::RpcError) -> SharedString {
     i18n::error_text(locale(cx), error).into()
 }
 
+/// Inject quoted context (such as terminal output or a diagnostic) into the active chat composer without sending it yet.
+pub fn insert_into_composer(snippet: String, window: &mut Window, cx: &mut App) {
+    if let Some(workbench) = cx.try_global::<crate::ui::workbench::WorkbenchHandle>().and_then(|h| h.0.upgrade()) {
+        workbench.update(cx, |workbench, cx| workbench.inject_into_chat(snippet, window, cx));
+    } else {
+        ask_ai(snippet, window, cx);
+    }
+}
+
 /// Send a question to the selected chat, or a new one in the project, and show the chat (3.x `onAsk`).
 pub fn ask_ai(text: String, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::ui::ide::ShowChat), cx);

@@ -4,8 +4,10 @@
 import { act, createElement, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MarkdownDocument, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
+import { MarkdownDocument, resolveDocumentPath, type MarkdownOptions } from '../../src/renderer/chat/Markdown.tsx'
 import { MarkdownPreview } from '../../src/renderer/ide/viewers/MarkdownPreview.tsx'
+import { viewerMessages } from '../../src/renderer/ide/viewers/messages.ts'
+import { resolveRichImageUrl } from '../../src/renderer/ide/viewers/RichMarkdown.tsx'
 import { onThemeChange } from '../../src/renderer/ide/viewers/mermaid.ts'
 import { ScrollSync } from '../../src/renderer/ide/viewers/scroll-sync.ts'
 import type { WorkspaceId } from '../../src/shared/ide-files-protocol.ts'
@@ -230,5 +232,77 @@ describe('onThemeChange', () => {
     document.body.removeAttribute('data-rainy-dark')
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(listener).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('resolveDocumentPath and RichMarkdown image guard', () => {
+  it('blocks Windows drive paths, UNC paths, file URLs and traversals up front', () => {
+    expect(resolveDocumentPath('docs', 'img/a.png')).toBe('docs/img/a.png')
+    expect(resolveDocumentPath('docs', '/README.md')).toBe('README.md')
+    expect(resolveDocumentPath('docs', '../src/index.ts')).toBe('src/index.ts')
+    expect(resolveDocumentPath('docs', '../../outside.txt')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'C:\\Windows\\win.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'c:/Users/secret.txt')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'C:relative.txt')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'C%3A%5CWindows%5Cwin.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '/C:/Windows/win.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '\\C:\\Windows\\win.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'a/../C:/Windows/win.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '/%43%3A/Windows/win.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '%20C:/Windows/win.ini')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'a%00b.md')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '\\\\evil-server\\share\\file.md')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '//evil-server/share/file.md')).toBeUndefined()
+    expect(resolveDocumentPath('docs', '%5C%5Cevil-server%5Cshare%5Ca.md')).toBeUndefined()
+    expect(resolveDocumentPath('docs', 'file:///C:/secret.md')).toBeUndefined()
+  })
+
+  it('never forwards drive or UNC links to openLocal in MarkdownPreview', async () => {
+    const openLocal = vi.fn()
+    const host = await mount(createElement(MarkdownPreview, {
+      text: '[盘符](C:\\Windows\\win.ini) [UNC](//fileserver/share/a.md) [FileUNC](file://fileserver/share/b.md) [EscapedUNC](\\\\\\\\fileserver\\\\share\\\\c.md) [合法](sub/ok.md)\n',
+      base: BASE,
+      version: null,
+      openLocal,
+    }))
+    await act(async () => {
+      for (const link of host.querySelectorAll<HTMLAnchorElement>('a')) link.click()
+    })
+    expect(openLocal.mock.calls).toEqual([[{ path: 'docs/sub/ok.md' }]])
+  })
+
+  it('blocks remote, external drive, UNC and traversal images in RichMarkdown with inline placeholders', () => {
+    const t = viewerMessages.t
+    const folder = { workspaceId: 'w', directory: 'docs', hostRoot: 'C:\\work\\project' }
+    expect(resolveRichImageUrl('', folder, 'v1', t)).toBe('')
+    expect(resolveRichImageUrl('data:image/png;base64,AAAA', folder, 'v1', t)).toBe('data:image/png;base64,AAAA')
+    expect(resolveRichImageUrl('assets/a.png', folder, 'v1', t)).toBe('/rainy/ide/raw?w=w&p=docs%2Fassets%2Fa.png&v=v1')
+    expect(resolveRichImageUrl('C:\\work\\project\\assets\\b.png', folder, 'v1', t)).toBe('/rainy/ide/raw?w=w&p=assets%2Fb.png&v=v1')
+
+    const remote = resolveRichImageUrl('https://evil.example/tracker.png', folder, 'v1', t)
+    expect(remote).toMatch(/^data:image\/svg\+xml;charset=utf-8,/u)
+    expect(decodeURIComponent(remote)).toContain('evil.example')
+
+    const protoRel = resolveRichImageUrl('//cdn.evil.example/p.png', folder, 'v1', t)
+    expect(protoRel).toMatch(/^data:image\/svg\+xml;charset=utf-8,/u)
+    expect(decodeURIComponent(protoRel)).toContain('cdn.evil.example')
+
+    for (const blocked of [
+      'C:\\Windows\\secret.png',
+      '/C:/Windows/secret.png',
+      'a/../C:/Windows/secret.png',
+      '/%43%3A/Windows/secret.png',
+      '%20C:/Windows/secret.png',
+      'C:\\work\\project\\..\\secret.png',
+      '\\\\server\\share\\a.png',
+      '../../outside.png',
+      'file:///C:/secret.png',
+      'javascript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+    ]) {
+      const resolved = resolveRichImageUrl(blocked, folder, 'v1', t)
+      expect(resolved).toMatch(/^data:image\/svg\+xml;charset=utf-8,/u)
+      expect(resolved).not.toBe(blocked)
+    }
   })
 })

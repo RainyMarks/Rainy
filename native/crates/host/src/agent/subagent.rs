@@ -20,6 +20,8 @@ use super::tools::task::{Progress, Report};
 pub const MAX_STEPS: usize = 24;
 /// How long one sub-agent may run.
 pub const MAX_TIME: Duration = Duration::from_secs(5 * 60);
+/// Cumulative input+output tokens a single sub-agent may consume before circuit-breaking.
+pub const MAX_TOKENS: u64 = 400_000;
 /// Tool calls kept in the progress list shown on the card.
 const ACTIVITY_KEPT: usize = 12;
 
@@ -54,6 +56,7 @@ pub struct Input {
 struct Track {
     activity: Vec<String>,
     steps: usize,
+    tokens: u64,
     text: String,
     partial: String,
     stopped: Option<&'static str>,
@@ -67,12 +70,6 @@ struct SubHooks {
     limit: CancellationToken,
 }
 
-impl SubHooks {
-    fn report(&self, track: &Track, text: &str) {
-        (self.progress)(Progress { activity: track.activity.clone(), steps: track.steps, text: text.to_owned() });
-    }
-}
-
 impl Hooks for SubHooks {
     type Meta = ();
 
@@ -81,39 +78,57 @@ impl Hooks for SubHooks {
     }
 
     async fn event(&self, event: Event<'_, ()>) {
-        let mut track = self.track.lock().unwrap();
-        match event {
-            Event::ToolStarted { name, .. } => {
-                track.activity.push(name.to_owned());
-                if track.activity.len() > ACTIVITY_KEPT {
-                    track.activity.remove(0);
+        // Release `track` lock before invoking external callbacks (`progress` / `usage`) to avoid lock inversion.
+        let mut emit_progress: Option<Progress> = None;
+        let mut emit_usage: Option<UsageSummary> = None;
+        {
+            let mut track = self.track.lock().unwrap();
+            match event {
+                Event::ToolStarted { name, .. } => {
+                    track.activity.push(name.to_owned());
+                    if track.activity.len() > ACTIVITY_KEPT {
+                        track.activity.remove(0);
+                    }
+                    let text = if track.text.is_empty() { track.partial.clone() } else { track.text.clone() };
+                    emit_progress = Some(Progress { activity: track.activity.clone(), steps: track.steps, text });
                 }
-                let text = if track.text.is_empty() { track.partial.clone() } else { track.text.clone() };
-                self.report(&track, &text);
+                Event::Reply(message) => {
+                    track.steps += 1;
+                    let said = reply_text(message);
+                    if !said.trim().is_empty() {
+                        track.text = said;
+                    }
+                    let used = usage_of(message);
+                    let billable = (used.input + used.output + used.cache_read + used.cache_write).max(0.0) as u64;
+                    track.tokens = track.tokens.saturating_add(billable);
+                    emit_usage = Some(used);
+                    if track.steps >= MAX_STEPS {
+                        track.stopped = Some("steps");
+                        self.limit.cancel();
+                    } else if track.tokens >= MAX_TOKENS {
+                        track.stopped = Some("budget");
+                        self.limit.cancel();
+                    }
+                    emit_progress = Some(Progress { activity: track.activity.clone(), steps: track.steps, text: track.text.clone() });
+                }
+                _ => {}
             }
-            Event::Reply(message) => {
-                track.steps += 1;
-                let said = reply_text(message);
-                if !said.trim().is_empty() {
-                    track.text = said;
-                }
-                (self.usage)(usage_of(message));
-                if track.steps >= MAX_STEPS {
-                    track.stopped = Some("steps");
-                    self.limit.cancel();
-                }
-                let text = track.text.clone();
-                self.report(&track, &text);
-            }
-            _ => {}
+        }
+        if let Some(usage) = emit_usage {
+            (self.usage)(usage);
+        }
+        if let Some(progress) = emit_progress {
+            (self.progress)(progress);
         }
     }
 
     fn streaming(&self, _event: llm::Event, reply: &AssistantMessage) {
-        let mut track = self.track.lock().unwrap();
-        track.partial = reply_text(reply);
-        let text = track.partial.clone();
-        self.report(&track, &text);
+        let progress = {
+            let mut track = self.track.lock().unwrap();
+            track.partial = reply_text(reply);
+            Progress { activity: track.activity.clone(), steps: track.steps, text: track.partial.clone() }
+        };
+        (self.progress)(progress);
     }
 
     async fn before_tool(&self, _id: &str, _name: &str, _args: &Value, _cancel: &CancellationToken) -> Option<Blocked> {

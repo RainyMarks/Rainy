@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /** The exported page of a Markdown file: raw HTML through the allowlist, CRLF files, highlights and dollar amounts. */
 import { describe, expect, it, vi } from 'vitest'
-import { documentTitle, exportHtml } from '../../src/renderer/ide/viewers/markdown-export.ts'
+import { documentTitle, EXPORT_HTML_CSP, exportHtml } from '../../src/renderer/ide/viewers/markdown-export.ts'
 
 vi.mock('../../src/renderer/rpc.ts', () => import('./ide-host-mock.ts'))
 vi.mock('../../src/renderer/ide/viewers/mermaid.ts', () => ({
@@ -100,5 +100,19 @@ describe('export of a Markdown file', () => {
     expect(links).toEqual(['#md-概述', '#md-背景', '#md-结论'])
     for (const link of links) expect(page.getElementById(link.slice(1))?.tagName).toMatch(/^H[12]$/u)
     expect(toc.querySelector('li > ul > li > a')?.textContent).toBe('背景')
+  })
+
+  it('injects a strict script-forbidding CSP meta tag into exported HTML head', async () => {
+    const html = await exportHtml({ text: '# 报告\n\n![图](a.png)\n', name: 'report', image: async () => 'data:image/png;base64,AAAA' })
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    const csp = doc.head.querySelector('meta[http-equiv="Content-Security-Policy"]')
+    expect(csp).not.toBeNull()
+    const content = csp!.getAttribute('content') ?? ''
+    expect(content).toBe(EXPORT_HTML_CSP)
+    expect(content).toContain("default-src 'none'")
+    expect(content).toContain('img-src data: blob:')
+    expect(content).toContain("style-src 'unsafe-inline'")
+    expect(content).toContain('font-src data:')
+    expect(content).not.toMatch(/script-src|http:|https:/iu)
   })
 })

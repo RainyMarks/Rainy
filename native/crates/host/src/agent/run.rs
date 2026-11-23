@@ -70,6 +70,12 @@ pub trait Hooks: Send + Sync {
     /// Refuse a call, or let it run (`None`).
     fn before_tool(&self, id: &str, name: &str, args: &Value, cancel: &CancellationToken) -> impl Future<Output = Option<Blocked>> + Send;
 
+    /// After a tool finishes executing (before its result reaches the model): hooks may run post-edit actions or
+    /// append LSP error diagnostics.
+    fn after_tool(&self, _id: &str, _name: &str, _args: &Value, _output: &mut ToolOutput) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
     /// After a step: whether the run ends now.
     fn finish_turn(&self) -> bool {
         false
@@ -126,7 +132,7 @@ async fn execute<H: Hooks>(hooks: &H, id: &str, name: &str, tool: &Arc<dyn Tool>
     let updates: Updates = Arc::new(move |output| {
         let _ = sender.send(output);
     });
-    let work = tool.execute(id.to_owned(), args, cancel.child_token(), updates);
+    let work = tool.execute(id.to_owned(), args.clone(), cancel.child_token(), updates);
     tokio::pin!(work);
     let result = loop {
         tokio::select! {
@@ -134,10 +140,14 @@ async fn execute<H: Hooks>(hooks: &H, id: &str, name: &str, tool: &Arc<dyn Tool>
             Some(output) = receiver.recv() => hooks.event(Event::ToolProgress { id, name, output: &output }).await,
         }
     };
-    match result {
+    let mut output = match result {
         Ok(output) => output,
         Err(message) => failed(message),
+    };
+    if !cancel.is_cancelled() {
+        hooks.after_tool(id, name, &args, &mut output).await;
     }
+    output
 }
 
 fn result_of(id: &str, name: &str, output: ToolOutput) -> (ToolResult, bool) {

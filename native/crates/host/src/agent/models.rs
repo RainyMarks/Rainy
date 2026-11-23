@@ -250,6 +250,40 @@ impl Models {
         Some(Resolved { model: Model::from_setup(&setup, output), setup, thinking })
     }
 
+    /// Resolve a model override hint (`"provider/model"`, `"provider"`, or `"model"`) against configured profiles.
+    pub fn resolve_by_hint(&self, hint: &str) -> HostResult<ModelSelection> {
+        let trimmed = hint.trim();
+        let data = self.settings.get();
+        let lower = trimmed.to_ascii_lowercase();
+        let found = data
+            .models
+            .iter()
+            .find(|m| format!("{}/{}", m.provider, m.model).eq_ignore_ascii_case(trimmed))
+            .or_else(|| data.models.iter().find(|m| m.provider.eq_ignore_ascii_case(trimmed) || m.model.eq_ignore_ascii_case(trimmed)))
+            .or_else(|| {
+                let mut partial = data.models.iter().filter(|m| m.model.to_ascii_lowercase().contains(&lower) || m.provider.to_ascii_lowercase().contains(&lower));
+                partial.next().filter(|_| partial.next().is_none())
+            });
+        match found {
+            Some(setup) => Ok(ModelSelection {
+                provider: setup.provider.clone(),
+                model: setup.model.clone(),
+                thinking: effective_thinking(setup, None).map(|level| level.as_str().to_owned()),
+            }),
+            None => {
+                let available: Vec<String> = data.models.iter().map(|m| format!("{}/{}", m.provider, m.model)).collect();
+                let list = if available.is_empty() { "none".to_owned() } else { available.join(", ") };
+                Err(HostError::new(
+                    "not-found",
+                    l(
+                        &format!("找不到模型“{trimmed}”。已配置的模型：{list}"),
+                        &format!("Model \"{trimmed}\" is not configured. Available models: {list}"),
+                    ),
+                ))
+            }
+        }
+    }
+
     /// Save a profile and make it the default; one profile is kept per provider id.
     pub fn configure(&self, input: &Value) -> HostResult<ModelSelection> {
         let SetupInput { setup, api_key, previous_provider } = parse_setup(input)?;

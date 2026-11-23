@@ -168,7 +168,11 @@ impl Workbench {
         let chat = cx.new(|cx| ChatPane::new(store.clone(), window, cx));
         let files = cx.new(|cx| FileTree::new(ide.clone(), cx));
         let search = cx.new(|cx| SearchView::new(ide.clone(), window, cx));
-        let git = cx.new(|cx| GitView::new(ide.clone(), window, cx));
+        let git = cx.new(|cx| {
+            let mut view = GitView::new(ide.clone(), window, cx);
+            view.set_polling(layout.mode == Mode::Ide, window, cx);
+            view
+        });
         let terminals = cx.new(|cx| TerminalPanel::new(window, cx));
         let cursor = cx.new(|cx| CursorStatus::new(ide.clone(), cx));
         let editor = cx.new(|cx| EditorArea::new(ide.clone(), cx));
@@ -265,6 +269,10 @@ impl Workbench {
                     StoreEvent::HostExited(code) => crate::ui::ssh::host_exited(this.store.clone(), *code, window, cx),
                     StoreEvent::ResourcesDamaged(error) => resources_damaged(error, window, cx),
                     StoreEvent::Update(notice) => crate::ui::update::show(notice, window, cx),
+                    StoreEvent::CredentialAlert(alert) => {
+                        let _ = this.store.update(cx, |store, _| store.take_credential_alerts());
+                        credential_alert(alert, window, cx);
+                    }
                     _ => {}
                 }
             }),
@@ -294,6 +302,11 @@ impl Workbench {
             }
         })
         .detach();
+        // Surface any DPAPI credential warning/error that arrived before the window opened.
+        let early_alerts = store.update(cx, |store, _| store.take_credential_alerts());
+        if let Some(first) = early_alerts.into_iter().next() {
+            window.defer(cx, move |window, cx| credential_alert(&first, window, cx));
+        }
         // The questions `ssh` asks are shown here, one after another.
         let questions = store.read(cx).questions.clone();
         cx.spawn_in(window, async move |_, cx| {
@@ -364,6 +377,15 @@ impl Workbench {
         self.layout.mode == Mode::Agent
     }
 
+    /// Reveal the chat pane and inject a quoted snippet into the composer so the user can add context and send.
+    pub fn inject_into_chat(&mut self, snippet: String, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.agent() {
+            self.agent_visible = true;
+        }
+        self.chat.update(cx, |chat, cx| chat.inject_into_composer(snippet, window, cx));
+        cx.notify();
+    }
+
     /// Switch the layout. Everything stays as it is: the chat and its draft, running work, open files and terminals.
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
         if self.layout.mode == mode {
@@ -376,9 +398,12 @@ impl Workbench {
         self.agent_panes = None;
         self.sidebar_peek = false;
         self.apply_mode(cx);
-        // Git reads its status more often only while its view is shown.
+        // Git reads its status more often only while its view is shown, and pauses 15 s polling in Agent mode.
         let git_shown = mode == Mode::Ide && self.left_visible && self.side == Side::Git;
-        self.git.update(cx, |git, cx| git.set_visible(git_shown, window, cx));
+        self.git.update(cx, |git, cx| {
+            git.set_visible(git_shown, window, cx);
+            git.set_polling(mode == Mode::Ide, window, cx);
+        });
         self.save_layout(cx);
         match mode {
             Mode::Agent => self.chat.update(cx, |chat, cx| chat.focus_composer(window, cx)),
@@ -1626,7 +1651,12 @@ impl Render for Workbench {
             (body, self.render_title_bar(window, cx).into_any_element(), Some(self.render_status_bar(cx)), toast_width)
         };
         if cx.theme().notification.width != px(toast_width) {
-            gpui_kit::component::Theme::global_mut(cx).notification.width = px(toast_width);
+            cx.defer(move |cx| {
+                let theme = gpui_kit::component::Theme::global_mut(cx);
+                if theme.notification.width != px(toast_width) {
+                    theme.notification.width = px(toast_width);
+                }
+            });
         }
         if window.focused(cx).is_none() {
             let focus = self.focus.clone();
@@ -1799,6 +1829,20 @@ impl Render for Workbench {
             // Painted after everything else: pages show only where their area was painted and nothing covers them.
             .child(canvas(|_, _, _| {}, move |_, _, window, cx| crate::web::end_frame(settings.is_some(), window, cx)).absolute().size_0())
     }
+}
+
+/// Explicit user-visible alert when DPAPI credential protection recovered from corruption or failed.
+fn credential_alert(alert: &crate::boot::CredentialAlert, window: &mut Window, cx: &mut App) {
+    let (title, description) = match alert {
+        crate::boot::CredentialAlert::Warning(message) => (tr(cx, "native.credentialWarningTitle"), SharedString::from(message.clone())),
+        crate::boot::CredentialAlert::Error(detail) => (
+            tr(cx, "native.credentialErrorTitle"),
+            trf(cx, "native.credentialErrorDetail", &[("detail", detail)]),
+        ),
+    };
+    window.open_alert_dialog(cx, move |alert, _, cx| {
+        alert.title(title.clone()).description(description.clone()).ok_text(tr(cx, "native.ok"))
+    });
 }
 
 /// The daily recheck found installed files changed or damaged. Rainy keeps running; the next start checks every file

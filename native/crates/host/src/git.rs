@@ -2,7 +2,7 @@
 //! the chat model.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,7 +52,15 @@ pub fn parse_status(output: &str, prefix: &str) -> Value {
     let (mut branch, mut head, mut upstream, mut ahead, mut behind) = (Value::Null, Value::Null, None, 0i64, 0i64);
     let mut files: Vec<Value> = Vec::new();
     let mut truncated = false;
-    let local = |path: &str| path.strip_prefix(prefix).map(str::to_owned);
+    let local = |path: &str| {
+        if let Some(stripped) = path.strip_prefix(prefix) {
+            Some(stripped.to_owned())
+        } else if cfg!(windows) && path.len() >= prefix.len() && path[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            Some(path[prefix.len()..].to_owned())
+        } else {
+            None
+        }
+    };
     let mut add = |change: Value, files: &mut Vec<Value>| {
         if files.len() >= MAX_FILES {
             truncated = true;
@@ -64,7 +72,7 @@ pub fn parse_status(output: &str, prefix: &str) -> Value {
     while index < fields.len() {
         let field = fields[index];
         if let Some(oid) = field.strip_prefix("# branch.oid ") {
-            head = if oid == "(initial)" { Value::Null } else { json!(&oid[..oid.len().min(7)]) };
+            head = if oid == "(initial)" { Value::Null } else { json!(oid.chars().take(7).collect::<String>()) };
         } else if let Some(name) = field.strip_prefix("# branch.head ") {
             branch = if name == "(detached)" { Value::Null } else { json!(name) };
         } else if let Some(name) = field.strip_prefix("# branch.upstream ") {
@@ -175,15 +183,23 @@ impl Git {
     }
 
     async fn git(&self, root: &Root, args: &[&str], timeout: Duration, input: Option<&str>) -> Result<Outcome, ()> {
+        self.git_with_env(root, args, timeout, input, &[]).await
+    }
+
+    async fn git_with_env(&self, root: &Root, args: &[&str], timeout: Duration, input: Option<&str>, extra_env: &[(&str, String)]) -> Result<Outcome, ()> {
         let overlay: BTreeMap<String, String> = self.runtime.resolve(Path::new(&root.path)).map(|resolved| resolved.environment).unwrap_or_default();
         let mut env = child_env(&overlay);
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("GCM_INTERACTIVE".into(), "never".into());
+        for (name, value) in extra_env {
+            env.insert((*name).into(), value.into());
+        }
         let mut argv = vec!["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "core.fsmonitor=false"];
         argv.extend_from_slice(args);
         let mut command = crate::process::command("git", &argv, Path::new(&root.path), &env);
         command.stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() }).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         let mut child = command.spawn().map_err(|_| ())?;
+        crate::process::contain_child(&child);
         if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
             use tokio::io::AsyncWriteExt as _;
             let text = text.to_owned();
@@ -375,16 +391,58 @@ impl Git {
     }
 }
 
+/// Untracked build artifacts and transient junk that `worktree_hand_off` skips even if a repository lacks `.gitignore`.
+fn is_untracked_junk(relative: &str) -> bool {
+    const JUNK_DIRS: &[&str] = &[
+        "target",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".rainy-ide",
+        "dist",
+        "build",
+        ".next",
+        ".turbo",
+    ];
+    const JUNK_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini"];
+    const JUNK_EXTS: &[&str] = &["pyc", "pyo", "tmp", "swp", "swo", "bak"];
+    let normalized = relative.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return true;
+    }
+    if parts[..parts.len().saturating_sub(1)].iter().any(|dir| JUNK_DIRS.contains(dir)) {
+        return true;
+    }
+    let name = *parts.last().unwrap_or(&"");
+    if JUNK_NAMES.iter().any(|junk| name.eq_ignore_ascii_case(junk)) {
+        return true;
+    }
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| JUNK_EXTS.iter().any(|junk| ext.eq_ignore_ascii_case(junk)))
+}
+
 /// A chat's own Git worktree: made, turned into a branch, handed off to the project's checkout and removed.
 impl Git {
     fn at(path: &Path) -> Root {
         Root { root_id: String::new(), path: path.to_string_lossy().into_owned(), title: String::new(), primary: true }
     }
 
-    /// A detached worktree in `worktrees` of the repository holding `folder`, at its current commit and with its
-    /// uncommitted changes to tracked files (untracked and ignored files stay behind, as in the Codex app). Returns the
-    /// worktree and the chat's working folder in it (the same place below the repository's top as `folder`).
+    /// A detached worktree in `worktrees` of the repository holding `folder`, created from clean `HEAD` so dirty
+    /// uncommitted changes in the main checkout are not duplicated into the worktree and do not conflict on hand-off.
+    /// Ignored files named by `.worktreeinclude` (such as `.env`) are still copied.
     pub async fn worktree_add(&self, folder: &Path, worktrees: &Path) -> HostResult<(rainy_protocol::Worktree, String)> {
+        self.worktree_add_with_dirty(folder, worktrees, false).await
+    }
+
+    /// Create a detached worktree from `HEAD`, optionally carrying over the checkout's uncommitted tracked changes.
+    pub async fn worktree_add_with_dirty(&self, folder: &Path, worktrees: &Path, include_dirty: bool) -> HostResult<(rainy_protocol::Worktree, String)> {
         let here = Self::at(folder);
         let not_repository = || HostError::new("not-git", l("这个项目不在 Git 仓库里，无法使用独立工作区。", "This project is not in a Git repository, so it cannot use a worktree."));
         let top = self.text(&here, &["rev-parse", "--show-toplevel"]).await?.trim().to_owned();
@@ -396,7 +454,11 @@ impl Git {
         if base.is_empty() {
             return Err(HostError::new("git-empty", l("仓库还没有任何提交，无法创建独立工作区。请先提交一次。", "The repository has no commit yet, so a worktree cannot start from one. Commit once first.")));
         }
-        let changes = self.text(&here, &["stash", "create"]).await.unwrap_or_default().trim().to_owned();
+        let changes = if include_dirty {
+            self.text(&here, &["stash", "create"]).await.unwrap_or_default().trim().to_owned()
+        } else {
+            String::new()
+        };
         std::fs::create_dir_all(worktrees)?;
         let name = Path::new(&top).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
         let id = uuid::Uuid::new_v4().simple().to_string();
@@ -408,7 +470,6 @@ impl Git {
             return Err(Self::failure(&added));
         }
         if !changes.is_empty() {
-            // The checkout's uncommitted changes come along; a worktree without them is still usable.
             if let Err(error) = self.check(&Self::at(&path), &["stash", "apply", &changes]).await {
                 log::warn!("worktree {target}: the uncommitted changes did not apply: {}", error.message);
             }
@@ -504,17 +565,37 @@ impl Git {
         self.check(&Self::at(Path::new(&worktree.path)), &["switch", "-c", name]).await
     }
 
-    /// Move everything the chat changed in the worktree, committed or not and new files included, into the project's
-    /// checkout as uncommitted changes, then remove the worktree. Nothing changes when the checkout's own changes are
-    /// in the way. Returns the number of changed files moved.
+    /// Move tracked changes and non-junk untracked files made in the worktree into the project's checkout as
+    /// uncommitted changes (using `git apply` with 3-way merge `git apply -3` fallback on a temporary index so
+    /// conflicts leave the checkout untouched), then remove the worktree. Returns the number of changed files moved.
     pub async fn worktree_hand_off(&self, worktree: &rainy_protocol::Worktree, scratch: &Path) -> HostResult<usize> {
         let tree = Self::at(Path::new(&worktree.path));
         let local = Self::at(Path::new(&worktree.repository));
-        self.check(&tree, &["add", "-A"]).await?;
-        let names = self.text(&tree, &["diff", "--cached", "--name-only", &worktree.base]).await?;
-        let count = names.lines().filter(|line| !line.trim().is_empty()).count();
+        // Stage tracked modifications/deletions without blindly pulling ignored or junk build files.
+        self.check(&tree, &["add", "-u"]).await?;
+        let others = self.git(&tree, &["ls-files", "-z", "--others", "--exclude-standard"], STATUS_TIMEOUT, None).await.map_err(|()| Self::missing())?;
+        if others.code != Some(0) {
+            return Err(Self::failure(&others));
+        }
+        let untracked: Vec<String> = String::from_utf8_lossy(&others.stdout)
+            .split('\0')
+            .filter(|name| !name.is_empty() && !is_untracked_junk(name))
+            .map(str::to_owned)
+            .collect();
+        for chunk in chunks(&untracked)? {
+            let mut args = vec!["add", "--"];
+            args.extend(chunk.iter().map(String::as_str));
+            self.check(&tree, &args).await?;
+        }
+        let names = self.text(&tree, &["diff", "--cached", "--name-only", "-z", &worktree.base]).await?;
+        let touched: Vec<String> = names.split('\0').filter(|line| !line.is_empty()).map(str::to_owned).collect();
+        let count = touched.len();
         if count > 0 {
-            let outcome = self.git(&tree, &["diff", "--cached", "--binary", "--no-color", &worktree.base], COMMAND_TIMEOUT, None).await.map_err(|()| Self::missing())?;
+            // `--full-index` gives `git apply -3` exact blob object IDs for three-way merging.
+            let outcome = self
+                .git(&tree, &["diff", "--cached", "--binary", "--full-index", "--no-color", &worktree.base], COMMAND_TIMEOUT, None)
+                .await
+                .map_err(|()| Self::missing())?;
             if outcome.code != Some(0) {
                 return Err(Self::failure(&outcome));
             }
@@ -522,22 +603,97 @@ impl Git {
             let patch = scratch.join(format!("handoff-{}.patch", uuid::Uuid::new_v4().simple()));
             std::fs::write(&patch, &outcome.stdout)?;
             let file = patch.to_string_lossy().into_owned();
-            let checked = self.check(&local, &["apply", "--check", "--whitespace=nowarn", &file]).await;
-            let applied = match checked {
-                Ok(()) => self.check(&local, &["apply", "--whitespace=nowarn", &file]).await,
-                Err(error) => Err(HostError::new(
-                    "handoff-conflict",
-                    l(
-                        &format!("项目里有和这些改动冲突的修改，没有移交，什么都没改。请先提交或撤销项目里的改动，再移交。\n{}", error.message),
-                        &format!("The project's checkout has changes that conflict with these, so nothing was handed off or changed. Commit or discard the checkout's changes, then hand off again.\n{}", error.message),
-                    ),
-                )),
+
+            // Fast path: clean direct patch apply.
+            let applied = if self.check(&local, &["apply", "--check", "--whitespace=nowarn", &file]).await.is_ok() {
+                self.check(&local, &["apply", "--whitespace=nowarn", &file]).await
+            } else {
+                // Three-way merge fallback (`git apply -3`) executed against a copied scratch index so the main
+                // repository's real index stays clean and any unresolvable conflict rolls back completely.
+                self.apply_three_way(&local, &touched, &file, scratch).await
             };
             let _ = std::fs::remove_file(&patch);
             applied?;
         }
         self.worktree_remove(worktree).await;
         Ok(count)
+    }
+
+    async fn apply_three_way(&self, local: &Root, touched: &[String], patch_file: &str, scratch: &Path) -> HostResult<()> {
+        let top = self.text(local, &["rev-parse", "--show-toplevel"]).await?.trim().to_owned();
+        let top_path = PathBuf::from(&top);
+        let index_rel = self.text(local, &["rev-parse", "--git-path", "index"]).await?.trim().to_owned();
+        let index_src = if Path::new(&index_rel).is_absolute() {
+            PathBuf::from(&index_rel)
+        } else {
+            Path::new(&local.path).join(&index_rel)
+        };
+        let scratch_index = scratch.join(format!("handoff-index-{}", uuid::Uuid::new_v4().simple()));
+        if index_src.is_file() {
+            std::fs::copy(&index_src, &scratch_index)?;
+        }
+
+        // Snapshot all files the patch touches so a failed 3-way merge restores the checkout verbatim.
+        let mut backups: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::with_capacity(touched.len());
+        for rel in touched {
+            let rel_path = Path::new(rel);
+            if rel_path.is_absolute() || rel_path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                continue;
+            }
+            let full = top_path.join(rel_path);
+            let before = if full.is_file() { Some(std::fs::read(&full)?) } else { None };
+            backups.push((full, before));
+        }
+
+        let extra_env = [("GIT_INDEX_FILE", scratch_index.to_string_lossy().into_owned())];
+        // Sync the main checkout's current working-tree state of touched files into the temporary scratch index so
+        // `git apply -3` merges against the real local edits (Ours) without touching the repository's actual index.
+        let top_root = Self::at(&top_path);
+        let safe_touched: Vec<String> = touched
+            .iter()
+            .filter(|rel| {
+                let p = Path::new(rel.as_str());
+                !p.is_absolute() && !p.components().any(|c| matches!(c, std::path::Component::ParentDir))
+            })
+            .cloned()
+            .collect();
+        for chunk in chunks(&safe_touched)? {
+            let mut add_args = vec!["add", "-A", "--"];
+            add_args.extend(chunk.iter().map(String::as_str));
+            let _ = self.git_with_env(&top_root, &add_args, COMMAND_TIMEOUT, None, &extra_env).await;
+        }
+        let outcome = self
+            .git_with_env(local, &["apply", "-3", "--whitespace=nowarn", patch_file], COMMAND_TIMEOUT, None, &extra_env)
+            .await
+            .map_err(|()| Self::missing())?;
+        let _ = std::fs::remove_file(&scratch_index);
+
+        if outcome.code == Some(0) {
+            return Ok(());
+        }
+
+        // Conflict: restore every touched file so nothing in the checkout is left modified or marked with conflict markers.
+        for (full, before) in backups {
+            match before {
+                Some(bytes) => {
+                    if let Some(parent) = full.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&full, bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&full);
+                }
+            }
+        }
+        let detail = Self::failure(&outcome).message;
+        Err(HostError::new(
+            "handoff-conflict",
+            l(
+                &format!("项目里有和这些改动冲突的修改，三方合并未能自动解决，什么都没改。请先提交或撤销项目里的改动，再移交。\n{detail}"),
+                &format!("The project's checkout has conflicting changes that 3-way merge could not resolve, so nothing was handed off or changed. Commit or discard the checkout's changes, then hand off again.\n{detail}"),
+            ),
+        ))
     }
 
     /// Remove the worktree's folder and Git's record of it; a branch made from it stays.
@@ -591,8 +747,8 @@ mod tests {
         std::fs::create_dir_all(repo.join("build")).unwrap();
         std::fs::write(repo.join("build").join("out.bin"), "x").unwrap();
         std::fs::write(repo.join("notes.txt"), "draft\n").unwrap();
-        // An uncommitted change comes along into the worktree.
-        std::fs::write(repo.join("sub").join("a.txt"), "one\ntwo\n").unwrap();
+        // Main checkout has dirty changes; clean HEAD worktree creation does not duplicate them into the worktree.
+        std::fs::write(repo.join("sub").join("a.txt"), "one\ndirty-local\n").unwrap();
         let context = crate::agent::tools::test_context(&dir);
         let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
         let (worktree, cwd) = git.worktree_add(&repo.join("sub"), &dir.join("worktrees")).await.unwrap();
@@ -600,21 +756,49 @@ mod tests {
         let top = Path::new(&worktree.path);
         assert_eq!(std::fs::read_to_string(top.join(".env")).unwrap(), "KEY=1\n");
         assert!(!top.join("build").exists() && !top.join("notes.txt").exists());
-        assert_eq!(std::fs::read_to_string(Path::new(&cwd).join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\n");
-        // The chat works there: a commit and a new file.
-        std::fs::write(Path::new(&cwd).join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        assert_eq!(std::fs::read_to_string(Path::new(&cwd).join("a.txt")).unwrap().replace("\r\n", "\n"), "one\n");
+        // The chat works there: a commit, a real new file, and untracked build junk that must be excluded on hand-off.
+        std::fs::write(Path::new(&cwd).join("a.txt"), "one\nthree\n").unwrap();
         git.worktree_branch(&worktree, "rainy/test").await.unwrap();
         run(Path::new(&cwd), &["commit", "-q", "-am", "three"]);
         std::fs::write(Path::new(&cwd).join("new.txt"), "new\n").unwrap();
+        std::fs::create_dir_all(top.join("target/debug")).unwrap();
+        std::fs::write(top.join("target/debug/artifact.o"), "junk").unwrap();
+        std::fs::write(Path::new(&cwd).join("scratch.tmp"), "junk").unwrap();
         assert!(git.worktree_branch(&worktree, "bad name").await.is_err());
-        // Handing off moves all of it into the checkout as uncommitted changes and removes the worktree.
+        // Handing off moves real changes into the checkout (excluding junk) and removes the worktree.
         std::fs::write(repo.join("sub").join("a.txt"), "one\n").unwrap();
         let moved = git.worktree_hand_off(&worktree, &dir.join("worktrees")).await.unwrap();
         assert_eq!(moved, 2);
-        assert_eq!(std::fs::read_to_string(repo.join("sub").join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\nthree\n");
+        assert_eq!(std::fs::read_to_string(repo.join("sub").join("a.txt")).unwrap().replace("\r\n", "\n"), "one\nthree\n");
         assert!(repo.join("sub").join("new.txt").is_file());
+        assert!(!repo.join("target").exists(), "untracked build junk must not be handed off");
+        assert!(!repo.join("sub").join("scratch.tmp").exists(), "untracked .tmp junk must not be handed off");
         assert!(!Path::new(&worktree.path).exists());
         assert!(run(&repo, &["branch", "--list", "rainy/test"]).contains("rainy/test"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hand_off_three_way_merges_non_overlapping_changes() {
+        let dir = std::env::temp_dir().join(format!("rainy-worktree-3way-{}", uuid::Uuid::new_v4().simple()));
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        // 3 lines total: both edits share context line2 so plain `git apply` fails and `git apply -3` merges cleanly.
+        std::fs::write(repo.join("doc.txt"), "line1\nline2\nline3\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "base"]);
+        let context = crate::agent::tools::test_context(&dir);
+        let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
+        let (worktree, cwd) = git.worktree_add(&repo, &dir.join("worktrees")).await.unwrap();
+        std::fs::write(repo.join("doc.txt"), "LINE1-LOCAL\nline2\nline3\n").unwrap();
+        std::fs::write(Path::new(&cwd).join("doc.txt"), "line1\nline2\nLINE3-WORKTREE\n").unwrap();
+        let moved = git.worktree_hand_off(&worktree, &dir.join("worktrees")).await.unwrap();
+        assert_eq!(moved, 1);
+        let merged = std::fs::read_to_string(repo.join("doc.txt")).unwrap().replace("\r\n", "\n");
+        assert_eq!(merged, "LINE1-LOCAL\nline2\nLINE3-WORKTREE\n");
+        assert!(!Path::new(&worktree.path).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -5,7 +5,8 @@
  */
 import { lazy, Suspense, useEffect, useState } from 'react'
 import type { IdeDirectory, IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
-import { ideRawUrl } from '../../shared/ide-preview.ts'
+import { ideOfficePdfUrl, ideRawUrl, isSameOriginOfficePdfUrl } from '../../shared/ide-preview.ts'
+import type { OfficePdfResult, OfficePdfSource } from '../../shared/office-protocol.ts'
 import { callIde, IdeRequestError } from '../ide/ide-api.ts'
 import { lockedDocumentName } from '../ide/viewers/file-facts.ts'
 import { HexViewer } from '../ide/viewers/HexViewer.tsx'
@@ -52,7 +53,7 @@ type Message =
 
 declare global {
   interface Window {
-    /** wry's message channel to the native workbench. */
+    /** WebView2's message channel to the native workbench. */
     ipc?: { postMessage(message: string): void }
     /** What the workbench calls in the page. */
     __rainyViewer?: {
@@ -127,20 +128,77 @@ window.__rainyViewer = {
 // The heading at the top of the rich editor, for the outline beside it.
 outlinePosition.subscribe(() => { post({ type: 'outline', index: outlinePosition.getSnapshot().index }) })
 
+/** Shape returned by the desktop `office-pdf` IPC request (zero-Base64 one-shot URL or legacy Base64 fallback). */
+export interface OfficePdfIpcResponse {
+  readonly url?: string | undefined
+  readonly token?: string | undefined
+  readonly pdf?: string | undefined
+  readonly application?: string | undefined
+  readonly code?: string | undefined
+  readonly error?: string | undefined
+  readonly missing?: boolean | undefined
+  readonly encrypted?: boolean | undefined
+}
+
+/**
+ * Consume the desktop's `office-pdf` IPC response: prefers the Host's one-shot binary route
+ * (`/rainy/ide/office-pdf?token=...`) via `fetch` + `ArrayBuffer` (zero Base64), with fallback for legacy payloads.
+ * @param result Raw IPC response object.
+ * @param fetcher Fetch implementation (injectable for tests).
+ * @returns Binary PDF bytes or the structured conversion failure.
+ */
+export async function resolveOfficePdfResponse(
+  result: OfficePdfIpcResponse,
+  fetcher: typeof fetch = fetch,
+): Promise<OfficePdfResult> {
+  const candidateUrl = typeof result.url === 'string' && result.url !== ''
+    ? result.url
+    : typeof result.token === 'string' && result.token !== ''
+      ? ideOfficePdfUrl(result.token)
+      : undefined
+  if (candidateUrl !== undefined) {
+    if (!isSameOriginOfficePdfUrl(candidateUrl)) {
+      return { code: 'failed', error: 'Invalid office-pdf URL', missing: false }
+    }
+    const response = await fetcher(candidateUrl, { credentials: 'include', cache: 'no-store' })
+    if (!response.ok) {
+      return { code: 'failed', error: `HTTP ${response.status}`, missing: false }
+    }
+    const pdf = new Uint8Array(await response.arrayBuffer())
+    return { pdf, application: typeof result.application === 'string' ? result.application : 'Office' }
+  }
+  if (typeof result.pdf === 'string') {
+    const raw = atob(result.pdf)
+    const pdf = new Uint8Array(raw.length)
+    for (let index = 0; index < raw.length; index++) pdf[index] = raw.charCodeAt(index)
+    return { pdf, application: typeof result.application === 'string' ? result.application : 'Office' }
+  }
+  return result as OfficePdfResult
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  return btoa(binary)
+}
+
 if (window.ipc !== undefined) {
   window.__RAINY_OFFICE__ = {
-    toPdf: async (bytes: Uint8Array, extension: string) => {
-      let binary = ''
-      for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-      const result = await request('office-pdf', { base64: btoa(binary), extension }) as { pdf?: string; [key: string]: unknown }
-      if (typeof result.pdf !== 'string') return result as never
-      const raw = atob(result.pdf)
-      const pdf = new Uint8Array(raw.length)
-      for (let index = 0; index < raw.length; index++) pdf[index] = raw.charCodeAt(index)
-      return { ...result, pdf } as never
+    toPdf: async (sourceOrBytes: OfficePdfSource | Uint8Array, extension?: string) => {
+      const params = sourceOrBytes instanceof Uint8Array
+        ? { base64: encodeBase64(sourceOrBytes), extension: extension ?? '' }
+        : {
+            workspaceId: sourceOrBytes.workspaceId,
+            rootId: sourceOrBytes.rootId,
+            path: sourceOrBytes.path,
+            version: sourceOrBytes.version,
+            extension: sourceOrBytes.extension,
+          }
+      const result = await request('office-pdf', params) as OfficePdfIpcResponse
+      return await resolveOfficePdfResponse(result)
     },
     open: async (path: string) => await request('open-external', { path }) as { error?: string },
-  } as never
+  }
   window.__RAINY_EXPORT__ = {
     save: async (options) => {
       const result = await request('export-save', options) as { path?: string; error?: string }
@@ -314,7 +372,15 @@ export function ViewerApp(): JSX.Element {
   const name = path.split('/').at(-1) ?? path
   const hostPath = params.get('hostPath') ?? undefined
   const url = ideRawUrl({ workspaceId, rootId, path, version })
-  const documentLocation: DocumentLocation = { name, extension: name.slice(name.lastIndexOf('.') + 1).toLowerCase(), hostPath }
+  const documentLocation: DocumentLocation = {
+    name,
+    extension: name.slice(name.lastIndexOf('.') + 1).toLowerCase(),
+    hostPath,
+    workspaceId,
+    rootId,
+    path,
+    version,
+  }
   // Pages of the editor's text say they are ready once they can take it.
   useEffect(() => {
     if (view !== 'markdown' && view !== 'markdown-rich' && view !== 'svg') post({ type: 'ready' })

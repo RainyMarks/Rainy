@@ -256,30 +256,23 @@ pub fn note_for(
     newly_waiting: bool,
     zh: bool,
 ) -> Option<(String, String)> {
+    let locale = if zh { crate::i18n::Locale::Zh } else { crate::i18n::Locale::En };
     let title = if title.trim().is_empty() {
-        if zh { "新对话" } else { "New chat" }
+        crate::i18n::text(locale, "native.notifyUntitledChat")
     } else {
         title.trim()
     };
     if newly_waiting {
-        return Some(if zh {
-            (
-                "等待你批准".into(),
-                format!("「{title}」需要你批准一个操作"),
-            )
-        } else {
-            (
-                "Waiting for approval".into(),
-                format!("\"{title}\" needs your approval"),
-            )
-        });
+        return Some((
+            crate::i18n::text(locale, "native.notifyApprovalTitle").to_owned(),
+            crate::i18n::format(locale, "native.notifyApprovalBody", &[("title", &title)]),
+        ));
     }
     (was_running && now_idle).then(|| {
-        if zh {
-            ("对话已完成".into(), format!("「{title}」已经回复完"))
-        } else {
-            ("Chat finished".into(), format!("\"{title}\" has finished"))
-        }
+        (
+            crate::i18n::text(locale, "native.notifyDoneTitle").to_owned(),
+            crate::i18n::format(locale, "native.notifyDoneBody", &[("title", &title)]),
+        )
     })
 }
 

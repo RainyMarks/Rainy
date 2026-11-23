@@ -6,13 +6,15 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use gpui_kit::*;
-use rainy_carrier::locale::localized;
 use serde_json::{Value, json};
 
+use crate::i18n::{self, Locale};
 use super::{Options, WebView};
 
 /// The page renders at this size; a page that reacts to width sees a desktop.
@@ -117,14 +119,51 @@ fn act_script(action: &str, target: &str, value: &str) -> String {
 #[derive(Default)]
 struct Preview {
     view: Option<WebView>,
+    folder: Option<PathBuf>,
     console: Rc<RefCell<VecDeque<String>>>,
     failed: Rc<RefCell<VecDeque<String>>>,
     /// Signals the end of the current navigation.
     loaded: Rc<RefCell<Option<async_channel::Sender<()>>>>,
 }
 
+static PREVIEW_SEQ: AtomicU64 = AtomicU64::new(1);
+
 thread_local! {
     static PREVIEW: RefCell<Preview> = RefCell::default();
+}
+
+/// Remove a preview profile directory; retries briefly off the UI thread while WebView2 releases file locks.
+fn remove_profile_dir(folder: PathBuf) {
+    if !folder.exists() {
+        return;
+    }
+    if std::fs::remove_dir_all(&folder).is_ok() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("preview-cleanup".into()).spawn(move || {
+        for _ in 0..15 {
+            std::thread::sleep(Duration::from_millis(200));
+            if std::fs::remove_dir_all(&folder).is_ok() || !folder.exists() {
+                break;
+            }
+        }
+    });
+}
+
+/// Remove any leftover `rainy-preview-<pid>*` folders belonging to this process.
+fn cleanup_stale_pid_dirs(keep: Option<&std::path::Path>) {
+    let prefix = format!("rainy-preview-{}", std::process::id());
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if keep.is_some_and(|k| k == path) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if name == prefix || name.starts_with(&format!("{prefix}-")) {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
 }
 
 fn push(list: &RefCell<VecDeque<String>>, line: String) {
@@ -144,16 +183,21 @@ fn error(text: String) -> Value {
     json!({ "error": text })
 }
 
-/// Close the control; a later command opens a new one.
+/// Close the control and remove its temporary profile folder; a later command opens a new one.
 pub fn close() {
-    PREVIEW.with(|preview| {
+    let folder = PREVIEW.with(|preview| {
         let mut preview = preview.borrow_mut();
         if let Some(view) = preview.view.take() {
             view.close();
         }
         preview.console.borrow_mut().clear();
         preview.failed.borrow_mut().clear();
+        preview.folder.take()
     });
+    if let Some(folder) = folder {
+        remove_profile_dir(folder);
+    }
+    cleanup_stale_pid_dirs(None);
 }
 
 /// Await one callback-style call.
@@ -180,17 +224,14 @@ pub async fn handle(command: Value, window: AnyWindowHandle, cx: &mut AsyncApp) 
         "open" => {
             let url = text("url");
             if !is_loopback_url(&url) {
-                return error(localized(
-                    "预览只能打开本机地址（localhost 或 127.0.0.1）上的项目自己的服务，其他网址请用 web_fetch。",
-                    "The preview only opens the project's own server on this machine (localhost or 127.0.0.1); use web_fetch for other addresses.",
-                ));
+                return error(i18n::text(Locale::current(), "native.previewLoopbackOnly").to_owned());
             }
             if let Err(message) = open(&url, window, cx).await {
                 return error(message);
             }
             report(settle.unwrap_or(400), cx).await
         }
-        _ if current().is_none() => error(localized("预览还没有打开任何页面，请先用 browser_open 打开。", "The preview has no page open yet; open one with browser_open first.")),
+        _ if current().is_none() => error(i18n::text(Locale::current(), "native.previewNoPage").to_owned()),
         "read" => report(0, cx).await,
         "screenshot" => {
             let view = current().expect("checked above");
@@ -237,11 +278,15 @@ async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
             (preview.console.clone(), preview.failed.clone(), preview.loaded.clone())
         });
         let blocked = failed.clone();
-        let folder = std::env::temp_dir().join(format!("rainy-preview-{}", std::process::id()));
+        let seq = PREVIEW_SEQ.fetch_add(1, Ordering::Relaxed);
+        let folder = std::env::temp_dir().join(format!("rainy-preview-{}-{seq}", std::process::id()));
+        cleanup_stale_pid_dirs(Some(&folder));
         let options = Options {
-            folder,
+            folder: folder.clone(),
             private: true,
             background: (255, 255, 255),
+            scripts_enabled: true,
+            ipc_origin: None,
             script: None,
             on_message: None,
             // Only the first address is checked above; the page itself may then try to leave (a script, a redirect or
@@ -249,7 +294,7 @@ async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
             allow: Some(Box::new(move |url| {
                 let allowed = is_loopback_url(url) || url == "about:blank";
                 if !allowed {
-                    push(&blocked, format!("{url}: {}", localized("已拦截：预览不离开本机地址", "blocked: the preview stays on this machine")));
+                    push(&blocked, format!("{url}: {}", i18n::text(Locale::current(), "native.previewBlockedOffMachine")));
                 }
                 allowed
             })),
@@ -257,7 +302,17 @@ async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
             on_shortcut: None,
         };
         let parent = window.update(cx, |_, window, _| super::hwnd(window)).ok().flatten().ok_or("No window for the preview.")?;
-        let created = call(|done| WebView::create(parent, options, done)).await.ok_or("The preview could not start.")??;
+        let created = match call(|done| WebView::create(parent, options, done)).await {
+            Some(Ok(view)) => view,
+            Some(Err(err)) => {
+                remove_profile_dir(folder);
+                return Err(err);
+            }
+            None => {
+                remove_profile_dir(folder);
+                return Err("The preview could not start.".to_owned());
+            }
+        };
         // Laid out at desktop size outside the window's visible area: the page renders, nobody sees it.
         created.set_bounds(-WIDTH - 200, -HEIGHT - 200, WIDTH, HEIGHT);
         created.set_visible(true);
@@ -269,7 +324,11 @@ async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
         // fixing the CSS size and the pixel ratio also makes every screenshot WIDTH by HEIGHT.
         let metrics = json!({ "width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false }).to_string();
         let _ = call(|done| created.devtools("Emulation.setDeviceMetricsOverride", &metrics, done)).await;
-        PREVIEW.with(|preview| preview.borrow_mut().view = Some(created));
+        PREVIEW.with(|preview| {
+            let mut preview = preview.borrow_mut();
+            preview.view = Some(created);
+            preview.folder = Some(folder);
+        });
     }
     let view = current().ok_or("The preview closed.")?;
     let (loaded_tx, loaded_rx) = async_channel::bounded::<()>(1);

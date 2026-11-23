@@ -566,9 +566,15 @@ impl DebugSession {
         if op == "debug.input" || op == "debug.resize" {
             let terminal = self.inner.lock().unwrap().terminal.clone().ok_or_else(|| error("This debug session has no interactive terminal."))?;
             if op == "debug.input" {
-                terminal.write(request["data"].as_str().unwrap_or_default())?;
+                let data = request["data"].as_str().unwrap_or_default();
+                if data.len() > super::execution::MAX_INPUT_BYTES {
+                    return Err(error("The terminal input exceeds the configured byte limit."));
+                }
+                terminal.write(data)?;
             } else {
-                terminal.resize(request["cols"].as_u64().unwrap_or(80) as u16, request["rows"].as_u64().unwrap_or(24) as u16);
+                let cols = super::execution::dimension(&request["cols"], 80)?;
+                let rows = super::execution::dimension(&request["rows"], 24)?;
+                terminal.resize(cols, rows);
             }
             return Ok(json!({ "ok": true }));
         }

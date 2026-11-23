@@ -25,6 +25,7 @@ export interface IdeWorkspace {
   readonly title: string
   /** Absent on legacy snapshots, which contain only the primary directory. */
   readonly roots?: readonly IdeWorkspaceRoot[] | undefined
+  readonly pinned?: boolean | undefined
 }
 
 /** A direct child; paths always use slash-separated project-relative spelling. */
@@ -47,6 +48,13 @@ export interface IdeDirectory {
   readonly entries: readonly IdeFileEntry[]
 }
 
+/** One-shot tokenized URL returned when registering a converted Office PDF (`officePdf.register`). */
+export interface OfficePdfRegistration {
+  readonly token: string
+  readonly url: string
+  readonly expiresInSecs: number
+}
+
 /** File operations pages send through the `ide` RPC method. */
 export type IdeFilesRequest =
   | { readonly op: 'workspaces.list' }
@@ -54,6 +62,7 @@ export type IdeFilesRequest =
   | { readonly op: 'files.mkdir'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string }
   /** A new file with binary content, such as an image pasted into a Markdown document; `base64` holds its bytes. */
   | { readonly op: 'files.createBinary'; readonly workspaceId: WorkspaceId; readonly rootId?: IdeRootId | undefined; readonly path: string; readonly base64: string }
+  | { readonly op: 'officePdf.register'; readonly path: string; readonly deleteAfterRead?: boolean | undefined }
 
 /** Successful results keyed by request operation. */
 export interface IdeFilesResults {
@@ -61,4 +70,5 @@ export interface IdeFilesResults {
   'files.list': IdeDirectory
   'files.mkdir': IdeFileEntry
   'files.createBinary': IdeFileEntry
+  'officePdf.register': OfficePdfRegistration
 }

@@ -101,13 +101,16 @@ pub fn ask(request: AskpassRequest, window: &mut Window, cx: &mut App) {
     }
 }
 
-/// The Host ended while Rainy used it: an SSH connection can be made again, any other Host restarted.
+/// The Host ended while Rainy used it: an SSH connection reconnects in place without restarting, any other Host restarts.
 pub fn host_exited(store: Entity<Store>, code: Option<i32>, window: &mut Window, cx: &mut App) {
     let target = store.read(cx).target.clone();
+    let is_ssh = matches!(target, Some(ExecutionTarget::Ssh { .. }));
     let (title, description, action) = match &target {
-        Some(target @ ExecutionTarget::Ssh { .. }) => {
-            (trf(cx, "native.sshLost", &[("target", &target.label())]), tr(cx, "native.sshLostDetail"), tr(cx, "native.reconnect"))
-        }
+        Some(target @ ExecutionTarget::Ssh { .. }) => (
+            trf(cx, "native.sshLost", &[("target", &target.label())]),
+            tr(cx, "native.sshLostReconnectDetail"),
+            tr(cx, "native.reconnect"),
+        ),
         _ => {
             let reason = match code {
                 Some(code) => trf(cx, "native.exitCode", &[("code", &code)]),
@@ -124,8 +127,13 @@ pub fn host_exited(store: Entity<Store>, code: Option<i32>, window: &mut Window,
             .ok_text(action.clone())
             .cancel_text(tr(cx, "native.later"))
             .show_cancel(true)
-            .on_ok(move |_, _, cx| {
-                store.update(cx, |store, cx| store.restart(cx));
+            .on_ok(move |_, window, cx| {
+                let handle = window.window_handle();
+                if is_ssh {
+                    store.update(cx, |store, cx| store.reconnect_ssh(handle, cx));
+                } else {
+                    store.update(cx, |store, cx| store.restart(cx));
+                }
                 true
             })
     });

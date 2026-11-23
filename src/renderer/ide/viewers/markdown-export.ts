@@ -14,6 +14,9 @@ import { markdownOutline } from './markdown-outline.ts'
 import { isMermaid, renderMermaid } from './mermaid.ts'
 import { viewerMessages } from './messages.ts'
 
+/** Strict CSP for exported standalone HTML: allows inline styles and embedded data/blob images, blocks all scripts and network loads. */
+export const EXPORT_HTML_CSP = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:;"
+
 /** Largest image embedded into an export; a larger one keeps its link. */
 const MAX_EMBEDDED_BYTES = 20 * 1024 * 1024
 
@@ -155,7 +158,9 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
     if (embedded !== undefined) element.setAttribute('src', embedded)
   }
   const main = page.querySelector('main')!
-  return `<!DOCTYPE html>\n<html lang="${locale === 'zh' ? 'zh-CN' : 'en'}">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n`
+  return `<!DOCTYPE html>\n<html lang="${locale === 'zh' ? 'zh-CN' : 'en'}">\n<head>\n<meta charset="utf-8">\n`
+    + `<meta http-equiv="Content-Security-Policy" content="${EXPORT_HTML_CSP}">\n`
+    + `<meta name="viewport" content="width=device-width, initial-scale=1">\n`
     + `<meta name="generator" content="Rainy">\n<title>${escapeHtml(documentTitle(text, name))}</title>\n<style>${STYLE}</style>\n</head>\n<body>\n`
     + `${main.outerHTML}\n</body>\n</html>\n`
 }

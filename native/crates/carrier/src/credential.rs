@@ -5,6 +5,7 @@
 //! `os_crypt.encrypted_key` = base64(`DPAPI` + a Windows DPAPI blob). This module reads and writes exactly that format,
 //! so keys saved by 3.x open in 4.0 and the other way round.
 
+use std::fmt;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -16,11 +17,106 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value};
 
+use crate::locale::localized;
+
 const KEY_FILE: &str = "credential-key.bin";
 const LOCAL_STATE: &str = "Local State";
 const VERSION: &[u8] = b"v10";
 const DPAPI_PREFIX: &[u8] = b"DPAPI";
 const NONCE_LEN: usize = 12;
+
+/// Security recovery notice surfaced to the interface when credential protection files had to be rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialWarning {
+    /// `Local State` JSON or its DPAPI `os_crypt.encrypted_key` was damaged; the damaged file was backed up and a
+    /// fresh DPAPI-protected key was created so API keys never downgrade to plaintext.
+    LocalStateRecovered { backup: PathBuf, reason: String },
+    /// `credential-key.bin` could not be opened; it was moved aside and a new protected key was created.
+    KeyFileRecovered { backup: PathBuf },
+}
+
+impl CredentialWarning {
+    /// User-facing warning text in the current interface language.
+    pub fn localized_message(&self) -> String {
+        match self {
+            Self::LocalStateRecovered { backup, reason } => localized(
+                &format!(
+                    "凭据保护文件 Local State 已损坏（{reason}），已备份至 {} 并重新生成受 Windows 数据保护（DPAPI）保护的密钥。之前保存的 API 密钥需要重新输入，新密钥仍以加密方式存储。",
+                    backup.display()
+                ),
+                &format!(
+                    "The credential protection file Local State was damaged ({reason}). It was backed up to {} and a new Windows DPAPI-protected key was created. Previously stored API keys must be entered again; new keys remain encrypted.",
+                    backup.display()
+                ),
+            ),
+            Self::KeyFileRecovered { backup } => localized(
+                &format!(
+                    "凭据密钥文件无法解密，已备份至 {} 并重新生成受保护的新密钥。之前保存的 API 密钥需要重新输入。",
+                    backup.display()
+                ),
+                &format!(
+                    "The credential key file could not be opened and was moved to {}. A new protected key was created; stored API keys must be entered again.",
+                    backup.display()
+                ),
+            ),
+        }
+    }
+}
+
+impl fmt::Display for CredentialWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.localized_message())
+    }
+}
+
+/// Result of loading or safely recovering the DPAPI-protected credential key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialKey {
+    /// Base64 32-byte key used to seal API keys in `.credentials.sealed.json`.
+    pub key: String,
+    /// Recovery warnings that should be surfaced to the user.
+    pub warnings: Vec<CredentialWarning>,
+}
+
+/// Structured failure when DPAPI protection itself cannot be established.
+/// Returning an error prevents silent downgrade to plaintext `.credentials.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialError {
+    /// Reading or writing credential files failed due to an I/O error.
+    Io { path: PathBuf, detail: String },
+    /// Windows DPAPI could not protect a new key (encryption unavailable).
+    ProtectionUnavailable { detail: String },
+    /// Encryption or random-byte generation failed internally.
+    Crypto { detail: String },
+}
+
+impl CredentialError {
+    /// User-facing error text in the current interface language.
+    pub fn localized_message(&self) -> String {
+        match self {
+            Self::Io { path, detail } => localized(
+                &format!("无法读写凭据保护文件 {}（{detail}），已拒绝降级为明文存储 API 密钥。", path.display()),
+                &format!("Could not access credential protection file {} ({detail}); refused to fall back to plaintext API key storage.", path.display()),
+            ),
+            Self::ProtectionUnavailable { detail } => localized(
+                &format!("Windows 数据保护（DPAPI）不可用（{detail}），已拒绝降级为明文存储 API 密钥。"),
+                &format!("Windows data protection (DPAPI) is unavailable ({detail}); refused to fall back to plaintext API key storage."),
+            ),
+            Self::Crypto { detail } => localized(
+                &format!("凭据加密初始化失败（{detail}），已拒绝降级为明文存储 API 密钥。"),
+                &format!("Credential encryption failed ({detail}); refused to fall back to plaintext API key storage."),
+            ),
+        }
+    }
+}
+
+impl fmt::Display for CredentialError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.localized_message())
+    }
+}
+
+impl std::error::Error for CredentialError {}
 
 /// Protects and opens bytes for the current Windows account.
 pub trait Protector {
@@ -76,29 +172,99 @@ impl Protector for Dpapi {
     }
 }
 
-/// The Chromium OSCrypt key from `Local State`, created when the file has none.
-fn os_crypt_key(user_data: &Path, protector: &dyn Protector) -> Result<[u8; 32]> {
+/// The Chromium OSCrypt key from `Local State`, created when the file has none, or safely backed up and recreated
+/// under DPAPI when the existing `Local State` is damaged. Never silently falls back to plaintext.
+fn os_crypt_key(
+    user_data: &Path,
+    protector: &dyn Protector,
+    log: &dyn Fn(&str),
+) -> std::result::Result<([u8; 32], Option<CredentialWarning>), CredentialError> {
     let path = user_data.join(LOCAL_STATE);
-    let mut state: Map<String, Value> = match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("Local State is not valid JSON")?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
-        Err(error) => return Err(error).context("Reading Local State"),
+    let existing = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(CredentialError::Io { path, detail: error.to_string() }),
     };
-    if let Some(encoded) = state.get("os_crypt").and_then(|value| value.get("encrypted_key")).and_then(Value::as_str) {
-        let blob = STANDARD.decode(encoded).context("Local State key is not base64")?;
-        let blob = blob.strip_prefix(DPAPI_PREFIX).ok_or_else(|| anyhow!("Local State key is not DPAPI-protected"))?;
-        let key = protector.unprotect(blob)?;
-        return key.try_into().map_err(|_| anyhow!("Local State key has the wrong length"));
+    let mut state = Map::new();
+    let mut json_valid = false;
+    let mut damaged: Option<String> = None;
+    if let Some(bytes) = &existing {
+        match serde_json::from_slice::<Map<String, Value>>(bytes) {
+            Ok(parsed) => {
+                json_valid = true;
+                match parsed.get("os_crypt") {
+                    None => {
+                        state = parsed;
+                    }
+                    Some(Value::Object(os_crypt)) => match os_crypt.get("encrypted_key") {
+                        None => {
+                            state = parsed;
+                        }
+                        Some(Value::String(encoded)) => match decode_os_crypt_key(encoded, protector) {
+                            Ok(key) => return Ok((key, None)),
+                            Err(reason) => {
+                                state = parsed;
+                                damaged = Some(reason);
+                            }
+                        },
+                        Some(_) => {
+                            state = parsed;
+                            damaged = Some("Local State encrypted_key is not a string".to_owned());
+                        }
+                    },
+                    Some(_) => {
+                        state = parsed;
+                        damaged = Some("Local State has an unexpected os_crypt entry".to_owned());
+                    }
+                }
+            }
+            Err(error) => {
+                damaged = Some(format!("Local State is not valid JSON: {error}"));
+            }
+        }
     }
+    // Verify DPAPI protection works before touching or backing up any existing file.
     let mut key = [0u8; 32];
-    getrandom::fill(&mut key).map_err(|error| anyhow!("{error}"))?;
+    getrandom::fill(&mut key).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
+    let protected = protector.protect(&key).map_err(|error| CredentialError::ProtectionUnavailable { detail: error.to_string() })?;
     let mut blob = DPAPI_PREFIX.to_vec();
-    blob.extend(protector.protect(&key)?);
-    let os_crypt = state.entry("os_crypt").or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(os_crypt) = os_crypt else { bail!("Local State has an unexpected os_crypt entry") };
+    blob.extend(protected);
+
+    let warning = if let Some(reason) = damaged {
+        let backup = unique_backup_path(user_data, "Local State.unreadable", "");
+        if let Some(raw) = &existing {
+            if json_valid {
+                write_atomic(&backup, raw).map_err(|error| CredentialError::Io { path: backup.clone(), detail: error.to_string() })?;
+            } else {
+                fs::rename(&path, &backup).map_err(|error| CredentialError::Io { path: path.clone(), detail: error.to_string() })?;
+            }
+        }
+        let warning = CredentialWarning::LocalStateRecovered { backup: backup.clone(), reason: reason.clone() };
+        log(&format!(
+            "Local State could not be opened ({reason}) and was backed up to {}; created a new DPAPI-protected key so API keys stay encrypted.",
+            backup.display()
+        ));
+        Some(warning)
+    } else {
+        None
+    };
+
+    let mut os_crypt = match state.remove("os_crypt") {
+        Some(Value::Object(existing_map)) => existing_map,
+        _ => Map::new(),
+    };
     os_crypt.insert("encrypted_key".into(), Value::String(STANDARD.encode(blob)));
-    write_atomic(&path, &serde_json::to_vec(&state)?)?;
-    Ok(key)
+    state.insert("os_crypt".into(), Value::Object(os_crypt));
+    let encoded_state = serde_json::to_vec(&state).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
+    write_atomic(&path, &encoded_state).map_err(|error| CredentialError::Io { path, detail: error.to_string() })?;
+    Ok((key, warning))
+}
+
+fn decode_os_crypt_key(encoded: &str, protector: &dyn Protector) -> std::result::Result<[u8; 32], String> {
+    let blob = STANDARD.decode(encoded).map_err(|error| format!("Local State key is not base64: {error}"))?;
+    let blob = blob.strip_prefix(DPAPI_PREFIX).ok_or_else(|| "Local State key is not DPAPI-protected".to_owned())?;
+    let key = protector.unprotect(blob).map_err(|error| error.to_string())?;
+    key.try_into().map_err(|_| "Local State key has the wrong length".to_owned())
 }
 
 /// OSCrypt `EncryptString`.
@@ -126,43 +292,74 @@ fn valid_key(key: &str) -> bool {
     key.len() == 44 && key.ends_with('=') && key[..43].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
 }
 
-/// Read the credential key, creating it on first use (`src/main/credential-key.ts`).
-/// Returns `Ok(None)` when the system cannot protect it; the Host then keeps API keys unencrypted for this run.
-pub fn credential_key(user_data: &Path, protector: &dyn Protector, log: &dyn Fn(&str)) -> Result<Option<String>> {
-    let os_key = match os_crypt_key(user_data, protector) {
-        Ok(key) => key,
+/// Load or safely recover the DPAPI-protected credential key.
+///
+/// Unlike 3.x, a damaged `Local State` or DPAPI failure never silently downgrades API keys to plaintext:
+/// - When `Local State` is damaged but Windows DPAPI is available, the damaged file is backed up and a fresh
+///   DPAPI-protected key is created with an explicit [`CredentialWarning`].
+/// - When DPAPI itself is unavailable or I/O fails, returns `Err(CredentialError)` without modifying existing files.
+pub fn load_credential_key(
+    user_data: &Path,
+    protector: &dyn Protector,
+    log: &dyn Fn(&str),
+) -> std::result::Result<CredentialKey, CredentialError> {
+    let (os_key, mut warnings) = match os_crypt_key(user_data, protector, log) {
+        Ok((key, warning)) => (key, warning.into_iter().collect::<Vec<_>>()),
         Err(error) => {
-            log(&format!("API keys are stored unencrypted: {error}"));
-            return Ok(None);
+            log(&format!("DPAPI credential protection failed (refusing plaintext fallback): {error}"));
+            return Err(error);
         }
     };
     let path = user_data.join(KEY_FILE);
+    let mut needs_backup = false;
     match fs::read(&path) {
         Ok(stored) => {
             if let Ok(key) = open(&os_key, &stored)
                 && valid_key(&key)
             {
-                return Ok(Some(key));
+                return Ok(CredentialKey { key, warnings });
             }
-            // Windows can no longer open it, for example after an administrator reset the account password. The file
-            // is kept for diagnosis; API keys stored with it have to be entered again.
-            let aside = unreadable_path(user_data);
-            fs::rename(&path, &aside)?;
-            log(&format!("The credential key could not be read and was moved to {}; stored API keys must be entered again.", aside.display()));
+            needs_backup = true;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("Reading the credential key"),
+        Err(error) => return Err(CredentialError::Io { path, detail: error.to_string() }),
     }
     let mut raw = [0u8; 32];
-    getrandom::fill(&mut raw).map_err(|error| anyhow!("{error}"))?;
+    getrandom::fill(&mut raw).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
     let key = STANDARD.encode(raw);
-    write_atomic(&path, &seal(&os_key, &key)?)?;
-    Ok(Some(key))
+    let sealed = seal(&os_key, &key).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
+    if needs_backup {
+        // Windows can no longer open it, for example after an administrator reset the account password or Local State
+        // had to be rebuilt. The file is kept for diagnosis; API keys stored with it have to be entered again.
+        let aside = unique_backup_path(user_data, "credential-key.unreadable", ".bin");
+        fs::rename(&path, &aside).map_err(|error| CredentialError::Io { path: path.clone(), detail: error.to_string() })?;
+        log(&format!("The credential key could not be read and was moved to {}; stored API keys must be entered again.", aside.display()));
+        warnings.push(CredentialWarning::KeyFileRecovered { backup: aside });
+    }
+    write_atomic(&path, &sealed).map_err(|error| CredentialError::Io { path, detail: error.to_string() })?;
+    Ok(CredentialKey { key, warnings })
 }
 
-fn unreadable_path(user_data: &Path) -> PathBuf {
+/// Read the credential key, creating it on first use (`src/main/credential-key.ts`).
+/// Never returns `Ok(None)` on `Local State` corruption or DPAPI failure; callers should prefer [`load_credential_key`]
+/// to surface structured warnings and errors to the interface.
+pub fn credential_key(user_data: &Path, protector: &dyn Protector, log: &dyn Fn(&str)) -> Result<Option<String>> {
+    load_credential_key(user_data, protector, log).map(|loaded| Some(loaded.key)).map_err(anyhow::Error::new)
+}
+
+fn unique_backup_path(user_data: &Path, stem: &str, suffix: &str) -> PathBuf {
     let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    user_data.join(format!("credential-key.unreadable-{millis}.bin"))
+    let candidate = user_data.join(format!("{stem}-{millis}{suffix}"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 1u32.. {
+        let next = user_data.join(format!("{stem}-{millis}-{n}{suffix}"));
+        if !next.exists() {
+            return next;
+        }
+    }
+    candidate
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -197,14 +394,38 @@ mod tests {
         }
     }
 
+    struct FailingProtect;
+    impl Protector for FailingProtect {
+        fn protect(&self, _data: &[u8]) -> Result<Vec<u8>> {
+            bail!("DPAPI unavailable")
+        }
+        fn unprotect(&self, _data: &[u8]) -> Result<Vec<u8>> {
+            bail!("DPAPI unavailable")
+        }
+    }
+
+    struct FailingUnprotect;
+    impl Protector for FailingUnprotect {
+        fn protect(&self, data: &[u8]) -> Result<Vec<u8>> {
+            Ok(data.iter().map(|b| b ^ 0x5a).collect())
+        }
+        fn unprotect(&self, _data: &[u8]) -> Result<Vec<u8>> {
+            bail!("password reset broke DPAPI blob")
+        }
+    }
+
     #[test]
     fn creates_then_reads_the_same_key() {
         let dir = tempfile::tempdir().unwrap();
-        let first = credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap();
-        assert!(valid_key(&first));
+        let first = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert!(valid_key(&first.key));
+        assert!(first.warnings.is_empty());
         let state: Value = serde_json::from_slice(&fs::read(dir.path().join(LOCAL_STATE)).unwrap()).unwrap();
         assert!(state["os_crypt"]["encrypted_key"].as_str().unwrap().starts_with("RFBBUE"));
-        assert_eq!(credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap(), first);
+        let again = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert_eq!(again.key, first.key);
+        assert!(again.warnings.is_empty());
+        assert_eq!(credential_key(dir.path(), &Fake, &|_| {}).unwrap().as_deref(), Some(first.key.as_str()));
         assert!(fs::read(dir.path().join(KEY_FILE)).unwrap().starts_with(b"v10"));
     }
 
@@ -212,7 +433,8 @@ mod tests {
     fn keeps_other_local_state_fields() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(LOCAL_STATE), br#"{"uninstall_metrics":{"a":1}}"#).unwrap();
-        credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        let loaded = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert!(loaded.warnings.is_empty());
         let state: Value = serde_json::from_slice(&fs::read(dir.path().join(LOCAL_STATE)).unwrap()).unwrap();
         assert_eq!(state["uninstall_metrics"]["a"], 1);
     }
@@ -222,9 +444,57 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let first = credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap();
         fs::write(dir.path().join(KEY_FILE), b"v10garbage-garbage-garbage-garbage").unwrap();
-        let second = credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap();
-        assert_ne!(first, second);
+        let second = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert_ne!(first, second.key);
+        assert!(matches!(second.warnings.as_slice(), [CredentialWarning::KeyFileRecovered { .. }]));
         assert!(fs::read_dir(dir.path()).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("credential-key.unreadable-")));
+    }
+
+    #[test]
+    fn recovers_corrupted_local_state_under_dpapi_with_warning_never_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap();
+        // Corrupt Local State JSON (e.g. power loss truncation).
+        fs::write(dir.path().join(LOCAL_STATE), b"{not valid json").unwrap();
+        let recovered = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert!(valid_key(&recovered.key));
+        assert_ne!(recovered.key, first);
+        assert!(recovered.warnings.iter().any(|w| matches!(w, CredentialWarning::LocalStateRecovered { .. })));
+        assert!(recovered.warnings.iter().any(|w| matches!(w, CredentialWarning::KeyFileRecovered { .. })));
+        assert!(fs::read_dir(dir.path()).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("Local State.unreadable-")));
+        // Next read succeeds cleanly with zero warnings using the rebuilt DPAPI Local State.
+        let steady = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert_eq!(steady.key, recovered.key);
+        assert!(steady.warnings.is_empty());
+    }
+
+    #[test]
+    fn recovers_damaged_os_crypt_key_while_preserving_other_local_state_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = credential_key(dir.path(), &Fake, &|_| {}).unwrap().unwrap();
+        fs::write(dir.path().join(LOCAL_STATE), br#"{"uninstall_metrics":{"kept":true},"os_crypt":{"encrypted_key":"not-base64!!!"}}"#).unwrap();
+        let recovered = load_credential_key(dir.path(), &Fake, &|_| {}).unwrap();
+        assert_ne!(recovered.key, first);
+        assert!(recovered.warnings.iter().any(|w| matches!(w, CredentialWarning::LocalStateRecovered { .. })));
+        let state: Value = serde_json::from_slice(&fs::read(dir.path().join(LOCAL_STATE)).unwrap()).unwrap();
+        assert_eq!(state["uninstall_metrics"]["kept"], true);
+        // Unprotect failure (e.g. Windows account password reset) also recovers cleanly under DPAPI.
+        let reset = load_credential_key(dir.path(), &FailingUnprotect, &|_| {}).unwrap();
+        assert_ne!(reset.key, recovered.key);
+        assert!(reset.warnings.iter().any(|w| matches!(w, CredentialWarning::LocalStateRecovered { .. })));
+    }
+
+    #[test]
+    fn refuses_plaintext_fallback_when_dpapi_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = b"{broken local state";
+        fs::write(dir.path().join(LOCAL_STATE), original).unwrap();
+        let err = load_credential_key(dir.path(), &FailingProtect, &|_| {}).unwrap_err();
+        assert!(matches!(err, CredentialError::ProtectionUnavailable { .. }));
+        // Compatibility wrapper must also return Err, never Ok(None).
+        assert!(credential_key(dir.path(), &FailingProtect, &|_| {}).is_err());
+        // Existing damaged file is left untouched when DPAPI cannot protect a replacement.
+        assert_eq!(fs::read(dir.path().join(LOCAL_STATE)).unwrap(), original);
     }
 
     #[test]

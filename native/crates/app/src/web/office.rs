@@ -1,22 +1,37 @@
 //! Slides and legacy Word documents as PDF, made by the Microsoft Office or WPS Office installed on this computer
 //! (`src/main/office-convert.ts`). The viewer page asks for it when it cannot draw a format itself.
 
-use std::collections::VecDeque;
-use std::hash::{Hash as _, Hasher as _};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
+
+static STAGING_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Ensures a temporary staging folder is always removed on error paths unless explicitly disarmed on success.
+struct StagingGuard(Option<PathBuf>);
+
+impl StagingGuard {
+    fn disarm(&mut self) -> Option<PathBuf> {
+        self.0.take()
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if let Some(folder) = self.0.take() {
+            ConvertedFile::cleanup(folder);
+        }
+    }
+}
 
 /// Largest file handed to Office.
 const MAX_BYTES: usize = 200 * 1024 * 1024;
 /// Time allowed for starting Office and exporting.
 const TIMEOUT: Duration = Duration::from_secs(120);
-/// Conversions remembered, so switching back to a tab does not start Office again.
-const KEEP: usize = 6;
 
 /// Which Office application opens a file, by lower-case extension.
 pub fn kind(extension: &str) -> Option<&'static str> {
@@ -51,10 +66,32 @@ impl Failure {
 }
 
 /// A PDF and the application that made it.
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Converted {
     pub pdf: Vec<u8>,
     pub application: String,
+}
+
+/// A PDF converted onto disk under `%TEMP%\rainy-office-*` so large files never round-trip through memory/base64.
+#[derive(Debug, Clone)]
+pub struct ConvertedFile {
+    pub folder: PathBuf,
+    pub pdf_path: PathBuf,
+    pub application: String,
+}
+
+impl ConvertedFile {
+    /// Remove the temporary folder holding this PDF (best-effort retry if Office/Host just released it).
+    pub fn cleanup(folder: PathBuf) {
+        for _ in 0..5 {
+            if std::fs::remove_dir_all(&folder).is_ok() || !folder.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
 }
 
 // PowerPoint and WPS keep one process per user, so an instance that was already running belongs to the user and is
@@ -162,7 +199,71 @@ fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String 
     text.lines().rev().map(str::trim).find(|line| !line.is_empty()).map_or_else(|| "FAILED".to_owned(), str::to_owned)
 }
 
+/// Create a private `%TEMP%\rainy-office-*` staging folder for one conversion.
+pub fn create_staging_dir() -> Result<PathBuf, Failure> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos());
+    let seq = STAGING_SEQ.fetch_add(1, Ordering::Relaxed);
+    let folder = std::env::temp_dir().join(format!("rainy-office-{}-{stamp}-{seq}", std::process::id()));
+    std::fs::create_dir(&folder).map_err(|error| Failure::new("failed", error.to_string()))?;
+    Ok(folder)
+}
+
+/// Convert an input file on disk to a PDF inside `staging_folder` (or a new `%TEMP%\rainy-office-*` folder).
+/// Avoids loading the entire Office document or output PDF into RAM, and guarantees `staging_folder` is cleaned
+/// up on every error path.
+pub fn convert_file_to_pdf(input_path: &std::path::Path, extension: &str, staging_folder: Option<PathBuf>) -> Result<ConvertedFile, Failure> {
+    let mut guard = StagingGuard(staging_folder);
+    let Some(kind) = kind(extension) else { return Err(Failure::new("unsupported", format!(".{extension}"))) };
+    let metadata = std::fs::metadata(input_path).map_err(|error| Failure::new("failed", error.to_string()))?;
+    if metadata.len() > MAX_BYTES as u64 {
+        return Err(Failure::new("too-large", format!("{} MB", metadata.len() / (1024 * 1024))));
+    }
+    let mut head = [0u8; 8];
+    if let Ok(mut file) = std::fs::File::open(input_path) {
+        let n = file.read(&mut head).unwrap_or(0);
+        if encrypted_open_xml(&head[..n], extension) {
+            return Err(Failure::new("password", ""));
+        }
+    }
+    if guard.0.is_none() {
+        guard.0 = Some(create_staging_dir()?);
+    }
+    let folder = guard.0.as_ref().expect("staging folder initialized").clone();
+    let staged_input = if input_path.parent() == Some(folder.as_path()) {
+        input_path.to_path_buf()
+    } else {
+        let copy = folder.join(format!("document.{extension}"));
+        std::fs::copy(input_path, &copy).map_err(|error| Failure::new("failed", error.to_string()))?;
+        copy
+    };
+    let output = folder.join("document.pdf");
+    let answer = run(&staged_input, &output, kind);
+    // Remove staged copy of the source document now that Office has closed it; keep only the PDF.
+    let _ = std::fs::remove_file(&staged_input);
+    match answer.as_str() {
+        "MISSING" => Err(Failure::new("missing", "")),
+        "PASSWORD" => Err(Failure::new("password", "")),
+        "TIMEOUT" => Err(Failure::new("timeout", "")),
+        _ => {
+            if let Some(application) = answer.strip_prefix("OK ") {
+                let mut magic = [0u8; 5];
+                let valid = std::fs::File::open(&output).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"%PDF-";
+                if valid {
+                    let folder = guard.disarm().expect("staging folder owned");
+                    return Ok(ConvertedFile { folder, pdf_path: output, application: application.to_owned() });
+                }
+                return Err(Failure::new("no-output", application.trim()));
+            }
+            if let Some(applications) = answer.strip_prefix("NOPDF") {
+                return Err(Failure::new("no-output", applications.trim()));
+            }
+            Err(Failure::new("failed", answer.strip_prefix("FAILED").unwrap_or(&answer).trim()))
+        }
+    }
+}
+
 /// Convert one document; the input goes to a private temporary folder that is removed afterwards.
+#[cfg(test)]
 pub fn convert(bytes: &[u8], extension: &str) -> Result<Converted, Failure> {
     let Some(kind) = kind(extension) else { return Err(Failure::new("unsupported", format!(".{extension}"))) };
     if bytes.len() > MAX_BYTES {
@@ -189,6 +290,7 @@ pub fn convert(bytes: &[u8], extension: &str) -> Result<Converted, Failure> {
 }
 
 /// The PDF, or why there is none, from the script's last output line.
+#[cfg(test)]
 fn failure_of(answer: &str, output: &std::path::Path) -> Result<Converted, Failure> {
     match answer {
         "MISSING" => Err(Failure::new("missing", "")),
@@ -204,32 +306,6 @@ fn failure_of(answer: &str, output: &std::path::Path) -> Result<Converted, Failu
             Err(Failure::new("failed", answer.strip_prefix("FAILED").unwrap_or(answer).trim()))
         }
     }
-}
-
-type Remembered = VecDeque<((String, usize, u64), Arc<Converted>)>;
-
-/// Convert, or return a recent conversion of the same file; a failure is not remembered.
-pub fn to_pdf(bytes: &[u8], extension: &str) -> Result<Arc<Converted>, Failure> {
-    static RECENT: Mutex<Remembered> = Mutex::new(VecDeque::new());
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    let key = (extension.to_owned(), bytes.len(), hasher.finish());
-    {
-        let mut recent = RECENT.lock().unwrap();
-        if let Some(index) = recent.iter().position(|(known, _)| *known == key) {
-            let entry = recent.remove(index).expect("index found above");
-            let converted = entry.1.clone();
-            recent.push_back(entry);
-            return Ok(converted);
-        }
-    }
-    let converted = Arc::new(convert(bytes, extension)?);
-    let mut recent = RECENT.lock().unwrap();
-    recent.push_back((key, converted.clone()));
-    while recent.len() > KEEP {
-        recent.pop_front();
-    }
-    Ok(converted)
 }
 
 #[cfg(test)]
@@ -262,5 +338,28 @@ mod tests {
         assert_eq!((code("FAILED").code, code("FAILED").error.as_str()), ("failed", ""));
         assert_eq!(code("FAILED WPS Office: 0x800A").error, "WPS Office: 0x800A");
         assert_eq!(code("OK Microsoft Word").code, "no-output");
+    }
+
+    #[test]
+    fn staging_dir_is_unique_and_cleaned_up_on_early_validation_failure() {
+        let dir_a = create_staging_dir().expect("staging dir a");
+        let dir_b = create_staging_dir().expect("staging dir b");
+        assert_ne!(dir_a, dir_b);
+        ConvertedFile::cleanup(dir_b);
+
+        // Unsupported extension must still clean up caller-provided staging folder.
+        let dummy = dir_a.join("document.txt");
+        std::fs::write(&dummy, b"hello").unwrap();
+        let err = convert_file_to_pdf(&dummy, "txt", Some(dir_a.clone())).unwrap_err();
+        assert_eq!(err.code, "unsupported");
+        assert!(!dir_a.exists(), "staging folder leaked on unsupported extension");
+
+        // Encrypted OpenXML early return must also clean up caller-provided staging folder.
+        let dir_c = create_staging_dir().expect("staging dir c");
+        let encrypted = dir_c.join("document.pptx");
+        std::fs::write(&encrypted, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0]).unwrap();
+        let err = convert_file_to_pdf(&encrypted, "pptx", Some(dir_c.clone())).unwrap_err();
+        assert!(err.encrypted);
+        assert!(!dir_c.exists(), "staging folder leaked on encrypted file");
     }
 }

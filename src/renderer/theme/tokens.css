@@ -95,7 +95,8 @@ body {
 }
 
 body[data-rainy-dark] {
-  --rainy-alias-bg-base: var(--rainy-static-gray-950);
+  /* Matches `native/crates/app/src/theme.rs` (`background` and `tab.active.background` use step 925). */
+  --rainy-alias-bg-base: var(--rainy-static-gray-925);
   --rainy-alias-bg-document-preview: var(--rainy-static-gray-950);
   --rainy-alias-bg-layer-1: var(--rainy-static-gray-875);
   --rainy-alias-bg-layer-2: var(--rainy-static-gray-850);

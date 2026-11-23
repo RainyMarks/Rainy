@@ -180,6 +180,8 @@ struct Event {
 struct Poll {
     events: Vec<Event>,
     cursor: u64,
+    #[serde(default)]
+    truncated: bool,
     status: Status,
 }
 
@@ -231,6 +233,8 @@ pub struct Execution {
     store: Entity<Store>,
     workspace_id: Option<String>,
     cursor: u64,
+    /// True when the Host reported that buffered execution events were dropped before this client caught up.
+    pub truncated: bool,
     pub terminals: Vec<TerminalInfo>,
     pub runs: Vec<RunInfo>,
     pub debugs: Vec<DebugInfo>,
@@ -264,6 +268,7 @@ impl Execution {
                 if *event == IdeEvent::WorkspaceChanged {
                     this.workspace_id = ide.read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
                     this.cursor = 0;
+                    this.truncated = false;
                     this.terminals.clear();
                     this.runs.clear();
                     this.debugs.clear();
@@ -290,6 +295,7 @@ impl Execution {
                 store,
                 workspace_id: None,
                 cursor: 0,
+                truncated: false,
                 terminals: Vec::new(),
                 runs: Vec::new(),
                 debugs: Vec::new(),
@@ -350,6 +356,14 @@ impl Execution {
         self.debugs.iter().find(|debug| debug.id == *id)
     }
 
+    /// Dismiss the output-truncation banner until another truncated poll arrives.
+    pub fn clear_truncated(&mut self, cx: &mut Context<Self>) {
+        if self.truncated {
+            self.truncated = false;
+            cx.notify();
+        }
+    }
+
     /// Read the events after the cursor; a hint arriving meanwhile reads again afterwards.
     pub fn poll(&mut self, cx: &mut Context<Self>) {
         if self.polling {
@@ -368,6 +382,9 @@ impl Execution {
                 }
                 if let Ok(Ok(poll)) = result.map(serde_json::from_value::<Poll>) {
                     this.cursor = poll.cursor;
+                    if poll.truncated {
+                        this.truncated = true;
+                    }
                     for event in poll.events {
                         if event.kind == "output"
                             && let (Some(operation), Some(stream), Some(text)) = (event.operation_id, event.stream, event.text)

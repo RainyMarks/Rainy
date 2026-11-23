@@ -97,6 +97,18 @@ pub struct HostProcess {
     exited: Arc<Mutex<Option<Option<i32>>>>,
     /// The distribution and Linux path of a Host in WSL, which outlives `wsl.exe` when it does not stop by itself.
     wsl: Option<(String, String)>,
+    /// The SSH target and Linux path of a remote Host, tracked for remote `/proc` force-stop and reconnect.
+    ssh: Option<crate::ssh::RemoteHost>,
+}
+
+impl std::fmt::Debug for HostProcess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostProcess")
+            .field("port", &self.ready.port)
+            .field("pid", &self.ready.pid)
+            .field("ssh", &self.ssh)
+            .finish()
+    }
 }
 
 /// Validate the `ready` message, as `parseReady` in `transport.ts` does.
@@ -129,9 +141,25 @@ pub fn inheritable(name: &str) -> bool {
     !(["KEY", "SECRET", "TOKEN", "PASSWORD"].iter().any(|word| upper.contains(word)) || upper == "NODE_OPTIONS" || upper == "NODE_PATH")
 }
 
-fn write_line(stdin: &Mutex<Option<ChildStdin>>, value: &Value) {
+fn write_line(stdin: &Mutex<Option<ChildStdin>>, value: &Value) -> bool {
     if let Some(stdin) = stdin.lock().unwrap().as_mut() {
-        let _ = writeln!(stdin, "{value}").and_then(|()| stdin.flush());
+        return writeln!(stdin, "{value}").and_then(|()| stdin.flush()).is_ok();
+    }
+    false
+}
+
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let _ = Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000)
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
     }
 }
 
@@ -203,7 +231,11 @@ impl HostProcess {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         };
+        let wsl = crate::wsl::host_of(command);
+        let ssh = crate::ssh::host_of(command);
+        let mut started_pid: Option<u32> = None;
         let ready = match outcome.and_then(|ready| {
+            started_pid = Some(ready.pid);
             if let Some(port) = command.expected_port
                 && ready.port != port
             {
@@ -216,14 +248,27 @@ impl HostProcess {
         }) {
             Ok(ready) => ready,
             Err(error) => {
+                if let Some(pid) = started_pid {
+                    if let Some((distro, host)) = &wsl
+                        && let Err(stop_err) = crate::wsl::force_stop(distro, host, pid)
+                    {
+                        log::warn!("The WSL Host did not stop after failed start: {stop_err:#}");
+                    }
+                    if let Some(remote) = &ssh
+                        && let Err(stop_err) = crate::ssh::force_stop(&remote.target, &remote.host, pid)
+                    {
+                        log::warn!("The SSH Host did not stop after failed start: {stop_err:#}");
+                    }
+                }
                 let mut child = child.lock().unwrap();
+                kill_tree(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(error);
             }
         };
 
-        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone(), wsl: crate::wsl::host_of(command) };
+        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone(), wsl, ssh };
         // Report the exit once, from a thread that only polls the child.
         let child_ref = child;
         thread::Builder::new().name("host-exit".into()).spawn(move || {
@@ -247,6 +292,11 @@ impl HostProcess {
         &self.ready
     }
 
+    /// Remote SSH target and Host path when this Host runs over SSH.
+    pub fn remote_ssh(&self) -> Option<&crate::ssh::RemoteHost> {
+        self.ssh.as_ref()
+    }
+
     /// Whether the Host process has ended.
     pub fn has_exited(&self) -> bool {
         self.exited.lock().unwrap().is_some()
@@ -258,7 +308,10 @@ impl HostProcess {
         message["id"] = Value::String(id.clone());
         let (tx, rx) = mpsc::channel();
         self.pending.lock().unwrap().insert(id.clone(), tx);
-        write_line(&self.stdin, &message);
+        if !write_line(&self.stdin, &message) {
+            self.pending.lock().unwrap().remove(&id);
+            bail!(localized("执行后端控制通道已关闭。", "The execution Host control channel is closed."));
+        }
         let answer = rx.recv_timeout(REQUEST_DEADLINE);
         self.pending.lock().unwrap().remove(&id);
         answer.map_err(|_| anyhow!(localized("执行后端没有及时响应。", "The execution Host did not answer in time.")))
@@ -290,15 +343,13 @@ impl HostProcess {
         {
             log::warn!("The WSL Host did not stop: {error:#}");
         }
-        let mut child = self.child.lock().unwrap();
-        #[cfg(windows)]
+        if let Some(remote) = &self.ssh
+            && let Err(error) = crate::ssh::force_stop(&remote.target, &remote.host, self.ready.pid)
         {
-            use std::os::windows::process::CommandExt as _;
-            let _ = Command::new("taskkill.exe")
-                .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                .creation_flags(0x0800_0000)
-                .status();
+            log::warn!("The SSH Host did not stop: {error:#}");
         }
+        let mut child = self.child.lock().unwrap();
+        kill_tree(child.id());
         let _ = child.kill();
         let _ = child.wait();
     }

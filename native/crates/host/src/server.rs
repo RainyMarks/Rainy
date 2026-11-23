@@ -146,6 +146,11 @@ impl HostServer {
             .is_some_and(|origin| origin == format!("http://127.0.0.1:{port}") || origin == format!("http://localhost:{port}"))
     }
 
+    /// True when the request either carries no `Origin` header (native loopback client) or carries this Host's exact origin.
+    pub fn origin_ok_if_present(&self, headers: &HeaderMap) -> bool {
+        !headers.contains_key(header::ORIGIN) || self.same_origin(headers)
+    }
+
     /// Content Security Policy of a page: scripts only from the Host plus the one inline script with the globals.
     fn page_policy(&self, nonce: &str) -> String {
         let port = self.port();

@@ -8,6 +8,7 @@ import { asciiByte, decodeText, formatBytes, formatOffset, guessEncoding, hexByt
 import { loadFailure, type LoadFailure } from './load-errors.ts'
 import { useViewerT } from './messages.ts'
 import { detectSignature, type FileSignature } from './signature.ts'
+import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
 import css from './Viewers.module.css'
 
 const ROW_HEIGHT = 20
@@ -38,6 +39,7 @@ export function HexViewer({ url, size, onChanged, onBack }: {
   onBack?: (() => void) | undefined
 }): JSX.Element {
   const t = useViewerT()
+  const narrow = useNarrow()
   const source = useMemo(() => new ByteSource(url, size), [url, size])
   const scroller = useRef<HTMLDivElement>(null)
   const gotoInput = useRef<HTMLInputElement>(null)
@@ -231,29 +233,40 @@ export function HexViewer({ url, size, onChanged, onBack }: {
     )
   }
 
+  const copyActions: readonly ToolAction[] = [
+    { id: 'hex-copy-hex', label: t('hexCopyHex'), disabled: selection === undefined, onSelect: () => { void copy('hex') } },
+    { id: 'hex-copy-text', label: t('hexCopyText'), disabled: selection === undefined, onSelect: () => { void copy('text') } },
+    { id: 'hex-copy-python', label: t('hexCopyPython'), disabled: selection === undefined, onSelect: () => { void copy('python') } },
+    { id: 'hex-copy-c', label: t('hexCopyC'), disabled: selection === undefined, onSelect: () => { void copy('c') } },
+    { id: 'hex-copy-base64', label: t('hexCopyBase64'), disabled: selection === undefined, onSelect: () => { void copy('base64') } },
+  ]
+
   return (
     <div className={css.viewer} data-viewer="hex">
-      <div className={css.toolbar}>
-        {onBack !== undefined && <><button type="button" className={css.toolButton} onClick={onBack}>{t('hexBack')}</button><span className={css.separator} /></>}
+      <div className={`${css.toolbar} ${css.hexToolbar}`} data-narrow={narrow || undefined}>
+        {onBack !== undefined && <><button type="button" className={css.toolButton} onClick={onBack}>{t('hexBack')}</button>{!narrow && <span className={css.separator} />}</>}
         <span className={css.ellipsis} title={t('hexType')}>{signature === undefined ? t('loading') : signature === null ? t('hexUnknownType') : signature.label}</span>
         <span>· {fileSizeText(size)}</span>
-        <span className={css.separator} />
+        {!narrow && <span className={css.separator} />}
         <input ref={gotoInput} aria-label={t('hexGoto')} placeholder={t('hexGotoPlaceholder')}
           onKeyDown={(event) => { if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) goto(event.currentTarget.value) }} />
-        <select aria-label={t('hexCopy')} value="" disabled={selection === undefined}
-          onChange={(event) => { if (event.target.value !== '') void copy(event.target.value as CopyFormat) }}>
-          <option value="">{t('hexCopy')}</option>
-          <option value="hex">{t('hexCopyHex')}</option>
-          <option value="text">{t('hexCopyText')}</option>
-          <option value="python">{t('hexCopyPython')}</option>
-          <option value="c">{t('hexCopyC')}</option>
-          <option value="base64">{t('hexCopyBase64')}</option>
-        </select>
+        {!narrow && (
+          <select aria-label={t('hexCopy')} value="" disabled={selection === undefined}
+            onChange={(event) => { if (event.target.value !== '') void copy(event.target.value as CopyFormat) }}>
+            <option value="">{t('hexCopy')}</option>
+            <option value="hex">{t('hexCopyHex')}</option>
+            <option value="text">{t('hexCopyText')}</option>
+            <option value="python">{t('hexCopyPython')}</option>
+            <option value="c">{t('hexCopyC')}</option>
+            <option value="base64">{t('hexCopyBase64')}</option>
+          </select>
+        )}
         <select aria-label={t('hexOpenText')} title={t('hexOpenTextTitle')} value=""
           onChange={(event) => { if (event.target.value !== '') setText({ encoding: event.target.value as TextEncoding }) }}>
           <option value="">{t('hexOpenText')}</option>
           {encodings.map(encoding => <option key={encoding} value={encoding}>{ENCODING_NAMES[encoding]}</option>)}
         </select>
+        {narrow && <><span className={css.grow} /><ToolActions actions={copyActions} /></>}
       </div>
       {error !== undefined && <div className={`${css.notice} ${css.error}`} role="alert" title={error.detail}>{t('loadFailed', { error: error.reason })}</div>}
       <div className={css.hex}>

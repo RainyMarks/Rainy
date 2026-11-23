@@ -89,8 +89,124 @@ fn read_start(root: &Path, path: &str, chars: usize) -> Option<String> {
     (!text.is_empty()).then(|| clip(text, chars))
 }
 
+/// One declaration symbol extracted from a source file for the `symbol_outline` tool.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolEntry {
+    /// 1-based line number.
+    pub line: usize,
+    /// Declaration line (trimmed, trailing `{` stripped).
+    pub signature: String,
+    /// Best-effort declaration kind (`fn`, `struct`, `enum`, `trait`, `impl`, `class`, `interface`, `type`, `mod`, `const`, `other`).
+    pub kind: String,
+    /// Leading whitespace width (spaces).
+    pub indent: usize,
+}
+
+/// Structured declaration outline of one project file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSymbols {
+    pub path: String,
+    pub language: String,
+    pub lines: usize,
+    pub symbols: Vec<SymbolEntry>,
+    pub truncated: bool,
+}
+
+const MAX_OUTLINE_BYTES: u64 = 1024 * 1024;
+
+fn declaration_kind(line: &str) -> &'static str {
+    let mut rest = line.trim();
+    loop {
+        let before = rest;
+        for prefix in ["pub(crate) ", "pub(super) ", "pub ", "export default ", "export ", "async ", "public ", "private ", "protected ", "static ", "abstract ", "unsafe "] {
+            if let Some(stripped) = rest.strip_prefix(prefix) {
+                rest = stripped;
+            }
+        }
+        if rest.starts_with("const fn ") {
+            rest = &rest["const ".len()..];
+        }
+        if rest == before {
+            break;
+        }
+    }
+    if rest.starts_with("fn ") || rest.starts_with("def ") || rest.starts_with("function ") || rest.starts_with("func ") {
+        "fn"
+    } else if rest.starts_with("struct ") || rest.starts_with("record ") {
+        "struct"
+    } else if rest.starts_with("enum ") {
+        "enum"
+    } else if rest.starts_with("trait ") {
+        "trait"
+    } else if rest.starts_with("impl ") || rest.starts_with("impl<") {
+        "impl"
+    } else if rest.starts_with("class ") || rest.starts_with("object ") {
+        "class"
+    } else if rest.starts_with("interface ") {
+        "interface"
+    } else if rest.starts_with("type ") {
+        "type"
+    } else if rest.starts_with("mod ") || rest.starts_with("module ") {
+        "mod"
+    } else if rest.starts_with("const ") {
+        "const"
+    } else {
+        "other"
+    }
+}
+
+/// Extract declaration symbols with 1-based line numbers from a file inside `root` (at most `limit` symbols, capped at 500).
+pub fn symbol_outline(root: &Path, file_path: &Path, limit: usize) -> crate::error::HostResult<FileSymbols> {
+    let canonical_root = crate::paths::realpath(root)?;
+    let target = if file_path.is_absolute() { file_path.to_path_buf() } else { canonical_root.join(file_path) };
+    let canonical_file = crate::paths::realpath(&target)?;
+    if !crate::paths::contains(&canonical_root, &canonical_file) {
+        return Err(crate::error::HostError::invalid(crate::locale::l(
+            "文件不在当前项目目录内。",
+            "The file is outside the current project directory.",
+        )));
+    }
+    let meta = std::fs::metadata(&canonical_file)?;
+    if !meta.is_file() {
+        return Err(crate::error::HostError::invalid(crate::locale::l("目标路径不是普通文件。", "The target path is not a regular file.")));
+    }
+    if meta.len() > MAX_OUTLINE_BYTES {
+        return Err(crate::error::HostError::new("too-large", crate::locale::l("文件超过符号提取大小上限（1 MB）。", "The file exceeds the 1 MB symbol outline limit.")));
+    }
+    let bytes = std::fs::read(&canonical_file)?;
+    if bytes[..bytes.len().min(8192)].contains(&0) {
+        return Err(crate::error::HostError::invalid(crate::locale::l("二进制文件无法提取符号轮廓。", "Binary files cannot be outlined.")));
+    }
+    let relative = crate::paths::relative_to(&canonical_root, &canonical_file)
+        .unwrap_or_else(|| canonical_file.to_string_lossy().replace('\\', "/"));
+    let language = super::languages::file_type(&relative).language.to_owned();
+    let text = String::from_utf8_lossy(&bytes);
+    let cap = limit.clamp(1, 500);
+    let mut symbols = Vec::new();
+    let mut truncated = false;
+    let mut lines = 0usize;
+    for (index, line) in text.lines().enumerate() {
+        lines = index + 1;
+        let Some(found) = declaration(line) else { continue };
+        if symbols.len() >= cap {
+            truncated = true;
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        symbols.push(SymbolEntry {
+            line: index + 1,
+            signature: clip(found.trim_end_matches(['{', ' ']), 160),
+            kind: declaration_kind(found).to_owned(),
+            indent,
+        });
+    }
+    Ok(FileSymbols { path: relative, language, lines, symbols, truncated })
+}
+
 /// Whether a line declares something worth pointing to: a function, type, class or module, at most one level in.
-fn declaration(line: &str) -> Option<&str> {
+pub fn declaration(line: &str) -> Option<&str> {
     let indent = line.len() - line.trim_start().len();
     if indent > 4 || line.trim().is_empty() {
         return None;

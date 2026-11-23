@@ -166,13 +166,18 @@ impl Askpass {
         let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
         let token = request.get("token").and_then(Value::as_str).unwrap_or_default();
         let prompt: String = request.get("prompt").and_then(Value::as_str).unwrap_or_default().chars().take(4096).collect();
-        // `ssh` may end while the window asks, killing its askpass process with it.
-        let open = Arc::new(AtomicBool::new(true));
-        if let Ok(watched) = stream.try_clone() {
-            let open = open.clone();
-            let _ = thread::Builder::new().name("askpass-watch".into()).spawn(move || watch(watched, &open));
-        }
-        let reply = if self.state.lock().unwrap().sessions.contains_key(token) { self.answer(token, &prompt, &open) } else { None };
+        let known = self.state.lock().unwrap().sessions.contains_key(token);
+        let reply = if known {
+            // `ssh` may end while the window asks, killing its askpass process with it.
+            let open = Arc::new(AtomicBool::new(true));
+            if let Ok(watched) = stream.try_clone() {
+                let open = open.clone();
+                let _ = thread::Builder::new().name("askpass-watch".into()).spawn(move || watch(watched, &open));
+            }
+            self.answer(token, &prompt, &open)
+        } else {
+            None
+        };
         let body = reply.map_or_else(|| json!({}), |answer| json!({ "answer": answer }));
         let mut stream = stream;
         let _ = stream.write_all(body.to_string().as_bytes());

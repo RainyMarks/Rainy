@@ -416,18 +416,157 @@ pub fn command_line_with(installer: &Path, arguments: &[&str]) -> OsString {
     line
 }
 
+/// Registry keys where Rainy records its installation folder (shared with 3.x and `native/installer/rainy.nsi`).
+const INSTALL_KEY: &str = r"Software\2b4d0a43-506b-52c1-a15c-818e3e1af64d";
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\2b4d0a43-506b-52c1-a15c-818e3e1af64d";
+
+/// Whether this Rainy installation is per-user (HKCU) or per-machine (HKLM, requiring UAC elevation to update).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallScope {
+    PerUser,
+    PerMachine,
+}
+
+/// Extract the folder of the quoted program in an NSIS `UninstallString` (mirrors `rainyQuotedFolder` in `rainy.nsi`).
+fn quoted_folder(uninstall_string: &str) -> Option<String> {
+    let rest = uninstall_string.trim().strip_prefix('"')?;
+    let (exe, _) = rest.split_once('"')?;
+    let parent = Path::new(exe).parent()?;
+    let text = parent.to_str()?.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+fn normalize_install_path(path: &str) -> String {
+    let normalized = path.trim().replace('/', "\\");
+    let trimmed = normalized.trim_end_matches('\\');
+    if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
+        format!("{trimmed}\\").to_ascii_lowercase()
+    } else {
+        trimmed.to_ascii_lowercase()
+    }
+}
+
+/// Decide whether `rainy.nsi` launched with [`QUIT_ARGUMENTS`] (`--updated /S`) would enter per-machine mode
+/// (`$installMode == "all"`) and trigger a UAC prompt via `rainyElevate`.
+pub fn install_scope_from(user_root: Option<&str>, machine_root: Option<&str>, current_install_dir: Option<&Path>) -> InstallScope {
+    let user = user_root.map(str::trim).filter(|value| !value.is_empty());
+    let machine = machine_root.map(str::trim).filter(|value| !value.is_empty());
+    let Some(machine) = machine else {
+        return InstallScope::PerUser;
+    };
+    if user.is_none() {
+        return InstallScope::PerMachine;
+    }
+    if let Some(current) = current_install_dir.and_then(|dir| dir.to_str())
+        && normalize_install_path(current) == normalize_install_path(machine)
+    {
+        return InstallScope::PerMachine;
+    }
+    InstallScope::PerUser
+}
+
+#[cfg(windows)]
+fn read_registry_string_64(root: windows_sys::Win32::System::Registry::HKEY, subkey: &str, name: &str) -> Option<String> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        KEY_READ, KEY_WOW64_64KEY, RRF_RT_REG_SZ, RegCloseKey, RegGetValueW, RegOpenKeyExW,
+    };
+    use crate::text::wide;
+
+    let key_path = wide(subkey);
+    let mut handle = std::ptr::null_mut();
+    // SAFETY: NUL-terminated subkey; handle is closed before returning.
+    if unsafe { RegOpenKeyExW(root, key_path.as_ptr(), 0, KEY_READ | KEY_WOW64_64KEY, &mut handle) } != ERROR_SUCCESS {
+        return None;
+    }
+    let value_name = wide(name);
+    let mut buffer = vec![0u16; 256];
+    let result = loop {
+        let mut size = (buffer.len() * 2) as u32;
+        // SAFETY: valid open key handle, NUL-terminated value name, writable buffer of `size` bytes.
+        let status = unsafe {
+            RegGetValueW(handle, std::ptr::null(), value_name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size)
+        };
+        match status {
+            ERROR_SUCCESS => {
+                let units = &buffer[..(size as usize / 2).min(buffer.len())];
+                let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+                let text = String::from_utf16_lossy(&units[..end]).trim().to_owned();
+                break (!text.is_empty()).then_some(text);
+            }
+            ERROR_MORE_DATA => buffer.resize(size as usize / 2 + 1, 0),
+            _ => break None,
+        }
+    };
+    // SAFETY: handle opened above, closed once.
+    unsafe { RegCloseKey(handle) };
+    result
+}
+
+#[cfg(windows)]
+fn find_install_root(root: windows_sys::Win32::System::Registry::HKEY) -> Option<String> {
+    read_registry_string_64(root, INSTALL_KEY, "InstallLocation")
+        .or_else(|| read_registry_string_64(root, UNINSTALL_KEY, "UninstallString").and_then(|value| quoted_folder(&value)))
+}
+
+/// Detect whether Rainy is installed per-machine (HKLM) or per-user (HKCU).
+pub fn install_scope() -> InstallScope {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        let user_root = find_install_root(HKEY_CURRENT_USER);
+        let machine_root = find_install_root(HKEY_LOCAL_MACHINE);
+        let current_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+        install_scope_from(user_root.as_deref(), machine_root.as_deref(), current_dir.as_deref())
+    }
+    #[cfg(not(windows))]
+    {
+        InstallScope::PerUser
+    }
+}
+
+/// Whether this installation is per-machine (HKLM) and would require UAC elevation during silent update.
+pub fn is_per_machine_install() -> bool {
+    install_scope() == InstallScope::PerMachine
+}
+
+/// Pre-launch safety check: the installer must be an existing non-empty regular `.exe` file with no reparse point.
+fn validate_installer_path(installer: &Path) -> io::Result<()> {
+    if !installer.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("refusing to launch non-executable installer: {}", installer.display())));
+    }
+    download::check_path(installer).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    let metadata = fs::symlink_metadata(installer)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("installer is missing, empty, or not a regular file: {}", installer.display())));
+    }
+    Ok(())
+}
+
 /// Start the installer detached from Rainy, in its own process group, with no handles of Rainy's and with its own
 /// folder as the working folder, so nothing it starts keeps the installation folder in use; the process id. An
 /// installer that needs elevation is started through the shell, which asks for it.
 #[cfg(windows)]
 pub fn launch(installer: &Path) -> io::Result<u32> {
+    validate_installer_path(installer)?;
     launch_with(installer, &INSTALLER_ARGUMENTS, true)
 }
 
 /// Install as Rainy quits: silently, Rainy not started again, and never through an elevation prompt the user would
-/// meet after closing the window; an installer that needs elevation is left for the next offer.
+/// meet after closing the window; a per-machine (HKLM) installation or an installer that needs elevation is skipped
+/// and left for the next interactive offer.
 #[cfg(windows)]
 pub fn launch_on_quit(installer: &Path) -> io::Result<u32> {
+    validate_installer_path(installer)?;
+    if is_per_machine_install() {
+        log::info!(
+            "Update: skipping silent install on quit because Rainy is installed per-machine (HKLM) and would prompt for UAC elevation; the update will be offered on next launch"
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "per-machine installation requires elevation; skipping silent install on quit",
+        ));
+    }
     launch_with(installer, &QUIT_ARGUMENTS, false)
 }
 
@@ -1029,6 +1168,54 @@ mod tests {
         assert_eq!(line, "\"C:\\Users\\me\\AppData\\Local\\rainy-agent-updater\\pending\\Rainy-4.0.1-windows-x64-setup.exe\" --updated /S --force-run");
         // As Rainy quits the update installs silently and Rainy stays closed.
         assert_eq!(command_line_with(Path::new("C:\\u\\setup.exe"), &QUIT_ARGUMENTS), "\"C:\\u\\setup.exe\" --updated /S");
+    }
+
+    #[test]
+    fn detects_per_machine_install_scope_for_quit_uac_avoidance() {
+        // Only HKLM present -> NSIS selects $installMode == "all" and elevates via UAC.
+        assert_eq!(install_scope_from(None, Some(r"C:\Program Files\RainyAgent"), None), InstallScope::PerMachine);
+        assert_eq!(install_scope_from(Some(""), Some(r"C:\Program Files\RainyAgent"), None), InstallScope::PerMachine);
+        // Only HKCU present -> per-user, silent quit update does not prompt for UAC.
+        assert_eq!(install_scope_from(Some(r"C:\Users\u\AppData\Local\Programs\RainyAgent"), None, None), InstallScope::PerUser);
+        // Both present: running from the HKLM installation dir counts as PerMachine; running from HKCU counts as PerUser.
+        assert_eq!(
+            install_scope_from(
+                Some(r"C:\Users\u\AppData\Local\Programs\RainyAgent"),
+                Some(r"C:\Program Files\RainyAgent\"),
+                Some(Path::new(r"c:/program files/rainyagent")),
+            ),
+            InstallScope::PerMachine
+        );
+        assert_eq!(
+            install_scope_from(
+                Some(r"C:\Users\u\AppData\Local\Programs\RainyAgent"),
+                Some(r"C:\Program Files\RainyAgent"),
+                Some(Path::new(r"C:\Users\u\AppData\Local\Programs\RainyAgent")),
+            ),
+            InstallScope::PerUser
+        );
+        // UninstallString quoted folder extraction mirrors rainy.nsi `rainyQuotedFolder`.
+        assert_eq!(
+            quoted_folder(r#""C:\Program Files\RainyAgent\Uninstall RainyAgent.exe" /allusers"#).as_deref(),
+            Some(r"C:\Program Files\RainyAgent")
+        );
+        assert_eq!(quoted_folder("unquoted.exe"), None);
+    }
+
+    #[test]
+    fn validates_installer_before_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("Rainy-setup.exe");
+        assert!(validate_installer_path(&missing).is_err());
+        let empty = dir.path().join("empty.exe");
+        fs::write(&empty, b"").unwrap();
+        assert!(validate_installer_path(&empty).is_err());
+        let non_exe = dir.path().join("script.bat");
+        fs::write(&non_exe, b"@echo hi").unwrap();
+        assert!(validate_installer_path(&non_exe).is_err());
+        let ok = dir.path().join("Rainy-4.12.0-windows-x64-setup.exe");
+        fs::write(&ok, b"MZ").unwrap();
+        assert!(validate_installer_path(&ok).is_ok());
     }
 
     /// Record `file` of `release` as this updater does, with a placeholder digest.

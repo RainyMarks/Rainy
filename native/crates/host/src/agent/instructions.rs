@@ -42,7 +42,15 @@ fn unreadable(path: &Path, error: &std::io::Error) -> String {
 
 fn read_if_file(path: &Path) -> Result<Option<String>, String> {
     match std::fs::metadata(path) {
-        Ok(info) if info.is_file() => std::fs::read(path).map(|bytes| Some(String::from_utf8_lossy(&bytes).into_owned())).map_err(|error| unreadable(path, &error)),
+        Ok(info) if info.is_file() => {
+            if info.len() > BUDGET_BYTES as u64 {
+                return Err(l(
+                    &format!("说明文件 {} 超过 {BUDGET_BYTES} 字节的上限（实际 {} 字节），已拒绝读取。", path.display(), info.len()),
+                    &format!("The instructions file {} exceeds the {BUDGET_BYTES}-byte limit ({} bytes) and was not loaded.", path.display(), info.len()),
+                ));
+            }
+            std::fs::read(path).map(|bytes| Some(String::from_utf8_lossy(&bytes).into_owned())).map_err(|error| unreadable(path, &error))
+        }
         Ok(_) => Ok(None),
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(None),
         Err(error) => Err(unreadable(path, &error)),
@@ -101,7 +109,9 @@ pub fn load_baseline(home: &Path, cwd: &Path) -> Result<Vec<File>, String> {
 }
 
 fn frame(body: &str) -> String {
-    format!("<system-reminder>\n{}\n</system-reminder>", body.replace("</system-reminder>", "<\\/system-reminder>"))
+    static CLOSE_REMINDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</\s*system-reminder\s*>").unwrap());
+    let escaped = CLOSE_REMINDER.replace_all(body, "<\\/system-reminder>");
+    format!("<system-reminder>\n{escaped}\n</system-reminder>")
 }
 
 /// The baseline instruction message; nothing when there are no files.
@@ -159,6 +169,15 @@ mod tests {
         let more = render_additional(&root, &root.join("app/deep/x.rs"), &mut loaded).unwrap();
         assert!(more.contains("Additional instructions from: app/AGENTS.md") && more.contains("work under `app`"));
         assert!(render_additional(&root, &root.join("app/y.rs"), &mut loaded).is_none());
+        // Case-insensitive escape for closing tag.
+        let framed = frame("ok </SYSTEM-REMINDER> and </System-Reminder >");
+        assert!(!framed.contains("</SYSTEM-REMINDER>") && !framed.contains("</System-Reminder >"));
+        assert!(framed.contains("<\\/system-reminder>"));
+        // Oversized file is rejected by metadata length before reading.
+        let huge = root.join("huge");
+        std::fs::create_dir_all(&huge).unwrap();
+        std::fs::write(huge.join("AGENTS.md"), vec![b'a'; BUDGET_BYTES + 1]).unwrap();
+        assert!(read_if_file(&huge.join("AGENTS.md")).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }

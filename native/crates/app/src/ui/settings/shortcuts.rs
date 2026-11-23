@@ -27,7 +27,7 @@ const GROUPS: [(Option<&str>, Shortcuts); 5] = [
         (&[&["Ctrl", "W"]], "ide.ideClose"),
     ]),
     (Some("settings.groupChat"), &[
-        (&[&["Ctrl", "Alt", "N"]], "settings.shortcutNewChat"),
+        (&[&["Ctrl", "N"], &["Ctrl", "Alt", "N"]], "settings.shortcutNewChat"),
         (&[&["Ctrl", "Alt", "K"]], "settings.shortcutSearchChats"),
         (&[&["Enter"]], "settings.shortcutSend"),
         (&[&["Shift", "Enter"]], "settings.shortcutNewline"),

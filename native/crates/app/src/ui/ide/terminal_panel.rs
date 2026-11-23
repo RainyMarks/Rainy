@@ -21,6 +21,42 @@ use crate::ui::{tr, trf};
 
 /// Lines of terminal output sent to the AI at most (3.x `SENT_LINES`).
 const SENT_LINES: usize = 200;
+/// Maximum lines and characters injected into the chat composer as a quoted block.
+const COMPOSER_QUOTE_LINES: usize = 80;
+const COMPOSER_QUOTE_CHARS: usize = 6000;
+
+/// Truncate terminal text keeping the tail (where recent errors live) and wrap it as a Markdown quote block.
+fn format_terminal_quote(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let mut clipped = false;
+    let slice = if lines.len() > COMPOSER_QUOTE_LINES {
+        clipped = true;
+        &lines[lines.len() - COMPOSER_QUOTE_LINES..]
+    } else {
+        &lines[..]
+    };
+    let mut joined = slice.join("\n");
+    if joined.chars().count() > COMPOSER_QUOTE_CHARS {
+        clipped = true;
+        let skip = joined.chars().count().saturating_sub(COMPOSER_QUOTE_CHARS);
+        joined = joined.chars().skip(skip).collect();
+    }
+    let mut quoted = String::from("> ```text\n");
+    if clipped {
+        quoted.push_str("> … (truncated)\n");
+    }
+    for line in joined.lines() {
+        quoted.push_str("> ");
+        quoted.push_str(line);
+        quoted.push('\n');
+    }
+    quoted.push_str("> ```");
+    quoted
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
@@ -236,6 +272,21 @@ impl TerminalPanel {
         crate::ui::ask_ai(trf(cx, "ide.ideTerminalAsk", &[("output", &text)]).to_string(), window, cx);
     }
 
+    /// Inject the selected terminal text (or recent output/errors) as a truncated quote into the active chat composer.
+    fn quote_to_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.views.iter().find(|view| Some(&view.read(cx).id) == self.selected.as_ref()).cloned() else { return };
+        let raw = {
+            let term = view.read(cx);
+            term.selected_text().unwrap_or_else(|| term.recent_text(COMPOSER_QUOTE_LINES))
+        };
+        let quoted = format_terminal_quote(&raw);
+        if quoted.is_empty() {
+            window.push_notification(gpui_kit::component::notification::Notification::info(tr(cx, "native.terminalEmpty")), cx);
+            return;
+        }
+        crate::ui::insert_into_composer(quoted, window, cx);
+    }
+
     fn add_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.watch.read(cx).value().trim().to_owned();
         if value.is_empty() {
@@ -325,6 +376,7 @@ impl TerminalPanel {
         let selected = self.selected.clone();
         let shown = self.views.iter().find(|view| Some(&view.read(cx).id) == selected.as_ref()).cloned();
         let has_shown = shown.is_some();
+        let truncated = self.execution.read(cx).truncated;
         v_flex()
             .size_full()
             .child(
@@ -375,6 +427,15 @@ impl TerminalPanel {
                     .child(div().flex_1())
                     .when(has_shown, |this| {
                         this.child(
+                            Button::new("terminal-quote-chat")
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Send))
+                                .label(tr(cx, "native.sendToChat"))
+                                .tooltip(tr(cx, "native.sendSelectionToChat"))
+                                .on_click(cx.listener(|this, _, window, cx| this.quote_to_chat(window, cx))),
+                        )
+                        .child(
                             Button::new("terminal-send")
                                 .ghost()
                                 .xsmall()
@@ -384,6 +445,32 @@ impl TerminalPanel {
                         )
                     }),
             )
+            .when(truncated, |this| {
+                this.child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .px_2p5()
+                        .py_1()
+                        .gap_2()
+                        .items_center()
+                        .text_xs()
+                        .bg(theme.warning.opacity(0.12))
+                        .border_b_1()
+                        .border_color(theme.warning.opacity(0.3))
+                        .text_color(crate::theme::warning_text(cx))
+                        .child(gpui_kit::component::Icon::new(IconName::TriangleAlert).xsmall())
+                        .child(div().flex_1().min_w_0().truncate().child(tr(cx, "native.terminalTruncated")))
+                        .child(
+                            Button::new("terminal-truncated-dismiss")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.execution.update(cx, |exec, cx| exec.clear_truncated(cx));
+                                })),
+                        ),
+                )
+            })
             .child(div().flex_1().min_h_0().px_2().pb_1().map(|this| match shown {
                 Some(view) => this.child(view),
                 None => this.child(
@@ -423,6 +510,7 @@ impl TerminalPanel {
             .children(problems.into_iter().enumerate().map(|(index, problem)| {
                 let (key, line, column) = (problem.key.clone(), problem.line, problem.column);
                 let ask = problem.clone();
+                let quote = problem.clone();
                 h_flex()
                     .id(("problem", index))
                     .px_2()
@@ -436,6 +524,17 @@ impl TerminalPanel {
                     .child(div().flex_shrink_0().text_color(if problem.error { theme.danger } else { crate::theme::warning_text(cx) }).child(if problem.error { "×" } else { "△" }))
                     .child(div().flex_1().min_w_0().truncate().child(problem.message.clone()))
                     .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(format!("{}:{line}:{column}", crate::store::ide::split_key(&problem.key).1)))
+                    .child(
+                        Button::new(("problem-quote", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Send))
+                            .tooltip(tr(cx, "native.sendDiagnosticToChat"))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                quote_problem(&quote, window, cx);
+                            }),
+                    )
                     .child(Button::new(("problem-fix", index)).ghost().xsmall().label(tr(cx, "ide.ideProblemFix")).on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         fix_problem(&ask, window, cx);
@@ -669,6 +768,26 @@ impl TerminalPanel {
     }
 }
 
+/// Inject a diagnostic and surrounding lines as a Markdown quote block into the current chat composer.
+fn quote_problem(problem: &crate::store::language::Problem, window: &mut Window, cx: &mut App) {
+    let path = crate::store::ide::split_key(&problem.key).1.to_owned();
+    let level = if problem.error { "error" } else { "warning" };
+    let snippet = Ide::global(cx)
+        .read(cx)
+        .files
+        .get(&problem.key)
+        .and_then(|file| file.editor.as_ref())
+        .map(|editor| {
+            let text = editor.read(cx).value().to_string();
+            let first = problem.line.saturating_sub(2).max(1) as usize;
+            text.lines().enumerate().skip(first - 1).take(5).map(|(index, line)| format!("> {:>4} | {line}", index + 1)).collect::<Vec<_>>().join("\n")
+        })
+        .unwrap_or_default();
+    let header = format!("> [{level}] `{path}:{}:{}` — {}", problem.line, problem.column, problem.message.trim());
+    let quote = if snippet.is_empty() { header } else { format!("{header}\n>\n{snippet}") };
+    crate::ui::insert_into_composer(quote, window, cx);
+}
+
 /// Ask the AI to fix a problem, with the lines around it (3.x `fixProblem`).
 fn fix_problem(problem: &crate::store::language::Problem, window: &mut Window, cx: &mut App) {
     let ide = Ide::global(cx);
@@ -703,4 +822,26 @@ impl Render for TerminalPanel {
 /// A terminal tab's mark: filled while its process runs.
 fn status_dot(running: bool, theme: &gpui_kit::component::Theme) -> impl IntoElement {
     div().size(px(6.)).rounded_full().map(|this| if running { this.bg(theme.success) } else { this.border_1().border_color(theme.muted_foreground) })
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    #[test]
+    fn quotes_and_truncates_long_terminal_output_keeping_tail() {
+        assert_eq!(format_terminal_quote("   \n  "), "");
+        let short = format_terminal_quote("error[E0308]: mismatched types\n  --> src/main.rs:10:5");
+        assert!(short.starts_with("> ```text\n> error[E0308]"));
+        assert!(!short.contains("(truncated)"));
+        assert!(short.ends_with("> ```"));
+
+        let many: String = (1..=120).map(|i| format!("line-{i}")).collect::<Vec<_>>().join("\n");
+        let clipped = format_terminal_quote(&many);
+        assert!(clipped.contains("> … (truncated)"));
+        assert!(!clipped.contains("line-1\n"));
+        assert!(clipped.contains("> line-120\n"));
+    }
 }

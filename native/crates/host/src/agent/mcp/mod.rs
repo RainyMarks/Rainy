@@ -28,6 +28,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 const STDIO_CONNECT_TIMEOUT: Duration = Duration::from_secs(180);
 /// An HTTP+SSE stream that drops later than this after connecting is reopened; one that drops sooner is an error.
 const SSE_SETTLE: Duration = Duration::from_secs(10);
+/// A stdio server running at least this long before exiting resets its backoff counter.
+const STDIO_SETTLE: Duration = Duration::from_secs(10);
+/// Maximum automatic reconnect attempts for a crashed stdio server.
+const STDIO_MAX_RECONNECTS: u32 = 5;
+/// Base backoff delay before restarting a crashed stdio server (2s, 4s, 8s, 16s, 32s).
+const STDIO_BACKOFF_BASE_SECS: u64 = 2;
+/// Hard fallback cap on a single MCP text block when no session `ToolContext::limit_output` is attached.
+const FALLBACK_MAX_CHARS: usize = 48_000;
+
+/// Output limiter matching [`super::tools::ToolContext::limit_output`].
+pub type OutputLimiter = Arc<dyn Fn(&str, String) -> String + Send + Sync>;
 
 /// The model-facing name of an MCP tool: `mcp__<server>__<tool>` in `[A-Za-z0-9_-]`, at most 64 characters.
 pub fn tool_name(server: &str, tool: &str) -> String {
@@ -56,6 +67,8 @@ struct Connection {
     client: Option<Arc<Client>>,
     tools: Vec<ServerTool>,
     instructions: String,
+    /// Consecutive stdio auto-reconnect attempts since the server last stayed up past [`STDIO_SETTLE`].
+    reconnect_attempts: u32,
     /// Cancelled when the connection is replaced or closed, ending a connection attempt.
     retired: CancellationToken,
 }
@@ -63,13 +76,23 @@ struct Connection {
 /// Keeps one connection per enabled server.
 pub struct McpManager {
     network: Arc<Network>,
+    runtime: Option<tokio::runtime::Handle>,
     connections: Mutex<Vec<Arc<Mutex<Connection>>>>,
     listeners: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl McpManager {
     pub fn new(network: Arc<Network>) -> Arc<Self> {
-        Arc::new(Self { network, connections: Mutex::default(), listeners: Mutex::default() })
+        Arc::new(Self {
+            network,
+            runtime: tokio::runtime::Handle::try_current().ok(),
+            connections: Mutex::default(),
+            listeners: Mutex::default(),
+        })
+    }
+
+    fn runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.runtime.clone().or_else(|| tokio::runtime::Handle::try_current().ok())
     }
 
     pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
@@ -82,9 +105,11 @@ impl McpManager {
         }
     }
 
-    /// Bring connections in line with the configured servers.
+    /// Bring connections in line with the configured servers. When an enabled server is replaced in place,
+    /// the new connection waits for the retired client to close first so stdio processes do not race on ports or locks.
     pub fn sync(self: &Arc<Self>, servers: &[McpServerConfig]) {
         let mut connections = self.connections.lock().unwrap();
+        let mut replacing: std::collections::HashMap<String, Arc<Client>> = std::collections::HashMap::new();
         connections.retain(|connection| {
             let mut held = connection.lock().unwrap();
             match servers.iter().find(|server| server.enabled && server.same_connection(&held.config)) {
@@ -93,7 +118,14 @@ impl McpManager {
                     true
                 }
                 None => {
-                    Self::retire(&held);
+                    let name = held.config.name.clone();
+                    let still_enabled = servers.iter().any(|server| server.enabled && server.name == name);
+                    if still_enabled && let Some(client) = held.client.take() {
+                        held.retired.cancel();
+                        replacing.insert(name, client);
+                    } else {
+                        self.retire(&held);
+                    }
                     false
                 }
             }
@@ -109,21 +141,36 @@ impl McpManager {
                 client: None,
                 tools: Vec::new(),
                 instructions: String::new(),
+                reconnect_attempts: 0,
                 retired: CancellationToken::new(),
             }));
+            let previous = replacing.remove(&server.name);
             if server.enabled {
-                self.spawn_connect(connection.clone());
+                self.spawn_connect_after(connection.clone(), previous, Duration::ZERO);
+            } else if let Some(old) = previous {
+                self.close_client_async(old);
             }
             connections.push(connection);
         }
         drop(connections);
+        for (_, old) in replacing {
+            self.close_client_async(old);
+        }
         self.notify();
     }
 
-    fn retire(connection: &Connection) {
+    fn close_client_async(&self, client: Arc<Client>) {
+        if let Some(handle) = self.runtime_handle() {
+            handle.spawn(async move { client.close().await });
+        } else {
+            log::warn!("[mcp] no Tokio runtime handle available to close retired client asynchronously");
+        }
+    }
+
+    fn retire(&self, connection: &Connection) {
         connection.retired.cancel();
         if let Some(client) = connection.client.clone() {
-            tokio::spawn(async move { client.close().await });
+            self.close_client_async(client);
         }
     }
 
@@ -139,7 +186,7 @@ impl McpManager {
             held.error = None;
             drop(held);
             retried = true;
-            self.spawn_connect(connection.clone());
+            self.spawn_connect_after(connection.clone(), None, Duration::ZERO);
         }
         if retried {
             self.notify();
@@ -201,20 +248,27 @@ impl McpManager {
         })
     }
 
-    /// The allowed tools of connected servers.
-    pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
+    /// The allowed tools of connected servers, deduplicated by model-facing name, with optional output limiting.
+    pub fn tools(&self, limiter: Option<OutputLimiter>) -> Vec<Arc<dyn Tool>> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for connection in self.connections.lock().unwrap().iter() {
             let held = connection.lock().unwrap();
             let Some(client) = held.client.clone().filter(|_| held.state == "ready") else { continue };
             let server = held.config.name.clone();
             for tool in &held.tools {
                 let name = tool_name(&server, &tool.name);
-                if !held.config.allows(&tool.name, &name) {
+                if !held.config.allows(&tool.name, &name) || !seen.insert(name.clone()) {
                     continue;
                 }
                 let description = if tool.description.is_empty() { format!("{} from MCP server {server}", tool.name) } else { tool.description.clone() };
-                tools.push(Arc::new(McpTool { client: client.clone(), server: server.clone(), tool: tool.name.clone(), spec: ToolSpec { name, description, parameters: tool.input_schema.clone(), freeform: None } }));
+                tools.push(Arc::new(McpTool {
+                    client: client.clone(),
+                    server: server.clone(),
+                    tool: tool.name.clone(),
+                    spec: ToolSpec { name, description, parameters: tool.input_schema.clone(), freeform: None },
+                    limiter: limiter.clone(),
+                }));
             }
         }
         tools
@@ -234,9 +288,25 @@ impl McpManager {
         futures::future::join_all(clients.iter().map(|client| client.close())).await;
     }
 
-    fn spawn_connect(self: &Arc<Self>, connection: Arc<Mutex<Connection>>) {
+    fn spawn_connect_after(self: &Arc<Self>, connection: Arc<Mutex<Connection>>, previous: Option<Arc<Client>>, delay: Duration) {
+        let Some(handle) = self.runtime_handle() else {
+            log::warn!("[mcp] no Tokio runtime handle available to connect server");
+            return;
+        };
         let manager = self.clone();
-        tokio::spawn(async move { manager.connect(connection).await });
+        handle.spawn(async move {
+            if let Some(old) = previous {
+                old.close().await;
+            }
+            if !delay.is_zero() {
+                let retired = connection.lock().unwrap().retired.clone();
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = retired.cancelled() => return,
+                }
+            }
+            manager.connect(connection).await;
+        });
     }
 
     async fn connect(self: Arc<Self>, connection: Arc<Mutex<Connection>>) {
@@ -244,6 +314,9 @@ impl McpManager {
             let held = connection.lock().unwrap();
             (held.config.clone(), held.retired.clone())
         };
+        if retired.is_cancelled() {
+            return;
+        }
         let attempt = tokio::select! {
             attempt = self.open(&config) => attempt,
             () = retired.cancelled() => return,
@@ -264,40 +337,86 @@ impl McpManager {
                 }
                 self.notify();
                 let connected = std::time::Instant::now();
+                let is_stdio = config.transport == "stdio";
                 let manager = self.clone();
-                tokio::spawn(async move {
+                let Some(handle) = self.runtime_handle() else { return };
+                handle.spawn(async move {
                     tokio::select! {
                         () = client.closed.cancelled() => {}
                         () = retired.cancelled() => return,
                     }
-                    let reopen = sse && connected.elapsed() > SSE_SETTLE;
-                    {
+                    let elapsed = connected.elapsed();
+                    let reopen_sse = sse && elapsed > SSE_SETTLE;
+                    let backoff = {
                         let mut held = connection.lock().unwrap();
                         if held.client.as_ref().is_some_and(|held| Arc::ptr_eq(held, &client)) {
                             held.client = None;
                         }
-                        if reopen {
+                        if reopen_sse {
                             log::info!("[mcp:{}] the HTTP+SSE stream closed; connecting again", held.config.name);
                             held.state = "connecting";
                             held.error = None;
+                            Some(Duration::ZERO)
+                        } else if is_stdio {
+                            if elapsed >= STDIO_SETTLE {
+                                held.reconnect_attempts = 0;
+                            }
+                            if held.reconnect_attempts < STDIO_MAX_RECONNECTS {
+                                let attempt = held.reconnect_attempts;
+                                held.reconnect_attempts += 1;
+                                let delay = stdio_backoff_delay(attempt);
+                                log::info!(
+                                    "[mcp:{}] stdio server exited; reconnecting in {}s (attempt {}/{STDIO_MAX_RECONNECTS})",
+                                    held.config.name,
+                                    delay.as_secs(),
+                                    held.reconnect_attempts
+                                );
+                                held.state = "connecting";
+                                held.error = Some(l(
+                                    &format!("MCP 服务器意外退出，{} 秒后自动重连…", delay.as_secs()),
+                                    &format!("The MCP server exited unexpectedly; reconnecting in {}s…", delay.as_secs()),
+                                ));
+                                Some(delay)
+                            } else {
+                                held.state = "error";
+                                held.error = Some(l(
+                                    "MCP 服务器多次意外退出，已停止自动重连。",
+                                    "The MCP server exited repeatedly; automatic reconnect stopped.",
+                                ));
+                                None
+                            }
                         } else {
                             held.state = "error";
                             held.error = Some(l("MCP 服务器断开了连接。", "The server closed the connection."));
+                            None
                         }
-                    }
+                    };
                     manager.notify();
-                    if reopen {
-                        manager.spawn_connect(connection);
+                    if let Some(delay) = backoff {
+                        manager.spawn_connect_after(connection, None, delay);
                     }
                 });
             }
             Err(message) => {
                 log::info!("[mcp:{}] {message}", config.name);
-                let mut held = connection.lock().unwrap();
-                held.state = "error";
-                held.error = Some(message);
-                drop(held);
+                let retry_delay = {
+                    let mut held = connection.lock().unwrap();
+                    if config.transport == "stdio" && held.reconnect_attempts > 0 && held.reconnect_attempts < STDIO_MAX_RECONNECTS {
+                        let delay = stdio_backoff_delay(held.reconnect_attempts);
+                        held.reconnect_attempts += 1;
+                        held.state = "connecting";
+                        held.error = Some(message);
+                        Some(delay)
+                    } else {
+                        held.state = "error";
+                        held.error = Some(message);
+                        None
+                    }
+                };
                 self.notify();
+                if let Some(delay) = retry_delay {
+                    self.spawn_connect_after(connection, None, delay);
+                }
             }
         }
     }
@@ -400,12 +519,33 @@ fn parse_tools(listed: &[Value]) -> Vec<ServerTool> {
         .collect()
 }
 
+/// Exponential backoff delay for stdio reconnect attempt `attempt` (0-based): 2s, 4s, 8s, 16s, 32s.
+fn stdio_backoff_delay(attempt: u32) -> Duration {
+    Duration::from_secs(STDIO_BACKOFF_BASE_SECS.saturating_mul(1u64 << attempt.min(5)))
+}
+
+fn limit_mcp_text(tool: &str, text: String, limiter: Option<&OutputLimiter>) -> String {
+    if let Some(limit) = limiter {
+        return limit(tool, text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= FALLBACK_MAX_CHARS {
+        return text;
+    }
+    let head = FALLBACK_MAX_CHARS * 3 / 4;
+    let tail = FALLBACK_MAX_CHARS - head;
+    let first: String = chars[..head].iter().collect();
+    let last: String = chars[chars.len() - tail..].iter().collect();
+    format!("{first}\n[Output limited ({} chars omitted)]\n{last}", chars.len() - FALLBACK_MAX_CHARS)
+}
+
 /// One server tool as the model calls it.
 struct McpTool {
     client: Arc<Client>,
     server: String,
     tool: String,
     spec: ToolSpec,
+    limiter: Option<OutputLimiter>,
 }
 
 impl Tool for McpTool {
@@ -424,22 +564,28 @@ impl Tool for McpTool {
                     other => other.to_string(),
                 })?;
             let mut content = Vec::new();
+            let mut text_parts = Vec::new();
             for block in result["content"].as_array().into_iter().flatten() {
                 match block["type"].as_str() {
-                    Some("text") => content.extend(block["text"].as_str().map(|text| ResultContent::Text { text: text.to_owned() })),
+                    Some("text") => text_parts.extend(block["text"].as_str().map(str::to_owned)),
                     Some("image") => {
                         if let (Some(data), Some(mime_type)) = (block["data"].as_str(), block["mimeType"].as_str()) {
                             content.push(ResultContent::Image { data: data.to_owned(), mime_type: mime_type.to_owned() });
                         }
                     }
-                    Some("resource") => content.extend(block.pointer("/resource/text").and_then(Value::as_str).map(|text| ResultContent::Text { text: text.to_owned() })),
+                    Some("resource") => text_parts.extend(block.pointer("/resource/text").and_then(Value::as_str).map(str::to_owned)),
                     _ => {}
                 }
             }
-            if content.is_empty()
+            if text_parts.is_empty()
+                && content.is_empty()
                 && let Some(structured) = result.get("structuredContent").filter(|value| !value.is_null())
             {
-                content.push(ResultContent::Text { text: serde_json::to_string_pretty(structured).unwrap_or_default() });
+                text_parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+            }
+            if !text_parts.is_empty() {
+                let limited = limit_mcp_text(&self.spec.name, text_parts.join("\n"), self.limiter.as_ref());
+                content.insert(0, ResultContent::Text { text: limited });
             }
             if content.is_empty() {
                 content.push(ResultContent::Text { text: "(no output)".into() });
@@ -459,5 +605,18 @@ mod tests {
         let long = tool_name("server", &"x".repeat(80));
         assert_eq!(long.len(), 64);
         assert!(long.starts_with("mcp__server__xxx"));
+    }
+
+    #[test]
+    fn limits_oversized_mcp_output_and_computes_backoff() {
+        let custom: OutputLimiter = Arc::new(|tool, text| format!("{tool}:{}", text.len().min(10)));
+        assert_eq!(limit_mcp_text("mcp__a__b", "0123456789abcdef".into(), Some(&custom)), "mcp__a__b:10");
+        let huge = "a".repeat(FALLBACK_MAX_CHARS + 5000);
+        let cut = limit_mcp_text("mcp__a__b", huge, None);
+        assert!(cut.contains("[Output limited") && cut.len() < FALLBACK_MAX_CHARS + 128);
+        assert_eq!(stdio_backoff_delay(0), Duration::from_secs(2));
+        assert_eq!(stdio_backoff_delay(1), Duration::from_secs(4));
+        assert_eq!(stdio_backoff_delay(2), Duration::from_secs(8));
+        assert_eq!(stdio_backoff_delay(4), Duration::from_secs(32));
     }
 }

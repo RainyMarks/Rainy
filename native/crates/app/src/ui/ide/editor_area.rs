@@ -34,6 +34,8 @@ struct Viewer {
     kind: &'static str,
     version: String,
     pane: Entity<WebPane>,
+    /// Monotonic counter of when this viewer was last accessed, for LRU hibernation.
+    last_used: u64,
     /// The editor whose text a Markdown page shows. Reading the file again from disk gives the tab a new editor; a page
     /// left on the old one would keep the old text, and its next edit would write that over the new file.
     editor: Option<EntityId>,
@@ -45,6 +47,18 @@ struct Viewer {
     /// Changes and scrolling of `editor`, replaced together with it.
     _editor_subscriptions: Vec<Subscription>,
 }
+
+/// Last known scroll position of a viewer pane so it can be restored after LRU hibernation.
+#[derive(Clone, Copy, Debug)]
+enum SavedScroll {
+    Line(f64),
+    Top(f64),
+}
+
+/// Maximum number of active WebView2 viewer panes kept alive simultaneously (LRU eviction above this).
+const MAX_ACTIVE_VIEWERS: usize = 4;
+/// Maximum number of decoded fallback image entries retained in memory.
+const MAX_PICTURES: usize = 16;
 
 /// Where the split view's source editor was last seen, and when the preview last moved it.
 #[derive(Default)]
@@ -79,8 +93,12 @@ pub struct EditorArea {
     ide: Entity<Ide>,
     /// Pictures by file key and version, so a changed file is fetched again.
     pictures: HashMap<(String, String), Picture>,
-    /// Pages by file key.
+    /// Pages by file key (bounded to `MAX_ACTIVE_VIEWERS` via LRU hibernation).
     viewers: HashMap<String, Viewer>,
+    /// Monotonic tick for WebPane LRU tracking.
+    viewer_tick: u64,
+    /// Saved scroll positions by file key, restored when a hibernated WebPane is recreated.
+    saved_scroll: HashMap<String, SavedScroll>,
     /// The tab strip, scrolled so the active tab is in view when it changes.
     tabs_scroll: ScrollHandle,
     scrolled_to: Option<String>,
@@ -97,6 +115,8 @@ pub struct EditorArea {
     outline: HashMap<String, i64>,
     /// An export to start once the file's page is ready.
     pending_export: Option<(String, &'static str)>,
+    /// True to show interactive per-hunk diff review (Accept/Revert Hunk); false for side-by-side Diff view.
+    diff_hunk_mode: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -138,10 +158,36 @@ impl EditorArea {
                 // Pages address their project; another project's file under the same key gets a page of its own.
                 if *event == crate::store::ide::IdeEvent::WorkspaceChanged {
                     this.viewers.clear();
+                    this.saved_scroll.clear();
+                    this.pictures.clear();
                 }
             }),
         ];
-        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, map_session: None, outline: HashMap::new(), pending_export: None, _subscriptions: subscriptions }
+        Self { ide, pictures: HashMap::new(), viewers: HashMap::new(), viewer_tick: 0, saved_scroll: HashMap::new(), tabs_scroll: ScrollHandle::new(), scrolled_to: None, scroll_retries: 0, ai_edit: None, map: None, map_shown: false, map_session: None, outline: HashMap::new(), pending_export: None, diff_hunk_mode: true, _subscriptions: subscriptions }
+    }
+
+    fn next_viewer_tick(&mut self) -> u64 {
+        self.viewer_tick = self.viewer_tick.wrapping_add(1);
+        self.viewer_tick
+    }
+
+    /// Evict least-recently-used WebPane instances when more than `MAX_ACTIVE_VIEWERS` are alive,
+    /// preserving any known scroll position so switching back restores the reader's place.
+    fn evict_lru_viewers(&mut self, keep_key: &str) {
+        while self.viewers.len() > MAX_ACTIVE_VIEWERS {
+            let victim = self
+                .viewers
+                .iter()
+                .filter(|(k, _)| k.as_str() != keep_key)
+                .min_by_key(|(_, viewer)| viewer.last_used)
+                .map(|(k, _)| k.clone());
+            let Some(victim) = victim else { break };
+            if let Some(removed) = self.viewers.remove(&victim) {
+                if let Some(line) = removed.scroll.line {
+                    self.saved_scroll.insert(victim, SavedScroll::Line(line));
+                }
+            }
+        }
     }
 
     /// The page of a file view, created on first use and again when the view or the file's version changes.
@@ -151,11 +197,21 @@ impl EditorArea {
         // Pages of the editor's text follow it as it changes; the others show one version of the file's bytes.
         let live = viewers::shows_text(kind);
         let version = file.document.version.clone();
-        if let Some(viewer) = self.viewers.get(key)
-            && viewer.kind == kind
-            && (live || viewer.version == version)
-        {
-            return Some(viewer.pane.clone());
+        if self.viewers.get(key).is_some_and(|viewer| viewer.kind == kind && (live || viewer.version == version)) {
+            let tick = self.next_viewer_tick();
+            if let Some(viewer) = self.viewers.get_mut(key) {
+                viewer.last_used = tick;
+                return Some(viewer.pane.clone());
+            }
+        }
+        // Snapshot the previous pane's scroll position when another active viewer is being switched away from.
+        for (other_key, other) in &self.viewers {
+            if other_key != key {
+                if let Some(view) = other.pane.read(cx).view() {
+                    let probe = "(() => { const el = document.scrollingElement || document.documentElement; const top = el ? el.scrollTop : window.scrollY; if (Number.isFinite(top) && top > 0 && window.ipc) { window.ipc.postMessage(JSON.stringify({ type: 'scroll-top', top })); } })()";
+                    view.execute(probe, |_| {});
+                }
+            }
         }
         // A hex page chosen in place of the file's own view offers the way back to it.
         let back = kind == "hex"
@@ -176,12 +232,14 @@ impl EditorArea {
         let owner = key.to_owned();
         let subscriptions = vec![cx.subscribe_in(&pane, window, move |this, _, event: &PaneEvent, window, cx| this.on_page(&owner, event, window, cx))];
         let editor_subscriptions = editor.as_ref().map(|editor| self.watch_editor(key, kind, editor, cx)).unwrap_or_default();
+        let tick = self.next_viewer_tick();
         self.viewers.insert(
             key.to_owned(),
             Viewer {
                 kind,
                 version,
                 pane: pane.clone(),
+                last_used: tick,
                 editor: editor.as_ref().map(Entity::entity_id),
                 from_page: None,
                 scroll: ScrollSync::default(),
@@ -189,6 +247,7 @@ impl EditorArea {
                 _editor_subscriptions: editor_subscriptions,
             },
         );
+        self.evict_lru_viewers(key);
         Some(pane)
     }
 
@@ -297,11 +356,19 @@ impl EditorArea {
     /// What a page asked for.
     fn on_page(&mut self, key: &str, event: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
         // The preview's scroll position is read here, before the general parser, which does not know it.
-        if let PaneEvent::Message(text) = event
-            && let Some(line) = scroll_message(text)
-        {
-            self.page_scrolled(key, line, cx);
-            return;
+        if let PaneEvent::Message(text) = event {
+            if let Some(line) = scroll_message(text) {
+                self.saved_scroll.insert(key.to_owned(), SavedScroll::Line(line));
+                if let Some(viewer) = self.viewers.get_mut(key) {
+                    viewer.scroll.line = Some(line);
+                }
+                self.page_scrolled(key, line, cx);
+                return;
+            }
+            if let Some(top) = scroll_top_message(text) {
+                self.saved_scroll.insert(key.to_owned(), SavedScroll::Top(top));
+                return;
+            }
         }
         match event {
             PaneEvent::Message(text) => match viewers::parse_message(text) {
@@ -311,9 +378,26 @@ impl EditorArea {
                         viewer.from_page = None;
                     }
                     self.send_text(key, cx);
-                    // The preview of a split view starts where the editor is.
-                    if let Some(editor) = self.ide.read(cx).files.get(key).and_then(|file| file.editor.clone()) {
+                    // The preview of a split view starts where the editor is; otherwise restore any hibernated scroll position.
+                    if self.split_shown(key, cx)
+                        && let Some(editor) = self.ide.read(cx).files.get(key).and_then(|file| file.editor.clone())
+                    {
                         self.editor_scrolled(key, &editor, true, cx);
+                    } else if let Some(saved) = self.saved_scroll.get(key).copied()
+                        && let Some(view) = self.viewers.get(key).and_then(|viewer| viewer.pane.read(cx).view())
+                    {
+                        match saved {
+                            SavedScroll::Line(line) => {
+                                if let Some(script) = scroll_script(line) {
+                                    view.execute(&script, |_| {});
+                                }
+                            }
+                            SavedScroll::Top(top) => {
+                                if let Some(script) = restore_scroll_top_script(top) {
+                                    view.execute(&script, |_| {});
+                                }
+                            }
+                        }
                     }
                     if self.pending_export.as_ref().is_some_and(|(pending, _)| pending == key)
                         && let Some((_, format)) = self.pending_export.take()
@@ -402,13 +486,36 @@ impl EditorArea {
         };
         match name {
             "open-external" => {
-                let path = params["path"].as_str().unwrap_or_default().to_owned();
-                if params["reveal"] == true {
-                    cx.reveal_path(std::path::Path::new(&path));
-                } else {
-                    cx.open_with_system(std::path::Path::new(&path));
+                let raw = params["path"].as_str().unwrap_or_default();
+                let windows = matches!(Store::global(cx).read(cx).target, None | Some(ExecutionTarget::Windows { .. }));
+                let roots: Vec<String> = self
+                    .ide
+                    .read(cx)
+                    .workspace
+                    .as_ref()
+                    .map(|ws| {
+                        let mut paths: Vec<String> = ws.roots().iter().map(|r| r.path.clone()).collect();
+                        if !paths.iter().any(|p| p == &ws.path) {
+                            paths.push(ws.path.clone());
+                        }
+                        paths
+                    })
+                    .unwrap_or_default();
+                let validated = if windows { validate_open_external_path(raw, &roots) } else { None };
+                match validated {
+                    Some(safe_path) => {
+                        if params["reveal"] == true {
+                            cx.reveal_path(&safe_path);
+                        } else {
+                            cx.open_with_system(&safe_path);
+                        }
+                        respond(json!({}), cx);
+                    }
+                    None => {
+                        log::warn!("Blocked open-external request for path outside workspace or unsafe type: {raw}");
+                        respond(json!({ "error": tr(cx, "native.openExternalDenied").to_string() }), cx);
+                    }
                 }
-                respond(json!({}), cx);
             }
             // An exported Markdown document: ask where, then write the page or print it to PDF.
             "export-save" => {
@@ -502,16 +609,157 @@ impl EditorArea {
                 })
                 .detach();
             }
-            // Slides and old Word files are drawn as the PDF the installed Office makes; the bytes came through the
-            // Host, so files in WSL and on SSH servers convert too.
+            // Slides and old Word files are drawn as the PDF the installed Office makes; delivered via the Host's
+            // single-use `/rainy/ide/office-pdf?token=...` route so up to 200 MB documents never round-trip as base64.
             "office-pdf" => {
-                let engine = base64::engine::general_purpose::STANDARD;
-                let bytes = engine.decode(params["base64"].as_str().unwrap_or_default()).unwrap_or_default();
-                let extension = params["extension"].as_str().unwrap_or_default().to_ascii_lowercase();
-                let converting = cx.background_spawn(async move { crate::web::office::to_pdf(&bytes, &extension) });
+                let extension = params["extension"].as_str().unwrap_or_default().trim_start_matches('.').to_ascii_lowercase();
+                if crate::web::office::kind(&extension).is_none() {
+                    respond(json!({ "error": "Unsupported Office document extension", "code": "unsupported", "missing": false, "encrypted": false }), cx);
+                    return;
+                }
+                let workspace_id = params["workspaceId"].as_str().map(str::to_owned);
+                let root_id = params["rootId"].as_str().map(str::to_owned);
+                let rel_path = params["path"].as_str().map(str::to_owned);
+                let version = params["version"].as_str().map(str::to_owned);
+                let legacy_base64 = params["base64"].as_str().map(str::to_owned);
+                let store = Store::global(cx);
+                let (rpc, windows) = {
+                    let s = store.read(cx);
+                    (s.rpc.clone(), matches!(s.target, None | Some(ExecutionTarget::Windows { .. })))
+                };
+                // On Windows, locate the file directly inside the active workspace to avoid downloading it through HTTP.
+                let local_source = if windows {
+                    if let Some(rel) = rel_path.as_deref() {
+                        self.ide.read(cx).workspace.as_ref().and_then(|ws| {
+                            let ws_roots = ws.roots();
+                            let base = ws_roots
+                                .iter()
+                                .find(|r| root_id.as_deref() == Some(r.root_id.as_str()) || (root_id.is_none() && r.primary))
+                                .map_or(ws.path.as_str(), |r| r.path.as_str());
+                            let candidate = std::path::Path::new(base).join(rel.replace('/', "\\"));
+                            let roots: Vec<String> = ws_roots.iter().map(|r| r.path.clone()).chain(std::iter::once(ws.path.clone())).collect();
+                            validate_workspace_file(&candidate.to_string_lossy(), &roots)
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let raw_query = match (workspace_id.as_deref(), rel_path.as_deref(), version.as_deref()) {
+                    (Some(ws), Some(path), Some(ver)) => {
+                        let mut q = format!("/rainy/ide/raw?w={}&p={}&v={}", encode(ws), encode(path), encode(ver));
+                        if let Some(r) = root_id.as_deref() {
+                            q.push_str(&format!("&r={}", encode(r)));
+                        }
+                        Some(q)
+                    }
+                    _ => None,
+                };
                 cx.spawn(async move |_, cx: &mut AsyncApp| {
-                    let result = match converting.await {
-                        Ok(converted) => json!({ "pdf": engine.encode(&converted.pdf), "application": converted.application }),
+                    let converted = cx
+                        .background_spawn({
+                            let rpc = rpc.clone();
+                            async move {
+                                if let Some(local) = local_source {
+                                    return crate::web::office::convert_file_to_pdf(&local, &extension, None);
+                                }
+                                if let (Some(query), Some(rpc)) = (raw_query, rpc) {
+                                    let folder = crate::web::office::create_staging_dir()?;
+                                    let input = folder.join(format!("document.{extension}"));
+                                    match rpc.get_to_file(&query, &input).await {
+                                        Ok(200..=299) => return crate::web::office::convert_file_to_pdf(&input, &extension, Some(folder)),
+                                        Ok(status) => {
+                                            crate::web::office::ConvertedFile::cleanup(folder);
+                                            return Err(crate::web::office::Failure {
+                                                code: "failed",
+                                                error: format!("HTTP {status}"),
+                                                missing: false,
+                                                encrypted: false,
+                                            });
+                                        }
+                                        Err(error) => {
+                                            crate::web::office::ConvertedFile::cleanup(folder);
+                                            return Err(crate::web::office::Failure {
+                                                code: "failed",
+                                                error: error.to_string(),
+                                                missing: false,
+                                                encrypted: false,
+                                            });
+                                        }
+                                    }
+                                }
+                                if let Some(b64) = legacy_base64 {
+                                    let bytes = base64::engine::general_purpose::STANDARD.decode(&b64).unwrap_or_default();
+                                    let folder = crate::web::office::create_staging_dir()?;
+                                    let input = folder.join(format!("document.{extension}"));
+                                    if let Err(error) = std::fs::write(&input, &bytes) {
+                                        crate::web::office::ConvertedFile::cleanup(folder);
+                                        return Err(crate::web::office::Failure {
+                                            code: "failed",
+                                            error: error.to_string(),
+                                            missing: false,
+                                            encrypted: false,
+                                        });
+                                    }
+                                    return crate::web::office::convert_file_to_pdf(&input, &extension, Some(folder));
+                                }
+                                Err(crate::web::office::Failure {
+                                    code: "failed",
+                                    error: "Missing document location".to_owned(),
+                                    missing: false,
+                                    encrypted: false,
+                                })
+                            }
+                        })
+                        .await;
+                    let result = match converted {
+                        Ok(converted) => {
+                            let delivered: Result<Value, String> = if let Some(rpc) = rpc {
+                                if windows {
+                                    let pdf_str = converted.pdf_path.to_string_lossy().to_string();
+                                    let reg = rpc.call("ide", json!({ "op": "officePdf.register", "path": pdf_str, "deleteAfterRead": true })).await;
+                                    match reg {
+                                        Ok(value) => Ok(value),
+                                        Err(error) => {
+                                            let folder = converted.folder.clone();
+                                            cx.background_spawn(async move { crate::web::office::ConvertedFile::cleanup(folder) }).detach();
+                                            Err(error.message)
+                                        }
+                                    }
+                                } else {
+                                    let pdf_path = converted.pdf_path.clone();
+                                    let folder = converted.folder.clone();
+                                    cx.background_spawn(async move {
+                                        let uploaded = rpc.post_file("/rainy/ide/office-pdf", "application/pdf", &pdf_path).await;
+                                        crate::web::office::ConvertedFile::cleanup(folder);
+                                        match uploaded {
+                                            Ok((200..=299, body)) => serde_json::from_slice::<Value>(&body).map_err(|e| e.to_string()),
+                                            Ok((status, body)) => Err(format!("HTTP {status} {}", String::from_utf8_lossy(&body))),
+                                            Err(error) => Err(error.to_string()),
+                                        }
+                                    })
+                                    .await
+                                }
+                            } else {
+                                let folder = converted.folder.clone();
+                                cx.background_spawn(async move { crate::web::office::ConvertedFile::cleanup(folder) }).detach();
+                                Err("Host disconnected".to_owned())
+                            };
+                            match delivered {
+                                Ok(reg) => json!({
+                                    "url": reg["url"],
+                                    "token": reg["token"],
+                                    "application": converted.application,
+                                }),
+                                Err(error) => json!({
+                                    "code": "failed",
+                                    "error": error,
+                                    "missing": false,
+                                    "encrypted": false,
+                                }),
+                            }
+                        }
                         Err(failure) => json!({ "code": failure.code, "error": failure.error, "missing": failure.missing, "encrypted": failure.encrypted }),
                     };
                     cx.update(|cx| respond(result, cx));
@@ -612,6 +860,16 @@ impl EditorArea {
                 query.push_str(&format!("&r={}", encode(root)));
             }
             let rpc = Store::global(cx).read(cx).rpc.clone();
+            while self.pictures.len() >= MAX_PICTURES {
+                let active_key = ide.active.as_deref();
+                let victim = self.pictures.keys().find(|(k, _)| Some(k.as_str()) != active_key).cloned();
+                match victim {
+                    Some(victim) => {
+                        self.pictures.remove(&victim);
+                    }
+                    None => break,
+                }
+            }
             self.pictures.insert(entry.clone(), Picture::Loading);
             let fetched = entry.clone();
             let (offline, failed) = (tr(cx, "viewers.hostOffline"), tr(cx, "viewers.imageReadFailed"));
@@ -696,19 +954,149 @@ impl EditorArea {
     }
 
     fn render_diff(&self, key: String, cx: &mut Context<Self>) -> AnyElement {
+        use crate::ui::ide::hunk_diff::HunkLineKind;
+
         let theme = cx.theme().clone();
         let ide = self.ide.read(cx);
         let tab = ide.diffs.get(&key);
         let state = tab.and_then(|tab| tab.state.clone());
         let error = tab.and_then(|tab| tab.error.clone());
+        let hunks = tab.map(|tab| tab.hunks.clone()).unwrap_or_default();
+        let hunk_count = hunks.len();
+        let loaded = state.is_some() || tab.is_some_and(|tab| !tab.status.is_empty());
+        let hunk_mode = self.diff_hunk_mode;
         let (show, reload) = (self.ide.clone(), self.ide.clone());
         let (shown, reloaded) = (key.clone(), key.clone());
         let (_, path) = split_key(&key);
         let body = match (state, error) {
-            (Some(state), _) => div().flex_1().min_h_0().child(Diff::new(&state)).into_any_element(),
-            (None, Some(error)) => {
+            (_, Some(error)) => {
                 centered(div().child(format!("{} {}", tr(cx, "ide.ideDiffUnavailable"), error)), &theme).into_any_element()
             }
+            (Some(_), None) if hunk_mode => {
+                if hunks.is_empty() {
+                    centered(div().child(tr(cx, "native.diffNoChanges")), &theme).into_any_element()
+                } else {
+                    let ide_handle = self.ide.clone();
+                    let diff_key = key.clone();
+                    let added_bg = theme.success.opacity(if theme.is_dark() { 0.14 } else { 0.12 });
+                    let removed_bg = theme.danger.opacity(if theme.is_dark() { 0.14 } else { 0.12 });
+                    let added_fg = if theme.is_dark() { theme.success } else { Hsla { l: theme.success.l.min(0.32), ..theme.success } };
+                    let removed_fg = if theme.is_dark() { theme.danger } else { Hsla { l: theme.danger.l.min(0.35), ..theme.danger } };
+                    let accept_label = tr(cx, "native.diffAcceptHunk");
+                    let revert_label = tr(cx, "native.diffRevertHunk");
+                    let card_radius = theme.radius;
+                    let card_border = theme.border;
+                    let card_bg = theme.background;
+                    let header_bg = theme.muted.opacity(0.45);
+                    let muted_fg = theme.muted_foreground;
+                    let text_fg = theme.foreground;
+                    let mono_font = theme.mono_font_family.clone();
+                    v_flex()
+                        .id("diff-hunks")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .p_3()
+                        .gap_3()
+                        .children(hunks.into_iter().map(move |hunk| {
+                            let idx = hunk.index;
+                            let accept_ide = ide_handle.clone();
+                            let revert_ide = ide_handle.clone();
+                            let accept_key = diff_key.clone();
+                            let revert_key = diff_key.clone();
+                            let accept_label = accept_label.clone();
+                            let revert_label = revert_label.clone();
+                            let mono = mono_font.clone();
+                            v_flex()
+                                .rounded(card_radius)
+                                .border_1()
+                                .border_color(card_border)
+                                .bg(card_bg)
+                                .overflow_hidden()
+                                .child(
+                                    h_flex()
+                                        .px_2p5()
+                                        .py_1()
+                                        .gap_2()
+                                        .items_center()
+                                        .bg(header_bg)
+                                        .border_b_1()
+                                        .border_color(card_border)
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .font_family(mono.clone())
+                                                .text_xs()
+                                                .text_color(muted_fg)
+                                                .child(hunk.header),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .flex_shrink_0()
+                                                .gap_1p5()
+                                                .text_xs()
+                                                .font_family(mono.clone())
+                                                .when(hunk.added > 0, |this| this.child(div().text_color(added_fg).child(format!("+{}", hunk.added))))
+                                                .when(hunk.removed > 0, |this| this.child(div().text_color(removed_fg).child(format!("-{}", hunk.removed)))),
+                                        )
+                                        .child(
+                                            Button::new(("hunk-accept", idx))
+                                                .outline()
+                                                .xsmall()
+                                                .icon(IconName::Check)
+                                                .label(accept_label)
+                                                .on_click(move |_, window, cx| {
+                                                    let key = accept_key.clone();
+                                                    accept_ide.update(cx, |ide, cx| ide.apply_diff_hunk(key, idx, true, window, cx));
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new(("hunk-revert", idx))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Undo)
+                                                .label(revert_label)
+                                                .on_click(move |_, window, cx| {
+                                                    let key = revert_key.clone();
+                                                    revert_ide.update(cx, |ide, cx| ide.apply_diff_hunk(key, idx, false, window, cx));
+                                                }),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .py_1()
+                                        .font_family(mono)
+                                        .text_xs()
+                                        .children(hunk.lines.into_iter().map(move |line| {
+                                            let (bg, mark, fg) = match line.kind {
+                                                HunkLineKind::Added => (Some(added_bg), "+", added_fg),
+                                                HunkLineKind::Removed => (Some(removed_bg), "-", removed_fg),
+                                                HunkLineKind::Context => (None, " ", text_fg),
+                                            };
+                                            let old_no = line.old_line.map(|n| n.to_string()).unwrap_or_default();
+                                            let new_no = line.new_line.map(|n| n.to_string()).unwrap_or_default();
+                                            h_flex()
+                                                .w_full()
+                                                .px_2()
+                                                .gap_2()
+                                                .items_start()
+                                                .when_some(bg, |this, bg| this.bg(bg))
+                                                .child(div().w(px(34.)).flex_shrink_0().text_right().text_color(muted_fg.opacity(0.7)).child(old_no))
+                                                .child(div().w(px(34.)).flex_shrink_0().text_right().text_color(muted_fg.opacity(0.7)).child(new_no))
+                                                .child(div().w(px(12.)).flex_shrink_0().text_color(fg).child(mark))
+                                                .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_color(text_fg).child(line.text))
+                                        })),
+                                )
+                        }))
+                        .into_any_element()
+                }
+            }
+            (Some(state), None) => div().flex_1().min_h_0().child(Diff::new(&state)).into_any_element(),
+            (None, None) if loaded => centered(div().child(tr(cx, "native.diffNoChanges")), &theme).into_any_element(),
             (None, None) => centered(Spinner::new().small(), &theme).into_any_element(),
         };
         v_flex()
@@ -725,6 +1113,37 @@ impl EditorArea {
                     .border_color(theme.border)
                     .child(Icon::new(gpui_kit::assets::IconName::GitCompare).small().text_color(theme.muted_foreground))
                     .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(path.to_owned()))
+                    .when(hunk_count > 0, |this| {
+                        this.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(trf(cx, "native.diffHunkCount", &[("count", &hunk_count)])),
+                        )
+                    })
+                    .child(
+                        Button::new("diff-mode-hunks")
+                            .ghost()
+                            .xsmall()
+                            .selected(hunk_mode)
+                            .label(tr(cx, "native.diffHunks"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.diff_hunk_mode = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("diff-mode-side")
+                            .ghost()
+                            .xsmall()
+                            .selected(!hunk_mode)
+                            .label(tr(cx, "native.diffSideBySide"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.diff_hunk_mode = false;
+                                cx.notify();
+                            })),
+                    )
                     .child(Button::new("diff-refresh").ghost().xsmall().icon(IconName::RefreshCw).tooltip(tr(cx, "ide.ideRefresh")).on_click(move |_, window, cx| {
                         let key = reloaded.clone();
                         reload.update(cx, |ide, cx| ide.load_diff(key, window, cx));
@@ -1080,6 +1499,111 @@ fn scroll_script(line: f64) -> Option<String> {
     line.is_finite().then(|| format!("window.__rainyViewer&&window.__rainyViewer.scrollToLine&&window.__rainyViewer.scrollToLine({})", line.max(1.)))
 }
 
+/// The scroll offset reported by a viewer before LRU hibernation: `{"type":"scroll-top","top":120}`.
+fn scroll_top_message(text: &str) -> Option<f64> {
+    if !text.contains("\"scroll-top\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(text).ok()?;
+    if value["type"] != "scroll-top" {
+        return None;
+    }
+    value["top"].as_f64().filter(|top| top.is_finite() && *top >= 0.)
+}
+
+/// Restore the vertical scroll offset of a viewer page after LRU hibernation.
+fn restore_scroll_top_script(top: f64) -> Option<String> {
+    (top.is_finite() && top >= 0.).then(|| {
+        format!(
+            "requestAnimationFrame(() => {{ const el = document.scrollingElement || document.documentElement; if (el) el.scrollTop = {top}; else window.scrollTo(0, {top}); }})"
+        )
+    })
+}
+
+/// Safe document and media extensions allowed for `open-external`.
+/// Strictly excludes executables, scripts, shortcuts, installers, HTML/SVG and macro-enabled Office formats.
+const SAFE_EXTERNAL_EXTENSIONS: &[&str] = &[
+    "pdf", "doc", "docx", "dot", "dotx", "wps", "odt", "rtf",
+    "xls", "xlsx", "xlt", "xltx", "ods", "csv", "tsv",
+    "ppt", "pptx", "pps", "ppsx", "pot", "potx", "odp", "dps",
+    "txt", "md", "markdown", "epub",
+    "png", "apng", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "tif", "tiff", "ico", "avif",
+    "mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "weba",
+    "mp4", "m4v", "webm", "ogv", "mov", "mkv",
+];
+
+/// Strip the Windows verbatim prefix (`\\?\`) for component comparisons; returns `None` for UNC or device paths.
+fn strip_local_verbatim(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let raw = path.to_str()?;
+    let upper = raw.to_ascii_uppercase();
+    if upper.starts_with(r"\\?\UNC\") || upper.starts_with(r"\\.\") || raw.starts_with(r"\\") && !raw.starts_with(r"\\?\") {
+        return None;
+    }
+    let cleaned = raw.strip_prefix(r"\\?\").unwrap_or(raw);
+    Some(std::path::PathBuf::from(cleaned))
+}
+
+/// Component-wise case-insensitive containment check on Windows paths (`C:\proj` never matches `C:\proj-evil`).
+fn path_within_root(candidate: &std::path::Path, root: &std::path::Path) -> bool {
+    let (Some(cand), Some(base)) = (strip_local_verbatim(candidate), strip_local_verbatim(root)) else {
+        return false;
+    };
+    let mut cand_comps = cand.components();
+    for base_comp in base.components() {
+        let Some(cand_comp) = cand_comps.next() else {
+            return false;
+        };
+        if !cand_comp.as_os_str().to_string_lossy().eq_ignore_ascii_case(&base_comp.as_os_str().to_string_lossy()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reject UNC paths, device paths, control characters and NTFS Alternate Data Streams (`file.pdf:evil.exe`).
+fn has_disallowed_path_syntax(raw: &str) -> bool {
+    if raw.trim().is_empty() || raw.chars().any(|c| c.is_control()) {
+        return true;
+    }
+    let trimmed = raw.trim();
+    if trimmed.starts_with(r"\\") || trimmed.starts_with("//") {
+        return true;
+    }
+    // Only a Windows drive prefix `X:` at byte index 1 may contain ':'.
+    for (idx, ch) in trimmed.char_indices() {
+        if ch == ':' {
+            let valid_drive = idx == 1 && trimmed.as_bytes()[0].is_ascii_alphabetic();
+            if !valid_drive {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Validate that `raw` canonicalizes to an existing regular file inside one of the active workspace roots.
+/// Returns a normalized local path without the Windows `\\?\` verbatim prefix so Shell APIs accept it.
+fn validate_workspace_file(raw: &str, workspace_roots: &[String]) -> Option<std::path::PathBuf> {
+    if has_disallowed_path_syntax(raw) || workspace_roots.is_empty() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(raw).ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+    // Reject symlinks or reparse points that resolve to a UNC share, and strip `\\?\` for Windows Shell APIs.
+    let clean = strip_local_verbatim(&canonical)?;
+    let inside = workspace_roots.iter().filter_map(|root| std::fs::canonicalize(root).ok()).any(|root| path_within_root(&canonical, &root));
+    inside.then_some(clean)
+}
+
+/// Validate `open-external`: path must canonicalize inside an active workspace root and carry an allowlisted document/media extension.
+fn validate_open_external_path(raw: &str, workspace_roots: &[String]) -> Option<std::path::PathBuf> {
+    let canonical = validate_workspace_file(raw, workspace_roots)?;
+    let ext = canonical.extension()?.to_str()?.to_ascii_lowercase();
+    SAFE_EXTERNAL_EXTENSIONS.contains(&ext.as_str()).then_some(canonical)
+}
+
 /// Close a tab, asking first when it has unsaved edits.
 pub fn close_tab(ide: Entity<Ide>, key: String, window: &mut Window, cx: &mut App) {
     if !ide.read(cx).is_dirty(&key) {
@@ -1266,10 +1790,16 @@ impl EditorArea {
 impl Render for EditorArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        // Pages of closed tabs go away with their tabs.
-        let open: std::collections::HashSet<String> = self.ide.read(cx).tabs.iter().cloned().collect();
+        // Pages of closed tabs go away with their tabs; stale image versions are evicted immediately.
+        let (open, versions): (std::collections::HashSet<String>, HashMap<String, String>) = {
+            let ide = self.ide.read(cx);
+            let open = ide.tabs.iter().cloned().collect();
+            let versions = ide.files.iter().map(|(k, f)| (k.clone(), f.document.version.clone())).collect();
+            (open, versions)
+        };
         self.viewers.retain(|key, _| open.contains(key));
-        self.pictures.retain(|(key, _), _| open.contains(key));
+        self.saved_scroll.retain(|key, _| open.contains(key));
+        self.pictures.retain(|(key, version), _| open.contains(key) && versions.get(key).is_some_and(|cur| cur == version));
         self.outline.retain(|key, _| open.contains(key));
         // A tab that becomes active is brought into view, also when it was opened past the end of the strip or restored
         // before the strip was first laid out (a scroll asked for then has no sizes to work with, so it is asked again).
@@ -1407,5 +1937,50 @@ mod tests {
         assert!(scroll_script(-3.).is_some_and(|script| script.ends_with("scrollToLine(1)")));
         assert_eq!(scroll_script(f64::NAN), None);
         assert_eq!(scroll_script(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn open_external_enforces_workspace_boundary_and_safe_extensions() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let root = base.path().join("proj");
+        let sibling = base.path().join("proj-evil");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        let safe_pdf = root.join("report.pdf");
+        let safe_docx = root.join("notes.docx");
+        let safe_png = root.join("chart.PNG");
+        std::fs::write(&safe_pdf, b"%PDF-1.4").unwrap();
+        std::fs::write(&safe_docx, b"PK\x03\x04").unwrap();
+        std::fs::write(&safe_png, b"\x89PNG").unwrap();
+
+        let outside_pdf = sibling.join("leak.pdf");
+        std::fs::write(&outside_pdf, b"%PDF-1.4").unwrap();
+
+        let roots = vec![root.to_string_lossy().to_string()];
+
+        let resolved_pdf = validate_open_external_path(&safe_pdf.to_string_lossy(), &roots).expect("safe pdf allowed");
+        assert!(!resolved_pdf.to_string_lossy().starts_with(r"\\?\"), "Shell APIs reject verbatim prefix: {}", resolved_pdf.display());
+        let resolved_docx = validate_open_external_path(&safe_docx.to_string_lossy(), &roots).expect("safe docx allowed");
+        assert!(!resolved_docx.to_string_lossy().starts_with(r"\\?\"));
+        let resolved_png = validate_open_external_path(&safe_png.to_string_lossy(), &roots).expect("safe png allowed");
+        assert!(!resolved_png.to_string_lossy().starts_with(r"\\?\"));
+
+        // Traversal & sibling prefix attacks must be rejected.
+        let traversal = root.join("..").join("proj-evil").join("leak.pdf");
+        assert!(validate_open_external_path(&traversal.to_string_lossy(), &roots).is_none());
+        assert!(validate_open_external_path(&outside_pdf.to_string_lossy(), &roots).is_none());
+
+        // UNC, device, and ADS paths must be rejected.
+        assert!(validate_open_external_path(r"\\attacker\share\doc.pdf", &roots).is_none());
+        assert!(validate_open_external_path("//attacker/share/doc.pdf", &roots).is_none());
+        assert!(validate_open_external_path(&format!("{}:evil.exe", safe_pdf.display()), &roots).is_none());
+
+        // Executable, script, shortcut, and macro-enabled extensions must all be rejected.
+        for bad in ["a.exe", "a.bat", "a.cmd", "a.ps1", "a.vbs", "a.msi", "a.lnk", "a.js", "a.hta", "a.docm", "a.xlsm", "a.html"] {
+            let file = root.join(bad);
+            std::fs::write(&file, b"test").unwrap();
+            assert!(validate_open_external_path(&file.to_string_lossy(), &roots).is_none(), "expected rejection for {bad}");
+        }
     }
 }

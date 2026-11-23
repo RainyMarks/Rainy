@@ -82,10 +82,6 @@ fn env_name(name: &str) -> bool {
 pub fn check_run_configuration(value: &Value) -> HostResult<()> {
     let invalid = |message: &str| Err(HostError::invalid(message));
     let Some(object) = value.as_object() else { return invalid("A run configuration must be an object.") };
-    const FIELDS: [&str; 11] = ["name", "language", "rootId", "program", "pythonModule", "cwd", "arguments", "environment", "executable", "build", "terminal"];
-    if object.keys().any(|key| !FIELDS.contains(&key.as_str())) {
-        return invalid("A run configuration has an unknown field.");
-    }
     let text = |key: &str, required: bool| match object.get(key) {
         None | Some(Value::Null) => !required,
         Some(Value::String(text)) => !text.contains('\0') && !text.is_empty(),
@@ -526,11 +522,13 @@ mod tests {
     fn checks_configurations_like_3x() {
         let ok = json!({ "name": "a", "language": "python", "program": "a.py", "environment": { "DEBUG": "1" } });
         assert!(check_run_configuration(&ok).is_ok());
+        // Unknown fields from newer versions are tolerated for forward compatibility.
+        let forward_compat = json!({ "name": "a", "language": "python", "program": "a.py", "extra": 1 });
+        assert!(check_run_configuration(&forward_compat).is_ok());
         for bad in [
             json!({ "name": "a", "language": "python", "program": "a.py", "environment": { "RAINY_X": "1" } }),
             json!({ "name": "a", "language": "python", "program": "a.py", "build": { "kind": "single-file" } }),
             json!({ "name": "a", "language": "rust", "program": "a.rs" }),
-            json!({ "name": "a", "language": "python", "program": "a.py", "extra": 1 }),
             json!({ "name": "a", "language": "c", "program": "a.c", "pythonModule": "x" }),
         ] {
             assert!(check_run_configuration(&bad).is_err(), "{bad}");

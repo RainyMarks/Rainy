@@ -1,7 +1,7 @@
 //! Project-scoped terminals, runs and launch-only debug sessions (3.x `ide/execution.ts`), with a bounded history of
 //! ordered events the page polls with a cursor.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,8 @@ const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 const MAX_OPERATIONS: usize = 16;
 const MAX_CONFIGURATION_BYTES: usize = 32 * 1024;
+pub(super) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+const INPUT_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_TERMINAL_DIMENSION: u64 = 10_000;
 const DEFAULT_COLS: u16 = 100;
 const DEFAULT_ROWS: u16 = 24;
@@ -29,13 +31,10 @@ fn error(message: impl Into<String>) -> HostError {
     HostError::new("execution-error", message)
 }
 
-/// Check the run settings stored with a project's editor state.
+/// Check the run settings stored with a project's editor state (validates known fields, keeps unknown ones).
 pub fn check_configuration(value: &Value) -> HostResult<()> {
     let invalid = || HostError::invalid("The run settings are not valid.");
     let object = value.as_object().ok_or_else(invalid)?;
-    if object.keys().any(|key| !["profiles", "activeProfile", "breakpoints", "watches"].contains(&key.as_str())) {
-        return Err(invalid());
-    }
     let profiles = object.get("profiles").and_then(Value::as_array).ok_or_else(invalid)?;
     let mut names = std::collections::HashSet::new();
     for profile in profiles {
@@ -119,7 +118,8 @@ pub struct Execution {
     tools: super::tools::Tools,
     pwsh_path: Option<PathBuf>,
     operations: Mutex<Vec<Arc<Operation>>>,
-    history: Mutex<History>,
+    /// Per-workspace bounded event history so high-volume output in one workspace never evicts another's events.
+    history: Mutex<HashMap<String, History>>,
     hint: Arc<dyn Fn(&str) + Send + Sync>,
     disposed: AtomicBool,
 }
@@ -128,7 +128,7 @@ fn exit_of(outcome: &Outcome, stopped: bool) -> Value {
     json!({ "exitCode": outcome.exit_code, "signal": outcome.signal, "stopped": stopped })
 }
 
-fn dimension(value: &Value, fallback: u16) -> HostResult<u16> {
+pub(super) fn dimension(value: &Value, fallback: u16) -> HostResult<u16> {
     match value.as_u64() {
         None if value.is_null() => Ok(fallback),
         Some(number) if number > 0 && number <= MAX_TERMINAL_DIMENSION => Ok(number.min(u64::from(u16::MAX)) as u16),
@@ -150,7 +150,8 @@ impl Execution {
             return;
         }
         (self.hint)(workspace_id);
-        let mut history = self.history.lock().unwrap();
+        let mut buckets = self.history.lock().unwrap();
+        let history = buckets.entry(workspace_id.to_owned()).or_default();
         history.sequence += 1;
         event["sequence"] = json!(history.sequence);
         event["workspaceId"] = json!(workspace_id);
@@ -166,6 +167,20 @@ impl Execution {
             history.bytes -= size;
             history.removed_through = history.removed_through.max(removed["sequence"].as_u64().unwrap_or(0));
         }
+    }
+
+    fn poll_history(&self, workspace_id: &str, cursor: u64) -> (Vec<Value>, u64, bool) {
+        let buckets = self.history.lock().unwrap();
+        let Some(history) = buckets.get(workspace_id) else {
+            return (Vec::new(), 0, false);
+        };
+        let events: Vec<Value> = history
+            .events
+            .iter()
+            .filter(|(event, _)| event["sequence"].as_u64().unwrap_or(0) > cursor)
+            .map(|(event, _)| event.clone())
+            .collect();
+        (events, history.sequence, cursor < history.removed_through)
     }
 
     fn output(&self, workspace_id: &str, operation_id: &str, stream: &str, text: &str) {
@@ -501,6 +516,7 @@ impl Execution {
         let operations: Vec<Arc<Operation>> = self.operations.lock().unwrap().iter().filter(|operation| operation.workspace_id == workspace_id).cloned().collect();
         futures::future::join_all(operations.iter().map(|operation| self.stop(operation))).await;
         self.operations.lock().unwrap().retain(|operation| operation.workspace_id != workspace_id);
+        self.history.lock().unwrap().remove(workspace_id);
     }
 
     /// Stop everything; later requests are refused.
@@ -509,6 +525,7 @@ impl Execution {
         let operations: Vec<Arc<Operation>> = self.operations.lock().unwrap().clone();
         futures::future::join_all(operations.iter().map(|operation| self.stop(operation))).await;
         self.operations.lock().unwrap().clear();
+        self.history.lock().unwrap().clear();
     }
 
     /// One execution operation of the `ide` method.
@@ -516,21 +533,25 @@ impl Execution {
         if self.disposed.load(Ordering::Relaxed) {
             return Err(error("The IDE execution service is closed."));
         }
-        if request.to_string().len() > MAX_CONFIGURATION_BYTES {
+        let op = request["op"].as_str().unwrap_or_default();
+        // Terminal/run/debug paste payloads get their own larger limit (`MAX_INPUT_BYTES`), while configuration and
+        // control requests stay capped at `MAX_CONFIGURATION_BYTES`.
+        if matches!(op, "terminal.input" | "run.input" | "debug.input") {
+            let data = request["data"].as_str().ok_or_else(|| HostError::invalid("data must be a string"))?;
+            if data.len() > MAX_INPUT_BYTES {
+                return Err(error("The terminal input exceeds the configured byte limit."));
+            }
+        } else if request.to_string().len() > MAX_CONFIGURATION_BYTES {
             return Err(error("The IDE request exceeds the configured input limit."));
         }
         let workspace_id = request["workspaceId"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("workspaceId is required"))?;
         files.resolve_workspace(workspace_id, None)?;
-        let op = request["op"].as_str().unwrap_or_default();
         let ok = || Ok(json!({ "ok": true }));
         match op {
             "execution.status" => Ok(self.status(workspace_id)),
             "execution.poll" => {
                 let cursor = request["cursor"].as_u64().ok_or_else(|| HostError::invalid("cursor must be a number"))?;
-                let history = self.history.lock().unwrap();
-                let events: Vec<Value> = history.events.iter().filter(|(event, _)| event["workspaceId"] == workspace_id && event["sequence"].as_u64().unwrap_or(0) > cursor).map(|(event, _)| event.clone()).collect();
-                let (sequence, truncated) = (history.sequence, cursor < history.removed_through);
-                drop(history);
+                let (events, sequence, truncated) = self.poll_history(workspace_id, cursor);
                 Ok(json!({ "events": events, "cursor": sequence, "truncated": truncated, "status": self.status(workspace_id) }))
             }
             "run.resolve" => Ok(self.resolve(workspace_id, &request["configuration"], files)?.spec()),
@@ -565,7 +586,9 @@ impl Execution {
                             use tokio::io::AsyncWriteExt as _;
                             let mut stdin = operation.stdin.lock().await;
                             let pipe = stdin.as_mut().ok_or_else(|| error("This operation has no open input pipe."))?;
-                            pipe.write_all(data.as_bytes()).await?;
+                            for chunk in data.as_bytes().chunks(INPUT_CHUNK_BYTES) {
+                                pipe.write_all(chunk).await?;
+                            }
                             pipe.flush().await?;
                         }
                     }
@@ -586,5 +609,51 @@ impl Execution {
             }
             _ => Err(HostError::invalid("Unknown IDE operation.")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimension_rejects_overflow_and_zero() {
+        assert_eq!(dimension(&Value::Null, 80).unwrap(), 80);
+        assert_eq!(dimension(&json!(120), 80).unwrap(), 120);
+        assert!(dimension(&json!(0), 80).is_err());
+        assert!(dimension(&json!(65536), 80).is_err());
+    }
+
+    #[test]
+    fn check_configuration_allows_unknown_fields() {
+        let cfg = json!({
+            "profiles": [{ "name": "p", "language": "python", "program": "main.py", "futureField": true }],
+            "activeProfile": "p",
+            "breakpoints": [],
+            "watches": [],
+            "futureExecutionSetting": 123
+        });
+        assert!(check_configuration(&cfg).is_ok());
+    }
+
+    #[test]
+    fn history_buckets_isolate_workspaces_and_report_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::agent::tools::test_context(dir.path());
+        let exec = Execution::new(context.runtime.clone(), super::super::tools::Tools::with_roots(vec![dir.path().to_path_buf()]), None, |_| {});
+        exec.publish("ws-a", json!({ "kind": "output", "operationId": "o1", "stream": "stdout", "text": "hello a" }));
+        // Flood ws-b well past MAX_OUTPUT_BYTES (8 MiB).
+        let big = "x".repeat(100 * 1024);
+        for _ in 0..100 {
+            exec.publish("ws-b", json!({ "kind": "output", "operationId": "o2", "stream": "stdout", "text": big }));
+        }
+        let (a_events, a_cursor, a_truncated) = exec.poll_history("ws-a", 0);
+        assert_eq!(a_events.len(), 1);
+        assert_eq!(a_cursor, 1);
+        assert!(!a_truncated, "flooding ws-b must not truncate ws-a");
+
+        let (_b_events, b_cursor, b_truncated) = exec.poll_history("ws-b", 0);
+        assert!(b_cursor >= 100);
+        assert!(b_truncated, "ws-b cursor 0 must report truncated after eviction");
     }
 }

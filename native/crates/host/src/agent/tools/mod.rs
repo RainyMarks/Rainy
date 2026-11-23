@@ -2,8 +2,10 @@
 //! tracking and output limits — and the built-in set of a chat.
 
 pub mod browser;
+pub mod diagnostics;
 pub mod encoding;
 pub mod jobs;
+pub mod outline;
 pub mod patch;
 pub mod plan;
 pub mod read;
@@ -129,6 +131,8 @@ pub type RecordChange = Arc<dyn Fn(String, PathBuf, Option<Vec<u8>>, Option<Vec<
 pub struct ToolContext {
     /// The chat's working directory (the project's primary directory).
     pub cwd: PathBuf,
+    /// Workspace id when the chat belongs to a registered project.
+    pub workspace_id: Option<String>,
     /// Exported to commands as `RAINY_SESSION_ID`.
     pub session_id: String,
     pub runtime: Arc<Runtime>,
@@ -144,6 +148,10 @@ pub struct ToolContext {
     pub record_change: Option<RecordChange>,
     /// Commands of this chat that keep running after their call; absent where background commands are unavailable.
     pub jobs: Option<Arc<jobs::Jobs>>,
+    /// Shared Host LSP diagnostics pool; absent in headless unit tests.
+    pub languages: Option<Arc<crate::ide::language::Languages>>,
+    /// Shared Host ProjectMap index; absent in headless unit tests.
+    pub maps: Option<Arc<crate::map::ProjectMaps>>,
 }
 
 impl ToolContext {
@@ -214,7 +222,18 @@ impl Default for ToolStyle {
 }
 
 pub fn core_tools(context: &ToolContext, windows: bool, web: Option<web::WebAccess>, subagents: Option<Arc<dyn task::Subagents>>, style: ToolStyle) -> Vec<Arc<dyn Tool>> {
-    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(read::Read::new(context.clone())), Arc::new(search::Grep::new(context.clone())), Arc::new(search::Glob::new(context.clone()))];
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(read::Read::new(context.clone())),
+        Arc::new(search::Grep::new(context.clone())),
+        Arc::new(search::Glob::new(context.clone())),
+        Arc::new(outline::SymbolOutline::new(context.clone())),
+    ];
+    if let Some(maps) = &context.maps {
+        tools.push(Arc::new(outline::ModuleDeps::new(context.clone(), maps.clone())));
+    }
+    if let Some(languages) = &context.languages {
+        tools.push(Arc::new(diagnostics::LspDiagnostics::new(context.clone(), languages.clone())));
+    }
     match style.patch {
         Some(freeform) => tools.push(Arc::new(patch::ApplyPatch::new(context.clone(), freeform))),
         None => {
@@ -240,7 +259,18 @@ pub fn core_tools(context: &ToolContext, windows: bool, web: Option<web::WebAcce
 
 /// Tools a sub-agent may use: it reads and searches, so no call of its own waits for the user.
 pub fn subagent_tools(context: &ToolContext, web: Option<web::WebAccess>) -> Vec<Arc<dyn Tool>> {
-    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(read::Read::new(context.clone())), Arc::new(search::Grep::new(context.clone())), Arc::new(search::Glob::new(context.clone()))];
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(read::Read::new(context.clone())),
+        Arc::new(search::Grep::new(context.clone())),
+        Arc::new(search::Glob::new(context.clone())),
+        Arc::new(outline::SymbolOutline::new(context.clone())),
+    ];
+    if let Some(maps) = &context.maps {
+        tools.push(Arc::new(outline::ModuleDeps::new(context.clone(), maps.clone())));
+    }
+    if let Some(languages) = &context.languages {
+        tools.push(Arc::new(diagnostics::LspDiagnostics::new(context.clone(), languages.clone())));
+    }
     if let Some(web) = web {
         tools.push(Arc::new(web::WebSearch::new(web)));
     }
@@ -256,6 +286,7 @@ pub fn test_context(cwd: &Path) -> ToolContext {
     let runtime = Runtime::new(env, projects, registry, Arc::new(crate::activity::Activity::default())).unwrap();
     ToolContext {
         cwd: cwd.to_path_buf(),
+        workspace_id: None,
         session_id: "test".into(),
         runtime,
         spill_dir: cwd.join(".spill"),
@@ -265,6 +296,8 @@ pub fn test_context(cwd: &Path) -> ToolContext {
         on_file_touched: None,
         record_change: None,
         jobs: None,
+        languages: None,
+        maps: None,
     }
 }
 

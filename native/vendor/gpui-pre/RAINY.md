@@ -9,7 +9,9 @@ Changes from the published package:
 - `src/text_system/line_wrapper.rs` and `src/text_system/line_layout.rs`: Chinese and Japanese line breaking. GPUI
   allows a break before every CJK character, so a closing mark such as `。` or `，` could start a line on its own and
   an opening one such as `（` or `《` could end one. Closing punctuation now counts as part of the word before it
-  (`is_word_char`), and there is no break right after opening punctuation (`is_opening_punctuation`). Both changes
-  are marked `Rainy:` where they are defined.
+  (`is_word_char`), and there is no break right after opening punctuation (`is_opening_punctuation`) in both
+  `wrap_line` and `truncate_line`. Both changes are marked `Rainy:` where they are defined.
+- `src/window.rs`: `Window::active_tooltip_bounds` exposes the prepainted tooltip's bounds so embedded WebView2 child
+  windows yield when a GPUI tooltip overlaps them.
 
-To move to another gpui-pre, copy the new package here the same way and apply both changes again.
+To move to another gpui-pre, copy the new package here the same way and apply these changes again.

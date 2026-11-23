@@ -534,22 +534,47 @@ impl Files {
         Ok(Value::Array(result))
     }
 
-    fn git(&self, root: &Path, args: &[&str]) -> Result<Vec<u8>, Option<i32>> {
+    fn git_batch(&self, root: &Path, spec: &str) -> Result<(Option<i32>, Vec<u8>, String), ()> {
         let overlay = (self.git_environment)(root);
         let mut env = crate::process::child_env(&overlay);
         env.retain(|name, _| !name.to_string_lossy().to_uppercase().starts_with("GIT_"));
         env.insert("GIT_OPTIONAL_LOCKS".into(), "0".into());
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
-        let mut full = vec!["-c", "core.fsmonitor=false", "-C"];
         let root_text = root.to_string_lossy().into_owned();
-        full.push(&root_text);
-        full.extend_from_slice(args);
-        let output = tokio::runtime::Handle::current().block_on(crate::process::run("git", &full, root, &env, MAX_TEXT_BYTES as usize + 1, Some(GIT_TIMEOUT))).map_err(|_| None)?;
-        if output.success { Ok(output.stdout) } else { Err(output.code) }
+        let args = ["-c", "core.fsmonitor=false", "-c", "core.quotepath=false", "-C", &root_text, "cat-file", "--batch"];
+        let input = format!("{spec}\n");
+        let work = async {
+            use tokio::io::AsyncWriteExt as _;
+            let mut child = crate::process::spawn("git", &args, root, &env, true).map_err(|_| ())?;
+            if let Some(mut stdin) = child.stdin.take() {
+                tokio::spawn(async move {
+                    let _ = stdin.write_all(input.as_bytes()).await;
+                    let _ = stdin.shutdown().await;
+                });
+            }
+            let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+            let read_limit = MAX_TEXT_BYTES as usize + 1024;
+            let result = tokio::time::timeout(
+                GIT_TIMEOUT,
+                async { tokio::join!(crate::process::read_limited(stdout, read_limit), crate::process::read_limited(stderr, 4096), child.wait()) },
+            )
+            .await;
+            match result {
+                Ok((out, err, status)) => Ok((status.ok().and_then(|s| s.code()), out, String::from_utf8_lossy(&err).into_owned())),
+                Err(_) => {
+                    crate::process::kill_tree(&mut child, Duration::from_millis(500)).await;
+                    Err(())
+                }
+            }
+        };
+        tokio::runtime::Handle::current().block_on(work)
     }
 
     fn diff(&self, workspace: &Workspace, path: &str) -> HostResult<Value> {
         relative_path(path, false)?;
+        if path.contains(['\n', '\r']) {
+            return Err(HostError::invalid("Invalid file path."));
+        }
         let current = match self.read(workspace, path) {
             Ok(current) => Some(current),
             Err(error) if missing(&error) => None,
@@ -571,45 +596,55 @@ impl Files {
             set(&mut result, Value::Null, "unavailable", Some(if reason == "media" { "binary" } else { reason }));
             return Ok(result);
         }
-        let repository = match self.git(&workspace.root, &["rev-parse", "--show-toplevel"]) {
-            Ok(output) => String::from_utf8_lossy(&output).trim().to_owned(),
-            Err(Some(128)) => {
-                set(&mut result, Value::Null, "unavailable", Some("not-git"));
-                return Ok(result);
-            }
-            Err(_) => return Err(HostError::new("io-error", l("无法运行 Git。", "Git could not be run."))),
+        // Single `git cat-file --batch` call resolves `HEAD:./<path>` relative to `workspace.root`, replacing up to
+        // four serial git processes (`rev-parse`, `ls-tree`, `cat-file -s`, `cat-file blob`).
+        let spec = format!("HEAD:./{path}");
+        let (code, stdout, stderr) = match self.git_batch(&workspace.root, &spec) {
+            Ok(outcome) => outcome,
+            Err(()) => return Err(HostError::new("io-error", l("无法运行 Git。", "Git could not be run."))),
         };
-        let repository_path = crate::paths::relative_to(&realpath(Path::new(&repository)).unwrap_or_else(|_| PathBuf::from(&repository)), &join_relative(&workspace.root, path))
-            .unwrap_or_else(|| path.to_owned());
+        if code == Some(128) || stderr.to_lowercase().contains("not a git repository") {
+            set(&mut result, Value::Null, "unavailable", Some("not-git"));
+            return Ok(result);
+        }
+        if code != Some(0) {
+            return Err(HostError::new("io-error", l("无法运行 Git。", "Git could not be run.")));
+        }
         let added = |result: &mut Value| set(result, json!(""), if current.is_none() { "unchanged" } else { "added" }, None);
-        let tree = match self.git(Path::new(&repository), &["ls-tree", "-z", "HEAD", "--", &repository_path]) {
-            Ok(output) => String::from_utf8_lossy(&output).into_owned(),
-            Err(Some(128)) => {
-                added(&mut result);
-                return Ok(result);
-            }
-            Err(_) => return Err(HostError::new("io-error", l("无法运行 Git。", "Git could not be run."))),
+        let Some(nl) = stdout.iter().position(|&b| b == b'\n') else {
+            added(&mut result);
+            return Ok(result);
         };
-        if tree.is_empty() {
+        let header = String::from_utf8_lossy(&stdout[..nl]);
+        let header = header.trim_end_matches('\r');
+        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
             added(&mut result);
             return Ok(result);
         }
-        let object = tree.split('\t').next().and_then(|head| {
-            let mut parts = head.split(' ');
-            let (_, kind, id) = (parts.next()?, parts.next()?, parts.next()?);
-            (kind == "blob").then(|| id.to_owned())
-        });
-        let Some(object) = object else {
+        let mut parts = header.split_whitespace();
+        let (_oid, kind, size_str) = match (parts.next(), parts.next(), parts.next()) {
+            (Some(oid), Some(kind), Some(size)) => (oid, kind, size),
+            _ => {
+                set(&mut result, Value::Null, "unavailable", Some("binary"));
+                return Ok(result);
+            }
+        };
+        if kind != "blob" {
             set(&mut result, Value::Null, "unavailable", Some("binary"));
             return Ok(result);
-        };
-        let size: u64 = self.git(&workspace.root, &["cat-file", "-s", &object]).ok().and_then(|output| String::from_utf8_lossy(&output).trim().parse().ok()).unwrap_or(u64::MAX);
+        }
+        let size: u64 = size_str.parse().unwrap_or(u64::MAX);
         if size > MAX_TEXT_BYTES {
             set(&mut result, Value::Null, "unavailable", Some("too-large"));
             return Ok(result);
         }
-        let blob = self.git(&workspace.root, &["cat-file", "blob", &object]).map_err(|_| HostError::new("io-error", l("Git 无法读取已提交的文件。", "Git could not read the committed file.")))?;
-        let decoded = decode(&blob, false);
+        let body_start = nl + 1;
+        let body_end = body_start.saturating_add(size as usize);
+        if body_end > stdout.len() {
+            return Err(HostError::new("io-error", l("Git 无法读取已提交的文件。", "Git could not read the committed file.")));
+        }
+        let blob = &stdout[body_start..body_end];
+        let decoded = decode(blob, false);
         let Some(content) = decoded.content else {
             set(&mut result, Value::Null, "unavailable", Some(decoded.reason.unwrap_or("unsupported-encoding")));
             return Ok(result);
@@ -627,48 +662,58 @@ impl Files {
     }
 }
 
-/// Quick Open: regular files whose relative path contains every query token, without following directory links.
+/// Quick Open: regular files respecting `.gitignore` whose relative path contains every query token, without following
+/// directory links.
 pub fn search(root: &Path, query: &str, requested: Option<usize>) -> Value {
     let lower = query.trim().to_lowercase().replace('\\', "/");
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     let limit = requested.unwrap_or(SEARCH_RESULT_LIMIT).min(SEARCH_RESULT_LIMIT);
     let deadline = Instant::now() + SEARCH_TIMEOUT;
-    let mut pending = vec![String::new()];
     let mut paths: Vec<String> = Vec::new();
-    let mut scanned = 0;
+    let mut scanned = 0usize;
     let mut truncated = false;
     let done = |mut paths: Vec<String>, truncated: bool| {
         paths.sort();
         json!({ "paths": paths, "truncated": truncated })
     };
-    while let Some(path) = pending.pop() {
-        if Instant::now() >= deadline {
-            return done(paths, true);
-        }
-        let absolute = join_relative(root, &path);
-        let Ok(entries) = std::fs::read_dir(&absolute) else {
+    let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+    for name in SEARCH_EXCLUDED {
+        let _ = overrides.add(&format!("!**/{name}/**"));
+        let _ = overrides.add(&format!("!{name}"));
+    }
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.hidden(false).require_git(false).follow_links(false);
+    if let Ok(built) = overrides.build() {
+        builder.overrides(built);
+    }
+    for entry in builder.build() {
+        if Instant::now() >= deadline || scanned >= SEARCH_MAX_ENTRIES {
             truncated = true;
+            break;
+        }
+        let Ok(entry) = entry else {
             continue;
         };
-        for entry in entries {
-            if Instant::now() >= deadline || scanned == SEARCH_MAX_ENTRIES {
-                return done(paths, true);
-            }
-            let Ok(entry) = entry else { continue };
-            scanned += 1;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let child = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() && !kind.is_symlink() && !SEARCH_EXCLUDED.contains(&name.as_str()) {
-                pending.push(child.clone());
-            }
-            if !kind.is_file() || !tokens.iter().all(|token| child.to_lowercase().contains(token)) {
+        if entry.depth() == 0 {
+            continue;
+        }
+        scanned += 1;
+        let Some(kind) = entry.file_type() else { continue };
+        if !kind.is_file() {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(root) else { continue };
+        let child = rel.to_string_lossy().replace('\\', "/");
+        if !tokens.is_empty() {
+            let child_lower = child.to_lowercase();
+            if !tokens.iter().all(|token| child_lower.contains(token)) {
                 continue;
             }
-            paths.push(child);
-            if paths.len() == limit {
-                return done(paths, true);
-            }
+        }
+        paths.push(child);
+        if paths.len() == limit {
+            truncated = true;
+            break;
         }
     }
     done(paths, truncated)
@@ -909,9 +954,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src/ui")).unwrap();
         std::fs::create_dir_all(dir.path().join("node_modules/x")).unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/\n*.log\n").unwrap();
         std::fs::write(dir.path().join("src/ui/chat.rs"), "").unwrap();
         std::fs::write(dir.path().join("node_modules/x/chat.js"), "").unwrap();
+        std::fs::write(dir.path().join("target/debug/chat.rs"), "").unwrap();
+        std::fs::write(dir.path().join("src/ui/chat.log"), "").unwrap();
         let found = search(dir.path(), "UI chat", None);
         assert_eq!(found["paths"], json!(["src/ui/chat.rs"]));
+        let all_chat = search(dir.path(), "chat", None);
+        assert_eq!(all_chat["paths"], json!(["src/ui/chat.rs"]));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_process_diff_reads_head_in_root_and_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run_git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("sub/a.txt"), "hello\n").unwrap();
+        run_git(&["add", "-A"]);
+        run_git(&["commit", "-q", "-m", "init"]);
+        std::fs::write(repo.join("sub/a.txt"), "hello\nworld\n").unwrap();
+        std::fs::write(repo.join("sub/new.txt"), "brand new\n").unwrap();
+
+        let projects = Arc::new(Projects::load(dir.path().join("projects.json")).unwrap());
+        let added = projects.open(repo.join("sub").to_str().unwrap(), None).unwrap();
+        let files = Arc::new(Files::new(projects, |_, _, _| {}, |_| BTreeMap::new()));
+        let ws = files.resolve_workspace(&added.id, None).unwrap();
+
+        let (f1, w1) = (files.clone(), ws.clone());
+        let modified = tokio::task::spawn_blocking(move || f1.diff(&w1, "a.txt")).await.unwrap().unwrap();
+        assert_eq!(modified["status"], "modified");
+        assert_eq!(modified["base"], "hello\n");
+        assert_eq!(modified["current"], "hello\nworld\n");
+
+        let (f2, w2) = (files.clone(), ws.clone());
+        let new_file = tokio::task::spawn_blocking(move || f2.diff(&w2, "new.txt")).await.unwrap().unwrap();
+        assert_eq!(new_file["status"], "added");
+        assert_eq!(new_file["base"], "");
     }
 }

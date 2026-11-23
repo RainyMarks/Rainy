@@ -11,6 +11,8 @@ pub mod preview;
 pub mod webview;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
@@ -40,6 +42,10 @@ enum State {
 
 /// One page shown in an area of the window.
 pub struct WebPane {
+    entity_id: EntityId,
+    /// Cleared in `Drop` so a WebView2 creation callback finishing after the pane was dropped
+    /// parks the orphaned control for deferred closing instead of leaking an HWND.
+    alive: Arc<AtomicBool>,
     state: State,
     /// Where it was painted last, in logical pixels of the window.
     bounds: Option<Bounds<Pixels>>,
@@ -60,6 +66,12 @@ struct Panes {
     following: HashSet<WindowId>,
     /// Toasts that ask for a frame once they are gone.
     toasts: HashSet<EntityId>,
+    /// Set during a frame whenever a Popover or custom floating menu is rendered open.
+    popover_open: bool,
+    /// Floating overlay bounds painted in the current frame (e.g. popovers or completion popups).
+    overlays: Vec<Bounds<Pixels>>,
+    /// Whether the previous frame had a transient overlay (popover/LSP/tooltip) hiding a pane.
+    had_transient_overlay: bool,
 }
 
 impl Global for Panes {}
@@ -98,19 +110,30 @@ impl WebPane {
         let windows = events.clone();
         options.on_new_window = Some(Box::new(move |url| drop(windows.try_send(PaneEvent::NewWindow(url)))));
         let entity = cx.entity().downgrade();
+        let entity_id = cx.entity_id();
+        let alive = Arc::new(AtomicBool::new(true));
         match hwnd(window) {
             Some(parent) => WebView::create(parent, options, {
                 let events = events.clone();
+                let alive = alive.clone();
                 move |result| {
-                    let _ = events.try_send(match result {
+                    let event = match result {
                         Ok(view) => {
                             view.set_visible(false);
+                            if !alive.load(Ordering::SeqCst) {
+                                // Never call `controller.Close()` synchronously inside a WebView2 callback;
+                                // park it for `close_orphaned()` outside the COM callback.
+                                ORPHANED.with(|orphaned| orphaned.borrow_mut().push(view));
+                                let _ = events.try_send(PaneEvent::Ready);
+                                return;
+                            }
                             view.navigate(&url);
                             CREATED.with(|created| created.borrow_mut().push((entity, view)));
                             PaneEvent::Ready
                         }
                         Err(error) => PaneEvent::Failed(error.into()),
-                    });
+                    };
+                    let _ = events.try_send(event);
                 }
             }),
             None => drop(events.try_send(PaneEvent::Failed(crate::ui::tr(cx, "viewers.pageNoWindow")))),
@@ -121,11 +144,7 @@ impl WebPane {
                 let applied = this.update(cx, |pane, cx| {
                     match &event {
                         PaneEvent::Ready => {
-                            if let Some(view) = CREATED.with(|created| {
-                                let mut created = created.borrow_mut();
-                                let at = created.iter().position(|(owner, _)| owner.entity_id() == cx.entity_id())?;
-                                Some(created.remove(at).1)
-                            }) {
+                            if let Some(view) = take_created(cx.entity_id()) {
                                 pane.state = State::Ready(view);
                                 pane.place(false);
                             }
@@ -137,6 +156,10 @@ impl WebPane {
                     cx.notify();
                 });
                 if applied.is_err() {
+                    if let Some(view) = take_created(entity_id) {
+                        view.close();
+                    }
+                    close_orphaned();
                     break;
                 }
             }
@@ -146,7 +169,7 @@ impl WebPane {
             cx.set_global(Panes::default());
         }
         cx.update_global::<Panes, _>(|panes, _| panes.all.push(weak));
-        Self { state: State::Creating, bounds: None, shown: false, _forward: forward }
+        Self { entity_id, alive, state: State::Creating, bounds: None, shown: false, _forward: forward }
     }
 
     pub fn view(&self) -> Option<&WebView> {
@@ -206,16 +229,99 @@ impl WebPane {
 
 impl Drop for WebPane {
     fn drop(&mut self) {
+        self.alive.store(false, Ordering::SeqCst);
         if let State::Ready(view) = &self.state {
             view.close();
         }
+        if let Some(view) = take_created(self.entity_id) {
+            view.close();
+        }
+        close_orphaned();
     }
 }
 
 thread_local! {
     /// Controls created but not yet handed to their pane.
     static CREATED: std::cell::RefCell<Vec<(WeakEntity<WebPane>, WebView)>> = std::cell::RefCell::default();
+    /// Controls whose owning `WebPane` was dropped before creation finished; closed outside WebView2 callbacks.
+    static ORPHANED: std::cell::RefCell<Vec<WebView>> = std::cell::RefCell::default();
     static SCALE: std::cell::RefCell<f32> = const { std::cell::RefCell::new(1.0) };
+}
+
+fn take_created(entity_id: EntityId) -> Option<WebView> {
+    CREATED.with(|created| {
+        let mut created = created.borrow_mut();
+        let at = created.iter().position(|(owner, _)| owner.entity_id() == entity_id)?;
+        Some(created.remove(at).1)
+    })
+}
+
+/// Close any WebView2 controls whose pane disappeared before creation finished.
+/// Must only be called outside WebView2 COM callbacks.
+pub fn close_orphaned() {
+    let orphaned = ORPHANED.with(|list| std::mem::take(&mut *list.borrow_mut()));
+    for view in orphaned {
+        view.close();
+    }
+    let stale: Vec<WebView> = CREATED.with(|created| {
+        let mut created = created.borrow_mut();
+        let mut dead = Vec::new();
+        let mut index = 0;
+        while index < created.len() {
+            if created[index].0.upgrade().is_none() {
+                dead.push(created.remove(index).1);
+            } else {
+                index += 1;
+            }
+        }
+        dead
+    });
+    for view in stale {
+        view.close();
+    }
+}
+
+/// Mark that a GPUI `Popover` or transient floating card is open in the current frame,
+/// so embedded WebView2 controls step aside instead of occluding it.
+pub fn mark_popover_open(cx: &mut App) {
+    if !cx.has_global::<Panes>() {
+        cx.set_global(Panes::default());
+    }
+    cx.update_global::<Panes, _>(|panes, _| panes.popover_open = true);
+}
+
+/// Record the bounds of a transient floating overlay painted in the current frame.
+pub fn mark_overlay_bounds(bounds: Bounds<Pixels>, cx: &mut App) {
+    if !cx.has_global::<Panes>() {
+        cx.set_global(Panes::default());
+    }
+    cx.update_global::<Panes, _>(|panes, _| panes.overlays.push(bounds));
+}
+
+/// Whether two axis-aligned rectangles intersect with positive area.
+fn rects_overlap(a: Bounds<Pixels>, b: Bounds<Pixels>) -> bool {
+    a.left() < b.right() && a.right() > b.left() && a.top() < b.bottom() && a.bottom() > b.top()
+}
+
+/// Whether any open editor currently shows an LSP completion, code-action, hover or diagnostic popup.
+fn has_active_editor_overlay(cx: &App) -> bool {
+    let Some(ide) = crate::store::ide::Ide::try_global(cx) else { return false };
+    let ide = ide.read(cx);
+    let Some(active) = ide.active.as_ref() else { return false };
+    let Some(editor) = ide.files.get(active).and_then(|file| file.editor.as_ref()) else { return false };
+    let state = editor.read(cx);
+    state.completion_menu_state().open
+        || state.code_action_menu_state().open
+        || state.hover_popover().is_some()
+        || state.diagnostic_popover().is_some()
+}
+
+/// Whether a GPUI key-context entry belongs to a floating menu, popover or completion overlay.
+fn is_overlay_context(context: &KeyContext) -> bool {
+    context.contains("PopupMenu")
+        || context.contains("Popover")
+        || context.contains("Completion")
+        || context.contains("ContextMenu")
 }
 
 /// Start a frame: no pane has been painted yet. Called by the workbench before its children.
@@ -223,20 +329,25 @@ pub fn begin_frame(cx: &mut App) {
     if !cx.has_global::<Panes>() {
         cx.set_global(Panes::default());
     }
-    cx.update_global::<Panes, _>(|panes, _| panes.painted.clear());
+    cx.update_global::<Panes, _>(|panes, _| {
+        panes.painted.clear();
+        panes.popover_open = false;
+        panes.overlays.clear();
+    });
 }
 
-/// End a frame: show the panes painted in it, unless a dialog, a sheet or the caller's own overlay (`covered`) is over
-/// the window or a toast over the pane, and hide the others.
+/// End a frame: show the panes painted in it, unless a dialog, sheet, popover, LSP popup, tooltip or
+/// the caller's own overlay (`covered`) is over the window or a toast over the pane, and hide the others.
 pub fn end_frame(covered: bool, window: &mut Window, cx: &mut App) {
+    close_orphaned();
     // A click anywhere GPUI draws takes the keyboard back from a page; clicks inside a page never reach GPUI.
     window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
         if phase == DispatchPhase::Capture {
             reclaim_focus(window);
         }
     });
-    // Menus are drawn inside the window, under the pages' own windows; an open menu holds the keyboard, so while the
-    // focus is in one the pages step aside.
+    // Menus and popovers are drawn inside the window, under the pages' own windows; an open menu holds the keyboard,
+    // so while the focus is in one the pages step aside.
     let id = Window::window_handle(window).window_id();
     let focused = window.focused(cx).map(|handle| handle.downgrade());
     let before = cx.update_global::<Panes, _>(|panes, _| panes.focus.insert(id, focused.clone()));
@@ -245,25 +356,38 @@ pub fn end_frame(covered: bool, window: &mut Window, cx: &mut App) {
     if before.as_ref().is_some_and(|before| *before != focused) {
         window.on_next_frame(|window, _| window.refresh());
     }
-    let menu_open = before.is_some() && focused.is_some() && window.context_stack().iter().any(|context| context.contains("PopupMenu"));
+    let menu_open = before.is_some() && focused.is_some() && window.context_stack().iter().any(is_overlay_context);
     if menu_open && cx.update_global::<Panes, _>(|panes, _| panes.following.insert(id)) {
         follow_menu(id, focused.clone(), window);
     }
-    let covered = covered || menu_open || window.has_active_dialog(cx) || window.has_active_sheet(cx);
-    let toasts = toast_column(window, cx);
-    let (all, painted) = cx.update_global::<Panes, _>(|panes, _| {
+    let lsp_overlay = has_active_editor_overlay(cx);
+    let tooltip_bounds = window.active_tooltip_bounds();
+    let (all, painted, popover_open, overlays, prev_transient) = cx.update_global::<Panes, _>(|panes, _| {
         panes.all.retain(|pane| pane.upgrade().is_some());
-        (panes.all.clone(), panes.painted.clone())
+        let prev = panes.had_transient_overlay;
+        (panes.all.clone(), panes.painted.clone(), panes.popover_open, panes.overlays.clone(), prev)
     });
+    let covered = covered || menu_open || popover_open || lsp_overlay || window.has_active_dialog(cx) || window.has_active_sheet(cx);
+    let toasts = toast_column(window, cx);
+    let mut any_transient_hidden = popover_open || lsp_overlay;
     for pane in all.iter().filter_map(WeakEntity::upgrade) {
-        let under_toast =
-            toasts.is_some_and(|(left, right)| pane.read(cx).bounds.is_some_and(|bounds| bounds.left() < right && bounds.right() > left));
-        let shown = !covered && !under_toast && painted.contains(&pane.entity_id());
+        let bounds = pane.read(cx).bounds;
+        let under_toast = toasts.is_some_and(|(left, right)| bounds.is_some_and(|bounds| bounds.left() < right && bounds.right() > left));
+        let under_tooltip = tooltip_bounds.is_some_and(|tip| bounds.is_some_and(|bounds| rects_overlap(bounds, tip)));
+        let under_overlay = !overlays.is_empty() && bounds.is_some_and(|bounds| overlays.iter().any(|ov| rects_overlap(bounds, *ov)));
+        if under_tooltip || under_overlay {
+            any_transient_hidden = true;
+        }
+        let shown = !covered && !under_toast && !under_tooltip && !under_overlay && painted.contains(&pane.entity_id());
         pane.update(cx, |pane, _| {
             if pane.shown != shown || shown {
                 pane.place(shown);
             }
         });
+    }
+    cx.update_global::<Panes, _>(|panes, _| panes.had_transient_overlay = any_transient_hidden);
+    if prev_transient && !any_transient_hidden {
+        window.on_next_frame(|window, _| window.refresh());
     }
 }
 
@@ -328,5 +452,23 @@ pub fn reclaim_focus(window: &Window) {
         if GetFocus() != hwnd {
             let _ = SetFocus(Some(hwnd));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    #[test]
+    fn detects_overlay_rect_overlap_accurately() {
+        let pane = Bounds::new(point(px(400.), px(60.)), size(px(500.), px(400.)));
+        let inside = Bounds::new(point(px(420.), px(80.)), size(px(120.), px(30.)));
+        let edge_touch = Bounds::new(point(px(280.), px(80.)), size(px(120.), px(30.)));
+        let separate = Bounds::new(point(px(10.), px(10.)), size(px(100.), px(20.)));
+        assert!(rects_overlap(pane, inside));
+        assert!(!rects_overlap(pane, edge_touch));
+        assert!(!rects_overlap(pane, separate));
     }
 }

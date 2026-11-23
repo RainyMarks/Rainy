@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use rainy_carrier::askpass::Askpass;
 use rainy_carrier::download::DownloadError;
 use rainy_carrier::modules::{ModuleError, Modules};
-use rainy_carrier::ssh::{self, InstallProgress, ServerRuntime};
+use rainy_carrier::ssh::{self, InstallProgress, ReconnectOutcome, RuntimeProbe, ServerRuntime};
 use rainy_carrier::trust::{self, Integrity, Recheck, TrustError, Verified};
 use rainy_carrier::wsl::{self, Installed, RuntimeFiles};
 use rainy_carrier::{ExecutionTarget, HostCommand, HostEvents, HostProcess, HostStopped, credential, launch, maintenance, proxy, targets};
@@ -561,9 +561,16 @@ fn start_host(command: &HostCommand, events: &Arc<CarrierEvents>) -> Result<Host
     })
 }
 
-/// Install this version's runtime on the server and start the Host there over SSH (`prepareSsh`, `startSshHost`), with
-/// the removal of the runtimes earlier versions installed there. When the server cannot download the base itself, this
-/// computer downloads it and uploads it; `None` when the user then chose to run on Windows instead.
+/// Security alert raised when Windows DPAPI credential protection recovers or fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialAlert {
+    Warning(String),
+    Error(String),
+}
+
+/// Install this version's runtime on the server (only when a zero-upload probe says it is needed) and start the Host
+/// over SSH (`prepareSsh`, `startSshHost`). When the server cannot download the base itself, this computer downloads
+/// and uploads it; `None` when the user then chose to run on Windows instead.
 fn ssh_host(
     paths: &Paths,
     target: &ExecutionTarget,
@@ -578,31 +585,20 @@ fn ssh_host(
     let name = ssh::name(&destination);
     progress(i18n::format(locale, "native.sshConnecting", &[("target", &target.label())]).into());
     let mut files = runtime_files(paths, modules);
-    // The application layer goes to the server from here: it is downloaded once per version and kept for the next
-    // connections.
-    if !files.app.is_file() {
-        if !download_linux_runtime(modules, LINUX_APP, locale, ask, progress)? {
-            return Ok(None);
-        }
-        files = runtime_files(paths, modules);
-        progress(i18n::format(locale, "native.sshConnecting", &[("target", &target.label())]).into());
-    }
-    let pieces = if std::env::var("RAINY_SSH_NO_FETCH").as_deref() == Ok("1") { json!([]) } else { modules.pieces(LINUX_RUNTIME) };
-    let fraction = |done: u64, total: u64| (total > 0).then(|| done as f32 / total as f32);
-    let report = |step: InstallProgress| {
-        progress(match step {
-            InstallProgress::Downloading { done, total } => Step {
-                text: i18n::format(locale, "native.sshDownloading", &[("done", &megabytes(done)), ("total", &megabytes(total))]),
-                fraction: fraction(done, total),
-            },
-            InstallProgress::Uploading { done, total } => Step {
-                text: i18n::format(locale, "native.sshUploading", &[("name", &name), ("done", &megabytes(done)), ("total", &megabytes(total))]),
-                fraction: fraction(done, total),
-            },
-        })
-    };
     let log = |line: &str| events.write_log(line);
     // One askpass session per `ssh` run; a refused login is remembered so the next run asks again.
+    let run_ssh = |run: &dyn Fn(&[(String, String)]) -> Result<std::result::Result<RuntimeProbe, ssh::RunOutput>>| {
+        let session = askpass.session();
+        match run(session.env())? {
+            Ok(answer) => Ok(answer),
+            Err(output) => {
+                if ssh::login_refused(&output.stderr) {
+                    session.failed();
+                }
+                Err(ssh::failure(&destination, output.code, &output.stderr))
+            }
+        }
+    };
     let installer = |run: &dyn Fn(&[(String, String)]) -> Result<std::result::Result<ServerRuntime, ssh::RunOutput>>| {
         let session = askpass.session();
         match run(session.env())? {
@@ -615,63 +611,111 @@ fn ssh_host(
             }
         }
     };
-    let mut answer = installer(&|env| ssh::fetch_runtime(&destination, &files, &pieces, env, &report, &log))?;
-    let mut uploaded = false;
-    if let ServerRuntime::NeedsArchive { error } = &answer {
-        if let Some(error) = error {
-            events.write_log(&format!("{} could not download the Linux runtime itself: {error}", target.label()));
-        }
-        let base = match development_base(paths) {
-            Some(base) => base,
-            None => {
-                if !download_linux_runtime(modules, LINUX_RUNTIME, locale, ask, progress)? {
+
+    // Fast path: zero-upload probe first; if this version's runtime is already on the server, skip downloading
+    // and uploading `linux-app.tar.gz` completely and prune old versions on the same connection.
+    let probe = run_ssh(&|env| ssh::probe_runtime(&destination, &files, env, paths.packaged(), &log))?;
+    let (host, pruned_during_probe) = match probe {
+        RuntimeProbe::Ready { host } => (host, true),
+        RuntimeProbe::Unsupported(system) => return Err(ssh::unsupported_error(&destination, &system)),
+        RuntimeProbe::NeedsInstall { needs_app, .. } => {
+            if needs_app && !files.app.is_file() {
+                if !download_linux_runtime(modules, LINUX_APP, locale, ask, progress)? {
                     return Ok(None);
                 }
-                modules.path(LINUX_RUNTIME)?
+                files = runtime_files(paths, modules);
+                progress(i18n::format(locale, "native.sshConnecting", &[("target", &target.label())]).into());
             }
-        };
-        answer = installer(&|env| ssh::receive_runtime(&destination, &files, &base, env, &report, &log))?;
-        uploaded = true;
-    }
-    let host = ssh::installed_paths(&destination, answer, uploaded)?;
-    if uploaded {
-        remove_linux_runtime(paths, modules, &events, &[LINUX_RUNTIME]);
-    }
+            let pieces = if std::env::var("RAINY_SSH_NO_FETCH").as_deref() == Ok("1") { json!([]) } else { modules.pieces(LINUX_RUNTIME) };
+            let fraction = |done: u64, total: u64| (total > 0).then(|| done as f32 / total as f32);
+            let report = |step: InstallProgress| {
+                progress(match step {
+                    InstallProgress::Downloading { done, total } => Step {
+                        text: i18n::format(locale, "native.sshDownloading", &[("done", &megabytes(done)), ("total", &megabytes(total))]),
+                        fraction: fraction(done, total),
+                    },
+                    InstallProgress::Uploading { done, total } => Step {
+                        text: i18n::format(locale, "native.sshUploading", &[("name", &name), ("done", &megabytes(done)), ("total", &megabytes(total))]),
+                        fraction: fraction(done, total),
+                    },
+                })
+            };
+            let mut answer = installer(&|env| ssh::fetch_runtime(&destination, &files, &pieces, env, &report, &log))?;
+            let mut uploaded = false;
+            if let ServerRuntime::NeedsArchive { error } = &answer {
+                if let Some(error) = error {
+                    events.write_log(&format!("{} could not download the Linux runtime itself: {error}", target.label()));
+                }
+                let base = match development_base(paths) {
+                    Some(base) => base,
+                    None => {
+                        if !download_linux_runtime(modules, LINUX_RUNTIME, locale, ask, progress)? {
+                            return Ok(None);
+                        }
+                        modules.path(LINUX_RUNTIME)?
+                    }
+                };
+                answer = installer(&|env| ssh::receive_runtime(&destination, &files, &base, env, &report, &log))?;
+                uploaded = true;
+            }
+            let host = ssh::installed_paths(&destination, answer, uploaded)?;
+            if uploaded {
+                remove_linux_runtime(paths, modules, &events, &[LINUX_RUNTIME]);
+            }
+            (host, false)
+        }
+    };
+
     progress(i18n::text(locale, "native.starting").to_owned().into());
     let env = shared_env(target);
-    // Another port is chosen when the chosen one was taken here or on the server.
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let session = askpass.session();
-        events.clear_recent();
-        let port = ssh::free_loopback_port()?;
-        let command = ssh::host_command(&destination, &host, &env, port, session.env())?;
-        match HostProcess::start(&command, events.clone()) {
-            Ok(process) => {
-                let prune = paths.packaged().then(|| {
-                    let (askpass, destination, files, events) = (askpass.clone(), destination.clone(), files.clone(), events.clone());
-                    Box::new(move || match ssh::prune_runtimes(&destination, &files, askpass.session().env()) {
-                        Ok(removed) if !removed.is_empty() => events.write_log(&format!("Removed {} Linux runtimes that earlier versions installed", removed.len())),
-                        Ok(_) => {}
-                        Err(error) => events.write_log(&format!("Earlier Linux runtimes were not removed: {error:#}")),
-                    }) as Prune
-                });
-                return Ok(Some((process, prune)));
-            }
-            Err(error) => {
-                let said = events.recent();
-                let lower = format!("{said}\n{error:#}").to_ascii_lowercase();
-                if attempt < 3 && (lower.contains("forwarding") || lower.contains("address already in use")) {
-                    continue;
-                }
-                if ssh::login_refused(&said) {
-                    session.failed();
-                }
-                return Err(if error.downcast_ref::<HostStopped>().is_some() { ssh::failure(&destination, None, &said) } else { error });
-            }
-        }
-    }
+    let recent_events = events.clone();
+    let clear_events = events.clone();
+    let process = ssh::start_host_process(
+        &destination,
+        &host,
+        &env,
+        askpass,
+        events.clone(),
+        &move || recent_events.recent(),
+        &move || clear_events.clear_recent(),
+    )?;
+    let prune = (paths.packaged() && !pruned_during_probe).then(|| {
+        let (askpass, destination, files, events) = (askpass.clone(), destination.clone(), files.clone(), events.clone());
+        Box::new(move || match ssh::prune_runtimes(&destination, &files, askpass.session().env()) {
+            Ok(removed) if !removed.is_empty() => events.write_log(&format!("Removed {} Linux runtimes that earlier versions installed", removed.len())),
+            Ok(_) => {}
+            Err(error) => events.write_log(&format!("Earlier Linux runtimes were not removed: {error:#}")),
+        }) as Prune
+    });
+    Ok(Some((process, prune)))
+}
+
+/// Reconnect an SSH Host in place without restarting RainyAgent.
+pub fn reconnect_ssh(
+    paths: &Paths,
+    target: &ExecutionTarget,
+    events: Arc<CarrierEvents>,
+    askpass: &Arc<Askpass>,
+    modules: &Modules,
+    previous: Option<(&str, u32)>,
+) -> Result<ReconnectOutcome> {
+    let destination = ssh::destination_of(target)?;
+    let files = runtime_files(paths, modules);
+    let env = shared_env(target);
+    let recent_events = events.clone();
+    let clear_events = events.clone();
+    let log_events = events.clone();
+    ssh::reconnect_host(
+        &destination,
+        &files,
+        &env,
+        askpass,
+        events,
+        previous,
+        &move || recent_events.recent(),
+        &move || clear_events.clear_recent(),
+        &move |line| log_events.write_log(line),
+    )
 }
 
 /// Answers the Host's requests and writes its output to `host.log`.
@@ -682,6 +726,8 @@ pub struct CarrierEvents {
     recent: Mutex<VecDeque<String>>,
     /// Carries the agent's preview commands to the window, each with the channel for its answer.
     pub preview: Mutex<Option<async_channel::Sender<(Value, std::sync::mpsc::Sender<Value>)>>>,
+    /// Reports DPAPI recovery warnings or fatal protection errors to the UI instead of swallowing them.
+    pub credential_alert: Mutex<Option<async_channel::Sender<CredentialAlert>>>,
     key: Mutex<Option<Option<String>>>,
     pub on_exit: Mutex<Option<Box<dyn Fn(Option<i32>) + Send>>>,
 }
@@ -690,7 +736,15 @@ impl CarrierEvents {
     pub fn new(paths: &Paths) -> Arc<Self> {
         rotate_host_log(&paths.log_path());
         let log = std::fs::OpenOptions::new().create(true).append(true).open(paths.log_path()).ok();
-        Arc::new(Self { user_data: paths.user_data.clone(), log: Mutex::new(log), recent: Mutex::default(), preview: Mutex::new(None), key: Mutex::new(None), on_exit: Mutex::new(None) })
+        Arc::new(Self {
+            user_data: paths.user_data.clone(),
+            log: Mutex::new(log),
+            recent: Mutex::default(),
+            preview: Mutex::new(None),
+            credential_alert: Mutex::new(None),
+            key: Mutex::new(None),
+            on_exit: Mutex::new(None),
+        })
     }
 
     pub fn clear_recent(&self) {
@@ -730,10 +784,26 @@ impl HostEvents for CarrierEvents {
         if let Some(key) = cached.as_ref() {
             return key.clone();
         }
-        let key = credential::credential_key(&self.user_data, &credential::Dpapi, &|line| self.write_log(line)).unwrap_or_else(|error| {
-            self.write_log(&format!("API keys stay unencrypted for this run: {error:#}"));
-            None
-        });
+        let key = match credential::load_credential_key(&self.user_data, &credential::Dpapi, &|line| self.write_log(line)) {
+            Ok(loaded) => {
+                if !loaded.warnings.is_empty() {
+                    let message = loaded.warnings.iter().map(|w| w.localized_message()).collect::<Vec<_>>().join("\n");
+                    self.write_log(&format!("DPAPI credential warning: {message}"));
+                    if let Some(tx) = self.credential_alert.lock().unwrap().as_ref() {
+                        let _ = tx.try_send(CredentialAlert::Warning(message));
+                    }
+                }
+                Some(loaded.key)
+            }
+            Err(error) => {
+                let message = error.localized_message();
+                self.write_log(&format!("DPAPI credential protection failed (refusing silent plaintext fallback): {error:#}"));
+                if let Some(tx) = self.credential_alert.lock().unwrap().as_ref() {
+                    let _ = tx.try_send(CredentialAlert::Error(message));
+                }
+                None
+            }
+        };
         *cached = Some(key.clone());
         key
     }

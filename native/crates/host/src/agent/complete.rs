@@ -1,6 +1,6 @@
 //! `@` completion (3.x `complete.ts`): files and folders under a working directory, and other chats.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -32,25 +32,33 @@ fn index(root: &Path) -> Arc<Vec<Indexed>> {
         return entries.clone();
     }
     let mut found = Vec::new();
-    let mut queue = VecDeque::from([root.to_path_buf()]);
-    'walk: while let Some(directory) = queue.pop_front() {
-        let Ok(children) = std::fs::read_dir(&directory) else { continue };
-        for child in children.flatten() {
-            if found.len() >= MAX_ENTRIES {
-                break 'walk;
-            }
-            let Ok(kind) = child.file_type() else { continue };
-            let path = child.path();
-            let relative = crate::paths::relative_to(root, &path).unwrap_or_default();
-            if kind.is_dir() {
-                if EXCLUDED.contains(&child.file_name().to_string_lossy().as_ref()) {
-                    continue;
-                }
-                found.push(Indexed { path: relative, directory: true });
-                queue.push_back(path);
-            } else if kind.is_file() {
-                found.push(Indexed { path: relative, directory: false });
-            }
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.hidden(false).follow_links(false).require_git(false);
+    builder.filter_entry(|entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            let name = entry.file_name().to_string_lossy();
+            return !EXCLUDED.contains(&name.as_ref());
+        }
+        true
+    });
+    for entry in builder.build().flatten() {
+        if entry.depth() == 0 {
+            continue;
+        }
+        if found.len() >= MAX_ENTRIES {
+            break;
+        }
+        let Some(kind) = entry.file_type() else { continue };
+        let Some(relative) = crate::paths::relative_to(root, entry.path()).filter(|rel| !rel.is_empty()) else {
+            continue;
+        };
+        if kind.is_dir() {
+            found.push(Indexed { path: relative, directory: true });
+        } else if kind.is_file() {
+            found.push(Indexed { path: relative, directory: false });
         }
     }
     let entries = Arc::new(found);
@@ -157,5 +165,19 @@ mod tests {
         let root = files(dir.path(), "");
         assert!(root.iter().any(|item| item["insert"] == "\"my notes.md\""));
         assert!(!root.iter().any(|item| item["detail"].as_str().unwrap().starts_with("node_modules")));
+    }
+
+    #[test]
+    fn respects_gitignore_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "ignored_dir/\n*.log\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("ignored_dir")).unwrap();
+        std::fs::write(dir.path().join("ignored_dir/secret.txt"), "").unwrap();
+        std::fs::write(dir.path().join("debug.log"), "").unwrap();
+        std::fs::write(dir.path().join("visible.rs"), "").unwrap();
+        let all = files(dir.path(), "");
+        assert!(all.iter().any(|item| item["detail"] == "visible.rs"));
+        assert!(!all.iter().any(|item| item["detail"] == "debug.log"));
+        assert!(!all.iter().any(|item| item["detail"].as_str().unwrap().starts_with("ignored_dir")));
     }
 }

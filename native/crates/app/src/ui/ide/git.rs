@@ -40,6 +40,8 @@ pub struct GitView {
     writing: Vec<String>,
     messages: HashMap<String, Entity<TextareaState>>,
     visible: bool,
+    /// False in Agent mode (where neither the Git pane nor the status bar is shown) to stop 15 s background polling.
+    polling: bool,
     poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -77,7 +79,9 @@ impl GitView {
                     this.status = None;
                     this.error = None;
                     this.messages.clear();
-                    this.refresh(window, cx);
+                    if this.polling || this.visible {
+                        this.refresh(window, cx);
+                    }
                 }
                 IdeEvent::Saved => this.refresh_soon(window, cx),
                 _ => {}
@@ -99,7 +103,7 @@ impl GitView {
                 _ => {}
             }),
         ];
-        let mut view = Self {
+        let view = Self {
             ide,
             status: None,
             error: None,
@@ -108,10 +112,10 @@ impl GitView {
             writing: Vec::new(),
             messages: HashMap::new(),
             visible: false,
+            polling: false,
             poll: None,
             _subscriptions: subscriptions,
         };
-        view.refresh(window, cx);
         view
     }
 
@@ -130,8 +134,22 @@ impl GitView {
         if self.visible != visible {
             self.visible = visible;
             if visible {
+                self.polling = true;
                 self.refresh(window, cx);
             }
+        }
+    }
+
+    /// Enable or pause periodic background `git status` polling (paused while in Agent mode).
+    pub fn set_polling(&mut self, polling: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.polling == polling {
+            return;
+        }
+        self.polling = polling;
+        if polling {
+            self.refresh(window, cx);
+        } else {
+            self.poll = None;
         }
     }
 
@@ -140,13 +158,16 @@ impl GitView {
     }
 
     fn refresh_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.polling && !self.visible {
+            return;
+        }
         self.poll = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(Duration::from_millis(400)).await;
             let _ = this.update_in(cx, |this, window, cx| this.refresh(window, cx));
         }));
     }
 
-    /// Read the status now, then again after a while.
+    /// Read the status now, then again after a while when background polling is active.
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace_id(cx) else {
             self.poll = None;
@@ -178,11 +199,24 @@ impl GitView {
                             }
                         }
                     }
-                    if this.visible { FAST } else { SLOW }
+                    if this.visible {
+                        Some(FAST)
+                    } else if this.polling {
+                        Some(SLOW)
+                    } else {
+                        None
+                    }
                 })
-                .unwrap_or(SLOW);
-            cx.background_executor().timer(delay).await;
-            let _ = this.update_in(cx, |this, window, cx| this.refresh(window, cx));
+                .ok()
+                .flatten();
+            if let Some(delay) = delay {
+                cx.background_executor().timer(delay).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if this.visible || this.polling {
+                        this.refresh(window, cx);
+                    }
+                });
+            }
         }));
     }
 

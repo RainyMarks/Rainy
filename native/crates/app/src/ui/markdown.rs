@@ -2,7 +2,7 @@
 //! (KaTeX with `remark-math` in 3.x).
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui_kit::component::text::{
@@ -118,20 +118,63 @@ struct Formula {
 
 type Key = (String, bool, u32, u32, u32);
 
+/// Maximum number of rasterized formulas retained in the LRU cache.
+const MAX_FORMULA_CACHE: usize = 2048;
+
+/// Bounded LRU cache backed by `HashMap` + `BTreeMap` of access ticks (no extra crate needed, no clear-all spike).
+struct LruCache<K, V> {
+    capacity: usize,
+    tick: u64,
+    entries: HashMap<K, (V, u64)>,
+    order: BTreeMap<u64, K>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
+    fn new(capacity: usize) -> Self {
+        Self { capacity: capacity.max(1), tick: 0, entries: HashMap::new(), order: BTreeMap::new() }
+    }
+
+    fn next_tick(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+
+    fn get(&mut self, key: &K) -> Option<V> {
+        let old_tick = self.entries.get(key)?.1;
+        let new_tick = self.next_tick();
+        self.order.remove(&old_tick);
+        self.order.insert(new_tick, key.clone());
+        let entry = self.entries.get_mut(key)?;
+        entry.1 = new_tick;
+        Some(entry.0.clone())
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if let Some((_, old_tick)) = self.entries.get(&key) {
+            self.order.remove(old_tick);
+        } else {
+            while self.entries.len() >= self.capacity {
+                let Some((_, oldest_key)) = self.order.pop_first() else { break };
+                self.entries.remove(&oldest_key);
+            }
+        }
+        let tick = self.next_tick();
+        self.order.insert(tick, key.clone());
+        self.entries.insert(key, (value, tick));
+    }
+}
+
 /// Formulas drawn so far, by source, style, size, color and screen scale; `None` when the source is not supported.
 fn formula(latex: &str, display: bool, font_size: f32, color: Hsla, scale: f32) -> Option<Arc<Formula>> {
-    static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<Formula>>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<LruCache<Key, Option<Arc<Formula>>>>> = OnceLock::new();
     let rgba = Rgba::from(color);
     let packed = u32::from_be_bytes([rgba.r, rgba.g, rgba.b, rgba.a].map(|channel| (channel * 255.0).round() as u8));
     let key = (latex.to_owned(), display, font_size.to_bits(), packed, scale.to_bits());
-    let mut cache = CACHE.get_or_init(Default::default).lock().ok()?;
+    let mut cache = CACHE.get_or_init(|| Mutex::new(LruCache::new(MAX_FORMULA_CACHE))).lock().ok()?;
     if let Some(found) = cache.get(&key) {
-        return found.clone();
+        return found;
     }
     let drawn = draw(latex, display, font_size, rgba, scale).map(Arc::new);
-    if cache.len() >= 2048 {
-        cache.clear();
-    }
     cache.insert(key, drawn.clone());
     drawn
 }
@@ -517,5 +560,20 @@ mod tests {
         let body = overlay(&svg[svg.find("<g fill=").unwrap()..], &missing, font).unwrap();
         assert!(body.contains(">路</text>") && body.contains(">程</text>"));
         assert!(body.find(">路<").unwrap() < body.find(">程<").unwrap());
+    }
+
+    #[test]
+    fn formula_lru_evicts_least_recently_used_entry() {
+        let mut cache = LruCache::new(3);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.insert("c", 3);
+        // Touch "a" so "b" becomes the least recently used entry.
+        assert_eq!(cache.get(&"a"), Some(1));
+        cache.insert("d", 4);
+        assert_eq!(cache.get(&"b"), None);
+        assert_eq!(cache.get(&"a"), Some(1));
+        assert_eq!(cache.get(&"c"), Some(3));
+        assert_eq!(cache.get(&"d"), Some(4));
     }
 }

@@ -1,4 +1,4 @@
-//! Project text search and replace (`src/shared/text-search.ts`) and Git status (`src/shared/git-protocol.ts`).
+//! Project text search and replace (`search.text`, `search.replace`) and Git (`git.*`, `files.diff`).
 
 use serde::{Deserialize, Serialize};
 
@@ -101,4 +101,10 @@ pub struct IdeFileDiff {
     pub status: String,
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+/// Short commit hash returned by `git.commit`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GitCommitResult {
+    pub commit: String,
 }

@@ -456,16 +456,21 @@ impl ApplyPatch {
                     if file.result.is_none() {
                         return Err(format!("cannot delete \"{}\": not found", file.display));
                     }
+                    if file.original.is_some() && file.result == file.original {
+                        context.observations.assert_current(&file.absolute, version_of(&file.absolute)?, &file.display, "delete")?;
+                    }
                     file.result = None;
                 }
                 Hunk::Update { path, move_to, chunks } => {
                     let at = slot(path, &mut planned)?;
                     let display = planned[at].display.clone();
                     let bytes = planned[at].result.clone().ok_or_else(|| format!("cannot update \"{display}\": not found"))?;
+                    if planned[at].original.is_some() && planned[at].result == planned[at].original {
+                        context.observations.assert_current(&planned[at].absolute, version_of(&planned[at].absolute)?, &display, "update")?;
+                    }
                     let decoded = editable(&bytes, &display)?;
-                    let sample = crate::text::truncate_chars(&decoded.text, 4096);
-                    let crlf = sample.matches("\r\n").count();
-                    let lf = sample.matches('\n').count() - crlf;
+                    let crlf = decoded.text.matches("\r\n").count();
+                    let lf = decoded.text.matches('\n').count() - crlf;
                     let normalized = decoded.text.replace("\r\n", "\n");
                     let patched = apply_chunks(&normalized, chunks, &display)?;
                     let text = if crlf > lf { patched.replace('\n', "\r\n") } else { patched };
@@ -622,7 +627,12 @@ mod tests {
         std::fs::write(dir.join("gbk.txt"), encode(super::super::encoding::Encoding::Gb18030, false, "\u{4f60}\u{597d}\nx\n").unwrap()).unwrap();
         std::fs::write(dir.join("old.txt"), b"keep\n").unwrap();
         std::fs::write(dir.join("gone.txt"), b"bye\n").unwrap();
-        let tool = ApplyPatch::new(super::super::test_context(dir), false);
+        let context = super::super::test_context(dir);
+        for name in ["crlf.txt", "gbk.txt", "old.txt", "gone.txt"] {
+            let path = dir.join(name);
+            context.observations.record(&path, version_of(&path).unwrap());
+        }
+        let tool = ApplyPatch::new(context.clone(), false);
         let patch = "*** Begin Patch\n*** Update File: crlf.txt\n a\n-b\n+B\n c\n*** Update File: gbk.txt\n-x\n+\u{4e16}\u{754c}\n*** Update File: old.txt\n*** Move to: sub/new.txt\n-keep\n+kept\n*** Delete File: gone.txt\n*** Add File: made.txt\n+hello\n*** End Patch";
         let output = tool.run("c1".into(), json!({ "input": patch })).await.unwrap();
         assert_eq!(std::fs::read(dir.join("crlf.txt")).unwrap(), b"a\r\nB\r\nc\r\n");
@@ -640,8 +650,18 @@ mod tests {
         let bad = "*** Begin Patch\n*** Add File: first.txt\n+x\n*** Update File: crlf.txt\n-missing\n+y\n*** End Patch";
         assert!(tool.run("c2".into(), json!({ "input": bad })).await.unwrap_err().contains("Failed to find expected lines in crlf.txt"));
         assert!(!dir.join("first.txt").exists());
-        // Replacing an existing file with Add File needs it read first.
+        // Replacing, updating or deleting an existing file needs it read first.
         std::fs::write(dir.join("unread.txt"), b"x\n").unwrap();
         assert!(tool.run("c3".into(), json!({ "input": "*** Begin Patch\n*** Add File: unread.txt\n+new\n*** End Patch" })).await.unwrap_err().contains("has not been read"));
+        assert!(tool.run("c4".into(), json!({ "input": "*** Begin Patch\n*** Update File: unread.txt\n-x\n+y\n*** End Patch" })).await.unwrap_err().contains("has not been read"));
+        assert!(tool.run("c5".into(), json!({ "input": "*** Begin Patch\n*** Delete File: unread.txt\n*** End Patch" })).await.unwrap_err().contains("has not been read"));
+
+        // Full-file CRLF detection works even when the first 4096 chars have no line breaks.
+        let long_header = "a".repeat(5000);
+        let long_path = dir.join("long_crlf.txt");
+        std::fs::write(&long_path, format!("{long_header}\r\nold\r\nend\r\n")).unwrap();
+        context.observations.record(&long_path, version_of(&long_path).unwrap());
+        tool.run("c6".into(), json!({ "input": "*** Begin Patch\n*** Update File: long_crlf.txt\n-old\n+new\n*** End Patch" })).await.unwrap();
+        assert_eq!(std::fs::read(&long_path).unwrap(), format!("{long_header}\r\nnew\r\nend\r\n").into_bytes());
     }
 }

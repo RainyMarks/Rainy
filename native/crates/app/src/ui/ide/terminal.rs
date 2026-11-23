@@ -3,6 +3,7 @@
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -153,6 +154,11 @@ struct Run {
     strike: bool,
 }
 
+/// Minimum interval between terminal repaints under heavy output bursts (~60 FPS cap).
+const RENDER_THROTTLE: Duration = Duration::from_millis(16);
+/// Width reserved on the right edge for the vertical scrollback bar.
+const SCROLLBAR_WIDTH: f32 = 8.;
+
 pub struct TerminalView {
     pub id: String,
     term: Term<Replies>,
@@ -165,7 +171,12 @@ pub struct TerminalView {
     /// Text being composed by an input method, shown at the cursor.
     marked: Option<String>,
     selecting: bool,
+    dragging_scrollbar: bool,
     scroll_remainder: f32,
+    /// Timestamp of the last repaint notification, for burst throttling.
+    last_notify: Option<Instant>,
+    /// Scheduled trailing repaint task when output arrived inside the throttle window.
+    pending_notify: Option<Task<()>>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -199,7 +210,10 @@ impl TerminalView {
             bounds: Bounds::default(),
             marked: None,
             selecting: false,
+            dragging_scrollbar: false,
             scroll_remainder: 0.,
+            last_notify: None,
+            pending_notify: None,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -211,7 +225,37 @@ impl TerminalView {
         for reply in replies {
             self.write(&reply, cx);
         }
-        cx.notify();
+        self.schedule_notify(cx);
+    }
+
+    /// Coalesce rapid terminal output bursts so rendering never exceeds ~60 Hz.
+    fn schedule_notify(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        match self.last_notify {
+            Some(last) if now.duration_since(last) < RENDER_THROTTLE => {
+                if self.pending_notify.is_none() {
+                    let wait = RENDER_THROTTLE.saturating_sub(now.duration_since(last));
+                    self.pending_notify = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                        cx.background_executor().timer(wait).await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.pending_notify = None;
+                            this.last_notify = Some(Instant::now());
+                            cx.notify();
+                        });
+                    }));
+                }
+            }
+            _ => {
+                self.pending_notify = None;
+                self.last_notify = Some(now);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Currently selected text in the terminal, trimmed, if non-empty.
+    pub fn selected_text(&self) -> Option<String> {
+        self.term.selection_to_string().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
     }
 
     fn write(&self, data: &str, cx: &App) {
@@ -229,7 +273,8 @@ impl TerminalView {
     /// Follow the element's size: the grid gets as many cells as fit.
     fn fit(&mut self, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
         self.bounds = bounds;
-        let cols = ((bounds.size.width / self.cell.width).floor() as usize).max(2);
+        let usable_width = (bounds.size.width - px(SCROLLBAR_WIDTH)).max(self.cell.width * 2.);
+        let cols = ((usable_width / self.cell.width).floor() as usize).max(2);
         let rows = ((bounds.size.height / self.cell.height).floor() as usize).max(1);
         let size = GridSize { cols, rows };
         if size != self.size {
@@ -302,8 +347,57 @@ impl TerminalView {
         (GridPoint::new(Line(row as i32 - offset), Column(column)), if half { Side::Right } else { Side::Left })
     }
 
+    /// Scrollbar thumb geometry `(top, height)` in pixels when scrollback history exists.
+    fn scrollbar_metrics(&self) -> Option<(f32, f32)> {
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let height = f32::from(self.bounds.size.height);
+        if history == 0 || height <= 8. {
+            return None;
+        }
+        let total = (history + self.size.rows) as f32;
+        let thumb_height = ((self.size.rows as f32 / total) * height).clamp(20., height);
+        let track = (height - thumb_height).max(1.);
+        let offset = grid.display_offset() as f32;
+        // display_offset == 0 is at bottom; display_offset == history is at top.
+        let top = ((history as f32 - offset) / history as f32).clamp(0., 1.) * track;
+        Some((top, thumb_height))
+    }
+
+    fn in_scrollbar_track(&self, position: Point<Pixels>) -> bool {
+        let history = self.term.grid().history_size();
+        if history == 0 || self.bounds.size.width <= px(SCROLLBAR_WIDTH) {
+            return false;
+        }
+        let track_left = self.bounds.origin.x + self.bounds.size.width - px(SCROLLBAR_WIDTH + 4.);
+        position.x >= track_left
+    }
+
+    fn scroll_to_pointer(&mut self, y: Pixels, cx: &mut Context<Self>) {
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let height = f32::from(self.bounds.size.height);
+        if history == 0 || height <= 1. {
+            return;
+        }
+        let rel = (f32::from(y - self.bounds.origin.y) / height).clamp(0., 1.);
+        let target_offset = ((1. - rel) * history as f32).round() as usize;
+        let current = grid.display_offset();
+        let delta = target_offset as i32 - current as i32;
+        if delta != 0 {
+            self.term.scroll_display(Scroll::Delta(delta));
+            cx.notify();
+        }
+    }
+
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
+        if self.in_scrollbar_track(event.position) {
+            self.dragging_scrollbar = true;
+            self.selecting = false;
+            self.scroll_to_pointer(event.position.y, cx);
+            return;
+        }
         let (point, side) = self.point_at(event.position);
         let kind = if event.click_count >= 2 { SelectionType::Semantic } else { SelectionType::Simple };
         self.term.selection = Some(Selection::new(kind, point, side));
@@ -312,6 +406,14 @@ impl TerminalView {
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.dragging_scrollbar {
+            if event.pressed_button == Some(MouseButton::Left) {
+                self.scroll_to_pointer(event.position.y, cx);
+            } else {
+                self.dragging_scrollbar = false;
+            }
+            return;
+        }
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -324,6 +426,7 @@ impl TerminalView {
 
     fn mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.selecting = false;
+        self.dragging_scrollbar = false;
     }
 
     fn scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -625,6 +728,32 @@ impl Render for TerminalView {
                     None if focused => this.child(at.w(width).bg(palette.cursor.opacity(0.6))),
                     None => this.child(at.w(width).border_1().border_color(palette.cursor)),
                 }
+            })
+            .when_some(self.scrollbar_metrics(), |this, (thumb_top, thumb_height)| {
+                let thumb_color = if self.dragging_scrollbar {
+                    theme.muted_foreground.opacity(0.65)
+                } else {
+                    theme.muted_foreground.opacity(0.35)
+                };
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(px(SCROLLBAR_WIDTH))
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(thumb_top))
+                                .right(px(1.))
+                                .w(px(SCROLLBAR_WIDTH - 2.))
+                                .h(px(thumb_height))
+                                .rounded(px(3.))
+                                .bg(thumb_color),
+                        ),
+                )
             })
     }
 }

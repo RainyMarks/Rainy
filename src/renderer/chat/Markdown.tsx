@@ -60,8 +60,8 @@ export function CodeBlock({ code, language, line }: {
  */
 export function localTarget(href: string): { path: string; line?: number | undefined } | undefined {
   if (/^(https?|mailto):/i.test(href)) return undefined
-  // `file:///C:/x` names the Windows path `C:/x`.
-  let path = href.replace(/^file:\/\//i, '').replace(/^\/([A-Za-z]:[\\/])/u, '$1')
+  // `file:///C:/x` names the Windows path `C:/x`; `file://host/share` keeps `//host/share` as UNC so it is rejected.
+  let path = href.replace(/^file:\/\/\//i, '/').replace(/^file:\/\//i, '//').replace(/^\/([A-Za-z]:[\\/])/u, '$1')
   let line: number | undefined
   const anchor = /#L(\d+)(?:-L?\d+)?$/.exec(path) ?? /:(\d+)(?::\d+)?$/.exec(path)
   if (anchor !== null) { line = Number(anchor[1]); path = path.slice(0, anchor.index) }
@@ -97,19 +97,24 @@ export function documentUrl(url: string, key: string, node: { tagName: string })
  * Resolve a link or image target written in a document against the document's directory.
  * @param directory Project-relative directory of the document, `''` for the root.
  * @param target Target as written; a leading `/` means the project root.
- * @returns A project-relative path, the target itself when it is an absolute host path, or `undefined` when it leaves the project.
+ * @returns A project-relative path, or `undefined` when it is an absolute drive/UNC/file path or leaves the project.
  */
 export function resolveDocumentPath(directory: string, target: string): string | undefined {
-  let path = target.replace(/[?#].*$/u, '')
+  let path = target.replace(/[?#].*$/u, '').trim()
   try { path = decodeURIComponent(path) } catch (_malformedEscape) { /* Keep the literal spelling. */ }
+  path = path.trim()
+  if (path === '' || /[\u0000-\u001f\u007f]/u.test(path)) return undefined
   path = path.replaceAll('\\', '/')
-  if (/^[A-Za-z]:\//u.test(path) || path.startsWith('//')) return path
+  if (/^[A-Za-z]:/u.test(path) || path.startsWith('//') || /^[a-z][a-z\d+.-]*:/iu.test(path)) return undefined
   const parts = path.startsWith('/') ? [] : directory.split('/').filter(part => part !== '')
   for (const part of path.split('/')) {
     if (part === '' || part === '.') continue
     if (part === '..') { if (parts.pop() === undefined) return undefined } else parts.push(part)
   }
-  return parts.length === 0 ? undefined : parts.join('/')
+  if (parts.length === 0) return undefined
+  // Reject Windows drive segments anywhere in the resolved path or scheme prefixes at the root (e.g. `/C:/...`, `a/../C:/...`).
+  if (parts.some(part => /^[A-Za-z]:/u.test(part)) || /^[a-z][a-z\d+.-]*:/iu.test(parts[0]!)) return undefined
+  return parts.join('/')
 }
 
 /**
@@ -192,9 +197,11 @@ function RemoteImage({ src, alt }: { src: string; alt: string | undefined }): JS
   )
 }
 
-function LocalImageLink({ path, alt, open }: { path: string; alt: string | undefined; open: (target: { path: string }) => void }): JSX.Element {
+function LocalImageLink({ path, alt, open }: { path: string; alt: string | undefined; open?: ((target: { path: string }) => void) | undefined }): JSX.Element {
   const t = useChatT()
-  return <a href={path} className={css.localImage} onClick={(event) => { event.preventDefault(); open({ path }) }}>{alt === undefined || alt === '' ? t('localImage', { path }) : alt}</a>
+  const label = alt === undefined || alt === '' ? t('localImage', { path }) : alt
+  if (open === undefined) return <span className={css.localImage} title={path}>{label}</span>
+  return <a href={path} className={css.localImage} onClick={(event) => { event.preventDefault(); open({ path }) }}>{label}</a>
 }
 
 /** Where a document's relative targets resolve and how they open. */
@@ -263,7 +270,8 @@ function markdownComponents(options: MarkdownOptions): Components {
       if (isDataImage(src)) return <img className={css.image} src={src} alt={alt ?? ''} {...shown} />
       if (/^[a-z][a-z\d+.-]*:/iu.test(src) && !/^[A-Za-z]:[\\/]/u.test(src)) return <RemoteImage src={src} alt={alt} />
       const path = base === undefined ? undefined : resolveDocumentPath(base.directory, src)
-      if (base === undefined || path === undefined || /^[A-Za-z]:\//u.test(path) || path.startsWith('//')) return <LocalImageLink path={src} alt={alt} open={open} />
+      if (base === undefined) return <LocalImageLink path={src} alt={alt} open={open} />
+      if (path === undefined) return <LocalImageLink path={src} alt={alt} />
       return <img className={css.image} src={ideRawUrl({ workspaceId: base.workspaceId, rootId: base.rootId, path, version: options.revision })} alt={alt ?? ''} loading="lazy" {...shown} />
     },
     table({ children, align, width, node }) {

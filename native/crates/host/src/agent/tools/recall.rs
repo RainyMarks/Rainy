@@ -110,7 +110,7 @@ impl Tool for Recall {
             if let Some(error) = failure {
                 return Err(error);
             }
-            Ok(ToolOutput::text(text, details))
+            Ok(ToolOutput::text(self.context.limit_output(NAME, text), details))
         })
     }
 }

@@ -6,11 +6,11 @@
  * first: `prefs.ts` sets --rainy-ui-font and --rainy-code-font to quoted names
  * each followed by a comma, and leaves them unset for the defaults. */
 :root {
-  /* Bundled Hanken Grotesk and Geist Mono (`main.tsx`) for Latin; Microsoft YaHei UI for Chinese. The system faces
-   * after them cover what the bundled ones lack. */
-  --rainy-font-family: var(--rainy-ui-font,) 'Hanken Grotesk Variable', 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+  /* System UI and code font stacks aligned with the native GPUI workbench (`native/crates/app/src/theme.rs`:
+   * Segoe UI / Cascadia Mono), without bundling web fonts. */
+  --rainy-font-family: var(--rainy-ui-font,) 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
     'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --rainy-font-family-code: var(--rainy-code-font,) 'Geist Mono Variable', 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
+  --rainy-font-family-code: var(--rainy-code-font,) 'Cascadia Mono', 'Cascadia Code', Consolas, 'SF Mono', 'JetBrains Mono', 'Fira Code',
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --rainy-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --rainy-radius-xs: 3px;

@@ -199,10 +199,9 @@ impl Edit {
         context.observations.assert_current(&absolute, Some(current), &display, "modify")?;
         let bytes = std::fs::read(&absolute).map_err(|error| error.to_string())?;
         let decoded = editable(&bytes, &display)?;
-        // The file keeps its dominant line ending.
-        let sample = crate::text::truncate_chars(&decoded.text, 4096);
-        let crlf = sample.matches("\r\n").count();
-        let lf = sample.matches('\n').count() - crlf;
+        // The file keeps its dominant line ending across its full text.
+        let crlf = decoded.text.matches("\r\n").count();
+        let lf = decoded.text.matches('\n').count() - crlf;
         let normalized = decoded.text.replace("\r\n", "\n");
         let edited = apply_edit(&normalized, &params.old_string, &params.new_string, params.replace_all, &display)?;
         let text = if crlf > lf { edited.replace('\n', "\r\n") } else { edited.clone() };

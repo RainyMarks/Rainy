@@ -10,6 +10,7 @@ pub mod framing;
 pub mod fs;
 pub mod hints;
 pub mod language;
+pub mod office_pdf;
 pub mod owner;
 pub mod preview;
 pub mod pty;
@@ -36,6 +37,7 @@ pub struct Ide {
     pub state: Arc<state::StateStore>,
     pub execution: Arc<execution::Execution>,
     pub languages: Arc<language::Languages>,
+    pub office_pdf: Arc<office_pdf::OfficePdfStore>,
     pub hints: hints::Hints,
     pub tools: tools::Tools,
 }
@@ -65,11 +67,17 @@ impl Ide {
                 languages.refresh_workspace(workspace_id);
             }
         });
-        let ide = Arc::new(Self { files, state, execution, languages, hints, tools });
+        let office_pdf = office_pdf::OfficePdfStore::new(host.env.tmp.clone());
+        let ide = Arc::new(Self { files, state, execution, languages, office_pdf, hints, tools });
         let (raw_files, activity) = (ide.files.clone(), host.activity.clone());
         host.server.route(
             "/rainy/ide/raw",
             Arc::new(move |request, url| Box::pin(raw::serve(raw_files.clone(), activity.clone(), request, url))),
+        );
+        let (pdf_store, server) = (ide.office_pdf.clone(), host.server.clone());
+        host.server.route(
+            "/rainy/ide/office-pdf",
+            Arc::new(move |request, url| Box::pin(pdf_store.clone().serve(server.clone(), request, url))),
         );
         let languages = ide.languages.clone();
         host.server.socket("/rainy/ide/lsp", Arc::new(move |socket, url| Box::pin(languages.clone().accept(socket, url))));
@@ -102,6 +110,16 @@ impl Ide {
             let ide = self.clone();
             return tokio::task::spawn_blocking(move || ide.state.handle(&request)).await.map_err(|_| HostError::other("The state operation stopped."))?;
         }
+        if op == "officePdf.register" {
+            host.activity.assert_can_start()?;
+            let path = request["path"].as_str().ok_or_else(|| HostError::invalid("path is required"))?.to_owned();
+            let delete_after_read = request["deleteAfterRead"].as_bool().unwrap_or(true);
+            let store = self.office_pdf.clone();
+            let reg = tokio::task::spawn_blocking(move || store.register(&path, delete_after_read))
+                .await
+                .map_err(|_| HostError::other("Office PDF registration stopped."))??;
+            return Ok(serde_json::to_value(reg)?);
+        }
         if op == "tools.status" {
             host.activity.assert_can_start()?;
             let tools = self.tools.clone();
@@ -127,7 +145,8 @@ impl Ide {
 
     pub async fn close(&self) {
         self.hints.close();
-        self.languages.close();
+        self.office_pdf.close();
+        self.languages.close().await;
         self.execution.dispose().await;
     }
 }

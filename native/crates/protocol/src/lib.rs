@@ -7,6 +7,7 @@
 pub mod chat;
 pub mod frames;
 pub mod ide;
+pub mod map;
 pub mod models;
 pub mod prefs;
 pub mod search;
@@ -15,6 +16,7 @@ pub mod stream;
 pub use chat::*;
 pub use frames::*;
 pub use ide::*;
+pub use map::*;
 pub use models::*;
 pub use prefs::*;
 pub use search::*;

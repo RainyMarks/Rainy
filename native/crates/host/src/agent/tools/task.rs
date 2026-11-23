@@ -29,19 +29,28 @@ pub struct Report {
     pub text: String,
     pub steps: usize,
     pub activity: Vec<String>,
-    /// `steps` or `time` when it stopped at a limit.
+    /// `steps`, `time` or `budget` when it stopped at a limit.
     pub stopped: Option<&'static str>,
 }
 
 /// Runs sub-agents for one chat.
 pub trait Subagents: Send + Sync {
-    fn run(&self, prompt: String, description: String, progress: Arc<dyn Fn(Progress) + Send + Sync>, cancel: CancellationToken) -> BoxFuture<'static, Result<Report, String>>;
+    fn run(
+        &self,
+        prompt: String,
+        description: String,
+        model: Option<String>,
+        progress: Arc<dyn Fn(Progress) + Send + Sync>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<Report, String>>;
 }
 
 #[derive(Deserialize)]
 struct Params {
     description: String,
     prompt: String,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 pub struct Task {
@@ -55,13 +64,14 @@ impl Task {
         let spec = spec(
             "task",
             &format!(
-                "Hand a self-contained investigation to a sub-agent that reads files, searches the project and searches the web, then answers in one report. Use it when finding the answer would otherwise fill this conversation with searching: locating where something is implemented, comparing several candidates, or reading a large area of the project. Several sub-agents (at most {MAX_PARALLEL_TASKS}) run at the same time when a step consists of task calls only; any other tool in the same step makes them run one after another. A sub-agent cannot change files, run commands or ask the user, and it sees nothing of this conversation beyond the prompt you give it, so state the task in full and say exactly what to report."
+                "Hand a self-contained investigation to a sub-agent that reads files, searches the project and searches the web, then answers in one report. Use it when finding the answer would otherwise fill this conversation with searching: locating where something is implemented, comparing several candidates, or reading a large area of the project. Several sub-agents (at most {MAX_PARALLEL_TASKS}) run at the same time when a step consists of task calls only; any other tool in the same step makes them run one after another. Optionally pass `model` to run this read-only sub-agent on a faster or lower-cost configured model. A sub-agent cannot change files, run commands or ask the user, and it sees nothing of this conversation beyond the prompt you give it, so state the task in full and say exactly what to report."
             ),
             json!({
                 "type": "object",
                 "properties": {
                     "description": { "type": "string", "description": "What this sub-agent is for, 3-6 words, shown in the interface. Example: \"Find the login flow\"." },
                     "prompt": { "type": "string", "description": "The task, written for an assistant that cannot see this conversation: what to look for, where to start, and exactly what to report back. The sub-agent reads files, searches the project and searches the web; it cannot change anything." },
+                    "model": { "type": "string", "description": "Optional configured model override (provider id, model id, or provider/model) to use a faster/cheaper model for this investigation." },
                 },
                 "required": ["description", "prompt"],
             }),
@@ -88,18 +98,23 @@ impl Tool for Task {
             if params.description.trim().is_empty() {
                 return Err("invalid description: expected a short label".into());
             }
+            let model = params.model.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
             let description = params.description.clone();
             let progress: Arc<dyn Fn(Progress) + Send + Sync> = Arc::new(move |progress: Progress| {
                 updates(ToolOutput::text(progress.text.clone(), json!({ "description": description, "steps": progress.steps, "activity": progress.activity })));
             });
-            let report = self.runner.run(params.prompt, params.description.clone(), progress, cancel).await?;
+            let report = self.runner.run(params.prompt, params.description.clone(), model.clone(), progress, cancel).await?;
             let note = match report.stopped {
                 Some("steps") => "\n\n[the sub-agent reached its step limit; its report may be incomplete]",
+                Some("budget") => "\n\n[the sub-agent reached its token budget limit; its report may be incomplete]",
                 Some(_) => "\n\n[the sub-agent reached its time limit; its report may be incomplete]",
                 None => "",
             };
             let text = if report.text.trim().is_empty() { "(the sub-agent reported nothing)".to_owned() } else { report.text };
             let mut details = json!({ "description": params.description, "steps": report.steps, "activity": report.activity });
+            if let Some(model) = model {
+                details["model"] = json!(model);
+            }
             if let Some(stopped) = report.stopped {
                 details["stopped"] = json!(stopped);
             }

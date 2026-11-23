@@ -87,19 +87,31 @@ pub struct Candidate {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Selection {
+    #[serde(default)]
     root: String,
+    #[serde(default)]
     selected: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     python_prefix: Option<String>,
+    /// Preserves fields written by newer versions for 3.x/4.x forward compatibility.
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SelectionFile {
+    #[serde(default = "default_selection_version")]
     version: u8,
+    #[serde(default)]
     workspaces: BTreeMap<String, Selection>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+fn default_selection_version() -> u8 {
+    1
 }
 
 /// What a process in a project folder gets: PATH and friends, the chosen executables, and the component's PowerShell.
@@ -226,7 +238,8 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(env: HostEnv, projects: Arc<Projects>, registry: Arc<Registry>, activity: Arc<Activity>) -> std::io::Result<Arc<Self>> {
-        let state = read_json::<SelectionFile>(&env.home.join("runtime-environments.json"))?.unwrap_or(SelectionFile { version: 1, workspaces: BTreeMap::new() });
+        let selection_path = env.home.join("runtime-environments.json");
+        let state = load_selection_file(&selection_path);
         let operations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = operations.clone();
         activity.add(move || counter.load(std::sync::atomic::Ordering::Relaxed) > 0);
@@ -456,7 +469,7 @@ impl Runtime {
                 None => selected.remove(language),
             };
             let python_prefix = if language == "python" { candidate.as_ref().and_then(|candidate| candidate.prefix.clone()) } else { previous.python_prefix };
-            state.workspaces.insert(workspace_id.to_owned(), Selection { root, selected, python_prefix });
+            state.workspaces.insert(workspace_id.to_owned(), Selection { root, selected, python_prefix, extra: previous.extra });
         }
         let state = self.state.lock().unwrap().clone();
         if let Err(error) = write_json(&self.env.home.join("runtime-environments.json"), &state) {
@@ -566,3 +579,57 @@ impl Runtime {
 }
 
 use futures::StreamExt as _;
+
+fn load_selection_file(path: &Path) -> SelectionFile {
+    match read_json::<SelectionFile>(path) {
+        Ok(Some(state)) => state,
+        Ok(None) => SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() },
+        Err(error) => {
+            log::warn!("runtime-environments.json is unreadable and was backed up: {error}");
+            let backup = path.with_file_name(format!("runtime-environments.json.damaged-{}", crate::text::now_ms()));
+            let _ = std::fs::copy(path, &backup);
+            SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_selections_accept_and_preserve_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runtime-environments.json");
+        std::fs::write(
+            &file,
+            r#"{"version":1,"futureTop":true,"workspaces":{"w1":{"root":"/p","selected":{"python":"/usr/bin/python3"},"futureWorkspace":"keep"}}}"#,
+        )
+        .unwrap();
+        let loaded = load_selection_file(&file);
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.extra.get("futureTop"), Some(&json!(true)));
+        let ws = loaded.workspaces.get("w1").unwrap();
+        assert_eq!(ws.selected.get("python").map(String::as_str), Some("/usr/bin/python3"));
+        assert_eq!(ws.extra.get("futureWorkspace"), Some(&json!("keep")));
+        let roundtrip: Value = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(roundtrip["futureTop"], true);
+        assert_eq!(roundtrip["workspaces"]["w1"]["futureWorkspace"], "keep");
+    }
+
+    #[test]
+    fn runtime_selections_salvage_corrupted_json_without_failing_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runtime-environments.json");
+        std::fs::write(&file, "{broken json").unwrap();
+        let loaded = load_selection_file(&file);
+        assert_eq!(loaded.version, 1);
+        assert!(loaded.workspaces.is_empty());
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("runtime-environments.json.damaged-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+    }
+}

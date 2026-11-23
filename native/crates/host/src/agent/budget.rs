@@ -1,7 +1,10 @@
 //! Request budgets and token estimates (3.x `shared/budget.ts`): how a model's window is split between input, output
 //! and a margin, and a conservative count of what a request costs.
 
+use std::collections::HashMap;
+
 use rainy_protocol::chat::{AssistantBlock, ResultContent};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::llm::{Message, Part, ToolSpec, UserContent};
@@ -31,14 +34,14 @@ pub fn resolve_budget(context_window: u64, max_output: Option<u64>) -> HostResul
         return Err(HostError::invalid(l("输出上限必须是正整数。", "The output limit must be a positive whole number.")));
     }
     let margin_tokens = 512.max(context_window * 8 / 100);
-    let input_limit = context_window as i64 - output_tokens as i64 - margin_tokens as i64;
-    if input_limit < 1024 {
+    // Use checked unsigned arithmetic so `max_output > i64::MAX` can never wrap negative and bypass the check.
+    let input_limit = context_window.checked_sub(output_tokens).and_then(|rem| rem.checked_sub(margin_tokens));
+    let Some(input_limit) = input_limit.filter(|&limit| limit >= 1024) else {
         return Err(HostError::invalid(l(
             &format!("输出预留 {output_tokens} 过大，上下文 {context_window} 没有足够的输入空间。请调小“最大输出 tokens”，或留空自动分配。"),
             &format!("The {output_tokens}-token output reservation is too large for a {context_window}-token context. Lower the maximum output tokens, or leave it empty to allocate it automatically."),
         )));
-    }
-    let input_limit = input_limit as u64;
+    };
     Ok(Budget {
         context_window,
         output_tokens,
@@ -278,33 +281,125 @@ pub fn expected_tokens(system: &str, tools: &[ToolSpec], messages: &[Message], r
     }
 }
 
+/// Estimated token share of each major prompt segment (for `session.contextBreakdown` / `usage_ring`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSegments {
+    pub system: u64,
+    pub instructions: u64,
+    pub mcp_tools: u64,
+    pub core_tools: u64,
+    pub history: u64,
+    pub recall: u64,
+}
+
+impl ContextSegments {
+    pub fn total(&self) -> u64 {
+        self.system + self.instructions + self.mcp_tools + self.core_tools + self.history + self.recall
+    }
+}
+
+/// Estimate tokens per segment from the assembled system prompt, tool specs, rebuilt context items and transcript entries.
+pub fn estimate_breakdown(system: &str, tools: &[ToolSpec], items: &[super::context::Item], entries: &[rainy_protocol::chat::TranscriptEntry]) -> ContextSegments {
+    use rainy_protocol::chat::TranscriptEntry;
+    let system_tokens = TextCost::of(&json!({ "system": system, "messages": [] }).to_string()).tokens() + 16;
+    let tool_json = |tool: &ToolSpec| json!({ "name": tool.name, "description": tool.description, "parameters": tool.parameters }).to_string();
+    let mut mcp_cost = TextCost::default();
+    let mut core_cost = TextCost::default();
+    for tool in tools {
+        let cost = TextCost::of(&tool_json(tool));
+        if tool.name.starts_with("mcp__") {
+            mcp_cost.add(cost);
+        } else {
+            core_cost.add(cost);
+        }
+    }
+    let mcp_tools = mcp_cost.tokens();
+    let core_tools = core_cost.tokens();
+
+    let mut labels: HashMap<&str, &str> = HashMap::new();
+    for entry in entries {
+        match entry {
+            TranscriptEntry::Context { id, label, .. } => {
+                labels.insert(id.as_str(), label.as_str());
+            }
+            TranscriptEntry::Compaction { id, .. } => {
+                labels.insert(id.as_str(), "compaction");
+            }
+            _ => {}
+        }
+    }
+
+    let (mut instr_msgs, mut recall_msgs, mut history_msgs) = (Vec::new(), Vec::new(), Vec::new());
+    for item in items {
+        let label = labels.get(item.entry_id.as_str()).copied();
+        let is_recall_tool = matches!(&item.message, Message::ToolResult(result) if result.tool_name == "recall");
+        match label {
+            Some("instructions") => instr_msgs.push(item.message.clone()),
+            Some("compaction" | "memory" | "reference") => recall_msgs.push(item.message.clone()),
+            _ if is_recall_tool => recall_msgs.push(item.message.clone()),
+            _ => history_msgs.push(item.message.clone()),
+        }
+    }
+
+    ContextSegments {
+        system: system_tokens,
+        instructions: estimate_added(&instr_msgs),
+        mcp_tools,
+        core_tools,
+        history: estimate_added(&history_msgs),
+        recall: estimate_added(&recall_msgs),
+    }
+}
+
 /// Requests whose reported input tokens calibrate the local estimate.
 const CALIBRATION_WINDOW: usize = 5;
+/// Maximum distinct model keys tracked per chat calibration map.
+const MAX_CALIBRATION_MODELS: usize = 16;
+/// Clamp single-request ratio outliers (e.g. opaque reasoning signatures) so one spike does not poison subsequent turns.
+const MAX_CALIBRATION_RATIO: f64 = 3.0;
 
-/// Scales local estimates by what the provider reported for the latest requests: the largest recent ratio with a
-/// 10 % margin, so an underestimate raises the factor at once, and an overestimate lowers it as it ages out.
+/// Scales local estimates by what the provider reported for the latest requests, isolated per `(provider/model)` key
+/// so switching models or running orchestrated pairs never cross-contaminates calibration ratios.
 #[derive(Default)]
 pub struct Calibration {
-    ratios: Vec<f64>,
+    by_model: HashMap<String, Vec<f64>>,
 }
 
 impl Calibration {
+    #[cfg(test)]
     pub fn observe(&mut self, estimated: u64, reported: u64) {
+        self.observe_for("", estimated, reported);
+    }
+
+    pub fn observe_for(&mut self, model_key: &str, estimated: u64, reported: u64) {
         if estimated > 0 && reported > 0 {
-            self.ratios.push(reported as f64 / estimated as f64);
-            if self.ratios.len() > CALIBRATION_WINDOW {
-                self.ratios.remove(0);
+            let ratio = (reported as f64 / estimated as f64).min(MAX_CALIBRATION_RATIO);
+            if !self.by_model.contains_key(model_key) && self.by_model.len() >= MAX_CALIBRATION_MODELS {
+                if let Some(evict) = self.by_model.keys().next().cloned() {
+                    self.by_model.remove(&evict);
+                }
+            }
+            let ratios = self.by_model.entry(model_key.to_owned()).or_default();
+            ratios.push(ratio);
+            if ratios.len() > CALIBRATION_WINDOW {
+                ratios.remove(0);
             }
         }
     }
 
-    /// The factor applied to local estimates: 1 before any report, and never below one half, since the local count
-    /// leaves out what signatures stand for.
+    /// The factor applied to local estimates for the default bucket.
+    #[cfg(test)]
     pub fn factor(&self) -> f64 {
-        if self.ratios.is_empty() {
+        self.factor_for("")
+    }
+
+    /// The factor applied to local estimates for one `provider/model`: 1 before any report, and never below one half.
+    pub fn factor_for(&self, model_key: &str) -> f64 {
+        let Some(ratios) = self.by_model.get(model_key).filter(|r| !r.is_empty()) else {
             return 1.0;
-        }
-        (self.ratios.iter().copied().fold(0.0, f64::max) * 1.1).max(0.5)
+        };
+        (ratios.iter().copied().fold(0.0, f64::max) * 1.1).max(0.5)
     }
 }
 
@@ -319,6 +414,38 @@ mod tests {
         let small = resolve_budget(32_768, None).unwrap();
         assert_eq!(small.output_tokens, 5242);
         assert!(resolve_budget(8192, Some(8000)).is_err());
+        // Huge max_tokens (> i64::MAX) must never wrap negative and bypass budget checks.
+        assert!(resolve_budget(200_000, Some(u64::MAX)).is_err());
+        assert!(resolve_budget(200_000, Some((i64::MAX as u64) + 1)).is_err());
+    }
+
+    #[test]
+    fn isolates_calibration_per_model_and_breaks_down_segments() {
+        let mut cal = Calibration::default();
+        cal.observe_for("p1/claude", 1000, 1500);
+        cal.observe_for("p2/gpt", 1000, 600);
+        assert!((cal.factor_for("p1/claude") - 1.65).abs() < 1e-9);
+        assert!((cal.factor_for("p2/gpt") - 0.66).abs() < 1e-9);
+        assert_eq!(cal.factor_for("p3/unseen"), 1.0);
+
+        use rainy_protocol::chat::TranscriptEntry;
+        let entries: Vec<TranscriptEntry> = vec![
+            serde_json::from_value(json!({ "kind": "context", "id": "c1", "ts": 1, "label": "instructions", "text": "follow rules" })).unwrap(),
+            serde_json::from_value(json!({ "kind": "context", "id": "m1", "ts": 2, "label": "memory", "text": "remembered facts" })).unwrap(),
+            serde_json::from_value(json!({ "kind": "user", "id": "u1", "ts": 3, "text": "hello world" })).unwrap(),
+        ];
+        let items = super::super::context::build_context(&entries);
+        let tools = vec![
+            ToolSpec { name: "read".into(), description: "read file".into(), parameters: json!({}), freeform: None },
+            ToolSpec { name: "mcp__db__query".into(), description: "run sql".into(), parameters: json!({}), freeform: None },
+        ];
+        let seg = estimate_breakdown("You are Rainy.", &tools, &items, &entries);
+        assert!(seg.system > 0);
+        assert!(seg.instructions > 0);
+        assert!(seg.mcp_tools > 0);
+        assert!(seg.core_tools > 0);
+        assert!(seg.history > 0);
+        assert!(seg.recall > 0);
     }
 
     #[test]

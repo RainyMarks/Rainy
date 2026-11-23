@@ -21,6 +21,8 @@ pub const GLOBAL_PROMPT_MAX_CHARS: usize = 4000;
 pub const LOCAL_NO_KEY: &str = "rainy-local-no-key";
 /// Remembered approvals per project are capped, so a runaway model cannot grow the file without bound.
 const MAX_RULES: usize = 200;
+/// Maximum number of trusted workspaces remembered in Settings.
+const MAX_TRUSTED_WORKSPACES: usize = 500;
 
 /// A saved model profile. `thinking` names any reasoning level and is stored as `thinking` with the nearest name 3.x
 /// and 4.0–4.2 read, plus `thinkingLevel` with the level itself when that differs (`rainy_protocol::reasoning`).
@@ -144,9 +146,28 @@ impl McpServerConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionRules {
+    #[serde(default)]
     pub commands: Vec<String>,
+    #[serde(default)]
     pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_tools: Vec<String>,
+}
+
+impl PermissionRules {
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+            && self.tools.is_empty()
+            && self.deny_commands.is_empty()
+            && self.deny_paths.is_empty()
+            && self.deny_tools.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -156,6 +177,8 @@ pub struct Security {
     pub default_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<BTreeMap<String, PermissionRules>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_workspaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -188,11 +211,13 @@ pub struct SettingsData {
     pub security: Option<Security>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxySettings>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<crate::agent::hooks::HookRule>,
 }
 
 impl Default for SettingsData {
     fn default() -> Self {
-        Self { version: 1, models: Vec::new(), selected: None, global_prompt: String::new(), mcp_servers: Vec::new(), ui: Map::new(), workbench: None, security: None, proxy: None }
+        Self { version: 1, models: Vec::new(), selected: None, global_prompt: String::new(), mcp_servers: Vec::new(), ui: Map::new(), workbench: None, security: None, proxy: None, hooks: Vec::new() }
     }
 }
 
@@ -331,13 +356,31 @@ fn check_data(data: &SettingsData) -> HostResult<()> {
     if data.global_prompt.chars().count() > GLOBAL_PROMPT_MAX_CHARS {
         return Err(HostError::invalid(l("全局提示词太长。", "The global prompt is too long.")));
     }
-    if let Some(rules) = data.security.as_ref().and_then(|security| security.rules.as_ref()) {
-        for rule in rules.values() {
-            let fits = |list: &Vec<String>, max: usize| list.len() <= MAX_RULES && list.iter().all(|item| (1..=max).contains(&item.chars().count()));
-            if !fits(&rule.commands, 200) || !fits(&rule.tools, 128) {
-                return Err(HostError::invalid(l("一条记住的批准规则无效。", "A remembered approval is not valid.")));
+    if let Some(security) = &data.security {
+        if let Some(rules) = &security.rules {
+            for rule in rules.values() {
+                let fits = |list: &Vec<String>, max: usize| list.len() <= MAX_RULES && list.iter().all(|item| (1..=max).contains(&item.chars().count()));
+                if !fits(&rule.commands, 200)
+                    || !fits(&rule.tools, 128)
+                    || !fits(&rule.deny_commands, 200)
+                    || !fits(&rule.deny_paths, 260)
+                    || !fits(&rule.deny_tools, 128)
+                {
+                    return Err(HostError::invalid(l("一条权限规则无效。", "A permission rule is not valid.")));
+                }
             }
         }
+        if security.trusted_workspaces.len() > MAX_TRUSTED_WORKSPACES
+            || security.trusted_workspaces.iter().any(|item| item.trim().is_empty() || item.chars().count() > 1024)
+        {
+            return Err(HostError::invalid(l("受信任工作区列表无效。", "The trusted workspaces list is not valid.")));
+        }
+    }
+    if data.hooks.len() > crate::agent::hooks::MAX_HOOKS {
+        return Err(HostError::invalid(l("Hook 规则数量超过上限。", "Too many hook rules.")));
+    }
+    for hook in &data.hooks {
+        crate::agent::hooks::check_rule(hook)?;
     }
     Ok(())
 }
@@ -371,6 +414,12 @@ fn salvage(raw: Option<Value>) -> SettingsData {
         workbench: serde_json::from_value(field("workbench")).unwrap_or_default(),
         security: serde_json::from_value(field("security")).unwrap_or_default(),
         proxy: serde_json::from_value(field("proxy")).unwrap_or_default(),
+        hooks: each("hooks")
+            .into_iter()
+            .take(crate::agent::hooks::MAX_HOOKS)
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .filter(|hook| crate::agent::hooks::check_rule(hook).is_ok())
+            .collect(),
         ..SettingsData::default()
     };
     data.ui.retain(|key, value| valid_pref(key, value));
@@ -511,18 +560,40 @@ impl Settings {
 
     /// Remember (`present`) or forget an approval for a project: a command prefix or a tool name.
     pub fn set_permission_rule(&self, workspace_id: &str, command: bool, rule: &str, present: bool) -> HostResult<PermissionRules> {
+        self.set_permission_rule_kind(workspace_id, if command { "command" } else { "tool" }, rule, present)
+    }
+
+    /// Add (`present`) or remove a permission rule of any supported kind (`command`, `tool`, `denyCommand`, `denyPath`, `denyTool`).
+    pub fn set_permission_rule_kind(&self, workspace_id: &str, kind: &str, rule: &str, present: bool) -> HostResult<PermissionRules> {
+        let rule = rule.trim();
+        let max_len = match kind {
+            "command" | "denyCommand" => 200,
+            "tool" | "denyTool" => 128,
+            "denyPath" => 260,
+            _ => return Err(HostError::invalid(l("未知的权限规则类型。", "Unknown permission rule kind."))),
+        };
+        if rule.is_empty() || rule.chars().count() > max_len {
+            return Err(HostError::invalid(l("权限规则无效。", "Invalid permission rule.")));
+        }
         self.update(|data| {
             let security = data.security.get_or_insert_with(Security::default);
             let all = security.rules.get_or_insert_with(BTreeMap::new);
             let mut current = all.get(workspace_id).cloned().unwrap_or_default();
-            let list = if command { &mut current.commands } else { &mut current.tools };
+            let list = match kind {
+                "command" => &mut current.commands,
+                "tool" => &mut current.tools,
+                "denyCommand" => &mut current.deny_commands,
+                "denyPath" => &mut current.deny_paths,
+                "denyTool" => &mut current.deny_tools,
+                _ => unreachable!(),
+            };
             list.retain(|item| item != rule);
             if present {
                 list.push(rule.to_owned());
             }
             let excess = list.len().saturating_sub(MAX_RULES);
             list.drain(..excess);
-            if current.commands.is_empty() && current.tools.is_empty() {
+            if current.is_empty() {
                 all.remove(workspace_id);
             } else {
                 all.insert(workspace_id.to_owned(), current);
@@ -530,6 +601,66 @@ impl Settings {
             Ok(())
         })?;
         Ok(self.permission_rules(workspace_id))
+    }
+
+    /// Normalize a workspace trust entry for cross-platform comparison.
+    fn trust_key(raw: &str) -> String {
+        let trimmed = raw.trim().replace('\\', "/");
+        let trimmed = trimmed.trim_end_matches('/');
+        if cfg!(windows) { trimmed.to_lowercase() } else { trimmed.to_owned() }
+    }
+
+    /// Workspaces explicitly marked trusted by the user.
+    pub fn trusted_workspaces(&self) -> Vec<String> {
+        self.inner.lock().unwrap().data.security.as_ref().map(|security| security.trusted_workspaces.clone()).unwrap_or_default()
+    }
+
+    /// Whether a workspace (matched by id or normalized path) is trusted to auto-load `.rainy/skills`, `.mcp.json` or `.rainy/hooks.json`.
+    pub fn is_workspace_trusted(&self, workspace_id: Option<&str>, path: Option<&Path>) -> bool {
+        let list = self.trusted_workspaces();
+        if list.is_empty() {
+            return false;
+        }
+        let path_key = path.map(|p| Self::trust_key(&crate::paths::normalize(p).to_string_lossy()));
+        let id_key = workspace_id.filter(|id| !id.trim().is_empty()).map(Self::trust_key);
+        list.iter().any(|entry| {
+            let key = Self::trust_key(entry);
+            id_key.as_deref() == Some(key.as_str()) || path_key.as_deref() == Some(key.as_str())
+        })
+    }
+
+    /// Mark a workspace id or path trusted (`true`) or untrusted (`false`).
+    pub fn set_workspace_trusted(&self, target: &str, trusted: bool) -> HostResult<Vec<String>> {
+        let trimmed = target.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > 1024 {
+            return Err(HostError::invalid(l("工作区标识或路径无效。", "Invalid workspace id or path.")));
+        }
+        let target_key = Self::trust_key(trimmed);
+        self.update(|data| {
+            let security = data.security.get_or_insert_with(Security::default);
+            security.trusted_workspaces.retain(|item| Self::trust_key(item) != target_key);
+            if trusted {
+                security.trusted_workspaces.push(trimmed.to_owned());
+                let excess = security.trusted_workspaces.len().saturating_sub(MAX_TRUSTED_WORKSPACES);
+                security.trusted_workspaces.drain(..excess);
+            }
+            Ok(())
+        })?;
+        Ok(self.trusted_workspaces())
+    }
+
+    /// Global declarative lifecycle hooks stored in Settings.
+    pub fn hooks(&self) -> Vec<crate::agent::hooks::HookRule> {
+        self.inner.lock().unwrap().data.hooks.clone()
+    }
+
+    /// Replace global declarative lifecycle hooks in Settings.
+    pub fn set_hooks(&self, hooks: Vec<crate::agent::hooks::HookRule>) -> HostResult<Vec<crate::agent::hooks::HookRule>> {
+        self.update(|data| {
+            data.hooks = hooks;
+            Ok(())
+        })?;
+        Ok(self.hooks())
     }
 
     /// A provider's API key; an environment variable with the credential's name takes precedence.
@@ -675,9 +806,34 @@ mod tests {
         let settings = Settings::load(dir.path(), None).unwrap();
         settings.set_permission_rule("w", true, "python3", true).unwrap();
         settings.set_permission_rule("w", false, "mcp__a__b", true).unwrap();
-        assert_eq!(settings.permission_rules("w"), PermissionRules { commands: vec!["python3".into()], tools: vec!["mcp__a__b".into()] });
+        settings.set_permission_rule_kind("w", "denyCommand", "rm -rf *", true).unwrap();
+        settings.set_permission_rule_kind("w", "denyPath", ".env", true).unwrap();
+        settings.set_permission_rule_kind("w", "denyTool", "mcp__bad__*", true).unwrap();
+        assert_eq!(
+            settings.permission_rules("w"),
+            PermissionRules {
+                commands: vec!["python3".into()],
+                tools: vec!["mcp__a__b".into()],
+                deny_commands: vec!["rm -rf *".into()],
+                deny_paths: vec![".env".into()],
+                deny_tools: vec!["mcp__bad__*".into()],
+            }
+        );
         settings.set_permission_rule("w", true, "python3", false).unwrap();
         settings.set_permission_rule("w", false, "mcp__a__b", false).unwrap();
+        settings.set_permission_rule_kind("w", "denyCommand", "rm -rf *", false).unwrap();
+        settings.set_permission_rule_kind("w", "denyPath", ".env", false).unwrap();
+        settings.set_permission_rule_kind("w", "denyTool", "mcp__bad__*", false).unwrap();
         assert!(settings.get().security.unwrap().rules.unwrap().is_empty());
+
+        // Workspace trust persistence and reload compatibility.
+        let project_dir = dir.path().join("proj");
+        assert!(!settings.is_workspace_trusted(Some("w"), Some(&project_dir)));
+        settings.set_workspace_trusted(&project_dir.to_string_lossy(), true).unwrap();
+        assert!(settings.is_workspace_trusted(Some("w"), Some(&project_dir)));
+        let reloaded = Settings::load(dir.path(), None).unwrap();
+        assert!(reloaded.is_workspace_trusted(Some("w"), Some(&project_dir)));
+        reloaded.set_workspace_trusted(&project_dir.to_string_lossy(), false).unwrap();
+        assert!(!reloaded.is_workspace_trusted(Some("w"), Some(&project_dir)));
     }
 }

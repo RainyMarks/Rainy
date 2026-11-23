@@ -203,11 +203,13 @@ fn replace_file(root: &Root, path: &str, regex: &Regex, replacement: &str) -> Re
     if !contains(&canonical_root, &absolute) {
         return Err(l("文件在项目之外。", "The file is outside the project."));
     }
-    let info = std::fs::symlink_metadata(&absolute).map_err(|error| error.to_string())?;
-    if !info.is_file() {
+    let observed = crate::ide::fs::stat(&absolute)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| l("文件不存在。", "The file does not exist."))?;
+    if observed.kind != crate::ide::fs::Kind::File {
         return Err(l("不是文件。", "Not a file."));
     }
-    if info.len() > MAX_FILE_BYTES {
+    if observed.size > MAX_FILE_BYTES {
         return Err(l("文件太大，没有替换。", "The file is too large to replace in."));
     }
     let bytes = std::fs::read(&absolute).map_err(|error| error.to_string())?;
@@ -217,7 +219,8 @@ fn replace_file(root: &Root, path: &str, regex: &Regex, replacement: &str) -> Re
     if count > 0 {
         let mut out = if bom { vec![0xef, 0xbb, 0xbf] } else { Vec::new() };
         out.extend_from_slice(next.as_bytes());
-        std::fs::write(&absolute, out).map_err(|error| error.to_string())?;
+        crate::ide::fs::write(&absolute, &out, crate::ide::fs::Intent::ReplaceIfVersion(&observed.version))
+            .map_err(|error| error.message)?;
     }
     Ok(count)
 }
@@ -252,9 +255,16 @@ fn search_root(root: &Root, request: &Value, regex: &Regex, budget: usize, cance
             if !entry.file_type().is_some_and(|kind| kind.is_file()) || entry.metadata().map_or(true, |info| info.len() > MAX_FILE_BYTES) {
                 return ignore::WalkState::Continue;
             }
-            let Ok(bytes) = std::fs::read(entry.path()) else { return ignore::WalkState::Continue };
-            // ripgrep skips a file once it sees a NUL byte: binary data.
-            if bytes[..bytes.len().min(8192)].contains(&0) {
+            let Ok(mut file) = std::fs::File::open(entry.path()) else { return ignore::WalkState::Continue };
+            // Probe the first 8 KiB for NUL bytes before reading the whole file to avoid allocating large binary files.
+            let mut probe = [0u8; 8192];
+            let Ok(first) = std::io::Read::read(&mut file, &mut probe) else { return ignore::WalkState::Continue };
+            if probe[..first].contains(&0) {
+                return ignore::WalkState::Continue;
+            }
+            let mut bytes = Vec::with_capacity(first);
+            bytes.extend_from_slice(&probe[..first]);
+            if first == probe.len() && std::io::Read::read_to_end(&mut file, &mut bytes).is_err() {
                 return ignore::WalkState::Continue;
             }
             let text = String::from_utf8_lossy(&bytes);
@@ -319,5 +329,17 @@ mod tests {
         assert_eq!(files[0]["path"], "a.txt");
         assert_eq!(files[0]["matches"][0]["column"], 3);
         assert_eq!(globs("src, *.py, build/"), ["src", "src/**", "**/src/**", "*.py", "build/**"]);
+    }
+
+    #[test]
+    fn atomic_replace_preserves_bom_and_skips_binary_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("sample.txt");
+        std::fs::write(&target, b"\xef\xbb\xbfhello world\r\n").unwrap();
+        let root = Root { root_id: "primary".into(), path: dir.path().display().to_string(), title: "t".into(), primary: true };
+        let options = json!({ "pattern": "world", "regex": false });
+        let count = replace_file(&root, "sample.txt", &expression(&options).unwrap(), &replacement(&options, "rainy")).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"\xef\xbb\xbfhello rainy\r\n");
     }
 }

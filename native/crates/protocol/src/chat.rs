@@ -333,12 +333,48 @@ pub struct Worktree {
 pub struct PendingApproval {
     pub tool_call_id: String,
     pub tool_name: String,
-    /// `command`, `outside-write`, `mcp` or `web`.
+    /// `command`, `outside-write`, `outside-read`, `outside-workdir`, `mcp` or `web`.
     pub reason: String,
     #[serde(default)]
     pub rule: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+}
+
+/// Token breakdown by context category for `session.contextBreakdown`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownSegments {
+    #[serde(default)]
+    pub system: u64,
+    #[serde(default)]
+    pub instructions: u64,
+    #[serde(default)]
+    pub mcp_tools: u64,
+    #[serde(default)]
+    pub core_tools: u64,
+    #[serde(default)]
+    pub history: u64,
+    #[serde(default)]
+    pub recall: u64,
+}
+
+/// Detailed context-window breakdown for one chat (`session.contextBreakdown`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdown {
+    pub session_id: String,
+    pub context_window: u64,
+    pub input_limit: u64,
+    pub compact_at: u64,
+    pub output_tokens: u64,
+    pub total: u64,
+    pub calibrated_total: u64,
+    pub calibration_factor: f64,
+    pub kind: String,
+    pub segments: ContextBreakdownSegments,
 }
 
 /// A message waiting for the current run to reach a step boundary (steer) or to finish (queue).

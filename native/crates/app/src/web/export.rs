@@ -3,14 +3,41 @@
 //! searches as written.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use base64::Engine as _;
 use serde_json::Value;
 use windows::Win32::Foundation::HWND;
 
 use super::webview::{Options, WebView};
+
+static EXPORT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Build a canonical percent-encoded `file:///` URL for a local Windows file path.
+fn file_url(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let raw = raw.strip_prefix("//?/").unwrap_or(&raw);
+    let mut encoded = String::from("file:///");
+    for byte in raw.as_bytes() {
+        let ch = *byte as char;
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | '~' | ':') {
+            encoded.push(ch);
+        } else {
+            encoded.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    encoded
+}
+
+/// Whether `address` is `about:blank` or the exact exported `document.html` file URL.
+fn is_allowed_export_url(address: &str, allowed: &str) -> bool {
+    if address == "about:blank" {
+        return true;
+    }
+    address.eq_ignore_ascii_case(allowed)
+}
 
 /// A file name the page suggested, without characters Windows does not allow; `document` when nothing is left.
 pub fn file_name(name: &str) -> String {
@@ -53,14 +80,16 @@ fn pdf_bytes(answer: &str) -> Result<Vec<u8>, PdfFailure> {
 
 /// Print `html` to a PDF; `done` runs on the UI thread with the file's bytes.
 pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnOnce(Result<Vec<u8>, PdfFailure>) + 'static) {
-    let folder = std::env::temp_dir().join(format!("rainy-export-{}-{}", std::process::id(), chrono::Utc::now().timestamp_millis()));
+    let seq = EXPORT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let folder = std::env::temp_dir().join(format!("rainy-export-{}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_millis(), seq));
     let page = folder.join("document.html");
     if let Err(error) = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&page, html)) {
         done(Err(PdfFailure::Page(error.to_string())));
         return;
     }
-    let url = format!("file:///{}", page.to_string_lossy().replace('\\', "/"));
+    let url = file_url(&page);
     let allowed = url.clone();
+    let expected_source = url.clone();
     let done: Rc<RefCell<Option<Box<dyn FnOnce(Result<Vec<u8>, PdfFailure>)>>>> = Rc::new(RefCell::new(Some(Box::new(done))));
     // The control lives until the PDF is made; then it and the page go.
     let holder: Rc<RefCell<Option<WebView>>> = Rc::default();
@@ -82,9 +111,11 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
         folder: profile,
         private: true,
         background: (255, 255, 255),
+        scripts_enabled: false,
+        ipc_origin: None,
         script: None,
         on_message: None,
-        allow: Some(Box::new(move |address| address == allowed || address.starts_with("about:") || address.starts_with("data:"))),
+        allow: Some(Box::new(move |address| is_allowed_export_url(address, &allowed))),
         on_new_window: Some(Box::new(|_| {})),
         on_shortcut: None,
     };
@@ -102,23 +133,28 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
         *holder.borrow_mut() = Some(view.clone());
         let printing = Rc::new(RefCell::new(false));
         let (printer, finish) = (view.clone(), finish.clone());
-        view.on_devtools_event("Page.loadEventFired", move |_| {
+        // Scripts are disabled for untrusted exported HTML, so wait for WebView2's own
+        // NavigationCompleted event (after subresources and CSS stylesheets load) instead of
+        // evaluating JS via `Runtime.evaluate`.
+        view.on_navigation_completed(move |source, success| {
+            if source == "about:blank" || (!source.is_empty() && !source.eq_ignore_ascii_case(&expected_source)) {
+                return;
+            }
             if std::mem::replace(&mut *printing.borrow_mut(), true) {
                 return;
             }
-            // Fonts load after the page; the PDF waits for them.
-            let (printer, finish) = (printer.clone(), finish.clone());
-            let wait = r#"{"expression":"document.fonts.ready.then(() => true)","awaitPromise":true}"#;
-            printer.clone().devtools("Runtime.evaluate", wait, move |_| {
-                let params = r#"{"printBackground":true,"preferCSSPageSize":true,"paperWidth":8.27,"paperHeight":11.69,"generateDocumentOutline":true,"generateTaggedPDF":true}"#;
-                printer.devtools("Page.printToPDF", params, move |result| {
-                    let pdf = result.map_err(PdfFailure::Print).and_then(|answer| pdf_bytes(&answer));
-                    finish(pdf.map(super::pdf_text::searchable_pdf));
-                });
+            if !success {
+                finish(Err(PdfFailure::Print("navigation failed".to_owned())));
+                return;
+            }
+            let finish = finish.clone();
+            let params = r#"{"printBackground":true,"preferCSSPageSize":true,"paperWidth":8.27,"paperHeight":11.69,"generateDocumentOutline":true,"generateTaggedPDF":true}"#;
+            printer.devtools("Page.printToPDF", params, move |result| {
+                let pdf = result.map_err(PdfFailure::Print).and_then(|answer| pdf_bytes(&answer));
+                finish(pdf.map(super::pdf_text::searchable_pdf));
             });
         });
-        let navigator = view.clone();
-        view.devtools("Page.enable", "{}", move |_| navigator.navigate(&url));
+        view.navigate(&url);
     });
 }
 
@@ -142,5 +178,17 @@ mod tests {
         assert_eq!(pdf_bytes(r#"{"stream":"1"}"#), Err(PdfFailure::Empty));
         assert_eq!(pdf_bytes(r#"{"data":"not base64!"}"#), Err(PdfFailure::Empty));
         assert_eq!(pdf_bytes("no json"), Err(PdfFailure::Empty));
+    }
+
+    #[test]
+    fn export_file_url_encodes_spaces_and_unicode_and_blocks_other_paths() {
+        let url = file_url(Path::new(r"C:\Users\Alice Smith\测试\document.html"));
+        assert_eq!(url, "file:///C:/Users/Alice%20Smith/%E6%B5%8B%E8%AF%95/document.html");
+        assert!(is_allowed_export_url("about:blank", &url));
+        assert!(is_allowed_export_url(&url, &url));
+        assert!(is_allowed_export_url("file:///c:/Users/Alice%20Smith/%e6%b5%8b%e8%af%95/document.html", &url));
+        assert!(!is_allowed_export_url("file:///C:/Windows/win.ini", &url));
+        assert!(!is_allowed_export_url("https://example.com/", &url));
+        assert!(!is_allowed_export_url("data:text/html,<script>alert(1)</script>", &url));
     }
 }

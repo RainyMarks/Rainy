@@ -23,6 +23,22 @@ use crate::error::{HostError, HostResult};
 use crate::locale::l;
 use crate::projects::Projects;
 
+#[allow(unused_imports)]
+pub use tour::{FileSymbols, SymbolEntry, symbol_outline};
+
+/// Import dependencies of one file or directory prefix, exposed to the Agent's `module_deps` tool.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleDeps {
+    pub target: String,
+    pub found: bool,
+    pub language: String,
+    pub lines: u64,
+    pub imports: Vec<String>,
+    pub imported_by: Vec<String>,
+    pub external_packages: Vec<String>,
+}
+
 /// One file of the project.
 #[derive(Clone, Debug, Serialize)]
 pub struct MapFile {
@@ -256,6 +272,58 @@ impl ProjectMaps {
         }))
     }
 
+    /// Query structured import dependencies for a file or directory prefix inside a registered workspace (reusing the
+    /// cached ProjectMap scan).
+    pub async fn module_deps(&self, workspace_id: &str, path: &str) -> HostResult<ModuleDeps> {
+        let cached = self.cache.lock().unwrap().get(workspace_id).filter(|(_, at)| at.elapsed() < RELATIONS_CACHE).map(|(map, _)| map.clone());
+        let map = match cached {
+            Some(map) => map,
+            None => self.scan(workspace_id)?.await?,
+        };
+        Ok(extract_module_deps(&map, path))
+    }
+
+    /// Query import dependencies for a file or directory under an arbitrary project directory `root` (reuses the
+    /// workspace cache when `workspace_id` matches `root`, otherwise caches a bounded scan keyed by canonical root).
+    pub async fn module_deps_in_dir(&self, root: &std::path::Path, path: &str, workspace_id: Option<&str>) -> HostResult<ModuleDeps> {
+        let canonical_root = crate::paths::realpath(root)?;
+        if let Some(id) = workspace_id {
+            if let Ok(project) = self.project(id) {
+                if crate::paths::realpath(std::path::Path::new(&project.path)).ok().as_deref() == Some(canonical_root.as_path()) {
+                    return self.module_deps(id, path).await;
+                }
+            }
+        }
+        let cache_key = format!("dir:{}", canonical_root.to_string_lossy());
+        let cached = self.cache.lock().unwrap().get(&cache_key).filter(|(_, at)| at.elapsed() < RELATIONS_CACHE).map(|(map, _)| map.clone());
+        let map = match cached {
+            Some(map) => map,
+            None => {
+                let cancelled = self.cancelled.clone();
+                let scan_root = canonical_root.clone();
+                let scanned = tokio::task::spawn_blocking(move || {
+                    let result = scan::scan_project(&scan_root, scan::ScanLimits::default(), &cancelled);
+                    Arc::new(ProjectMap {
+                        workspace_id: String::new(),
+                        title: scan_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                        generated_at: crate::text::now_ms(),
+                        truncated: result.truncated,
+                        files: result.files,
+                        imports: result.imports,
+                        packages: result.packages,
+                        stack: result.stack,
+                        explanation: None,
+                    })
+                })
+                .await
+                .map_err(|error| HostError::other(error.to_string()))?;
+                self.cache.lock().unwrap().insert(cache_key, (scanned.clone(), Instant::now()));
+                scanned
+            }
+        };
+        Ok(extract_module_deps(&map, path))
+    }
+
     /// Ask the default model to explain the project, and keep the explanation; one request per project at a time.
     pub async fn explain(&self, workspace_id: &str, models: &crate::agent::models::Models, locale: &str) -> HostResult<MapExplanation> {
         let _one = self.explaining.lock().await;
@@ -380,5 +448,115 @@ impl ProjectMaps {
     pub(crate) fn store_explanation(&self, workspace_id: &str, explanation: &MapExplanation, paths: &[String]) -> HostResult<()> {
         crate::store::write_json(&self.path(workspace_id), &json!({ "version": 1, "explanation": explanation, "paths": paths }))?;
         Ok(())
+    }
+}
+
+fn extract_module_deps(map: &ProjectMap, raw_path: &str) -> ModuleDeps {
+    let target = raw_path.trim().trim_start_matches("./").trim_end_matches('/').replace('\\', "/");
+    if target.is_empty() {
+        return ModuleDeps { target, found: false, language: String::new(), lines: 0, imports: Vec::new(), imported_by: Vec::new(), external_packages: Vec::new() };
+    }
+    // Exact file match first, then unique suffix match, then directory prefix aggregation.
+    let exact = map.files.iter().position(|file| file.path == target).or_else(|| {
+        let suffix = format!("/{target}");
+        let mut matches = map.files.iter().enumerate().filter(|(_, file)| file.path.ends_with(&suffix)).map(|(idx, _)| idx);
+        match (matches.next(), matches.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    });
+    if let Some(index) = exact {
+        let mut imports: Vec<String> = map.imports.chunks_exact(2).filter(|pair| pair[0] == index).map(|pair| map.files[pair[1]].path.clone()).collect();
+        let mut imported_by: Vec<String> = map.imports.chunks_exact(2).filter(|pair| pair[1] == index).map(|pair| map.files[pair[0]].path.clone()).collect();
+        let mut external_packages: Vec<String> = map.packages.iter().filter(|pkg| pkg.files.contains(&index)).map(|pkg| pkg.name.clone()).collect();
+        for list in [&mut imports, &mut imported_by, &mut external_packages] {
+            list.sort();
+            list.dedup();
+        }
+        return ModuleDeps {
+            target: map.files[index].path.clone(),
+            found: true,
+            language: map.files[index].language.clone(),
+            lines: map.files[index].lines,
+            imports,
+            imported_by,
+            external_packages,
+        };
+    }
+
+    let prefix = format!("{target}/");
+    let members: std::collections::HashSet<usize> = map.files.iter().enumerate().filter(|(_, file)| file.path.starts_with(&prefix)).map(|(idx, _)| idx).collect();
+    if members.is_empty() {
+        return ModuleDeps { target, found: false, language: String::new(), lines: 0, imports: Vec::new(), imported_by: Vec::new(), external_packages: Vec::new() };
+    }
+    let lines: u64 = members.iter().map(|&idx| map.files[idx].lines).sum();
+    let mut imports = Vec::new();
+    let mut imported_by = Vec::new();
+    for pair in map.imports.chunks_exact(2) {
+        let from_in = members.contains(&pair[0]);
+        let to_in = members.contains(&pair[1]);
+        if from_in && !to_in {
+            imports.push(map.files[pair[1]].path.clone());
+        } else if !from_in && to_in {
+            imported_by.push(map.files[pair[0]].path.clone());
+        }
+    }
+    let mut external_packages: Vec<String> = map.packages.iter().filter(|pkg| pkg.files.iter().any(|idx| members.contains(idx))).map(|pkg| pkg.name.clone()).collect();
+    for list in [&mut imports, &mut imported_by, &mut external_packages] {
+        list.sort();
+        list.dedup();
+    }
+    ModuleDeps { target, found: true, language: "directory".into(), lines, imports, imported_by, external_packages }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_symbol_outline_and_module_deps() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub struct Engine {}\npub async fn start() {\n}\nimpl Engine {\n    pub fn run(&self) {}\n}\n",
+        )
+        .unwrap();
+        let outline = symbol_outline(dir.path(), std::path::Path::new("src/lib.rs"), 50).unwrap();
+        assert_eq!(outline.path, "src/lib.rs");
+        assert_eq!(outline.language, "rust");
+        assert!(!outline.truncated);
+        assert_eq!(outline.symbols.len(), 4);
+        assert_eq!((outline.symbols[0].line, outline.symbols[0].kind.as_str()), (1, "struct"));
+        assert_eq!((outline.symbols[1].line, outline.symbols[1].kind.as_str()), (2, "fn"));
+        assert_eq!((outline.symbols[2].line, outline.symbols[2].kind.as_str()), (4, "impl"));
+        assert_eq!((outline.symbols[3].line, outline.symbols[3].kind.as_str()), (5, "fn"));
+
+        let map = ProjectMap {
+            workspace_id: "w".into(),
+            title: "t".into(),
+            generated_at: 0,
+            truncated: false,
+            files: vec![
+                MapFile { path: "src/a.ts".into(), language: "typescript".into(), kind: "code".into(), lines: 20, bytes: 200 },
+                MapFile { path: "src/b.ts".into(), language: "typescript".into(), kind: "code".into(), lines: 10, bytes: 100 },
+                MapFile { path: "app/main.ts".into(), language: "typescript".into(), kind: "code".into(), lines: 30, bytes: 300 },
+            ],
+            imports: vec![2, 0, 0, 1],
+            packages: vec![MapPackage { name: "react".into(), files: vec![0, 2] }],
+            stack: vec![],
+            explanation: None,
+        };
+        let file_deps = extract_module_deps(&map, "src/a.ts");
+        assert!(file_deps.found);
+        assert_eq!(file_deps.imports, vec!["src/b.ts"]);
+        assert_eq!(file_deps.imported_by, vec!["app/main.ts"]);
+        assert_eq!(file_deps.external_packages, vec!["react"]);
+
+        let dir_deps = extract_module_deps(&map, "src");
+        assert!(dir_deps.found);
+        assert!(dir_deps.imports.is_empty());
+        assert_eq!(dir_deps.imported_by, vec!["app/main.ts"]);
+        assert_eq!(dir_deps.external_packages, vec!["react"]);
     }
 }

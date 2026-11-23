@@ -171,7 +171,143 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>, args: &[impl AsRef<std::ffi
 pub fn spawn(program: impl AsRef<std::ffi::OsStr>, args: &[impl AsRef<std::ffi::OsStr>], cwd: &Path, env: &BTreeMap<OsString, OsString>, stdin: bool) -> std::io::Result<Child> {
     let mut command = command(program, args, cwd, env);
     command.stdin(if stdin { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    command.spawn()
+    let child = command.spawn()?;
+    contain_child(&child);
+    Ok(child)
+}
+
+/// An isolated Windows Job Object with `KILL_ON_JOB_CLOSE` so one operation's entire process tree (including detached
+/// grandchildren holding inherited pipes) terminates cleanly on `terminate()`, drop, or Host exit.
+#[cfg(windows)]
+pub struct ProcessJob {
+    handle: usize,
+}
+
+#[cfg(windows)]
+impl ProcessJob {
+    pub fn new() -> Option<Self> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+        // SAFETY: unnamed non-inheritable job configured with plain POD limits.
+        let job = unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+            if SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), size) == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            job
+        };
+        Some(Self { handle: job as usize })
+    }
+
+    pub fn assign_handle(&self, process: windows_sys::Win32::Foundation::HANDLE) -> bool {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        if self.handle == 0 || process.is_null() {
+            return false;
+        }
+        // SAFETY: both handles are valid for the duration of this call.
+        unsafe { AssignProcessToJobObject(self.handle as windows_sys::Win32::Foundation::HANDLE, process) != 0 }
+    }
+
+    pub fn assign_child(&self, child: &Child) -> bool {
+        child.raw_handle().is_some_and(|handle| self.assign_handle(handle as windows_sys::Win32::Foundation::HANDLE))
+    }
+
+    pub fn assign_pid(&self, pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+        if pid == 0 {
+            return false;
+        }
+        // SAFETY: opens the process with minimal rights needed by AssignProcessToJobObject, then closes the handle.
+        unsafe {
+            let handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let ok = self.assign_handle(handle);
+            CloseHandle(handle);
+            ok
+        }
+    }
+
+    pub fn terminate(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        if self.handle != 0 {
+            // SAFETY: valid job handle owned by `self`.
+            unsafe {
+                TerminateJobObject(self.handle as windows_sys::Win32::Foundation::HANDLE, 1);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        if self.handle != 0 {
+            // SAFETY: valid job handle owned exclusively by `self`.
+            unsafe {
+                CloseHandle(self.handle as windows_sys::Win32::Foundation::HANDLE);
+            }
+            self.handle = 0;
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub struct ProcessJob;
+
+#[cfg(not(windows))]
+impl ProcessJob {
+    pub fn new() -> Option<Self> {
+        None
+    }
+
+    pub fn assign_child(&self, _child: &Child) -> bool {
+        false
+    }
+
+    pub fn assign_pid(&self, _pid: u32) -> bool {
+        false
+    }
+
+    pub fn terminate(&self) {}
+}
+
+#[cfg(windows)]
+fn host_job() -> Option<&'static ProcessJob> {
+    static JOB: std::sync::OnceLock<Option<ProcessJob>> = std::sync::OnceLock::new();
+    JOB.get_or_init(ProcessJob::new).as_ref()
+}
+
+/// Bind a spawned child process (and its descendants) to the Host's `KILL_ON_JOB_CLOSE` job on Windows.
+pub fn contain_child(child: &Child) {
+    #[cfg(windows)]
+    if let Some(job) = host_job() {
+        let _ = job.assign_child(child);
+    }
+    #[cfg(not(windows))]
+    let _ = child;
+}
+
+/// Bind a process by PID to the Host's `KILL_ON_JOB_CLOSE` job on Windows (for PTY children spawned via `portable-pty`).
+pub fn contain_pid(pid: u32) {
+    #[cfg(windows)]
+    if let Some(job) = host_job() {
+        let _ = job.assign_pid(pid);
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 #[cfg(windows)]
@@ -313,5 +449,21 @@ mod tests {
         assert_eq!(resolve_executable("tool", Some(&env)).map(|path| path.file_name().unwrap().to_ascii_lowercase()), Some("tool.cmd".into()));
         assert_eq!(resolve_executable("tool.cmd", Some(&env)).map(|path| path.file_name().unwrap().to_ascii_lowercase()), Some("tool.cmd".into()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn process_job_terminates_child_and_binds_to_host_job() {
+        let job = ProcessJob::new().expect("windows job object");
+        let env = scrubbed_env();
+        let mut child = command("cmd.exe", &["/c", "ping -n 30 127.0.0.1 >NUL"], &std::env::temp_dir(), &env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert!(job.assign_child(&child));
+        job.terminate();
+        let status = tokio::time::timeout(Duration::from_secs(3), child.wait()).await.expect("job killed child promptly").unwrap();
+        assert!(!status.success());
     }
 }

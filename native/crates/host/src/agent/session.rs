@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use rainy_protocol::chat::{
-    AssistantBlock, AssistantMessage, ChatChange, ContextUsage, ImageContent, PendingApproval, QueuedMessage, RetryWait, RevertFailure, RevertResult,
-    SessionSnapshot, SessionStateEvent, SessionSummary, TranscriptEntry, UsageSummary,
+    AssistantBlock, AssistantMessage, ChatChange, ContextBreakdown, ContextBreakdownSegments, ContextUsage, ImageContent, PendingApproval, QueuedMessage, ResultContent, RetryWait, RevertFailure,
+    RevertResult, SessionSnapshot, SessionStateEvent, SessionSummary, TranscriptEntry, UsageSummary,
 };
 use regex::Regex;
 use serde_json::{Value, json};
@@ -17,10 +17,11 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::budget::{Budget, Calibration, Reported, estimate_messages, expected_tokens, resolve_budget};
+use super::budget::{Budget, Calibration, Reported, estimate_breakdown, estimate_messages, expected_tokens, resolve_budget};
 use super::changes::{self, change_text, line_counts, path_for_model, path_key};
 use super::compaction::{self, CompactionRequest, SHARED_CACHE_WINDOW_MS, Strategy, add_usage, usage_of};
-use super::context::{build_context, cleared_ids};
+use super::context::{build_context, cleared_ids, model_user_text};
+use super::hooks::{self, HookContext, PreHookOutcome};
 use super::instructions::{load_baseline, loaded_from, render_additional, render_baseline};
 use super::llm::{self, Level, Message, Part, UserContent, context_overflow, text_parts};
 use super::mcp::McpManager;
@@ -35,12 +36,13 @@ use super::snapshots::Snapshots;
 use super::store::{ChatStore, MetaPatch, StoredChat};
 use super::subagent;
 use super::tools::browser::{Browser, Preview};
+use super::tools::diagnostics;
 use super::tools::jobs::Jobs;
 use super::tools::recall::{History, Recall};
 use super::tools::task::{Progress, Report, Subagents};
 use super::tools::web::{WebAccess, deepseek_key};
 use super::profile::Profile;
-use super::tools::{Observations, RecordChange, Tool, ToolContext, ToolStyle, core_tools, subagent_tools};
+use super::tools::{Observations, RecordChange, Tool, ToolContext, ToolOutput, ToolStyle, core_tools, subagent_tools, version_of};
 use super::{skills, stream};
 use crate::activity::Activity;
 use crate::env::HostEnv;
@@ -87,6 +89,12 @@ pub struct Services {
     pub model_activity: Arc<AtomicU64>,
     /// Boards and inboxes of `/swarm` chats.
     pub swarm: Arc<super::swarm::Hub>,
+    /// Shared Host LSP diagnostics pool (used by `lsp_diagnostics` and post-edit diagnostics).
+    pub languages: Option<Arc<crate::ide::language::Languages>>,
+    /// IDE formatter tools (used by `PostEdit` built-in `format` hooks).
+    pub ide_tools: Option<crate::ide::tools::Tools>,
+    /// Shared ProjectMap index (used by `module_deps`).
+    pub maps: Arc<crate::map::ProjectMaps>,
 }
 
 /// Title from the first message: control characters removed, at most five words and 40 bytes.
@@ -231,6 +239,8 @@ struct Inner {
     tool_updates: HashMap<String, u64>,
     calibration: Calibration,
     last_estimate: u64,
+    /// `provider/model` key of the latest prepared request, so `Calibration` stays isolated per model.
+    last_model_key: String,
     /// Messages, system prompt length and tools of the run's latest request.
     last_sent: (usize, usize, usize),
     /// What the provider counted for the run's latest request; `None` once the run's messages were rebuilt.
@@ -243,6 +253,8 @@ struct Inner {
     thinking_started: HashMap<usize, u64>,
     thinking_ms: BTreeMap<usize, u64>,
     run: Option<RunInfo>,
+    /// Set by `Session::close` so no queued run can start after close begins.
+    closing: bool,
     retry_wait: Option<RetryWait>,
     retry_wake: Option<oneshot::Sender<bool>>,
     touched: Vec<PathBuf>,
@@ -289,6 +301,12 @@ impl Session {
             Session {
                 id: file.chat.id.clone(),
                 inner: Mutex::new(Inner {
+                    phase: if file.chat.orchestrate_phase.as_deref() == Some("execute") && file.chat.orchestrate.is_some() {
+                        Phase::Execute
+                    } else {
+                        Phase::Plan
+                    },
+                    phase_note: file.chat.orchestrate_note.clone(),
                     chat: file.chat,
                     entries: file.entries,
                     kept: file.kept.into_iter().collect(),
@@ -304,6 +322,7 @@ impl Session {
                     tool_updates: HashMap::new(),
                     calibration: Calibration::default(),
                     last_estimate: 0,
+                    last_model_key: String::new(),
                     last_sent: (0, 0, 0),
                     reported: None,
                     last_request: None,
@@ -312,16 +331,15 @@ impl Session {
                     thinking_started: HashMap::new(),
                     thinking_ms: BTreeMap::new(),
                     run: None,
+                    closing: false,
                     retry_wait: None,
                     retry_wake: None,
                     touched: Vec::new(),
                     approvals: Vec::new(),
                     stop_after_step: false,
                     refused: HashMap::new(),
-                    phase: Phase::Plan,
                     phase_sent: None,
                     tool_errors: 0,
-                    phase_note: None,
                 }),
                 services,
                 observations: Arc::default(),
@@ -385,27 +403,60 @@ impl Session {
         }
     }
 
+    /// Persist orchestration phase/note asynchronously so Host restarts restore the exact active model and tools.
+    fn persist_orchestrate_phase(&self, phase: Phase, note: Option<String>) {
+        if self.chat().orchestrate.is_none() {
+            return;
+        }
+        let phase_str = match phase {
+            Phase::Plan => "plan",
+            Phase::Execute => "execute",
+        };
+        let (store, id) = (self.services.store.clone(), self.id.clone());
+        let patch = MetaPatch {
+            orchestrate_phase: Some(Some(phase_str.to_owned())),
+            orchestrate_note: Some(note),
+            ..MetaPatch::default()
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(error) = store.set_meta(&id, patch).await {
+                    log::warn!("[chat {id}] persisting orchestrate phase failed: {}", error.message);
+                }
+            });
+        }
+    }
+
     /// Hand the turn to the other model of an orchestrated chat; it takes over at the next request.
     fn switch_phase(&self, phase: Phase, text: String) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.phase = phase;
-        inner.tool_errors = 0;
-        inner.phase_note = (phase == Phase::Plan).then_some(text);
+        let note = (phase == Phase::Plan).then_some(text);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.phase = phase;
+            inner.tool_errors = 0;
+            inner.phase_note = note.clone();
+        }
+        self.persist_orchestrate_phase(phase, note);
     }
 
     /// Count the executor's failed calls; `true` when they reached the limit and the planner took the turn back.
     fn friction(&self, failed: bool) -> bool {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.phase != Phase::Execute {
-            return false;
-        }
-        inner.tool_errors = if failed { inner.tool_errors + 1 } else { 0 };
-        if inner.tool_errors < FRICTION_ERRORS {
-            return false;
-        }
-        inner.phase = Phase::Plan;
-        inner.tool_errors = 0;
-        inner.phase_note = Some(format!("its last {FRICTION_ERRORS} tool calls failed; see the results above."));
+        let handed_back = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.phase != Phase::Execute {
+                return false;
+            }
+            inner.tool_errors = if failed { inner.tool_errors + 1 } else { 0 };
+            if inner.tool_errors < FRICTION_ERRORS {
+                return false;
+            }
+            let note = format!("its last {FRICTION_ERRORS} tool calls failed; see the results above.");
+            inner.phase = Phase::Plan;
+            inner.tool_errors = 0;
+            inner.phase_note = Some(note.clone());
+            note
+        };
+        self.persist_orchestrate_phase(Phase::Plan, Some(handed_back));
         true
     }
 
@@ -422,17 +473,64 @@ impl Session {
             ),
             None => None,
         };
-        let chat = self.services.store.set_meta(&self.id, MetaPatch { orchestrate: Some(stored.clone()), ..MetaPatch::default() }).await?;
+        let patch = MetaPatch {
+            orchestrate: Some(stored.clone()),
+            orchestrate_phase: if stored.is_none() { Some(None) } else { None },
+            orchestrate_note: if stored.is_none() { Some(None) } else { None },
+            ..MetaPatch::default()
+        };
+        let chat = self.services.store.set_meta(&self.id, patch).await?;
         {
             let mut inner = self.inner.lock().unwrap();
             inner.chat = chat;
             if stored.is_none() {
                 inner.phase = Phase::Plan;
+                inner.phase_note = None;
             }
         }
         self.publish_state();
         self.services.rpc.emit("sessions.changed", self.summary());
         Ok(stored)
+    }
+
+    /// Detailed per-segment token breakdown for `session.contextBreakdown` / `usage_ring`.
+    pub fn context_breakdown(&self) -> HostResult<ContextBreakdown> {
+        let resolved = self.request_resolved().or_else(|| self.resolved()).ok_or_else(no_model)?;
+        let budget = resolve_budget(resolved.setup.context_window, resolved.setup.max_tokens)?;
+        let tools = self.tools();
+        let specs: Vec<llm::ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
+        let system = self.system_prompt(&tools);
+        let model_key = format!("{}/{}", resolved.model.provider, resolved.model.id);
+        let (items, entries, ratio, reported_tokens, kind) = {
+            let inner = self.inner.lock().unwrap();
+            let items = build_context(&inner.entries);
+            let ratio = inner.calibration.factor_for(&model_key);
+            let reported = inner.context.as_ref().filter(|c| c.kind == "exact").map(|c| c.tokens.max(0.0) as u64);
+            let kind = if reported.is_some() { "reported".to_owned() } else { "estimated".to_owned() };
+            (items, inner.entries.clone(), ratio, reported, kind)
+        };
+        let seg = estimate_breakdown(&system, &specs, &items, &entries);
+        let total = seg.total();
+        let calibrated_total = reported_tokens.unwrap_or_else(|| (total as f64 * ratio).ceil() as u64);
+        Ok(ContextBreakdown {
+            session_id: self.id.clone(),
+            context_window: budget.context_window,
+            input_limit: budget.input_limit,
+            compact_at: budget.compact_at,
+            output_tokens: budget.output_tokens,
+            total,
+            calibrated_total,
+            calibration_factor: ratio,
+            kind,
+            segments: ContextBreakdownSegments {
+                system: seg.system,
+                instructions: seg.instructions,
+                mcp_tools: seg.mcp_tools,
+                core_tools: seg.core_tools,
+                history: seg.history,
+                recall: seg.recall,
+            },
+        })
     }
 
     /// Everything the page shows for this chat; `limit` keeps only the last entries (older ones load on demand).
@@ -480,9 +578,16 @@ impl Session {
         if text.trim().is_empty() && images.is_empty() {
             return Err(HostError::new("empty", l("消息不能为空。", "A message cannot be empty.")));
         }
+        if self.inner.lock().unwrap().closing {
+            return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+        }
         let resolved = self.resolved().ok_or_else(no_model)?;
         if let Some(task) = super::swarm::swarm_command(text) {
             self.start_swarm(task).await?;
+        }
+        // A fresh user message to a swarm coordinator resets the circuit-breaker window for the new instruction.
+        if self.chat().swarm.as_ref().is_some_and(|link| link.coordinator == self.id) {
+            self.services.swarm.reset_budget(&self.id);
         }
         if !images.is_empty() && !resolved.model.images {
             return Err(HostError::new("images-unsupported", l("当前模型不支持图片输入。", "The current model does not accept images.")));
@@ -521,6 +626,53 @@ impl Session {
         Ok(false)
     }
 
+    /// Non-preemptive delivery from the Swarm message board: if this chat is running and has any pending user approval,
+    /// enqueue into `pending` (never set `steer = true` and never supersede pending approvals). If idle, start a run.
+    pub async fn send_swarm(self: &Arc<Self>, text: &str) -> HostResult<bool> {
+        if text.trim().is_empty() {
+            return Err(HostError::new("empty", l("消息不能为空。", "A message cannot be empty.")));
+        }
+        if self.inner.lock().unwrap().closing {
+            return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+        }
+        let _ = self.resolved().ok_or_else(no_model)?;
+        let (message, meta, references) = self.user_message(text, Vec::new()).await;
+        let mut prepared = Some((message, meta, references));
+        let queued = {
+            let mut inner = self.inner.lock().unwrap();
+            if matches!(inner.status, "running" | "compacting") {
+                let (message, meta, references) = prepared.take().unwrap();
+                let queue_id = uuid::Uuid::new_v4().to_string();
+                let Meta::User { entry_id, text: shown, images, .. } = meta else { unreachable!() };
+                let meta = Meta::User { entry_id, text: shown, images, queue_id: Some(queue_id.clone()) };
+                let messages: Vec<(Message, Meta)> = std::iter::once((message, meta)).chain(references).collect();
+                // Never preempt when waiting for user approval; queue safely into `pending`.
+                let can_steer = inner.approvals.is_empty() && inner.run.is_some();
+                inner.queue.push(QueuedMessage {
+                    id: queue_id.clone(),
+                    text: text.to_owned(),
+                    mode: if can_steer { "steer" } else { "queue" }.into(),
+                    image_count: 0,
+                });
+                if can_steer {
+                    inner.steering.extend(messages);
+                } else {
+                    inner.pending.insert(queue_id, messages);
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if queued {
+            self.publish_state();
+            return Ok(true);
+        }
+        let (message, meta, references) = prepared.unwrap();
+        self.start_run(std::iter::once((message, meta)).chain(references).collect()).await?;
+        Ok(false)
+    }
+
     /// `/swarm <task>`: make this chat the coordinator of a swarm; the message itself then goes to it as the task.
     async fn start_swarm(&self, task: &str) -> HostResult<()> {
         if task.is_empty() {
@@ -550,7 +702,12 @@ impl Session {
     /// The run status, whether a call waits for approval, and whether the user wrote while it runs.
     pub fn swarm_state(&self) -> super::swarm::ChatState {
         let inner = self.inner.lock().unwrap();
-        super::swarm::ChatState { status: inner.status.to_owned(), awaiting_approval: !inner.approvals.is_empty(), user_waiting: !inner.queue.is_empty() || !inner.steering.is_empty() }
+        super::swarm::ChatState {
+            status: inner.status.to_owned(),
+            awaiting_approval: !inner.approvals.is_empty(),
+            user_waiting: !inner.queue.is_empty() || !inner.steering.is_empty(),
+            has_pending: !inner.pending.is_empty(),
+        }
     }
 
     /// Stop the run; queued and steered messages are discarded.
@@ -697,11 +854,13 @@ impl Session {
         Ok(json!(self.background()))
     }
 
-    /// Stop any run and wait for it.
+    /// Stop any run and wait for it; setting `closing` prevents queued runs from starting after close begins.
     pub async fn close(&self) {
+        self.inner.lock().unwrap().closing = true;
         self.abort();
-        let task = self.task.lock().unwrap().take();
-        if let Some(task) = task {
+        loop {
+            let task = self.task.lock().unwrap().take();
+            let Some(task) = task else { break };
             let _ = task.await;
         }
         self.jobs.close().await;
@@ -865,7 +1024,12 @@ impl Session {
 
     // ── run ──
 
-    async fn start_run(self: &Arc<Self>, prompts: Vec<(Message, Meta)>) -> HostResult<()> {
+    /// Prepare the initial state of one run iteration (used both when starting fresh and when continuing seamlessly
+    /// into the next queued message inside the same `drive` task).
+    async fn prepare_run(self: &Arc<Self>, prompts: Vec<(Message, Meta)>) -> HostResult<(State, Vec<(Message, Meta)>, Resolved, HashSet<String>, CancellationToken)> {
+        if self.inner.lock().unwrap().closing {
+            return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+        }
         self.services.activity.assert_can_start()?;
         let resolved = self.resolved().ok_or_else(no_model)?;
         let first_text = prompts.first().and_then(|(_, meta)| if let Meta::User { text, .. } = meta { Some(text.clone()) } else { None });
@@ -880,22 +1044,33 @@ impl Session {
                 log::warn!("[review] {error}");
             }
         }
-        {
+        let reset_phase = {
             let mut inner = self.inner.lock().unwrap();
-            if first_text.is_some() {
+            let reset = if first_text.is_some() {
+                let changed = inner.phase != Phase::Plan || inner.phase_note.is_some();
                 inner.phase = Phase::Plan;
                 inner.tool_errors = 0;
                 inner.phase_note = None;
-            }
+                changed
+            } else {
+                false
+            };
             inner.phase_sent = Some(inner.phase);
+            reset
+        };
+        if reset_phase {
+            self.persist_orchestrate_phase(Phase::Plan, None);
         }
         let injections = self.first_request_context(&resolved).await?;
         let tools = self.tools();
-        let mcp_tools: HashSet<String> = self.services.mcp.tools().iter().map(|tool| tool.spec().name.clone()).collect();
+        let mcp_tools: HashSet<String> = self.services.mcp.tools(None).iter().map(|tool| tool.spec().name.clone()).collect();
         let system = self.system_prompt(&tools);
         let cancel = CancellationToken::new();
         let messages = {
             let mut inner = self.inner.lock().unwrap();
+            if inner.closing {
+                return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+            }
             inner.run = Some(RunInfo {
                 started: now_ms(),
                 from: inner.entries.len(),
@@ -922,22 +1097,49 @@ impl Session {
             thread: Some(self.thread.clone()),
         };
         let prompts: Vec<(Message, Meta)> = prompts.into_iter().chain(injections).collect();
+        Ok((state, prompts, resolved, mcp_tools, cancel))
+    }
+
+    async fn start_run(self: &Arc<Self>, prompts: Vec<(Message, Meta)>) -> HostResult<()> {
+        let (state, prompts, resolved, mcp_tools, cancel) = self.prepare_run(prompts).await?;
         let this = self.clone();
         let task = tokio::spawn(async move { this.drive(state, prompts, resolved, mcp_tools, cancel).await });
         *self.task.lock().unwrap() = Some(task);
         Ok(())
     }
 
-    async fn drive(self: Arc<Self>, mut state: State, prompts: Vec<(Message, Meta)>, resolved: Resolved, mcp_tools: HashSet<String>, cancel: CancellationToken) {
-        let hooks = RunHooks { session: self.clone(), mcp_tools, resolved: resolved.clone() };
-        let mut prompts = prompts;
+    async fn drive(self: Arc<Self>, mut state: State, mut prompts: Vec<(Message, Meta)>, mut resolved: Resolved, mut mcp_tools: HashSet<String>, mut cancel: CancellationToken) {
         loop {
-            run::run(&self.services.models.llm, &mut state, std::mem::take(&mut prompts), &hooks, &cancel).await;
-            if !self.recover(&resolved, &mut state).await {
-                break;
+            let hooks = RunHooks { session: self.clone(), mcp_tools, resolved: resolved.clone() };
+            loop {
+                run::run(&self.services.models.llm, &mut state, std::mem::take(&mut prompts), &hooks, &cancel).await;
+                if !self.recover(&resolved, &mut state).await {
+                    break;
+                }
+            }
+            match self.finish_run(&resolved).await {
+                Some(next_messages) => match self.prepare_run(next_messages).await {
+                    Ok((next_state, next_prompts, next_resolved, next_mcp, next_cancel)) => {
+                        state = next_state;
+                        prompts = next_prompts;
+                        resolved = next_resolved;
+                        mcp_tools = next_mcp;
+                        cancel = next_cancel;
+                    }
+                    Err(error) => {
+                        let closing = self.inner.lock().unwrap().closing;
+                        if !closing {
+                            self.inner.lock().unwrap().error = Some(error.message);
+                            self.set_status("error");
+                        } else {
+                            self.set_status("idle");
+                        }
+                        break;
+                    }
+                },
+                None => break,
             }
         }
-        self.finish_run(&resolved).await;
     }
 
     /// After a failed request: compact and ask again when the context overflowed, or wait and ask again when the
@@ -1029,7 +1231,9 @@ impl Session {
         go
     }
 
-    async fn finish_run(self: &Arc<Self>, resolved: &Resolved) {
+    /// Finish one run iteration and return the next queued message batch to run inside the same task, or `None` once
+    /// the session transitions cleanly to `idle`/`error` (eliminating `finish_run` → `start_next` vs `close` races).
+    async fn finish_run(self: &Arc<Self>, resolved: &Resolved) -> Option<Vec<(Message, Meta)>> {
         let run = {
             let mut inner = self.inner.lock().unwrap();
             inner.streaming = None;
@@ -1043,6 +1247,7 @@ impl Session {
             run
         };
         let aborted = run.as_ref().is_some_and(|run| run.aborted);
+        let turn_usage = run.as_ref().filter(|r| !r.aborted && r.requests > 0).map(|r| r.usage.clone());
         if let Some(run) = run {
             if run.aborted {
                 self.notice("stopped", l("已停止。", "Stopped.")).await;
@@ -1065,39 +1270,46 @@ impl Session {
                 });
             }
         }
-        let failed = self.inner.lock().unwrap().error.is_some();
-        self.set_status(if failed { "error" } else { "idle" });
-        if self.chat().swarm.is_some() {
-            let (hub, chat) = (self.services.swarm.clone(), self.chat());
-            tokio::spawn(async move { hub.turn_ended(&chat, aborted).await });
+        // Run declarative `Stop` hooks (trusted project + global) without blocking shutdown on failure.
+        let stop_rules = self.effective_hooks();
+        if stop_rules.iter().any(|r| r.enabled && r.event == "Stop") {
+            let ctx = self.hook_context();
+            hooks::run_stop(&stop_rules, &ctx, aborted).await;
         }
         self.services.memory.resume();
         self.services.model_activity.store(now_ms(), Ordering::SeqCst);
-        if aborted {
-            return;
-        }
-        let next = {
-            let mut inner = self.inner.lock().unwrap();
-            let next = inner.queue.iter().find(|item| inner.pending.contains_key(&item.id)).map(|item| item.id.clone());
-            next.and_then(|id| {
-                inner.queue.retain(|item| item.id != id);
-                inner.pending.remove(&id)
-            })
-        };
-        if let Some(messages) = next {
-            // A new task: this one is the run that just ended, and the next run's task replaces it.
-            tokio::spawn(self.clone().start_next(messages));
-        }
-    }
 
-    /// Start the run of a queued message; boxed, since a run's end starts the next run.
-    fn start_next(self: Arc<Self>, messages: Vec<(Message, Meta)>) -> BoxFuture<'static, ()> {
-        Box::pin(async move {
-            if let Err(error) = self.start_run(messages).await {
-                self.inner.lock().unwrap().error = Some(error.message);
-                self.set_status("error");
+        // Decide atomically whether there is another queued message to run inside this same task before ever marking `idle`.
+        let next = if aborted {
+            None
+        } else {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.closing {
+                None
+            } else {
+                let next_id = inner.queue.iter().find(|item| inner.pending.contains_key(&item.id)).map(|item| item.id.clone());
+                next_id.and_then(|id| {
+                    inner.queue.retain(|item| item.id != id);
+                    inner.pending.remove(&id)
+                })
             }
-        })
+        };
+
+        if next.is_some() {
+            if self.chat().swarm.is_some() {
+                let (hub, chat, usage) = (self.services.swarm.clone(), self.chat(), turn_usage);
+                tokio::spawn(async move { hub.turn_ended(&chat, aborted, usage.as_ref()).await });
+            }
+            return next;
+        }
+
+        let failed = self.inner.lock().unwrap().error.is_some();
+        self.set_status(if failed { "error" } else { "idle" });
+        if self.chat().swarm.is_some() {
+            let (hub, chat, usage) = (self.services.swarm.clone(), self.chat(), turn_usage);
+            tokio::spawn(async move { hub.turn_ended(&chat, aborted, usage.as_ref()).await });
+        }
+        None
     }
 
     // ── run events ──
@@ -1197,7 +1409,8 @@ impl Session {
             }
             let actual = message.usage.input + message.usage.cache_read + message.usage.cache_write;
             let estimate = inner.last_estimate;
-            inner.calibration.observe(estimate, actual as u64);
+            let model_key = inner.last_model_key.clone();
+            inner.calibration.observe_for(&model_key, estimate, actual as u64);
             if actual > 0.0 && message.stop_reason != "error" && message.stop_reason != "aborted" {
                 let (sent, system_len, tools) = inner.last_sent;
                 // The next request repeats this one and the reply, so their counts stand in for the estimate.
@@ -1275,6 +1488,38 @@ impl Session {
         self.services.rpc.emit("session.stream", json!({ "sessionId": self.id, "message": message }));
     }
 
+    /// Whether this chat's workspace is trusted to auto-load project `.rainy/skills`, `.mcp.json` and `.rainy/hooks.json`.
+    fn workspace_trusted(&self, chat: &StoredChat) -> bool {
+        self.services.settings.is_workspace_trusted(chat.workspace_id.as_deref(), Some(Path::new(&chat.cwd)))
+    }
+
+    /// Effective declarative lifecycle hooks for this chat (global + trusted workspace `.rainy/hooks.json`).
+    fn effective_hooks(&self) -> Vec<hooks::HookRule> {
+        let chat = self.chat();
+        let global = self.services.settings.hooks();
+        hooks::effective_hooks(&global, Path::new(&chat.cwd), self.workspace_trusted(&chat))
+    }
+
+    fn hook_context(&self) -> HookContext {
+        let chat = self.chat();
+        let cwd = PathBuf::from(&chat.cwd);
+        let environment = chat
+            .workspace_id
+            .as_deref()
+            .and_then(|id| self.services.runtime.resolve_workspace(id).ok())
+            .or_else(|| self.services.runtime.resolve(&cwd).ok())
+            .map(|r| r.environment)
+            .unwrap_or_default();
+        HookContext {
+            cwd,
+            session_id: self.id.clone(),
+            windows: self.services.env.windows,
+            pwsh_path: self.services.env.pwsh_path.clone(),
+            environment,
+            ide_tools: self.services.ide_tools.clone(),
+        }
+    }
+
     async fn before_tool(&self, mcp_tools: &HashSet<String>, id: &str, name: &str, args: &Value, cancel: &CancellationToken) -> Option<Blocked> {
         if self.inner.lock().unwrap().stop_after_step {
             return Some(Blocked { reason: "Skipped: the user refused an earlier tool call in this step.".into(), terminate: true });
@@ -1287,6 +1532,7 @@ impl Session {
         let rules = chat.workspace_id.as_deref().map(|workspace| self.services.settings.permission_rules(workspace)).unwrap_or_default();
         let read_only_tools = self.services.mcp.read_only_tools();
         let roots = || self.canonical_roots(&chat);
+        let spill_dir = self.services.env.home.join("spill").join(&self.id);
         let decision = decide(&permissions::Input {
             mode: &self.permission(),
             tool: name,
@@ -1297,28 +1543,129 @@ impl Session {
             read_only_tools: &read_only_tools,
             can_remember: chat.workspace_id.is_some(),
             windows: self.services.env.windows,
+            spill_dir: Some(&spill_dir),
         });
         let fields = match decision {
-            Decision::Allow => return None,
+            Decision::Allow => None,
             Decision::Deny(reason) => {
                 self.inner.lock().unwrap().refused.insert(id.to_owned(), "mode");
                 return Some(Blocked { reason, terminate: false });
             }
-            Decision::Ask(fields) => fields,
+            Decision::Ask(fields) => Some(fields),
         };
-        let text = |key: &str| fields.get(key).and_then(Value::as_str).map(str::to_owned);
-        let approval = PendingApproval { tool_call_id: id.to_owned(), tool_name: name.to_owned(), reason: text("reason").unwrap_or_default(), rule: text("rule"), path: text("path") };
-        match self.wait_for_approval(approval, cancel).await {
-            Answer::Allow => None,
-            Answer::Refuse { text, stop, by } => {
-                let mut inner = self.inner.lock().unwrap();
-                if let Some(by) = by {
-                    inner.refused.insert(id.to_owned(), by);
+        if let Some(fields) = fields {
+            let text = |key: &str| fields.get(key).and_then(Value::as_str).map(str::to_owned);
+            let approval = PendingApproval {
+                tool_call_id: id.to_owned(),
+                tool_name: name.to_owned(),
+                reason: text("reason").unwrap_or_default(),
+                rule: text("rule"),
+                path: text("path"),
+                workdir: text("workdir"),
+            };
+            match self.wait_for_approval(approval, cancel).await {
+                Answer::Allow => {}
+                Answer::Refuse { text, stop, by } => {
+                    let mut inner = self.inner.lock().unwrap();
+                    if let Some(by) = by {
+                        inner.refused.insert(id.to_owned(), by);
+                    }
+                    if stop {
+                        inner.stop_after_step = true;
+                    }
+                    return Some(Blocked { reason: text, terminate: stop });
                 }
-                if stop {
-                    inner.stop_after_step = true;
+            }
+        }
+        // Run declarative `PreToolUse` hooks; exit code 2 blocks the call and feeds output back to the model.
+        let hook_rules = self.effective_hooks();
+        if hook_rules.iter().any(|r| r.enabled && r.event == "PreToolUse") {
+            let ctx = self.hook_context();
+            if let PreHookOutcome::Block(feedback) = hooks::run_pre_tool(&hook_rules, &ctx, name, args).await {
+                self.inner.lock().unwrap().refused.insert(id.to_owned(), "hook");
+                return Some(Blocked { reason: feedback, terminate: false });
+            }
+        }
+        None
+    }
+
+    /// Run `PostEdit` hooks (including built-in `ide::format`), append Error-level LSP diagnostics after edits, and run
+    /// `PostToolUse` hooks before the tool result is recorded and sent to the model.
+    async fn after_tool(&self, _id: &str, name: &str, args: &Value, output: &mut ToolOutput) {
+        let append_text = |output: &mut ToolOutput, extra: &str| {
+            if extra.is_empty() {
+                return;
+            }
+            if let Some(ResultContent::Text { text }) = output.content.iter_mut().find(|c| matches!(c, ResultContent::Text { .. })) {
+                text.push_str(extra);
+            } else {
+                output.content.push(ResultContent::Text { text: extra.trim_start().to_owned() });
+            }
+        };
+
+        let hook_rules = self.effective_hooks();
+        let hook_ctx = if !hook_rules.is_empty() { Some(self.hook_context()) } else { None };
+        let cwd = PathBuf::from(self.chat().cwd);
+
+        if !output.is_error && changes::CHANGE_TOOLS.contains(&name) {
+            let mut edited_files: Vec<PathBuf> = Vec::new();
+            if name == super::tools::patch::NAME {
+                if let Some(files) = output.details.as_ref().and_then(|d| d.get("files")).and_then(Value::as_array) {
+                    for file in files {
+                        if file.get("operation").and_then(Value::as_str) == Some("delete") {
+                            continue;
+                        }
+                        if let Some(path) = file.get("path").and_then(Value::as_str) {
+                            edited_files.push(crate::paths::normalize(&cwd.join(path)));
+                        }
+                    }
                 }
-                Some(Blocked { reason: text, terminate: stop })
+            } else if let Some(path) = output
+                .details
+                .as_ref()
+                .and_then(|d| d.get("path"))
+                .and_then(Value::as_str)
+                .or_else(|| args.get("file_path").and_then(Value::as_str))
+            {
+                edited_files.push(crate::paths::normalize(&cwd.join(path)));
+            }
+
+            if let Some(ctx) = &hook_ctx
+                && hook_rules.iter().any(|r| r.enabled && r.event == "PostEdit")
+            {
+                let report = hooks::run_post_edit(&hook_rules, ctx, name, &edited_files).await;
+                for formatted in &report.formatted_files {
+                    if let Ok(Some(ver)) = version_of(formatted) {
+                        self.observations.record(formatted, Some(ver));
+                    }
+                }
+                if !report.formatted_files.is_empty() {
+                    let names: Vec<String> = report.formatted_files.iter().map(|p| path_for_model(&self.chat().cwd, &p.to_string_lossy())).collect();
+                    append_text(output, &format!("\n[PostEdit formatted: {}]", names.join(", ")));
+                }
+                for note in &report.notes {
+                    append_text(output, &format!("\n{note}"));
+                }
+            }
+
+            // Attach Error-level LSP diagnostics for affected files (silently skipped when no LSP is available).
+            if !edited_files.is_empty() && self.services.languages.is_some() {
+                let tool_ctx = self.tool_context();
+                if let Some((summary, diag_details)) = diagnostics::post_edit_error_summary(&tool_ctx, &edited_files).await {
+                    append_text(output, &summary);
+                    if let Some(Value::Object(map)) = &mut output.details {
+                        map.insert("diagnostics".into(), json!(diag_details));
+                    }
+                }
+            }
+        }
+
+        if let Some(ctx) = &hook_ctx
+            && hook_rules.iter().any(|r| r.enabled && r.event == "PostToolUse")
+        {
+            let report = hooks::run_post_tool(&hook_rules, ctx, name, args, output.is_error).await;
+            for note in &report.notes {
+                append_text(output, &format!("\n{note}"));
             }
         }
     }
@@ -1377,11 +1724,13 @@ impl Session {
         let Ok(budget) = resolve_budget(state.model.context_window, Some(state.model.max_tokens)) else { return };
         let specs = state.specs();
         let estimate = estimate_messages(&state.system, &specs, &state.messages);
+        let model_key = format!("{}/{}", state.model.provider, state.model.id);
         let (ratio, running, reported) = {
             let mut inner = self.inner.lock().unwrap();
             inner.last_estimate = estimate;
+            inner.last_model_key = model_key.clone();
             inner.last_sent = (state.messages.len(), state.system.len(), specs.len());
-            (inner.calibration.factor(), inner.run.is_some(), inner.reported)
+            (inner.calibration.factor_for(&model_key), inner.run.is_some(), inner.reported)
         };
         let mut tokens = expected_tokens(&state.system, &specs, &state.messages, reported.as_ref(), ratio);
         let key = request_key(&state.model, state.reasoning);
@@ -1426,23 +1775,24 @@ impl Session {
     /// below that line, compact a span instead, which covers those outputs too. Whether the conversation the model
     /// sees changed.
     async fn free_context(&self, resolved: &Resolved, budget: &Budget, tokens: u64, trigger: &str, cancel: Option<CancellationToken>, prefix: Option<&[Message]>) -> HostResult<bool> {
+        let model_key = format!("{}/{}", resolved.model.provider, resolved.model.id);
         let (ids, freed) = {
             let inner = self.inner.lock().unwrap();
-            let ratio = inner.calibration.factor();
+            let ratio = inner.calibration.factor_for(&model_key);
             let need = (tokens.saturating_sub(budget.compact_at / 2) as f64 / ratio).ceil() as u64;
             let (ids, freed) = compaction::select_clearable(&build_context(&inner.entries), &cleared_ids(&inner.entries), need);
             (ids, (freed as f64 * ratio) as u64)
         };
-        let clear = |ids: Vec<String>| TranscriptEntry::Cleared {
+        let clear = |ids: Vec<String>, freed_tokens: u64| TranscriptEntry::Cleared {
             id: uuid::Uuid::new_v4().to_string(),
             ts: now_ms() as f64,
             entry_ids: ids,
             tokens_before: tokens as f64,
-            tokens_after: tokens.saturating_sub(freed) as f64,
+            tokens_after: tokens.saturating_sub(freed_tokens) as f64,
             trigger: trigger.to_owned(),
         };
         if !ids.is_empty() && tokens.saturating_sub(freed) <= budget.compact_at * 4 / 5 {
-            self.append(clear(ids)).await;
+            self.append(clear(ids, freed)).await;
             return Ok(true);
         }
         let compacted = self.compact(resolved, trigger, cancel, prefix).await;
@@ -1450,14 +1800,28 @@ impl Session {
             return Ok(true);
         }
         // Clearing still helps when no span could be compacted, or the summary request failed.
-        if ids.is_empty() {
-            return compacted.map(|_| false);
+        if !ids.is_empty() {
+            if let Err(error) = compacted {
+                log::warn!("[chat {}] compaction failed, clearing old tool outputs only: {error}", self.id);
+            }
+            self.append(clear(ids, freed)).await;
+            return Ok(true);
         }
-        if let Err(error) = compacted {
-            log::warn!("[chat {}] compaction failed, clearing old tool outputs only: {error}", self.id);
+        // Last-resort overflow fallback: clear oversized outputs even from the latest step (still recoverable via `recall`).
+        if trigger == "overflow" {
+            let (emergency_ids, emergency_freed) = {
+                let inner = self.inner.lock().unwrap();
+                let ratio = inner.calibration.factor_for(&model_key);
+                let need = (tokens.saturating_sub(budget.compact_at / 2) as f64 / ratio).ceil() as u64;
+                let (ids, freed) = compaction::select_clearable_overflow(&build_context(&inner.entries), &cleared_ids(&inner.entries), need);
+                (ids, (freed as f64 * ratio) as u64)
+            };
+            if !emergency_ids.is_empty() {
+                self.append(clear(emergency_ids, emergency_freed)).await;
+                return Ok(true);
+            }
         }
-        self.append(clear(ids)).await;
-        Ok(true)
+        compacted.map(|_| false)
     }
 
     /// Compact the chat's context with `resolved`; `prefix` is what the next request would send when a run holds it.
@@ -1469,13 +1833,14 @@ impl Session {
         let system = self.system_prompt(&tools);
         let specs: Vec<llm::ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
         let strategy = self.strategy();
+        let model_key = format!("{}/{}", resolved.model.provider, resolved.model.id);
         let (items, entries, latest_user, share_cache, ratio) = {
             let inner = self.inner.lock().unwrap();
             let latest_user = inner.entries.iter().rev().find_map(|entry| if let TranscriptEntry::User { id, .. } = entry { Some(id.clone()) } else { None });
             let warm = inner.last_request.as_ref().is_some_and(|(at, key)| *key == request_key(&resolved.model, resolved.thinking) && now_ms().saturating_sub(*at) < SHARED_CACHE_WINDOW_MS);
             // A recall index is built from the entries themselves.
             let entries = if strategy == Strategy::Recall { inner.entries.clone() } else { Vec::new() };
-            (build_context(&inner.entries), entries, latest_user, warm, inner.calibration.factor())
+            (build_context(&inner.entries), entries, latest_user, warm, inner.calibration.factor_for(&model_key))
         };
         let rebuilt: Vec<Message>;
         let prefix = match prefix {
@@ -1610,7 +1975,7 @@ impl Session {
                 ),
             ));
         }
-        let model_text = REFERENCE.replace_all(text, "@$1").into_owned();
+        let model_text = model_user_text(text);
         let content = if images.is_empty() {
             UserContent::Text(model_text)
         } else {
@@ -1622,6 +1987,7 @@ impl Session {
 
     fn tool_context(&self) -> ToolContext {
         let env = &self.services.env;
+        let chat = self.chat();
         let session = self.this.clone();
         let tool_tokens = move || {
             session.upgrade().and_then(|session| session.resolved()).and_then(|resolved| resolve_budget(resolved.setup.context_window, resolved.setup.max_tokens).ok()).map_or(4000, |budget: Budget| budget.tool_tokens)
@@ -1646,7 +2012,8 @@ impl Session {
             }) as BoxFuture<'static, bool>
         });
         ToolContext {
-            cwd: PathBuf::from(self.chat().cwd),
+            cwd: PathBuf::from(chat.cwd),
+            workspace_id: chat.workspace_id,
             session_id: self.id.clone(),
             runtime: self.services.runtime.clone(),
             spill_dir: env.home.join("spill").join(&self.id),
@@ -1656,6 +2023,8 @@ impl Session {
             on_file_touched: Some(Arc::new(on_file_touched)),
             record_change: Some(record_change),
             jobs: Some(self.jobs.clone()),
+            languages: self.services.languages.clone(),
+            maps: Some(self.services.maps.clone()),
         }
     }
 
@@ -1686,7 +2055,9 @@ impl Session {
             let vision = resolved.as_ref().is_some_and(|resolved| resolved.model.images);
             tools.extend(Browser::tools(&context, preview.clone(), vision));
         }
-        tools.extend(self.services.mcp.tools());
+        let limiter_ctx = context.clone();
+        let mcp_limiter: super::mcp::OutputLimiter = Arc::new(move |tool, text| limiter_ctx.limit_output(tool, text));
+        tools.extend(self.services.mcp.tools(Some(mcp_limiter)));
         if let Some(link) = self.chat().swarm {
             // The coordinator splits and judges the work; changing files is the workers' part.
             if link.coordinator == self.id {
@@ -1704,7 +2075,8 @@ impl Session {
         let project = chat.workspace_id.as_deref().and_then(|workspace| self.services.projects.get(workspace));
         let extra_roots: Vec<String> = project.map(|project| project.roots().into_iter().filter(|root| !root.primary).map(|root| root.path).collect()).unwrap_or_default();
         let names: Vec<String> = tools.iter().map(|tool| tool.spec().name.clone()).collect();
-        let skills = skills::section(&skills::discover(Some(Path::new(&chat.cwd))));
+        let trusted = self.workspace_trusted(&chat);
+        let skills = skills::section(&skills::discover_for(Some(Path::new(&chat.cwd)), trusted));
         let powershell_core = env.windows.then(|| {
             let component = self.services.runtime.resolve(Path::new(&chat.cwd)).ok().and_then(|resolved| resolved.powershell);
             crate::process::resolve_powershell(env.pwsh_path.as_deref(), component.as_deref()).1
@@ -1854,6 +2226,10 @@ impl Hooks for RunHooks {
         self.session.before_tool(&self.mcp_tools, id, name, args, cancel).await
     }
 
+    async fn after_tool(&self, id: &str, name: &str, args: &Value, output: &mut ToolOutput) {
+        self.session.after_tool(id, name, args, output).await;
+    }
+
     fn finish_turn(&self) -> bool {
         let mut inner = self.session.inner.lock().unwrap();
         if !inner.stop_after_step {
@@ -1889,15 +2265,21 @@ struct ChatSubagents {
 }
 
 impl Subagents for ChatSubagents {
-    fn run(&self, prompt: String, description: String, progress: Arc<dyn Fn(Progress) + Send + Sync>, cancel: CancellationToken) -> BoxFuture<'static, Result<Report, String>> {
+    fn run(&self, prompt: String, description: String, model: Option<String>, progress: Arc<dyn Fn(Progress) + Send + Sync>, cancel: CancellationToken) -> BoxFuture<'static, Result<Report, String>> {
         let session = self.session.clone();
         // Its own observations: what a sub-agent read does not let the chat write that file without reading it itself.
         let context = ToolContext { observations: Arc::default(), jobs: None, record_change: None, on_file_touched: None, ..self.context.clone() };
         let web = self.web.clone();
         Box::pin(async move {
             let session = session.upgrade().ok_or("the chat was closed")?;
-            let resolved = session.resolved().ok_or("no model is configured for this chat")?;
-            log::info!("[chat {}] sub-agent: {description}", session.id);
+            let resolved = match model.as_deref() {
+                Some(hint) => {
+                    let selection = session.services.models.resolve_by_hint(hint).map_err(|error| error.message)?;
+                    session.services.models.resolve(Some(&selection)).ok_or("the requested sub-agent model is not configured")?
+                }
+                None => session.resolved().ok_or("no model is configured for this chat")?,
+            };
+            log::info!("[chat {}] sub-agent ({}/{}): {description}", session.id, resolved.setup.provider, resolved.setup.model);
             let counted = Arc::downgrade(&session);
             let input = subagent::Input {
                 prompt,
@@ -1951,5 +2333,166 @@ mod tests {
         settle_steering(steering(), &mut queue, &mut pending, true);
         assert_eq!(queue.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["q"]);
         assert!(pending.is_empty());
+    }
+
+    fn test_services(root: &Path) -> Arc<Services> {
+        let env = HostEnv::for_tests(root);
+        let settings = Arc::new(Settings::load(root, None).unwrap());
+        settings
+            .update(|data| {
+                data.models.push(crate::settings::ModelSetup {
+                    provider: "mock".into(),
+                    base_url: "http://127.0.0.1:9".into(),
+                    model: "mock-strong".into(),
+                    context_window: 100_000,
+                    max_tokens: Some(8000),
+                    local: true,
+                    api: Some("openai-completions".into()),
+                    thinking: None,
+                    thinking_format: None,
+                    max_tokens_field: None,
+                    images: None,
+                });
+                data.models.push(crate::settings::ModelSetup {
+                    provider: "mock-fast".into(),
+                    base_url: "http://127.0.0.1:9".into(),
+                    model: "mock-lite".into(),
+                    context_window: 64_000,
+                    max_tokens: Some(4000),
+                    local: true,
+                    api: Some("openai-completions".into()),
+                    thinking: None,
+                    thinking_format: None,
+                    max_tokens_field: None,
+                    images: None,
+                });
+                data.selected = Some(ModelSelection { provider: "mock".into(), model: "mock-strong".into(), thinking: None });
+                Ok(())
+            })
+            .unwrap();
+        let network = Arc::new(Network::new(env.windows, None));
+        let llm = Arc::new(llm::Llm::new(network.clone(), env.version));
+        let models = Arc::new(Models::new(settings.clone(), network.clone(), llm));
+        let store = ChatStore::load(root.join("chats")).unwrap();
+        let mcp = McpManager::new(network.clone());
+        let projects = Arc::new(Projects::load(root.join("projects.json")).unwrap());
+        let registry = Arc::new(crate::registry::Registry::new(root.join("state"), "test".into()));
+        let activity = Arc::new(Activity::default());
+        let rpc = Arc::new(RpcHub::default());
+        let runtime = Runtime::new(env.clone(), projects.clone(), registry.clone(), activity.clone()).unwrap();
+        let maps = Arc::new(crate::map::ProjectMaps::new(projects.clone(), root.join("maps")));
+        let memory = ProjectMemory::new(super::super::memory::Deps {
+            root: root.join("memory"),
+            target: "test".into(),
+            models: models.clone(),
+            chats: store.clone(),
+            projects: projects.clone(),
+            registry,
+            busy: Box::new(|| false),
+            last_model_activity: Box::new(|| 0),
+            changed: Box::new(|_| {}),
+        });
+        let snapshots = Arc::new(Snapshots::new(root.join("snapshots")));
+        let swarm = super::super::swarm::Hub::new(root.join("swarms"), store.clone(), rpc.clone());
+        Arc::new(Services {
+            env,
+            settings,
+            models,
+            store,
+            mcp,
+            memory,
+            projects,
+            runtime,
+            activity,
+            rpc,
+            snapshots,
+            network,
+            preview: None,
+            model_activity: Arc::new(AtomicU64::new(0)),
+            swarm,
+            languages: None,
+            ide_tools: None,
+            maps,
+        })
+    }
+
+    #[tokio::test]
+    async fn swarm_deliver_queues_without_preempting_pending_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = test_services(dir.path());
+        let chat = services
+            .store
+            .create(super::super::store::NewChat { cwd: dir.path().to_string_lossy().into_owned(), ..Default::default() })
+            .unwrap();
+        let session = Session::open(services, &chat.id).await.unwrap();
+        let (tx, mut rx) = oneshot::channel();
+        {
+            let mut inner = session.inner.lock().unwrap();
+            inner.status = "running";
+            inner.approvals.push(Approval {
+                approval: PendingApproval {
+                    tool_call_id: "call-1".into(),
+                    tool_name: "bash".into(),
+                    reason: "command".into(),
+                    rule: Some("git push".into()),
+                    path: None,
+                    workdir: None,
+                },
+                settle: tx,
+            });
+        }
+        let queued = session.send_swarm("[Swarm board] update from @w1").await.unwrap();
+        assert!(queued);
+        // The pending approval must remain intact (not superseded!) and the message must sit in `pending`.
+        assert!(rx.try_recv().is_err());
+        let inner = session.inner.lock().unwrap();
+        assert_eq!(inner.approvals.len(), 1);
+        assert_eq!(inner.pending.len(), 1);
+        assert!(inner.steering.is_empty());
+        assert_eq!(inner.queue[0].mode, "queue");
+    }
+
+    #[tokio::test]
+    async fn persists_orchestrate_phase_and_computes_breakdown_and_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("repo");
+        std::fs::create_dir_all(workdir.join(".rainy/skills/demo")).unwrap();
+        std::fs::write(workdir.join(".rainy/skills/demo/SKILL.md"), "---\nname: Demo\ndescription: demo skill\n---\nbody").unwrap();
+        std::fs::write(workdir.join(".rainy/hooks.json"), r#"[{"event":"PreToolUse","command":"echo hi"}]"#).unwrap();
+
+        let services = test_services(dir.path());
+        let chat = services
+            .store
+            .create(super::super::store::NewChat { cwd: workdir.to_string_lossy().into_owned(), ..Default::default() })
+            .unwrap();
+        let session = Session::open(services.clone(), &chat.id).await.unwrap();
+
+        // Untrusted workspace skips project skills and hooks; trusting enables both.
+        assert!(!session.system_prompt(&session.tools()).contains("project/demo"));
+        assert!(session.effective_hooks().is_empty());
+        services.settings.set_workspace_trusted(&workdir.to_string_lossy(), true).unwrap();
+        assert!(session.system_prompt(&session.tools()).contains("project/demo"));
+        assert_eq!(session.effective_hooks().len(), 1);
+
+        // Orchestrate phase persistence across Session::open.
+        let exec = ModelSelection { provider: "mock-fast".into(), model: "mock-lite".into(), thinking: None };
+        session.set_orchestrate(Some(&exec)).await.unwrap();
+        session.switch_phase(Phase::Execute, "step 1".into());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let reopened = Session::open(services.clone(), &chat.id).await.unwrap();
+        assert_eq!(reopened.inner.lock().unwrap().phase, Phase::Execute);
+
+        // Context breakdown returns populated segments and budget fields.
+        let breakdown = reopened.context_breakdown().unwrap();
+        assert_eq!(breakdown.session_id, chat.id);
+        assert!(breakdown.context_window >= 64_000);
+        assert!(breakdown.segments.system > 0);
+        assert!(breakdown.segments.core_tools > 0);
+        assert_eq!(breakdown.total, breakdown.segments.system + breakdown.segments.instructions + breakdown.segments.mcp_tools + breakdown.segments.core_tools + breakdown.segments.history + breakdown.segments.recall);
+
+        // Model hint resolution supports provider/model, provider, and model id.
+        assert_eq!(services.models.resolve_by_hint("mock-lite").unwrap().provider, "mock-fast");
+        assert_eq!(services.models.resolve_by_hint("mock-fast/mock-lite").unwrap().model, "mock-lite");
+        assert!(services.models.resolve_by_hint("nonexistent").is_err());
     }
 }

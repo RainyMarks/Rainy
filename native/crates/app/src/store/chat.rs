@@ -1,6 +1,7 @@
 //! One chat as the interface sees it, kept current from Host events (`src/renderer/chat/chat-store.ts`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::ops::Range;
 
 use rainy_protocol::{
     AssistantMessage, SessionEntryEvent, SessionSnapshot, SessionStateEvent, SessionToolEvent, StreamUpdate,
@@ -19,6 +20,13 @@ pub struct RunningTool {
     pub partial: Option<String>,
 }
 
+/// Index range of one turn inside `SessionSnapshot::entries`, maintained incrementally on append.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRange {
+    pub user: Option<usize>,
+    pub items: Range<usize>,
+}
+
 /// One chat.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatView {
@@ -30,13 +38,37 @@ pub struct ChatView {
     pub revision: u64,
     /// The streaming thinking block (`timestamp:index`) and when it began, for its timer.
     pub thinking_since: Option<(String, std::time::Instant)>,
+    /// O(1) entry-id membership set for incremental deduplication.
+    entry_ids: HashSet<String>,
+    /// Tool call ids undone by `context` entries, maintained incrementally to avoid O(N) scans during streaming.
+    reverted_ids: HashSet<String>,
+    /// Incrementally maintained turn boundaries over `snapshot.entries`.
+    turn_ranges: Vec<TurnRange>,
 }
 
 impl ChatView {
     pub fn new(snapshot: SessionSnapshot, whole: bool) -> Self {
         let tools = snapshot.running_tools.iter().map(|id| (id.clone(), RunningTool::default())).collect();
         let truncated = !whole && snapshot.entries.len() >= INITIAL_ENTRIES;
-        Self { snapshot, tools, truncated, revision: 0, thinking_since: None }
+        let mut entry_ids = HashSet::with_capacity(snapshot.entries.len());
+        let mut reverted_ids = HashSet::new();
+        let mut turn_ranges: Vec<TurnRange> = Vec::new();
+        for (idx, entry) in snapshot.entries.iter().enumerate() {
+            entry_ids.insert(entry.id().to_owned());
+            if let TranscriptEntry::Context { reverted: Some(ids), .. } = entry {
+                reverted_ids.extend(ids.iter().cloned());
+            }
+            push_turn_range(&mut turn_ranges, idx, entry);
+        }
+        Self { snapshot, tools, truncated, revision: 0, thinking_since: None, entry_ids, reverted_ids, turn_ranges }
+    }
+
+    pub fn reverted_ids(&self) -> &HashSet<String> {
+        &self.reverted_ids
+    }
+
+    pub fn turn_ranges(&self) -> &[TurnRange] {
+        &self.turn_ranges
     }
 
     pub fn busy(&self) -> bool {
@@ -66,13 +98,19 @@ impl ChatView {
 
     /// `session.entry`; returns whether anything changed.
     pub fn apply_entry(&mut self, event: SessionEntryEvent) -> bool {
-        if self.snapshot.entries.iter().any(|item| item.id() == event.entry.id()) {
+        let id = event.entry.id().to_owned();
+        if !self.entry_ids.insert(id) {
             return false;
         }
         // A finished reply leaves the stream when its entry arrives, so the transcript never drops it in between.
         if matches!(event.entry, TranscriptEntry::Assistant { .. }) {
             self.snapshot.streaming = None;
         }
+        if let TranscriptEntry::Context { reverted: Some(ids), .. } = &event.entry {
+            self.reverted_ids.extend(ids.iter().cloned());
+        }
+        let idx = self.snapshot.entries.len();
+        push_turn_range(&mut self.turn_ranges, idx, &event.entry);
         self.snapshot.entries.push(event.entry);
         self.touched()
     }
@@ -131,7 +169,18 @@ impl ChatView {
     }
 }
 
+fn push_turn_range(turns: &mut Vec<TurnRange>, idx: usize, entry: &TranscriptEntry) {
+    if matches!(entry, TranscriptEntry::User { .. }) {
+        turns.push(TurnRange { user: Some(idx), items: (idx + 1)..(idx + 1) });
+    } else if let Some(last) = turns.last_mut() {
+        last.items.end = idx + 1;
+    } else {
+        turns.push(TurnRange { user: None, items: idx..(idx + 1) });
+    }
+}
+
 /// A turn: a user message and everything after it until the next one.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Turn<'a> {
     pub user: Option<&'a TranscriptEntry>,
@@ -139,6 +188,7 @@ pub struct Turn<'a> {
 }
 
 /// Entries grouped into turns; entries before the first user message form a leading turn without one.
+#[cfg(test)]
 pub fn group_turns(entries: &[TranscriptEntry]) -> Vec<Turn<'_>> {
     let mut turns: Vec<Turn<'_>> = Vec::new();
     for entry in entries {
@@ -238,5 +288,30 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert!(turns[0].user.is_none());
         assert_eq!(turns[1].items.len(), 1);
+    }
+
+    #[test]
+    fn maintains_incremental_turn_ranges_and_reverted_ids() {
+        let mut chat = ChatView::new(snapshot(), false);
+        assert_eq!(chat.turn_ranges().len(), 1);
+        assert_eq!(chat.turn_ranges()[0].user, Some(0));
+        assert!(chat.turn_ranges()[0].items.is_empty());
+        assert!(chat.apply_entry(SessionEntryEvent { session_id: "s".into(), entry: assistant("a1", "第一轮答复") }));
+        assert_eq!(chat.turn_ranges().len(), 1);
+        assert_eq!(chat.turn_ranges()[0].items, 1..2);
+        let ctx_entry: TranscriptEntry = serde_json::from_value(json!({
+            "id": "x1", "kind": "context", "ts": 3, "label": "notice", "text": "undone", "reverted": ["c0"]
+        }))
+        .unwrap();
+        assert!(chat.apply_entry(SessionEntryEvent { session_id: "s".into(), entry: ctx_entry }));
+        assert!(chat.reverted_ids().contains("c0"));
+        let user2: TranscriptEntry = serde_json::from_value(json!({
+            "id": "u2", "kind": "user", "ts": 4, "text": "第二问"
+        }))
+        .unwrap();
+        assert!(chat.apply_entry(SessionEntryEvent { session_id: "s".into(), entry: user2 }));
+        assert_eq!(chat.turn_ranges().len(), 2);
+        assert_eq!(chat.turn_ranges()[1].user, Some(3));
+        assert_eq!(chat.turn_ranges()[1].items, 4..4);
     }
 }

@@ -4155,6 +4155,12 @@ impl Window {
         id
     }
 
+    /// Rainy: returns the bounds of the tooltip prepainted for the current frame, if any,
+    /// so embedded native child windows (WebView2) can yield to tooltips that overlap them.
+    pub fn active_tooltip_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.tooltip_bounds.as_ref().map(|tb| tb.bounds)
+    }
+
     /// Invoke the given function with the given content mask after intersecting it
     /// with the current mask. This method should only be called during element drawing.
     // This function is called in a highly recursive manner in editor

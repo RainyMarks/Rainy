@@ -9,10 +9,10 @@
  */
 import type { StreamPatch } from './stream-patch.ts'
 import type { Accent, ColorScheme } from './appearance.ts'
-import type { IdeFilesRequest, IdeFilesResults, WorkspaceId } from './ide-files-protocol.ts'
+import type { IdeFilesRequest, IdeFilesResults, OfficePdfRegistration, WorkspaceId } from './ide-files-protocol.ts'
 import type { FootprintTurn, MapExplanation, ProjectMap } from './map-protocol.ts'
 
-export type { WorkspaceId }
+export type { OfficePdfRegistration, WorkspaceId }
 
 /** Chat identifier: a UUID string. */
 export type SessionId = string
@@ -24,6 +24,15 @@ export interface TextContent { type: 'text'; text: string; textSignature?: strin
 export interface ThinkingContent { type: 'thinking'; thinking: string; thinkingSignature?: string | undefined; redacted?: boolean | undefined }
 export interface ToolCall { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> }
 
+/** Token counts of one model request (`rainy-protocol::chat::Usage`). */
+export interface Usage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  reasoning?: number | undefined
+}
+
 /** One model reply. */
 export interface AssistantMessage {
   role: 'assistant'
@@ -31,7 +40,7 @@ export interface AssistantMessage {
   api: string
   provider: string
   model: string
-  usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  usage: Usage
   stopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
   errorMessage?: string | undefined
   timestamp: number
@@ -77,6 +86,8 @@ export interface UiPreferences {
   markdownImages: 'assets' | 'named' | 'same'
   /** How a full chat context is freed once old tool outputs are cleared: an index read back with the recall tool, or a summary the model writes (4.6's `auto` reads back). */
   contextStrategy: 'recall' | 'summary' | 'auto'
+  /** Windows notifications when a chat finishes or waits for an approval while Rainy is in the background. */
+  notify: boolean
 }
 
 // ───────────────────────────── Chats ─────────────────────────────
@@ -111,12 +122,156 @@ export interface ChatChange {
   undoable: boolean
 }
 
+/** A tool call waiting for the user (`rainy-protocol::chat::PendingApproval`). */
+export interface PendingApproval {
+  toolCallId: string
+  toolName: string
+  reason: 'command' | 'outside-write' | 'outside-read' | 'outside-workdir' | 'mcp' | 'web'
+  rule?: string | null | undefined
+  path?: string | null | undefined
+  workdir?: string | null | undefined
+}
+
+/** Context-window accounting for the next request (`rainy-protocol::chat::ContextUsage`). */
+export interface ContextUsage {
+  tokens: number
+  contextWindow: number
+  inputLimit: number
+  outputTokens: number
+  compactAt: number
+  kind: string
+}
+
+/** Token breakdown by context category (`rainy-protocol::chat::ContextBreakdownSegments`). */
+export interface ContextBreakdownSegments {
+  system: number
+  instructions: number
+  mcpTools: number
+  coreTools: number
+  history: number
+  recall: number
+}
+
+/** Detailed context-window breakdown for one chat (`session.contextBreakdown`). */
+export interface ContextBreakdown {
+  sessionId: SessionId
+  contextWindow: number
+  inputLimit: number
+  compactAt: number
+  outputTokens: number
+  total: number
+  calibratedTotal: number
+  calibrationFactor: number
+  kind: string
+  segments: ContextBreakdownSegments
+}
+
+// ───────────────────────────── IDE & Execution ─────────────────────────────
+// Shared shapes mirrored with `native/crates/protocol/src/ide.rs`.
+
+export interface IdeOk {
+  ok: boolean
+}
+
+export interface ProcessExit {
+  exitCode?: number | null | undefined
+  signal?: string | null | undefined
+  stopped: boolean
+}
+
+export interface TerminalInfo {
+  id: string
+  workspaceId?: WorkspaceId | null | undefined
+  cwd: string
+  phase: 'starting' | 'running' | 'stopping' | 'exited' | 'failed'
+  exit?: ProcessExit | null | undefined
+  error?: string | null | undefined
+}
+
+export interface RunSpec {
+  terminal: boolean
+  name?: string | null | undefined
+  language?: string | null | undefined
+  argv: string[]
+  cwd?: string | null | undefined
+}
+
+export interface RunInfo {
+  id: string
+  workspaceId?: WorkspaceId | null | undefined
+  name: string
+  phase: 'starting' | 'building' | 'running' | 'stopping' | 'exited' | 'failed'
+  spec: RunSpec
+  exit?: ProcessExit | null | undefined
+  error?: string | null | undefined
+}
+
+export interface DebugCapabilities {
+  evaluate: boolean
+  pause: boolean
+  stepIn: boolean
+  stepOut: boolean
+  next: boolean
+}
+
+export interface DebugBreakpoint {
+  path: string
+  requestedLine: number
+  verified: boolean
+  id?: number | null | undefined
+  line?: number | null | undefined
+  message?: string | null | undefined
+}
+
+export interface DebugInfo {
+  id: string
+  workspaceId?: WorkspaceId | null | undefined
+  name: string
+  language?: string | null | undefined
+  rootId?: string | null | undefined
+  phase: 'starting' | 'building' | 'initializing' | 'running' | 'paused' | 'stopping' | 'terminated' | 'failed'
+  threadId?: number | null | undefined
+  reason?: string | null | undefined
+  capabilities?: DebugCapabilities | null | undefined
+  breakpoints: DebugBreakpoint[]
+  exit?: ProcessExit | null | undefined
+  error?: string | null | undefined
+}
+
+export interface ExecutionStatus {
+  runs: RunInfo[]
+  terminals: TerminalInfo[]
+  debugSessions: DebugInfo[]
+}
+
+export interface ExecutionEvent {
+  sequence: number
+  workspaceId?: WorkspaceId | null | undefined
+  kind: 'output' | 'run' | 'terminal' | 'debug'
+  operationId?: string | null | undefined
+  stream?: string | null | undefined
+  text?: string | null | undefined
+  run?: unknown
+  terminal?: unknown
+  debug?: unknown
+}
+
+/** Response of `execution.poll`: ordered events after the requested cursor plus whether older output was dropped. */
+export interface ExecutionPoll {
+  events: ExecutionEvent[]
+  cursor: number
+  truncated: boolean
+  status: ExecutionStatus
+}
+
 // ───────────────────────────── Method table ─────────────────────────────
 
 /** The file operations of the `ide` method that pages make. */
 export type IdeRequest = IdeFilesRequest
 /** Result type for one IDE operation. */
 export type IdeResult<T extends IdeRequest> = IdeFilesResults[T['op']]
+/** Union of all strongly typed results returned by the `ide` RPC method. */
+export type IdeResponse = IdeFilesResults[IdeRequest['op']]
 
 /** The methods pages call: `[params, result]`. */
 export interface HostMethods {
@@ -124,13 +279,17 @@ export interface HostMethods {
   'sessions.list': [{ workspaceId?: WorkspaceId | null | undefined; archived?: boolean | undefined }, SessionSummary[]]
   /** Files the chat's agent changed that are not yet kept or undone. */
   'chat.changes': [{ sessionId: SessionId }, ChatChange[]]
+  /** Detailed token usage breakdown for a chat's next request. */
+  'session.contextBreakdown': [{ sessionId: SessionId }, ContextBreakdown]
   /** The project map; a recent one is reused unless `refresh` is set. */
   'map.get': [{ workspaceId: WorkspaceId; refresh?: boolean | undefined }, ProjectMap]
   /** Ask the chat model to describe the project's parts; the answer is kept with the project. */
   'map.explain': [{ workspaceId: WorkspaceId }, MapExplanation]
   /** What the chat's agent did in each of its recent turns, newest last. */
   'map.footprint': [{ sessionId: SessionId }, { turns: FootprintTurn[] }]
-  'ide': [IdeRequest, unknown]
+  /** Register a converted temporary Office PDF for one-shot streaming consumption. */
+  'ide.registerOfficePdf': [{ path: string; deleteAfterRead?: boolean | undefined }, OfficePdfRegistration]
+  'ide': [IdeRequest, IdeResponse]
 }
 
 export type HostMethod = keyof HostMethods
@@ -161,6 +320,7 @@ export type HostEvent = keyof HostEvents
 export interface RpcErrorBody {
   code: string
   message: string
+  data?: unknown
 }
 
 export type RpcResponseFrame = { id: number; result?: unknown; error?: RpcErrorBody }

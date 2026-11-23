@@ -76,6 +76,7 @@ const zh = {
   richHighlight: '高亮', toc: '目录', tocEmpty: '文档中还没有标题',
   richTooLarge: '文件有 {size}，所见即所得编辑会很慢，已关闭。可以改用源码编辑，或用“预览”查看。', richOpenSource: '改用源码编辑',
   richTypingReplaced: '文件在别处被修改，刚输入的几个字与修改在同一处，已按新内容显示',
+  richRemoteImage: '远程图片未加载：{host}', richOutsideImage: '项目外图片未加载',
 }
 
 const en: typeof zh = {
@@ -153,6 +154,7 @@ const en: typeof zh = {
   richHighlight: 'Highlight', toc: 'Contents', tocEmpty: 'The document has no headings yet',
   richTooLarge: 'This file is {size}; rich editing would be slow, so it is off. Edit its source instead, or read it in Preview.', richOpenSource: 'Edit the source',
   richTypingReplaced: 'The file changed elsewhere where you were just typing; the new text is shown instead of your last keystrokes',
+  richRemoteImage: 'Remote image not loaded: {host}', richOutsideImage: 'Image outside project not loaded',
 }
 
 /** Viewer strings. */

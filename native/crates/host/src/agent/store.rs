@@ -56,6 +56,12 @@ pub struct StoredChat {
     /// Orchestration's executor: the chat's model plans and this one carries the plan out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrate: Option<ModelSelection>,
+    /// Persisted orchestration phase (`"plan"` or `"execute"`), optional for 3.x/4.x forward compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrate_phase: Option<String>,
+    /// Persisted note explaining why the executor handed back to the planner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrate_note: Option<String>,
 }
 
 /// Metadata changes, recorded as `meta` lines; later lines win.
@@ -85,6 +91,10 @@ pub struct MetaPatch {
     /// `Some(None)` ends orchestration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestrate: Option<Option<ModelSelection>>,
+    #[serde(rename = "orchestratePhase", skip_serializing_if = "Option::is_none")]
+    pub orchestrate_phase: Option<Option<String>>,
+    #[serde(rename = "orchestrateNote", skip_serializing_if = "Option::is_none")]
+    pub orchestrate_note: Option<Option<String>>,
 }
 
 impl MetaPatch {
@@ -118,6 +128,12 @@ impl MetaPatch {
         }
         if let Some(orchestrate) = &self.orchestrate {
             chat.orchestrate = orchestrate.clone();
+        }
+        if let Some(phase) = &self.orchestrate_phase {
+            chat.orchestrate_phase = phase.clone();
+        }
+        if let Some(note) = &self.orchestrate_note {
+            chat.orchestrate_note = note.clone();
         }
     }
 }
@@ -167,6 +183,8 @@ struct State {
 /// Reads and writes chat files; one per Host.
 pub struct ChatStore {
     dir: PathBuf,
+    /// Captured runtime handle so synchronous callers (even on plain threads) never panic in `schedule_index`.
+    runtime: Option<tokio::runtime::Handle>,
     state: Mutex<State>,
     /// One writer per chat file at a time.
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -325,6 +343,7 @@ impl ChatStore {
         create_private_dir(&dir)?;
         let store = Arc::new(Self {
             dir,
+            runtime: tokio::runtime::Handle::try_current().ok(),
             state: Mutex::new(State {
                 chats: HashMap::new(),
                 line_ended: HashSet::new(),
@@ -406,6 +425,8 @@ impl ChatStore {
             worktree: new.worktree,
             swarm: new.swarm,
             orchestrate: None,
+            orchestrate_phase: None,
+            orchestrate_note: None,
         };
         let mut header = json!({ "type": "header", "version": CHAT_FORMAT_VERSION, "id": chat.id, "workspaceId": chat.workspace_id, "cwd": chat.cwd, "createdAt": now });
         if let Some(parent) = &chat.parent {
@@ -477,6 +498,8 @@ impl ChatStore {
             worktree: None,
             swarm: None,
             orchestrate: None,
+            orchestrate_phase: None,
+            orchestrate_note: None,
         };
         let (mut entries, mut kept, mut damaged) = (Vec::new(), Vec::new(), 0);
         for line in lines.filter(|line| !line.is_empty()) {
@@ -498,6 +521,10 @@ impl ChatStore {
                         worktree: record.get("worktree").map(|worktree| serde_json::from_value(worktree.clone()).ok()),
                         swarm: record.get("swarm").map(|swarm| serde_json::from_value(swarm.clone()).ok()),
                         orchestrate: record.get("orchestrate").map(|model| serde_json::from_value(model.clone()).ok()),
+                        orchestrate_phase: record
+                            .get("orchestratePhase")
+                            .map(|phase| phase.as_str().filter(|p| matches!(*p, "plan" | "execute")).map(str::to_owned)),
+                        orchestrate_note: record.get("orchestrateNote").map(|note| note.as_str().map(str::to_owned)),
                     };
                     patch.apply(&mut chat);
                 }
@@ -634,8 +661,17 @@ impl ChatStore {
             }
             state.index_pending = true;
         }
+        let handle = self.runtime.clone().or_else(|| tokio::runtime::Handle::try_current().ok());
+        let Some(handle) = handle else {
+            // Plain thread without a Tokio runtime: write synchronously instead of panicking under `panic = "abort"`.
+            self.state.lock().unwrap().index_pending = false;
+            if let Err(error) = self.write_index() {
+                log::warn!("chat index write failed: {}", error.message);
+            }
+            return;
+        };
         let store = self.clone();
-        tokio::spawn(async move {
+        handle.spawn(async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             store.state.lock().unwrap().index_pending = false;
             if let Err(error) = store.write_index() {

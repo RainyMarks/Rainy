@@ -6,9 +6,9 @@ import { Button, fileSizeText, IconAction, IconChevronDownOutlineRegular, IconCh
   writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
 import { describePdfError, PdfJsUnavailableError } from './pdf-errors.ts'
-import { findMatches, findPattern, type MatchPiece, type PdfMatch } from './pdf-find.ts'
+import { findMatchesInPage, findPattern, MAX_MATCHES, PdfTextCache, type MatchPiece, type PdfMatch } from './pdf-find.ts'
 import { anchoredScroll, canvasPixelRatio, captureAnchor, pageIndexAt, type Anchor, type Box } from './pdf-layout.ts'
-import { fixRadicals, joinTextItems, layOutText, selectedText, type LaidOutText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
+import { fixRadicals, joinTextItems, layOutText, selectedText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
 import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
@@ -646,34 +646,42 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
     document.addEventListener('copy', onCopy)
     return () => { document.removeEventListener('copy', onCopy) }
   }, [context])
-  // Find: the text of every page as copying joins it, read once per document.
+  // Find: bounded LRU cache of laid-out page text, streamed page-by-page so large PDFs stay within a fixed memory ceiling.
   const [findRequest, setFindRequest] = useState<number | undefined>()
   const [query, setQuery] = useState('')
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [found, setFound] = useState<Found | undefined>()
   const [searching, setSearching] = useState(false)
-  const texts = useRef<{ document: PdfDocument | undefined; pages: Map<number, LaidOutText> }>({ document: undefined, pages: new Map() })
+  const texts = useRef<{ document: PdfDocument | undefined; pages: PdfTextCache }>({ document: undefined, pages: new PdfTextCache() })
+  useEffect(() => () => { texts.current.pages.clear(); texts.current.document = undefined }, [])
   const finding = findRequest !== undefined && opened !== undefined
   useEffect(() => {
     const pattern = finding ? findPattern(query, caseSensitive) : undefined
     if (opened === undefined || pattern === undefined) { setFound(undefined); setSearching(false); return }
-    if (texts.current.document !== opened.document) texts.current = { document: opened.document, pages: new Map() }
+    if (texts.current.document !== opened.document) {
+      texts.current.pages.clear()
+      texts.current.document = opened.document
+    }
     const cache = texts.current.pages
     let cancelled = false
     setSearching(true)
     const timer = window.setTimeout(() => {
       void (async () => {
-        const pages: LaidOutText[] = []
+        const matches: PdfMatch[] = []
         for (let number = 1; number <= opened.document.numPages; number++) {
           let text = cache.get(number)
           if (text === undefined) {
-            text = layOutText((await (await opened.document.getPage(number)).getTextContent()).items)
+            const pdfPage = await opened.document.getPage(number)
+            const content = await pdfPage.getTextContent()
+            if (cancelled) return
+            text = layOutText(content.items)
             cache.set(number, text)
+            // Free pdf.js parsed page structures for off-screen pages scanned solely for search.
+            if (context?.layers.has(number) !== true) pdfPage.cleanup()
           }
           if (cancelled) return
-          pages.push(text)
+          if (findMatchesInPage(number, text, pattern, matches, MAX_MATCHES)) break
         }
-        const matches = findMatches(pages, pattern)
         // The first match is the first one on or after the page being read.
         const first = Math.max(0, matches.findIndex(match => match.page >= currentPage.current))
         setFound(previous => ({ matches, current: first, reveal: (previous?.reveal ?? 0) + 1 }))
@@ -685,7 +693,7 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
       })
     }, 150)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [finding, query, caseSensitive, opened])
+  }, [finding, query, caseSensitive, opened, context])
   const stepFind = (delta: 1 | -1): void => {
     setFound(previous => previous === undefined || previous.matches.length === 0 ? previous
       : { ...previous, current: (previous.current + delta + previous.matches.length) % previous.matches.length, reveal: previous.reveal + 1 })

@@ -324,10 +324,13 @@ pub fn operations(executable: &str, language: Language, wanted: ShellIntegration
             remove_key(PRODUCT, above(types_recorded, &[VENDOR])),
         ]);
         for extension in extensions() {
+            let id = prog_id(extension);
             let type_key = format!(r"{CLASSES}\.{extension}");
             operations.extend([
-                remove_key(&format!(r"{CLASSES}\{}", prog_id(extension)), Vec::new()),
-                remove_value(types_recorded, &format!(r"{type_key}\OpenWithProgids"), &prog_id(extension), &[&type_key]),
+                remove_key(&format!(r"{CLASSES}\{id}"), Vec::new()),
+                remove_value(types_recorded, &format!(r"{type_key}\OpenWithProgids"), &id, &[&type_key]),
+                Operation::RemoveValue { key: format!(r"{}\OpenWithProgids", file_exts(extension)), name: id.clone(), parents: Vec::new(), keep_key: true },
+                Operation::RemoveValue { key: ASSOCIATION_TOASTS.to_owned(), name: format!("{id}_.{extension}"), parents: Vec::new(), keep_key: true },
             ]);
         }
     }
@@ -366,7 +369,8 @@ pub fn existing_keys(registry: &impl Registry, keys: &[String]) -> Result<Vec<St
 }
 
 /// What the registry holds now: the context menu's label and command, the command and name of Rainy's Markdown type,
-/// and for each part whether anything of it is there, also without those values, as a write cut short leaves it.
+/// whether every expected verb and every extension in [`FILE_TYPES`] is present and consistent, and for each part
+/// whether anything of it is there, also without those values, as a write cut short leaves it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
     pub context_menu_label: Option<String>,
@@ -378,6 +382,27 @@ pub struct Status {
     /// Rainy's name on `Applications\RainyAgent.exe`, its capabilities or its Default apps entry: the first file-type
     /// values written.
     pub file_type_traces: bool,
+    /// All three [`CONTEXT_KEYS`] exist with matching label, icon and command for the same executable.
+    pub context_menu_complete: bool,
+    /// All registered application keys and every extension in [`FILE_TYPES`] exist with consistent names, icons,
+    /// commands, `OpenWithProgids`, `SupportedTypes`, and `FileAssociations`.
+    pub file_types_complete: bool,
+    /// Extensions in [`FILE_TYPES`] missing their `OpenWithProgids` entry (for example after an upgrade added new
+    /// extensions), so [`sync`] can record any pre-existing user keys before backfilling them.
+    pub missing_extensions: Vec<&'static str>,
+}
+
+fn command_executable(command: &str) -> Option<&str> {
+    let rest = command.strip_prefix('"')?;
+    let (exe, _) = rest.split_once('"')?;
+    (!exe.is_empty()).then_some(exe)
+}
+
+fn file_type_description(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "AI 编程、Markdown 写作与科研办公工作台",
+        Language::English => "Workbench for AI coding, Markdown writing and research",
+    }
 }
 
 pub fn read_status(registry: &impl Registry) -> Result<Status> {
@@ -390,28 +415,105 @@ pub fn read_status(registry: &impl Registry) -> Result<Status> {
     let file_type_traces = registry.read(APPLICATION, FRIENDLY_APP_NAME)?.as_deref() == Some("Rainy")
         || registry.exists(PRODUCT)?
         || registry.has_value(REGISTERED_APPLICATIONS, REGISTERED_APPLICATION)?;
+
+    let context_menu_label = registry.read(menu, "")?;
+    let context_menu_command = registry.read(&format!(r"{menu}\command"), "")?;
+    let file_type_command = registry.read(&format!(r"{markdown}\shell\open\command"), "")?;
+    let file_type_name = registry.read(&markdown, "")?;
+
+    let context_menu_complete = if let (Some(label), Some(cmd)) = (context_menu_label.as_deref(), context_menu_command.as_deref())
+        && let Some(exe) = command_executable(cmd)
+    {
+        let icon = format!("\"{exe}\",0");
+        let mut all_ok = true;
+        for (index, (verb, _)) in CONTEXT_KEYS.iter().enumerate() {
+            let placeholder = if index == 0 { "%1" } else { "%V" };
+            let expected_cmd = launch_command(exe, placeholder);
+            let ok = registry.read(verb, "")?.as_deref() == Some(label)
+                && registry.read(verb, "Icon")?.as_deref() == Some(icon.as_str())
+                && registry.read(&format!(r"{verb}\command"), "")?.as_deref() == Some(expected_cmd.as_str());
+            if !ok {
+                all_ok = false;
+                break;
+            }
+        }
+        all_ok
+    } else {
+        false
+    };
+
+    let inferred_language = match file_type_name.as_deref() {
+        Some(name) if name == FILE_TYPES[0].zh => Some(Language::Chinese),
+        Some(name) if name == FILE_TYPES[0].en => Some(Language::English),
+        _ => None,
+    };
+
+    let mut missing_extensions = Vec::new();
+    let file_types_complete = if let (Some(cmd), Some(language)) = (file_type_command.as_deref(), inferred_language)
+        && let Some(exe) = command_executable(cmd)
+    {
+        let icon = format!("\"{exe}\",0");
+        let mut all_ok = registry.read(APPLICATION, FRIENDLY_APP_NAME)?.as_deref() == Some("Rainy")
+            && registry.read(&format!(r"{APPLICATION}\shell\open\command"), "")?.as_deref() == Some(cmd)
+            && registry.read(CAPABILITIES, "ApplicationName")?.as_deref() == Some("Rainy")
+            && registry.read(CAPABILITIES, "ApplicationDescription")?.as_deref() == Some(file_type_description(language))
+            && registry.read(CAPABILITIES, "ApplicationIcon")?.as_deref() == Some(icon.as_str())
+            && registry.read(REGISTERED_APPLICATIONS, REGISTERED_APPLICATION)?.as_deref() == Some(CAPABILITIES);
+        for entry in &FILE_TYPES {
+            let expected_name = entry.name(language);
+            for &extension in entry.extensions {
+                let id = prog_id(extension);
+                let has_open_with = registry.has_value(&format!(r"{CLASSES}\.{extension}\OpenWithProgids"), &id)?;
+                if !has_open_with {
+                    missing_extensions.push(extension);
+                }
+                if all_ok {
+                    let ext_ok = has_open_with
+                        && registry.read(&format!(r"{CLASSES}\{id}"), "")?.as_deref() == Some(expected_name)
+                        && registry.read(&format!(r"{CLASSES}\{id}\DefaultIcon"), "")?.as_deref() == Some(icon.as_str())
+                        && registry.read(&format!(r"{CLASSES}\{id}\shell\open\command"), "")?.as_deref() == Some(cmd)
+                        && registry.has_value(&format!(r"{APPLICATION}\SupportedTypes"), &format!(".{extension}"))?
+                        && registry.read(&format!(r"{CAPABILITIES}\FileAssociations"), &format!(".{extension}"))?.as_deref() == Some(id.as_str());
+                    if !ext_ok {
+                        all_ok = false;
+                    }
+                }
+            }
+        }
+        all_ok
+    } else {
+        false
+    };
+
     Ok(Status {
-        context_menu_label: registry.read(menu, "")?,
-        context_menu_command: registry.read(&format!(r"{menu}\command"), "")?,
-        file_type_command: registry.read(&format!(r"{markdown}\shell\open\command"), "")?,
-        file_type_name: registry.read(&markdown, "")?,
+        context_menu_label,
+        context_menu_command,
+        file_type_command,
+        file_type_name,
         context_menu_traces,
         file_type_traces,
+        context_menu_complete,
+        file_types_complete,
+        missing_extensions,
     })
 }
 
 /// Whether the registry already matches, so nothing needs to be written (`shellIntegrationCurrent`). A moved
-/// installation or another language needs a rewrite; unlike 3.x the type name is compared too, so the names follow the
-/// language when only the file types are on, and a part that is off must have left no trace.
+/// installation, another language, a missing/damaged verb or an extension added in an upgrade all need a rewrite,
+/// and a part that is off must have left no trace.
 pub fn current(status: &Status, executable: &str, language: Language, wanted: ShellIntegration) -> bool {
     let command = launch_command(executable, "%1");
     let menu = if wanted.context_menu {
-        status.context_menu_command.as_deref() == Some(command.as_str()) && status.context_menu_label.as_deref() == Some(context_menu_label(language))
+        status.context_menu_complete
+            && status.context_menu_command.as_deref() == Some(command.as_str())
+            && status.context_menu_label.as_deref() == Some(context_menu_label(language))
     } else {
         status.context_menu_command.is_none() && !status.context_menu_traces
     };
     let types = if wanted.file_types {
-        status.file_type_command.as_deref() == Some(command.as_str()) && status.file_type_name.as_deref() == Some(FILE_TYPES[0].name(language))
+        status.file_types_complete
+            && status.file_type_command.as_deref() == Some(command.as_str())
+            && status.file_type_name.as_deref() == Some(FILE_TYPES[0].name(language))
     } else {
         status.file_type_command.is_none() && !status.file_type_traces
     };
@@ -525,9 +627,18 @@ pub fn sync(
         file_types: wanted.file_types && !registered.file_types && !(status.file_type_traces && memory.recorded.file_types),
     };
     let mut before = memory.clone();
-    if turning_on.any() {
+    let mut backfill_keys: Vec<String> = Vec::new();
+    if wanted.file_types && registered.file_types && memory.recorded.file_types && !status.missing_extensions.is_empty() {
+        for &extension in &status.missing_extensions {
+            backfill_keys.push(format!(r"{CLASSES}\.{extension}"));
+            backfill_keys.push(format!(r"{CLASSES}\.{extension}\OpenWithProgids"));
+        }
+    }
+    if turning_on.any() || !backfill_keys.is_empty() {
+        let mut keys_to_check = removable_keys(turning_on);
+        keys_to_check.extend(backfill_keys);
         let mut keep: Vec<String> = Vec::new();
-        for path in memory.keep.iter().map(|path| path.to_lowercase()).chain(existing_keys(&*registry, &removable_keys(turning_on))?) {
+        for path in memory.keep.iter().map(|path| path.to_lowercase()).chain(existing_keys(&*registry, &keys_to_check)?) {
             if !keep.contains(&path) {
                 keep.push(path);
             }
@@ -536,8 +647,11 @@ pub fn sync(
             context_menu: memory.recorded.context_menu || turning_on.context_menu,
             file_types: memory.recorded.file_types || turning_on.file_types,
         };
-        before = Memory { keep, recorded };
-        remember(&before)?;
+        let next = Memory { keep, recorded };
+        if next != before || turning_on.any() {
+            before = next;
+            remember(&before)?;
+        }
     }
     // A part that is off is removed only while Rainy's registration for it, whole or cut short, is there and is this
     // installation's, or that of a Rainy that is gone.
@@ -1253,20 +1367,64 @@ mod tests {
             file_type_name: Some("Markdown 文档".into()),
             context_menu_traces: true,
             file_type_traces: true,
+            context_menu_complete: true,
+            file_types_complete: true,
+            missing_extensions: Vec::new(),
         };
         assert!(current(&registered, EXE, Language::Chinese, ALL));
-        // Another language, a moved installation or a part turned off all need a rewrite.
+        // Another language, a moved installation, incomplete keys or a part turned off all need a rewrite.
         assert!(!current(&registered, EXE, Language::English, ALL));
         assert!(!current(&registered, r"D:\Rainy\RainyAgent.exe", Language::Chinese, ALL));
         assert!(!current(&registered, EXE, Language::Chinese, on(false, true)));
+        assert!(!current(&Status { context_menu_complete: false, ..registered.clone() }, EXE, Language::Chinese, ALL));
+        assert!(!current(&Status { file_types_complete: false, ..registered.clone() }, EXE, Language::Chinese, ALL));
         assert!(current(&Status::default(), EXE, Language::Chinese, OFF));
         // The type names follow the language also when only the file types are on.
-        let types_only = Status { context_menu_label: None, context_menu_command: None, context_menu_traces: false, ..registered };
+        let types_only = Status { context_menu_label: None, context_menu_command: None, context_menu_traces: false, context_menu_complete: false, ..registered };
         assert!(current(&types_only, EXE, Language::Chinese, on(false, true)));
         assert!(!current(&types_only, EXE, Language::English, on(false, true)));
         // A part that is off but left something behind, as a write cut short does, is not current either.
         assert!(!current(&Status { context_menu_traces: true, ..Status::default() }, EXE, Language::Chinese, OFF));
         assert!(!current(&Status { file_type_traces: true, ..Status::default() }, EXE, Language::Chinese, OFF));
+    }
+
+    #[test]
+    fn heals_missing_context_verb_and_backfills_extensions_added_in_an_upgrade() {
+        let mut registry = Hive::default();
+        let synced = quietly(&mut registry, EXE, Language::Chinese, ALL, &Memory::default());
+        assert!(synced.changed);
+        // Simulate an earlier version or cleaner deleting a non-sampled context verb (`Directory\shell\Rainy`)
+        // and an extension other than `.md` (`Rainy.rs` + `.rs\OpenWithProgids`), while the user already had `.rs`.
+        registry.delete_tree(r"Software\Classes\Directory\shell\Rainy").unwrap();
+        registry.delete_tree(r"Software\Classes\Rainy.rs").unwrap();
+        registry.delete_value(r"Software\Classes\.rs\OpenWithProgids", "Rainy.rs").unwrap();
+        registry.set(r"Software\Classes\.rs\OpenWithProgids", "Other.rs", "").unwrap();
+
+        let status = read_status(&registry).unwrap();
+        assert!(!status.context_menu_complete);
+        assert!(!status.file_types_complete);
+        assert_eq!(status.missing_extensions, ["rs"]);
+        assert!(!current(&status, EXE, Language::Chinese, ALL));
+
+        // Next sync repairs both and records the pre-existing `.rs` user key in `memory.keep`.
+        let mut remembered = Vec::new();
+        let healed = sync(&mut registry, EXE, Language::Chinese, ALL, &synced.memory, |memory| {
+            remembered.push(memory.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert!(healed.changed);
+        assert!(registry.has(r"Software\Classes\Directory\shell\Rainy\command"));
+        assert!(registry.has(r"Software\Classes\Rainy.rs\shell\open\command"));
+        assert_eq!(registry.text(r"Software\Classes\.rs\OpenWithProgids", "Rainy.rs").as_deref(), Some(""));
+        assert!(healed.memory.keep.contains(&r"software\classes\.rs\openwithprogids".to_owned()));
+        assert!(!remembered.is_empty());
+
+        let after = read_status(&registry).unwrap();
+        assert!(after.context_menu_complete && after.file_types_complete && after.missing_extensions.is_empty());
+        assert!(current(&after, EXE, Language::Chinese, ALL));
+        // Subsequent sync is a no-op.
+        assert!(!quietly(&mut registry, EXE, Language::Chinese, ALL, &healed.memory).changed);
     }
 
     #[test]
@@ -1284,6 +1442,9 @@ mod tests {
             file_type_name: Some("Markdown 文档".into()),
             context_menu_traces: true,
             file_type_traces: true,
+            context_menu_complete: true,
+            file_types_complete: true,
+            missing_extensions: Vec::new(),
         });
         assert!(current(&status, unicode, Language::Chinese, ALL));
         // Both parts were recorded as turned on into an empty registry: everything Rainy created goes.

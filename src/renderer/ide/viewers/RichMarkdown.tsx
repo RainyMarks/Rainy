@@ -12,6 +12,7 @@ import { usePrefs } from '../../prefs.ts'
 import { Button, toast } from '../../ui/index.ts'
 import { outlinePosition, provideOutline } from '../outline-store.ts'
 import { frontMatterContent, frontMatterIsToml, splitFrontMatter, withFrontMatterContent } from './front-matter.ts'
+import { isDataImage } from './markdown-html.ts'
 import { conventionalTables, mergeEdit, rebaseEdit } from './markdown-merge.ts'
 import { headingForFragment, markdownOutline } from './markdown-outline.ts'
 import { isMermaid, onThemeChange, renderMermaid } from './mermaid.ts'
@@ -67,6 +68,69 @@ const CONTROL_TIPS: readonly (readonly [string, ViewerKey])[] = [
 
 /** Above this size the rich view stays off: Crepe renders and serializes the whole document on every edit. */
 const RICH_LIMIT = 2 * 1024 * 1024
+
+/** Base folder metadata used to resolve images in the rich Markdown editor. */
+export interface RichImageBase {
+  readonly workspaceId: string
+  readonly rootId?: string | undefined
+  readonly directory: string
+  readonly hostRoot?: string | undefined
+}
+
+function escapeSvgText(text: string): string {
+  return text.replace(/[&<>"']/gu, ch => `&#${ch.charCodeAt(0)};`)
+}
+
+/**
+ * Build a self-contained inline SVG data URL badge shown when a remote or outside-project image is blocked,
+ * so the editor never attempts a network/SMB fetch or triggers CSP console errors while keeping Markdown source intact.
+ */
+function blockedImagePlaceholder(label: string): string {
+  const shown = label.length > 64 ? `${label.slice(0, 63)}…` : label
+  let units = 0
+  for (const ch of shown) units += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u.test(ch) ? 2 : 1
+  const width = Math.max(140, Math.min(480, Math.round(units * 7.2 + 24)))
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" viewBox="0 0 ${width} 28">`
+    + `<rect x="0.5" y="0.5" width="${width - 1}" height="27" rx="4" fill="#f3f4f6" stroke="#d1d5db"/>`
+    + `<text x="12" y="18" fill="#4b5563" font-family="Segoe UI, Microsoft YaHei UI, system-ui, sans-serif" font-size="12">${escapeSvgText(shown)}</text>`
+    + `</svg>`
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+}
+
+/**
+ * Resolve an image URL in the rich Markdown editor with the same policy as `MarkdownPreview`:
+ * allows empty strings (for the insert-image input), embedded `data:image/*` URLs, and paths inside the current project;
+ * blocks remote images, UNC paths, external Windows drive paths, other schemes and path traversals up front.
+ */
+export function resolveRichImageUrl(url: string, folder: RichImageBase, version: string | null, t: ReturnType<typeof useViewerT>): string {
+  const trimmed = url.trim()
+  if (trimmed === '') return ''
+  if (isDataImage(trimmed)) return trimmed
+  let candidate = trimmed
+  // `C:\…` and `C:/…` are paths, not URL schemes: shown only when they lie inside the open project.
+  if (/^[A-Za-z]:[\\/]/u.test(candidate)) {
+    const root = folder.hostRoot?.replaceAll('\\', '/').replace(/\/+$/u, '')
+    const target = candidate.replaceAll('\\', '/')
+    const inside = root !== undefined && target.toLowerCase().startsWith(`${root.toLowerCase()}/`)
+    if (!inside) return blockedImagePlaceholder(t('richOutsideImage'))
+    candidate = `/${target.slice(root.length + 1)}`
+  } else if (/^\\\\/u.test(candidate)) {
+    return blockedImagePlaceholder(t('richOutsideImage'))
+  } else if (/^\/\//u.test(candidate)) {
+    let host = candidate.slice(2).split('/')[0] ?? candidate
+    try { host = new URL(`https:${candidate}`).host || host } catch { /* Keep the host slice. */ }
+    return blockedImagePlaceholder(t('richRemoteImage', { host }))
+  } else if (/^https?:\/\//iu.test(candidate)) {
+    let host = candidate
+    try { host = new URL(candidate).host || candidate } catch { /* Keep the raw URL. */ }
+    return blockedImagePlaceholder(t('richRemoteImage', { host }))
+  } else if (/^(?:[a-z][a-z\d+.-]*:|#)/iu.test(candidate)) {
+    return blockedImagePlaceholder(t('richOutsideImage'))
+  }
+  const resolved = resolveDocumentPath(folder.directory, candidate)
+  if (resolved === undefined) return blockedImagePlaceholder(t('richOutsideImage'))
+  return ideRawUrl({ workspaceId: folder.workspaceId, rootId: folder.rootId, path: resolved, version: version ?? undefined })
+}
 
 /**
  * Crepe's language button reads "Text" for a code block without a language and offers no setting for it.
@@ -197,18 +261,8 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
       if (cancelled) return
       plugins.current = rich
       const image = (url: string): string => {
-        const { base: folder, version: revision } = latest.current
-        // `C:\…` and `C:/…` are paths, not URL schemes: shown when they lie in the project, as the Host serves only that.
-        const drive = /^[A-Za-z]:[\\/]/u.test(url)
-        if (drive) {
-          const root = folder.hostRoot?.replaceAll('\\', '/').replace(/\/+$/u, '')
-          const target = url.replaceAll('\\', '/')
-          const inside = root !== undefined && target.toLowerCase().startsWith(`${root.toLowerCase()}/`)
-          if (!inside) return url
-          url = `/${target.slice(root.length + 1)}`
-        } else if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(url)) return url
-        const resolved = resolveDocumentPath(folder.directory, url)
-        return resolved === undefined ? url : ideRawUrl({ workspaceId: folder.workspaceId, rootId: folder.rootId, path: resolved, version: revision ?? undefined })
+        const { base: folder, version: revision, t: translate } = latest.current
+        return resolveRichImageUrl(url, folder, revision, translate)
       }
       const save = async (file: File): Promise<string> => {
         try { return await latest.current.onImage(file) } catch (error) {

@@ -16,6 +16,11 @@ impl Locale {
     pub fn from_code(code: &str) -> Self {
         if code == "en" { Self::En } else { Self::Zh }
     }
+
+    /// Current interface locale from the carrier atomic flag (for contexts without `App`).
+    pub fn current() -> Self {
+        if rainy_carrier::locale::chinese() { Self::Zh } else { Self::En }
+    }
 }
 
 type Table = HashMap<String, String>;
@@ -306,6 +311,177 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "{value} is a path from another system and may not exist where Rainy runs commands. Check it.",
     ),
     ("native.mcpJsonBackslashes", "Windows 路径里的单个反斜杠已按原样读取，请核对路径", "Single backslashes in Windows paths were read as written. Check the paths."),
+    // WebView2, preview & external open security
+    (
+        "native.webview2Missing",
+        "这台电脑没有 Microsoft Edge WebView2 运行时，无法显示这类文件。请从微软官网安装 WebView2 运行时后重试。",
+        "This computer has no Microsoft Edge WebView2 Runtime, so this kind of file cannot be shown. Install the WebView2 Runtime from Microsoft, then try again.",
+    ),
+    (
+        "native.previewLoopbackOnly",
+        "预览只能打开本机地址（localhost 或 127.0.0.1）上的项目自己的服务，其他网址请用 web_fetch。",
+        "The preview only opens the project's own server on this machine (localhost or 127.0.0.1); use web_fetch for other addresses.",
+    ),
+    (
+        "native.previewNoPage",
+        "预览还没有打开任何页面，请先用 browser_open 打开。",
+        "The preview has no page open yet; open one with browser_open first.",
+    ),
+    (
+        "native.previewBlockedOffMachine",
+        "已拦截：预览不离开本机地址",
+        "blocked: the preview stays on this machine",
+    ),
+    (
+        "native.openExternalDenied",
+        "已阻止外部打开：仅允许打开当前活动项目内的安全文档或媒体文件。",
+        "Blocked opening externally: only safe document or media files inside the active project are allowed.",
+    ),
+    // Terminal output truncation & chat integration
+    (
+        "native.terminalTruncated",
+        "部分较早的输出因缓冲上限已被截断",
+        "Earlier output was truncated due to the buffer limit",
+    ),
+    (
+        "native.sendToChat",
+        "发送到当前对话",
+        "Send to chat",
+    ),
+    (
+        "native.sendSelectionToChat",
+        "将选中内容或最近输出发送到当前对话",
+        "Send selected text or recent output to the current chat",
+    ),
+    (
+        "native.sendDiagnosticToChat",
+        "发送诊断信息到当前对话",
+        "Send diagnostic to current chat",
+    ),
+    (
+        "native.terminalEmpty",
+        "终端里还没有可发送的输出",
+        "There is no terminal output to send yet",
+    ),
+    // Hunk diff review
+    ("native.diffHunks", "按块审阅", "Hunk review"),
+    ("native.diffSideBySide", "并排视图", "Side-by-side"),
+    ("native.diffAcceptHunk", "采纳此块", "Accept hunk"),
+    ("native.diffRevertHunk", "回滚此块", "Revert hunk"),
+    ("native.diffNoChanges", "文件内容没有差异", "No differences in this file"),
+    ("native.diffHunkCount", "{count} 处变更块", "{count} change hunks"),
+    ("native.diffHunkApplied", "已更新文件变更块", "Updated file hunk"),
+    ("native.diffHunkFailed", "无法更新变更块：{error}", "Could not update hunk: {error}"),
+    // Credential protection / DPAPI warnings
+    ("native.credentialWarningTitle", "密钥加密保护告警", "Credential protection warning"),
+    (
+        "native.credentialErrorTitle",
+        "无法保护本地密钥",
+        "Could not protect local credentials",
+    ),
+    (
+        "native.credentialErrorDetail",
+        "Windows 密钥保护（DPAPI）当前不可用，Rainy 不会以明文保存 API 密钥：{detail}",
+        "Windows credential protection (DPAPI) is unavailable; Rainy will not save API keys in plain text: {detail}",
+    ),
+    // SSH reconnect without restarting the whole app
+    (
+        "native.sshReconnecting",
+        "正在重新连接到 {target}…",
+        "Reconnecting to {target}…",
+    ),
+    (
+        "native.sshReconnected",
+        "已重新连接到 {target}",
+        "Reconnected to {target}",
+    ),
+    (
+        "native.sshReconnectFailed",
+        "重新连接 {target} 失败：{error}",
+        "Could not reconnect to {target}: {error}",
+    ),
+    (
+        "native.sshLostReconnectDetail",
+        "远程后端随连接一起停止了，会话历史保存在服务器上。点击“重新连接”可在当前窗口恢复连接。",
+        "The remote backend stopped with the connection. Chat history is kept on the server. Choose Reconnect to restore the connection in this window.",
+    ),
+    // Approval outside-read / outside-workdir badges
+    (
+        "native.approvalOutsideRead",
+        "读取项目外文件",
+        "Read outside project",
+    ),
+    (
+        "native.approvalOutsideWorkdir",
+        "命令工作目录在项目外",
+        "Working directory outside project",
+    ),
+    (
+        "native.approvalTargetPath",
+        "目标路径：{path}",
+        "Target path: {path}",
+    ),
+    (
+        "native.approvalWorkdir",
+        "工作目录：{path}",
+        "Working directory: {path}",
+    ),
+    // Context breakdown popover
+    ("native.contextBreakdownTitle", "上下文构成", "Context breakdown"),
+    ("native.contextBreakdownLoading", "正在统计上下文占用…", "Measuring context usage…"),
+    ("native.contextBreakdownUnavailable", "暂时无法获取上下文拆解", "Context breakdown is unavailable"),
+    ("native.contextSegSystem", "系统提示", "System"),
+    ("native.contextSegInstructions", "项目指令", "Instructions"),
+    ("native.contextSegMcpTools", "MCP 工具", "MCP tools"),
+    ("native.contextSegCoreTools", "内置工具", "Core tools"),
+    ("native.contextSegHistory", "对话历史", "History"),
+    ("native.contextSegRecall", "摘要索引", "Recall"),
+    ("native.contextCalibrated", "已按模型回报校准 ({factor}x)", "Calibrated ({factor}x)"),
+    ("native.contextCompactThreshold", "自动压缩阈值：{tokens}", "Auto-compact at: {tokens}"),
+    // Security rules & trusted workspaces UI
+    ("native.securityRulesTitle", "权限规则管理", "Permission rules"),
+    (
+        "native.securityRulesDescription",
+        "管理当前项目允许或显式禁止的命令、路径与工具规则（支持通配符 * 与 **）。禁止规则始终优先。",
+        "Manage allowed and explicitly denied commands, paths, and tools for the active project (supports * and ** wildcards). Deny rules always take precedence.",
+    ),
+    ("native.securityNoWorkspace", "请先打开一个项目以管理项目级权限规则。", "Open a project first to manage per-project permission rules."),
+    ("native.securityAllowRules", "允许规则", "Allow rules"),
+    ("native.securityDenyRules", "禁止规则（最高优先级）", "Deny rules (highest priority)"),
+    ("native.securityRuleKindCommand", "允许命令", "Allow command"),
+    ("native.securityRuleKindTool", "允许工具", "Allow tool"),
+    ("native.securityRuleKindDenyCommand", "禁止命令", "Deny command"),
+    ("native.securityRuleKindDenyPath", "禁止路径", "Deny path"),
+    ("native.securityRuleKindDenyTool", "禁止工具", "Deny tool"),
+    ("native.securityRulePlaceholder", "例如 git diff *、rm -rf * 或 ~/.ssh/**", "e.g. git diff *, rm -rf *, or ~/.ssh/**"),
+    ("native.securityAddRule", "添加规则", "Add rule"),
+    ("native.securityRemoveRule", "移除", "Remove"),
+    ("native.securityNoRules", "尚未配置任何规则", "No rules configured yet"),
+    ("native.securityTrustedTitle", "受信任工作区", "Trusted workspaces"),
+    (
+        "native.securityTrustedDescription",
+        "只有受信任工作区会自动加载仓库内的指令（AGENTS.md / CLAUDE.md）、项目技能与生命周期钩子。",
+        "Only trusted workspaces automatically load repository instructions (AGENTS.md / CLAUDE.md), project skills, and lifecycle hooks.",
+    ),
+    ("native.securityCurrentTrusted", "当前工作区：已信任", "Active workspace: Trusted"),
+    ("native.securityCurrentUntrusted", "当前工作区：未信任", "Active workspace: Untrusted"),
+    ("native.securityTrustCurrent", "信任当前工作区", "Trust active workspace"),
+    ("native.securityUntrustCurrent", "取消信任", "Revoke trust"),
+    ("native.securityNoTrusted", "暂无已信任的工作区", "No trusted workspaces yet"),
+    ("native.securityRuleEmpty", "请输入规则内容", "Enter a rule first"),
+    // Notifications & relative time (moved from inline hardcoded strings)
+    ("native.notifyUntitledChat", "新对话", "New chat"),
+    ("native.notifyApprovalTitle", "等待你批准", "Waiting for approval"),
+    ("native.notifyApprovalBody", "「{title}」需要你批准一个操作", "\"{title}\" needs your approval"),
+    ("native.notifyDoneTitle", "对话已完成", "Chat finished"),
+    ("native.notifyDoneBody", "「{title}」已经回复完", "\"{title}\" has finished"),
+    ("native.timeJustNow", "刚刚", "now"),
+    ("native.timeMinutesAgo", "{count}分钟", "{count}m"),
+    ("native.timeHoursAgo", "{count}小时", "{count}h"),
+    ("native.timeDaysAgo", "{count}天", "{count}d"),
+    ("native.timeWeeksAgo", "{count}周", "{count}w"),
+    ("native.timeMonthsAgo", "{count}个月", "{count}mo"),
+    ("native.timeYearsAgo", "{count}年", "{count}y"),
 ];
 
 fn tables() -> &'static (Table, Table) {

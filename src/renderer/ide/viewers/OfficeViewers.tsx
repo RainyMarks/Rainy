@@ -1,22 +1,22 @@
 /** Office documents and small Windows files: Word (.docx) rendered in the page, spreadsheets as tables, slides and legacy
  *  Word documents as PDF made by the Office installed on the computer, `~$` lock files and `.lnk` shortcuts. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { encryptedOpenXml, type OfficeFailureCode } from '../../../shared/office-protocol.ts'
+import type { IdeRootId, WorkspaceId } from '../../../shared/ide-files-protocol.ts'
+import { encryptedOpenXml, type OfficeFailureCode, type OfficePdfSource } from '../../../shared/office-protocol.ts'
 import { fileSizeText, toast, writeClipboard } from '../../ui/index.ts'
 import { HttpStatusError } from './byte-source.ts'
+import { revokeBlobUrls, sanitizeDocxDom } from './docx-sanitize.ts'
 import { officeLockOwner, shortcutFacts } from './file-facts.ts'
 import { loadFailure, type LoadFailure } from './load-errors.ts'
 import { useViewerT } from './messages.ts'
 import { PdfViewer } from './PdfViewer.tsx'
+import { MAX_SHEET_COLUMNS, MAX_SHEET_ROWS, readSheets, type SheetGrid } from './sheet-parse.ts'
 import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
 
 /** Largest file read whole into the page for a preview. */
 const MAX_PREVIEW_BYTES = 200 * 1024 * 1024
-/** Spreadsheet cells drawn at once; Excel files can be far larger than a useful preview. */
-const MAX_SHEET_ROWS = 2000
-const MAX_SHEET_COLUMNS = 200
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -35,6 +35,7 @@ function useFileBytes(url: string, size: number): { bytes?: Uint8Array; error?: 
   useEffect(() => {
     let cancelled = false
     setState({})
+    if (url === '') return
     if (size > MAX_PREVIEW_BYTES) { setState({ error: { reason: t('previewTooLarge', { size: fileSizeText(size) }), detail: '' } }); return }
     void fetch(url, { cache: 'no-store' }).then(async (response) => {
       if (!response.ok) throw new HttpStatusError(response.status)
@@ -46,12 +47,28 @@ function useFileBytes(url: string, size: number): { bytes?: Uint8Array; error?: 
   return state
 }
 
-/** Where a document opened from the tab lives, for "Open in default app". */
+/** Where a document opened from the tab lives, for "Open in default app" and zero-Base64 Office conversion. */
 export interface DocumentLocation {
   /** Host path of the file; absent when the desktop cannot open it (SSH, or a plain browser). */
   readonly hostPath?: string | undefined
   readonly name: string
   readonly extension: string
+  /** Workspace file coordinates; when present, Office → PDF conversion streams directly through the Host without Base64. */
+  readonly workspaceId?: WorkspaceId | undefined
+  readonly rootId?: IdeRootId | undefined
+  readonly path?: string | undefined
+  readonly version?: string | undefined
+}
+
+function pdfSourceOf(location: DocumentLocation): OfficePdfSource | undefined {
+  if (location.workspaceId === undefined || location.path === undefined || location.path === '') return undefined
+  return {
+    workspaceId: location.workspaceId,
+    rootId: location.rootId,
+    path: location.path,
+    version: location.version,
+    extension: location.extension,
+  }
 }
 
 /** "Open in default app" as a toolbar action, where the desktop can reach the file. */
@@ -125,34 +142,45 @@ function WordPreview({ bytes, onFailed, modes, actions }: {
     const element = host.current
     if (element === null) return
     let cancelled = false
+    const revoked = new Set<string>()
     const root = element.shadowRoot ?? element.attachShadow({ mode: 'open' })
+    revokeBlobUrls(root, revoked)
     root.replaceChildren()
     const style = document.createElement('style')
     style.textContent = WORD_STYLE
     const styles = document.createElement('div')
     const body = document.createElement('div')
     root.append(style, styles, body)
+    const cleanupBlobs = (): void => {
+      revokeBlobUrls(root, revoked)
+      revokeBlobUrls(styles, revoked)
+      revokeBlobUrls(body, revoked)
+      root.replaceChildren()
+    }
     setRendered(false)
     void import('docx-preview').then(async ({ renderAsync }) => {
+      if (cancelled) return
       await renderAsync(bytes, body, styles, {
         className: 'docx', inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true, renderHeaders: true, renderFooters: true,
         renderFootnotes: true, renderEndnotes: true, renderComments: false, renderChanges: false, renderAltChunks: false, useBase64URL: false, experimental: true,
       })
-      if (cancelled) return
-      // Links leave the page only for the web; other targets (files, scripts) are dropped.
-      for (const link of body.querySelectorAll('a[href]')) {
-        const href = link.getAttribute('href') ?? ''
-        if (/^https?:\/\//iu.test(href)) { link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener noreferrer') }
-        else if (!href.startsWith('#')) link.removeAttribute('href')
+      if (cancelled) {
+        // Release any blob: URLs docx-preview created into detached `styles`/`body` after unmount.
+        cleanupBlobs()
+        return
       }
+      sanitizeDocxDom(styles, body)
       const page = body.querySelector<HTMLElement>('section.docx')
       setPageWidth(page?.offsetWidth ?? 0)
       setRendered(true)
-    }).catch((error: unknown) => { if (!cancelled) onFailed(error) })
+    }).catch((error: unknown) => {
+      cleanupBlobs()
+      if (!cancelled) onFailed(error)
+    })
     return () => {
       cancelled = true
       // docx-preview gives every image and font an object URL and never frees them.
-      for (const url of new Set(root.innerHTML.match(/blob:[^"')\s]+/gu) ?? [])) URL.revokeObjectURL(url)
+      cleanupBlobs()
     }
   }, [bytes, onFailed])
 
@@ -202,20 +230,21 @@ interface OfficePdfState {
   unavailable?: boolean
 }
 
-function useOfficePdf(bytes: Uint8Array | undefined, extension: string, attempt: number): OfficePdfState {
+function useOfficePdf(source: OfficePdfSource | undefined, bytes: Uint8Array | undefined, extension: string, attempt: number): OfficePdfState {
   const [state, setState] = useState<OfficePdfState>({})
   useEffect(() => {
     let cancelled = false
     setState({})
-    if (bytes === undefined) return
+    if (source === undefined && bytes === undefined) return
     const bridge = window.__RAINY_OFFICE__
     if (bridge === undefined) { setState({ unavailable: true }); return }
-    void bridge.toPdf(bytes, extension).then((result) => {
+    const pending = source !== undefined ? bridge.toPdf(source) : bridge.toPdf(bytes!, extension)
+    void pending.then((result) => {
       if (cancelled) return
       setState('pdf' in result ? { pdf: result.pdf, application: result.application } : { code: result.code, error: result.error, missing: result.missing, encrypted: result.encrypted === true })
     }, (error: unknown) => { if (!cancelled) setState({ code: 'failed', error: message(error) }) })
     return () => { cancelled = true }
-  }, [bytes, extension, attempt])
+  }, [source?.workspaceId, source?.rootId, source?.path, source?.version, source?.extension, bytes, extension, attempt])
   return state
 }
 
@@ -266,8 +295,18 @@ function officeFailure(result: OfficePdfState, t: ReturnType<typeof useViewerT>)
   }
 }
 
-function OfficePdf({ bytes, location, attempt, onRetry, fallback, modes }: {
-  bytes: Uint8Array
+function LazySlidesOutline({ url, size, bytes }: { url?: string | undefined; size: number; bytes?: Uint8Array | undefined }): JSX.Element {
+  const t = useViewerT()
+  const fetched = useFileBytes(bytes === undefined && url !== undefined ? url : '', bytes === undefined && url !== undefined ? size : 0)
+  const data = bytes ?? fetched.bytes
+  if (bytes === undefined && fetched.error !== undefined) return <Failed template={reason => t('loadFailed', { error: reason })} failure={fetched.error} />
+  if (data === undefined) return <p>{t('loading')}</p>
+  return <SlidesOutline bytes={data} />
+}
+
+function OfficePdf({ bytes, size, location, attempt, onRetry, fallback, modes }: {
+  bytes?: Uint8Array | undefined
+  size: number
   location: DocumentLocation
   attempt: number
   onRetry: () => void
@@ -275,11 +314,12 @@ function OfficePdf({ bytes, location, attempt, onRetry, fallback, modes }: {
   modes?: ReactNode
 }): JSX.Element {
   const t = useViewerT()
-  const result = useOfficePdf(bytes, location.extension, attempt)
+  const source = pdfSourceOf(location)
+  const result = useOfficePdf(source, source === undefined ? bytes : undefined, location.extension, attempt)
   const openInApp = useOpenInApp(location)
   if (result.encrypted === true) return <>{modes !== undefined && <div className={css.toolbar}>{modes}</div>}<Encrypted location={location} /></>
   if (result.pdf !== undefined) {
-    return <PdfViewer data={result.pdf} bytes={bytes.length} note={t('officeConvertedBy', { app: result.application ?? 'Office' })}
+    return <PdfViewer data={result.pdf} bytes={bytes?.length ?? size} note={t('officeConvertedBy', { app: result.application ?? 'Office' })}
       modes={modes} actions={openInApp === undefined ? [] : [openInApp]} />
   }
   const failed = result.unavailable === true || result.missing === true || result.error !== undefined
@@ -330,7 +370,7 @@ export function WordViewer({ url, size, location }: { url: string; size: number;
   if (file.error !== undefined) body = <Failed block template={reason => t('loadFailed', { error: reason })} failure={file.error} />
   else if (file.bytes === undefined) body = <div className={css.message}>{t('loading')}</div>
   else if (encryptedOpenXml(file.bytes, location.extension)) body = <Encrypted location={location} />
-  else if (office) body = <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }} modes={modes} />
+  else if (office) body = <OfficePdf bytes={file.bytes} size={size} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }} modes={modes} />
   else if (failure !== undefined) {
     body = <div className={css.stage}><div className={css.factPage}>
       <Failed template={reason => t('docxFailed', { error: reason })} failure={failure} />
@@ -357,61 +397,27 @@ export function WordViewer({ url, size, location }: { url: string; size: number;
  */
 export function OfficeViewer({ url, size, location }: { url: string; size: number; location: DocumentLocation }): JSX.Element {
   const t = useViewerT()
-  const file = useFileBytes(url, size)
+  const direct = window.__RAINY_OFFICE__ !== undefined && pdfSourceOf(location) !== undefined
+  // When the desktop bridge can stream directly from the Host via file coordinates, skip downloading up to 200 MB
+  // into the renderer; fall back to fetching only when SlidesOutline is actually rendered or no direct bridge exists.
+  const file = useFileBytes(direct ? '' : url, direct ? 0 : size)
   const [attempt, setAttempt] = useState(0)
   const slides = ['pptx', 'pptm', 'ppsx', 'ppsm', 'potx'].includes(location.extension)
+  if (direct) {
+    return <div className={css.viewer} data-viewer="office">
+      {size > MAX_PREVIEW_BYTES
+        ? <Failed block template={reason => t('loadFailed', { error: reason })} failure={{ reason: t('previewTooLarge', { size: fileSizeText(size) }), detail: '' }} />
+        : <OfficePdf size={size} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }}
+          fallback={slides ? <LazySlidesOutline url={url} size={size} /> : undefined} />}
+    </div>
+  }
   return <div className={css.viewer} data-viewer="office">
     {file.error !== undefined ? <Failed block template={reason => t('loadFailed', { error: reason })} failure={file.error} />
       : file.bytes === undefined ? <div className={css.message}>{t('loading')}</div>
         : encryptedOpenXml(file.bytes, location.extension) ? <Encrypted location={location} />
-        : <OfficePdf bytes={file.bytes} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }}
+        : <OfficePdf bytes={file.bytes} size={size} location={location} attempt={attempt} onRetry={() => { setAttempt(value => value + 1) }}
           fallback={slides ? <SlidesOutline bytes={file.bytes} /> : undefined} />}
   </div>
-}
-
-/** One sheet as rows of display text, with merged cells. */
-interface SheetGrid {
-  readonly name: string
-  readonly rows: readonly (readonly string[])[]
-  readonly totalRows: number
-  readonly totalColumns: number
-  /** `row:column` of each merge's top-left cell → its span; covered cells are listed in `hidden`. */
-  readonly spans: ReadonlyMap<string, { rows: number; columns: number }>
-  readonly hidden: ReadonlySet<string>
-}
-
-/** Excel's built-in short date formats follow the system language, as in Excel; the others are shown as written. */
-const SHORT_DATES: Readonly<Record<string, { zh: string; en: string }>> = {
-  'm/d/yy': { zh: 'yyyy/m/d', en: 'm/d/yyyy' },
-  'm/d/yy h:mm': { zh: 'yyyy/m/d h:mm', en: 'm/d/yyyy h:mm' },
-}
-
-async function readSheets(bytes: Uint8Array, locale: 'zh' | 'en'): Promise<SheetGrid[]> {
-  const XLSX = await import('xlsx')
-  const book = XLSX.read(bytes, { type: 'array', cellNF: true, cellStyles: false, sheetRows: MAX_SHEET_ROWS + 1 })
-  return book.SheetNames.map((name) => {
-    const sheet = book.Sheets[name]
-    if (sheet === undefined || sheet['!ref'] === undefined) return { name, rows: [], totalRows: 0, totalColumns: 0, spans: new Map(), hidden: new Set() }
-    for (const [address, cell] of Object.entries(sheet)) {
-      if (address.startsWith('!') || typeof cell !== 'object' || cell === null || !('t' in cell)) continue
-      const short = typeof cell.z === 'string' ? SHORT_DATES[cell.z] : undefined
-      if (short !== undefined && cell.t === 'n' && typeof cell.v === 'number') cell.w = XLSX.SSF.format(short[locale], cell.v)
-    }
-    const range = XLSX.utils.decode_range(sheet['!fullref'] ?? sheet['!ref'])
-    const totalRows = range.e.r + 1
-    const totalColumns = range.e.c + 1
-    const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: false, defval: '', blankrows: true, dateNF: 'yyyy-mm-dd' })
-      .slice(0, MAX_SHEET_ROWS).map(row => row.slice(0, MAX_SHEET_COLUMNS).map(String))
-    const spans = new Map<string, { rows: number; columns: number }>()
-    const hidden = new Set<string>()
-    for (const merge of sheet['!merges'] ?? []) {
-      spans.set(`${merge.s.r}:${merge.s.c}`, { rows: merge.e.r - merge.s.r + 1, columns: merge.e.c - merge.s.c + 1 })
-      for (let row = merge.s.r; row <= merge.e.r; row++) {
-        for (let column = merge.s.c; column <= merge.e.c; column++) if (row !== merge.s.r || column !== merge.s.c) hidden.add(`${row}:${column}`)
-      }
-    }
-    return { name, rows, totalRows, totalColumns, spans, hidden }
-  })
 }
 
 /** Marks a spreadsheet that needs a password, in place of an error text. */
@@ -439,12 +445,16 @@ export function SheetViewer({ url, size, location }: { url: string; size: number
   const [active, setActive] = useState(0)
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     setSheets(undefined); setError(undefined); setActive(0)
     if (file.bytes === undefined) return
     if (encryptedOpenXml(file.bytes, location.extension)) { setError(PROTECTED); return }
-    void readSheets(file.bytes, document.documentElement.lang.startsWith('zh') ? 'zh' : 'en').then((value) => { if (!cancelled) setSheets(value) },
-      (failure: unknown) => { if (!cancelled) setError(/password/iu.test(message(failure)) ? PROTECTED : loadFailure(failure, t)) })
-    return () => { cancelled = true }
+    void readSheets(file.bytes, document.documentElement.lang.startsWith('zh') ? 'zh' : 'en', controller.signal).then((value) => { if (!cancelled) setSheets(value) },
+      (failure: unknown) => {
+        if (cancelled || (failure instanceof DOMException && failure.name === 'AbortError')) return
+        setError(/password/iu.test(message(failure)) ? PROTECTED : loadFailure(failure, t))
+      })
+    return () => { cancelled = true; controller.abort() }
   }, [file.bytes, location.extension, t])
   const sheet = sheets?.[active]
   const columns = useMemo(() => Math.min(MAX_SHEET_COLUMNS, Math.max(sheet?.totalColumns ?? 0, ...(sheet?.rows ?? []).map(row => row.length))), [sheet])

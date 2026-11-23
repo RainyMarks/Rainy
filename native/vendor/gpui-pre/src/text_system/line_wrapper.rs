@@ -433,7 +433,10 @@ impl LineWrapper {
                     last_candidate_ix = ix;
                     last_candidate_width = width;
                 }
-            } else if c != ' ' && first_non_whitespace_ix.is_some() {
+            } else if c != ' '
+                && first_non_whitespace_ix.is_some()
+                && !Self::is_opening_punctuation(prev_c)
+            {
                 last_candidate_ix = ix;
                 last_candidate_width = width;
             }

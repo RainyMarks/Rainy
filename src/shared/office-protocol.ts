@@ -1,7 +1,18 @@
 /** The desktop bridge for office documents: PDF copies made by the installed Office, and opening files in their own app. */
+import type { IdeRootId, WorkspaceId } from './ide-files-protocol.ts'
 
 /** Why a conversion made no PDF (`native/crates/app/src/web/office.rs`); the page explains each in the reader's language. */
 export type OfficeFailureCode = 'missing' | 'password' | 'too-large' | 'timeout' | 'no-output' | 'unsupported' | 'failed'
+
+/** Project file locator for zero-Base64 Office → PDF conversion across the GPUI / Host boundary. */
+export interface OfficePdfSource {
+  readonly workspaceId: WorkspaceId
+  readonly rootId?: IdeRootId | undefined
+  readonly path: string
+  readonly version?: string | undefined
+  /** Lower-case extension without the dot. */
+  readonly extension: string
+}
 
 /** A conversion's PDF, or why there is none; `missing` means neither Microsoft Office nor WPS Office is installed, and
  *  `encrypted` that the file needs a password. `error` is the detail as Office or Windows put it, possibly English. */
@@ -11,9 +22,12 @@ export type OfficePdfResult = { pdf: Uint8Array; application: string }
 /** Exposed by the viewer page of the desktop (`ViewerApp.tsx`) as `__RAINY_OFFICE__`; absent in a plain browser. */
 export interface OfficeBridge {
   /**
-   * @param bytes File contents, read through the Host so files in WSL and on SSH servers convert too.
-   * @param extension Lower-case extension without the dot.
+   * Convert an Office document to PDF.
+   * Passing an {@link OfficePdfSource} avoids Base64 round-trips completely: GPUI streams the source from the Host and
+   * registers a one-shot `/rainy/ide/office-pdf?token=...` route that the page fetches as binary `ArrayBuffer`.
+   * A raw `Uint8Array` + `extension` remains accepted as a fallback for legacy callers.
    */
+  toPdf(source: OfficePdfSource): Promise<OfficePdfResult>
   toPdf(bytes: Uint8Array, extension: string): Promise<OfficePdfResult>
   /** Open a document in the app Windows associates with it; absent on an SSH server. @param path Host path. */
   open?(path: string): Promise<{ error?: string }>

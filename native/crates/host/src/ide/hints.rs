@@ -88,12 +88,12 @@ impl Hints {
         if !sets.contains_key(&key) {
             let weak: Weak<Inner> = Arc::downgrade(&self.inner);
             let workspace = workspace_id.to_owned();
-            let handle = self.inner.runtime.clone();
             let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 if event.is_ok_and(|event| !event.kind.is_access()) {
                     if let Some(inner) = weak.upgrade() {
-                        let workspace = workspace.clone();
-                        handle.spawn(async move { Self::notify_inner(&inner, &workspace, "files") });
+                        // Deduplicate/throttle synchronously in the watcher callback instead of spawning a task per
+                        // filesystem event; `notify_inner` only schedules one timer per 100ms window on `inner.runtime`.
+                        Self::notify_inner(&inner, &workspace, "files");
                     }
                 }
             });

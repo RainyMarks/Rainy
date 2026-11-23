@@ -71,6 +71,8 @@ pub enum StoreEvent {
     ResourcesDamaged(TrustError),
     /// Something about an update to show.
     Update(update::UpdateNotice),
+    /// Windows DPAPI credential storage recovered from corruption or could not protect keys.
+    CredentialAlert(boot::CredentialAlert),
 }
 
 /// A question `ssh` asks, waiting for the window to show it; dropping `reply` cancels it.
@@ -168,6 +170,9 @@ pub struct Store {
     pub models: Option<ModelsStatus>,
     pub summaries: Vec<SessionSummary>,
     pub chats: HashMap<String, Entity<ChatModel>>,
+    /// Monotonic access counter per cached chat for bounded LRU eviction.
+    chat_used: HashMap<String, u64>,
+    chat_tick: u64,
     pub selected: Option<String>,
     /// Counts the changes of `selected`, so work that finishes later (a chat created for a message) can tell whether
     /// the user moved on meanwhile.
@@ -186,6 +191,10 @@ pub struct Store {
     pub updates: update::Updates,
     /// Exporting the diagnostics zip.
     pub diagnostics: diagnostics::Diagnostics,
+    /// Credential protection alerts raised before the window subscribed.
+    pending_credential_alerts: Vec<boot::CredentialAlert>,
+    /// True while an in-place SSH reconnect is under way.
+    reconnecting: bool,
     _tasks: Vec<Task<()>>,
 }
 
@@ -261,6 +270,8 @@ impl Store {
                 models: None,
                 summaries: Vec::new(),
                 chats: HashMap::new(),
+                chat_used: HashMap::new(),
+                chat_tick: 0,
                 selected: None,
                 selections: 0,
                 pending_permission: None,
@@ -270,6 +281,8 @@ impl Store {
                 shell,
                 updates,
                 diagnostics: diagnostics::Diagnostics::default(),
+                pending_credential_alerts: Vec::new(),
+                reconnecting: false,
                 _tasks: Vec::new(),
             };
             cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
@@ -287,10 +300,13 @@ impl Store {
         store
     }
 
-    fn start(&mut self, cx: &mut Context<Self>) {
-        let paths = self.paths.clone();
-        let events = CarrierEvents::new(&paths);
-        let (progress_tx, progress_rx) = async_channel::unbounded::<boot::Step>();
+    /// Drain any credential protection alerts recorded during early startup before the window subscribed.
+    pub fn take_credential_alerts(&mut self) -> Vec<boot::CredentialAlert> {
+        std::mem::take(&mut self.pending_credential_alerts)
+    }
+
+    fn wire_carrier_events(&self, cx: &mut Context<Self>) -> (Arc<CarrierEvents>, async_channel::Receiver<Option<i32>>) {
+        let events = CarrierEvents::new(&self.paths);
         // A Host that ends after startup is reported once, unless Rainy is quitting.
         let (exit_tx, exit_rx) = async_channel::bounded::<Option<i32>>(1);
         *events.on_exit.lock().unwrap() = Some(Box::new(move |code| {
@@ -310,6 +326,26 @@ impl Store {
             }
         })
         .detach();
+        // DPAPI credential warnings/errors surface explicitly in the window rather than being swallowed.
+        let (alert_tx, alert_rx) = async_channel::unbounded::<boot::CredentialAlert>();
+        *events.credential_alert.lock().unwrap() = Some(alert_tx);
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            while let Ok(alert) = alert_rx.recv().await {
+                let _ = this.update(cx, |store, cx| {
+                    store.pending_credential_alerts.push(alert.clone());
+                    cx.emit(StoreEvent::CredentialAlert(alert));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        (events, exit_rx)
+    }
+
+    fn start(&mut self, cx: &mut Context<Self>) {
+        let paths = self.paths.clone();
+        let (events, exit_rx) = self.wire_carrier_events(cx);
+        let (progress_tx, progress_rx) = async_channel::unbounded::<boot::Step>();
         let askpass = self.askpass.clone();
         let (modules, prompt) = (self.modules.manager.clone(), self.prompt.clone());
         let (accepted_tx, accepted) = async_channel::bounded::<()>(1);
@@ -443,6 +479,7 @@ impl Store {
     /// second call has nothing left to stop.
     pub fn shutdown(&mut self) -> Shutdown {
         self.stopping = true;
+        crate::web::preview::close();
         // A download stops; what it received is kept for the next attempt.
         self.modules.manager.close();
         self.updates.cancel();
@@ -645,6 +682,7 @@ impl Store {
                 if let Some(id) = session(&data) {
                     self.summaries.retain(|s| s.id != id);
                     self.chats.remove(&id);
+                    self.chat_used.remove(&id);
                     if self.selected.as_deref() == Some(id.as_str()) {
                         self.selected = None;
                         self.selections += 1;
@@ -681,14 +719,48 @@ impl Store {
         });
     }
 
+    /// Maximum number of inactive chats kept loaded in memory simultaneously.
+    const MAX_CACHED_CHATS: usize = 24;
+
+    fn touch_chat(&mut self, id: &str) {
+        self.chat_tick = self.chat_tick.wrapping_add(1);
+        self.chat_used.insert(id.to_owned(), self.chat_tick);
+    }
+
+    fn evict_lru_chats(&mut self, keep_id: &str, cx: &App) {
+        while self.chats.len() > Self::MAX_CACHED_CHATS {
+            let victim = self
+                .chats
+                .iter()
+                .filter(|(id, model)| {
+                    if id.as_str() == keep_id || self.selected.as_deref() == Some(id.as_str()) {
+                        return false;
+                    }
+                    let pinned = self.summaries.iter().any(|s| s.id == **id && s.pinned);
+                    if pinned {
+                        return false;
+                    }
+                    let active = model.read(cx).view.as_ref().is_some_and(|v| v.busy() || !v.snapshot.approvals.is_empty());
+                    !active
+                })
+                .min_by_key(|(id, _)| self.chat_used.get(id.as_str()).copied().unwrap_or(0))
+                .map(|(id, _)| id.clone());
+            let Some(victim) = victim else { break };
+            self.chats.remove(&victim);
+            self.chat_used.remove(&victim);
+        }
+    }
+
     /// The chat with this id, loading it the first time.
     pub fn chat(&mut self, id: &str, cx: &mut Context<Self>) -> Entity<ChatModel> {
+        self.touch_chat(id);
         if let Some(chat) = self.chats.get(id) {
             return chat.clone();
         }
         let chat = cx.new(|_| ChatModel { id: id.to_owned(), view: None, error: None, whole: false, loading_whole: false, loaded: 0, load: 0 });
         self.chats.insert(id.to_owned(), chat.clone());
         self.load_chat(id, false, cx);
+        self.evict_lru_chats(id, cx);
         chat
     }
 
@@ -778,6 +850,137 @@ impl Store {
             .detach();
         }
         cx.emit(StoreEvent::PrefsChanged);
+    }
+
+    /// Reconnect an SSH Host in place without restarting `RainyAgent.exe`.
+    /// Falls back to a full restart only when the server needs a fresh runtime installation.
+    pub fn reconnect_ssh(&mut self, window: AnyWindowHandle, cx: &mut Context<Self>) {
+        if self.reconnecting || self.quitting {
+            return;
+        }
+        let Some(target @ ExecutionTarget::Ssh { .. }) = self.target.clone() else {
+            self.restart(cx);
+            return;
+        };
+        let Some(askpass) = self.askpass.clone() else {
+            self.restart(cx);
+            return;
+        };
+        self.reconnecting = true;
+        let locale = self.locale();
+        let label = target.label().to_owned();
+        if let Some(rpc) = self.rpc.take() {
+            rpc.close();
+        }
+        let previous = self
+            .host
+            .take()
+            .and_then(|host| host.remote_ssh().map(|remote| (remote.host.clone(), host.ready().pid)));
+        self.connection = ConnectionState::Connecting;
+        cx.notify();
+        let _ = window.update(cx, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            let note = crate::i18n::format(locale, "native.sshReconnecting", &[("target", &label)]);
+            window.push_notification(gpui_kit::component::notification::Notification::info(note), cx);
+        });
+        let (events, exit_rx) = self.wire_carrier_events(cx);
+        let paths = self.paths.clone();
+        let modules = self.modules.manager.clone();
+        let reconnecting = cx.background_spawn(async move {
+            let prev_ref = previous.as_ref().map(|(h, pid)| (h.as_str(), *pid));
+            boot::reconnect_ssh(&paths, &target, events, &askpass, &modules, prev_ref)
+        });
+        let label_done = label.clone();
+        let task = cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            let outcome = reconnecting.await;
+            let host = match outcome {
+                Ok(rainy_carrier::ssh::ReconnectOutcome::Connected(host)) => Arc::new(host),
+                Ok(rainy_carrier::ssh::ReconnectOutcome::NeedsInstall { .. }) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.reconnecting = false;
+                        store.restart(cx);
+                    });
+                    return;
+                }
+                Ok(rainy_carrier::ssh::ReconnectOutcome::Unsupported(system)) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.reconnecting = false;
+                        store.connection = ConnectionState::Closed;
+                        cx.notify();
+                    });
+                    let _ = window.update(cx, |_, window, cx| {
+                        use gpui_kit::component::WindowExt as _;
+                        let text = crate::i18n::format(locale, "native.sshReconnectFailed", &[("target", &label_done), ("error", &system)]);
+                        window.push_notification(gpui_kit::component::notification::Notification::error(text), cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    let _ = this.update(cx, |store, cx| {
+                        store.reconnecting = false;
+                        store.connection = ConnectionState::Closed;
+                        cx.notify();
+                    });
+                    let _ = window.update(cx, |_, window, cx| {
+                        use gpui_kit::component::WindowExt as _;
+                        let text = crate::i18n::format(locale, "native.sshReconnectFailed", &[("target", &label_done), ("error", &detail)]);
+                        window.push_notification(gpui_kit::component::notification::Notification::error(text), cx);
+                    });
+                    return;
+                }
+            };
+            let (rpc, rpc_events) = match RpcClient::connect(host.ready()) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    let _ = this.update(cx, |store, cx| {
+                        store.reconnecting = false;
+                        store.connection = ConnectionState::Closed;
+                        cx.notify();
+                    });
+                    let _ = window.update(cx, |_, window, cx| {
+                        use gpui_kit::component::WindowExt as _;
+                        let text = crate::i18n::format(locale, "native.sshReconnectFailed", &[("target", &label_done), ("error", &detail)]);
+                        window.push_notification(gpui_kit::component::notification::Notification::error(text), cx);
+                    });
+                    return;
+                }
+            };
+            // Watch exits of the new Host process as well.
+            let watcher = this.clone();
+            cx.spawn(async move |cx| {
+                if let Ok(code) = exit_rx.recv().await {
+                    cx.update(|_| crate::web::preview::close());
+                    let _ = watcher.update(cx, |store, cx| {
+                        if !store.stopping && store.host.is_some() {
+                            if let Some(rpc) = &store.rpc {
+                                rpc.close();
+                            }
+                            cx.emit(StoreEvent::HostExited(code));
+                        }
+                    });
+                }
+            })
+            .detach();
+            let _ = this.update(cx, |store, cx| {
+                store.reconnecting = false;
+                store.host = Some(host);
+                store.rpc = Some(rpc);
+                cx.notify();
+            });
+            let _ = window.update(cx, |_, window, cx| {
+                use gpui_kit::component::WindowExt as _;
+                let text = crate::i18n::format(locale, "native.sshReconnected", &[("target", &label_done)]);
+                window.push_notification(gpui_kit::component::notification::Notification::success(text), cx);
+            });
+            while let Ok(event) = rpc_events.recv().await {
+                if this.update(cx, |store, cx| store.handle(event, cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        self._tasks.push(task);
     }
 
     /// Start Rainy again with this run's switches, then quit. The window goes at once and the Host stops off the

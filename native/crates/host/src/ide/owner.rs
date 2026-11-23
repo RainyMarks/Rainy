@@ -18,6 +18,7 @@ pub type Output = Arc<dyn Fn(&'static str, String) + Send + Sync>;
 pub struct Owner {
     output: Output,
     closing: AtomicBool,
+    job: Option<crate::process::ProcessJob>,
     processes: Mutex<Vec<u32>>,
     terminals: Mutex<Vec<Arc<Pty>>>,
     stopped: tokio_util::sync::CancellationToken,
@@ -29,7 +30,14 @@ fn stopped_error() -> HostError {
 
 impl Owner {
     pub fn new(output: Output) -> Arc<Self> {
-        Arc::new(Self { output, closing: AtomicBool::new(false), processes: Mutex::default(), terminals: Mutex::default(), stopped: tokio_util::sync::CancellationToken::new() })
+        Arc::new(Self {
+            output,
+            closing: AtomicBool::new(false),
+            job: crate::process::ProcessJob::new(),
+            processes: Mutex::default(),
+            terminals: Mutex::default(),
+            stopped: tokio_util::sync::CancellationToken::new(),
+        })
     }
 
     /// Completes once the owner closes.
@@ -59,6 +67,9 @@ impl Owner {
             let code = if error.kind() == std::io::ErrorKind::NotFound { "dependency-unavailable" } else { "execution-error" };
             HostError::new(code, format!("{program}: {error}"))
         })?;
+        if !self.job.as_ref().is_some_and(|job| job.assign_child(&child)) {
+            crate::process::contain_child(&child);
+        }
         if let Some(pid) = child.id() {
             self.processes.lock().unwrap().push(pid);
         }
@@ -89,7 +100,7 @@ impl Owner {
     /// Drain a stream as text into one output channel.
     pub async fn pump(&self, stream: Option<impl tokio::io::AsyncRead + Unpin>, channel: &'static str) {
         let Some(mut stream) = stream else { return };
-        let mut decoder = Utf8Stream::default();
+        let mut decoder = Utf8Stream::for_console();
         let mut buffer = [0u8; 16384];
         loop {
             match stream.read(&mut buffer).await {
@@ -103,7 +114,21 @@ impl Owner {
     /// Wait for a process and its output; the tree is stopped once the process itself ended.
     pub async fn wait_process(&self, child: &mut Child, stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -> Outcome {
         let pid = child.id();
-        let (_, _, status) = tokio::join!(self.pump(stdout, "stdout"), self.pump(stderr, "stderr"), child.wait());
+        let out_pump = self.pump(stdout, "stdout");
+        let err_pump = self.pump(stderr, "stderr");
+        tokio::pin!(out_pump);
+        tokio::pin!(err_pump);
+        let status = tokio::select! {
+            (_, _, status) = async { tokio::join!(&mut out_pump, &mut err_pump, child.wait()) } => status,
+            () = self.stopped.cancelled() => {
+                if let Some(job) = &self.job {
+                    job.terminate();
+                }
+                crate::process::kill_tree(child, std::time::Duration::from_millis(500)).await;
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async { tokio::join!(out_pump, err_pump) }).await;
+                return Outcome::default();
+            }
+        };
         if let Some(pid) = pid {
             self.processes.lock().unwrap().retain(|known| *known != pid);
         }
@@ -135,6 +160,9 @@ impl Owner {
             return;
         }
         self.stopped.cancel();
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
         let pids: Vec<u32> = std::mem::take(&mut *self.processes.lock().unwrap());
         let terminals: Vec<Arc<Pty>> = std::mem::take(&mut *self.terminals.lock().unwrap());
         let processes = futures::future::join_all(pids.into_iter().map(kill_pid_tree));

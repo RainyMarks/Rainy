@@ -3,7 +3,7 @@
 //! same pane is the middle of the window (`wide`): the transcript in a centred column, the composer below it with the
 //! permission, model and context under it, and a new chat's composer in the middle under a greeting.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::StyledExt as _;
 use rainy_protocol::reasoning::{Level, Reasoning};
-use rainy_protocol::{ImageContent, ModelSelection, ModelSetup, PendingApproval, QueuedMessage, RpcError};
+use rainy_protocol::{ContextBreakdown, ImageContent, ModelSelection, ModelSetup, PendingApproval, QueuedMessage, RpcError};
 use serde_json::{Value, json};
 
 use crate::i18n::{self, Locale};
@@ -76,6 +76,8 @@ pub struct ChatPane {
     attachments: Vec<Attachment>,
     /// The composer's text and images of the chats not shown, by chat; `None` is the next new chat.
     drafts: HashMap<Option<String>, Draft>,
+    /// LRU recency order for bounded draft eviction (releasing image attachment bytes of stale drafts).
+    draft_order: VecDeque<Option<String>>,
     /// The chat the composer's text and images belong to: always the chat shown, so a draft is never sent to
     /// another one.
     draft_key: Option<String>,
@@ -121,6 +123,10 @@ pub struct ChatPane {
     error_open: bool,
     background_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
+    /// Cached `session.contextBreakdown` result keyed by `(session_id, chat_revision)`.
+    breakdown: Option<(String, u64, Result<ContextBreakdown, SharedString>)>,
+    /// In-flight `session.contextBreakdown` request key to deduplicate triggers.
+    breakdown_loading: Option<(String, u64)>,
     /// Drawn as the middle of Agent mode rather than as the IDE's side pane.
     wide: bool,
     _subscriptions: Vec<Subscription>,
@@ -192,7 +198,12 @@ impl ChatPane {
                         cx.notify();
                     }
                 }
-                StoreEvent::SummariesChanged | StoreEvent::Host { .. } | StoreEvent::HostExited(_) | StoreEvent::ResourcesDamaged(_) | StoreEvent::Update(_) => {}
+                StoreEvent::SummariesChanged
+                | StoreEvent::Host { .. }
+                | StoreEvent::HostExited(_)
+                | StoreEvent::ResourcesDamaged(_)
+                | StoreEvent::Update(_)
+                | StoreEvent::CredentialAlert(_) => {}
             }),
             cx.observe(&store, |_, _, cx| cx.notify()),
         ];
@@ -200,6 +211,7 @@ impl ChatPane {
         let mut pane = Self {
             attachments: Vec::new(),
             drafts: HashMap::new(),
+            draft_order: VecDeque::new(),
             draft_key: None,
             creating: false,
             default_permission: "ask".into(),
@@ -231,6 +243,8 @@ impl ChatPane {
             error_open: false,
             background_scroll: ScrollHandle::new(),
             queue_scroll: ScrollHandle::new(),
+            breakdown: None,
+            breakdown_loading: None,
             wide: false,
             _subscriptions: subscriptions,
             chat_subscription: None,
@@ -254,6 +268,25 @@ impl ChatPane {
         self.composer.update(cx, |state, cx| state.focus(window, cx));
     }
 
+    /// Inject a quoted block (e.g. terminal output or diagnostic error) into the active chat composer without sending yet.
+    pub fn inject_into_composer(&mut self, snippet: String, window: &mut Window, cx: &mut Context<Self>) {
+        let trimmed = snippet.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let current = self.composer.read(cx).value().to_string();
+        let next = if current.trim().is_empty() {
+            format!("{trimmed}\n\n")
+        } else {
+            format!("{}\n\n{trimmed}\n\n", current.trim_end())
+        };
+        self.composer.update(cx, |state, cx| {
+            state.set_value(next, window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
     /// The files the chat changed, which Agent mode shows in its changes panel.
     pub fn changes(&self) -> Entity<crate::ui::changes::ChangesBar> {
         self.changes.clone()
@@ -275,10 +308,15 @@ impl ChatPane {
         self.row_count = 0;
         self.anchor = None;
         self.error_open = false;
+        self.breakdown = None;
+        self.breakdown_loading = None;
         self.list.reset(0);
         self.list.set_follow_mode(FollowMode::Tail);
         self.rebuild(cx);
     }
+
+    /// Maximum number of background chat drafts (and their image attachments) kept in memory.
+    const MAX_DRAFTS: usize = 24;
 
     /// Keep the composer's text and images with the chat they were typed for, and bring back those of `next`.
     fn swap_draft(&mut self, next: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -288,11 +326,23 @@ impl ChatPane {
         let text = self.composer.read(cx).value().to_string();
         let attachments = std::mem::take(&mut self.attachments);
         let previous = std::mem::replace(&mut self.draft_key, next.clone());
+        self.draft_order.retain(|k| k != &previous);
         if text.trim().is_empty() && attachments.is_empty() {
             self.drafts.remove(&previous);
         } else {
-            self.drafts.insert(previous, Draft { text, attachments });
+            self.drafts.insert(previous.clone(), Draft { text, attachments });
+            self.draft_order.push_back(previous);
+            while self.drafts.len() > Self::MAX_DRAFTS {
+                if let Some(pos) = self.draft_order.iter().position(|k| k.is_some()) {
+                    if let Some(oldest) = self.draft_order.remove(pos) {
+                        self.drafts.remove(&oldest);
+                    }
+                } else {
+                    break;
+                }
+            }
         }
+        self.draft_order.retain(|k| k != &next);
         let draft = self.drafts.remove(&next).unwrap_or_default();
         self.attachments = draft.attachments;
         self.composer.update(cx, |state, cx| state.set_value(draft.text, window, cx));
@@ -841,6 +891,11 @@ impl ChatPane {
             .mx_3()
             .mb_1()
             .child(
+                canvas(|bounds, _, cx| crate::web::mark_overlay_bounds(bounds, cx), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .child(
                 v_flex()
                     .id("suggestions")
                     .p_1()
@@ -992,12 +1047,17 @@ impl ChatPane {
     fn render_approval(&self, approval: &PendingApproval, focused: bool, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let path = approval.path.clone().unwrap_or_default();
+        let workdir = approval.workdir.clone().filter(|w| !w.trim().is_empty());
+        let outside = matches!(approval.reason.as_str(), "outside-write" | "outside-read" | "outside-workdir");
         let text = match approval.reason.as_str() {
             "outside-write" => i18n::format(locale, "chat.approvalOutsideWrite", &[("path", &path)]),
+            "outside-read" => i18n::text(locale, "native.approvalOutsideRead").to_owned(),
+            "outside-workdir" => i18n::text(locale, "native.approvalOutsideWorkdir").to_owned(),
             "mcp" => i18n::text(locale, "chat.approvalMcp").to_owned(),
             "web" => i18n::format(locale, "chat.approvalWeb", &[("url", &path)]),
             _ => i18n::text(locale, "chat.approvalCommand").to_owned(),
         };
+        let detail_path = (!path.trim().is_empty() && matches!(approval.reason.as_str(), "outside-read" | "outside-workdir" | "outside-write")).then(|| path.clone());
         let decide = |decision: &'static str| {
             let tool_call_id = approval.tool_call_id.clone();
             cx.listener(move |this, _, window, cx| this.answer(tool_call_id.clone(), decision, window, cx))
@@ -1014,9 +1074,41 @@ impl ChatPane {
             .gap_2()
             .rounded(theme.radius_lg)
             .border_1()
-            .border_color(if focused { theme.ring } else { theme.warning })
+            .border_color(if focused { theme.ring } else if outside { theme.danger } else { theme.warning })
             .bg(theme.secondary)
-            .child(div().text_sm().child(text))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .when(outside, |this| this.child(Icon::new(IconName::TriangleAlert).small().text_color(theme.warning)))
+                    .child(div().flex_1().min_w_0().text_sm().font_medium().child(text)),
+            )
+            .when_some(detail_path, |this, target| {
+                this.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(theme.radius)
+                        .bg(theme.muted.opacity(0.6))
+                        .font_family(theme.mono_font_family.clone())
+                        .text_xs()
+                        .text_color(theme.foreground)
+                        .child(i18n::format(locale, "native.approvalTargetPath", &[("path", &target)])),
+                )
+            })
+            .when_some(workdir, |this, dir| {
+                this.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(theme.radius)
+                        .bg(theme.muted.opacity(0.6))
+                        .font_family(theme.mono_font_family.clone())
+                        .text_xs()
+                        .text_color(theme.foreground)
+                        .child(i18n::format(locale, "native.approvalWorkdir", &[("path", &dir)])),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -1350,21 +1442,52 @@ impl ChatPane {
     }
 
     /// Under Agent mode's composer, on the right as in Claude: the model and its reasoning, the permission mode and how
+    /// Fetch the context breakdown for `(session_id, revision)` if not already cached or in flight.
+    fn request_breakdown(&mut self, session_id: String, revision: u64, cx: &mut Context<Self>) {
+        if self.breakdown.as_ref().is_some_and(|(id, rev, _)| *id == session_id && *rev == revision)
+            || self.breakdown_loading.as_ref().is_some_and(|(id, rev)| *id == session_id && *rev == revision)
+        {
+            return;
+        }
+        self.breakdown_loading = Some((session_id.clone(), revision));
+        let call = self.store.read(cx).call("session.contextBreakdown", json!({ "sessionId": session_id }));
+        let locale = self.store.read(cx).locale();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = call.await.and_then(|value| {
+                serde_json::from_value::<ContextBreakdown>(value).map_err(|error| RpcError { code: "invalid".into(), message: error.to_string(), data: None })
+            });
+            let _ = this.update(cx, |this, cx| {
+                if this.breakdown_loading.as_ref().is_some_and(|(id, rev)| *id == session_id && *rev == revision) {
+                    this.breakdown_loading = None;
+                }
+                let mapped = result.map_err(|error| SharedString::from(i18n::error_text(locale, &error)));
+                this.breakdown = Some((session_id, revision, mapped));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// full the context is. The model gives way in a narrow window; the mode and the ring never leave it.
     fn render_composer_footer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let context = self.chat.as_ref().and_then(|chat| chat.read(cx).view.as_ref().and_then(|view| view.snapshot.context.clone()));
+        let chat_meta = self.chat.as_ref().and_then(|chat| {
+            let model = chat.read(cx);
+            let view = model.view.as_ref()?;
+            Some((model.id.clone(), view.revision, view.snapshot.context.clone()?))
+        });
         let model_picker = self.model_picker(locale, cx);
         let permission_picker = self.permission_picker(locale, cx);
         // On the left, as in the Codex app: where the chat runs.
         let where_picker = self.where_picker(locale, cx);
-        let ring = context.map(|context| {
+        let pane_entity = cx.entity();
+        let ring = chat_meta.map(|(session_id, revision, context)| {
             let fraction = if context.input_limit > 0.0 { (context.tokens / context.input_limit) as f32 } else { 0. };
             let tip = trf(cx, "agent.contextUsage", &[
                 ("percent", &(fraction * 100.).round()),
                 ("used", &crate::ui::format_tokens(context.tokens)),
                 ("limit", &crate::ui::format_tokens(context.input_limit)),
             ]);
-            let theme = cx.theme();
+            let theme = cx.theme().clone();
             let color = if fraction >= 0.9 {
                 theme.danger
             } else if fraction >= 0.75 {
@@ -1372,12 +1495,29 @@ impl ChatPane {
             } else {
                 theme.muted_foreground
             };
-            div()
-                .id("context-usage")
-                .flex_shrink_0()
-                .p_1()
-                .child(crate::ui::agent::usage_ring(fraction, color, theme.muted_foreground.opacity(0.3)))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+            let trigger = Button::new("context-usage")
+                .ghost()
+                .xsmall()
+                .px_1()
+                .tooltip(tip)
+                .child(crate::ui::agent::usage_ring(fraction, color, theme.muted_foreground.opacity(0.3)));
+            let pane_for_content = pane_entity.clone();
+            Popover::new("context-breakdown-card")
+                .anchor(gpui_kit::Anchor::BottomRight)
+                .w(px(284.))
+                .p_3()
+                .rounded(theme.radius_lg)
+                .trigger(trigger)
+                .content(move |_, _, cx| {
+                    crate::web::mark_popover_open(cx);
+                    let pane_req = pane_for_content.clone();
+                    let sid = session_id.clone();
+                    cx.defer(move |cx| {
+                        pane_req.update(cx, |pane, cx| pane.request_breakdown(sid, revision, cx));
+                    });
+                    let snapshot = pane_for_content.read(cx).breakdown.clone();
+                    render_context_breakdown_card(&session_id, revision, snapshot.as_ref(), locale, cx)
+                })
         });
         h_flex()
             .flex_shrink_0()
@@ -1392,6 +1532,115 @@ impl ChatPane {
             .child(div().flex_shrink_0().child(permission_picker))
             .children(ring)
     }
+}
+
+/// Lightweight stacked bar + legend card rendered when clicking `usage_ring`.
+fn render_context_breakdown_card(
+    session_id: &str,
+    revision: u64,
+    cached: Option<&(String, u64, Result<ContextBreakdown, SharedString>)>,
+    locale: Locale,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let fresh = cached.filter(|(id, rev, _)| id == session_id && *rev == revision);
+    let Some((_, _, result)) = fresh.or_else(|| cached.filter(|(id, _, _)| id == session_id)) else {
+        return h_flex()
+            .gap_2()
+            .items_center()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(gpui_kit::component::spinner::Spinner::new().xsmall())
+            .child(i18n::text(locale, "native.contextBreakdownLoading"))
+            .into_any_element();
+    };
+    let breakdown = match result {
+        Ok(b) => b,
+        Err(err) => {
+            return v_flex()
+                .gap_1()
+                .child(div().text_xs().font_semibold().child(i18n::text(locale, "native.contextBreakdownTitle")))
+                .child(div().text_xs().text_color(theme.muted_foreground).child(i18n::text(locale, "native.contextBreakdownUnavailable")))
+                .child(div().text_xs().text_color(theme.danger).child(err.clone()))
+                .into_any_element();
+        }
+    };
+    let s = &breakdown.segments;
+    let items: [(&'static str, u64, Hsla); 6] = [
+        ("native.contextSegSystem", s.system, rgb(0x5b8def).into()),
+        ("native.contextSegInstructions", s.instructions, rgb(0x8b6ce8).into()),
+        ("native.contextSegMcpTools", s.mcp_tools, rgb(0xd97745).into()),
+        ("native.contextSegCoreTools", s.core_tools, rgb(0x3ba68c).into()),
+        ("native.contextSegHistory", s.history, rgb(0x64748b).into()),
+        ("native.contextSegRecall", s.recall, rgb(0xc49a3a).into()),
+    ];
+    let denom = breakdown.input_limit.max(breakdown.total).max(1) as f64;
+    let bar_width: f32 = 256.0;
+    let bar_segments: Vec<AnyElement> = items
+        .iter()
+        .filter(|(_, tokens, _)| *tokens > 0)
+        .map(|(_, tokens, color)| {
+            let w = ((*tokens as f64 / denom) as f32 * bar_width).max(3.0);
+            div().h_full().w(px(w)).bg(*color).into_any_element()
+        })
+        .collect();
+    let header_usage = format!(
+        "{} / {}",
+        crate::ui::format_tokens(breakdown.calibrated_total as f64),
+        crate::ui::format_tokens(breakdown.input_limit as f64)
+    );
+    let show_factor = (breakdown.calibration_factor - 1.0).abs() >= 0.02;
+    let factor_str = format!("{:.2}", breakdown.calibration_factor);
+    let compact_str = crate::ui::format_tokens(breakdown.compact_at as f64);
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(div().text_xs().font_semibold().child(i18n::text(locale, "native.contextBreakdownTitle")))
+                .child(div().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(header_usage)),
+        )
+        .child(
+            h_flex()
+                .w(px(bar_width))
+                .h(px(8.))
+                .rounded(px(4.))
+                .overflow_hidden()
+                .bg(theme.muted)
+                .children(bar_segments),
+        )
+        .child(v_flex().gap_1().children(items.into_iter().map(|(label_key, tokens, color)| {
+            let pct = ((tokens as f64 / denom) * 100.0).round() as u64;
+            h_flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .child(div().size(px(7.)).rounded_full().flex_shrink_0().bg(color))
+                .child(div().flex_1().min_w_0().truncate().child(i18n::text(locale, label_key)))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.muted_foreground)
+                        .child(format!("{} ({pct}%)", crate::ui::format_tokens(tokens as f64))),
+                )
+        })))
+        .child(
+            h_flex()
+                .pt_1()
+                .border_t_1()
+                .border_color(theme.border)
+                .justify_between()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(i18n::format(locale, "native.contextCompactThreshold", &[("tokens", &compact_str)]))
+                .when(show_factor, |this| {
+                    this.child(i18n::format(locale, "native.contextCalibrated", &[("factor", &factor_str)]))
+                }),
+        )
+        .into_any_element()
 }
 
 /// The text of a message that did not go out, in front of what was typed since.
@@ -1559,6 +1808,7 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
         .rounded(theme.radius_lg)
         .trigger(trigger)
         .content(move |_, window, cx| {
+            crate::web::mark_popover_open(cx);
             let popover = cx.entity();
             model_card(&store, chat.as_ref(), popover, window, cx)
         })

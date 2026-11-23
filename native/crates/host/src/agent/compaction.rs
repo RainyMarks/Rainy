@@ -65,7 +65,8 @@ fn item_tokens(item: &Item) -> u64 {
 }
 
 /// The span to compact: older than the most recent `keep_recent_tokens`, never the latest user request, never
-/// separating a tool call from its result. `manual` takes the largest eligible span.
+/// separating a tool call from its result. `manual` takes the largest eligible span. When a single oversized message
+/// fills the window on its own, allow compacting that single balanced item so compaction cannot deadlock.
 pub fn select_span(items: &[Item], budget: &Budget, latest_user: Option<&str>, manual: bool) -> Option<(usize, usize)> {
     let user = latest_user.and_then(|id| items.iter().position(|item| item.entry_id == id));
     let mut keep_from = items.len();
@@ -89,17 +90,36 @@ pub fn select_span(items: &[Item], budget: &Budget, latest_user: Option<&str>, m
             candidates
         }
     };
-    for (start, initial_end) in candidates {
-        let mut end = initial_end;
-        while end > start && !tool_pairs_balanced(items, start as usize, end as usize) {
+    for (start, initial_end) in &candidates {
+        let mut end = *initial_end;
+        while end > *start && !tool_pairs_balanced(items, *start as usize, end as usize) {
             end -= 1;
         }
-        if end <= start {
+        if end <= *start {
             continue;
         }
-        let tokens: u64 = items[start as usize..=end as usize].iter().map(item_tokens).sum();
+        let tokens: u64 = items[*start as usize..=end as usize].iter().map(item_tokens).sum();
         if tokens > budget.summary_tokens + 512 {
-            return Some((start as usize, end as usize));
+            return Some((*start as usize, end as usize));
+        }
+    }
+    // Fallback for a single oversized balanced item (e.g. giant context or user message before latest_user) to avoid
+    // context-overflow deadlocks when no multi-message span exists.
+    let single_threshold = (budget.compact_at / 2).max(budget.summary_tokens + 512);
+    for (idx, item) in items.iter().enumerate() {
+        if user == Some(idx) && items.len() == 1 {
+            // Even when there is only one item, if it alone exceeds input_limit on overflow/auto we still allow
+            // compacting it so the chat can recover instead of looping forever.
+            if !manual && item_tokens(item) >= budget.input_limit && tool_pairs_balanced(items, idx, idx) {
+                return Some((idx, idx));
+            }
+            continue;
+        }
+        if user == Some(idx) {
+            continue;
+        }
+        if item_tokens(item) > single_threshold && tool_pairs_balanced(items, idx, idx) {
+            return Some((idx, idx));
         }
     }
     None
@@ -109,7 +129,21 @@ pub fn select_span(items: &[Item], budget: &Budget, latest_user: Option<&str>, m
 /// The latest step's outputs, which the model is about to read, and outputs no larger than their placeholder stay.
 /// When everything clearable frees less than `need`, all of it is returned.
 pub fn select_clearable(items: &[Item], cleared: &HashSet<String>, need: u64) -> (Vec<String>, u64) {
-    let keep_from = items.iter().rposition(|item| matches!(item.message, Message::Assistant(_))).unwrap_or(items.len());
+    select_clearable_inner(items, cleared, need, false)
+}
+
+/// Same as [`select_clearable`], but when `include_latest` is true (emergency overflow fallback) also permits clearing
+/// oversized outputs from the latest step so a single massive tool result cannot deadlock the session.
+pub fn select_clearable_overflow(items: &[Item], cleared: &HashSet<String>, need: u64) -> (Vec<String>, u64) {
+    select_clearable_inner(items, cleared, need, true)
+}
+
+fn select_clearable_inner(items: &[Item], cleared: &HashSet<String>, need: u64, include_latest: bool) -> (Vec<String>, u64) {
+    let keep_from = if include_latest {
+        items.len()
+    } else {
+        items.iter().rposition(|item| matches!(item.message, Message::Assistant(_))).unwrap_or(items.len())
+    };
     let (mut ids, mut freed) = (Vec::new(), 0);
     for item in &items[..keep_from] {
         if freed >= need {
@@ -127,6 +161,60 @@ pub fn select_clearable(items: &[Item], cleared: &HashSet<String>, need: u64) ->
         }
     }
     (ids, freed)
+}
+
+/// Truncate an oversized message's text fields (keeping head + tail) so a single giant message can still be summarized
+/// within `max_tokens` instead of deadlocking compaction.
+fn truncate_message_to_fit(message: &Message, max_tokens: u64) -> Message {
+    let budget_chars = (max_tokens.saturating_mul(2)).max(256) as usize;
+    let clip = |text: &str| -> String {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() <= budget_chars {
+            return text.to_owned();
+        }
+        let head = budget_chars / 2;
+        let tail = budget_chars - head;
+        let first: String = chars[..head].iter().collect();
+        let last: String = chars[chars.len() - tail..].iter().collect();
+        format!("{first}\n\n[... {} chars omitted for compaction summary ...]\n\n{last}", chars.len() - budget_chars)
+    };
+    match message {
+        Message::User { content, timestamp } => {
+            let content = match content {
+                llm::UserContent::Text(text) => llm::UserContent::Text(clip(text)),
+                llm::UserContent::Parts(parts) => llm::UserContent::Parts(
+                    parts
+                        .iter()
+                        .map(|part| match part {
+                            llm::Part::Text(text) => llm::Part::Text(clip(text)),
+                            other => other.clone(),
+                        })
+                        .collect(),
+                ),
+            };
+            Message::User { content, timestamp: *timestamp }
+        }
+        Message::ToolResult(result) => {
+            let mut cloned = result.clone();
+            for part in &mut cloned.content {
+                if let rainy_protocol::chat::ResultContent::Text { text } = part {
+                    *text = clip(text);
+                }
+            }
+            Message::ToolResult(cloned)
+        }
+        Message::Assistant(reply) => {
+            let mut cloned = reply.clone();
+            for block in &mut cloned.content {
+                match block {
+                    AssistantBlock::Text { text, .. } => *text = clip(text),
+                    AssistantBlock::Thinking { thinking, .. } => *thinking = clip(thinking),
+                    AssistantBlock::ToolCall { .. } => {}
+                }
+            }
+            Message::Assistant(cloned)
+        }
+    }
 }
 
 /// What one compaction works from.
@@ -209,6 +297,8 @@ pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<Transc
             let index = history::span_index(request.entries, first, last, budget.summary_tokens);
             return Ok(Some(entry(items, index, "recall", UsageSummary::default())));
         }
+        // In Recall mode, never silently fall through to a paid LLM summarization request.
+        return Ok(None);
     }
     let text_of = |reply: &rainy_protocol::chat::AssistantMessage| llm::reply_text(reply).trim().to_owned();
     let mut spent: Option<UsageSummary> = None;
@@ -242,11 +332,22 @@ pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<Transc
     while start < end && !tool_pairs_balanced(request.items, start, end) {
         start += 1;
     }
-    if start >= end {
+    let items = &request.items[start..=end];
+    if items.is_empty() {
         return Ok(None);
     }
-    let items = &request.items[start..=end];
-    let mut conversation: Vec<Message> = items.iter().map(|item| item.message.clone()).collect();
+    let available = summary_budget.input_limit.saturating_sub(fixed).max(512);
+    let per_item = (available / items.len() as u64).max(256);
+    let mut conversation: Vec<Message> = items
+        .iter()
+        .map(|item| {
+            if item_tokens(item) > per_item {
+                truncate_message_to_fit(&item.message, per_item)
+            } else {
+                item.message.clone()
+            }
+        })
+        .collect();
     conversation.push(Message::user(directive(budget.summary_tokens, false)));
     let llm_request = Request {
         reasoning: request.resolved.thinking,
@@ -284,6 +385,12 @@ mod tests {
         assert!(span.1 < 5);
         assert_eq!(span.0, 0);
         assert!(select_span(&items[..1], &budget, Some("e0"), true).is_none());
+
+        // A single oversized message still yields a fallback span so compaction cannot deadlock.
+        let giant = Item { entry_id: "g0".into(), number: 1, message: Message::user("x".repeat(80_000)) };
+        assert_eq!(select_span(&[giant.clone()], &budget, Some("g0"), false), Some((0, 0)));
+        let trimmed = truncate_message_to_fit(&giant.message, 500);
+        assert!(estimate_messages("", &[], &[trimmed]) < 2000);
     }
 
     #[test]

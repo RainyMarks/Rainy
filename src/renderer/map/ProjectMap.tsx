@@ -47,6 +47,13 @@ export interface ProjectMapProps {
 /** How the agent touches a box: the strongest mark of its files, and how many of them it changed. */
 interface NodeActivity { mark?: 'reading' | 'writing' | undefined; changed: number }
 
+/** Adaptive badge dimensions so 3+ digit change counts never overflow the pill or the node box. */
+export function changeBadgeLayout(changed: number): { readonly label: string; readonly width: number; readonly x: number; readonly textX: number } {
+  const label = changed > 999 ? '✎999+' : `✎${changed}`
+  const width = Math.max(26, 12 + label.length * 6)
+  return { label, width, x: NODE_WIDTH - width - 8, textX: width / 2 }
+}
+
 const KIND_LABEL: Record<MapFileKind, MapMessageKey> = {
   code: 'kindCode', test: 'kindTest', doc: 'kindDoc', config: 'kindConfig', asset: 'kindAsset', other: 'kindOther',
 }
@@ -252,12 +259,16 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
                   return segment
                 })}
                 {touch?.mark !== undefined && <circle className={css.pulse} cx={NODE_WIDTH - 14} cy={14} r={5} />}
-                {touch !== undefined && touch.changed > 0 && (
-                  <g transform={`translate(${NODE_WIDTH - 34} ${NODE_HEIGHT - 22})`} className={css.badge}>
-                    <rect width={26} height={15} rx={7.5} />
-                    <text x={13} y={11} textAnchor="middle">{`✎${touch.changed}`}</text>
-                  </g>
-                )}
+                {touch !== undefined && touch.changed > 0 && (() => {
+                  const badge = changeBadgeLayout(touch.changed)
+                  return (
+                    <g transform={`translate(${badge.x} ${NODE_HEIGHT - 22})`} className={css.badge} data-change-badge>
+                      <title>{String(touch.changed)}</title>
+                      <rect width={badge.width} height={15} rx={7.5} />
+                      <text x={badge.textX} y={11} textAnchor="middle">{badge.label}</text>
+                    </g>
+                  )
+                })()}
               </g>
             )
           })}

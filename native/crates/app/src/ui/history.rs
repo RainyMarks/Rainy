@@ -646,18 +646,19 @@ fn ago(updated_ms: f64, zh: bool) -> String {
 }
 
 fn ago_from(now_ms: f64, updated_ms: f64, zh: bool) -> String {
+    let locale = if zh { crate::i18n::Locale::Zh } else { crate::i18n::Locale::En };
     let minutes = ((now_ms - updated_ms) / 60_000.0).max(0.0) as u64;
     let (hours, days) = (minutes / 60, minutes / (60 * 24));
-    let (number, zh_unit, en_unit) = match minutes {
-        0 => return if zh { "刚刚".into() } else { "now".into() },
-        1..60 => (minutes, "分钟", "m"),
-        _ if hours < 24 => (hours, "小时", "h"),
-        _ if days < 7 => (days, "天", "d"),
-        _ if days < 30 => (days / 7, "周", "w"),
-        _ if days < 365 => (days / 30, "个月", "mo"),
-        _ => (days / 365, "年", "y"),
+    let (number, key) = match minutes {
+        0 => return crate::i18n::text(locale, "native.timeJustNow").to_owned(),
+        1..60 => (minutes, "native.timeMinutesAgo"),
+        _ if hours < 24 => (hours, "native.timeHoursAgo"),
+        _ if days < 7 => (days, "native.timeDaysAgo"),
+        _ if days < 30 => (days / 7, "native.timeWeeksAgo"),
+        _ if days < 365 => (days / 30, "native.timeMonthsAgo"),
+        _ => (days / 365, "native.timeYearsAgo"),
     };
-    if zh { format!("{number}{zh_unit}") } else { format!("{number}{en_unit}") }
+    crate::i18n::format(locale, key, &[("count", &number)])
 }
 
 /// The folding key of a swarm coordinator's workers in the sidebar.

@@ -2,10 +2,21 @@
 //! outputs applied, entries the model never sees left out.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use rainy_protocol::chat::{AssistantBlock, ResultContent, TranscriptEntry};
+use regex::Regex;
 
 use super::llm::{Message, Part, ToolResult, UserContent};
+
+/// `@[title](rainy-session:<id>)` syntax stored verbatim in user entries for the UI, rendered as `@title` for the model.
+static SESSION_REFERENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@\[([^\]\n]{1,200})\]\(rainy-session:([A-Za-z0-9-]{1,64})\)").unwrap());
+
+/// Replace `@[title](rainy-session:<id>)` links with `@title` so live turns and transcript replays produce identical
+/// model messages (preserving Anthropic thread hashes and prompt caches).
+pub fn model_user_text(text: &str) -> String {
+    SESSION_REFERENCE.replace_all(text, "@$1").into_owned()
+}
 
 /// The user message that stands in for a compacted span: a summary the model wrote, or (`recall`) the index the Host
 /// built of entries `first`–`last`.
@@ -50,13 +61,14 @@ pub struct Item {
 pub fn entry_message(entry: &TranscriptEntry) -> Option<Message> {
     match entry {
         TranscriptEntry::User { ts, text, images, .. } => {
+            let clean = model_user_text(text);
             let content = match images.as_deref() {
                 Some(images) if !images.is_empty() => {
-                    let mut parts = vec![Part::Text(text.clone())];
+                    let mut parts = vec![Part::Text(clean)];
                     parts.extend(images.iter().map(|image| Part::Image { data: image.data.clone(), mime_type: image.mime_type.clone() }));
                     UserContent::Parts(parts)
                 }
-                _ => UserContent::Text(text.clone()),
+                _ => UserContent::Text(clean),
             };
             Some(Message::User { content, timestamp: *ts })
         }
@@ -224,5 +236,13 @@ mod tests {
         assert_eq!(items.iter().map(|item| item.entry_id.as_str()).collect::<Vec<_>>(), ["u1", "k2"]);
         assert!(matches!(&items[1].message, Message::User { content: UserContent::Text(text), .. } if text.starts_with("Entries #2-#5 of this chat") && text.contains("<span-index>\nINDEX2\n")));
         assert_eq!(compaction_range(&entries, "k1", "t2"), Some((2, 5)));
+    }
+
+    #[test]
+    fn replays_session_references_identically_to_live_text() {
+        let raw = "compare @[Old Chat](rainy-session:abc-123) with now";
+        let user = entry(json!({ "kind": "user", "id": "u1", "ts": 1, "text": raw }));
+        let items = build_context(&[user]);
+        assert!(matches!(&items[0].message, Message::User { content: UserContent::Text(text), .. } if text == &model_user_text(raw) && text == "compare @Old Chat with now"));
     }
 }

@@ -269,6 +269,22 @@ fn register(host: &Arc<Host>) {
     }
     {
         let host = host.clone();
+        rpc.register("ide.registerOfficePdf", move |params| {
+            let host = host.clone();
+            async move {
+                let ide = host.ide.get().cloned().ok_or_else(|| HostError::other(locale::l("编辑器服务尚未就绪。", "The editor services are not ready.")))?;
+                host.activity.assert_can_start()?;
+                let path = params["path"].as_str().ok_or_else(|| HostError::invalid("path is required"))?.to_owned();
+                let delete_after_read = params["deleteAfterRead"].as_bool().unwrap_or(true);
+                let store = ide.office_pdf.clone();
+                tokio::task::spawn_blocking(move || store.register(&path, delete_after_read))
+                    .await
+                    .map_err(|_| HostError::other("Office PDF registration stopped."))?
+            }
+        });
+    }
+    {
+        let host = host.clone();
         rpc.register("runtime", move |params| {
             let host = host.clone();
             async move { host.runtime.handle(params).await }

@@ -118,6 +118,9 @@ impl Agent {
             preview,
             model_activity,
             swarm,
+            languages: host.ide.get().map(|ide| ide.languages.clone()),
+            ide_tools: host.ide.get().map(|ide| ide.tools.clone()),
+            maps: host.maps.clone(),
         });
         let rpc = host.rpc.clone();
         let agent = Arc::new(Agent {
@@ -216,12 +219,31 @@ impl Agent {
     }
 
     fn extensions_status(&self, cwd: Option<&str>) -> Value {
-        json!({ "skills": skills::discover(cwd.map(Path::new)), "servers": self.services.settings.get().mcp_servers, "status": self.services.mcp.status() })
+        let trusted = cwd.is_some_and(|dir| self.services.settings.is_workspace_trusted(None, Some(Path::new(dir))));
+        let project_skills_skipped = !trusted && cwd.is_some_and(|dir| skills::has_project_skills(Path::new(dir)));
+        json!({
+            "skills": skills::discover_for(cwd.map(Path::new), trusted),
+            "servers": self.services.settings.get().mcp_servers,
+            "status": self.services.mcp.status(),
+            "trusted": trusted,
+            "projectSkillsSkipped": project_skills_skipped,
+        })
     }
 
     fn security_status(&self, workspace_id: Option<&str>) -> Value {
         let rules = workspace_id.map(|workspace| self.services.settings.permission_rules(workspace)).unwrap_or_default();
-        json!({ "defaultMode": self.services.settings.default_permission(), "rules": rules })
+        let workspace_path = self.cwd_for(workspace_id);
+        let trusted = self.services.settings.is_workspace_trusted(workspace_id, workspace_path.as_deref().map(Path::new));
+        let mut status = json!({
+            "defaultMode": self.services.settings.default_permission(),
+            "rules": rules,
+            "trusted": trusted,
+            "trustedWorkspaces": self.services.settings.trusted_workspaces(),
+        });
+        if let Some(path) = workspace_path {
+            status["workspacePath"] = json!(path);
+        }
+        status
     }
 
     fn save_servers(&self, change: impl FnOnce(&mut Vec<McpServerConfig>) -> HostResult<()>) -> HostResult<Value> {
@@ -379,16 +401,29 @@ impl Agent {
             Ok(json!({ "session": summary, "files": files }))
         });
         self.on("sessions.delete", |agent, params: SessionRef| async move {
+            let stored = agent.services.store.get(&params.session_id);
+            let is_coordinator = stored.as_ref().and_then(|chat| chat.swarm.as_ref()).is_some_and(|link| link.coordinator == params.session_id);
+            if is_coordinator {
+                let workers = agent.services.swarm.worker_ids(&params.session_id);
+                agent.services.swarm.cleanup_coordinator(&params.session_id);
+                for worker_id in workers {
+                    let worker = agent.sessions.lock().unwrap().remove(&worker_id);
+                    if let Some(worker) = worker {
+                        worker.close().await;
+                    }
+                }
+            }
             let live = agent.sessions.lock().unwrap().remove(&params.session_id);
             if let Some(session) = live {
                 session.close().await;
             }
-            let worktree = agent.services.store.get(&params.session_id).and_then(|chat| chat.worktree);
+            let worktree = stored.and_then(|chat| chat.worktree);
             agent.services.store.delete(&params.session_id).await?;
             if let Some(worktree) = worktree {
                 agent.git.worktree_remove(&worktree).await;
             }
             agent.services.snapshots.remove(&params.session_id);
+            let _ = std::fs::remove_dir_all(agent.services.env.home.join("spill").join(&params.session_id));
             agent.services.rpc.emit("sessions.removed", json!({ "sessionId": params.session_id }));
             Ok(Value::Null)
         });
@@ -457,6 +492,8 @@ impl Agent {
             agent.session(&params.session_id).await?.set_orchestrate(params.executor.as_ref()).await
         });
         self.on("chat.compact", |agent, params: SessionRef| async move { Ok(json!({ "message": agent.session(&params.session_id).await?.compact_now().await? })) });
+        self.on("session.contextBreakdown", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.context_breakdown() });
+        self.on("chat.contextBreakdown", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.context_breakdown() });
         self.on("chat.retry", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.retry().await.map(|()| Value::Null) });
         self.on("chat.stopCommand", |agent, params: ItemParams| async move { agent.session(&params.session_id).await?.stop_command(params.command_id()?).await });
         self.on("chat.dismissCommand", |agent, params: ItemParams| async move { agent.session(&params.session_id).await?.dismiss_command(params.command_id()?) });
@@ -600,12 +637,58 @@ impl Agent {
             agent.services.rpc.emit("security.changed", json!({ "defaultMode": status["defaultMode"] }));
             Ok(status)
         });
+        self.on("security.addRule", |agent, params: RuleParams| async move {
+            agent.services.settings.set_permission_rule_kind(&params.workspace_id, &params.kind, &params.rule, true)?;
+            let status = agent.security_status(Some(&params.workspace_id));
+            agent.services.rpc.emit("security.changed", &status);
+            Ok(status)
+        });
         self.on("security.removeRule", |agent, params: RuleParams| async move {
-            if !matches!(params.kind.as_str(), "command" | "tool") || params.rule.is_empty() || params.rule.len() > 200 {
-                return Err(HostError::invalid("Invalid permission rule."));
-            }
-            agent.services.settings.set_permission_rule(&params.workspace_id, params.kind == "command", &params.rule, false)?;
-            Ok(agent.security_status(Some(&params.workspace_id)))
+            agent.services.settings.set_permission_rule_kind(&params.workspace_id, &params.kind, &params.rule, false)?;
+            let status = agent.security_status(Some(&params.workspace_id));
+            agent.services.rpc.emit("security.changed", &status);
+            Ok(status)
+        });
+        for method in ["settings.trustWorkspace", "security.setTrust"] {
+            self.on(method, |agent, params: TrustParams| async move {
+                let target = params
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| agent.cwd_for(params.workspace_id.as_deref()))
+                    .or_else(|| params.workspace_id.as_deref().map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned))
+                    .ok_or_else(|| HostError::invalid(l("需要提供工作区 ID 或路径。", "A workspaceId or path is required.")))?;
+                agent.services.settings.set_workspace_trusted(&target, params.trusted)?;
+                let status = agent.security_status(params.workspace_id.as_deref());
+                agent.services.rpc.emit("security.changed", &status);
+                let cwd = agent.extensions_cwd.lock().unwrap().clone();
+                agent.services.rpc.emit("extensions.changed", agent.extensions_status(cwd.as_deref()));
+                Ok(status)
+            });
+        }
+        self.on("hooks.list", |agent, params: OptionalWorkspace| async move {
+            let global = agent.services.settings.hooks();
+            let cwd = agent.cwd_for(params.workspace_id.as_deref());
+            let trusted = agent.services.settings.is_workspace_trusted(params.workspace_id.as_deref(), cwd.as_deref().map(Path::new));
+            let has_project = cwd.as_deref().is_some_and(|dir| super::hooks::has_project_hooks(Path::new(dir)));
+            let project = if trusted {
+                cwd.as_deref().map(|dir| super::hooks::load_project_hooks(Path::new(dir))).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            Ok(json!({
+                "global": global,
+                "project": project,
+                "trusted": trusted,
+                "hasProjectHooks": has_project,
+                "projectHooksSkipped": !trusted && has_project,
+            }))
+        });
+        self.on("hooks.save", |agent, params: HooksParams| async move {
+            let saved = agent.services.settings.set_hooks(params.hooks)?;
+            Ok(json!({ "global": saved }))
         });
         self.on("extensions.status", |agent, params: ExtensionsParams| async move {
             *agent.extensions_cwd.lock().unwrap() = params.cwd.clone();
@@ -644,17 +727,26 @@ impl Agent {
     }
 }
 
-/// Delete spill files older than [`RETENTION`]; they hold full tool outputs the model saw cut.
+/// Delete spill files older than [`RETENTION`] and prune emptied session spill folders.
 fn sweep_spill(root: &Path) {
     let Ok(sessions) = std::fs::read_dir(root) else { return };
     let cutoff = std::time::SystemTime::now() - RETENTION;
     for directory in sessions.flatten() {
-        let Ok(files) = std::fs::read_dir(directory.path()) else { continue };
+        let dir_path = directory.path();
+        let Ok(files) = std::fs::read_dir(&dir_path) else { continue };
+        let mut remaining = 0usize;
         for file in files.flatten() {
             let path: PathBuf = file.path();
             if file.metadata().and_then(|info| info.modified()).is_ok_and(|modified| modified < cutoff) {
-                let _ = std::fs::remove_file(path);
+                if std::fs::remove_file(path).is_err() {
+                    remaining += 1;
+                }
+            } else {
+                remaining += 1;
             }
+        }
+        if remaining == 0 {
+            let _ = std::fs::remove_dir(&dir_path);
         }
     }
 }
@@ -873,6 +965,20 @@ struct RuleParams {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrustParams {
+    workspace_id: Option<String>,
+    path: Option<String>,
+    trusted: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HooksParams {
+    hooks: Vec<super::hooks::HookRule>,
+}
+
+#[derive(Deserialize)]
 struct ExtensionsParams {
     cwd: Option<String>,
 }
@@ -967,9 +1073,13 @@ impl super::swarm::Chats for SwarmChats {
     fn deliver(&self, id: String, text: String) -> futures::future::BoxFuture<'static, HostResult<()>> {
         let agent = self.agent();
         Box::pin(async move {
-            agent?.session(&id).await?.send(&text, Vec::new(), true).await?;
+            agent?.session(&id).await?.send_swarm(&text).await?;
             Ok(())
         })
+    }
+
+    fn resolve_model(&self, hint: &str) -> HostResult<ModelSelection> {
+        self.agent()?.services.models.resolve_by_hint(hint)
     }
 
     fn land(&self, id: String) -> futures::future::BoxFuture<'static, HostResult<usize>> {
@@ -1014,7 +1124,7 @@ impl super::swarm::Chats for SwarmChats {
     fn state(&self, id: &str) -> super::swarm::ChatState {
         match self.0.upgrade().and_then(|agent| agent.live(id)) {
             Some(session) => session.swarm_state(),
-            None => super::swarm::ChatState { status: "idle".into(), awaiting_approval: false, user_waiting: false },
+            None => super::swarm::ChatState { status: "idle".into(), awaiting_approval: false, user_waiting: false, has_pending: false },
         }
     }
 

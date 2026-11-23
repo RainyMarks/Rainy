@@ -43,11 +43,6 @@ fn invalid() -> HostError {
     HostError::invalid("The IDE state request contains invalid editor fields.")
 }
 
-fn only_keys(value: &Value, allowed: &[&str]) -> HostResult<()> {
-    let object = value.as_object().ok_or_else(invalid)?;
-    if object.keys().all(|key| allowed.contains(&key.as_str())) { Ok(()) } else { Err(invalid()) }
-}
-
 fn relative(value: &Value, allow_root: bool) -> HostResult<String> {
     let path = value.as_str().ok_or_else(invalid)?;
     relative_path(path, allow_root).map_err(|_| invalid())?;
@@ -62,22 +57,85 @@ fn root_id(value: &Value) -> HostResult<Option<String>> {
     }
 }
 
-/// Check a snapshot the page sends: only the documented fields, paths inside the project, one tab and one buffer per
-/// file, and the active path among the tabs.
+fn valid_dimension(value: &Value) -> bool {
+    value.is_null() || value.as_f64().is_some_and(|n| n.is_finite() && (0.0..=100_000.0).contains(&n))
+}
+
+fn check_layout(layout: &Value) -> HostResult<()> {
+    let object = layout.as_object().ok_or_else(invalid)?;
+    for key in ["sidebarWidth", "agentWidth", "bottomHeight"] {
+        if let Some(value) = object.get(key) {
+            if !valid_dimension(value) {
+                return Err(invalid());
+            }
+        }
+    }
+    for key in ["sidebarVisible", "agentVisible", "bottomVisible"] {
+        if let Some(value) = object.get(key) {
+            if !value.is_null() && !value.is_boolean() {
+                return Err(invalid());
+            }
+        }
+    }
+    if let Some(value) = object.get("bottomTab") {
+        if !value.is_null() && !value.as_str().is_some_and(|tab| (1..=64).contains(&tab.len())) {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+fn entry_identity(entry: &Value) -> HostResult<String> {
+    Ok(format!("{}:{}", root_id(&entry["rootId"])?.unwrap_or_else(|| "primary".into()), relative(&entry["path"], false)?))
+}
+
+fn check_tab(tab: &Value) -> HostResult<(String, String)> {
+    if !tab.is_object() {
+        return Err(invalid());
+    }
+    let kind = tab["kind"].as_str().filter(|kind| *kind == "file" || *kind == "diff").ok_or_else(invalid)?;
+    if !(tab["view"].is_null() || tab["view"].as_str().is_some_and(|view| (1..=64).contains(&view.len()))) {
+        return Err(invalid());
+    }
+    if let Some(cursor) = tab.get("cursor").filter(|v| !v.is_null()) {
+        if !cursor.is_object() && !cursor.is_number() {
+            return Err(invalid());
+        }
+    }
+    if let Some(scroll) = tab.get("scroll").filter(|v| !v.is_null()) {
+        if !scroll.is_object() && !scroll.is_number() {
+            return Err(invalid());
+        }
+    }
+    Ok((kind.to_owned(), entry_identity(tab)?))
+}
+
+fn check_buffer(buffer: &Value) -> HostResult<String> {
+    if !buffer.is_object() {
+        return Err(invalid());
+    }
+    buffer["content"].as_str().ok_or_else(invalid)?;
+    if !(buffer["baseVersion"].is_null() || buffer["baseVersion"].as_str().is_some_and(|version| (1..=1024).contains(&version.len()))) || !buffer["bom"].is_boolean() {
+        return Err(invalid());
+    }
+    buffer["eol"].as_str().filter(|eol| ["lf", "crlf", "mixed"].contains(eol)).ok_or_else(invalid)?;
+    entry_identity(buffer)
+}
+
+/// Check a snapshot: validate known key fields and their types while preserving unknown fields written by newer or older
+/// versions (3.x/4.x forward compatibility).
 pub fn check_data(data: &Value) -> HostResult<()> {
-    only_keys(data, &["lastSessionId", "tabs", "activePath", "activeRootId", "expandedPaths", "expandedRoots", "buffers", "layout", "execution"])?;
+    if !data.is_object() {
+        return Err(invalid());
+    }
     if !(data["lastSessionId"].is_null() || data["lastSessionId"].as_str().is_some_and(|id| (1..=512).contains(&id.len()))) {
         return Err(invalid());
     }
-    let identity = |entry: &Value| -> HostResult<String> { Ok(format!("{}:{}", root_id(&entry["rootId"])?.unwrap_or_else(|| "primary".into()), relative(&entry["path"], false)?)) };
     let mut tabs = HashSet::new();
-    for tab in data["tabs"].as_array().ok_or_else(invalid)? {
-        only_keys(tab, &["path", "rootId", "kind", "cursor", "scroll", "view"])?;
-        let kind = tab["kind"].as_str().filter(|kind| *kind == "file" || *kind == "diff").ok_or_else(invalid)?;
-        if !(tab["view"].is_null() || tab["view"].as_str().is_some_and(|view| ["source", "preview", "split", "hex", "rich"].contains(&view))) {
-            return Err(invalid());
-        }
-        if !tabs.insert(format!("{kind}:{}", identity(tab)?)) {
+    let tab_array = data["tabs"].as_array().ok_or_else(invalid)?;
+    for tab in tab_array {
+        let (kind, id) = check_tab(tab)?;
+        if !tabs.insert(format!("{kind}:{id}")) {
             return Err(HostError::invalid("An editor tab may appear only once."));
         }
     }
@@ -86,35 +144,143 @@ pub fn check_data(data: &Value) -> HostResult<()> {
     }
     if let Some(roots) = data.get("expandedRoots").filter(|roots| !roots.is_null()) {
         for entry in roots.as_array().ok_or_else(invalid)? {
-            only_keys(entry, &["rootId", "path"])?;
+            if !entry.is_object() {
+                return Err(invalid());
+            }
             root_id(&entry["rootId"])?.ok_or_else(invalid)?;
             relative(&entry["path"], true)?;
         }
     }
     let mut buffers = HashSet::new();
     for buffer in data["buffers"].as_array().ok_or_else(invalid)? {
-        only_keys(buffer, &["path", "rootId", "content", "baseVersion", "bom", "eol"])?;
-        buffer["content"].as_str().ok_or_else(invalid)?;
-        if !(buffer["baseVersion"].is_null() || buffer["baseVersion"].as_str().is_some_and(|version| (1..=1024).contains(&version.len()))) || !buffer["bom"].is_boolean() {
-            return Err(invalid());
-        }
-        buffer["eol"].as_str().filter(|eol| ["lf", "crlf", "mixed"].contains(eol)).ok_or_else(invalid)?;
-        if !buffers.insert(identity(buffer)?) {
+        if !buffers.insert(check_buffer(buffer)?) {
             return Err(HostError::invalid("A file may have only one recovery buffer."));
         }
     }
     if !data["activePath"].is_null() {
         let active = json!({ "path": data["activePath"], "rootId": data["activeRootId"] });
-        let wanted = identity(&active)?;
-        if !data["tabs"].as_array().unwrap().iter().any(|tab| identity(tab).is_ok_and(|known| known == wanted)) {
+        let wanted = entry_identity(&active)?;
+        if !tab_array.iter().any(|tab| entry_identity(tab).is_ok_and(|known| known == wanted)) {
             return Err(HostError::invalid("The active path must name an open tab."));
         }
     }
-    only_keys(&data["layout"], &["sidebarWidth", "agentWidth", "bottomHeight", "sidebarVisible", "agentVisible", "bottomVisible", "bottomTab"])?;
+    check_layout(&data["layout"])?;
     if let Some(execution) = data.get("execution").filter(|execution| !execution.is_null()) {
         super::execution::check_configuration(execution)?;
     }
     Ok(())
+}
+
+/// Salvage valid fields from a damaged or incompatible IDE state snapshot, falling back to `empty_state()`.
+fn salvage_state(raw: Option<Value>) -> Value {
+    let mut base = empty_state();
+    let Some(Value::Object(record)) = raw else { return base };
+    if let Some(rev) = record.get("revision").and_then(Value::as_u64) {
+        base["revision"] = json!(rev);
+    }
+    let Some(Value::Object(src)) = record.get("data") else { return base };
+    let default_layout = base["data"]["layout"].as_object().cloned().unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    // Preserve unknown top-level data keys.
+    for (k, v) in src {
+        if !["lastSessionId", "tabs", "activePath", "activeRootId", "expandedPaths", "expandedRoots", "buffers", "layout", "execution"].contains(&k.as_str()) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    let last_session = src.get("lastSessionId").and_then(Value::as_str).filter(|id| (1..=512).contains(&id.len())).map(|id| json!(id)).unwrap_or(Value::Null);
+    out.insert("lastSessionId".into(), last_session);
+
+    let mut seen_tabs = HashSet::new();
+    let mut valid_tabs = Vec::new();
+    let mut tab_ids = HashSet::new();
+    if let Some(items) = src.get("tabs").and_then(Value::as_array) {
+        for tab in items.iter().take(MAX_TABS) {
+            if let Ok((kind, id)) = check_tab(tab) {
+                if seen_tabs.insert(format!("{kind}:{id}")) {
+                    tab_ids.insert(id);
+                    valid_tabs.push(tab.clone());
+                }
+            }
+        }
+    }
+    out.insert("tabs".into(), Value::Array(valid_tabs));
+
+    let active_valid = src.get("activePath").filter(|v| !v.is_null()).and_then(|path| {
+        let probe = json!({ "path": path, "rootId": src.get("activeRootId").cloned().unwrap_or(Value::Null) });
+        entry_identity(&probe).ok().filter(|id| tab_ids.contains(id))
+    });
+    if active_valid.is_some() {
+        out.insert("activePath".into(), src["activePath"].clone());
+        if let Some(active_root) = src.get("activeRootId") {
+            out.insert("activeRootId".into(), active_root.clone());
+        }
+    } else {
+        out.insert("activePath".into(), Value::Null);
+    }
+
+    let expanded_paths: Vec<Value> = src
+        .get("expandedPaths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|p| relative(p, false).is_ok())
+        .take(MAX_EXPANDED_PATHS)
+        .cloned()
+        .collect();
+    out.insert("expandedPaths".into(), Value::Array(expanded_paths));
+
+    if let Some(items) = src.get("expandedRoots").and_then(Value::as_array) {
+        let valid_roots: Vec<Value> = items
+            .iter()
+            .filter(|e| e.is_object() && root_id(&e["rootId"]).ok().flatten().is_some() && relative(&e["path"], true).is_ok())
+            .take(MAX_EXPANDED_PATHS)
+            .cloned()
+            .collect();
+        out.insert("expandedRoots".into(), Value::Array(valid_roots));
+    }
+
+    let mut seen_buffers = HashSet::new();
+    let mut valid_buffers = Vec::new();
+    if let Some(items) = src.get("buffers").and_then(Value::as_array) {
+        for buf in items.iter().take(MAX_BUFFERS) {
+            if let Ok(id) = check_buffer(buf) {
+                if buf["content"].as_str().map_or(0, str::len) <= MAX_BUFFER_BYTES && seen_buffers.insert(id) {
+                    valid_buffers.push(buf.clone());
+                }
+            }
+        }
+    }
+    out.insert("buffers".into(), Value::Array(valid_buffers));
+
+    let mut layout = default_layout;
+    if let Some(Value::Object(src_layout)) = src.get("layout") {
+        for (k, v) in src_layout {
+            let valid = match k.as_str() {
+                "sidebarWidth" | "agentWidth" | "bottomHeight" => valid_dimension(v) && !v.is_null(),
+                "sidebarVisible" | "agentVisible" | "bottomVisible" => v.is_boolean(),
+                "bottomTab" => v.as_str().is_some_and(|tab| (1..=64).contains(&tab.len())),
+                _ => true,
+            };
+            if valid {
+                layout.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    out.insert("layout".into(), Value::Object(layout));
+
+    if let Some(execution) = src.get("execution").filter(|e| !e.is_null()) {
+        if super::execution::check_configuration(execution).is_ok() {
+            out.insert("execution".into(), execution.clone());
+        }
+    }
+
+    let data = Value::Object(out);
+    if check_data(&data).is_ok() {
+        base["data"] = data;
+        base
+    } else {
+        empty_state()
+    }
 }
 
 pub struct StateStore {
@@ -145,10 +311,25 @@ impl StateStore {
         if let Some(record) = self.records.lock().unwrap().get(workspace_id) {
             return Ok(record.clone());
         }
-        let unreadable = || HostError::new("io-error", l("这个项目保存的编辑器状态格式不受支持，文件保持原样。", "The saved IDE state of this project has an unsupported format; it was left unchanged."));
-        let record = match read_json::<Value>(&self.directory.join(file_name(workspace_id))) {
+        let path = self.directory.join(file_name(workspace_id));
+        let record = match read_json::<Value>(&path) {
             Ok(Some(record)) if record["version"] == 1 && record["revision"].is_u64() && check_data(&record["data"]).is_ok() => record,
-            Ok(Some(_)) | Err(_) => return Err(unreadable()),
+            Ok(Some(raw)) => {
+                log::warn!("IDE state for workspace {workspace_id} has invalid fields; backing up and salvaging.");
+                let backup = self.directory.join(format!("{}.damaged-{}", file_name(workspace_id), crate::text::now_ms()));
+                let _ = std::fs::copy(&path, &backup);
+                let salvaged = salvage_state(Some(raw));
+                let _ = write_json(&path, &salvaged);
+                salvaged
+            }
+            Err(error) => {
+                log::warn!("IDE state for workspace {workspace_id} is unreadable ({error}); backing up and rebuilding.");
+                let backup = self.directory.join(format!("{}.damaged-{}", file_name(workspace_id), crate::text::now_ms()));
+                let _ = std::fs::copy(&path, &backup);
+                let salvaged = empty_state();
+                let _ = write_json(&path, &salvaged);
+                salvaged
+            }
             Ok(None) => empty_state(),
         };
         self.records.lock().unwrap().insert(workspace_id.to_owned(), record.clone());
@@ -205,7 +386,11 @@ impl StateStore {
             Some("state.read") => self.get(workspace()?),
             Some("state.save") => self.replace(workspace()?, request["baseRevision"].as_u64().ok_or_else(invalid)?, request["data"].clone()),
             Some("state.selection.read") => Ok(json!({ "version": 1, "workspaceId": self.selection() })),
-            Some("state.selection.save") => self.set_selection(request["workspaceId"].as_str()),
+            Some("state.selection.save") => match request.get("workspaceId") {
+                None | Some(Value::Null) => self.set_selection(None),
+                Some(Value::String(id)) if !id.is_empty() => self.set_selection(Some(id)),
+                _ => Err(invalid()),
+            },
             _ => Err(invalid()),
         }
     }
@@ -234,5 +419,45 @@ mod tests {
         assert!(check_data(&data).is_err());
         data["activePath"] = json!("../x");
         assert!(check_data(&data).is_err());
+    }
+
+    #[test]
+    fn preserves_unknown_fields_and_salvages_damaged_state() {
+        let mut data = empty_state()["data"].clone();
+        data["futureTopKey"] = json!({ "enabled": true });
+        data["tabs"] = json!([{ "path": "a.py", "kind": "file", "view": "futureView", "futureTabKey": 42 }]);
+        data["layout"]["futurePaneWidth"] = json!(320);
+        data["activePath"] = json!("a.py");
+        assert!(check_data(&data).is_ok());
+        // Invalid known field type is still rejected.
+        let mut bad_layout = data.clone();
+        bad_layout["layout"]["sidebarWidth"] = json!("wide");
+        assert!(check_data(&bad_layout).is_err());
+
+        // Salvage keeps valid tabs/unknown keys and repairs invalid layout fields.
+        let dir = tempfile::tempdir().unwrap();
+        let projects_file = dir.path().join("projects.json");
+        let projects = Arc::new(Projects::load(projects_file).unwrap());
+        let project_dir = dir.path().join("proj");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let added = projects.open(project_dir.to_str().unwrap(), None).unwrap();
+        let state_dir = dir.path().join("ide");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_file = state_dir.join(file_name(&added.id));
+        // Corrupted JSON triggers backup + clean rebuild.
+        std::fs::write(&state_file, "{not valid json").unwrap();
+        let store = StateStore::open(state_dir.clone(), projects.clone());
+        let loaded = store.get(&added.id).unwrap();
+        assert_eq!(loaded["version"], 1);
+        assert_eq!(loaded["revision"], 0);
+        let backups: Vec<_> = std::fs::read_dir(&state_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".damaged-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        // Reject non-string workspaceId on state.selection.save.
+        assert!(store.handle(&json!({ "op": "state.selection.save", "workspaceId": 123 })).is_err());
+        assert!(store.handle(&json!({ "op": "state.selection.save", "workspaceId": Value::Null })).is_ok());
     }
 }

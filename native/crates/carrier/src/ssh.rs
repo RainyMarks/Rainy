@@ -98,16 +98,20 @@ pub fn destination_of(target: &ExecutionTarget) -> Result<Destination> {
     }
 }
 
-/// Concrete host aliases of an OpenSSH config file; patterns with wildcards or negation are not hosts.
+/// Concrete host aliases of an OpenSSH config file; patterns with wildcards or negation and `#` comments are skipped.
 pub fn config_hosts(text: &str) -> Vec<String> {
     let mut hosts: Vec<String> = Vec::new();
     for line in text.lines() {
         let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
         let Some(keyword) = line.get(..4).filter(|keyword| keyword.eq_ignore_ascii_case("host")) else { continue };
         let rest = &line[keyword.len()..];
         if !rest.starts_with(char::is_whitespace) {
             continue;
         }
+        let rest = rest.split('#').next().unwrap_or(rest);
         for name in rest.split_whitespace() {
             if name.contains(['*', '?', '!']) || !valid_destination(name) || hosts.iter().any(|known| known == name) {
                 continue;
@@ -243,7 +247,40 @@ fn configured_remote_command(target: &Destination) -> bool {
 }
 
 fn with_options(target: &Destination, remote: &[String], forward: Option<u16>, clear_remote_command: bool) -> Vec<String> {
-    let mut args: Vec<String> = ["-T", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"].map(str::to_owned).to_vec();
+    with_options_mode(target, remote, forward, clear_remote_command, false, 20)
+}
+
+fn batch_arguments(target: &Destination, remote: &[String], connect_timeout_secs: u64) -> Vec<String> {
+    with_options_mode(target, remote, None, configured_remote_command(target), true, connect_timeout_secs)
+}
+
+fn with_options_mode(
+    target: &Destination,
+    remote: &[String],
+    forward: Option<u16>,
+    clear_remote_command: bool,
+    batch_mode: bool,
+    connect_timeout_secs: u64,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-T".to_owned(),
+        "-o".to_owned(),
+        format!("ConnectTimeout={connect_timeout_secs}"),
+        "-o".to_owned(),
+        "ServerAliveInterval=15".to_owned(),
+        "-o".to_owned(),
+        "ServerAliveCountMax=4".to_owned(),
+    ];
+    if batch_mode {
+        args.extend([
+            "-o".to_owned(),
+            "BatchMode=yes".to_owned(),
+            "-o".to_owned(),
+            "KbdInteractiveAuthentication=no".to_owned(),
+            "-o".to_owned(),
+            "PasswordAuthentication=no".to_owned(),
+        ]);
+    }
     if clear_remote_command {
         args.extend(["-o".to_owned(), "RemoteCommand=none".to_owned()]);
     }
@@ -307,7 +344,30 @@ pub fn run(
     on_line: &mut dyn FnMut(&str),
     timeout: Option<Duration>,
 ) -> Result<RunOutput> {
-    let mut child = ssh_command(&arguments(target, remote, None), env)?
+    let command = ssh_command(&arguments(target, remote, None), env)?;
+    run_command(command, input, on_line, timeout)
+}
+
+/// Non-interactive `ssh` run (`BatchMode=yes`, no askpass environment) that fails fast instead of prompting for OTP/passwords.
+fn run_batch(
+    target: &Destination,
+    remote: &[String],
+    connect_timeout_secs: u64,
+    timeout: Option<Duration>,
+) -> Result<RunOutput> {
+    let args = batch_arguments(target, remote, connect_timeout_secs);
+    let mut command = ssh_command(&args, &[])?;
+    command.env_remove("SSH_ASKPASS").env_remove("SSH_ASKPASS_REQUIRE");
+    run_command(command, None, &mut |_| {}, timeout)
+}
+
+fn run_command(
+    mut command: Command,
+    input: Option<Box<dyn Read + Send>>,
+    on_line: &mut dyn FnMut(&str),
+    timeout: Option<Duration>,
+) -> Result<RunOutput> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -333,7 +393,9 @@ pub fn run(
         let child = child.clone();
         thread::spawn(move || {
             if done_rx.recv_timeout(timeout) == Err(mpsc::RecvTimeoutError::Timeout) {
-                let _ = child.lock().unwrap().kill();
+                let mut child = child.lock().unwrap();
+                kill_process_tree(child.id());
+                let _ = child.kill();
             }
         });
     }
@@ -356,6 +418,21 @@ pub fn run(
     let _ = done_tx.send(());
     let _ = feeder.join();
     Ok(RunOutput { code: status.code(), stdout: String::from_utf8_lossy(&stdout).into_owned(), stderr: Vec::from(errors).join("\n") })
+}
+
+fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let _ = Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+    }
 }
 
 /// Whether the server refused the login, in ssh's own words (`user@host: Permission denied (publickey,password).`,
@@ -460,12 +537,98 @@ impl<R: Read> Read for Counted<R> {
 /// What the runtime installer on the server answered to `--fetch` or `--receive`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRuntime {
-    /// The Host is installed: absolute paths of `node` and `host.js` on the server.
+    /// The Host is installed: absolute path of `rainy-host` on the server.
     Ready { host: String },
     /// The base of this version is missing there; `error` says why the server could not download it, when it tried.
     NeedsArchive { error: Option<String> },
     /// Not an x86_64 Linux server: its system and machine.
     Unsupported(String),
+}
+
+/// Result of a zero-upload probe (`install-runtime.py --probe`) on an SSH server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeProbe {
+    /// This version is already installed on the server (zero archive uploaded).
+    Ready { host: String },
+    /// This version is missing on the server and needs installation.
+    NeedsInstall { needs_app: bool, needs_base: bool },
+    /// Not an x86_64 Linux server: its system and machine.
+    Unsupported(String),
+}
+
+/// Remote SSH Host identity tracked by [`crate::HostProcess`] for force-stop and in-place reconnect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteHost {
+    pub target: Destination,
+    pub host: String,
+}
+
+/// Outcome of an in-place SSH reconnect attempt without restarting `RainyAgent.exe`.
+#[derive(Debug)]
+pub enum ReconnectOutcome {
+    /// Reconnected to the SSH server with a fresh running HostProcess.
+    Connected(crate::HostProcess),
+    /// The runtime on the server is missing and needs full installation.
+    NeedsInstall { needs_app: bool, needs_base: bool },
+    /// Not an x86_64 Linux server: its system and machine.
+    Unsupported(String),
+}
+
+/// Localized error for an unsupported SSH server platform (`RuntimeProbe::Unsupported`).
+pub fn unsupported_error(target: &Destination, system: &str) -> anyhow::Error {
+    let name = name(target);
+    anyhow!(localized(
+        &format!("{name} 是 {system}；SSH 远程开发目前只支持 x86_64 Linux 服务器。"),
+        &format!("{name} runs {system}; SSH remote development supports x86_64 Linux servers only."),
+    ))
+}
+
+fn probe_answer(stdout: &str) -> Result<RuntimeProbe> {
+    let line = stdout.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
+    let value: Value = serde_json::from_str(line.trim())
+        .map_err(|_| anyhow!("{}\n{}", localized("服务器返回的探活结果无效。", "The server returned an invalid probe result."), tail(stdout, 400)))?;
+    if let Some(system) = value.get("unsupported").and_then(Value::as_str) {
+        return Ok(RuntimeProbe::Unsupported(system.to_owned()));
+    }
+    if value.get("needsApp").and_then(Value::as_bool) == Some(true) {
+        let needs_base = value.get("needsBase").and_then(Value::as_bool).unwrap_or(true);
+        return Ok(RuntimeProbe::NeedsInstall { needs_app: true, needs_base });
+    }
+    match value.get("host").and_then(Value::as_str).filter(|path| path.starts_with('/')) {
+        Some(host) => Ok(RuntimeProbe::Ready { host: host.to_owned() }),
+        None => bail!("{}\n{}", localized("服务器返回的探活结果无效。", "The server returned an invalid probe result."), tail(stdout, 400)),
+    }
+}
+
+/// Probe the server without streaming `linux-app.tar.gz` (`install-runtime.py --probe`).
+/// When this version is already installed, returns `Ok(Ok(RuntimeProbe::Ready { host }))` with zero archive upload,
+/// and opportunistically prunes earlier runtimes on the same SSH connection when `prune` is true.
+pub fn probe_runtime(
+    target: &Destination,
+    files: &RuntimeFiles,
+    env: &[(String, String)],
+    prune: bool,
+    log: &(dyn Fn(&str) + Sync),
+) -> Result<std::result::Result<RuntimeProbe, RunOutput>> {
+    let name = name(target);
+    let script = std::fs::read_to_string(&files.installer).with_context(|| reading(&files.installer))?;
+    let metadata = std::fs::read_to_string(&files.metadata).with_context(|| reading(&files.metadata))?;
+    let mut args = vec!["--probe", metadata.as_str()];
+    if prune {
+        args.push("--prune");
+    }
+    let output = run(
+        target,
+        &remote_python(&script, &args),
+        env,
+        None,
+        &mut |line| log(&format!("ssh {name}: {line}")),
+        Some(Duration::from_secs(120)),
+    )?;
+    if output.code != Some(0) {
+        return Ok(Err(output));
+    }
+    probe_answer(&output.stdout).map(Ok)
 }
 
 /// The context of a runtime file of this installation that could not be read or opened.
@@ -603,15 +766,164 @@ pub fn installed_paths(target: &Destination, answer: ServerRuntime, uploaded: bo
 }
 
 /// Delete runtimes earlier versions installed on the server; the removed folders.
-pub fn prune_runtimes(target: &Destination, files: &RuntimeFiles, env: &[(String, String)]) -> Result<Vec<String>> {
+///
+/// Runs non-interactively (`BatchMode=yes`, ignoring askpass variables) so background maintenance never pops an
+/// unexpected password/OTP prompt after startup. If non-interactive authentication is refused, pruning is silently
+/// skipped and `Ok(vec![])` is returned.
+pub fn prune_runtimes(target: &Destination, files: &RuntimeFiles, _env: &[(String, String)]) -> Result<Vec<String>> {
     let script = std::fs::read_to_string(&files.installer)?;
     let metadata = std::fs::read_to_string(&files.metadata)?;
-    let output = run(target, &remote_python(&script, &["--prune", &metadata]), env, None, &mut |_| {}, Some(Duration::from_secs(120)))?;
+    let output = run_batch(target, &remote_python(&script, &["--prune", &metadata]), 10, Some(Duration::from_secs(120)))?;
     if output.code != Some(0) {
+        if login_refused(&output.stderr)
+            || output.stderr.contains("Permission denied")
+            || output.stderr.contains("Host key verification failed")
+        {
+            log::info!("Skipped background SSH runtime prune on {} (requires interactive authentication)", name(target));
+            return Ok(Vec::new());
+        }
         return Err(failure(target, output.code, &output.stderr));
     }
     let value: Value = serde_json::from_str(output.stdout.lines().last().unwrap_or("{}")).unwrap_or(Value::Null);
     Ok(value.get("removed").and_then(Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()).unwrap_or_default())
+}
+
+/// Extract the SSH target and remote Host path from a command built by [`host_command`], so [`crate::HostProcess`] can
+/// force-stop the remote process tree when graceful shutdown fails.
+pub(crate) fn host_of(command: &HostCommand) -> Option<RemoteHost> {
+    let program = command.program.file_name()?.to_str()?;
+    if !(program.eq_ignore_ascii_case("ssh.exe") || program.eq_ignore_ascii_case("ssh")) {
+        return None;
+    }
+    let args: Vec<&str> = command.args.iter().map(|arg| arg.to_str()).collect::<Option<_>>()?;
+    let sep = args.iter().position(|arg| *arg == "--")?;
+    let mut port: Option<u16> = None;
+    let mut i = 0;
+    while i + 1 < sep {
+        if args[i] == "-p" {
+            port = args[i + 1].parse::<u16>().ok().filter(|p| *p != 22);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let destination = args.get(sep + 1)?;
+    if !valid_destination(destination) {
+        return None;
+    }
+    // Expected tail: `python3 -c <LOADER> <b64(HOST_LAUNCHER)> <b64(parameters)>`
+    let tail = args.get(sep + 2..)?;
+    if tail.len() != 5 || tail[0] != "python3" || tail[1] != "-c" || tail[2] != LOADER {
+        return None;
+    }
+    let engine = base64::engine::general_purpose::STANDARD;
+    let script = engine.decode(tail[3]).ok()?;
+    if script.as_slice() != HOST_LAUNCHER.as_bytes() {
+        return None;
+    }
+    let params_bytes = engine.decode(tail[4]).ok()?;
+    let params: Value = serde_json::from_slice(&params_bytes).ok()?;
+    let host = params.get("host").and_then(Value::as_str).filter(|path| path.starts_with('/'))?;
+    Some(RemoteHost {
+        target: Destination { destination: (*destination).to_owned(), port },
+        host: host.to_owned(),
+    })
+}
+
+/// Best-effort non-interactive (`BatchMode=yes`) remote `/proc`-verified SIGKILL of an SSH Host process tree when
+/// graceful stop timed out or startup failed after launch. Never triggers an interactive askpass/OTP prompt.
+pub fn force_stop(target: &Destination, host: &str, pid: u32) -> Result<()> {
+    let pid_text = pid.to_string();
+    let output = run_batch(
+        target,
+        &remote_python(crate::wsl::FORCE_STOP, &[&pid_text, host]),
+        10,
+        Some(Duration::from_secs(15)),
+    )?;
+    match output.code {
+        Some(0) | Some(3) => Ok(()),
+        _ => Err(failure(target, output.code, &output.stderr)),
+    }
+}
+
+/// Start (or restart) an SSH Host process with automatic loopback port retry (up to 3 attempts).
+/// Suitable both for initial startup and in-place reconnect without restarting the desktop process.
+pub fn start_host_process(
+    target: &Destination,
+    host: &str,
+    env: &[(String, String)],
+    askpass: &Arc<crate::askpass::Askpass>,
+    events: Arc<dyn crate::HostEvents>,
+    recent_output: &(dyn Fn() -> String + Sync),
+    clear_recent: &(dyn Fn() + Sync),
+) -> Result<crate::HostProcess> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let session = askpass.session();
+        clear_recent();
+        let port = free_loopback_port()?;
+        let command = host_command(target, host, env, port, session.env())?;
+        match crate::HostProcess::start(&command, events.clone()) {
+            Ok(process) => return Ok(process),
+            Err(error) => {
+                let said = recent_output();
+                let lower = format!("{said}\n{error:#}").to_ascii_lowercase();
+                if attempt < 3 && (lower.contains("forwarding") || lower.contains("address already in use")) {
+                    continue;
+                }
+                if login_refused(&said) {
+                    session.failed();
+                }
+                return Err(if error.downcast_ref::<crate::HostStopped>().is_some() {
+                    failure(target, None, &said)
+                } else {
+                    error
+                });
+            }
+        }
+    }
+}
+
+/// Reconnect to an SSH server in-place without restarting `RainyAgent.exe`:
+/// 1. Best-effort force-stops a stale remote Host PID (when `previous` is provided, non-interactive `BatchMode=yes`).
+/// 2. Probes the server runtime with zero archive upload (`--probe`).
+/// 3. Starts a fresh SSH Host tunnel when the runtime is ready, or reports `NeedsInstall` / `Unsupported`.
+#[allow(clippy::too_many_arguments)]
+pub fn reconnect_host(
+    target: &Destination,
+    files: &RuntimeFiles,
+    env: &[(String, String)],
+    askpass: &Arc<crate::askpass::Askpass>,
+    events: Arc<dyn crate::HostEvents>,
+    previous: Option<(&str, u32)>,
+    recent_output: &(dyn Fn() -> String + Sync),
+    clear_recent: &(dyn Fn() + Sync),
+    log: &(dyn Fn(&str) + Sync),
+) -> Result<ReconnectOutcome> {
+    if let Some((prev_host, prev_pid)) = previous
+        && let Err(error) = force_stop(target, prev_host, prev_pid)
+    {
+        log(&format!("Best-effort SSH force-stop before reconnect skipped: {error:#}"));
+    }
+    let session = askpass.session();
+    let probe = match probe_runtime(target, files, session.env(), false, log)? {
+        Ok(probe) => probe,
+        Err(output) => {
+            if login_refused(&output.stderr) {
+                session.failed();
+            }
+            return Err(failure(target, output.code, &output.stderr));
+        }
+    };
+    match probe {
+        RuntimeProbe::Ready { host } => {
+            let process = start_host_process(target, &host, env, askpass, events, recent_output, clear_recent)?;
+            Ok(ReconnectOutcome::Connected(process))
+        }
+        RuntimeProbe::NeedsInstall { needs_app, needs_base } => Ok(ReconnectOutcome::NeedsInstall { needs_app, needs_base }),
+        RuntimeProbe::Unsupported(system) => Ok(ReconnectOutcome::Unsupported(system)),
+    }
 }
 
 /// A loopback port free on this computer, used on both ends of the forward.
@@ -657,8 +969,63 @@ mod tests {
 
     #[test]
     fn config_aliases() {
-        let text = "Host dev box\n  HostName 10.0.0.2\nHost *.internal !bad\nhost   prod\nHostName x\n";
-        assert_eq!(config_hosts(text), ["dev", "box", "prod"]);
+        let text = "# Host ignored-line\nHost dev box # work server\n  HostName 10.0.0.2\nHost *.internal !bad\nhost   prod #comment trailing\nHost edge#inline extra\nHostName x\n";
+        assert_eq!(config_hosts(text), ["dev", "box", "prod", "edge"]);
+    }
+
+    #[test]
+    fn batch_mode_disables_interactive_prompts_and_tracks_remote_host() {
+        let target = Destination { destination: "dev@box".into(), port: Some(2222) };
+        let args = with_options_mode(&target, &["true".into()], None, false, true, 10);
+        assert!(args.windows(2).any(|pair| pair == ["-o", "BatchMode=yes"]));
+        assert!(args.windows(2).any(|pair| pair == ["-o", "KbdInteractiveAuthentication=no"]));
+        assert!(args.windows(2).any(|pair| pair == ["-o", "PasswordAuthentication=no"]));
+        assert!(args.windows(2).any(|pair| pair == ["-o", "ConnectTimeout=10"]));
+        // host_of extracts RemoteHost from a command created by host_command (without touching HostCommand fields).
+        let parameters = json!({ "host": "/home/u/.rainy-agent/runtime/abc/rainy-host", "env": {} }).to_string();
+        let cmd_args = with_options(&target, &remote_python(HOST_LAUNCHER, &[&parameters]), Some(5000), false);
+        let command = HostCommand {
+            program: PathBuf::from(r"C:\Windows\System32\OpenSSH\ssh.exe"),
+            args: cmd_args.into_iter().map(OsString::from).collect(),
+            env: Vec::new(),
+            cwd: None,
+            scrub_environment: false,
+            wait_for_loopback: true,
+            expected_port: Some(5000),
+        };
+        assert_eq!(
+            host_of(&command),
+            Some(RemoteHost {
+                target: target.clone(),
+                host: "/home/u/.rainy-agent/runtime/abc/rainy-host".into(),
+            })
+        );
+        // Non-ssh commands or non-launcher remote commands are never matched.
+        assert_eq!(host_of(&HostCommand { program: PathBuf::from("wsl.exe"), ..command.clone() }), None);
+        let other = HostCommand { args: with_options(&target, &remote_python("print(1)", &[]), None, false).into_iter().map(OsString::from).collect(), ..command };
+        assert_eq!(host_of(&other), None);
+    }
+
+    #[test]
+    fn parses_zero_upload_probe_answers() {
+        assert_eq!(
+            probe_answer("motd\n{\"host\": \"/h/.rainy-agent/runtime/x/rainy-host\"}\n").unwrap(),
+            RuntimeProbe::Ready { host: "/h/.rainy-agent/runtime/x/rainy-host".into() }
+        );
+        assert_eq!(
+            probe_answer("{\"needsApp\": true, \"needsBase\": false}\n").unwrap(),
+            RuntimeProbe::NeedsInstall { needs_app: true, needs_base: false }
+        );
+        assert_eq!(
+            probe_answer("{\"needsApp\": true, \"needsBase\": true}\n").unwrap(),
+            RuntimeProbe::NeedsInstall { needs_app: true, needs_base: true }
+        );
+        assert_eq!(
+            probe_answer("{\"unsupported\": \"Linux aarch64\"}\n").unwrap(),
+            RuntimeProbe::Unsupported("Linux aarch64".into())
+        );
+        assert!(probe_answer("{\"host\": \"relative\"}").is_err());
+        assert!(probe_answer("garbage").is_err());
     }
 
     #[test]

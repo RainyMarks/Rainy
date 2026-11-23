@@ -259,20 +259,44 @@ pub fn resolve_script(id: u64, result: &Value) -> String {
     format!("window.__rainyViewer && window.__rainyViewer.resolve({id}, {result})")
 }
 
+/// Extract the exact loopback Host origin (`http://127.0.0.1:<port>`) from a Host URL.
+pub fn exact_host_origin(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("http://127.0.0.1:")?;
+    let port_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let port_str = &rest[..port_end];
+    let port: u16 = port_str.parse().ok().filter(|p| *p > 0)?;
+    Some(format!("http://127.0.0.1:{port}"))
+}
+
+/// Whether a viewer WebPane is permitted to navigate to `url`: only the exact active Host origin or `about:blank`.
+pub fn is_allowed_viewer_url(url: &str, host_origin: Option<&str>) -> bool {
+    if url == "about:blank" {
+        return true;
+    }
+    let Some(origin) = host_origin else {
+        return false;
+    };
+    crate::web::webview::matches_origin(url, origin)
+}
+
 /// A pane for one file view.
 pub fn create_pane(url: String, kind: &'static str, window: &mut Window, cx: &mut App) -> Entity<WebPane> {
     let store = Store::global(cx);
     let folder = store.read(cx).paths.user_data.join("WebView2");
+    let host_origin = store.read(cx).launch_url().and_then(|launch| exact_host_origin(&launch)).or_else(|| exact_host_origin(&url));
     let background = crate::web::background(gpui_kit::component::ActiveTheme::theme(cx).background);
     cx.new(|cx| {
+        let allowed_origin = host_origin.clone();
         let options = Options {
             folder,
             private: false,
             background,
+            scripts_enabled: true,
+            ipc_origin: host_origin,
             script: None,
             on_message: None,
-            // The viewer page and the files it loads come from the Host; anything else opens in the browser instead.
-            allow: Some(Box::new(|url| url.starts_with("http://127.0.0.1:") || url.starts_with("about:") || url.starts_with("blob:") || url.starts_with("data:"))),
+            // Restrict navigation strictly to the active Host's exact origin and `about:blank` (no `data:`, `blob:`, or other localhost ports).
+            allow: Some(Box::new(move |address| is_allowed_viewer_url(address, allowed_origin.as_deref()))),
             on_new_window: None,
             on_shortcut: Some(Box::new(move |shortcut| shortcut_action(shortcut, kind).is_some())),
         };
@@ -349,5 +373,27 @@ mod tests {
         assert!(matches!(attach, Some(PageRequest::Attach { bytes, .. }) if bytes == [0, 1, 2]));
         assert!(parse_message(r#"{"type":"attach","name":"a.svg","mime":"image/svg+xml","base64":"AAEC"}"#).is_none());
         assert!(viewer_url("http://127.0.0.1:1/launch?t=x", "hex", "a.bin", "w", 3, "v1", None, true).contains(&encode("&back=1")));
+    }
+
+    #[test]
+    fn viewer_navigation_allowlist_is_exact_origin_only() {
+        let origin = exact_host_origin("http://127.0.0.1:47400/?token=abc&next=%2F").expect("valid host origin");
+        assert_eq!(origin, "http://127.0.0.1:47400");
+        assert!(exact_host_origin("http://127.0.0.1:0/").is_none());
+        assert!(exact_host_origin("http://127.0.0.1:99999/").is_none());
+        assert!(exact_host_origin("http://localhost:47400/").is_none());
+        assert!(exact_host_origin("https://127.0.0.1:47400/").is_none());
+
+        assert!(is_allowed_viewer_url("about:blank", Some(&origin)));
+        assert!(is_allowed_viewer_url("http://127.0.0.1:47400/?view=pdf", Some(&origin)));
+        assert!(is_allowed_viewer_url("http://127.0.0.1:47400/rainy/ide/raw?w=1", Some(&origin)));
+        assert!(!is_allowed_viewer_url("about:srcdoc", Some(&origin)));
+        assert!(!is_allowed_viewer_url("data:text/html,<script>alert(1)</script>", Some(&origin)));
+        assert!(!is_allowed_viewer_url("blob:http://127.0.0.1:47400/1234", Some(&origin)));
+        assert!(!is_allowed_viewer_url("http://127.0.0.1:47401/", Some(&origin)));
+        assert!(!is_allowed_viewer_url("http://127.0.0.1:474000/", Some(&origin)));
+        assert!(!is_allowed_viewer_url("http://127.0.0.1:47400@evil.example/", Some(&origin)));
+        assert!(!is_allowed_viewer_url("file:///C:/Windows/win.ini", Some(&origin)));
+        assert!(!is_allowed_viewer_url("http://127.0.0.1:47400/", None));
     }
 }

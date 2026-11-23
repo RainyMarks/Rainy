@@ -152,4 +152,7 @@
 
 /* Toolbars on a narrow pane: a long label such as the hex view's file type gives way first, and the offset box shrinks. */
 .ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.hexToolbar { flex-wrap: wrap; row-gap: 4px; padding-block: 4px; overflow-x: visible; }
+.hexToolbar[data-narrow] input { width: 88px; }
+.hexToolbar[data-narrow] select { max-width: 120px; }
 @media (max-width: 520px) { .toolbar input { width: 96px; } }

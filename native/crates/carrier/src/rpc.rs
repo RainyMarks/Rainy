@@ -120,6 +120,26 @@ impl RpcClient {
         Ok((response.status, response.body))
     }
 
+    /// POST raw bytes to a Host route with the session cookie, such as `/rainy/ide/office-pdf`; returns the status and body.
+    pub async fn post(&self, path: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>)> {
+        let cookie = self.inner.cookie.lock().unwrap().clone().ok_or_else(|| anyhow!(localized("尚未连接到执行后端。", "Not connected to the Host.")))?;
+        let response = http_post(self.inner.port, path, &cookie, content_type, body).await?;
+        Ok((response.status, response.body))
+    }
+
+    /// Stream a file as a POST request body to a Host route with the session cookie, avoiding loading large files into RAM.
+    pub async fn post_file(&self, path: &str, content_type: &str, file: &std::path::Path) -> Result<(u16, Vec<u8>)> {
+        let cookie = self.inner.cookie.lock().unwrap().clone().ok_or_else(|| anyhow!(localized("尚未连接到执行后端。", "Not connected to the Host.")))?;
+        let response = http_post_file(self.inner.port, path, &cookie, content_type, file).await?;
+        Ok((response.status, response.body))
+    }
+
+    /// Stream a GET response from a Host route directly to a local file with bounded memory; returns the HTTP status code.
+    pub async fn get_to_file(&self, path: &str, destination: &std::path::Path) -> Result<u16> {
+        let cookie = self.inner.cookie.lock().unwrap().clone().ok_or_else(|| anyhow!(localized("尚未连接到执行后端。", "Not connected to the Host.")))?;
+        http_get_to_file(self.inner.port, path, Some(&cookie), destination).await
+    }
+
     /// Open another WebSocket to a Host route, such as `/rainy/ide/lsp?…`.
     pub(crate) async fn socket(&self, route: &str) -> Result<Socket> {
         open_route(&self.inner, route).await
@@ -132,8 +152,15 @@ impl RpcClient {
     }
 }
 
+fn valid_header_token(value: &str) -> bool {
+    !value.contains(['\r', '\n', '\0'])
+}
+
 /// A minimal HTTP/1.1 GET over loopback; the Host answers with `Connection: close` semantics when asked.
 async fn http_get(port: u16, path: &str, cookie: Option<&str>) -> Result<http::Response> {
+    if !path.starts_with('/') || !valid_header_token(path) {
+        bail!(localized("无效的请求路径。", "Invalid HTTP request path."));
+    }
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     let mut request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
     if let Some(cookie) = cookie {
@@ -144,6 +171,163 @@ async fn http_get(port: u16, path: &str, cookie: Option<&str>) -> Result<http::R
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await?;
     http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+}
+
+/// A minimal HTTP/1.1 POST over loopback carrying the session cookie and same-origin headers.
+async fn http_post(port: u16, path: &str, cookie: &str, content_type: &str, body: &[u8]) -> Result<http::Response> {
+    if !path.starts_with('/') || !valid_header_token(path) || !valid_header_token(content_type) {
+        bail!(localized("无效的 HTTP 请求参数。", "Invalid HTTP request parameters."));
+    }
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let header = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.flush().await?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await?;
+    http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+}
+
+/// Stream a local file into an HTTP/1.1 POST over loopback in 256 KiB chunks.
+async fn http_post_file(port: u16, path: &str, cookie: &str, content_type: &str, file: &std::path::Path) -> Result<http::Response> {
+    use std::io::Read as _;
+    if !path.starts_with('/') || !valid_header_token(path) || !valid_header_token(content_type) {
+        bail!(localized("无效的 HTTP 请求参数。", "Invalid HTTP request parameters."));
+    }
+    let metadata = std::fs::symlink_metadata(file)?;
+    if !metadata.is_file() {
+        bail!(localized("无法上传非常规文件。", "Cannot upload a non-regular file."));
+    }
+    let total = metadata.len();
+    let mut reader = std::fs::File::open(file)?;
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let header = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: {content_type}\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(header.as_bytes()).await?;
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut remaining = total;
+    while remaining > 0 {
+        let want = (buffer.len() as u64).min(remaining) as usize;
+        let read = reader.read(&mut buffer[..want])?;
+        if read == 0 {
+            bail!(localized("上传过程中文件被截断。", "The file was truncated while uploading."));
+        }
+        stream.write_all(&buffer[..read]).await?;
+        remaining -= read as u64;
+    }
+    stream.flush().await?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await?;
+    http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+}
+
+/// Stream an HTTP/1.1 GET response directly to `destination` without buffering the whole body in memory.
+async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destination: &std::path::Path) -> Result<u16> {
+    use std::io::Write as _;
+    if !path.starts_with('/') || !valid_header_token(path) {
+        bail!(localized("无效的请求路径。", "Invalid HTTP request path."));
+    }
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+    if let Some(cookie) = cookie {
+        request.push_str(&format!("Cookie: {cookie}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).await?;
+    stream.flush().await?;
+
+    let invalid = || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer.");
+    let mut head_buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let split = loop {
+        if let Some(pos) = head_buf.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos;
+        }
+        if head_buf.len() > 64 * 1024 {
+            bail!(invalid());
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            bail!(invalid());
+        }
+        head_buf.extend_from_slice(&chunk[..n]);
+    };
+    let head = String::from_utf8_lossy(&head_buf[..split]);
+    let mut lines = head.split("\r\n");
+    let Some(status) = lines.next().and_then(|line| line.split_whitespace().nth(1)).and_then(|code| code.parse::<u16>().ok()) else {
+        bail!(invalid());
+    };
+    let chunked = lines.any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, value)| name.trim().eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked"))
+    });
+    let mut file = std::fs::File::create(destination)?;
+    let initial = &head_buf[split + 4..];
+    if chunked {
+        let mut buf = initial.to_vec();
+        let mut io_buf = vec![0u8; 256 * 1024];
+        loop {
+            while !buf.windows(2).any(|w| w == b"\r\n") {
+                let n = stream.read(&mut io_buf).await?;
+                if n == 0 {
+                    bail!(invalid());
+                }
+                buf.extend_from_slice(&io_buf[..n]);
+            }
+            let line_end = buf.windows(2).position(|w| w == b"\r\n").unwrap();
+            let size_text = std::str::from_utf8(&buf[..line_end]).map_err(|_| anyhow!(invalid()))?;
+            let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| anyhow!(invalid()))?;
+            buf.drain(..line_end + 2);
+            if size == 0 {
+                break;
+            }
+            let mut left = size;
+            if !buf.is_empty() {
+                let take = left.min(buf.len());
+                file.write_all(&buf[..take])?;
+                buf.drain(..take);
+                left -= take;
+            }
+            while left > 0 {
+                let want = left.min(io_buf.len());
+                let n = stream.read(&mut io_buf[..want]).await?;
+                if n == 0 {
+                    bail!(invalid());
+                }
+                file.write_all(&io_buf[..n])?;
+                left -= n;
+            }
+            while buf.len() < 2 {
+                let n = stream.read(&mut io_buf[..2 - buf.len()]).await?;
+                if n == 0 {
+                    bail!(invalid());
+                }
+                buf.extend_from_slice(&io_buf[..n]);
+            }
+            if &buf[..2] != b"\r\n" {
+                bail!(invalid());
+            }
+            buf.drain(..2);
+        }
+    } else {
+        if !initial.is_empty() {
+            file.write_all(initial)?;
+        }
+        let mut io_buf = vec![0u8; 256 * 1024];
+        loop {
+            let n = stream.read(&mut io_buf).await?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&io_buf[..n])?;
+        }
+    }
+    file.flush()?;
+    Ok(status)
 }
 
 /// Exchange the launch token for the session cookie (`name=value`).
@@ -285,5 +469,80 @@ async fn dispatch(inner: &Inner, events: &async_channel::Sender<RpcEvent>, sent:
             }
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    use super::*;
+
+    #[test]
+    fn posts_bytes_and_streams_files_with_cookie() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap() == 0 {
+                        break;
+                    }
+                    head.push(byte[0]);
+                }
+                let text = String::from_utf8_lossy(&head);
+                let content_len: usize = text
+                    .lines()
+                    .find_map(|line| {
+                        let (k, v) = line.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok()).flatten()
+                    })
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_len];
+                if content_len > 0 {
+                    stream.read_exact(&mut body).unwrap();
+                }
+                if text.starts_with("POST /upload ") {
+                    assert!(text.contains("Cookie: rainy_auth=tok\r\n"));
+                    assert!(text.contains("Content-Type: application/pdf\r\n"));
+                    let reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    stream.write_all(reply.as_bytes()).unwrap();
+                    stream.write_all(&body).unwrap();
+                } else if text.starts_with("GET /chunked ") {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
+                        .unwrap();
+                }
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("sample.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\nbody").unwrap();
+
+        smol::block_on(async {
+            let resp = http_post(port, "/upload", "rainy_auth=tok", "application/pdf", b"%PDF-bytes").await.unwrap();
+            assert_eq!(resp.status, 200);
+            assert_eq!(resp.body, b"%PDF-bytes");
+
+            let resp = http_post_file(port, "/upload", "rainy_auth=tok", "application/pdf", &pdf).await.unwrap();
+            assert_eq!(resp.status, 200);
+            assert_eq!(resp.body, b"%PDF-1.7\nbody");
+
+            let out = dir.path().join("out.bin");
+            let status = http_get_to_file(port, "/chunked", Some("rainy_auth=tok"), &out).await.unwrap();
+            assert_eq!(status, 200);
+            assert_eq!(std::fs::read(&out).unwrap(), b"hello world");
+
+            // Rejects CRLF injection in path or content-type.
+            assert!(http_post(port, "/bad\r\nX: 1", "rainy_auth=tok", "application/pdf", b"").await.is_err());
+            assert!(http_post(port, "/ok", "rainy_auth=tok", "text/plain\r\nX: 1", b"").await.is_err());
+        });
+        server.join().unwrap();
     }
 }

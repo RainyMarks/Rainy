@@ -12,12 +12,12 @@ use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler, DevToolsProtocolEventReceivedEventHandler,
-    ExecuteScriptCompletedHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
-    WebMessageReceivedEventHandler, take_pwstr,
+    ExecuteScriptCompletedHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    PermissionRequestedEventHandler, WebMessageReceivedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
-use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
+use windows::core::{BOOL, HSTRING, Interface, PCWSTR, PWSTR};
 
 type Waiter = Box<dyn FnOnce(Result<ICoreWebView2Environment, String>)>;
 
@@ -35,10 +35,7 @@ thread_local! {
 fn describe(error: &windows::core::Error) -> String {
     // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND): no WebView2 runtime is installed.
     if error.code().0 as u32 == 0x8007_0002 {
-        return rainy_carrier::locale::localized(
-            "这台电脑没有 Microsoft Edge WebView2 运行时，无法显示这类文件。请从微软官网安装 WebView2 运行时后重试。",
-            "This computer has no Microsoft Edge WebView2 Runtime, so this kind of file cannot be shown. Install the WebView2 Runtime from Microsoft, then try again.",
-        );
+        return crate::i18n::text(crate::i18n::Locale::current(), "native.webview2Missing").to_owned();
     }
     format!("WebView2: {} ({:#010x})", error.message(), error.code().0)
 }
@@ -133,6 +130,18 @@ pub struct Shortcut {
     pub alt: bool,
 }
 
+/// Whether `url` belongs to exact `origin` (scheme + host + port), preventing prefix spoofing
+/// such as `http://127.0.0.1:80` matching `http://127.0.0.1:8080/` or `http://127.0.0.1:80@evil.com`.
+pub fn matches_origin(url: &str, origin: &str) -> bool {
+    if origin.is_empty() {
+        return false;
+    }
+    let Some(rest) = url.strip_prefix(origin) else {
+        return false;
+    };
+    rest.is_empty() || matches!(rest.as_bytes()[0], b'/' | b'?' | b'#')
+}
+
 /// How a WebView is set up.
 pub struct Options {
     /// Profile folder: cookies, cache and storage.
@@ -141,7 +150,11 @@ pub struct Options {
     pub private: bool,
     /// Shown before the page paints.
     pub background: (u8, u8, u8),
-    /// Runs in every page before its own scripts; `window.ipc.postMessage` is always defined.
+    /// Whether JavaScript execution is allowed in the control (false for untrusted HTML PDF export).
+    pub scripts_enabled: bool,
+    /// Exact origin allowed to receive `window.ipc` and deliver WebMessages; `None` disables IPC injection.
+    pub ipc_origin: Option<String>,
+    /// Runs in every page before its own scripts (only when `scripts_enabled` is true).
     pub script: Option<String>,
     /// Strings the page posts with `window.ipc.postMessage`.
     pub on_message: Option<Box<dyn FnMut(String)>>,
@@ -217,7 +230,9 @@ impl WebView {
             let settings = view.Settings()?;
             settings.SetIsStatusBarEnabled(false)?;
             settings.SetIsZoomControlEnabled(false)?;
-            settings.SetAreDevToolsEnabled(cfg!(debug_assertions) || remote_debugging())?;
+            settings.SetIsScriptEnabled(options.scripts_enabled)?;
+            settings.SetIsWebMessageEnabled(options.scripts_enabled && options.ipc_origin.is_some())?;
+            settings.SetAreDevToolsEnabled(options.scripts_enabled && (cfg!(debug_assertions) || remote_debugging()))?;
             // The browser's own keys make no sense in an embedded page: F5 / Ctrl+R would reload it and lose the rich
             // editor's undo history, Ctrl+P, Ctrl+U, Ctrl+F, F12 and Alt+Left open browser features. Editing keys
             // (copy, paste, undo, select all) are not browser accelerators and keep working, and the keys reach the
@@ -227,9 +242,19 @@ impl WebView {
                 settings.SetAreBrowserAcceleratorKeysEnabled(false)?;
             }
             let mut token = 0i64;
+            let ipc_origin = options.ipc_origin.clone();
             if let Some(mut on_message) = options.on_message.take() {
+                let expected_origin = ipc_origin.clone();
                 let handler = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
                     if let Some(args) = args {
+                        if let Some(expected) = expected_origin.as_deref() {
+                            let mut source = PWSTR::null();
+                            if args.Source(&mut source).is_err() || !matches_origin(&take_pwstr(source), expected) {
+                                return Ok(());
+                            }
+                        } else {
+                            return Ok(());
+                        }
                         let mut text = PWSTR::null();
                         if args.TryGetWebMessageAsString(&mut text).is_ok() {
                             on_message(take_pwstr(text));
@@ -293,12 +318,27 @@ impl WebView {
                 }));
                 controller.add_AcceleratorKeyPressed(&handler, &mut token)?;
             }
-            let mut script = "window.ipc = { postMessage: (message) => window.chrome.webview.postMessage(String(message)) };".to_owned();
-            if let Some(extra) = options.script.take() {
-                script.push('\n');
-                script.push_str(&extra);
+            if options.scripts_enabled {
+                let mut script = String::new();
+                if let Some(origin) = ipc_origin.as_deref() {
+                    let origin_json = serde_json::to_string(origin).unwrap_or_else(|_| "\"\"".to_owned());
+                    script.push_str(&format!(
+                        "if (window.location && window.location.origin === {origin_json}) {{ window.ipc = {{ postMessage: (message) => window.chrome.webview.postMessage(String(message)) }}; }}"
+                    ));
+                }
+                if let Some(extra) = options.script.take() {
+                    if !script.is_empty() {
+                        script.push('\n');
+                    }
+                    script.push_str(&extra);
+                }
+                if !script.is_empty() {
+                    view.AddScriptToExecuteOnDocumentCreated(
+                        &HSTRING::from(script),
+                        None::<&ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>,
+                    )?;
+                }
             }
-            view.AddScriptToExecuteOnDocumentCreated(&HSTRING::from(script), None::<&ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>)?;
             Ok(WebView { controller, view })
         }
     }
@@ -373,9 +413,55 @@ impl WebView {
         let _ = unsafe { self.view.GetDevToolsProtocolEventReceiver(&HSTRING::from(name)).and_then(|receiver| receiver.add_DevToolsProtocolEventReceived(&callback, &mut token)) };
     }
 
+    /// Run `handler` when a navigation finishes; receives the page's current URL and whether navigation succeeded.
+    pub fn on_navigation_completed(&self, mut handler: impl FnMut(&str, bool) + 'static) {
+        let callback = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+            let mut ok = BOOL(0);
+            if let Some(args) = args {
+                // SAFETY: COM call on the UI thread with a valid out-pointer.
+                let _ = unsafe { args.IsSuccess(&mut ok) };
+            }
+            let source = sender
+                .and_then(|view| {
+                    let mut uri = PWSTR::null();
+                    // SAFETY: COM call on the UI thread with a valid out-pointer.
+                    unsafe { view.Source(&mut uri) }.ok().map(|()| take_pwstr(uri))
+                })
+                .unwrap_or_default();
+            handler(&source, ok.as_bool());
+            Ok(())
+        }));
+        let mut token = 0i64;
+        // SAFETY: COM call on the UI thread.
+        let _ = unsafe { self.view.add_NavigationCompleted(&callback, &mut token) };
+    }
+
     /// Remove the control and its window.
     pub fn close(&self) {
         // SAFETY: COM call on the UI thread.
         let _ = unsafe { self.controller.Close() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    #[test]
+    fn matches_exact_origin_only() {
+        let origin = "http://127.0.0.1:47400";
+        assert!(matches_origin("http://127.0.0.1:47400", origin));
+        assert!(matches_origin("http://127.0.0.1:47400/", origin));
+        assert!(matches_origin("http://127.0.0.1:47400/?view=pdf", origin));
+        assert!(matches_origin("http://127.0.0.1:47400#section", origin));
+        assert!(!matches_origin("http://127.0.0.1:474000/", origin));
+        assert!(!matches_origin("http://127.0.0.1:47401/", origin));
+        assert!(!matches_origin("http://127.0.0.1:47400@evil.com/", origin));
+        assert!(!matches_origin("https://127.0.0.1:47400/", origin));
+        assert!(!matches_origin("data:text/html,hi", origin));
+        assert!(!matches_origin("blob:http://127.0.0.1:47400/abc", origin));
+        assert!(!matches_origin("http://127.0.0.1:47400/", ""));
     }
 }
