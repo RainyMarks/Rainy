@@ -27,7 +27,12 @@
   - clangd：本机 PATH 里没有 clangd，打开 `main.c` 后状态栏显示“C：找不到 clangd，点这里到“设置 → 运行环境”准备”，点击打开“设置 → 运行环境”。
   - 英文界面、约 960×650 的窗口：状态栏显示 “C: clangd not found, click to prepare it in Settings → Runtime”；把左侧窗格拖到最窄，Swarm 标题栏的 Board / Members 1 / Stop all 仍完整显示。
 - **安装包 QA（QA 身份）**：46 项全部通过，包括从 3.9.2 和 4.0.0 覆盖升级。
-- **未验证**：悬停提示的文字只核对了代码，没有在界面里看到浮层；WSL 和 SSH 执行环境下的 clangd 提示、IDE Swarm 标签没有实测；Git 工作区对话仍只在 Windows 后台测过；没有用真实模型检查 Swarm 的协作质量。
+- **WSL 实测**（发布后补做；调试版加 4.11.4 的 Linux 运行环境 `ef6a436e…`，`RAINY_DEV_WSL_HOME` 指向临时家目录，执行环境 WSL · Ubuntu，假模型跑在 WSL 里，测试项目为 WSL 里新建的 Git 仓库）：
+  - Git 工作区对话：新对话选“独立工作区”后让模型写 `wt.txt`，后台在 `~/.rainy-agent/worktrees/proj-<id>` 建了分离的工作区，文件只在工作区里，项目目录不变；侧栏“在工作区建分支…”填 `wsl-test` 后工作区切到该分支，提示“已建分支 wsl-test”；“移交到项目”后 `wt.txt` 成为项目里未提交的改动，工作区目录和 Git 记录都删除，分支保留，侧栏的工作区图标消失。
+  - `/swarm 隔离 丢弃 创建两个文件`：结果与 Windows 后台相同，项目里只有 `beta.txt`，没有残留的工作区和分支。
+  - IDE 模式：左侧标签栏出现 Swarm 图标，看板在窄窗格里完整显示；文件树里没有 `alpha.txt`。
+  - clangd：这台 WSL 装有 `/usr/bin/clangd`，打开 `main.c` 后语言服务正常启动、状态栏没有报错；“找不到 clangd”的提示在 WSL 下没有触发。
+- **未验证**：悬停提示的文字只核对了代码，没有在界面里看到浮层；WSL 下找不到 clangd 的提示、SSH 执行环境下的 clangd 提示和 IDE Swarm 标签没有实测；SSH 后台的 Git 工作区对话没有测；没有用真实模型检查 Swarm 的协作质量。
 
 ## 4.11.3（2026-11-15）
 
