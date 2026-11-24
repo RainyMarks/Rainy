@@ -567,7 +567,9 @@ impl ChatStore {
     }
 
     /// Append whole lines, starting on a new line when a crash left the last one partial.
+    /// Called with the chat's lock held; a chat deleted while the caller waited for it is not written again.
     fn append_lines(&self, id: &str, text: &str) -> HostResult<()> {
+        self.require(id)?;
         let path = self.path(id);
         let checked = self.state.lock().unwrap().line_ended.contains(id);
         let mut file = std::fs::OpenOptions::new().append(true).read(true).create(true).open(&path)?;
@@ -667,11 +669,11 @@ impl ChatStore {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
                 _ => {}
             }
+            // Still holding the lock, so a write waiting for it finds the chat gone.
+            let mut state = self.state.lock().unwrap();
+            state.chats.remove(id);
+            state.line_ended.remove(id);
         }
-        let mut state = self.state.lock().unwrap();
-        state.chats.remove(id);
-        state.line_ended.remove(id);
-        drop(state);
         self.locks.lock().unwrap().remove(id);
         self.schedule_index();
         Ok(())
@@ -778,6 +780,34 @@ fn snippet(text: &str, word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_write_waiting_on_a_delete_does_not_bring_the_chat_back() {
+        let dir = std::env::temp_dir().join(format!("rainy-chats-{}", uuid::Uuid::new_v4()));
+        let store = ChatStore::load(dir.clone()).unwrap();
+        let chat = store.create(NewChat { cwd: "/w".into(), ..NewChat::default() }).unwrap();
+        let held = store.lock(&chat.id);
+        let guard = held.lock().await;
+        // The delete waits first, then a write that found the chat still there.
+        let deleting = tokio::spawn({
+            let (store, id) = (store.clone(), chat.id.clone());
+            async move { store.delete(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let writing = tokio::spawn({
+            let (store, id) = (store.clone(), chat.id.clone());
+            async move {
+                let entry: TranscriptEntry = serde_json::from_value(json!({ "kind": "notice", "id": "e1", "ts": 1, "level": "info", "text": "late" })).unwrap();
+                store.append(&id, &[entry]).await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(guard);
+        deleting.await.unwrap().unwrap();
+        assert!(writing.await.unwrap().is_err());
+        assert!(!store.path(&chat.id).exists(), "the deleted chat's file came back without its first line");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn writes_and_reads_3x_files() {
