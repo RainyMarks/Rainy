@@ -180,12 +180,15 @@ fn shared_env(target: &ExecutionTarget) -> Vec<(String, String)> {
 /// `linux-app` modules, which may not be there yet; a development checkout stages them beside the other resources.
 pub fn runtime_files(paths: &Paths, modules: &Modules) -> RuntimeFiles {
     let staged = paths.resources.join("linux-app.tar.gz");
-    let app = if !paths.packaged() && staged.is_file() { staged.clone() } else { modules.path(LINUX_APP).unwrap_or(staged) };
+    // Only this version's archives count. An earlier version's application layer stays in `modules` (an SSH
+    // connection keeps it for the next server), and sent to a server it failed the check as a layer that "did not
+    // arrive intact", on every retry. A path that does not exist makes the callers download this version's first.
+    let app = if !paths.packaged() && staged.is_file() { staged.clone() } else { modules.archive(LINUX_APP).unwrap_or(staged) };
     RuntimeFiles {
         metadata: paths.resources.join("linux-runtime.json"),
         app,
         installer: paths.resources.join("install-runtime.py"),
-        base: development_base(paths).or_else(|| modules.path(LINUX_RUNTIME).ok()),
+        base: development_base(paths).or_else(|| modules.archive(LINUX_RUNTIME)),
     }
 }
 

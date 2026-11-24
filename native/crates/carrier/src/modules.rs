@@ -337,9 +337,9 @@ impl Modules {
         Value::Array(module.pieces.iter().map(|piece| json!({ "url": format!("{}{}", module.base_url, piece.file), "bytes": piece.bytes, "sha256": piece.sha256 })).collect())
     }
 
-    /// The archive of an installed file module.
-    #[cfg(test)]
-    fn archive(&self, id: &str) -> Option<PathBuf> {
+    /// The archive of a file module when it is the one this version pins; `None` otherwise. An earlier version's
+    /// archive stays in place until it is replaced, and `path` names it all the same.
+    pub fn archive(&self, id: &str) -> Option<PathBuf> {
         let module = self.module(id).ok()?;
         (module.kind == Kind::File && self.is_installed(&module).ok()?).then(|| self.root.join(id).join(&module.file))
     }
@@ -822,6 +822,11 @@ mod tests {
         // Another pinned archive, or a file module without its archive, is not installed.
         installed_by_3x(user_data.path(), "php", &"0".repeat(64), None);
         assert_eq!(modules.installed("php"), Ok(false));
+        // An earlier version's archive is still there: `path` names it, `archive` does not.
+        installed_by_3x(user_data.path(), "linux-runtime", &"0".repeat(64), Some("linux-runtime.tar.xz"));
+        assert!(archive.is_file());
+        assert_eq!(modules.archive("linux-runtime"), None);
+        assert_eq!(modules.path("linux-runtime"), Ok(archive.clone()));
         fs::remove_file(&archive).unwrap();
         assert_eq!(modules.archive("linux-runtime"), None);
         fs::write(user_data.path().join("modules").join("php").join(MARKER), "{damaged").unwrap();

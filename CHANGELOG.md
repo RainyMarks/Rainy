@@ -14,7 +14,7 @@ English | [中文](CHANGELOG.zh.md)
 - **Remote resources**: with an SSH or WSL connection the status bar shows free GPUs, CPU cores (with the cgroup limit) and load; open it for memory, each GPU's memory and processes, and free disk space.
 - **Research settings per host**: Settings → Runtime sets, for each SSH host, the Rainy data folder (kept across container restarts), the default working folder, bookmarked folders, preset environment variables, keep-alive, port forwards (optionally started on connect) and notes about the host that the agent is told (which GPU is often busy, say).
 - **Upload and download files**: the file tree uploads files from this PC into a project folder (up to 512 MB each) and downloads a file to this PC.
-- **Steadier SSH**: the host list reads configs that `~/.ssh/config` pulls in with `Include`; a dropped connection reconnects by itself (up to 3 tries, or retry now); the command palette switches the execution target directly.
+- **Steadier SSH**: the host list reads configs that `~/.ssh/config` pulls in with `Include`; a dropped connection reconnects by itself (up to 3 tries, or retry now); the command palette switches the execution target directly; after an upgrade, the first connection from a PC that used SSH before no longer fails its check (and every retry) because the previous version's Linux application layer was still on this PC.
 
 ## 4.11.5 · 2026-11-23
 
