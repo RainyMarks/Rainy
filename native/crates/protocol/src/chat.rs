@@ -396,6 +396,60 @@ pub struct ExternalAgentStatus {
     /// The slash commands the agent last listed in this Host (Antigravity's `/swarm`, `/teamwork`…).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<ExternalCommand>,
+    /// The account's usage limits as the agent last reported them (`external.quota`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<ExternalQuota>,
+}
+
+/// An external agent account's usage limits: Codex's five-hour and weekly windows, Antigravity's per model group.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalQuota {
+    /// Unix milliseconds when Rainy read them.
+    pub fetched_at: i64,
+    /// The account's plan ("plus"), when the agent tells it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<QuotaWindow>,
+    /// Why the limits could not be read, when they could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ExternalQuota {
+    /// Which of the account's model groups `model` counts toward: for Antigravity "Gemini Models" for `gemini-*`, the
+    /// group naming Claude or GPT for those; `None` when the windows name no group or none fits.
+    pub fn group_of(&self, model: &str) -> Option<&str> {
+        let model = model.to_ascii_lowercase();
+        let family = ["gemini", "claude", "gpt"].into_iter().find(|family| model.starts_with(family))?;
+        self.windows.iter().filter_map(|window| window.group.as_deref()).find(|group| group.to_ascii_lowercase().contains(family))
+    }
+
+    /// The windows that count `model`, shortest first: those of its group, or all of them when no group fits.
+    pub fn windows_for(&self, model: Option<&str>) -> Vec<&QuotaWindow> {
+        let group = model.and_then(|model| self.group_of(model));
+        let mut windows: Vec<&QuotaWindow> = self.windows.iter().filter(|window| group.is_none() || window.group.as_deref() == group).collect();
+        windows.sort_by_key(|window| window.minutes.unwrap_or(u32::MAX));
+        windows
+    }
+}
+
+/// One usage window of an external agent account.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaWindow {
+    /// The models the window counts, as the agent names them ("Gemini Models"); `None` for all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The window's length in minutes: 300 is five hours, 10080 a week.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u32>,
+    /// Percent of the window still available, 0–100.
+    pub remaining: u8,
+    /// Unix seconds when the window starts over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
 }
 
 /// Response of `external.status`, `external.probe`, `external.configure` and payload of `external.changed`.

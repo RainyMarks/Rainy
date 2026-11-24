@@ -6,15 +6,17 @@
 pub mod acp;
 pub mod codex;
 pub mod jsonrpc;
+pub mod quota;
 pub mod team;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rainy_protocol::chat::{
-    ExternalAgentConfig, ExternalAgentStatus, ExternalBackendRef, ExternalCommand, ExternalModelInfo, ExternalStatusResponse, PendingApproval, UsageSummary,
+    ExternalAgentConfig, ExternalAgentStatus, ExternalBackendRef, ExternalCommand, ExternalModelInfo, ExternalQuota, ExternalStatusResponse, PendingApproval,
+    UsageSummary,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -31,6 +33,10 @@ const IDLE_REAP_AFTER: Duration = Duration::from_secs(10 * 60);
 const REAP_INTERVAL: Duration = Duration::from_secs(60);
 const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_MODELS_TIMEOUT: Duration = Duration::from_secs(15);
+/// Usage limits read this recently are not read again unless asked to.
+const QUOTA_FRESH_MS: i64 = 60_000;
+/// `agy -p /usage` asks Google's servers; it answers within seconds.
+const QUOTA_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// User decision answering an external agent's approval/permission prompt.
 #[derive(Debug, Clone)]
@@ -80,6 +86,8 @@ pub enum ExternalEvent {
     UsageUpdated(UsageSummary),
     /// The models the agent offers, as a session it opened listed them (ACP `session/new` and `session/resume`).
     ModelsListed(Vec<ExternalModelInfo>),
+    /// The account's usage limits, as the agent reported them during the turn (Codex `account/rateLimits/updated`).
+    QuotaUpdated(ExternalQuota),
     Notice { code: String, text: String },
     TurnFinished {
         stop_reason: String,
@@ -156,6 +164,9 @@ pub struct ExternalManager {
     /// a restart without starting the agent (a probe leaves an empty conversation in Antigravity's history).
     known_models: Mutex<HashMap<String, Vec<ExternalModelInfo>>>,
     models_file: PathBuf,
+    /// Each kind's usage limits as last read, and the kinds being read now.
+    quotas: Mutex<HashMap<String, ExternalQuota>>,
+    quota_reading: Mutex<HashSet<String>>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -185,6 +196,8 @@ impl ExternalManager {
             commands: Mutex::new(HashMap::new()),
             known_models: Mutex::new(known_models),
             models_file,
+            quotas: Mutex::new(HashMap::new()),
+            quota_reading: Mutex::new(HashSet::new()),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&manager);
@@ -219,12 +232,13 @@ impl ExternalManager {
                     None => {
                         let cmd = command_name_for(&cfg);
                         let resolved = resolve_cli(&cmd, &env);
+                        let missing = (resolved.is_none() && !cmd.is_empty()).then(|| jsonrpc::explain_missing(&cmd, &env));
                         (
                             resolved.is_some(),
                             resolved.map(|p| p.to_string_lossy().into_owned()),
                             None,
                             self.known_models.lock().ok().and_then(|known| known.get(&cfg.kind).cloned()).unwrap_or_default(),
-                            None,
+                            missing,
                         )
                     }
                 };
@@ -233,6 +247,7 @@ impl ExternalManager {
                     install_hint: install_hint(&cfg.kind, self.windows),
                     login_hint: login_hint(&cfg.kind, self.windows),
                     commands: self.commands.lock().ok().and_then(|known| known.get(&cfg.kind).cloned()).unwrap_or_default(),
+                    quota: self.quotas.lock().ok().and_then(|known| known.get(&cfg.kind).cloned()),
                     kind: cfg.kind,
                     enabled: cfg.enabled,
                     installed,
@@ -412,6 +427,85 @@ impl ExternalManager {
         if let Ok(mut known) = self.commands.lock() {
             known.insert(kind.to_owned(), commands);
         }
+    }
+
+    /// Keep usage limits an agent of `kind` reported; whether they differ from those known (ignoring when read).
+    pub fn note_quota(&self, kind: &str, quota: ExternalQuota) -> bool {
+        let Ok(mut known) = self.quotas.lock() else { return false };
+        let same = known.get(kind).is_some_and(|old| old.plan == quota.plan && old.windows == quota.windows && old.error == quota.error);
+        known.insert(kind.to_owned(), quota);
+        !same
+    }
+
+    /// Read the usage limits of `kind` again, unless they were read within the last minute and `force` is off: Codex
+    /// answers `account/rateLimits/read`, Antigravity prints them for `agy -p /usage` (neither opens a conversation).
+    /// Whether what is known changed.
+    pub async fn refresh_quota(&self, kind: &str, force: bool, cwd: &Path) -> bool {
+        if !matches!(kind, "codex" | "antigravity") {
+            return false;
+        }
+        let fresh = self.quotas.lock().ok().and_then(|known| known.get(kind).map(|quota| quota::now_ms() - quota.fetched_at < QUOTA_FRESH_MS)).unwrap_or(false);
+        if fresh && !force {
+            return false;
+        }
+        {
+            let Ok(mut reading) = self.quota_reading.lock() else { return false };
+            if !reading.insert(kind.to_owned()) {
+                return false;
+            }
+        }
+        let read = self.read_quota(kind, cwd).await;
+        if let Ok(mut reading) = self.quota_reading.lock() {
+            reading.remove(kind);
+        }
+        let quota = read.unwrap_or_else(|error| {
+            // Keep the last limits read, marked with why they could not be read now.
+            let mut last = self.quotas.lock().ok().and_then(|known| known.get(kind).cloned()).unwrap_or_default();
+            last.fetched_at = quota::now_ms();
+            last.error = Some(error);
+            last
+        });
+        self.note_quota(kind, quota)
+    }
+
+    async fn read_quota(&self, kind: &str, cwd: &Path) -> Result<ExternalQuota, String> {
+        let cfg = self.effective_configs().into_iter().find(|cfg| cfg.kind == kind).ok_or_else(|| l("没有配置这个外部 Agent。", "This external agent is not configured."))?;
+        let env = external_env();
+        let command = command_name_for(&cfg);
+        let binary = resolve_cli(&command, &env).ok_or_else(|| jsonrpc::explain_missing(&command, &env))?;
+        if kind == "codex" {
+            let args = if cfg.args.is_empty() { default_args(kind) } else { cfg.args.clone() };
+            // A Codex already running for a chat answers as well as a new one, and sooner.
+            let running = self.codex_pool.lock().await.values().find(|process| process.is_alive()).cloned();
+            let started = running.is_none();
+            let process = match running {
+                Some(process) => process,
+                None => CodexProcess::spawn(&binary, &args, cwd).await.map_err(|error| error.message)?,
+            };
+            let cancel = CancellationToken::new();
+            let read = tokio::time::timeout(QUOTA_TIMEOUT, process.read_rate_limits(&cancel)).await;
+            if started {
+                process.close().await;
+            }
+            return match read {
+                Ok(Ok(value)) => quota::codex(&value).ok_or_else(|| l("Codex 没有返回额度信息。", "Codex sent no usage limits.")),
+                Ok(Err(error)) => Err(error.message),
+                Err(_) => Err(l("读取 Codex 额度超时。", "Reading Codex's usage limits timed out.")),
+            };
+        }
+        let output = crate::process::run(&binary, &["-p", "/usage"], cwd, &env, 64 * 1024, Some(QUOTA_TIMEOUT))
+            .await
+            .map_err(|error| l(&format!("无法运行 agy 读取额度：{error}"), &format!("Could not run agy to read the usage limits: {error}")))?;
+        let text = crate::process::console_text(&output.stdout);
+        let errors = crate::process::console_text(&output.stderr);
+        quota::agy_usage(&text).ok_or_else(|| {
+            let said = text.lines().chain(errors.lines()).map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().chars().take(160).collect::<String>();
+            if said.is_empty() {
+                l("agy 没有返回额度信息。", "agy printed no usage limits.")
+            } else {
+                l(&format!("agy 没有返回额度信息：{said}"), &format!("agy printed no usage limits: {said}"))
+            }
+        })
     }
 
     /// The latest steps of a Codex sub-agent of the main thread `main`.
@@ -602,7 +696,7 @@ async fn probe_one(cfg: &ExternalAgentConfig, env: &std::collections::BTreeMap<s
         return CachedProbe { installed: false, ..CachedProbe::default() };
     }
     let Some(binary) = resolve_cli(&cmd, env) else {
-        return CachedProbe { installed: false, ..CachedProbe::default() };
+        return CachedProbe { installed: false, error: Some(jsonrpc::explain_missing(&cmd, env)), ..CachedProbe::default() };
     };
     let binary_path = Some(binary.to_string_lossy().into_owned());
     let version = probe_version(&binary, cwd, env).await;

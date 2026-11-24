@@ -434,8 +434,76 @@ pub fn external_env() -> BTreeMap<OsString, OsString> {
     env
 }
 
-/// Resolve an external CLI executable on the Host's `PATH` (or direct path), with common fallback locations
-/// such as `~/.local/bin` on Unix and `%USERPROFILE%\.codex\bin` / `%LOCALAPPDATA%\Programs` on Windows.
+/// Where the CLIs install themselves when their directory is not on the inherited PATH: `~/.local/bin`,
+/// `~/.codex/bin`, Antigravity's and agy's own folders under `%LOCALAPPDATA%`, and on Windows the PATH the registry
+/// holds now (an installer adds itself there, and a Rainy started before it, or by a shell that kept an older copy,
+/// does not see it).
+fn fallback_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from) {
+        dirs.push(home.join(".local").join("bin"));
+        dirs.push(home.join(".codex").join("bin"));
+    }
+    if cfg!(windows)
+        && let Some(local) = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+    {
+        dirs.push(local.join("Programs").join("Antigravity").join("bin"));
+        dirs.push(local.join("Antigravity").join("bin"));
+        dirs.push(local.join("agy").join("bin"));
+    }
+    #[cfg(windows)]
+    dirs.extend(registry_path());
+    dirs
+}
+
+/// The user's and the machine's PATH as the registry holds them now, `%NAME%`s expanded.
+#[cfg(windows)]
+fn registry_path() -> Vec<std::path::PathBuf> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |text: &str| text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let read = |root: HKEY, key: &str| -> Option<String> {
+        let (key, value) = (wide(key), wide("Path"));
+        let mut buffer = vec![0u16; 4096];
+        for _ in 0..4 {
+            let mut size = u32::try_from(buffer.len() * 2).ok()?;
+            // SAFETY: both names end with NUL, and `size` is the buffer's length in bytes. RRF_RT_REG_SZ takes a
+            // REG_EXPAND_SZ too, expanded.
+            let status = unsafe { RegGetValueW(root, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size) };
+            match status {
+                ERROR_SUCCESS => {
+                    let units = &buffer[..(size as usize / 2).min(buffer.len())];
+                    let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+                    return Some(String::from_utf16_lossy(&units[..end]));
+                }
+                ERROR_MORE_DATA => buffer = vec![0u16; (size as usize / 2).max(buffer.len() * 2) + 1],
+                _ => return None,
+            }
+        }
+        None
+    };
+    [read(HKEY_CURRENT_USER, "Environment"), read(HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")]
+        .into_iter()
+        .flatten()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| std::path::PathBuf::from(dir.to_string_lossy().trim().trim_matches('"')))
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect()
+}
+
+fn path_of(env: &BTreeMap<OsString, OsString>) -> OsString {
+    env.iter()
+        .find(|(k, _)| if cfg!(windows) { k.to_string_lossy().eq_ignore_ascii_case("PATH") } else { k.as_os_str() == "PATH" })
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
+fn is_direct(command: &str) -> bool {
+    Path::new(command).is_absolute() || command.contains('/') || (cfg!(windows) && command.contains('\\'))
+}
+
+/// Resolve an external CLI executable on the Host's `PATH` (or direct path), then in the places [`fallback_dirs`]
+/// lists.
 pub fn resolve_cli(command: &str, env: &BTreeMap<OsString, OsString>) -> Option<std::path::PathBuf> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -444,37 +512,59 @@ pub fn resolve_cli(command: &str, env: &BTreeMap<OsString, OsString>) -> Option<
     if let Some(found) = crate::process::resolve_executable(trimmed, Some(env)) {
         return Some(found);
     }
-    // Check well-known user-level CLI install directories if not yet on the inherited PATH.
-    let direct = Path::new(trimmed).is_absolute() || trimmed.contains('/') || (cfg!(windows) && trimmed.contains('\\'));
-    if direct {
+    if is_direct(trimmed) {
         return None;
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)?;
-    let mut extra_dirs = vec![home.join(".local").join("bin"), home.join(".codex").join("bin")];
-    if cfg!(windows)
-        && let Some(local) = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
-    {
-        extra_dirs.push(local.join("Programs").join("Antigravity").join("bin"));
-        extra_dirs.push(local.join("Antigravity").join("bin"));
-    }
     let mut augmented = env.clone();
-    let existing = augmented
-        .iter()
-        .find(|(k, _)| if cfg!(windows) { k.to_string_lossy().eq_ignore_ascii_case("PATH") } else { k.as_os_str() == "PATH" })
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
-    let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&existing).collect();
-    paths.extend(extra_dirs);
-    if let Ok(joined) = std::env::join_paths(paths) {
-        if cfg!(windows) {
-            augmented.retain(|k, _| !k.to_string_lossy().eq_ignore_ascii_case("PATH"));
-        }
-        augmented.insert(OsString::from("PATH"), joined);
-        return crate::process::resolve_executable(trimmed, Some(&augmented));
+    let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&path_of(env)).collect();
+    paths.extend(fallback_dirs());
+    let joined = std::env::join_paths(paths).ok()?;
+    if cfg!(windows) {
+        augmented.retain(|k, _| !k.to_string_lossy().eq_ignore_ascii_case("PATH"));
     }
-    None
+    augmented.insert(OsString::from("PATH"), joined);
+    crate::process::resolve_executable(trimmed, Some(&augmented))
+}
+
+/// Why [`resolve_cli`] found nothing, for the settings row: how many places it looked in, and any candidate that
+/// exists but could not be read (an access error, a broken link), which is the case PATH alone cannot explain.
+pub fn explain_missing(command: &str, env: &BTreeMap<OsString, OsString>) -> String {
+    let trimmed = command.trim();
+    let names: Vec<String> = if cfg!(windows) && Path::new(trimmed).extension().is_none() {
+        ["exe", "cmd", "bat", "com"].iter().map(|ext| format!("{trimmed}.{ext}")).collect()
+    } else {
+        vec![trimmed.to_owned()]
+    };
+    let candidates: Vec<std::path::PathBuf> = if is_direct(trimmed) {
+        names.iter().map(std::path::PathBuf::from).collect()
+    } else {
+        let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path_of(env)).filter(|dir| !dir.as_os_str().is_empty()).collect();
+        dirs.extend(fallback_dirs());
+        dirs.iter().flat_map(|dir| names.iter().map(move |name| dir.join(name))).collect()
+    };
+    // A file that is there by name (the directory lists it) but whose metadata cannot be read.
+    let unreadable = candidates.iter().find_map(|candidate| {
+        let present = std::fs::symlink_metadata(candidate).is_ok();
+        match std::fs::metadata(candidate) {
+            Err(error) if present => Some((candidate.clone(), error)),
+            _ => None,
+        }
+    });
+    if let Some((path, error)) = unreadable {
+        return crate::locale::l(
+            &format!("找到了 {}，但读不了它：{error}", path.display()),
+            &format!("Found {}, but it cannot be read: {error}", path.display()),
+        );
+    }
+    if is_direct(trimmed) {
+        return crate::locale::l(&format!("没有这个文件：{trimmed}"), &format!("No such file: {trimmed}"));
+    }
+    let searched = std::env::split_paths(&path_of(env)).filter(|dir| !dir.as_os_str().is_empty()).count();
+    let extra = fallback_dirs().len();
+    crate::locale::l(
+        &format!("在 PATH 的 {searched} 个目录和另外 {extra} 个常见安装位置都没找到 {trimmed}。装好后点“重新探测”，或在“自定义可执行文件路径”里填它的完整路径。"),
+        &format!("{trimmed} is in none of the {searched} PATH directories or {extra} other usual install places. After installing it, choose Re-probe, or enter its full path as the custom executable path."),
+    )
 }
 
 #[cfg(test)]
@@ -486,6 +576,27 @@ mod tests {
         let env = external_env();
         assert!(env.keys().any(|k| k.to_string_lossy().eq_ignore_ascii_case("PATH")));
         assert!(!env.keys().any(|k| k.to_string_lossy().eq_ignore_ascii_case("RAINY_TOKEN")));
+    }
+
+    #[test]
+    fn explains_a_missing_cli() {
+        let env = BTreeMap::from([(OsString::from("PATH"), OsString::new())]);
+        assert!(resolve_cli("rainy-no-such-cli", &env).is_none());
+        let text = explain_missing("rainy-no-such-cli", &env);
+        assert!(text.contains("rainy-no-such-cli") && text.contains(" 0 "), "{text}");
+        assert!(explain_missing("/no/such/dir/cli", &env).contains("/no/such/dir/cli"));
+    }
+
+    /// A name the directory lists but that cannot be opened (here a link to nothing) is reported with its error.
+    #[cfg(unix)]
+    #[test]
+    fn explains_an_unreadable_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("rainy-broken-cli")).unwrap();
+        let env = BTreeMap::from([(OsString::from("PATH"), dir.path().as_os_str().to_owned())]);
+        assert!(resolve_cli("rainy-broken-cli", &env).is_none());
+        let text = explain_missing("rainy-broken-cli", &env);
+        assert!(text.contains(&dir.path().join("rainy-broken-cli").display().to_string()), "{text}");
     }
 
     #[test]

@@ -147,6 +147,30 @@ export interface ExternalAgentStatus {
   error?: string | null | undefined
   /** The slash commands the agent last listed (ACP `available_commands_update`). */
   commands?: ExternalCommand[] | undefined
+  /** The account's usage limits as the agent last reported them (`external.quota`). */
+  quota?: ExternalQuota | null | undefined
+}
+
+/** An external agent account's usage limits: Codex's five-hour and weekly windows, Antigravity's per model group. */
+export interface ExternalQuota {
+  /** Unix milliseconds when Rainy read them. */
+  fetchedAt: number
+  plan?: string | null | undefined
+  windows?: QuotaWindow[] | undefined
+  /** Why the limits could not be read, when they could not. */
+  error?: string | null | undefined
+}
+
+/** One usage window of an external agent account. */
+export interface QuotaWindow {
+  /** The models the window counts ("Gemini Models"); absent for all of them. */
+  group?: string | null | undefined
+  /** The window's length in minutes: 300 is five hours, 10080 a week. */
+  minutes?: number | null | undefined
+  /** Percent of the window still available, 0–100. */
+  remaining: number
+  /** Unix seconds when the window starts over. */
+  resetsAt?: number | null | undefined
 }
 
 /** A slash command an external agent offers, sent to it as `/name text`. */
@@ -483,6 +507,8 @@ export interface HostMethods {
   'session.contextBreakdown': [{ sessionId: SessionId }, ContextBreakdown]
   /** Configuration and cached probe status of external CLI agents. */
   'external.status': [Record<string, never>, ExternalStatusResponse]
+  /** Read an external agent's usage limits again (Codex, Antigravity); a reading under a minute old is kept unless `force`. */
+  'external.quota': [{ kind: string; force?: boolean | undefined; cwd?: string | undefined }, ExternalStatusResponse]
   /** Probe external CLI binaries and models on demand. */
   'external.probe': [{ kind?: string | undefined; binary?: string | undefined; args?: string[] | undefined; cwd?: string | undefined }, ExternalStatusResponse]
   /** Update or remove one external CLI agent entry in `settings.json`. */

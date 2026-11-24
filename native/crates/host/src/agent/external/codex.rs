@@ -175,6 +175,15 @@ impl CodexProcess {
         Ok(parse_codex_models(&value))
     }
 
+    /// The account's usage limits via `account/rateLimits/read`: no thread, no turn, nothing used up.
+    pub async fn read_rate_limits(&self, cancel: &CancellationToken) -> HostResult<Value> {
+        self.touch();
+        self.rpc
+            .request("account/rateLimits/read", Value::Null, RPC_TIMEOUT, cancel)
+            .await
+            .map_err(|err| codex_error("account/rateLimits/read", err, &self.rpc.stderr_tail()))
+    }
+
     /// Run one full conversational turn on Codex, emitting normalized [`ExternalEvent`] updates until `turn/completed`.
     pub async fn run_turn(
         self: &Arc<Self>,
@@ -322,6 +331,12 @@ impl CodexProcess {
                             }
                             self.touch();
                             match note.method.as_str() {
+                                // Sent when a turn uses up some of the account's limits; it names no thread.
+                                "account/rateLimits/updated" => {
+                                    if let Some(quota) = super::quota::codex(&note.params) {
+                                        let _ = events.send(ExternalEvent::QuotaUpdated(quota));
+                                    }
+                                }
                                 "item/agentMessage/delta" => {
                                     if let Some(delta) = note.params.get("delta").and_then(Value::as_str)
                                         && !delta.is_empty()

@@ -1449,6 +1449,11 @@ impl Session {
                             self.services.rpc.emit("external.changed", &self.services.external.status());
                         }
                     }
+                    ExternalEvent::QuotaUpdated(quota) => {
+                        if self.services.external.note_quota(&backend.kind, quota) {
+                            self.services.rpc.emit("external.changed", &self.services.external.status());
+                        }
+                    }
                     ExternalEvent::CommandsUpdated(commands) => {
                         self.services.external.remember_commands(&backend.kind, commands.clone());
                         self.services.rpc.emit("external.commands", json!({ "kind": backend.kind, "commands": commands }));
@@ -1643,6 +1648,16 @@ impl Session {
             }
             self.inner.lock().unwrap().external_turn = None;
             self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+            // The turn used some of the account's limits: read them again in the background (Codex usually sent them
+            // during the turn already, and a reading less than a minute old is kept).
+            {
+                let (external, rpc, kind, cwd) = (self.services.external.clone(), self.services.rpc.clone(), backend.kind.clone(), PathBuf::from(&self.chat().cwd));
+                tokio::spawn(async move {
+                    if external.refresh_quota(&kind, false, &cwd).await {
+                        rpc.emit("external.changed", &external.status());
+                    }
+                });
+            }
 
             match self.finish_external_run(&provider, &reply.model).await {
                 Some((next_text, next_images)) => {
