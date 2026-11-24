@@ -1,35 +1,5 @@
 # Rainy 验收记录
 
-## 外部 Agent 接入审查（2026-11-23，未发版）
-
-审查另一个代理提交的 `c3b32fe8d0`（接入 Codex、Antigravity 等外部 Agent，升级 SSH 科研工作台），并按要求补上外部 Agent 团队的显示：Antigravity 的蜂群（`/swarm`）、团队模式（`/teamwork`）和其他子 Agent，Codex 的子 Agent。外部 Agent 和用户自己配置的 API 模型并存，互不影响。
-
-### 审查发现并修正的问题
-
-- **Codex 子 Agent 的审批会卡住回合**：子 Agent 在自己的线程上请求审批，请求不属于主线程，被直接丢弃，Codex 一直等答复。现在本对话子 Agent 的请求照常显示，审批条前标出是谁（`@tester · 运行这条命令需要你的批准`，`PendingApproval.agent`），答复发回它的线程；同一进程上其他对话的线程仍不处理。
-- **Antigravity 的 `/swarm` 被拦截**：外部对话里以 `/swarm` 开头的消息一律报错“不支持 Rainy 内置 /swarm”，而 `/swarm`、`/teamwork` 正是 Antigravity 启动蜂群和团队模式的命令，在 Rainy 里开不了。现在 ACP 类 Agent 原样收到命令；Codex 没有 `/swarm`，提示改为直接用文字让它派子 Agent。
-- **Agent 公布的斜杠命令没接上**：没有处理 ACP 的 `available_commands_update`，而且回合在建立会话之后才开始监听，`session/new` 之后马上推来的命令清单会漏掉。现在建立会话前就开始监听，期间只取命令清单（`session/load` 重放的历史不会写进对话）；清单经 `external.commands` 送到界面，外部对话的 `/` 菜单显示 Rainy 的 `/new` 和 Agent 自己的命令，Antigravity 公布清单前先提供 `/swarm`、`/teamwork`；Rainy 自己的 `/swarm`、`/compact` 不在外部对话里出现，在外部对话里打 `/compact` 等也原样发给 Agent。
-- **协议定义不同步**：`PendingApproval` 新增的字段没有写进 `src/shared/rpc.ts`，协议同步测试失败；已补上，`ExternalAgentStatus.commands`、`ExternalCommand` 一并加入。
-
-SSH 科研工作台部分（后台实验、文件上传下载、端口隧道、`Include` 解析、自动重连）没有发现需要修改的问题：实验按进程号、启动时间、用户和进程组核对身份后才发信号；上传只写进工作区，拒绝 `..`、绝对路径和符号链接，先写临时文件再改名；隧道只绑 `127.0.0.1`，参数都在 `--` 之前；`Include` 限深度 8、64 个文件，不出 `~/.ssh`；重连最多 3 次。
-
-### 新增：外部 Agent 的团队
-
-- **Antigravity**：从它自己的目录读团队（`~/.gemini/antigravity/brain/<对话>/.system_generated`，CLI 为 `antigravity-cli`）：`subagents/*.json` 给出成员树（蜂群成员、teamwork 的编排者、探索者、挑战者、访谈者、审核者，浏览器等子 Agent），`swarm/members.json`、`plan.json`、`board.jsonl` 给出蜂群的成员、计划和看板，各成员的 `logs/transcript.jsonl` 给出最近的步骤、当前重点和清单进度。有人工作时每 1.5 秒、否则每 5 秒读一次，看板增量读取；新对话的目录要等 Antigravity 开工才出现，对话运行期间每 1.5 秒找一次。看板帖子的 `time` 是本地时间，不再当成 UTC 换算；“协调者”无论作为发帖人还是被 @ 的人都显示为主 Agent。
-- **Codex**：从通知里收集子 Agent（`subAgentActivity`，以及多智能体 v2 的 `spawnAgent`、`wait`），子 Agent 自己线程的通知只进团队，不进对话正文。每个子 Agent 在对话里是一张卡片，显示进度和最终回答；等待子 Agent 显示为一步。
-- **面板**：沿用 Swarm 面板，只读：看板（发帖人 → 收件人、时间，长帖折叠、可展开，跟随最新帖子，用户往上翻时不打扰）、成员（按层级缩进，类型、模型、状态、当前重点或最近动作、清单进度、任务，点开看最近步骤）、计划（目标和各条工作线及成员状态）。对话运行中出现团队时面板自动打开；主 Agent 的状态以对话的实时状态为准。
-
-### 检查
-
-- **测试**：`rainy` 133 项（1 项忽略）、`rainy-carrier` 295 项（7 项忽略）、`rainy-host` 203 项（1 项忽略）加 4 项端到端、`rainy-protocol` 20 项通过；前端类型检查、vitest 165 项、Node 脚本测试 38 项（含协议同步）通过；Windows 和 Linux（zig 交叉编译）两个 Host 的 qa 版编译通过。新增端到端测试：假 Codex 派出子 Agent，子 Agent 请求审批（带 `@tester`、答复发回它的线程，另一个线程的请求不显示），卡片、等待步骤、团队快照、增量看板、成员步骤，再加一轮多智能体 v2；假 Antigravity 收到原样的 `/swarm`，`session/new` 后公布的命令清单到达界面和 `external.status`，团队目录在回合中途才出现也能找到，看板新帖子无人询问时也会通知。假 Codex 的消息格式对照过真实 Codex 的抓包（`subAgentActivity` 的 started/completed，`wait` 不带状态）。
-- **界面实测**（调试版，临时用户目录里放假的 Antigravity 目录，Antigravity 和 Codex 指向测试用的假程序）：模型选择器里内置模型和外部 Agent 分区显示，切到 Antigravity 后 `/` 菜单是 `/new`、`/swarm`、`/teamwork`，Agent 公布清单后换成它自己的命令；发送 `/swarm …` 后面板在回合中自动打开，看板、成员（三层缩进的 teamwork 子树）、计划、成员步骤、长帖展开、新帖子实时出现都正常；新对话回到用户自己的 API 模型，`/` 菜单恢复 Rainy 的 `/swarm`。Codex 对话里子 Agent 卡片、`@tester` 审批条、批准后卡片里的回答、等待步骤和团队面板都正常。
-
-### 未验证
-
-- 本机没装 `agy` CLI：ACP 会话 ID 等于 Antigravity 对话目录名、CLI 版的目录在 `~/.gemini/antigravity-cli/brain`，都是根据 IDE 版目录推断的，没有用真实 `agy acp` 验证。如果不成立，团队面板不会出现，对话本身不受影响。Antigravity 在 ACP 下实际公布哪些命令、`/swarm` 是否经 ACP 可用，也没有实测（官方文档只说“CLI 支持的斜杠命令会出现在客户端的命令菜单里”）。
-- Antigravity 成员在 ACP 下如何请求审批未知；Codex 主线程这一轮结束后子 Agent 再请求审批，要等下一轮才会显示。
-- 没有用真实 Codex 在界面里跑子 Agent（协议格式按之前抓到的真实通知核对过）。
-
 ## 4.11.5（2026-11-23）
 
 被测产物为 `Rainy-4.11.5-windows-x64-setup.exe`（16,298,146 字节，SHA-256 `93d4c590d488dd87fb71ed89b31abe38174194a33c232668079482a956bc4895`），构建自提交 `247237e252`。六个可选分片已上传到 `v4.11.5-resources`。Linux 底座的内容摘要 `ceb19029…` 与 4.11.4 相同（只有两个目录的打包时间不同，压缩包摘要因此变了），已装过底座的电脑不会重新下载。
