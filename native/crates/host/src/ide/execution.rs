@@ -80,6 +80,14 @@ struct Operation {
     done: tokio::sync::watch::Sender<bool>,
 }
 
+/// Bytes `character` takes in a JSON string.
+fn json_size(character: char) -> usize {
+    match character {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        '\u{0}'..='\u{1f}' => 6,
+        character => character.len_utf8(),
+    }
+}
 impl Operation {
     fn snapshot(&self) -> Value {
         match &self.kind {
@@ -184,14 +192,19 @@ impl Execution {
     }
 
     fn output(&self, workspace_id: &str, operation_id: &str, stream: &str, text: &str) {
-        // Split output into events that fit the event limit, at character boundaries.
+        // Split output into events that fit the event limit once written as JSON, at character boundaries: a control
+        // character such as a terminal's escape takes six bytes there.
         let mut rest = text;
-        let limit = MAX_EVENT_BYTES - 1024;
+        let limit = (MAX_EVENT_BYTES - 1024) / 2;
         while !rest.is_empty() {
-            let mut cut = rest.len().min(limit / 2);
-            while !rest.is_char_boundary(cut) {
-                cut -= 1;
-            }
+            let mut size = 0;
+            let cut = rest
+                .char_indices()
+                .find(|&(_, character)| {
+                    size += json_size(character);
+                    size > limit
+                })
+                .map_or(rest.len(), |(at, _)| at.max(rest.chars().next().map_or(0, char::len_utf8)));
             let (chunk, tail) = rest.split_at(cut);
             self.publish(workspace_id, json!({ "kind": "output", "operationId": operation_id, "stream": stream, "text": chunk }));
             rest = tail;
@@ -658,6 +671,21 @@ mod tests {
             "futureExecutionSetting": 123
         });
         assert!(check_configuration(&cfg).is_ok());
+    }
+
+    #[test]
+    fn output_of_control_characters_is_split_into_events_that_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::agent::tools::test_context(dir.path());
+        let exec = Execution::new(context.runtime.clone(), super::super::tools::Tools::with_roots(vec![dir.path().to_path_buf()]), None, |_| {});
+        // A terminal printing escapes: each byte takes six in JSON.
+        let text = "\u{1b}".repeat(300 * 1024) + "é\"end";
+        exec.output("ws", "o1", "stdout", &text);
+        let (events, _, truncated) = exec.poll_history("ws", 0);
+        assert!(!truncated);
+        let joined: String = events.iter().map(|event| event["text"].as_str().unwrap()).collect();
+        assert_eq!(joined, text);
+        assert!(events.iter().all(|event| event.to_string().len() <= MAX_EVENT_BYTES));
     }
 
     #[test]
