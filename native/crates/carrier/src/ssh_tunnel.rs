@@ -187,7 +187,7 @@ impl TunnelManager {
             return Err(error);
         }
 
-        let session: Option<Session> = self.askpass.as_ref().map(|askpass| askpass.session());
+        let session: Option<Session> = self.askpass.as_ref().map(|askpass| askpass.session(&ssh::askpass_scope(&target)));
         let mut command = Command::new(ssh::executable()?);
         command
             .args(&args)

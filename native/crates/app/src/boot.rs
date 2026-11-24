@@ -616,7 +616,7 @@ fn ssh_host(
     let log = |line: &str| events.write_log(line);
     // One askpass session per `ssh` run; a refused login is remembered so the next run asks again.
     let run_ssh = |run: &dyn Fn(&[(String, String)]) -> Result<std::result::Result<RuntimeProbe, ssh::RunOutput>>| {
-        let session = askpass.session();
+        let session = askpass.session(&ssh::askpass_scope(&destination));
         match run(session.env())? {
             Ok(answer) => Ok(answer),
             Err(output) => {
@@ -628,7 +628,7 @@ fn ssh_host(
         }
     };
     let installer = |run: &dyn Fn(&[(String, String)]) -> Result<std::result::Result<ServerRuntime, ssh::RunOutput>>| {
-        let session = askpass.session();
+        let session = askpass.session(&ssh::askpass_scope(&destination));
         match run(session.env())? {
             Ok(answer) => Ok(answer),
             Err(output) => {
@@ -710,7 +710,7 @@ fn ssh_host(
     )?;
     let prune = (paths.packaged() && !pruned_during_probe).then(|| {
         let (askpass, destination, files, events, profile) = (askpass.clone(), destination.clone(), files.clone(), events.clone(), profile.clone());
-        Box::new(move || match ssh::prune_runtimes_with_profile(&destination, &files, askpass.session().env(), profile.as_ref()) {
+        Box::new(move || match ssh::prune_runtimes_with_profile(&destination, &files, askpass.session(&ssh::askpass_scope(&destination)).env(), profile.as_ref()) {
             Ok(removed) if !removed.is_empty() => events.write_log(&format!("Removed {} Linux runtimes that earlier versions installed", removed.len())),
             Ok(_) => {}
             Err(error) => events.write_log(&format!("Earlier Linux runtimes were not removed: {error:#}")),

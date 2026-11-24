@@ -34,6 +34,11 @@ pub struct Destination {
     pub port: Option<u16>,
 }
 
+/// The askpass scope of `target`: answers typed for one server are only reused for that same destination and port.
+pub fn askpass_scope(target: &Destination) -> String {
+    format!("{}:{}", target.destination, target.port.unwrap_or(22))
+}
+
 /// `[user@]host` or an alias, never starting with `-`, so `ssh` cannot read it as an option.
 fn valid_destination(text: &str) -> bool {
     let (user, host) = match text.split_once('@') {
@@ -1405,7 +1410,7 @@ pub fn start_host_process_with_profile(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let session = askpass.session();
+        let session = askpass.session(&askpass_scope(target));
         clear_recent();
         let port = free_loopback_port()?;
         let command = host_command_with_profile(target, host, env, port, session.env(), profile)?;
@@ -1468,7 +1473,7 @@ pub fn reconnect_host_with_profile(
     {
         log(&format!("Best-effort SSH force-stop before reconnect skipped: {error:#}"));
     }
-    let session = askpass.session();
+    let session = askpass.session(&askpass_scope(target));
     let probe = match probe_runtime_with_profile(target, files, session.env(), false, profile, log)? {
         Ok(probe) => probe,
         Err(output) => {

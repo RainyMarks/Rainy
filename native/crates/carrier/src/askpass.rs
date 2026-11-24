@@ -45,12 +45,19 @@ pub fn is_host_key_question(prompt: &str) -> bool {
     prompt.contains("continue connecting (yes/no")
 }
 
+/// One `ssh` run: the server it talks to and the questions it has used an answer for.
+struct Run {
+    scope: String,
+    used: HashSet<String>,
+}
+
 #[derive(Default)]
 struct State {
-    /// Answers given in this application run, by question, so the several connections of one start ask once.
-    remembered: HashMap<String, String>,
-    /// Questions each run has used an answer for, by token.
-    sessions: HashMap<String, HashSet<String>>,
+    /// Answers given in this application run, by server and question, so the several connections of one start ask
+    /// once. The server is part of the key: a bare "Password: " from one server is never answered for another.
+    remembered: HashMap<(String, String), String>,
+    /// Each run's server and the questions it has used an answer for, by token.
+    sessions: HashMap<String, Run>,
     /// Runs whose question the user cancelled: `ssh` takes a failed askpass as an empty answer and asks again, up to
     /// three times, so their later questions are refused without a window.
     cancelled: HashSet<String>,
@@ -85,9 +92,10 @@ impl Session {
     pub fn failed(&self) {
         if let Some(owner) = self.owner.upgrade() {
             let mut state = owner.state.lock().unwrap();
-            let used: Vec<String> = state.sessions.get(&self.token).map(|used| used.iter().cloned().collect()).unwrap_or_default();
-            for prompt in used {
-                state.remembered.remove(&prompt);
+            let Some(run) = state.sessions.get(&self.token) else { return };
+            let used: Vec<(String, String)> = run.used.iter().map(|prompt| (run.scope.clone(), prompt.clone())).collect();
+            for key in used {
+                state.remembered.remove(&key);
             }
         }
     }
@@ -143,10 +151,11 @@ impl Askpass {
         Ok(server)
     }
 
-    /// A new identity for one `ssh` run.
-    pub fn session(self: &Arc<Self>) -> Session {
+    /// A new identity for one `ssh` run to the server `scope` names (see `ssh::askpass_scope`). Answers are shared only
+    /// between runs to the same server.
+    pub fn session(self: &Arc<Self>, scope: &str) -> Session {
         let token = random_token();
-        self.state.lock().unwrap().sessions.insert(token.clone(), HashSet::new());
+        self.state.lock().unwrap().sessions.insert(token.clone(), Run { scope: scope.to_owned(), used: HashSet::new() });
         let env = vec![
             ("SSH_ASKPASS".to_owned(), self.program.display().to_string()),
             ("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()),
@@ -194,17 +203,18 @@ impl Askpass {
             if cancelled.contains(token) {
                 return None;
             }
-            let used = sessions.get_mut(token)?;
+            let run = sessions.get_mut(token)?;
+            let key = (run.scope.clone(), prompt.to_owned());
             if kind == QuestionKind::Secret
-                && !used.contains(prompt)
-                && let Some(answer) = remembered.get(prompt)
+                && !run.used.contains(prompt)
+                && let Some(answer) = remembered.get(&key)
             {
-                used.insert(prompt.to_owned());
+                run.used.insert(prompt.to_owned());
                 return Some(answer.clone());
             }
             // A question asked twice in one run means its earlier answer did not work.
-            if used.contains(prompt) {
-                remembered.remove(prompt);
+            if run.used.contains(prompt) {
+                remembered.remove(&key);
             }
             questions.insert(token.to_owned(), open.clone());
         }
@@ -217,9 +227,10 @@ impl Askpass {
         }
         match &reply {
             Some(answer) if kind == QuestionKind::Secret => {
-                state.remembered.insert(prompt.to_owned(), answer.clone());
-                if let Some(used) = state.sessions.get_mut(token) {
-                    used.insert(prompt.to_owned());
+                if let Some(run) = state.sessions.get_mut(token) {
+                    run.used.insert(prompt.to_owned());
+                    let key = (run.scope.clone(), prompt.to_owned());
+                    state.remembered.insert(key, answer.clone());
                 }
             }
             Some(_) => {}
@@ -280,11 +291,11 @@ mod tests {
             (question.kind == QuestionKind::Secret).then(|| "secret".to_owned())
         }))
         .unwrap();
-        let first = server.session();
+        let first = server.session("alice@one:22");
         assert!(first.env().iter().any(|(name, value)| name == "SSH_ASKPASS_REQUIRE" && value == "force"));
         assert_eq!(ask_once(&server, &first, "Password: ").as_deref(), Some("secret"));
         // Another connection of the same start gets the answer without asking.
-        let second = server.session();
+        let second = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &second, "Password: ").as_deref(), Some("secret"));
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         // Asked again in the same run: the answer was wrong, so the user is asked anew.
@@ -297,19 +308,44 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_is_never_given_to_another_server() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        let server = Askpass::start(PathBuf::from("Rainy.exe"), Arc::new(move |_question: Question| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some("secret-for-one".to_owned())
+        }))
+        .unwrap();
+        let one = server.session("alice@one:22");
+        assert_eq!(ask_once(&server, &one, "Password: ").as_deref(), Some("secret-for-one"));
+        // A different server asking the same bare question gets a window, not the first server's password.
+        let other = server.session("alice@other:22");
+        assert_eq!(ask_once(&server, &other, "Password: ").as_deref(), Some("secret-for-one"));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        let same_host_other_port = server.session("alice@one:2222");
+        ask_once(&server, &same_host_other_port, "Password: ");
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+        // A failed login forgets only that server's answer.
+        other.failed();
+        let again = server.session("alice@one:22");
+        ask_once(&server, &again, "Password: ");
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn a_cancelled_question_ends_the_run_questions() {
         let asked = Arc::new(AtomicUsize::new(0));
         let counter = asked.clone();
         // The user cancels the first question and would answer any later one.
         let server = Askpass::start(PathBuf::from("Rainy.exe"), Arc::new(move |_: Question| (counter.fetch_add(1, Ordering::SeqCst) > 0).then(|| "pw".to_owned()))).unwrap();
-        let run = server.session();
+        let run = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &run, "Password: "), None);
         // ssh asks again after the empty answer; no window opens for it.
         assert_eq!(ask_once(&server, &run, "Password: "), None);
         assert_eq!(ask_once(&server, &run, "Enter passphrase for key: "), None);
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         // The next run asks again.
-        let next = server.session();
+        let next = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &next, "Password: ").as_deref(), Some("pw"));
         drop(run);
         assert!(server.state.lock().unwrap().cancelled.is_empty());
@@ -328,7 +364,7 @@ mod tests {
     #[test]
     fn a_question_closes_when_its_run_ends() {
         let server = Askpass::start(PathBuf::from("Rainy.exe"), until_closed()).unwrap();
-        let run = server.session();
+        let run = server.session("alice@one:22");
         let (token, address) = (run.token.clone(), server.address);
         let client = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
@@ -350,7 +386,7 @@ mod tests {
     #[test]
     fn a_question_closes_when_its_askpass_process_goes() {
         let server = Askpass::start(PathBuf::from("Rainy.exe"), until_closed()).unwrap();
-        let run = server.session();
+        let run = server.session("alice@one:22");
         let mut stream = TcpStream::connect(server.address).unwrap();
         stream.write_all(format!("{}\n", json!({ "token": run.token, "prompt": "Password: " })).as_bytes()).unwrap();
         while !server.state.lock().unwrap().questions.contains_key(&run.token) {

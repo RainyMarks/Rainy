@@ -387,7 +387,7 @@ impl RuntimePage {
         self.ssh_busy = true;
         cx.notify();
         let added = cx.background_spawn(async move {
-            ssh::probe(&destination, &askpass.session())?;
+            ssh::probe(&destination, &askpass.session(&ssh::askpass_scope(&destination)))?;
             ssh::save_host(&settings, &destination)?;
             anyhow::Ok(ssh::target(&destination).label().to_owned())
         });
