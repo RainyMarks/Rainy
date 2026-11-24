@@ -1,7 +1,5 @@
 //! `read`: a line-numbered window of a text file.
 
-use std::io::BufRead as _;
-
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
