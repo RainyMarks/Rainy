@@ -11,8 +11,13 @@ use tokio::process::{Child, Command};
 use crate::locale::l;
 
 /// Whether an environment name looks like a credential; such variables are never inherited by child processes.
+/// `GIT_CONFIG_KEY_<n>` names a configuration key, not a credential: dropping it while `GIT_CONFIG_COUNT` and
+/// `GIT_CONFIG_VALUE_<n>` stay makes every `git` command fail with "missing config key".
 pub fn sensitive(name: &str) -> bool {
     let upper = name.to_uppercase();
+    if upper.strip_prefix("GIT_CONFIG_KEY_").is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())) {
+        return false;
+    }
     ["KEY", "PASSWORD", "SECRET", "TOKEN"].iter().any(|word| upper.contains(word))
 }
 
@@ -438,6 +443,14 @@ pub struct Output {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_config_keys_are_inherited_but_credentials_are_not() {
+        assert!(!sensitive("GIT_CONFIG_KEY_0") && !sensitive("git_config_key_12"));
+        assert!(!sensitive("GIT_CONFIG_COUNT") && !sensitive("GIT_CONFIG_VALUE_0"));
+        assert!(sensitive("GIT_CONFIG_KEY_") && sensitive("GIT_CONFIG_KEY_X") && sensitive("GIT_CONFIG_KEYS"));
+        assert!(sensitive("OPENAI_API_KEY") && sensitive("GITHUB_TOKEN") && sensitive("DB_PASSWORD") && sensitive("CLIENT_SECRET"));
+    }
 
     #[test]
     fn bare_names_take_a_pathext_extension_on_windows() {
