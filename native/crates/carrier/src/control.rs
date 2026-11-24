@@ -136,12 +136,17 @@ pub fn parse_ready(value: &Value) -> Result<HostReady> {
 }
 
 /// Whether an inherited variable may reach the native Host (`/KEY|SECRET|TOKEN|PASSWORD|^NODE_OPTIONS$|^NODE_PATH$/i`).
+/// `GIT_CONFIG_KEY_<n>` names a configuration key, not a credential: without it, a `GIT_CONFIG_COUNT` that does reach the
+/// Host makes every `git` command fail with "missing config key".
 pub fn inheritable(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
+    if upper.strip_prefix("GIT_CONFIG_KEY_").is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())) {
+        return true;
+    }
     !(["KEY", "SECRET", "TOKEN", "PASSWORD"].iter().any(|word| upper.contains(word)) || upper == "NODE_OPTIONS" || upper == "NODE_PATH")
 }
 
-fn write_line(stdin: &Mutex<Option<ChildStdin>>, value: &Value) -> bool {
+fn write_line(stdin: &Mutex<Option<impl Write>>, value: &Value) -> bool {
     if let Some(stdin) = stdin.lock().unwrap().as_mut() {
         return writeln!(stdin, "{value}").and_then(|()| stdin.flush()).is_ok();
     }
@@ -210,8 +215,10 @@ impl HostProcess {
             let events = events.clone();
             let stdin = stdin.clone();
             let pending = pending.clone();
+            // An SSH Host runs on another computer: this computer's loopback services are not its to look at.
+            let local = crate::ssh::host_of(command).is_none() && !is_ssh_program(&command.program);
             thread::Builder::new().name("host-control".into()).spawn(move || {
-                read_control(stdout, &stdin, &pending, &ready_tx, &events);
+                read_control(stdout, &stdin, &pending, &ready_tx, &events, local);
             })?;
         }
 
@@ -361,12 +368,20 @@ impl Drop for HostProcess {
     }
 }
 
-fn read_control(
+/// Whether `program` is the `ssh` client, whose Host runs on another computer.
+fn is_ssh_program(program: &std::path::Path) -> bool {
+    program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("ssh"))
+}
+
+/// Answers the Host's control messages. `local`: the Host runs on this computer and may drive the preview window,
+/// which opens this computer's loopback addresses; a remote Host is refused, whatever it asks.
+fn read_control<W: Write + Send + 'static>(
     stdout: impl Read,
-    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    stdin: &Arc<Mutex<Option<W>>>,
     pending: &Pending,
     ready: &mpsc::Sender<Result<HostReady>>,
     events: &Arc<dyn HostEvents>,
+    local: bool,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut raw = Vec::new();
@@ -411,6 +426,9 @@ fn read_control(
                     write_line(&stdin, &json!({ "type": "reply", "id": id, "url": proxy }));
                 });
             }
+            ("preview", Some(id)) if !local => {
+                write_line(stdin, &json!({ "type": "reply", "id": id, "answer": { "error": "The preview window is only available to a Host on this computer." } }));
+            }
             ("preview", Some(id)) => {
                 let command = message.get("command").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
                 let (events, stdin) = (events.clone(), stdin.clone());
@@ -451,6 +469,44 @@ fn random_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct PreviewEvents(std::sync::atomic::AtomicBool);
+
+    impl HostEvents for PreviewEvents {
+        fn preview(&self, _command: Value) -> Value {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            json!({ "ok": true })
+        }
+    }
+
+    #[test]
+    fn a_remote_host_cannot_drive_the_preview_window() {
+        let request = b"RAINY_CONTROL {\"type\":\"preview\",\"id\":\"p1\",\"command\":{\"action\":\"open\",\"url\":\"http://127.0.0.1:8888/\"}}\n";
+        let opened = Arc::new(PreviewEvents::default());
+        let events: Arc<dyn HostEvents> = opened.clone();
+        let stdin = Arc::new(Mutex::new(Some(Vec::<u8>::new())));
+        let (ready, _) = mpsc::channel();
+        read_control(&request[..], &stdin, &Pending::default(), &ready, &events, false);
+        assert!(!opened.0.load(std::sync::atomic::Ordering::SeqCst), "a remote Host reached the preview window");
+        let written = stdin.lock().unwrap().take().unwrap();
+        let reply: Value = serde_json::from_slice(written.trim_ascii()).unwrap();
+        assert_eq!((reply["type"].as_str(), reply["id"].as_str()), (Some("reply"), Some("p1")));
+        assert!(reply["answer"]["error"].is_string());
+    }
+
+    #[test]
+    fn git_config_keys_reach_the_host_but_credentials_do_not() {
+        assert!(inheritable("GIT_CONFIG_KEY_0") && inheritable("GIT_CONFIG_COUNT") && inheritable("GIT_CONFIG_VALUE_0"));
+        assert!(!inheritable("GIT_CONFIG_KEY_X") && !inheritable("OPENAI_API_KEY") && !inheritable("GH_TOKEN") && !inheritable("NODE_OPTIONS"));
+    }
+
+    #[test]
+    fn the_ssh_client_is_recognized_by_name() {
+        assert!(is_ssh_program(std::path::Path::new(r"C:\Windows\System32\OpenSSH\ssh.exe")) || !cfg!(windows));
+        assert!(is_ssh_program(std::path::Path::new("/usr/bin/ssh")));
+        assert!(!is_ssh_program(std::path::Path::new("wsl.exe")) && !is_ssh_program(std::path::Path::new("rainy-host.exe")));
+    }
 
     #[test]
     fn accepts_only_loopback_readiness() {
