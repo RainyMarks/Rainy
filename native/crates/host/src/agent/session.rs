@@ -2282,6 +2282,35 @@ impl Session {
         }
     }
 
+    /// The chat's permission decision for a call a `task` sub-agent makes. A sub-agent has no approval card, so a call
+    /// the chat would ask about is refused; deny rules and project boundaries hold for it as they do for the chat.
+    fn subagent_refusal(&self, name: &str, args: &Value) -> Option<String> {
+        let chat = self.chat();
+        let rules = chat.workspace_id.as_deref().map(|workspace| self.services.settings.permission_rules(workspace)).unwrap_or_default();
+        let read_only_tools = self.services.mcp.read_only_tools();
+        let roots = || self.canonical_roots(&chat);
+        let spill_dir = self.services.env.home.join("spill").join(&self.id);
+        let decision = decide(&permissions::Input {
+            mode: &self.permission(),
+            tool: name,
+            args,
+            cwd: Path::new(&chat.cwd),
+            roots: &roots,
+            rules: &rules,
+            read_only_tools: &read_only_tools,
+            can_remember: false,
+            windows: self.services.env.windows,
+            spill_dir: Some(&spill_dir),
+        });
+        match decision {
+            Decision::Allow => None,
+            Decision::Deny(reason) => Some(reason),
+            Decision::Ask(_) => Some(format!(
+                "Sub-agents cannot ask for approval, so `{name}` was not run: it needs the user's permission in this chat. Report what you could not check; the main assistant can do it itself."
+            )),
+        }
+    }
+
     async fn before_tool(&self, mcp_tools: &HashSet<String>, id: &str, name: &str, args: &Value, cancel: &CancellationToken) -> Option<Blocked> {
         if self.inner.lock().unwrap().stop_after_step {
             return Some(Blocked { reason: "Skipped: the user refused an earlier tool call in this step.".into(), terminate: true });
@@ -3063,6 +3092,7 @@ impl Subagents for ChatSubagents {
             };
             log::info!("[chat {}] sub-agent ({}/{}): {description}", session.id, resolved.setup.provider, resolved.setup.model);
             let counted = Arc::downgrade(&session);
+            let guarded = Arc::downgrade(&session);
             let input = subagent::Input {
                 prompt,
                 api_key: session.services.models.api_key(&resolved.setup.provider),
@@ -3077,6 +3107,10 @@ impl Subagents for ChatSubagents {
                     }
                 }),
                 max_time: subagent::MAX_TIME,
+                guard: Arc::new(move |name: &str, args: &Value| match guarded.upgrade() {
+                    Some(session) => session.subagent_refusal(name, args),
+                    None => Some("The chat was closed.".into()),
+                }),
             };
             subagent::run_subagent(&session.services.models.llm, input, cancel).await
         })

@@ -53,7 +53,12 @@ pub struct Input {
     /// Counts the sub-agent's model usage into the chat's run.
     pub usage: Arc<dyn Fn(UsageSummary) + Send + Sync>,
     pub max_time: Duration,
+    /// The chat's permission check for each tool call: `Some(reason)` refuses it. Sub-agents cannot ask the user.
+    pub guard: Guard,
 }
+
+/// Refuses a sub-agent's tool call with a reason for the model, or lets it run.
+pub type Guard = Arc<dyn Fn(&str, &Value) -> Option<String> + Send + Sync>;
 
 #[derive(Default)]
 struct Track {
@@ -71,6 +76,7 @@ struct SubHooks {
     usage: Arc<dyn Fn(UsageSummary) + Send + Sync>,
     /// Ends the run at a limit or when the chat stops it; it also ends a model request in flight.
     limit: CancellationToken,
+    guard: Guard,
 }
 
 impl Hooks for SubHooks {
@@ -133,8 +139,11 @@ impl Hooks for SubHooks {
         (self.progress)(progress);
     }
 
-    async fn before_tool(&self, _id: &str, _name: &str, _args: &Value, _cancel: &CancellationToken) -> Option<Blocked> {
-        self.limit.is_cancelled().then(|| Blocked { reason: "The sub-agent was stopped.".into(), terminate: true })
+    async fn before_tool(&self, _id: &str, name: &str, args: &Value, _cancel: &CancellationToken) -> Option<Blocked> {
+        if self.limit.is_cancelled() {
+            return Some(Blocked { reason: "The sub-agent was stopped.".into(), terminate: true });
+        }
+        (self.guard)(name, args).map(|reason| Blocked { reason, terminate: false })
     }
 
     async fn prepare_request(&self, _state: &mut State, _cancel: &CancellationToken) {}
@@ -143,7 +152,7 @@ impl Hooks for SubHooks {
 /// Run one sub-agent to completion; `cancel` is the parent tool call's.
 pub async fn run_subagent(llm: &Llm, input: Input, cancel: CancellationToken) -> Result<Report, String> {
     let limit = cancel.child_token();
-    let hooks = SubHooks { track: Mutex::default(), progress: input.progress, usage: input.usage, limit: limit.clone() };
+    let hooks = SubHooks { track: Mutex::default(), progress: input.progress, usage: input.usage, limit: limit.clone(), guard: input.guard };
     let timed_out = Arc::new(AtomicBool::new(false));
     let timer = tokio::spawn({
         let (limit, timed_out, max) = (limit.clone(), timed_out.clone(), input.max_time);
@@ -178,6 +187,22 @@ pub async fn run_subagent(llm: &Llm, input: Input, cancel: CancellationToken) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tool_calls_pass_the_chats_permission_guard() {
+        let guard: Guard = Arc::new(|name: &str, args: &Value| {
+            let path = args.get("file_path").and_then(Value::as_str).unwrap_or_default();
+            (name == "read" && path.starts_with("/home/user/.ssh")).then(|| "outside the project".to_owned())
+        });
+        let hooks = SubHooks { track: Mutex::default(), progress: Arc::new(|_| {}), usage: Arc::new(|_| {}), limit: CancellationToken::new(), guard };
+        let cancel = CancellationToken::new();
+        let refused = hooks.before_tool("1", "read", &serde_json::json!({ "file_path": "/home/user/.ssh/id_ed25519" }), &cancel).await.expect("refused");
+        assert_eq!(refused.reason, "outside the project");
+        assert!(!refused.terminate);
+        assert!(hooks.before_tool("2", "read", &serde_json::json!({ "file_path": "src/main.rs" }), &cancel).await.is_none());
+        hooks.limit.cancel();
+        assert!(hooks.before_tool("3", "read", &serde_json::json!({ "file_path": "src/main.rs" }), &cancel).await.unwrap().terminate);
+    }
 
     #[test]
     fn prompt_names_the_platform() {
