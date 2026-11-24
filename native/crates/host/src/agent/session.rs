@@ -1444,6 +1444,11 @@ impl Session {
                         // An Antigravity swarm or teamwork the conversation starts is followed from here on.
                         let _ = self.watch_antigravity_team();
                     }
+                    ExternalEvent::ModelsListed(models) => {
+                        if self.services.external.remember_models(&backend.kind, models) {
+                            self.services.rpc.emit("external.changed", &self.services.external.status());
+                        }
+                    }
                     ExternalEvent::CommandsUpdated(commands) => {
                         self.services.external.remember_commands(&backend.kind, commands.clone());
                         self.services.rpc.emit("external.commands", json!({ "kind": backend.kind, "commands": commands }));
@@ -1484,7 +1489,14 @@ impl Session {
                             self.on_stream(llm::Event::BlockStarted(idx), &reply);
                         }
                     }
-                    ExternalEvent::ToolStarted { id, name, args } => {
+                    ExternalEvent::ToolStarted { id, name, mut args } => {
+                        // A call of an Antigravity team member, not of the chat's own agent, says whose it is.
+                        if backend.kind == "antigravity"
+                            && let Some(member) = self.antigravity_member(&id)
+                            && let Some(map) = args.as_object_mut()
+                        {
+                            map.insert("teamMember".into(), json!(member));
+                        }
                         if let Some(last_idx) = reply.content.len().checked_sub(1)
                             && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
                         {
@@ -1523,6 +1535,11 @@ impl Session {
                         }
                     }
                     ExternalEvent::ToolCompleted { id, name, output, is_error, details } => {
+                        // A call that ended while its approval waited (Antigravity gives a member's 60 s, then fails
+                        // the call without withdrawing the request): the approval bar goes.
+                        if self.inner.lock().unwrap().approvals.iter().any(|item| item.approval.tool_call_id == id) {
+                            self.settle(&id, refusal(l("外部 Agent 已不再等待这次批准。", "The external agent stopped waiting for this approval."), false, None));
+                        }
                         if active_tool_ids.contains(&id) && !reply.content.is_empty() {
                             reply.stop_reason = "toolUse".into();
                             self.on_reply(&reply).await;
@@ -1557,7 +1574,10 @@ impl Session {
                             self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
                         }
                     }
-                    ExternalEvent::ApprovalRequested { approval, respond } => {
+                    ExternalEvent::ApprovalRequested { mut approval, respond } => {
+                        if approval.agent.is_none() && backend.kind == "antigravity" {
+                            approval.agent = self.antigravity_member(&approval.tool_call_id);
+                        }
                         let session = self.clone();
                         let cancel_child = cancel.clone();
                         tokio::spawn(async move {
@@ -1750,6 +1770,18 @@ impl Session {
             self.services.rpc.emit("external.teamChanged", json!({ "sessionId": self.id, "revision": revision, "lastPost": last_post }));
         }
         found
+    }
+
+    /// The name of the Antigravity team member a tool call belongs to (`None` for the chat's own agent's calls).
+    fn antigravity_member(self: &Arc<Self>, call_id: &str) -> Option<String> {
+        let conversation = super::external::team::member_of_call(call_id)?;
+        if let Some(team) = self.watch_antigravity_team()
+            && let Some(name) = team.lock().unwrap().member_name(conversation)
+        {
+            return Some(name);
+        }
+        let thread = self.chat().external_thread_id?;
+        AntigravityTeam::locate(&thread)?.member_name(conversation)
     }
 
     /// The team the chat's external agent runs, with the board posts newer than `after`; `None` without one.

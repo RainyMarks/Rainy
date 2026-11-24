@@ -452,7 +452,12 @@ fn tool_row(
     ToolRow {
         call_id: id.to_owned().into(),
         name: name.to_owned().into(),
-        title: tool_title(ctx.locale, name, &titled_arguments(ctx.cwd, arguments)).into(),
+        title: match arguments.get("teamMember").and_then(Value::as_str).filter(|member| !member.is_empty()) {
+            // A call of an external agent's team member (Antigravity), not of the chat's own agent.
+            Some(member) => format!("{member} · {}", tool_title(ctx.locale, name, &titled_arguments(ctx.cwd, arguments))),
+            None => tool_title(ctx.locale, name, &titled_arguments(ctx.cwd, arguments)),
+        }
+        .into(),
         command,
         state,
         output,

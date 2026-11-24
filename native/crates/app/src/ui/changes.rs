@@ -231,6 +231,8 @@ impl ChangesBar {
         let added: u64 = self.changes.iter().map(|change| change.added).sum();
         let removed: u64 = self.changes.iter().map(|change| change.removed).sum();
         let undoable = self.changes.iter().any(|change| change.undoable);
+        // Lines are counted only against a known earlier text (an external agent's edit outside Git has none).
+        let counted = self.changes.iter().any(|change| change.comparable);
         let all = self.changes.clone();
         let docked = self.docked;
         h_flex()
@@ -255,8 +257,10 @@ impl ChangesBar {
                             }))
                     })
                     .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(if self.changes.len() == 1 { tr(cx, "review.changesTitleOne") } else { trf(cx, "review.changesTitle", &[("count", &self.changes.len())]) }))
-                    .child(div().flex_shrink_0().text_xs().text_color(theme.success).child(format!("+{added}")))
-                    .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}"))),
+                    .when(counted, |this| {
+                        this.child(div().flex_shrink_0().text_xs().text_color(theme.success).child(format!("+{added}")))
+                            .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}")))
+                    }),
             )
             .child(Button::new("changes-keep-all").outline().xsmall().label(tr(cx, "review.changesKeepAll")).disabled(self.pending).on_click(cx.listener(
                 move |this, _, window, cx| this.keep(all.clone(), window, cx),

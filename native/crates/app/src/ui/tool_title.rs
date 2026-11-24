@@ -35,7 +35,8 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
         "apply_patch" => {
             let files = patch_files(string(args, "input").unwrap_or_default());
             match files.as_slice() {
-                [] => t("toolPatch", &[("path", &"…")]),
+                // An external agent's edit names its file instead of carrying a patch.
+                [] => t("toolPatch", &[("path", &string(args, "file_path").unwrap_or("…"))]),
                 [path] => t("toolPatch", &[("path", path)]),
                 _ => t("toolPatchFiles", &[("count", &files.len())]),
             }
@@ -151,6 +152,7 @@ mod tests {
         assert_eq!(tool_title(zh, "Read", &args(json!({"file_path": "a.py"}))), "读取 a.py");
         let patch = "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n-x\n+y\n*** Delete File: c.rs\n*** End Patch";
         assert_eq!(tool_title(zh, "apply_patch", &args(json!({"input": patch}))), "修改 2 个文件");
+        assert_eq!(tool_title(zh, "apply_patch", &args(json!({"Path": "C:\\w\\calc\\ops.py", "file_path": "calc\\ops.py"}))), "修改 calc\\ops.py");
         assert_eq!(tool_title(Locale::En, "apply_patch", &args(json!({"input": "*** Begin Patch\n*** Add File: n.md\n+x\n*** End Patch"}))), "Patch n.md");
         let plan = json!({"plan": [{"step": "Read", "status": "completed"}, {"step": "Fix", "status": "in_progress"}]});
         assert_eq!(tool_title(zh, "update_plan", &args(plan)), "更新计划（1/2）");

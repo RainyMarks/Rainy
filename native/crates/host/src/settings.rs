@@ -474,6 +474,11 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// The folder `settings.json` is in.
+    pub fn home(&self) -> &Path {
+        self.file.parent().unwrap_or(Path::new("."))
+    }
+
     /// Load both files; a missing `settings.json` starts empty and keeps the stored keys.
     pub fn load(home: &Path, seal: Option<Seal>) -> io::Result<Self> {
         let file = home.join("settings.json");

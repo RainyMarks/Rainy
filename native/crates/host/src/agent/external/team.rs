@@ -46,6 +46,13 @@ fn safe_id(id: &str) -> bool {
     (1..=80).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
+/// The conversation of the team member an Antigravity tool call over ACP belongs to: a member's call id is
+/// `<conversation>:call_…`, a call of the chat's own agent is `call_…` alone.
+pub fn member_of_call(call_id: &str) -> Option<&str> {
+    let (conversation, call) = call_id.split_once(':')?;
+    (conversation.len() >= 8 && safe_id(conversation) && !call.is_empty()).then_some(conversation)
+}
+
 fn now_ms() -> f64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
@@ -625,6 +632,16 @@ impl AntigravityTeam {
         changed
     }
 
+    /// The name of the member whose conversation is `conversation`, the team read again when it is not known yet.
+    pub fn member_name(&mut self, conversation: &str) -> Option<String> {
+        let find = |team: &ExternalTeam| team.members.iter().skip(1).find(|member| member.id == conversation).map(|member| member.name.clone());
+        if let Some(name) = find(&self.team) {
+            return Some(name);
+        }
+        self.refresh();
+        find(&self.team)
+    }
+
     /// The team's revision and newest post number.
     pub fn marks(&self) -> (u64, u64) {
         (self.team.revision, self.team.last_post)
@@ -1088,6 +1105,22 @@ mod tests {
         assert_eq!(steps[0].title, "You have just started.");
         assert!(team.activity("other", 10).is_none());
         assert!(team.activity("../w1", 10).is_none());
+
+        // Whose a tool call over ACP is: a member's name, never the chat's own agent's.
+        assert_eq!(team.member_name("w1").as_deref(), Some("parser"));
+        assert_eq!(team.member_name("e1").as_deref(), Some("Host Explorer"));
+        assert_eq!(team.member_name(lead), None);
+        assert_eq!(team.member_name("nobody"), None);
+    }
+
+    /// Tool call ids as `agy acp` 1.5.16 sends them: a member's carries its conversation, the chat's own agent's not.
+    #[test]
+    fn tells_a_members_call_from_the_agents_own() {
+        assert_eq!(member_of_call("d5779e44-6979-4cd5-8b06-37256ccbdd33:call_5036756017209403336"), Some("d5779e44-6979-4cd5-8b06-37256ccbdd33"));
+        assert_eq!(member_of_call("call_6896172746418138150"), None);
+        assert_eq!(member_of_call("acp-perm-7"), None);
+        assert_eq!(member_of_call("../../x:call_1"), None);
+        assert_eq!(member_of_call("d5779e44-6979-4cd5-8b06-37256ccbdd33:"), None);
     }
 
     use std::io::Write as _;

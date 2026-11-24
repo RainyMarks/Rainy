@@ -78,6 +78,8 @@ pub enum ExternalEvent {
     /// The slash commands the agent offers (ACP `available_commands_update`).
     CommandsUpdated(Vec<ExternalCommand>),
     UsageUpdated(UsageSummary),
+    /// The models the agent offers, as a session it opened listed them (ACP `session/new` and `session/resume`).
+    ModelsListed(Vec<ExternalModelInfo>),
     Notice { code: String, text: String },
     TurnFinished {
         stop_reason: String,
@@ -150,10 +152,29 @@ pub struct ExternalManager {
     stop_reaper: CancellationToken,
     /// The slash commands each kind of agent last listed.
     commands: Mutex<HashMap<String, Vec<ExternalCommand>>>,
+    /// The models each kind of agent last listed, kept in `external-models.json` so the model menu has them after
+    /// a restart without starting the agent (a probe leaves an empty conversation in Antigravity's history).
+    known_models: Mutex<HashMap<String, Vec<ExternalModelInfo>>>,
+    models_file: PathBuf,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct KnownModels {
+    version: u8,
+    models: std::collections::BTreeMap<String, Vec<ExternalModelInfo>>,
 }
 
 impl ExternalManager {
     pub fn new(settings: Arc<Settings>, windows: bool) -> Arc<Self> {
+        let models_file = settings.home().join("external-models.json");
+        let known_models = match crate::store::read_json::<KnownModels>(&models_file) {
+            Ok(Some(file)) => file.models.into_iter().collect(),
+            Ok(None) => HashMap::new(),
+            Err(error) => {
+                log::warn!("{error}; the external agents' models are listed again by the next probe or chat");
+                HashMap::new()
+            }
+        };
         let manager = Arc::new(Self {
             settings,
             windows,
@@ -162,6 +183,8 @@ impl ExternalManager {
             acp_pool: AsyncMutex::new(HashMap::new()),
             stop_reaper: CancellationToken::new(),
             commands: Mutex::new(HashMap::new()),
+            known_models: Mutex::new(known_models),
+            models_file,
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&manager);
@@ -200,7 +223,7 @@ impl ExternalManager {
                             resolved.is_some(),
                             resolved.map(|p| p.to_string_lossy().into_owned()),
                             None,
-                            Vec::new(),
+                            self.known_models.lock().ok().and_then(|known| known.get(&cfg.kind).cloned()).unwrap_or_default(),
                             None,
                         )
                     }
@@ -284,6 +307,7 @@ impl ExternalManager {
                 check_external_agent(&cfg)?;
             }
             let result = probe_one(&cfg, &env, cwd).await;
+            self.remember_models(&cfg.kind, result.models.clone());
             if let Ok(mut cache) = self.cache.lock() {
                 cache.insert(cfg.kind.clone(), result);
             }
@@ -360,6 +384,30 @@ impl ExternalManager {
     }
 
     /// Keep the slash commands an agent of `kind` listed, for `external.status` and the next chats with it.
+    /// Keep the models an agent listed; whether they differ from what was known (then they are saved too).
+    pub fn remember_models(&self, kind: &str, models: Vec<ExternalModelInfo>) -> bool {
+        if models.is_empty() {
+            return false;
+        }
+        let snapshot = {
+            let Ok(mut known) = self.known_models.lock() else { return false };
+            if known.get(kind) == Some(&models) {
+                return false;
+            }
+            known.insert(kind.to_owned(), models.clone());
+            KnownModels { version: 1, models: known.iter().map(|(kind, models)| (kind.clone(), models.clone())).collect() }
+        };
+        if let Ok(mut cache) = self.cache.lock()
+            && let Some(hit) = cache.get_mut(kind)
+        {
+            hit.models = models;
+        }
+        if let Err(error) = crate::store::write_json(&self.models_file, &snapshot) {
+            log::warn!("could not save {}: {error}", self.models_file.display());
+        }
+        true
+    }
+
     pub fn remember_commands(&self, kind: &str, commands: Vec<ExternalCommand>) {
         if let Ok(mut known) = self.commands.lock() {
             known.insert(kind.to_owned(), commands);
@@ -756,5 +804,30 @@ mod tests {
         assert!(mgr.probe(Some("codex"), None, Some(&bad_args), dir.path()).await.is_err());
         assert!(mgr.probe(Some("custom-acp"), None, None, dir.path()).await.is_err());
         mgr.close().await;
+    }
+
+    /// The model menu lists an agent's models after a restart, from what its last probe or chat listed.
+    #[tokio::test]
+    async fn listed_models_outlive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Arc::new(Settings::load(dir.path(), None).unwrap());
+        let models = vec![ExternalModelInfo {
+            id: "gemini-4-neon".into(),
+            display_name: Some("Gemini 4 Neon".into()),
+            reasoning_efforts: vec!["low".into(), "high".into()],
+            default_effort: Some("high".into()),
+            is_default: Some(true),
+        }];
+        let mgr = ExternalManager::new(settings.clone(), cfg!(windows));
+        let agy = |mgr: &ExternalManager| mgr.status().agents.into_iter().find(|agent| agent.kind == "antigravity").unwrap();
+        assert!(agy(&mgr).models.is_empty());
+        assert!(mgr.remember_models("antigravity", models.clone()), "news");
+        assert!(!mgr.remember_models("antigravity", models.clone()), "nothing new");
+        assert!(!mgr.remember_models("antigravity", Vec::new()), "an empty list forgets nothing");
+        assert_eq!(agy(&mgr).models, models);
+        mgr.close().await;
+        let again = ExternalManager::new(settings, cfg!(windows));
+        assert_eq!(agy(&again).models, models);
+        again.close().await;
     }
 }

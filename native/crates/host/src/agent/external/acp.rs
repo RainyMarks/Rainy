@@ -26,6 +26,8 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(45);
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(3600);
 const CANCEL_GRACE: Duration = Duration::from_secs(3);
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+/// The most text of a reported edit kept to show its diff.
+const MAX_DIFF_TEXT: usize = 256 * 1024;
 
 /// Active turn control handle for an ACP session (`session/cancel`, `session/set_mode`).
 pub struct AcpTurnControl {
@@ -77,6 +79,8 @@ pub struct AcpSessionMeta {
     pub session_id: String,
     pub models: Vec<ExternalModelInfo>,
     pub modes: Vec<String>,
+    /// The id of the config option that sets the thinking level (`thought_level` for Antigravity).
+    pub thought_option: Option<String>,
 }
 
 /// A live ACP subprocess (`agy acp` or custom ACP server).
@@ -86,6 +90,8 @@ pub struct AcpProcess {
     capabilities: Value,
     /// Maps Rainy chat `external_thread_id` -> cached advertised modes for that ACP session.
     known_modes: Mutex<HashMap<String, Vec<String>>>,
+    /// The thinking-level option each ACP session advertised.
+    thought_options: Mutex<HashMap<String, String>>,
     last_used: Mutex<Instant>,
     active_turns: Mutex<usize>,
 }
@@ -127,6 +133,7 @@ impl AcpProcess {
             rpc,
             capabilities,
             known_modes: Mutex::new(HashMap::new()),
+            thought_options: Mutex::new(HashMap::new()),
             last_used: Mutex::new(Instant::now()),
             active_turns: Mutex::new(0),
         }))
@@ -179,6 +186,9 @@ impl AcpProcess {
         let mut stream = self.rpc.subscribe();
         let (meta, resumed_fallback) = self.ensure_session(req.thread_id.as_deref(), &req.cwd, &cancel).await?;
         let session_id = meta.session_id.clone();
+        if !meta.models.is_empty() {
+            let _ = events.send(ExternalEvent::ModelsListed(meta.models.clone()));
+        }
         // What came while the session was made is no part of this turn (`session/load` replays the whole history):
         // only the commands it listed are kept.
         while let Some(early) = stream.try_recv() {
@@ -199,6 +209,15 @@ impl AcpProcess {
             meta.modes.clone()
         } else {
             self.known_modes.lock().ok().and_then(|m| m.get(&session_id).cloned()).unwrap_or_default()
+        };
+        let thought_option = match &meta.thought_option {
+            Some(option) => {
+                if let Ok(mut known) = self.thought_options.lock() {
+                    known.insert(session_id.clone(), option.clone());
+                }
+                Some(option.clone())
+            }
+            None => self.thought_options.lock().ok().and_then(|known| known.get(&session_id).cloned()),
         };
         control.set_session(session_id.clone(), modes.clone());
         let _ = events.send(ExternalEvent::ThreadReady { thread_id: session_id.clone() });
@@ -228,16 +247,27 @@ impl AcpProcess {
                     .await;
             }
         }
+        // After the model: choosing a model resets its thinking level. The option the session advertised, else the
+        // ids agents use (Antigravity's is `thought_level` and refuses any other).
         if let Some(thinking) = req.thinking.as_deref().map(str::trim).filter(|t| !t.is_empty() && *t != "off") {
-            let _ = self
-                .rpc
-                .request(
-                    "session/set_config_option",
-                    json!({ "sessionId": session_id, "configId": "reasoning_effort", "value": thinking }),
-                    Duration::from_secs(10),
-                    &cancel,
-                )
-                .await;
+            let options = match &thought_option {
+                Some(option) => vec![option.clone()],
+                None => vec!["thought_level".to_owned(), "reasoning_effort".to_owned()],
+            };
+            for option in options {
+                let res = self
+                    .rpc
+                    .request(
+                        "session/set_config_option",
+                        json!({ "sessionId": session_id, "configId": option, "value": thinking }),
+                        Duration::from_secs(10),
+                        &cancel,
+                    )
+                    .await;
+                if res.is_ok() {
+                    break;
+                }
+            }
         }
 
         let prompt_blocks = build_acp_prompt_blocks(&req.prompt, &req.image_paths);
@@ -273,11 +303,15 @@ impl AcpProcess {
                     // Drain any trailing notifications already queued before `session/prompt` returned.
                     while let Ok(Some(IncomingEvent::Notification(note))) = tokio::time::timeout(Duration::from_millis(20), stream.recv()).await {
                         if matches_session(&note.params, &session_id) && note.method == "session/update" {
-                            handle_acp_update(&note.params, &mut tool_state, &mut latest_usage, &events);
+                            handle_acp_update(&note.params, &req.cwd, &mut tool_state, &mut latest_usage, &events);
                         }
                     }
                     match prompt_res {
                         Ok(res) => {
+                            // The turn's tokens; `usage_update` only tells how full the context window is.
+                            if let Some(usage) = res.get("usage").and_then(acp_turn_usage) {
+                                latest_usage = Some(usage);
+                            }
                             let stop_reason = match res.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn") {
                                 "cancelled" => "aborted".to_owned(),
                                 "refusal" | "error" => "error".to_owned(),
@@ -347,7 +381,7 @@ impl AcpProcess {
                             }
                             self.touch();
                             if note.method == "session/update" {
-                                handle_acp_update(&note.params, &mut tool_state, &mut latest_usage, &events);
+                                handle_acp_update(&note.params, &req.cwd, &mut tool_state, &mut latest_usage, &events);
                             }
                         }
                     }
@@ -361,10 +395,7 @@ impl AcpProcess {
         if let Some(session_id) = existing.filter(|id| !id.trim().is_empty()) {
             // If this process already holds this session in memory, reuse directly without reloading.
             if self.known_modes.lock().is_ok_and(|m| m.contains_key(session_id)) {
-                return Ok((
-                    AcpSessionMeta { session_id: session_id.to_owned(), models: Vec::new(), modes: Vec::new() },
-                    false,
-                ));
+                return Ok((AcpSessionMeta { session_id: session_id.to_owned(), ..AcpSessionMeta::default() }, false));
             }
             // Prefer `session/resume` (no replay), then fall back to `session/load` if supported.
             let resume_params = json!({ "sessionId": session_id, "cwd": cwd_str, "mcpServers": [] });
@@ -460,25 +491,24 @@ fn build_acp_prompt_blocks(prompt: &str, image_paths: &[PathBuf]) -> Vec<Value> 
     blocks
 }
 
+/// Thinking levels by name, weakest first.
+const LEVEL_NAMES: [&str; 8] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /// Parse ACP `session/new` or `session/resume` response into session id, models, and available modes.
 pub fn parse_acp_session_meta(res: &Value) -> AcpSessionMeta {
     let session_id = res.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_owned();
-    let mut models = Vec::new();
+    // ACP's older `models` list.
     let current_model = res.pointer("/models/currentModelId").and_then(Value::as_str).map(str::to_owned);
-    if let Some(arr) = res.pointer("/models/availableModels").and_then(Value::as_array) {
-        for item in arr {
-            if let Some(id) = item.get("modelId").or_else(|| item.get("id")).and_then(Value::as_str).filter(|s| !s.is_empty()) {
-                let display_name = item.get("name").or_else(|| item.get("displayName")).and_then(Value::as_str).map(str::to_owned);
-                models.push(ExternalModelInfo {
-                    id: id.to_owned(),
-                    display_name,
-                    reasoning_efforts: Vec::new(),
-                    default_effort: None,
-                    is_default: (current_model.as_deref() == Some(id)).then_some(true),
-                });
-            }
-        }
-    }
+    let listed: Vec<(String, Option<String>)> = res
+        .pointer("/models/availableModels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("modelId").or_else(|| item.get("id")).and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            Some((id.to_owned(), item.get("name").or_else(|| item.get("displayName")).and_then(Value::as_str).map(str::to_owned)))
+        })
+        .collect();
     let mut modes = Vec::new();
     if let Some(arr) = res.pointer("/modes/availableModes").and_then(Value::as_array) {
         for item in arr {
@@ -487,7 +517,10 @@ pub fn parse_acp_session_meta(res: &Value) -> AcpSessionMeta {
             }
         }
     }
-    // Also parse ACP v2 `configOptions` (category `model` / `mode` / `thought_level`).
+    // ACP v2 `configOptions` (category `model` / `mode` / `thought_level`).
+    let mut config_models: Vec<(String, Option<String>)> = Vec::new();
+    let mut config_current: Option<String> = None;
+    let mut thought_option: Option<String> = None;
     let mut thought_levels: Vec<String> = Vec::new();
     let mut default_thought: Option<String> = None;
     if let Some(options) = res.get("configOptions").and_then(Value::as_array) {
@@ -497,38 +530,89 @@ pub fn parse_acp_session_meta(res: &Value) -> AcpSessionMeta {
             let current = opt.get("currentValue").and_then(Value::as_str).map(str::to_owned);
             let values = collect_config_option_values(opt);
             if category == "model" || id == "model" {
-                if models.is_empty() {
-                    for (val, name) in values {
-                        models.push(ExternalModelInfo {
-                            is_default: (current.as_deref() == Some(val.as_str())).then_some(true),
-                            id: val,
-                            display_name: name,
-                            reasoning_efforts: Vec::new(),
-                            default_effort: None,
-                        });
-                    }
-                }
+                config_models = values;
+                config_current = current;
             } else if category == "mode" || id == "mode" {
                 if modes.is_empty() {
                     modes.extend(values.into_iter().map(|(val, _)| val));
                 }
-            } else if category == "thought_level" || id == "reasoning_effort" || id == "thinking" {
-                thought_levels.extend(values.into_iter().map(|(val, _)| val));
+            } else if category == "thought_level" || matches!(id, "thought_level" | "reasoning_effort" | "thinking") {
+                thought_option = (!id.is_empty()).then(|| id.to_owned());
+                thought_levels = values.into_iter().map(|(val, _)| val).collect();
                 default_thought = current;
             }
         }
     }
-    if !thought_levels.is_empty() {
-        for model in &mut models {
-            if model.reasoning_efforts.is_empty() {
-                model.reasoning_efforts = thought_levels.clone();
-            }
-            if model.default_effort.is_none() {
-                model.default_effort = default_thought.clone();
-            }
+    // Antigravity lists each model once per thinking level in `models` (`gemini-4-neon-high`, ...) and the models
+    // themselves in `configOptions`, whose thinking levels are the current model's: each model offers the levels its
+    // entries end in (Claude has no `xhigh`, GPT-OSS no level at all).
+    let is_level = |text: &str| LEVEL_NAMES.contains(&text) || thought_levels.iter().any(|level| level == text);
+    let mut offered: HashMap<&str, Vec<String>> = HashMap::new();
+    for (id, _) in &listed {
+        if config_models.iter().any(|(model, _)| model == id) {
+            continue;
+        }
+        let base = config_models
+            .iter()
+            .filter_map(|(model, _)| {
+                let level = id.strip_prefix(model.as_str())?.strip_prefix('-')?;
+                is_level(level).then_some((model.as_str(), level))
+            })
+            .max_by_key(|(model, _)| model.len());
+        if let Some((model, level)) = base {
+            offered.entry(model).or_default().push(level.to_owned());
         }
     }
-    AcpSessionMeta { session_id, models, modes }
+    let rank = |level: &String| LEVEL_NAMES.iter().position(|name| name == level).unwrap_or(LEVEL_NAMES.len());
+    let models = if !offered.is_empty() {
+        config_models
+            .iter()
+            .map(|(id, name)| {
+                let current = config_current.as_deref() == Some(id.as_str());
+                let mut efforts = if current && !thought_levels.is_empty() { thought_levels.clone() } else { offered.get(id.as_str()).cloned().unwrap_or_default() };
+                efforts.sort_by_key(rank);
+                efforts.dedup();
+                ExternalModelInfo {
+                    id: id.clone(),
+                    display_name: name.clone(),
+                    default_effort: default_thought.clone().filter(|level| efforts.contains(level)),
+                    reasoning_efforts: efforts,
+                    is_default: current.then_some(true),
+                }
+            })
+            .collect()
+    } else {
+        // Every model with the advertised levels, from `models` when it lists any.
+        let (source, current) = if listed.is_empty() { (&config_models, config_current.as_deref()) } else { (&listed, current_model.as_deref()) };
+        source
+            .iter()
+            .map(|(id, name)| ExternalModelInfo {
+                id: id.clone(),
+                display_name: name.clone(),
+                reasoning_efforts: thought_levels.clone(),
+                default_effort: if thought_levels.is_empty() { None } else { default_thought.clone() },
+                is_default: (current == Some(id.as_str())).then_some(true),
+            })
+            .collect()
+    };
+    AcpSessionMeta { session_id, models, modes, thought_option }
+}
+
+/// The tokens a `session/prompt` result reports for its turn (`inputTokens` leaves out the cached part).
+fn acp_turn_usage(usage: &Value) -> Option<UsageSummary> {
+    let num = |key: &str| usage.get(key).and_then(Value::as_f64);
+    let (input, output) = (num("inputTokens"), num("outputTokens"));
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(UsageSummary {
+        input: input.unwrap_or(0.0),
+        output: output.unwrap_or(0.0),
+        cache_read: num("cachedReadTokens").unwrap_or(0.0),
+        cache_write: num("cachedWriteTokens").unwrap_or(0.0),
+        reasoning: num("thoughtTokens").filter(|v| *v > 0.0),
+        cost: None,
+    })
 }
 
 fn collect_config_option_values(opt: &Value) -> Vec<(String, Option<String>)> {
@@ -593,6 +677,7 @@ fn acp_commands(params: &Value) -> Option<Vec<ExternalCommand>> {
 
 fn handle_acp_update(
     params: &Value,
+    cwd: &Path,
     tools: &mut HashMap<String, AcpToolState>,
     latest_usage: &mut Option<UsageSummary>,
     events: &mpsc::UnboundedSender<ExternalEvent>,
@@ -635,6 +720,7 @@ fn handle_acp_update(
                 args["title"] = json!(title);
             }
             let locations = extract_locations(update);
+            add_rainy_args(tool_kind, &locations, cwd, &mut args);
             tools.insert(
                 id.to_owned(),
                 AcpToolState { name: name.clone(), kind: tool_kind.to_owned(), output: String::new(), locations, completed: false },
@@ -690,8 +776,13 @@ fn handle_acp_update(
             }
         }
         "usage_update" => {
+            // ACP's `usage_update` tells how full the context window is (`used` of `size`), which is no count of the
+            // tokens a request took; the turn's own come with `session/prompt`'s result. Only token counts are kept.
+            if update.get("inputTokens").is_none() && update.get("outputTokens").is_none() {
+                return;
+            }
             let num = |k: &str| update.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-            let input = num("inputTokens").max(num("used"));
+            let input = num("inputTokens");
             let output = num("outputTokens");
             let usage = UsageSummary {
                 input,
@@ -727,7 +818,7 @@ fn handle_acp_request(
     let kind = tool_call.get("kind").and_then(Value::as_str).unwrap_or("other");
     let title = tool_call.get("title").and_then(Value::as_str).unwrap_or(kind);
     let path = extract_locations(tool_call).into_iter().next().or_else(|| {
-        tool_call.pointer("/rawInput/path").or_else(|| tool_call.pointer("/rawInput/file_path")).and_then(Value::as_str).map(str::to_owned)
+        tool_call.pointer("/rawInput/path").or_else(|| tool_call.pointer("/rawInput/file_path")).and_then(Value::as_str).map(acp_path)
     });
     let options: Vec<(String, String)> = req
         .params
@@ -828,29 +919,77 @@ fn extract_tool_update_text(update: &Value) -> Option<String> {
     if let Some(text) = extract_content_text(update.get("content")) {
         return Some(text);
     }
-    update.get("rawOutput").map(|raw| raw.as_str().map(str::to_owned).unwrap_or_else(|| raw.to_string()))
+    update
+        .get("rawOutput")
+        .filter(|raw| !raw.is_null() && raw.as_object().is_none_or(|map| !map.is_empty()))
+        .map(|raw| raw.as_str().map(str::to_owned).unwrap_or_else(|| raw.to_string()))
+}
+
+/// Rainy's names for what an ACP agent's call works on, beside the agent's own (Antigravity's `CommandLine` and
+/// `Path`), so a command row shows the command and a file row the file, relative to the project when inside it.
+fn add_rainy_args(kind: &str, locations: &[String], cwd: &Path, args: &mut Value) {
+    let Some(map) = args.as_object_mut() else { return };
+    let text = |map: &serde_json::Map<String, Value>, keys: &[&str]| keys.iter().find_map(|key| map.get(*key).and_then(Value::as_str).map(str::to_owned));
+    match kind {
+        "execute" if !map.contains_key("command") => {
+            if let Some(command) = text(map, &["CommandLine", "commandLine", "cmd"]) {
+                map.insert("command".into(), json!(command));
+            }
+        }
+        "read" | "edit" | "delete" | "move" if !map.contains_key("file_path") => {
+            let path = locations.first().cloned().or_else(|| text(map, &["Path", "path", "AbsolutePath", "TargetFile"]).map(|path| acp_path(&path)));
+            if let Some(path) = path {
+                map.insert("file_path".into(), json!(crate::agent::changes::path_for_model(&cwd.to_string_lossy(), &path)));
+            }
+        }
+        _ => {}
+    }
 }
 
 fn extract_locations(value: &Value) -> Vec<String> {
-    value
-        .get("locations")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|loc| loc.get("path").and_then(Value::as_str).map(str::to_owned))
-        .collect()
+    let mut paths: Vec<String> = Vec::new();
+    for path in value.get("locations").and_then(Value::as_array).into_iter().flatten().filter_map(|loc| loc.get("path").and_then(Value::as_str)) {
+        let path = acp_path(path);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// One spelling of a path the agent reports: Antigravity names one Windows file `C:\a\b.txt`, `C:/a/b.txt` and
+/// `/C:/a/b.txt` within a single call.
+fn acp_path(raw: &str) -> String {
+    let is_drive = |text: &str| matches!(text.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic());
+    let path = raw.strip_prefix('/').filter(|rest| is_drive(rest)).unwrap_or(raw);
+    if is_drive(path) { path.replace('/', "\\") } else { path.to_owned() }
 }
 
 fn build_acp_tool_details(id: &str, state: &AcpToolState, update: &Value) -> Option<Value> {
+    if state.kind == "execute" {
+        let mut details = json!({ "external": true });
+        let raw = update.get("rawOutput");
+        if let Some(code) = raw.and_then(|raw| raw.get("exit_code").or_else(|| raw.get("exitCode"))).and_then(Value::as_i64) {
+            details["exitCode"] = json!(code);
+        }
+        return Some(details);
+    }
+    // The files it names, and for those an ACP `diff` shows, the text before (none for a new file) and after.
     let mut paths: Vec<String> = state.locations.clone();
-    if let Some(content) = update.get("content").and_then(Value::as_array) {
-        for block in content {
-            if block.get("type").and_then(Value::as_str) == Some("diff")
-                && let Some(path) = block.get("path").and_then(Value::as_str)
-                && !paths.iter().any(|p| p == path)
-            {
-                paths.push(path.to_owned());
-            }
+    let mut texts: HashMap<String, (String, String)> = HashMap::new();
+    for block in update.get("content").and_then(Value::as_array).into_iter().flatten() {
+        if block.get("type").and_then(Value::as_str) != Some("diff") {
+            continue;
+        }
+        let Some(path) = block.get("path").and_then(Value::as_str).map(acp_path) else { continue };
+        if !paths.contains(&path) {
+            paths.push(path.clone());
+        }
+        let before = block.get("oldText").and_then(Value::as_str).unwrap_or_default();
+        if let Some(after) = block.get("newText").and_then(Value::as_str)
+            && before.len() + after.len() <= MAX_DIFF_TEXT
+        {
+            texts.insert(path, (before.to_owned(), after.to_owned()));
         }
     }
     if matches!(state.kind.as_str(), "edit" | "delete" | "move") && !paths.is_empty() {
@@ -859,13 +998,18 @@ fn build_acp_tool_details(id: &str, state: &AcpToolState, update: &Value) -> Opt
             .into_iter()
             .enumerate()
             .map(|(idx, path)| {
-                json!({
+                let mut file = json!({
                     "changeId": format!("{id}#{idx}"),
-                    "path": path,
                     "operation": op,
                     "undoable": false,
                     "external": true,
-                })
+                });
+                if let Some((before, after)) = texts.remove(&path) {
+                    file["before"] = json!(before);
+                    file["after"] = json!(after);
+                }
+                file["path"] = json!(path);
+                file
             })
             .collect();
         return Some(json!({ "files": files, "external": true }));
@@ -934,5 +1078,113 @@ mod tests {
         assert_eq!(pick_acp_mode("read-only", &meta.modes).as_deref(), Some("plan"));
         assert_eq!(pick_acp_mode("ask", &meta.modes).as_deref(), Some("default"));
         assert_eq!(pick_acp_mode("auto", &meta.modes).as_deref(), Some("accept-edits"));
+        assert_eq!(meta.thought_option.as_deref(), Some("reasoning_effort"));
+    }
+
+    /// What `agy acp` 1.5.16 answers to `session/new` (the model ids as it sent them, the option lists cut down).
+    #[test]
+    fn reads_antigravity_models_with_the_levels_each_offers() {
+        let ids = [
+            "gemini-4-neon-high", "gemini-4-neon-xhigh", "gemini-4-neon-medium", "gemini-4-neon-low",
+            "gemini-pro-orchestrator-neon", "gemini-pro-orchestrator", "gemini-pro-orchestrator-argon",
+            "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+            "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high", "gpt-oss-120b-medium",
+        ];
+        let option = |value: &str, name: &str| json!({ "value": value, "name": name });
+        let res = json!({
+            "sessionId": "f0c9fb3e-0429-4a6c-b0b8-a15de20df612",
+            "models": {
+                "currentModelId": "gemini-4-neon-high",
+                "availableModels": ids.iter().map(|id| json!({ "modelId": id, "name": id })).collect::<Vec<_>>(),
+            },
+            "modes": { "currentModeId": "default", "availableModes": [{ "id": "default" }, { "id": "accept-edits" }, { "id": "auto" }, { "id": "plan" }] },
+            "configOptions": [
+                { "id": "model", "category": "model", "type": "select", "currentValue": "gemini-4-neon", "options": [
+                    option("gemini-4-neon", "Gemini 4 Neon"), option("gemini-pro-orchestrator-neon", "Orchestrator (Neon)"),
+                    option("gemini-pro-orchestrator", "Orchestrator (Carbon)"), option("gemini-pro-orchestrator-argon", "Orchestrator (Argon)"),
+                    option("gemini-3.8-flash", "Gemini 3.8 Flash"), option("claude-opus-5-5", "Claude Opus 5.5"),
+                    option("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+                ] },
+                { "id": "thought_level", "category": "thought_level", "type": "select", "currentValue": "high", "options": [
+                    option("low", "Low"), option("medium", "Medium"), option("high", "High"), option("xhigh", "Extra"),
+                ] },
+                { "id": "mode", "category": "mode", "type": "select", "currentValue": "default", "options": [option("default", "Default")] },
+            ],
+        });
+        let meta = parse_acp_session_meta(&res);
+        assert_eq!(meta.thought_option.as_deref(), Some("thought_level"));
+        assert_eq!(meta.modes, vec!["default", "accept-edits", "auto", "plan"]);
+        let ids: Vec<&str> = meta.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gemini-4-neon", "gemini-pro-orchestrator-neon", "gemini-pro-orchestrator", "gemini-pro-orchestrator-argon", "gemini-3.8-flash", "claude-opus-5-5", "gpt-oss-120b-medium"]);
+        let model = |id: &str| meta.models.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(model("gemini-4-neon").is_default, Some(true));
+        assert_eq!(model("gemini-4-neon").display_name.as_deref(), Some("Gemini 4 Neon"));
+        assert_eq!(model("gemini-4-neon").reasoning_efforts, ["low", "medium", "high", "xhigh"]);
+        assert_eq!(model("gemini-3.8-flash").reasoning_efforts, ["low", "medium", "high"]);
+        assert_eq!(model("claude-opus-5-5").reasoning_efforts, ["low", "medium", "high"]);
+        assert_eq!(model("claude-opus-5-5").default_effort.as_deref(), Some("high"));
+        assert_eq!(model("claude-opus-5-5").is_default, None);
+        // Models of their own, not levels of `gemini-pro-orchestrator`; GPT-OSS's `-medium` is part of its name.
+        for id in ["gemini-pro-orchestrator", "gemini-pro-orchestrator-neon", "gpt-oss-120b-medium"] {
+            assert!(model(id).reasoning_efforts.is_empty(), "{id}");
+            assert_eq!(model(id).default_effort, None, "{id}");
+        }
+    }
+
+    #[test]
+    fn one_spelling_per_reported_path_and_the_turns_tokens() {
+        assert_eq!(acp_path("/C:/Users/a/hello.txt"), r"C:\Users\a\hello.txt");
+        assert_eq!(acp_path("C:/Users/a/hello.txt"), r"C:\Users\a\hello.txt");
+        assert_eq!(acp_path(r"C:\Users\a\hello.txt"), r"C:\Users\a\hello.txt");
+        assert_eq!(acp_path("/home/a/hello.txt"), "/home/a/hello.txt");
+        let call = json!({ "locations": [{ "path": r"C:\w\hello.txt" }, { "path": "C:/w/hello.txt" }, { "path": "/C:/w/hello.txt" }] });
+        assert_eq!(extract_locations(&call), [r"C:\w\hello.txt"]);
+        let state = AcpToolState { name: "apply_patch".into(), kind: "edit".into(), locations: extract_locations(&call), ..AcpToolState::default() };
+        let done = json!({ "content": [{ "type": "diff", "path": "/C:/w/hello.txt", "newText": "hi" }] });
+        let details = build_acp_tool_details("call_1", &state, &done).unwrap();
+        assert_eq!(details["files"].as_array().unwrap().len(), 1, "{details}");
+
+        let usage = json!({ "inputTokens": 15167, "outputTokens": 51, "cachedReadTokens": 10945, "cachedWriteTokens": 0, "thoughtTokens": 0, "totalTokens": 26163 });
+        let usage = acp_turn_usage(&usage).unwrap();
+        assert_eq!((usage.input, usage.output, usage.cache_read, usage.reasoning), (15167.0, 51.0, 10945.0, None));
+        assert!(acp_turn_usage(&json!({ "used": 13120, "size": 1048576 })).is_none());
+    }
+
+    /// A command and an edit of an existing file as `agy acp` 1.5.16 reports them, and its context-window report.
+    #[test]
+    fn names_antigravity_calls_the_way_rainy_shows_them() {
+        let cwd = Path::new(r"C:\w");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tools = HashMap::new();
+        let mut usage = None;
+        let mut feed = |update: Value| handle_acp_update(&json!({ "sessionId": "s", "update": update }), cwd, &mut tools, &mut usage, &tx);
+        let command = r#"python -c "print(6*7)""#;
+        feed(json!({ "sessionUpdate": "tool_call", "toolCallId": "c1", "name": "run_command", "kind": "execute", "title": command, "status": "in_progress",
+            "rawInput": { "CommandLine": command, "WaitMsBeforeAsync": 5000, "toolSummary": "Run python math print" } }));
+        feed(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "c1", "kind": "execute", "title": command, "status": "completed",
+            "rawOutput": { "output": "Command exited with code 0.\n\nCommand output:\n42\r\n", "exit_code": 0 },
+            "content": [{ "type": "content", "content": { "type": "text", "text": "Command exited with code 0.\n\nCommand output:\n42\r\n" } }] }));
+        feed(json!({ "sessionUpdate": "tool_call", "toolCallId": "e1", "name": "edit_file", "kind": "edit", "title": "File hello.txt", "status": "in_progress",
+            "locations": [{ "path": r"C:\w\hello.txt" }], "rawInput": { "Path": r"C:\w\hello.txt", "Replacement": "hello", "Target": "hi" } }));
+        feed(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "e1", "kind": "edit", "title": "File /C:/w/hello.txt", "status": "completed",
+            "locations": [{ "path": "/C:/w/hello.txt" }], "rawOutput": {}, "content": [{ "type": "diff", "path": "/C:/w/hello.txt", "newText": "hello", "oldText": "hi" }] }));
+        feed(json!({ "sessionUpdate": "usage_update", "used": 13120, "size": 1048576 }));
+        let events: Vec<ExternalEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(events.len(), 4, "{events:?}");
+        let ExternalEvent::ToolStarted { args, .. } = &events[0] else { panic!("{events:?}") };
+        assert_eq!(args["command"], command);
+        assert_eq!(args["CommandLine"], command, "the agent's own names stay");
+        let ExternalEvent::ToolCompleted { details: Some(details), output, .. } = &events[1] else { panic!("{events:?}") };
+        assert_eq!(details["exitCode"], 0);
+        assert!(output.contains("42"));
+        let ExternalEvent::ToolStarted { name, args, .. } = &events[2] else { panic!("{events:?}") };
+        assert_eq!(name, "apply_patch");
+        assert_eq!(args["file_path"], if cfg!(windows) { "hello.txt" } else { r"C:\w\hello.txt" });
+        let ExternalEvent::ToolCompleted { details: Some(details), output, .. } = &events[3] else { panic!("{events:?}") };
+        assert!(output.is_empty(), "an empty raw output is no output: {output:?}");
+        let files = details["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{details}");
+        assert_eq!((files[0]["path"].as_str(), files[0]["before"].as_str(), files[0]["after"].as_str()), (Some(r"C:\w\hello.txt"), Some("hi"), Some("hello")));
+        assert!(usage.is_none(), "a context-window report is no token count");
     }
 }
