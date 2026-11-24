@@ -259,7 +259,7 @@ impl Client {
         let status = response.status().as_u16();
         let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok()).unwrap_or_default().to_owned();
         if !(200..300).contains(&status) {
-            return Err(Failure::Http(status, response.text().await.unwrap_or_default()));
+            return Err(Failure::Http(status, error_text(response).await));
         }
         if !content_type.to_lowercase().starts_with("text/event-stream") {
             return Err(Failure::Other(format!("Unexpected content type: {content_type}")));
@@ -306,7 +306,7 @@ impl Client {
                 let response = request.send().await.map_err(|error| Failure::Other(format!("fetch failed: {}", crate::agent::llm::transport_error(&error))))?;
                 let status = response.status().as_u16();
                 if !(200..300).contains(&status) {
-                    return Err(Failure::Http(status, response.text().await.unwrap_or_default()));
+                    return Err(Failure::Http(status, error_text(response).await));
                 }
                 Ok(())
             }
@@ -327,7 +327,7 @@ impl Client {
                 }
                 let status = response.status().as_u16();
                 if !(200..300).contains(&status) {
-                    return Err(Failure::Http(status, response.text().await.unwrap_or_default()));
+                    return Err(Failure::Http(status, error_text(response).await));
                 }
                 if status == 202 {
                     return Ok(());
@@ -467,9 +467,44 @@ impl Client {
     }
 }
 
+/// Most of an error answer's body kept for the message.
+const ERROR_TEXT_BYTES: usize = 16 * 1024;
+
+/// The start of an error answer's body: a server can send a body of any size, or one that never ends.
+async fn error_text(response: reqwest::Response) -> String {
+    let mut body = response.bytes_stream();
+    let mut kept = Vec::new();
+    while kept.len() < ERROR_TEXT_BYTES {
+        let Some(Ok(chunk)) = body.next().await else { break };
+        kept.extend_from_slice(&chunk[..chunk.len().min(ERROR_TEXT_BYTES - kept.len())]);
+    }
+    String::from_utf8_lossy(&kept).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_error_answer_keeps_only_the_start_of_its_body() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let _ = socket.write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n").await;
+            // A body that never ends.
+            let block = vec![b'e'; 64 * 1024];
+            while socket.write_all(&block).await.is_ok() {}
+        });
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = http.get(format!("http://{address}/mcp")).send().await.unwrap();
+        let text = tokio::time::timeout(Duration::from_secs(10), error_text(response)).await.expect("the body is not read to its end");
+        assert_eq!(text.len(), ERROR_TEXT_BYTES);
+        server.abort();
+    }
 
     #[tokio::test]
     async fn a_silent_http_server_times_out_and_stops() {
