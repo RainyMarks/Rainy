@@ -225,6 +225,9 @@ async fn http_post_file(port: u16, path: &str, cookie: &str, content_type: &str,
     http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
 }
 
+/// The longest chunk-size line (with its extensions) a streamed answer may send.
+const MAX_CHUNK_LINE: usize = 4096;
+
 /// Stream an HTTP/1.1 GET response directly to `destination` without buffering the whole body in memory.
 async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destination: &std::path::Path) -> Result<u16> {
     use std::io::Write as _;
@@ -272,7 +275,11 @@ async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destinati
         let mut io_buf = vec![0u8; 256 * 1024];
         loop {
             while !buf.windows(2).any(|w| w == b"\r\n") {
-                let n = stream.read(&mut io_buf).await?;
+                // A chunk's size line is a few hex digits and optional extensions.
+                if buf.len() > MAX_CHUNK_LINE {
+                    bail!(invalid());
+                }
+                let n = stream.read(&mut io_buf[..MAX_CHUNK_LINE]).await?;
                 if n == 0 {
                     bail!(invalid());
                 }
@@ -544,5 +551,32 @@ mod tests {
             assert!(http_post(port, "/ok", "rainy_auth=tok", "text/plain\r\nX: 1", b"").await.is_err());
         });
         server.join().unwrap();
+    }
+
+    #[test]
+    fn an_endless_chunk_size_line_is_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request);
+            socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
+            // A size line that never ends, on a connection that stays open.
+            for _ in 0..64 {
+                if socket.write_all(&[b'f'; 4096]).is_err() {
+                    return;
+                }
+            }
+            thread::sleep(Duration::from_secs(10));
+        });
+        let destination = std::env::temp_dir().join(format!("rainy-chunked-{}", std::process::id()));
+        let started = std::time::Instant::now();
+        let result = smol::block_on(http_get_to_file(port, "/file", None, &destination));
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5), "the answer must be refused before the server gives up");
+        let _ = std::fs::remove_file(&destination);
+        drop(server);
     }
 }
