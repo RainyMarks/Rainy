@@ -440,7 +440,32 @@ impl ExperimentsView {
             .border_b_1()
             .border_color(theme.border)
             .bg(theme.secondary.opacity(0.45))
-            .child(div().text_xs().font_semibold().child(tr(cx, "experiments.formTitle")))
+            // The buttons sit on the title row so they are in view however short the panel is.
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_xs().font_semibold().child(tr(cx, "experiments.formTitle")))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("exp-cancel")
+                            .ghost()
+                            .xsmall()
+                            .label(tr(cx, "experiments.cancel"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_form = false;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("exp-start")
+                            .primary()
+                            .xsmall()
+                            .loading(self.starting)
+                            .label(tr(cx, "experiments.start"))
+                            .on_click(cx.listener(|this, _, window, cx| this.submit_new(window, cx))),
+                    ),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -486,41 +511,17 @@ impl ExperimentsView {
                             .child(Input::new(&self.log_input).xsmall()),
                     ),
             )
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .when(env_count > 0, |this| {
-                        this.child(
-                            Checkbox::new("exp-apply-env")
-                                .checked(apply_env)
-                                .label(trf(cx, "experiments.applyHostEnv", &[("count", &env_count)]))
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.apply_host_env = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("exp-cancel")
-                            .ghost()
-                            .xsmall()
-                            .label(tr(cx, "experiments.cancel"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_form = false;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("exp-start")
-                            .primary()
-                            .xsmall()
-                            .loading(self.starting)
-                            .label(tr(cx, "experiments.start"))
-                            .on_click(cx.listener(|this, _, window, cx| this.submit_new(window, cx))),
-                    ),
-            )
+            .when(env_count > 0, |this| {
+                this.child(
+                    Checkbox::new("exp-apply-env")
+                        .checked(apply_env)
+                        .label(trf(cx, "experiments.applyHostEnv", &[("count", &env_count)]))
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.apply_host_env = *checked;
+                            cx.notify();
+                        })),
+                )
+            })
     }
 }
 
@@ -614,13 +615,8 @@ impl Render for ExperimentsView {
                             .flex_1()
                             .min_w_0()
                             .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .child(div().text_xs().font_medium().truncate().child(exp.name.clone()))
-                                    .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(meta.join(" · "))),
-                            )
+                            .child(div().text_xs().font_medium().truncate().child(exp.name.clone()))
+                            .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(meta.join(" · ")))
                             .child(
                                 div()
                                     .text_xs()
@@ -707,7 +703,6 @@ impl Render for ExperimentsView {
                         .border_b_1()
                         .border_color(theme.border)
                         .text_xs()
-                        .child(div().font_medium().flex_shrink_0().child(tr(cx, "experiments.tailTitle")))
                         .child(
                             div()
                                 .flex_1()
@@ -718,10 +713,12 @@ impl Render for ExperimentsView {
                                 .child(format!("{} ({size_label})", exp.log_path)),
                         )
                         .child(
+                            // An icon, so the log path keeps some room when the panel is narrow.
                             Button::new("exp-tail-pause")
                                 .ghost()
                                 .xsmall()
-                                .label(tr(cx, if paused { "experiments.tailResume" } else { "experiments.tailPause" }))
+                                .icon(if paused { IconName::Play } else { IconName::Pause })
+                                .tooltip(tr(cx, if paused { "experiments.tailResume" } else { "experiments.tailPause" }))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.tail_paused = !this.tail_paused;
                                     if !this.tail_paused {
@@ -782,23 +779,15 @@ impl Render for ExperimentsView {
                 )
                 .into_any_element()
         } else {
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(tr(cx, "experiments.empty"))
-                .into_any_element()
+            // Nothing selected: the list takes the whole width and says itself when it is empty.
+            div().into_any_element()
         };
 
         v_flex()
             .size_full()
             .child(toolbar)
-            .children(form)
+            // In a short panel the form shrinks and scrolls instead of pushing its buttons out of view.
+            .children(form.map(|form| div().id("exp-form").h_auto().flex_shrink(1.).child(form).overflow_y_scrollbar()))
             .child(h_flex().flex_1().min_h_0().child(list_pane).child(tail_pane))
     }
 }

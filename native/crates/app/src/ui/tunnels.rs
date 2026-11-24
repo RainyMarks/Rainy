@@ -363,7 +363,10 @@ fn render_popover_body(entity: Entity<TunnelsView>, locale: Locale, cx: &App) ->
         .collect();
 
     // Discovered listening ports on remote host.
-    let unforwarded: Vec<&ListeningPort> = discovered.iter().filter(|p| !active_remotes.contains(&p.port)).collect();
+    let mut unforwarded: Vec<&ListeningPort> = discovered.iter().filter(|p| !active_remotes.contains(&p.port)).collect();
+    // Only the first eight show: services the user runs (their process is known) on unprivileged ports come before
+    // system ones such as DNS or mail, so TensorBoard on 6006 is not crowded out by port 25 and 53.
+    unforwarded.sort_by_key(|p| (p.port < 1024, p.process_name.is_none() && p.label.is_none(), p.port));
     let discovered_rows: Vec<AnyElement> = unforwarded
         .iter()
         .take(8)

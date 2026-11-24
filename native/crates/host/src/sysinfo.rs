@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 use rainy_protocol::metrics::ListeningPort;
 use rainy_protocol::metrics::{CgroupLimits, DiskUsage, GpuInfo, GpuProcess, HostMetrics, HostPortsResponse};
 
@@ -830,20 +830,35 @@ fn discover_linux_listening_ports(self_port: u16) -> Vec<ListeningPort> {
     }
     let needed: BTreeSet<u64> = rows.iter().map(|row| row.inode).filter(|&inode| inode > 0).collect();
     let owners = map_socket_inodes_to_pids(&needed);
-    let mut dedup: BTreeMap<(u16, String), ListeningPort> = BTreeMap::new();
+    merge_listening_rows(rows, &owners)
+}
+
+/// One row per port: a service's IPv4 and IPv6 sockets, or one bound to several addresses (DNS on `127.0.0.53` and
+/// `127.0.0.54`), are the same thing to forward. The first address seen is kept (IPv4 is read first) and a socket
+/// whose owner was found fills in the process of one whose owner was not.
+#[cfg(any(unix, test))]
+fn merge_listening_rows(rows: Vec<ProcNetListen>, owners: &HashMap<u64, (u32, String)>) -> Vec<ListeningPort> {
+    let mut merged: BTreeMap<u16, ListeningPort> = BTreeMap::new();
     for row in rows {
-        let (pid, process_name) = owners.get(&row.inode).map(|(p, c)| (Some(*p), Some(c.clone()))).unwrap_or((None, None));
-        let label = infer_port_label(row.port, process_name.as_deref());
-        let key = (row.port, row.address.clone());
-        dedup.entry(key).or_insert(ListeningPort {
+        let port = merged.entry(row.port).or_insert_with(|| ListeningPort {
             port: row.port,
-            address: row.address,
-            pid,
-            process_name,
-            label,
+            address: row.address.clone(),
+            pid: None,
+            process_name: None,
+            label: None,
         });
+        if port.pid.is_none()
+            && let Some((pid, name)) = owners.get(&row.inode)
+        {
+            port.pid = Some(*pid);
+            port.process_name = Some(name.clone());
+        }
     }
-    dedup.into_values().collect()
+    let mut ports: Vec<ListeningPort> = merged.into_values().collect();
+    for port in &mut ports {
+        port.label = infer_port_label(port.port, port.process_name.as_deref());
+    }
+    ports
 }
 
 #[cfg(unix)]
@@ -959,6 +974,28 @@ mod tests {
         assert_eq!(rows6.len(), 1);
         assert_eq!(rows6[0], ProcNetListen { address: "::1".into(), port: 7860, inode: 77889 });
         assert_eq!(infer_port_label(7860, None).as_deref(), Some("Gradio"));
+    }
+
+    #[test]
+    fn merges_listening_sockets_into_one_row_per_port() {
+        let row = |address: &str, port: u16, inode: u64| ProcNetListen { address: address.into(), port, inode };
+        let rows = vec![
+            row("0.0.0.0", 8080, 10),
+            row("127.0.0.53", 53, 0),
+            row("127.0.0.54", 53, 0),
+            row("127.0.0.1", 6006, 11),
+            row("::", 8080, 12),
+            row("::1", 6006, 13),
+        ];
+        // The IPv4 socket of 6006 belongs to another user (no owner found); its IPv6 one is ours.
+        let owners = HashMap::from([(10, (100, "node".to_owned())), (12, (100, "node".to_owned())), (13, (200, "python3".to_owned()))]);
+        let ports = merge_listening_rows(rows, &owners);
+        let summary: Vec<(u16, &str, Option<u32>, Option<&str>)> =
+            ports.iter().map(|p| (p.port, p.address.as_str(), p.pid, p.label.as_deref())).collect();
+        assert_eq!(
+            summary,
+            vec![(53, "127.0.0.53", None, None), (6006, "127.0.0.1", Some(200), Some("TensorBoard")), (8080, "0.0.0.0", Some(100), Some("Web"))]
+        );
     }
 
     #[test]

@@ -553,6 +553,25 @@ exit $_rc"#;
     Ok(Launched { pid, pgid: Some(pid), proc_start_ticks, uid })
 }
 
+/// The PowerShell that runs an experiment on Windows. The command and the exit-marker path come in through
+/// environment variables, and the wrapper itself has no double quotes, so Windows argument quoting cannot change it.
+/// It goes in with `-Command`, not `-EncodedCommand`: Windows PowerShell writes the error and progress streams of an
+/// encoded command as CLIXML, which made a failing run's log unreadable (and every log start with `#< CLIXML`).
+#[cfg(any(windows, test))]
+const WINDOWS_WRAPPER: &str = concat!(
+    "$ProgressPreference = 'SilentlyContinue'; ",
+    "$c = $env:_RAINY_EXP_CMD; $e = $env:_RAINY_EXP_EXIT; ",
+    "Remove-Item Env:_RAINY_EXP_CMD, Env:_RAINY_EXP_EXIT -ErrorAction SilentlyContinue; ",
+    "$rc = 0; ",
+    "try { Invoke-Expression $c; if ($null -ne $LASTEXITCODE) { $rc = [int]$LASTEXITCODE } } catch { Write-Error $_; $rc = 1 }; ",
+    "$ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); ",
+    "$json = (@{ exitCode = $rc; endedAt = $ts } | ConvertTo-Json -Compress); ",
+    "$tmp = $e + '.tmp'; ",
+    "[System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false))); ",
+    "Move-Item -Force $tmp $e; ",
+    "exit $rc"
+);
+
 #[cfg(windows)]
 fn spawn_detached(
     command: &str,
@@ -561,7 +580,6 @@ fn spawn_detached(
     log_file: File,
     exit_path: &Path,
 ) -> HostResult<Launched> {
-    use base64::Engine as _;
     use std::os::windows::process::CommandExt as _;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -569,25 +587,8 @@ fn spawn_detached(
 
     let (pwsh, _) = crate::process::resolve_powershell(None, None);
     let stderr_file = log_file.try_clone()?;
-    // Pass command and exit path via env vars and encode the wrapper as UTF-16LE Base64 (`-EncodedCommand`)
-    // to bypass Windows command-line quote stripping completely.
-    let script = concat!(
-        "$c = $env:_RAINY_EXP_CMD; $e = $env:_RAINY_EXP_EXIT; ",
-        "Remove-Item Env:_RAINY_EXP_CMD, Env:_RAINY_EXP_EXIT -ErrorAction SilentlyContinue; ",
-        "$rc = 0; ",
-        "try { Invoke-Expression $c; if ($null -ne $LASTEXITCODE) { $rc = [int]$LASTEXITCODE } } catch { Write-Error $_; $rc = 1 }; ",
-        "$ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); ",
-        "$json = (@{ exitCode = $rc; endedAt = $ts } | ConvertTo-Json -Compress); ",
-        "$tmp = \"$e.tmp\"; ",
-        "[System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false))); ",
-        "Move-Item -Force $tmp $e; ",
-        "exit $rc"
-    );
-    let utf16_bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16_bytes);
-
     let mut cmd = std::process::Command::new(&pwsh);
-    cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+    cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_WRAPPER])
         .current_dir(cwd)
         .env_clear()
         .envs(env)
@@ -819,8 +820,9 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         let mgr = Experiments::open(&home);
 
-        // Start a quick experiment that prints and exits cleanly.
-        let cmd = if cfg!(windows) { "Write-Output 'exp-hello-42'" } else { "echo exp-hello-42" };
+        // Start a quick experiment that prints (an error too) and exits cleanly.
+        assert!(!WINDOWS_WRAPPER.contains('"'), "Windows argument quoting would rewrite the wrapper");
+        let cmd = if cfg!(windows) { "Write-Output 'exp-hello-42'; Write-Error 'exp-oops'" } else { "echo exp-hello-42; echo exp-oops >&2" };
         let rec = mgr
             .start(ExperimentStartParams {
                 name: Some("quick-check".into()),
@@ -853,6 +855,8 @@ mod tests {
 
         let tail = mgr.tail(&rec.id, Some(0), None).unwrap();
         assert!(tail.text.contains("exp-hello-42"), "unexpected tail: {:?}", tail.text);
+        // Errors reach the log as text, not as PowerShell's CLIXML.
+        assert!(tail.text.contains("exp-oops") && !tail.text.contains("CLIXML"), "unexpected tail: {:?}", tail.text);
         assert!(mgr.remove(&rec.id).unwrap());
 
         // Start a longer experiment and verify safe stop + removal.
