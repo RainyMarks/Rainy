@@ -421,11 +421,10 @@ impl DebugSession {
                 fields.insert("subProcess".into(), json!(false));
             }
             "javascript" | "typescript" => {
-                let index = launch.argv.iter().position(|arg| *arg == program).unwrap_or(launch.argv.len());
                 fields.insert("type".into(), json!("pwa-node"));
                 fields.insert("program".into(), json!(program));
                 fields.insert("runtimeExecutable".into(), json!(launch.argv[0]));
-                fields.insert("runtimeArgs".into(), json!(launch.argv[1..index]));
+                fields.insert("runtimeArgs".into(), json!(node_runtime_args(&launch.argv, &program)));
                 fields.insert("console".into(), json!(if self.resolved.terminal { "integratedTerminal" } else { "internalConsole" }));
                 fields.insert("sourceMaps".into(), json!(true));
                 fields.insert("autoAttachChildProcesses".into(), json!(false));
@@ -859,5 +858,26 @@ impl DebugSession {
             ]);
         }
         let _ = self.done.send(true);
+    }
+}
+
+/// The runtime's own arguments in a Node launch: those between the runtime (`argv[0]`) and the program. A launch whose
+/// first word is the program itself has none.
+fn node_runtime_args<'a>(argv: &'a [String], program: &str) -> &'a [String] {
+    let end = argv.iter().position(|arg| arg == program).unwrap_or(argv.len());
+    argv.get(1..end).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_runtime_args_survive_a_launch_that_starts_with_the_program() {
+        let argv = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        assert_eq!(node_runtime_args(&argv(&["node", "--inspect", "app.js", "x"]), "app.js"), argv(&["--inspect"]).as_slice());
+        assert!(node_runtime_args(&argv(&["app.js", "x"]), "app.js").is_empty());
+        assert!(node_runtime_args(&argv(&["node"]), "app.js").is_empty());
+        assert!(node_runtime_args(&[], "app.js").is_empty());
     }
 }
