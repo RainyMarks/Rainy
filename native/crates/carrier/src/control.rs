@@ -427,7 +427,8 @@ fn read_control<W: Write + Send + 'static>(
                 });
             }
             ("preview", Some(id)) if !local => {
-                write_line(stdin, &json!({ "type": "reply", "id": id, "answer": { "error": "The preview window is only available to a Host on this computer." } }));
+                let error = localized("预览窗口只能由这台电脑上的执行后端打开。", "The preview window is only available to a Host on this computer.");
+                write_line(stdin, &json!({ "type": "reply", "id": id, "answer": { "error": error } }));
             }
             ("preview", Some(id)) => {
                 let command = message.get("command").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
