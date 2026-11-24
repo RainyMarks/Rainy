@@ -235,6 +235,12 @@ pub fn contained(root: &Path, relative: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+/// Whether `next` is a path on this origin. Browsers drop tabs and line breaks from a URL before reading it, so
+/// `/<tab>/example.com` would be read as `//example.com`, another site.
+fn local_path(next: &str) -> bool {
+    next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') && !next.chars().any(char::is_control)
+}
+
 async fn handle(State(server): State<Arc<HostServer>>, request: Request) -> Response {
     let mut response = route(&server, request).await;
     let headers = response.headers_mut();
@@ -256,7 +262,7 @@ async fn route(server: &Arc<HostServer>, request: Request) -> Response {
             }
             // `next` lets a pane land on its own page; only paths on this origin are followed.
             let next = url.query_pairs().find(|(name, _)| name == "next").map(|(_, value)| value.into_owned()).unwrap_or_else(|| "/".to_owned());
-            let next = if next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') { next } else { "/".to_owned() };
+            let next = if local_path(&next) { next } else { "/".to_owned() };
             let mut response = status(StatusCode::FOUND);
             let headers = response.headers_mut();
             if let Ok(cookie) = HeaderValue::from_str(&format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", server.secret)) {
@@ -302,4 +308,20 @@ async fn route(server: &Arc<HostServer>, request: Request) -> Response {
 
 pub fn empty(code: StatusCode) -> Response {
     status(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_lands_only_on_this_origins_pages() {
+        assert!(local_path("/"));
+        assert!(local_path("/ide/viewer.html?path=a%20b#top"));
+        for next in ["//example.com", "/\\example.com", "/\t/example.com", "/\n/example.com", "/\r/example.com", "https://example.com", "example.com"] {
+            assert!(!local_path(next), "{next:?}");
+        }
+        // What a browser would make of the tab: another site.
+        assert_eq!(Url::parse("http://127.0.0.1:1/").unwrap().join("/\t/example.com").unwrap().host_str(), Some("example.com"));
+    }
 }
