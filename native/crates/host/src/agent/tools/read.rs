@@ -67,6 +67,48 @@ pub fn format(display: &str, offset: usize, window: &Window, encoding: Option<&s
     format!("<path>{display}</path>\n<type>file</type>\n{encoding}<content>\n{body}\n</content>")
 }
 
+/// Bytes kept of one line of a file too large to decode whole: enough for more than [`MAX_LINE_LENGTH`] characters, so
+/// the line still shows as truncated, without holding a file with no line breaks in memory.
+const KEPT_LINE_BYTES: usize = (MAX_LINE_LENGTH + 1) * 4;
+
+/// The lines of a large file, each cut to [`KEPT_LINE_BYTES`]; reading stops at the first error.
+fn capped_lines(mut reader: impl std::io::BufRead) -> impl Iterator<Item = String> {
+    let mut done = false;
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let mut line = Vec::new();
+        let mut any = false;
+        loop {
+            let buffer = match reader.fill_buf() {
+                Ok(buffer) => buffer,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    done = true;
+                    break;
+                }
+            };
+            if buffer.is_empty() {
+                done = true;
+                break;
+            }
+            any = true;
+            let (part, used, end) = match buffer.iter().position(|&byte| byte == b'\n') {
+                Some(at) => (&buffer[..at], at + 1, true),
+                None => (buffer, buffer.len(), false),
+            };
+            let room = KEPT_LINE_BYTES.saturating_sub(line.len());
+            line.extend_from_slice(&part[..part.len().min(room)]);
+            reader.consume(used);
+            if end {
+                break;
+            }
+        }
+        any.then(|| String::from_utf8_lossy(&line).into_owned())
+    })
+}
+
 /// Lines of text the way a file splits them: a final newline ends the last line rather than starting another.
 fn split_lines(text: &str) -> impl Iterator<Item = String> + '_ {
     let trimmed = text.strip_suffix('\n').unwrap_or(text);
@@ -141,8 +183,7 @@ impl Read {
             (window(split_lines(&decoded.text), offset, limit, &display)?, encoding)
         } else {
             let file = std::fs::File::open(&absolute).map_err(|error| error.to_string())?;
-            let lines = std::io::BufReader::new(file).split(b'\n').map_while(Result::ok).map(|line| String::from_utf8_lossy(&line).into_owned());
-            (window(lines, offset, limit, &display)?, None)
+            (window(capped_lines(std::io::BufReader::new(file)), offset, limit, &display)?, None)
         };
         self.context.observations.record(&absolute, Some(version));
         self.context.touched(&absolute);
@@ -173,5 +214,19 @@ mod tests {
         assert_eq!(format("a.txt", 2, &window, None), "<path>a.txt</path>\n<type>file</type>\n<content>\n2: two\n\n(Showing lines 2-2 of 3. Use offset=3 to continue.)\n</content>");
         assert!(super::window(split_lines("a\n"), 5, 10, "a.txt").is_err());
         assert_eq!(super::window(split_lines(""), 1, 10, "e").unwrap().total, 0);
+    }
+
+    #[test]
+    fn a_large_files_lines_are_cut_while_they_are_read() {
+        let mut text = vec![b'x'; 3 * 1024 * 1024];
+        text.extend_from_slice(b"\nshort\nlast");
+        let lines: Vec<String> = capped_lines(std::io::Cursor::new(text)).collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].len(), KEPT_LINE_BYTES);
+        assert_eq!((lines[1].as_str(), lines[2].as_str()), ("short", "last"));
+        let window = window(lines.into_iter(), 1, 10, "big").unwrap();
+        assert!(window.lines[0].1.ends_with(&format!("(line truncated to {MAX_LINE_LENGTH} chars)")));
+        // A final line break ends the last line, as for a file read whole.
+        assert_eq!(capped_lines(std::io::Cursor::new(b"a\nb\n".to_vec())).collect::<Vec<_>>(), ["a", "b"]);
     }
 }
