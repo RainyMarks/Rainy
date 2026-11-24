@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod notify;
 pub mod palette;
 pub mod prompt;
+pub mod quota;
 pub mod ide;
 pub mod save_dialog;
 pub mod settings;

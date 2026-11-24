@@ -186,6 +186,13 @@ impl ExternalAgentsCard {
         card
     }
 
+    /// Ask the Host to read the usage limits of every installed agent that has them again.
+    fn refresh_quotas(&self, force: bool, cx: &mut Context<Self>) {
+        for agent in self.agents.iter().filter(|agent| agent.enabled && agent.installed) {
+            crate::ui::quota::refresh(&self.store, &agent.kind, force, cx);
+        }
+    }
+
     fn apply_agents(&mut self, agents: Vec<ExternalAgentStatus>, window: &mut Window, cx: &mut Context<Self>) {
         self.agents = agents.clone();
         self.store.update(cx, |store, cx| {
@@ -226,6 +233,7 @@ impl ExternalAgentsCard {
                 Ok(Ok(resp)) => {
                     this.error = None;
                     this.apply_agents(resp.agents, window, cx);
+                    this.refresh_quotas(false, cx);
                 }
                 Ok(Err(err)) => {
                     this.error = Some(err.to_string().into());
@@ -260,6 +268,7 @@ impl ExternalAgentsCard {
                     Ok(Ok(resp)) => {
                         this.error = None;
                         this.apply_agents(resp.agents, window, cx);
+                        this.refresh_quotas(true, cx);
                         window.push_notification(Notification::success(tr(cx, "external.probeDone")), cx);
                     }
                     Ok(Err(err)) => this.error = Some(err.to_string().into()),
@@ -521,7 +530,15 @@ impl ExternalAgentsCard {
             );
 
         if let Some(err) = agent.error.as_deref().filter(|s| !s.is_empty()) {
-            container = container.child(div().text_xs().text_color(theme.danger).child(err.to_owned()));
+            // Why an agent was not found reads as a note; a found one that failed is an error.
+            let color = if agent.installed { theme.danger } else { theme.muted_foreground };
+            container = container.child(div().text_xs().text_color(color).child(err.to_owned()));
+        }
+        if agent.enabled {
+            let locale = self.store.read(cx).locale();
+            if let Some(quota) = crate::ui::quota::section(agent, None, locale, cx) {
+                container = container.child(div().max_w(px(420.)).child(quota));
+            }
         }
 
         if agent.kind == "antigravity" {
@@ -718,6 +735,7 @@ mod tests {
             login_hint: None,
             error: None,
             commands: Vec::new(),
+            quota: None,
         };
         let existing = vec![make("codex"), make("antigravity"), make("my-acp")];
         assert_eq!(make_custom_kind("My ACP", "my-acp", &existing), "my-acp-2");

@@ -103,6 +103,8 @@ pub struct ChatPane {
     last_escape: Option<std::time::Instant>,
     /// Redraws a thinking timer.
     ticker: Option<Task<()>>,
+    /// The chat and external agent whose usage limits were last asked for, so showing the chat asks once.
+    quota_asked: std::cell::RefCell<Option<String>>,
     store: Entity<Store>,
     changes: Entity<crate::ui::changes::ChangesBar>,
     chat: Option<Entity<ChatModel>>,
@@ -137,15 +139,15 @@ pub struct ChatPane {
     chat_subscription: Option<Subscription>,
 }
 
-/// The labels of the reasoning levels, by the names the providers share.
-const THINKING: [(Level, &str); 7] = [
-    (Level::Off, "chat.thinkingOff"),
-    (Level::Minimal, "chat.thinkingMinimal"),
-    (Level::Low, "chat.thinkingLow"),
-    (Level::Medium, "chat.thinkingMedium"),
-    (Level::High, "chat.thinkingHigh"),
-    (Level::XHigh, "chat.thinkingXHigh"),
-    (Level::Max, "chat.thinkingMax"),
+/// The labels of the reasoning levels, by the names the providers share, and what each trades.
+const THINKING: [(Level, &str, &str); 7] = [
+    (Level::Off, "chat.thinkingOff", "chat.thinkingOffInfo"),
+    (Level::Minimal, "chat.thinkingMinimal", "chat.thinkingMinimalInfo"),
+    (Level::Low, "chat.thinkingLow", "chat.thinkingLowInfo"),
+    (Level::Medium, "chat.thinkingMedium", "chat.thinkingMediumInfo"),
+    (Level::High, "chat.thinkingHigh", "chat.thinkingHighInfo"),
+    (Level::XHigh, "chat.thinkingXHigh", "chat.thinkingXHighInfo"),
+    (Level::Max, "chat.thinkingMax", "chat.thinkingMaxInfo"),
 ];
 const PERMISSIONS: [(&str, &str); 3] = [("read-only", "chat.permissionReadOnly"), ("ask", "chat.permissionAsk"), ("auto", "chat.permissionAuto")];
 /// Heights of the lists above the composer, which scroll beyond them so the composer always keeps its place.
@@ -237,6 +239,7 @@ impl ChatPane {
             accept_shown: false,
             last_escape: None,
             ticker: None,
+            quota_asked: std::cell::RefCell::default(),
             changes,
             store,
             chat: None,
@@ -381,9 +384,12 @@ impl ChatPane {
 
     /// Build the turns again after the chat changed, and tell the list which rows changed.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        // A reply still thinking is drawn again every second, so its timer runs between deltas.
+        self.rebuild_rows(cx);
+        // A reply still thinking, or a turn waiting for its agent, is drawn again every second, so its timer runs
+        // between deltas.
         let thinking = self.chat.as_ref().is_some_and(|chat| chat.read(cx).view.as_ref().is_some_and(|view| view.thinking_since.is_some()));
-        if thinking && self.ticker.is_none() {
+        let waiting = self.rows.last().is_some_and(|row| row.waiting.is_some());
+        if (thinking || waiting) && self.ticker.is_none() {
             self.ticker = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let _ = this.update(cx, |this, cx| {
@@ -392,6 +398,9 @@ impl ChatPane {
                 });
             }));
         }
+    }
+
+    fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         let locale = self.store.read(cx).locale();
         let (loaded, older) = self.chat.as_ref().map_or((0, None), |chat| {
             let chat = chat.read(cx);
@@ -1222,6 +1231,15 @@ impl ChatPane {
 
     /// The model and reasoning control under the composer ([`model_control`]).
     fn model_picker(&self, _locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // A chat with Codex or Antigravity shows how much of the account is left: showing it reads that again
+        // (the Host keeps a reading under a minute old), so the button can warn before a turn fails.
+        if let Some(backend) = model_state(&self.store, self.chat.as_ref(), cx).and_then(|state| state.external) {
+            let key = format!("{}:{}", self.session_id(cx).unwrap_or_default(), backend.kind);
+            if self.quota_asked.borrow().as_deref() != Some(key.as_str()) {
+                *self.quota_asked.borrow_mut() = Some(key);
+                crate::ui::quota::refresh(&self.store, &backend.kind, false, cx);
+            }
+        }
         model_control(&self.store, self.chat.as_ref(), cx)
     }
 
@@ -1771,26 +1789,7 @@ const COMPOSER_LINE: f32 = 32.;
 
 /// The card the model control opens.
 const CARD_WIDTH: f32 = 280.;
-const CARD_PADDING: f32 = 12.;
-const TRACK_WIDTH: f32 = CARD_WIDTH - 2. * CARD_PADDING;
-const TRACK_HEIGHT: f32 = 20.;
-const THUMB: f32 = 16.;
-/// Sparkles on the filled part of the track: x as a share of the track, y from its top, diameter, blink period in
-/// milliseconds and phase. Fixed, so they twinkle in place instead of jumping on every draw.
-const SPARKLES: [(f32, f32, f32, u64, f32); 10] = [
-    (0.05, 9., 2., 1900, 0.0),
-    (0.12, 19., 1.5, 2600, 0.4),
-    (0.2, 12., 2.5, 2200, 0.7),
-    (0.29, 21., 1.5, 3000, 0.2),
-    (0.37, 8., 2., 2400, 0.9),
-    (0.46, 17., 2.5, 2000, 0.5),
-    (0.55, 11., 1.5, 2800, 0.1),
-    (0.65, 20., 2., 2300, 0.6),
-    (0.75, 10., 1.5, 2700, 0.3),
-    (0.86, 18., 2., 2100, 0.8),
-];
-/// The thumb and the fill follow a level with a critically damped spring.
-const SLIDE: SpringConfig = SpringConfig::new(420., 41., 1.);
+const CARD_PADDING: f32 = 8.;
 /// How long a level sent from the card is shown, at most, before the chat reports it.
 const PENDING: Duration = Duration::from_secs(3);
 
@@ -2007,7 +2006,15 @@ pub(crate) fn thinking_label(locale: Locale, level: Level, toggle: bool) -> &'st
     if toggle && level != Level::Off {
         return i18n::text(locale, "chat.thinkingOn");
     }
-    i18n::text(locale, THINKING.iter().find(|(known, _)| *known == level).map_or("chat.thinkingOff", |(_, key)| key))
+    i18n::text(locale, THINKING.iter().find(|(known, ..)| *known == level).map_or("chat.thinkingOff", |(_, key, _)| key))
+}
+
+/// What a level trades, in a few words, for the card's list.
+fn thinking_info(locale: Locale, level: Level, toggle: bool) -> &'static str {
+    if toggle && level != Level::Off {
+        return i18n::text(locale, "chat.thinkingOnInfo");
+    }
+    i18n::text(locale, THINKING.iter().find(|(known, ..)| *known == level).map_or("chat.thinkingOffInfo", |(.., info)| info))
 }
 
 /// A model's name as the composer shows it: a preset's without the vendor ("Opus 5.5"), a known id in its vendor's
@@ -2037,6 +2044,23 @@ fn short_model_name(id: &str, preset: Option<&str>) -> String {
     }
 }
 
+/// Who a live turn of `chat` waits for: the external agent's name ("Codex"), else the model's.
+fn waiting_for(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx: &App) -> SharedString {
+    let Some(state) = model_state(store, chat, cx) else { return SharedString::default() };
+    match &state.external {
+        Some(backend) => store
+            .read(cx)
+            .external_agents
+            .iter()
+            .find(|agent| agent.kind == backend.kind)
+            .map(|agent| agent.label.clone())
+            .or_else(|| backend.label.clone())
+            .unwrap_or_else(|| backend.kind.clone())
+            .into(),
+        None => state.name,
+    }
+}
+
 /// The model and reasoning control both chat layouts place under their composer: the model's short name and its
 /// reasoning level, opening a card with the level slider and the model list. `chat` is the chat shown, `None` before a
 /// new chat's first message. The card reads both on every draw, so it follows a chat or model switched while it is
@@ -2057,6 +2081,14 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
         .as_ref()
         .filter(|state| state.adjustable())
         .and_then(|state| state.level.map(|level| thinking_label(locale, level, state.toggle())));
+    // An external agent close to its limit says what is left, so it shows before a turn fails.
+    let low = state.as_ref().and_then(|state| {
+        let backend = state.external.as_ref()?;
+        let agent = store.read(cx).external_agents.iter().find(|agent| agent.kind == backend.kind)?;
+        let model = Some(state.current.model.as_str()).filter(|model| !model.is_empty() && *model != "default");
+        crate::ui::quota::lowest(agent, model).filter(|left| *left < crate::ui::quota::LOW)
+    });
+    let low_color = crate::theme::warning_text(cx);
     // The name gives way first, so a narrow composer keeps the level and the other buttons.
     let trigger = Button::new("model-control").ghost().small().dropdown_caret(true).tooltip(i18n::text(locale, "chat.modelTitle")).min_w_0().flex_shrink(1.).child(
         h_flex()
@@ -2078,7 +2110,8 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
                 )
             })
             .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
-            .when_some(level, |this, level| this.child(div().flex_shrink_0().text_color(theme.muted_foreground).child(level))),
+            .when_some(level, |this, level| this.child(div().flex_shrink_0().text_color(theme.muted_foreground).child(level)))
+            .when_some(low, |this, left| this.child(div().flex_shrink_0().text_color(low_color).child(i18n::format(locale, "external.quotaLeft", &[("percent", &left)])))),
     );
     let (store, chat) = (store.clone(), chat.cloned());
     Popover::new("model-control-card")
@@ -2098,18 +2131,18 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
 /// The card's own state, kept while it is open.
 #[derive(Default)]
 struct CardState {
-    /// The stop under the pointer while the track is held; it is sent once, on release.
-    drag: Option<usize>,
-    /// A level sent and not yet reported by the chat: the selection it replaced, its stop and when it was sent.
+    /// A level sent and not yet reported by the chat: the selection it replaced, its index and when it was sent.
     pending: Option<(ModelSelection, usize, Instant)>,
-    /// The model list shows instead of the slider.
+    /// The model list shows instead of the levels.
     list: bool,
     /// The orchestration page shows.
     orchestrate: bool,
+    /// The external agent whose usage limits this opening already asked the Host to read again.
+    quota_asked: Option<String>,
 }
 
-/// The card the control opens: the level slider for a model with reasoning levels, the list of saved models on
-/// request, and for a model without levels the list with a note.
+/// The card the control opens: the levels for a model with reasoning levels, the list of saved models on request,
+/// and for a model without levels the list with a note.
 fn model_card(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, popover: Entity<gpui_kit::component::popover::PopoverState>, window: &mut Window, cx: &mut App) -> AnyElement {
     let card = window.use_keyed_state("model-card", cx, |_, _| CardState::default());
     let locale = store.read(cx).locale();
@@ -2135,211 +2168,141 @@ fn model_card(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, popover: 
         }
         return div().text_sm().text_color(cx.theme().muted_foreground).child(i18n::text(locale, "chat.noModel")).into_any_element();
     };
+    // Opening the card reads the external agent's limits again (the Host keeps a reading under a minute old).
+    if let Some(kind) = state.external.as_ref().map(|backend| backend.kind.clone())
+        && card.read(cx).quota_asked.as_deref() != Some(kind.as_str())
+    {
+        card.update(cx, |card, _| card.quota_asked = Some(kind.clone()));
+        crate::ui::quota::refresh(store, &kind, false, cx);
+    }
     if card.read(cx).orchestrate && state.external.is_none() {
         return orchestrate_page(store, session, &state, &card, popover, locale, cx);
     }
     if card.read(cx).list || !state.adjustable() {
         return model_list(store, session, &state, &card, popover, locale, cx);
     }
-    level_slider(store, session, &state, &card, locale, cx)
+    level_list(store, session, &state, &card, locale, cx)
 }
 
 /// Send a level chosen in the card, and show it until the chat reports it.
-fn send_level(store: &Entity<Store>, session: Option<String>, card: &Entity<CardState>, current: &ModelSelection, level: Level, stop: usize, window: &mut Window, cx: &mut App) {
+fn send_level(store: &Entity<Store>, session: Option<String>, card: &Entity<CardState>, current: &ModelSelection, level: Level, index: usize, window: &mut Window, cx: &mut App) {
     card.update(cx, |card, cx| {
-        card.pending = Some((current.clone(), stop, Instant::now()));
+        card.pending = Some((current.clone(), index, Instant::now()));
         cx.notify();
     });
     set_model(store, session, ModelSelection { thinking: Some(level.as_str().to_owned()), ..current.clone() }, window, cx);
 }
 
-/// The level slider: the level's name large in the accent color, with a reset to the provider's default; the model's
-/// name, which opens the list; and a pill track filled with the accent up to a round white thumb, one stop per level,
-/// each named below. Pressing a stop or dragging across them moves the thumb; the level is sent once, on release,
-/// wherever the button comes up.
-fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> AnyElement {
-    let theme = cx.theme();
-    let dark = theme.mode.is_dark();
-    let levels = state.levels.clone();
-    let count = levels.len();
-    let sent = state.level.and_then(|level| levels.iter().position(|known| *known == level)).unwrap_or(0);
-    let view = card.read(cx);
-    let pending = view.pending.as_ref().filter(|(before, _, at)| *before == state.current && at.elapsed() < PENDING).map(|(_, stop, _)| *stop);
-    let shown = view.drag.or(pending).unwrap_or(sent).min(count - 1);
-    let toggle = state.toggle();
-    let label = move |level: Level| thinking_label(locale, level, toggle);
-    // The accent as text: the lighter step reads better on a dark card.
-    let accent = if dark { theme.link } else { theme.primary };
+/// The usage limits of the external agent `state` uses, for the card.
+fn quota_section(store: &Entity<Store>, state: &ModelState, locale: Locale, cx: &App) -> Option<AnyElement> {
+    let backend = state.external.as_ref()?;
+    let agent = store.read(cx).external_agents.iter().find(|agent| agent.kind == backend.kind)?;
+    let model = Some(state.current.model.as_str()).filter(|model| !model.is_empty() && *model != "default");
+    crate::ui::quota::section(agent, model, locale, cx)
+}
 
-    let default = state.default_level;
-    let default_stop = default.and_then(|level| levels.iter().position(|known| *known == level));
-    let reset = {
-        let (store, session, card, current) = (store.clone(), session.clone(), card.clone(), state.current.clone());
-        Button::new("reasoning-reset")
-            .ghost()
-            .xsmall()
-            .icon(Icon::new(gpui_kit::assets::IconName::RotateCcw))
-            .disabled(default_stop.is_none_or(|stop| stop == shown))
-            .when_some(default, |this, level| this.tooltip(i18n::format(locale, "chat.thinkingReset", &[("level", &label(level))])))
-            .on_click(move |_, window, cx| {
-                if let (Some(level), Some(stop)) = (default, default_stop) {
-                    send_level(&store, session.clone(), &card, &current, level, stop, window, cx);
-                }
-            })
-    };
-    let header = h_flex()
-        .h(px(24.))
-        .items_center()
-        .child(div().w(px(24.)).flex_shrink_0().child(Icon::new(gpui_kit::assets::IconName::Zap).size_3p5().text_color(accent)))
-        .child(div().flex_1().min_w_0().text_center().text_base().font_semibold().text_color(accent).child(label(levels[shown])))
-        .child(h_flex().w(px(24.)).flex_shrink_0().justify_end().child(reset));
+/// The card for a model with reasoning levels, laid out like the model list: the model, which opens the list; an
+/// external agent's usage limits; and the levels, each with what it trades and the provider's default marked. A
+/// level picked is sent at once and checked until the chat reports it.
+fn level_list(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let (hover, muted, border) = (theme.accent, theme.muted_foreground, theme.border);
+    let accent = if theme.mode.is_dark() { theme.link } else { theme.primary };
+    let sent = state.level.and_then(|level| state.levels.iter().position(|known| *known == level));
+    let pending = card.read(cx).pending.as_ref().filter(|(before, _, at)| *before == state.current && at.elapsed() < PENDING).map(|(_, index, _)| *index);
+    let shown = pending.or(sent);
+    let toggle = state.toggle();
 
     let list = card.clone();
-    let (muted, strong) = (theme.muted_foreground, theme.foreground);
     let model = h_flex()
         .id("reasoning-model")
-        .justify_center()
-        .gap_1()
-        .text_sm()
-        .text_color(muted)
+        .gap_2()
+        .px_2()
+        .py_1p5()
+        .items_center()
+        .rounded(theme.radius)
         .cursor_pointer()
-        .hover(move |style| style.text_color(strong))
+        .hover(move |style| style.bg(hover))
         .when_some(state.external_badge.clone(), |this, badge| {
             this.child(
                 div()
                     .flex_shrink_0()
                     .px_1()
                     .rounded(theme.radius)
+                    .border_1()
+                    .border_color(border)
                     .bg(theme.secondary)
                     .text_xs()
                     .text_color(muted)
                     .child(badge),
             )
         })
-        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(state.name.clone()))
-        .child(Icon::new(IconName::ChevronRight).xsmall())
+        .child(div().flex_1().min_w_0().text_sm().font_medium().overflow_hidden().text_ellipsis().whitespace_nowrap().child(state.name.clone()))
+        .child(Icon::new(IconName::ChevronRight).xsmall().text_color(muted))
         .on_click(move |_, _, cx| {
             list.update(cx, |card, cx| {
                 card.list = true;
                 cx.notify();
             });
         });
+    let quota = quota_section(store, state, locale, cx).map(|section| div().px_2().pt_0p5().pb_1().child(section));
 
-    let stop_x = |stop: usize| TRACK_WIDTH * (stop as f32 + 0.5) / count as f32;
-    let thumb = stop_x(shown);
-    let fill = thumb + THUMB / 2.;
-    let sparkle = theme.primary_foreground.opacity(if dark { 0.9 } else { 0.75 });
-    let sparkles = SPARKLES.iter().enumerate().filter(|(_, (x, ..))| x * TRACK_WIDTH < fill - THUMB).map(|(index, &(x, y, size, period, phase))| {
-        div().absolute().left(px(x * TRACK_WIDTH)).top(px(y * TRACK_HEIGHT / 30.)).size(px(size * 0.8)).rounded_full().bg(sparkle).with_animation(
-            ("reasoning-sparkle", index),
-            Animation::new(Duration::from_millis(period)).repeat().with_max_fps(20.).with_easing(move |t| 0.5 - 0.5 * ((t + phase) * std::f32::consts::TAU).cos()),
-            |dot, glow| dot.opacity(0.15 + 0.85 * glow),
-        )
-    });
-    let gradient = linear_gradient(90., linear_color_stop(theme.primary.opacity(if dark { 0.55 } else { 0.7 }), 0.), linear_color_stop(theme.primary, 1.));
-    let filled = div()
-        .absolute()
-        .left_0()
-        .top_0()
-        .h(px(TRACK_HEIGHT))
-        .rounded_full()
-        .overflow_hidden()
-        .bg(gradient)
-        .children(sparkles)
-        .with_spring("reasoning-fill", SpringAnimation::new(SLIDE).to(px(fill)), |filled, width| filled.w(width));
-    let stops = (shown + 1..count).map(|stop| {
-        div().absolute().left(px(stop_x(stop) - 2.5)).top(px(TRACK_HEIGHT / 2. - 2.5)).size(px(5.)).rounded_full().bg(muted.opacity(0.7))
-    });
-    let knob = div()
-        .absolute()
-        .top(px((TRACK_HEIGHT - THUMB) / 2.))
-        .size(px(THUMB))
-        .rounded_full()
-        .bg(theme.primary_foreground)
-        .border_1()
-        .border_color(theme.border)
-        .shadow(theme.shadow_tokens().md)
-        .with_spring("reasoning-thumb", SpringAnimation::new(SLIDE).to(px(thumb - THUMB / 2.)), |knob, left| knob.left(left));
-    let targets = (0..count).map(|stop| {
-        let (press, glide) = (card.clone(), card.clone());
-        div()
-            .id(("reasoning-stop", stop))
-            .w(px(TRACK_WIDTH / count as f32))
-            .h_full()
+    let heading = div()
+        .mt_1()
+        .px_2()
+        .pt_2()
+        .pb_0p5()
+        .border_t_1()
+        .border_color(border)
+        .text_xs()
+        .font_medium()
+        .text_color(muted)
+        .child(i18n::text(locale, "chat.thinkingTitle"));
+    let rows = state.levels.iter().enumerate().map(|(index, level)| {
+        let selected = shown == Some(index);
+        let is_default = state.default_level == Some(*level);
+        let (store, session, card, current, level) = (store.clone(), session.clone(), card.clone(), state.current.clone(), *level);
+        h_flex()
+            .id(("reasoning-level", index))
+            .gap_2()
+            .px_2()
+            .py_1()
+            .items_center()
+            .rounded(theme.radius)
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                press.update(cx, |card, cx| {
-                    card.drag = Some(stop);
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            })
-            .on_mouse_move(move |event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button != Some(MouseButton::Left) {
-                    return;
-                }
-                glide.update(cx, |card, cx| {
-                    if card.drag.is_some_and(|held| held != stop) {
-                        card.drag = Some(stop);
-                        cx.notify();
-                    }
-                });
-            })
-    });
-    // A level's name below the track picks it too.
-    let pick = (store.clone(), session.clone(), card.clone(), state.current.clone());
-    let release = {
-        let (store, card, current, levels) = (store.clone(), card.clone(), state.current.clone(), levels.clone());
-        Rc::new(move |window: &mut Window, cx: &mut App| {
-            let Some(stop) = card.update(cx, |card, cx| {
-                cx.notify();
-                card.drag.take()
-            }) else {
-                return;
-            };
-            if stop != sent {
-                send_level(&store, session.clone(), &card, &current, levels[stop], stop, window, cx);
-            }
-        })
-    };
-    let release_out = release.clone();
-    let track = div()
-        .id("reasoning-track")
-        .relative()
-        .w(px(TRACK_WIDTH))
-        .h(px(TRACK_HEIGHT))
-        .child(div().absolute().inset_0().rounded_full().bg(theme.muted))
-        .child(filled)
-        .children(stops)
-        .child(knob)
-        .child(h_flex().absolute().inset_0().children(targets))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| release(window, cx))
-        .on_mouse_up_out(MouseButton::Left, move |_, window, cx| release_out(window, cx));
-    let names = h_flex().w(px(TRACK_WIDTH)).children(levels.iter().enumerate().map(|(stop, level)| {
-        let (store, session, card, current, level_sent) = (pick.0.clone(), pick.1.clone(), pick.2.clone(), pick.3.clone(), *level);
-        div()
-            .id(("reasoning-name", stop))
-            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_baseline()
+                            .child(div().text_sm().when(selected, |this| this.font_medium()).child(thinking_label(locale, level, toggle)))
+                            .when(is_default, |this| this.child(div().text_xs().text_color(muted).child(i18n::text(locale, "chat.thinkingDefault")))),
+                    )
+                    .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(thinking_info(locale, level, toggle))),
+            )
+            .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
             .on_click(move |_, window, cx| {
-                if stop != sent {
-                    send_level(&store, session.clone(), &card, &current, level_sent, stop, window, cx);
+                if !selected {
+                    send_level(&store, session.clone(), &card, &current, level, index, window, cx);
                 }
             })
-            .w(px(TRACK_WIDTH / count as f32))
-            .text_center()
-            .text_xs()
-            .whitespace_nowrap()
-            .overflow_hidden()
-            .text_ellipsis()
-            .text_color(if stop == shown { strong } else { muted })
-            .when(stop == shown, |this| this.font_medium())
-            .child(label(*level))
-    }));
+    });
     let orchestrate = state.external.is_none().then(|| orchestrate_entry(state, card, locale, cx));
-    v_flex().gap_0p5().child(header).child(model).child(v_flex().pt_1p5().gap_1().child(track).child(names)).children(orchestrate).into_any_element()
+    v_flex()
+        .gap_0p5()
+        .child(model)
+        .children(quota)
+        .child(heading)
+        .child(v_flex().id("reasoning-levels").max_h(px(320.)).overflow_y_scroll().gap_0p5().children(rows))
+        .children(orchestrate)
+        .into_any_element()
 }
 
-/// The row under the slider and the model list that opens the orchestration page, with its current choice.
+/// The row under the levels and the model list that opens the orchestration page, with its current choice.
 fn orchestrate_entry(state: &ModelState, card: &Entity<CardState>, locale: Locale, cx: &App) -> impl IntoElement + use<> {
     let theme = cx.theme();
     let (muted, strong) = (theme.muted_foreground, theme.foreground);
@@ -2883,10 +2846,12 @@ fn model_list(
         });
 
     let orchestrate = state.external.is_none().then(|| orchestrate_entry(state, card, locale, cx));
+    let quota = quota_section(store, state, locale, cx).map(|section| div().px_1().pb_1().child(section));
     v_flex()
         .gap_1()
         .child(header)
         .children(note)
+        .children(quota)
         .child(v_flex().id("model-rows").max_h(px(320.)).overflow_y_scroll().gap_0p5().children(rows))
         .children(orchestrate)
         .child(configure_row)
@@ -2954,6 +2919,7 @@ impl Render for ChatPane {
             show_usage,
             step_detail: self.store.read(cx).prefs.step_detail.clone().into(),
             session: self.session_id(cx).map(SharedString::from),
+            waiting_for: waiting_for(&self.store, self.chat.as_ref(), cx),
         };
         let fork_session = self.session_id(cx);
         let fork_store = self.store.clone();
@@ -3254,9 +3220,11 @@ mod tests {
 
     #[test]
     fn labels_every_level() {
-        for (level, key) in THINKING {
+        for (level, key, info) in THINKING {
             assert_ne!(thinking_label(Locale::Zh, level, false), key, "{level:?}");
             assert_ne!(thinking_label(Locale::En, level, false), key, "{level:?}");
+            assert_ne!(thinking_info(Locale::Zh, level, false), info, "{level:?}");
+            assert_ne!(thinking_info(Locale::En, level, false), info, "{level:?}");
         }
         assert_eq!(thinking_label(Locale::Zh, Level::XHigh, false), "超高");
         // A model that only switches reasoning names its level On.
@@ -3297,6 +3265,7 @@ mod tests {
             login_hint: None,
             error: None,
             commands: Vec::new(),
+            quota: None,
         };
         let sel = external_default_selection(&status, None);
         assert_eq!(sel.provider, "external:codex");

@@ -152,6 +152,9 @@ pub struct TurnRow {
     pub work_steps: usize,
     /// What the steps did: files read, searches, changes, commands.
     pub summary: SharedString,
+    /// The live turn waits for the agent with nothing to show (it starts, or thinks between steps): for how many
+    /// milliseconds.
+    pub waiting: Option<f64>,
     pub source: RowSource,
 }
 
@@ -388,6 +391,9 @@ struct Context<'a> {
     /// Calls the user undid, from the `context` entries that record it.
     reverted: &'a HashSet<String>,
     thinking_since: Option<&'a (String, std::time::Instant)>,
+    /// The chat runs a turn (not a compaction), and how long ago it last changed.
+    turn_running: bool,
+    quiet_ms: f64,
 }
 
 /// Parts of an earlier build of a turn that come out the same: the text and thinking of its entries, and the views
@@ -679,6 +685,10 @@ fn build_turn(
         answer_from = blocks.len();
     }
     let entries = user_entry.into_iter().chain(items.iter()).map(|entry| SharedString::from(entry.id().to_owned())).collect();
+    // Nothing streams and no tool runs or waits for approval: the agent is starting, or working out its next step.
+    let busy_block = blocks.last().is_some_and(|block| matches!(block, Block::Tool(tool) if matches!(tool.state, ToolState::Running | ToolState::Waiting)));
+    let streaming = stream.is_some_and(|stream| !stream.content.is_empty());
+    let waiting = (live && ctx.turn_running && !streaming && !busy_block).then_some(ctx.quiet_ms);
     TurnRow {
         key: key.to_owned().into(),
         user,
@@ -689,6 +699,7 @@ fn build_turn(
         answer_from,
         work_steps,
         summary: summary.into(),
+        waiting,
         source: RowSource { chat: chat.clone(), locale, entries, live: live || stream.is_some() },
     }
 }
@@ -704,6 +715,8 @@ fn rows_from(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Vec<TurnR
         waiting: snapshot.approvals.iter().map(|approval| approval.tool_call_id.as_str()).collect(),
         reverted: view.reverted_ids(),
         thinking_since: view.thinking_since.as_ref(),
+        turn_running: snapshot.summary.status == "running",
+        quiet_ms: view.changed_at.elapsed().as_secs_f64() * 1000.,
     };
     let busy = view.busy();
     let ranges = view.turn_ranges();
@@ -1101,6 +1114,8 @@ pub struct TurnStyle {
     pub step_detail: SharedString,
     /// The chat shown, for actions on one tool call.
     pub session: Option<SharedString>,
+    /// Who a live turn waits for: the external agent or the model.
+    pub waiting_for: SharedString,
 }
 
 /// Draw one turn.
@@ -1193,6 +1208,24 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
         };
         column = column.child(element);
     }
+    if let Some(ms) = row.waiting {
+        // Shown from the start, with the time once it is worth counting.
+        let name = if style.waiting_for.is_empty() { i18n::text(locale, "chat.waitingAgent").to_owned() } else { style.waiting_for.to_string() };
+        let label = if ms >= 2000. {
+            i18n::format(locale, "chat.waitingReplyFor", &[("name", &name), ("duration", &format_duration(ms))])
+        } else {
+            i18n::format(locale, "chat.waitingReply", &[("name", &name)])
+        };
+        column = column.child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(thinking_mark(&format!("wait-{}", row.key).into(), true))
+                .child(label),
+        );
+    }
     if row.footer.is_some() || row.copy.is_some() {
         let mut parts = Vec::new();
         if let Some(footer) = &row.footer {
@@ -1281,6 +1314,29 @@ mod tests {
 
     fn tools(row: &TurnRow) -> Vec<&ToolRow> {
         row.blocks.iter().filter_map(|block| if let Block::Tool(tool) = block { Some(tool) } else { None }).collect()
+    }
+
+    #[test]
+    fn a_running_turn_waits_while_nothing_streams_or_runs() {
+        let user = json!({"id": "u1", "kind": "user", "ts": 1, "text": "你好"});
+        // Just sent: the agent has said nothing yet.
+        let rows = build_rows(&view(json!([user.clone()]), Value::Null, "running"), Locale::Zh);
+        assert!(rows[0].waiting.is_some());
+        // The reply streams.
+        let streaming = assistant("x", json!([{"type": "text", "text": "正在"}]), "pending")["message"].clone();
+        assert!(build_rows(&view(json!([user.clone()]), streaming, "running"), Locale::Zh)[0].waiting.is_none());
+        // A tool runs.
+        let calling = json!([user.clone(), assistant("a1", json!([call("c1", "read", json!({"file_path": "a.txt"}))]), "toolUse")]);
+        let mut running = view(calling, Value::Null, "running");
+        running.tools.insert("c1".into(), RunningTool::default());
+        assert!(build_rows(&running, Locale::Zh)[0].waiting.is_none());
+        // Between steps: the tool is done and the next reply has not begun.
+        let between = json!([user.clone(), assistant("a1", json!([call("c1", "read", json!({"file_path": "a.txt"}))]), "toolUse"),
+            result("r1", "c1", "read", json!([{"type": "text", "text": "hello"}]), false, Value::Null)]);
+        assert!(build_rows(&view(between, Value::Null, "running"), Locale::Zh)[0].waiting.is_some());
+        // Idle, or compacting.
+        assert!(build_rows(&view(json!([user.clone()]), Value::Null, "idle"), Locale::Zh)[0].waiting.is_none());
+        assert!(build_rows(&view(json!([user]), Value::Null, "compacting"), Locale::Zh)[0].waiting.is_none());
     }
 
     #[test]

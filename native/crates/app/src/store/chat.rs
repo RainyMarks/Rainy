@@ -38,6 +38,8 @@ pub struct ChatView {
     pub revision: u64,
     /// The streaming thinking block (`timestamp:index`) and when it began, for its timer.
     pub thinking_since: Option<(String, std::time::Instant)>,
+    /// When the chat last changed: while it runs with nothing streaming, how long it has waited for the agent.
+    pub changed_at: std::time::Instant,
     /// O(1) entry-id membership set for incremental deduplication.
     entry_ids: HashSet<String>,
     /// Tool call ids undone by `context` entries, maintained incrementally to avoid O(N) scans during streaming.
@@ -60,7 +62,7 @@ impl ChatView {
             }
             push_turn_range(&mut turn_ranges, idx, entry);
         }
-        Self { snapshot, tools, truncated, revision: 0, thinking_since: None, entry_ids, reverted_ids, turn_ranges }
+        Self { snapshot, tools, truncated, revision: 0, thinking_since: None, changed_at: std::time::Instant::now(), entry_ids, reverted_ids, turn_ranges }
     }
 
     pub fn reverted_ids(&self) -> &HashSet<String> {
@@ -77,6 +79,7 @@ impl ChatView {
 
     fn touched(&mut self) -> bool {
         self.revision += 1;
+        self.changed_at = std::time::Instant::now();
         self.follow_thinking();
         true
     }
