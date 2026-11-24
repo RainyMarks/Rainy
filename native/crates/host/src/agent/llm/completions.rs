@@ -414,6 +414,7 @@ impl Reader for CompletionsReader {
     }
 
     fn finish(&mut self, output: &mut AssistantMessage, emit: &mut dyn FnMut(Event, &AssistantMessage)) -> Result<(), String> {
+        unique_call_ids(output);
         for index in 0..output.content.len() {
             if let AssistantBlock::ToolCall { arguments, .. } = &mut output.content[index] {
                 *arguments = parse_arguments(self.arguments.get(&index).map_or("", String::as_str));
@@ -430,9 +431,37 @@ impl Reader for CompletionsReader {
     }
 }
 
+/// Some OpenAI-compatible servers send tool calls without an id, or reuse one within a reply. Undo snapshots and
+/// approvals are keyed by the id, so each call gets its own: an empty or repeated id is replaced by a fresh one.
+fn unique_call_ids(output: &mut AssistantMessage) {
+    let mut seen = std::collections::HashSet::new();
+    for block in &mut output.content {
+        if let AssistantBlock::ToolCall { id, .. } = block
+            && (id.is_empty() || !seen.insert(id.clone()))
+        {
+            *id = format!("call_{}", uuid::Uuid::new_v4().simple());
+            seen.insert(id.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_calls_without_ids_or_with_repeated_ids_get_their_own() {
+        let call = |id: &str| AssistantBlock::ToolCall { id: id.into(), name: "write".into(), arguments: Map::new(), rest: Map::new() };
+        let mut output = AssistantMessage { content: vec![call(""), call("a"), call("a"), call("")], ..serde_json::from_value(json!({ "content": [] })).unwrap() };
+        unique_call_ids(&mut output);
+        let ids: Vec<String> = output.content.iter().filter_map(|block| match block {
+            AssistantBlock::ToolCall { id, .. } => Some(id.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(ids[1], "a");
+        assert!(ids.iter().all(|id| !id.is_empty()));
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 4);
+    }
     use crate::agent::llm::test_support::{body_for, reasoning_fields, setup};
     use crate::agent::llm::{Api, ToolSpec};
     use crate::settings::ModelSetup;
