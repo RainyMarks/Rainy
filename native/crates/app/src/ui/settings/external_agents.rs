@@ -717,6 +717,7 @@ mod tests {
             install_hint: None,
             login_hint: None,
             error: None,
+            commands: Vec::new(),
         };
         let existing = vec![make("codex"), make("antigravity"), make("my-acp")];
         assert_eq!(make_custom_kind("My ACP", "my-acp", &existing), "my-acp-2");

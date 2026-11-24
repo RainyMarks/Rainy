@@ -21,7 +21,7 @@ use rainy_carrier::targets::SshHostProfile;
 use rainy_carrier::trust::{Integrity, TrustError};
 use rainy_carrier::{ConnectionState, HostProcess, RpcClient, RpcEvent};
 use rainy_protocol::{
-    AppInfo, ExternalAgentStatus, ExternalBackendRef, ExternalStatusResponse, HostMetrics, ModelSelection, ModelsStatus, RpcError,
+    AppInfo, ExternalAgentStatus, ExternalBackendRef, ExternalStatusResponse, ExternalTeam, HostMetrics, ModelSelection, ModelsStatus, RpcError,
     SessionEntryEvent, SessionSnapshot, SessionStateEvent, SessionSummary, SessionToolEvent, UiPreferences, parse_stream_event,
 };
 use serde_json::{Value, json};
@@ -100,6 +100,8 @@ pub enum StoreEvent {
     Update(update::UpdateNotice),
     /// Windows DPAPI credential storage recovered from corruption or could not protect keys.
     CredentialAlert(boot::CredentialAlert),
+    /// The team an external agent runs for this chat changed (`external.team`).
+    TeamChanged(String),
 }
 
 /// A question `ssh` asks, waiting for the window to show it; dropping `reply` cancels it.
@@ -203,6 +205,8 @@ pub struct Store {
     pub pending_external: Option<ExternalBackendRef>,
     /// Model & reasoning selection for the next new external-agent chat.
     pub pending_external_model: Option<ModelSelection>,
+    /// The teams external agents run, by chat id, with every board post read so far.
+    pub teams: HashMap<String, ExternalTeam>,
     pub summaries: Vec<SessionSummary>,
     pub chats: HashMap<String, Entity<ChatModel>>,
     /// Monotonic access counter per cached chat for bounded LRU eviction.
@@ -326,6 +330,7 @@ impl Store {
                 external_agents: Vec::new(),
                 pending_external: None,
                 pending_external_model: None,
+                teams: HashMap::new(),
                 summaries: Vec::new(),
                 chats: HashMap::new(),
                 chat_used: HashMap::new(),
@@ -913,6 +918,25 @@ impl Store {
                 }
                 cx.emit(StoreEvent::Host { name: name.to_owned(), data });
             }
+            "external.commands" => {
+                // The slash commands an external agent offers (Antigravity's /swarm, /teamwork…), for the composer.
+                if let Some(kind) = data["kind"].as_str()
+                    && let Ok(commands) = serde_json::from_value::<Vec<rainy_protocol::ExternalCommand>>(data["commands"].clone())
+                    && let Some(agent) = self.external_agents.iter_mut().find(|agent| agent.kind == kind)
+                {
+                    agent.commands = commands;
+                    cx.notify();
+                }
+            }
+            "external.teamChanged" => {
+                // Read only for the chat shown and teams already open; the others are read when shown.
+                if let Some(id) = data["sessionId"].as_str()
+                    && (self.selected.as_deref() == Some(id) || self.teams.contains_key(id))
+                    && self.teams.get(id).is_none_or(|team| data["revision"].as_u64() != Some(team.revision))
+                {
+                    self.fetch_team(id.to_owned(), cx);
+                }
+            }
             _ => cx.emit(StoreEvent::Host { name: name.to_owned(), data }),
         }
     }
@@ -1021,6 +1045,11 @@ impl Store {
     pub fn select(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         if let Some(id) = &id {
             self.chat(id, cx);
+            // An external agent's chat may run a team (a swarm, teamwork, sub-agents); a chat just made may not be
+            // listed yet, and is asked as well.
+            if !self.summaries.iter().any(|summary| summary.id == *id && summary.external_backend.is_none()) {
+                self.fetch_team(id.clone(), cx);
+            }
         }
         if self.selected != id {
             self.selections += 1;
@@ -1032,6 +1061,46 @@ impl Store {
     }
 
     /// Call a Host method; fails at once while the Host is not connected.
+    /// Whether the chat's external agent runs a team: anyone besides itself, or a board.
+    pub fn has_team(&self, id: &str) -> bool {
+        self.teams.get(id).is_some_and(|team| team.members.len() > 1 || !team.posts.is_empty())
+    }
+
+    /// Read the team of an external agent's chat: the board posts newer than the ones held, everything else anew.
+    pub fn fetch_team(&mut self, id: String, cx: &mut Context<Self>) {
+        let after = self.teams.get(&id).map(|team| team.last_post);
+        let call = self.call("external.team", json!({ "sessionId": id, "after": after }));
+        cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            let Ok(value) = call.await else { return };
+            let Ok(Some(mut team)) = serde_json::from_value::<Option<ExternalTeam>>(value) else { return };
+            let _ = this.update(cx, |store, cx| {
+                match store.teams.get_mut(&id) {
+                    Some(known) => {
+                        let newest = known.posts.last().map(|post| post.seq).unwrap_or(0);
+                        // The board was written anew (a new swarm starts at post 1 again): read it whole once more.
+                        if team.last_post < newest {
+                            store.teams.remove(&id);
+                            store.fetch_team(id.clone(), cx);
+                            return;
+                        }
+                        let mut posts = std::mem::take(&mut known.posts);
+                        posts.extend(team.posts.drain(..).filter(|post| post.seq > newest));
+                        let excess = posts.len().saturating_sub(800);
+                        posts.drain(..excess);
+                        team.posts = posts;
+                        *known = team;
+                    }
+                    None => {
+                        store.teams.insert(id.clone(), team);
+                    }
+                }
+                cx.emit(StoreEvent::TeamChanged(id.clone()));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn call(&self, method: &str, params: Value) -> impl Future<Output = Result<Value, RpcError>> + use<> {
         let call = self.rpc.as_ref().map(|rpc| rpc.call(method, params));
         let disconnected = crate::i18n::text(self.locale(), "app.connectionLost");
@@ -1111,6 +1180,7 @@ impl Store {
             self.external_agents.clear();
             self.pending_external = None;
             self.pending_external_model = None;
+            self.teams.clear();
             self.host_metrics = None;
             self.tunnel_status = TunnelStatus { target: None, rules: Vec::new(), state: TunnelState::Stopped };
             cx.emit(StoreEvent::SummariesChanged);

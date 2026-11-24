@@ -353,6 +353,18 @@ pub struct ExternalAgentConfig {
     pub default_thinking: Option<String>,
 }
 
+/// A slash command an external agent offers (ACP `available_commands_update`), sent to it as `/name text`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalCommand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What to write after it, when it takes text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
 /// Detection and configuration snapshot of one external agent (`external.status` / `external.probe`).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -381,6 +393,9 @@ pub struct ExternalAgentStatus {
     pub login_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The slash commands the agent last listed in this Host (Antigravity's `/swarm`, `/teamwork`…).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<ExternalCommand>,
 }
 
 /// Response of `external.status`, `external.probe`, `external.configure` and payload of `external.changed`.
@@ -389,6 +404,127 @@ pub struct ExternalAgentStatus {
 pub struct ExternalStatusResponse {
     #[serde(default)]
     pub agents: Vec<ExternalAgentStatus>,
+}
+
+/// The team an external agent runs for a chat (`external.team`): an Antigravity swarm or teamwork, or Codex
+/// sub-agents. Members form a tree under the chat's own agent; the board holds the posts they exchange.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalTeam {
+    pub session_id: String,
+    /// `antigravity` or `codex`.
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// The chat's own agent first, then every member depth first.
+    #[serde(default)]
+    pub members: Vec<TeamMember>,
+    /// Board posts newer than the `after` the caller gave (all of them without one), oldest first.
+    #[serde(default)]
+    pub posts: Vec<TeamPost>,
+    /// Number of the newest post on the board.
+    #[serde(default)]
+    pub last_post: u64,
+    /// The plan's groups of tasks (Antigravity swarms).
+    #[serde(default)]
+    pub threads: Vec<TeamThread>,
+    /// Changes whenever anything above does.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// One agent of an external team.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMember {
+    /// The external agent's own id of it (conversation or thread id).
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Its handle without `@` (`parser`, `verifier`), or a role name.
+    pub name: String,
+    /// `lead`, `worker`, `verifier`, `monitor`, `teamwork`, `orchestrator`, `explorer`, `challenger`, `interviewer`,
+    /// `auditor`, `browser` or `subagent`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Its assignment from the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// `running`, `waiting` (asleep until mentioned), `idle`, `done`, `error` or `killed`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// What it said it focuses on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// Its latest action, one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    /// When it last did something, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_at: Option<f64>,
+    /// Its own checklist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<TeamStep>,
+    #[serde(default)]
+    pub depth: u32,
+}
+
+/// One item of a member's checklist.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStep {
+    pub title: String,
+    /// `pending`, `in_progress` or `completed`.
+    pub status: String,
+}
+
+/// A post on an external team's board.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamPost {
+    pub seq: u64,
+    /// The member's name, or `lead` for the chat's own agent.
+    pub from: String,
+    /// The names it mentions, `all` for everyone.
+    #[serde(default)]
+    pub to: Vec<String>,
+    pub text: String,
+    /// Unix milliseconds, 0 when only `time` is known.
+    #[serde(default)]
+    pub ts: f64,
+    /// Local time as the external agent wrote it (`2026-11-23 10:46:31`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+}
+
+/// A group of tasks in an external team's plan.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamThread {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// Member names.
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
+/// One recent step of a team member (`external.teamMember`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamActivity {
+    /// Unix milliseconds.
+    pub ts: f64,
+    /// `tool`, `reply`, `thinking`, `message` (a message it received) or `error`.
+    pub kind: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A chat's place in a swarm (`/swarm`): the coordinator splits a task among worker chats, which talk over one board.
@@ -438,6 +574,9 @@ pub struct PendingApproval {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
+    /// The member of an external agent's team that asks (`@alpha`), when it is not the chat's own agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Token breakdown by context category for `session.contextBreakdown`.

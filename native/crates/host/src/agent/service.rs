@@ -536,6 +536,9 @@ impl Agent {
         });
         self.on("chat.compact", |agent, params: SessionRef| async move { Ok(json!({ "message": agent.session(&params.session_id).await?.compact_now().await? })) });
         self.on("session.contextBreakdown", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.context_breakdown() });
+        // The team an external agent runs for a chat (an Antigravity swarm or teamwork, Codex sub-agents).
+        self.on("external.team", |agent, params: TeamParams| async move { Ok(agent.session(&params.session_id).await?.external_team(params.after)) });
+        self.on("external.teamMember", |agent, params: TeamMemberParams| async move { agent.session(&params.session_id).await?.team_activity(&params.member_id).await });
         self.on("chat.contextBreakdown", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.context_breakdown() });
         self.on("chat.retry", |agent, params: SessionRef| async move { agent.session(&params.session_id).await?.retry().await.map(|()| Value::Null) });
         self.on("chat.stopCommand", |agent, params: ItemParams| async move { agent.session(&params.session_id).await?.stop_command(params.command_id()?).await });
@@ -800,6 +803,22 @@ fn sweep_spill(root: &Path) {
 #[serde(rename_all = "camelCase")]
 struct SessionRef {
     session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamParams {
+    session_id: String,
+    /// Only board posts newer than this.
+    #[serde(default)]
+    after: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamMemberParams {
+    session_id: String,
+    member_id: String,
 }
 
 #[derive(Deserialize)]

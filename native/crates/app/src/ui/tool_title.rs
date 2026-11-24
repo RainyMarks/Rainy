@@ -60,6 +60,8 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
             }
         }
         "task" => t("toolTask", &[("description", &string(args, "description").unwrap_or_default())]),
+        // An external agent (Codex) waiting for its sub-agents.
+        "agent_wait" => t("toolAgentWait", &[]),
         "browser_open" => t("toolBrowserOpen", &[("url", &string(args, "url").unwrap_or_default())]),
         "browser_read" => t("toolBrowserRead", &[]),
         "browser_screenshot" => t("toolBrowserShot", &[]),

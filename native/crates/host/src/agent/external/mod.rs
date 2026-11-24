@@ -6,6 +6,7 @@
 pub mod acp;
 pub mod codex;
 pub mod jsonrpc;
+pub mod team;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rainy_protocol::chat::{
-    ExternalAgentConfig, ExternalAgentStatus, ExternalBackendRef, ExternalModelInfo, ExternalStatusResponse, PendingApproval, UsageSummary,
+    ExternalAgentConfig, ExternalAgentStatus, ExternalBackendRef, ExternalCommand, ExternalModelInfo, ExternalStatusResponse, PendingApproval, UsageSummary,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -72,6 +73,10 @@ pub enum ExternalEvent {
         respond: Arc<Mutex<Option<oneshot::Sender<ApprovalDecision>>>>,
     },
     DiffUpdated { diff: String },
+    /// The agents the backend runs for this chat changed (Codex sub-agents); `session_id` is left empty.
+    TeamUpdated(rainy_protocol::chat::ExternalTeam),
+    /// The slash commands the agent offers (ACP `available_commands_update`).
+    CommandsUpdated(Vec<ExternalCommand>),
     UsageUpdated(UsageSummary),
     Notice { code: String, text: String },
     TurnFinished {
@@ -143,6 +148,8 @@ pub struct ExternalManager {
     codex_pool: AsyncMutex<HashMap<ProcessKey, Arc<CodexProcess>>>,
     acp_pool: AsyncMutex<HashMap<String, (ProcessKey, Arc<AcpProcess>)>>,
     stop_reaper: CancellationToken,
+    /// The slash commands each kind of agent last listed.
+    commands: Mutex<HashMap<String, Vec<ExternalCommand>>>,
 }
 
 impl ExternalManager {
@@ -154,6 +161,7 @@ impl ExternalManager {
             codex_pool: AsyncMutex::new(HashMap::new()),
             acp_pool: AsyncMutex::new(HashMap::new()),
             stop_reaper: CancellationToken::new(),
+            commands: Mutex::new(HashMap::new()),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&manager);
@@ -201,6 +209,7 @@ impl ExternalManager {
                     label: display_label(&cfg),
                     install_hint: install_hint(&cfg.kind, self.windows),
                     login_hint: login_hint(&cfg.kind, self.windows),
+                    commands: self.commands.lock().ok().and_then(|known| known.get(&cfg.kind).cloned()).unwrap_or_default(),
                     kind: cfg.kind,
                     enabled: cfg.enabled,
                     installed,
@@ -348,6 +357,18 @@ impl ExternalManager {
             });
             Ok((handle, rx))
         }
+    }
+
+    /// Keep the slash commands an agent of `kind` listed, for `external.status` and the next chats with it.
+    pub fn remember_commands(&self, kind: &str, commands: Vec<ExternalCommand>) {
+        if let Ok(mut known) = self.commands.lock() {
+            known.insert(kind.to_owned(), commands);
+        }
+    }
+
+    /// The latest steps of a Codex sub-agent of the main thread `main`.
+    pub async fn codex_activity(&self, main: &str, member: &str, limit: usize) -> Option<Vec<rainy_protocol::chat::TeamActivity>> {
+        self.codex_pool.lock().await.values().find_map(|process| process.agent_activity(main, member, limit))
     }
 
     /// Release any per-session external process when a Rainy chat is closed or deleted.

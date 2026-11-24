@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use rainy_protocol::chat::{ExternalModelInfo, PendingApproval, UsageSummary};
+use rainy_protocol::chat::{ExternalCommand, ExternalModelInfo, PendingApproval, UsageSummary};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -175,8 +175,23 @@ impl AcpProcess {
         let _guard = ActiveGuard(self.clone());
         self.touch();
 
+        // Subscribed before the session is made: an agent lists its commands right after `session/new`.
+        let mut stream = self.rpc.subscribe();
         let (meta, resumed_fallback) = self.ensure_session(req.thread_id.as_deref(), &req.cwd, &cancel).await?;
         let session_id = meta.session_id.clone();
+        // What came while the session was made is no part of this turn (`session/load` replays the whole history):
+        // only the commands it listed are kept.
+        while let Some(early) = stream.try_recv() {
+            match early {
+                IncomingEvent::Notification(note) if note.method == "session/update" && matches_session(&note.params, &session_id) => {
+                    if let Some(commands) = acp_commands(&note.params) {
+                        let _ = events.send(ExternalEvent::CommandsUpdated(commands));
+                    }
+                }
+                IncomingEvent::Request(server_req) if matches_session(&server_req.params, &session_id) => handle_acp_request(&self.rpc, server_req, &events, &cancel),
+                _ => {}
+            }
+        }
         let modes = if !meta.modes.is_empty() {
             if let Ok(mut known) = self.known_modes.lock() {
                 known.insert(session_id.clone(), meta.modes.clone());
@@ -225,8 +240,6 @@ impl AcpProcess {
                 .await;
         }
 
-        // Subscribe BEFORE issuing `session/prompt` so early `session/update` chunks are never lost.
-        let mut stream = self.rpc.subscribe();
         let prompt_blocks = build_acp_prompt_blocks(&req.prompt, &req.image_paths);
         let prompt_cancel = CancellationToken::new();
         let prompt_fut = self.rpc.request(
@@ -555,6 +568,29 @@ pub fn pick_acp_mode(permission: &str, available: &[String]) -> Option<String> {
     None
 }
 
+/// The commands of an `available_commands_update`: `{ name, description, input: { hint } | null }` each.
+fn acp_commands(params: &Value) -> Option<Vec<ExternalCommand>> {
+    let update = params.get("update").unwrap_or(params);
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("available_commands_update") {
+        return None;
+    }
+    let list = update.get("availableCommands").and_then(Value::as_array)?;
+    Some(
+        list.iter()
+            .filter_map(|command| {
+                let name = command.get("name").and_then(Value::as_str)?.trim().trim_start_matches('/').to_owned();
+                let valid = !name.is_empty() && name.len() <= 64 && !name.chars().any(char::is_whitespace);
+                valid.then(|| ExternalCommand {
+                    name,
+                    description: command.get("description").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(|text| text.chars().take(300).collect()),
+                    hint: command.pointer("/input/hint").and_then(Value::as_str).map(|hint| hint.chars().take(120).collect()),
+                })
+            })
+            .take(100)
+            .collect(),
+    )
+}
+
 fn handle_acp_update(
     params: &Value,
     tools: &mut HashMap<String, AcpToolState>,
@@ -564,6 +600,11 @@ fn handle_acp_update(
     let update = params.get("update").unwrap_or(params);
     let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
     match kind {
+        "available_commands_update" => {
+            if let Some(commands) = acp_commands(params) {
+                let _ = events.send(ExternalEvent::CommandsUpdated(commands));
+            }
+        }
         "agent_message_chunk" => {
             if let Some(text) = extract_content_text(update.get("content"))
                 && !text.is_empty()
@@ -713,6 +754,7 @@ fn handle_acp_request(
         rule: has_always.then(|| title.to_owned()),
         path,
         workdir: None,
+        agent: None,
     };
     let (tx, rx) = oneshot::channel::<ApprovalDecision>();
     if events

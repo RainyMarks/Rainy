@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::jsonrpc::{IncomingEvent, JsonRpcClient, JsonRpcError, external_env};
+use super::team::CodexTeam;
 use super::{ApprovalDecision, ExternalEvent, TurnRequest};
 use crate::error::{HostError, HostResult};
 use crate::locale::l;
@@ -85,6 +86,20 @@ pub struct CodexProcess {
     pub rpc: Arc<JsonRpcClient>,
     last_used: Mutex<Instant>,
     active_turns: Mutex<usize>,
+    /// The sub-agents of each main thread, kept across its turns.
+    teams: Mutex<HashMap<String, CodexTeam>>,
+}
+
+/// What a turn keeps about the team: the sub-agent cards it opened and the team revision it last sent.
+#[derive(Default)]
+struct TurnTeam {
+    cards: HashSet<String>,
+    sent: u64,
+}
+
+/// The transcript id of a sub-agent's card.
+fn card_id(thread: &str) -> String {
+    format!("agent:{thread}")
 }
 
 impl CodexProcess {
@@ -127,6 +142,7 @@ impl CodexProcess {
             rpc,
             last_used: Mutex::new(Instant::now()),
             active_turns: Mutex::new(0),
+            teams: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -228,6 +244,7 @@ impl CodexProcess {
         let mut tool_names: HashMap<String, String> = HashMap::new();
         let mut text_delta_items: HashSet<String> = HashSet::new();
         let mut latest_usage: Option<UsageSummary> = None;
+        let mut turn_team = TurnTeam::default();
 
         loop {
             tokio::select! {
@@ -282,13 +299,25 @@ impl CodexProcess {
                             return Ok(());
                         }
                         IncomingEvent::Request(server_req) => {
-                            if !matches_thread(&server_req.params, &thread_id) {
-                                continue;
-                            }
-                            handle_codex_request(&self.rpc, server_req, &events, &cancel);
+                            // The chat's own thread, or one of its sub-agents (the approval names it); another chat's
+                            // thread on the same Codex process is left to that chat.
+                            let agent = if matches_thread(&server_req.params, &thread_id) {
+                                None
+                            } else {
+                                let child = server_req.params.get("threadId").and_then(Value::as_str).unwrap_or_default();
+                                match self.agent_name(&thread_id, child) {
+                                    Some(name) => Some(format!("@{name}")),
+                                    None => continue,
+                                }
+                            };
+                            handle_codex_request(&self.rpc, server_req, &events, &cancel, agent);
                         }
                         IncomingEvent::Notification(note) => {
                             if !matches_thread(&note.params, &thread_id) {
+                                // A sub-agent's own thread: its card and the team, never the chat's transcript.
+                                if let Some(child) = note.params.get("threadId").and_then(Value::as_str) {
+                                    self.on_agent_note(&thread_id, child, &note.method, &note.params, &mut turn_team, &events);
+                                }
                                 continue;
                             }
                             self.touch();
@@ -312,6 +341,7 @@ impl CodexProcess {
                                 }
                                 "item/started" => {
                                     if let Some(item) = note.params.get("item") {
+                                        self.on_team_item(&thread_id, &thread_id, item, false, &mut turn_team, &events);
                                         handle_item_started(item, &mut tool_names, &events);
                                     }
                                 }
@@ -335,6 +365,7 @@ impl CodexProcess {
                                 }
                                 "item/completed" => {
                                     if let Some(item) = note.params.get("item") {
+                                        self.on_team_item(&thread_id, &thread_id, item, true, &mut turn_team, &events);
                                         handle_item_completed(item, &mut tool_names, &mut tool_outputs, &text_delta_items, &events);
                                     }
                                 }
@@ -462,6 +493,143 @@ impl CodexProcess {
 
     pub async fn close(&self) {
         self.rpc.close().await;
+    }
+
+    /// The name of a sub-agent of `main`'s team.
+    fn agent_name(&self, main: &str, thread: &str) -> Option<String> {
+        self.teams.lock().ok()?.get(main)?.name_of(thread)
+    }
+
+    /// Send the team when it changed since the turn last did.
+    fn send_team(&self, main: &str, turn: &mut TurnTeam, events: &mpsc::UnboundedSender<ExternalEvent>) {
+        let Ok(teams) = self.teams.lock() else { return };
+        let Some(team) = teams.get(main) else { return };
+        if team.is_empty() || team.revision() == turn.sent {
+            return;
+        }
+        turn.sent = team.revision();
+        let _ = events.send(ExternalEvent::TeamUpdated(team.snapshot("", "running")));
+    }
+
+    /// A team item (`subAgentActivity`, `collabAgentToolCall`) on `sender`'s thread: the main thread's or a
+    /// sub-agent's. Sub-agents the main thread starts get a card in the chat; its waits show as a step.
+    fn on_team_item(&self, main: &str, sender: &str, item: &Value, completed: bool, turn: &mut TurnTeam, events: &mpsc::UnboundedSender<ExternalEvent>) {
+        let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+        match kind {
+            // Each activity comes as a started and a completed item; the completed one carries the same facts.
+            "subAgentActivity" if completed => {
+                let activity = item.get("kind").and_then(Value::as_str).unwrap_or_default();
+                let child = item.get("agentThreadId").and_then(Value::as_str).unwrap_or_default().to_owned();
+                let (started, name, reply) = {
+                    let Ok(mut teams) = self.teams.lock() else { return };
+                    let team = teams.entry(main.to_owned()).or_insert_with(|| CodexTeam::new(main));
+                    let started = team.sub_agent_activity(sender, item);
+                    (started, team.name_of(&child).unwrap_or_default(), team.reply_of(&child))
+                };
+                if started.is_some() && sender == main {
+                    turn.cards.insert(child.clone());
+                    let _ = events.send(ExternalEvent::ToolStarted { id: card_id(&child), name: "task".into(), args: json!({ "description": format!("@{name}"), "external": true }) });
+                }
+                if matches!(activity, "completed" | "interrupted") && turn.cards.remove(&child) {
+                    let output = reply.unwrap_or_else(|| l("（没有回复）", "(no reply)"));
+                    let _ = events.send(ExternalEvent::ToolCompleted {
+                        id: card_id(&child),
+                        name: "task".into(),
+                        output,
+                        is_error: activity == "interrupted",
+                        details: Some(json!({ "external": true, "agent": name })),
+                    });
+                }
+                self.send_team(main, turn, events);
+            }
+            "collabAgentToolCall" => {
+                let tool = item.get("tool").and_then(Value::as_str).unwrap_or_default();
+                let mut started = Vec::new();
+                let mut finished = Vec::new();
+                if let Ok(mut teams) = self.teams.lock() {
+                    let team = teams.entry(main.to_owned()).or_insert_with(|| CodexTeam::new(main));
+                    // Multi-agent v2 starts agents with `spawnAgent` instead of a sub-agent activity.
+                    if tool == "spawnAgent" && completed {
+                        for id in item.get("receiverThreadIds").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                            if !team.knows(id)
+                                && let Some(id) = team.sub_agent_activity(sender, &json!({ "agentThreadId": id, "kind": "started", "agentPath": "", "model": item.get("model") }))
+                            {
+                                started.push((id.clone(), team.name_of(&id).unwrap_or_default()));
+                            }
+                        }
+                    }
+                    team.collab_call(sender, item);
+                    // A wait tells when agents are through; v2 agents report it nowhere else.
+                    for id in &turn.cards {
+                        if let Some(failed) = team.finished(id)
+                            && !started.iter().any(|(new, _)| new == id)
+                        {
+                            finished.push((id.clone(), team.name_of(id).unwrap_or_default(), team.reply_of(id), failed));
+                        }
+                    }
+                }
+                if sender == main {
+                    for (child, name) in started {
+                        turn.cards.insert(child.clone());
+                        let _ = events.send(ExternalEvent::ToolStarted { id: card_id(&child), name: "task".into(), args: json!({ "description": format!("@{name}"), "external": true }) });
+                    }
+                }
+                for (child, name, reply, failed) in finished {
+                    turn.cards.remove(&child);
+                    let _ = events.send(ExternalEvent::ToolCompleted {
+                        id: card_id(&child),
+                        name: "task".into(),
+                        output: reply.unwrap_or_else(|| l("（没有回复）", "(no reply)")),
+                        is_error: failed,
+                        details: Some(json!({ "external": true, "agent": name })),
+                    });
+                }
+                if sender == main && tool == "wait"
+                    && let Some(id) = item.get("id").and_then(Value::as_str)
+                {
+                    if completed {
+                        let _ = events.send(ExternalEvent::ToolCompleted {
+                            id: id.to_owned(),
+                            name: "agent_wait".into(),
+                            output: String::new(),
+                            is_error: item.get("status").and_then(Value::as_str) == Some("failed"),
+                            details: Some(json!({ "external": true })),
+                        });
+                    } else {
+                        let _ = events.send(ExternalEvent::ToolStarted { id: id.to_owned(), name: "agent_wait".into(), args: json!({ "external": true }) });
+                    }
+                }
+                self.send_team(main, turn, events);
+            }
+            _ => {}
+        }
+    }
+
+    /// A notification of a sub-agent's own thread.
+    fn on_agent_note(&self, main: &str, child: &str, method: &str, params: &Value, turn: &mut TurnTeam, events: &mpsc::UnboundedSender<ExternalEvent>) {
+        if !self.teams.lock().ok().is_some_and(|teams| teams.get(main).is_some_and(|team| team.knows(child))) {
+            return;
+        }
+        self.touch();
+        // Agents a sub-agent starts in turn.
+        if matches!(method, "item/started" | "item/completed")
+            && let Some(item) = params.get("item")
+            && matches!(item.get("type").and_then(Value::as_str), Some("subAgentActivity" | "collabAgentToolCall"))
+        {
+            self.on_team_item(main, child, item, method == "item/completed", turn, events);
+        }
+        let line = self.teams.lock().ok().and_then(|mut teams| teams.get_mut(main)?.agent_event(child, method, params));
+        if let Some(line) = line
+            && turn.cards.contains(child)
+        {
+            let _ = events.send(ExternalEvent::ToolProgress { id: card_id(child), name: "task".into(), partial: line });
+        }
+        self.send_team(main, turn, events);
+    }
+
+    /// The latest steps of one sub-agent of `main`'s team.
+    pub fn agent_activity(&self, main: &str, thread: &str, limit: usize) -> Option<Vec<rainy_protocol::chat::TeamActivity>> {
+        self.teams.lock().ok()?.get(main)?.activity(thread, limit)
     }
 }
 
@@ -729,6 +897,7 @@ fn handle_codex_request(
     req: super::jsonrpc::ServerRequest,
     events: &mpsc::UnboundedSender<ExternalEvent>,
     cancel: &CancellationToken,
+    agent: Option<String>,
 ) {
     match req.method.as_str() {
         "item/commandExecution/requestApproval" | "execCommandApproval" => {
@@ -750,6 +919,7 @@ fn handle_codex_request(
                 rule,
                 path: None,
                 workdir,
+                agent: agent.clone(),
             };
             let (tx, rx) = oneshot::channel::<ApprovalDecision>();
             let sent = events.send(ExternalEvent::ApprovalRequested {
@@ -792,6 +962,7 @@ fn handle_codex_request(
                 rule,
                 path,
                 workdir: None,
+                agent: agent.clone(),
             };
             let (tx, rx) = oneshot::channel::<ApprovalDecision>();
             let sent = events.send(ExternalEvent::ApprovalRequested {
@@ -833,6 +1004,7 @@ fn handle_codex_request(
                 rule: reason,
                 path: None,
                 workdir: None,
+                agent: agent.clone(),
             };
             let (tx, rx) = oneshot::channel::<ApprovalDecision>();
             if events

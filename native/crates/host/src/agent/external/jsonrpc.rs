@@ -77,6 +77,11 @@ impl EventStream {
     pub async fn recv(&mut self) -> Option<IncomingEvent> {
         self.rx.recv().await
     }
+
+    /// An event already queued, without waiting.
+    pub fn try_recv(&mut self) -> Option<IncomingEvent> {
+        self.rx.try_recv().ok()
+    }
 }
 
 impl Drop for EventStream {

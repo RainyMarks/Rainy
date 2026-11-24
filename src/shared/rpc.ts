@@ -145,6 +145,16 @@ export interface ExternalAgentStatus {
   installHint?: string | null | undefined
   loginHint?: string | null | undefined
   error?: string | null | undefined
+  /** The slash commands the agent last listed (ACP `available_commands_update`). */
+  commands?: ExternalCommand[] | undefined
+}
+
+/** A slash command an external agent offers, sent to it as `/name text`. */
+export interface ExternalCommand {
+  name: string
+  description?: string | null | undefined
+  /** What to write after it, when it takes text. */
+  hint?: string | null | undefined
 }
 
 /** Response of `external.status`, `external.probe`, `external.configure` and payload of `external.changed`. */
@@ -194,6 +204,8 @@ export interface PendingApproval {
   rule?: string | null | undefined
   path?: string | null | undefined
   workdir?: string | null | undefined
+  /** The member of an external agent's team that asks (`@tester`), when not the agent itself. */
+  agent?: string | null | undefined
 }
 
 /** Context-window accounting for the next request (`rainy-protocol::chat::ContextUsage`). */

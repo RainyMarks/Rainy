@@ -192,13 +192,22 @@ struct HostProcess {
 
 impl HostProcess {
     fn spawn() -> Self {
+        Self::spawn_with_user_home(None)
+    }
+
+    /// A Host whose user folder (`USERPROFILE`, `HOME`) is `user_home`, where it looks for `~/.gemini`.
+    fn spawn_with_user_home(user_home: Option<&Path>) -> Self {
         let home = tempfile::tempdir().expect("temp home");
         let app_root = home.path().join("app");
         std::fs::create_dir_all(app_root.join("resources")).expect("create resources");
         std::fs::create_dir_all(app_root.join("dist").join("renderer")).expect("create renderer");
         std::fs::write(app_root.join("dist").join("renderer").join("index.html"), "<!doctype html><head></head><body>ok</body>").expect("write index");
         let bin = env!("CARGO_BIN_EXE_rainy-host");
-        let mut child = Command::new(bin)
+        let mut command = Command::new(bin);
+        if let Some(user_home) = user_home {
+            command.env("USERPROFILE", user_home).env("HOME", user_home);
+        }
+        let mut child = command
             .env("RAINY_HOME", home.path())
             .env("RAINY_APP_ROOT", &app_root)
             .env("RAINY_PORT", "0")
@@ -411,6 +420,44 @@ for raw in sys.stdin:
                     send({"id": inner.get("id"), "result": {}})
                     send({"method": "turn/completed", "params": {"threadId": tid, "turn": {"id": turn_id, "status": "interrupted"}}})
                     break
+        elif "team_v2" in text:
+            # Multi-agent v2: the agent is started by `spawnAgent` and is through when a wait says so.
+            child = "thread-v2-abcdef"
+            send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "spawn-2", "tool": "spawnAgent", "status": "inProgress", "senderThreadId": tid, "receiverThreadIds": [], "prompt": "Summarize the logs", "model": "gpt-5.3-codex"}}})
+            send({"method": "item/completed", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "spawn-2", "tool": "spawnAgent", "status": "completed", "senderThreadId": tid, "receiverThreadIds": [child], "prompt": "Summarize the logs", "model": "gpt-5.3-codex", "agentsStates": {child: {"status": "pendingInit"}}}}})
+            send({"method": "item/started", "params": {"threadId": child, "turnId": "v2-turn", "item": {"type": "commandExecution", "id": "v2-cmd", "command": "tail -n 50 run.log", "cwd": os.getcwd()}}})
+            send({"method": "item/completed", "params": {"threadId": child, "turnId": "v2-turn", "item": {"type": "agentMessage", "id": "v2-msg", "text": "Logs look clean."}}})
+            send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "wait-2", "tool": "wait", "status": "inProgress", "senderThreadId": tid, "receiverThreadIds": [child]}}})
+            send({"method": "item/completed", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "wait-2", "tool": "wait", "status": "completed", "senderThreadId": tid, "receiverThreadIds": [child], "agentsStates": {child: {"status": "completed"}}}}})
+            send({"method": "item/agentMessage/delta", "params": {"threadId": tid, "turnId": turn_id, "itemId": "msg-v2", "delta": "V2 done."}})
+            send({"method": "turn/completed", "params": {"threadId": tid, "turn": {"id": turn_id, "status": "completed"}}})
+        elif "team_turn" in text:
+            # The main thread starts a sub-agent; the sub-agent runs on its own thread, asks for a command approval,
+            # answers, and the main thread waits for it and finishes.
+            child = "thread-child-7"
+            send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "collab-1", "tool": "spawnAgent", "status": "inProgress", "senderThreadId": tid, "receiverThreadIds": [], "prompt": "Run the test suite", "model": "gpt-5.3-codex"}}})
+            sa = {"type": "subAgentActivity", "id": "sa-1", "kind": "started", "agentThreadId": child, "agentPath": "/root/tester", "model": "gpt-5.3-codex"}
+            send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": sa}})
+            send({"method": "item/completed", "params": {"threadId": tid, "turnId": turn_id, "item": sa}})
+            send({"method": "item/completed", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "collab-1", "tool": "spawnAgent", "status": "completed", "senderThreadId": tid, "receiverThreadIds": [child], "prompt": "Run the test suite", "agentsStates": {child: {"status": "running"}}}}})
+            send({"method": "turn/started", "params": {"threadId": child, "turn": {"id": "child-turn-1"}}})
+            send({"method": "item/started", "params": {"threadId": child, "turnId": "child-turn-1", "item": {"type": "commandExecution", "id": "child-cmd", "command": "pytest -q", "cwd": os.getcwd()}}})
+            # A request of another chat's thread on the same process is not this chat's to answer.
+            send({"id": "srv-other-1", "method": "item/commandExecution/requestApproval", "params": {"threadId": "thread-someone-else", "turnId": "x", "itemId": "x", "command": "rm -rf /", "cwd": os.getcwd(), "startedAtMs": 1}})
+            send({"id": "srv-child-1", "method": "item/commandExecution/requestApproval", "params": {"threadId": child, "turnId": "child-turn-1", "itemId": "child-cmd", "command": "pytest -q", "cwd": os.getcwd(), "startedAtMs": 1}})
+            decision = wait_response("srv-child-1")
+            record({"child_decision": decision})
+            send({"method": "item/completed", "params": {"threadId": child, "turnId": "child-turn-1", "item": {"type": "commandExecution", "id": "child-cmd", "aggregatedOutput": "12 passed\n", "exitCode": 0, "status": "completed"}}})
+            send({"method": "item/agentMessage/delta", "params": {"threadId": child, "turnId": "child-turn-1", "itemId": "child-msg", "delta": "All 12 tests pass."}})
+            send({"method": "item/completed", "params": {"threadId": child, "turnId": "child-turn-1", "item": {"type": "agentMessage", "id": "child-msg", "text": "All 12 tests pass."}}})
+            send({"method": "turn/completed", "params": {"threadId": child, "turn": {"id": "child-turn-1", "status": "completed"}}})
+            send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "wait-1", "tool": "wait", "status": "inProgress", "senderThreadId": tid, "receiverThreadIds": [], "prompt": None, "agentsStates": {}}}})
+            send({"method": "item/completed", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "collabAgentToolCall", "id": "wait-1", "tool": "wait", "status": "completed", "senderThreadId": tid, "receiverThreadIds": [], "prompt": None, "agentsStates": {}}}})
+            done = dict(sa, id="sa-2", kind="completed")
+            send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": done}})
+            send({"method": "item/completed", "params": {"threadId": tid, "turnId": turn_id, "item": done}})
+            send({"method": "item/agentMessage/delta", "params": {"threadId": tid, "turnId": turn_id, "itemId": "msg-team", "delta": f"Team done ({decision.get('decision')})."}})
+            send({"method": "turn/completed", "params": {"threadId": tid, "turn": {"id": turn_id, "status": "completed"}}})
         elif "deny_file" in text:
             send({"method": "item/started", "params": {"threadId": tid, "turnId": turn_id, "item": {"type": "fileChange", "id": "fc-deny", "changes": [{"path": "blocked.txt", "kind": "create"}]}}})
             send({"id": "srv-file-1", "method": "item/fileChange/requestApproval", "params": {"threadId": tid, "turnId": turn_id, "itemId": "fc-deny", "grantRoot": "blocked.txt", "reason": "Write blocked.txt", "startedAtMs": 1}})
@@ -520,6 +567,12 @@ for raw in sys.stdin:
                 ]
             }]
         }})
+        send({"method": "session/update", "params": {"sessionId": session_id, "update": {"sessionUpdate": "available_commands_update", "availableCommands": [
+            {"name": "swarm", "description": "Start a swarm", "input": {"hint": "task"}},
+            {"name": "teamwork", "description": "Start a team", "input": {"hint": "goal"}},
+            {"name": "plan", "description": "Plan first", "input": None},
+            {"name": "bad name", "description": "dropped"}
+        ]}}})
     elif method == "session/resume":
         send({"id": req_id, "result": {"sessionId": params.get("sessionId") or session_id}})
     elif method == "session/set_mode":
@@ -535,7 +588,17 @@ for raw in sys.stdin:
                 text += blk.get("text", "")
         sid = params.get("sessionId") or session_id
 
-        if "slow_turn" in text:
+        if text.startswith("/swarm "):
+            # Antigravity makes the conversation's folders once it works in it: the test's staged ones appear now.
+            home = os.path.expanduser("~")
+            staged = os.path.join(home, "staged-brain")
+            if os.path.isdir(staged):
+                os.makedirs(os.path.join(home, ".gemini", "antigravity"), exist_ok=True)
+                os.rename(staged, os.path.join(home, ".gemini", "antigravity", "brain"))
+            send({"method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Swarm started."}}}})
+            time.sleep(3.5)
+            send({"id": req_id, "result": {"stopReason": "end_turn"}})
+        elif "slow_turn" in text:
             send({"method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "thinking..."}}}})
             for inner_raw in sys.stdin:
                 inner_raw = inner_raw.strip()
@@ -740,6 +803,253 @@ async fn codex_app_server_probe_stream_approval_resume_and_abort() {
     assert!(log.contains("\"turn/interrupt\""), "log={log}");
 }
 
+/// Codex sub-agents: a card in the chat, the team (`external.team`, `external.teamMember`), and an approval the
+/// sub-agent asks for, named after it and answered on its own thread.
+#[tokio::test]
+async fn codex_sub_agents_show_as_cards_and_team_with_named_approvals() {
+    let host = HostProcess::spawn();
+    let cookie = host.auth_cookie().await;
+    let ws = WsClient::connect(host.port, &cookie).await;
+    let mut rpc = RpcSession::new(ws);
+
+    let work = tempfile::tempdir().expect("workdir");
+    let mock_bin = write_mock_cli(work.path(), "mock-codex", MOCK_CODEX_PY);
+    rpc.call(
+        "external.configure",
+        json!({ "config": { "kind": "codex", "enabled": true, "binary": mock_bin.to_string_lossy(), "args": [], "defaultModel": "gpt-5.3-codex" } }),
+    )
+    .await
+    .expect("external.configure");
+    let created = rpc
+        .call("sessions.create", json!({ "cwd": work.path().to_string_lossy(), "permission": "ask", "externalBackend": { "kind": "codex" } }))
+        .await
+        .expect("sessions.create");
+    let session_id = created["id"].as_str().unwrap().to_owned();
+    // No team before the agent starts one, and no /swarm in Codex (Rainy's own does not apply to it).
+    assert_eq!(rpc.call("external.team", json!({ "sessionId": session_id })).await.expect("external.team"), Value::Null);
+    assert!(rpc.call("chat.send", json!({ "sessionId": session_id, "text": "/swarm split it" })).await.is_err());
+
+    rpc.call("chat.send", json!({ "sessionId": session_id, "text": "team_turn" })).await.expect("chat.send");
+    let mut approved = false;
+    let mut team_changed = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while tokio::time::Instant::now() < deadline {
+        let (event, data) = rpc.next_event(Duration::from_secs(10)).await;
+        if event == "external.teamChanged" && data["sessionId"] == session_id {
+            team_changed = true;
+        }
+        if event == "session.state" && data["sessionId"] == session_id {
+            if !approved
+                && let Some(first) = data["approvals"].as_array().and_then(|list| list.first())
+            {
+                // Only the sub-agent's request reaches the chat, named after the sub-agent.
+                assert_eq!(data["approvals"].as_array().unwrap().len(), 1, "approvals={}", data["approvals"]);
+                assert_eq!(first["agent"], "@tester", "approval={first}");
+                assert_eq!(first["reason"], "command");
+                let call_id = first["toolCallId"].as_str().unwrap().to_owned();
+                approved = true;
+                rpc.call("chat.approve", json!({ "sessionId": session_id, "toolCallId": call_id, "decision": "allow" })).await.expect("approve sub-agent");
+            }
+            if approved && data["status"] == "idle" {
+                break;
+            }
+        }
+    }
+    assert!(approved, "the sub-agent's approval must reach the chat");
+    assert!(team_changed, "the interface must hear that the team changed");
+
+    // The chat shows the sub-agent as one card with its answer, and the wait as a step; nothing of the child's own
+    // thread lands in the chat's text.
+    let snap = rpc.call("sessions.get", json!({ "sessionId": session_id })).await.expect("sessions.get");
+    let entries = snap["entries"].to_string();
+    assert!(entries.contains("Team done (accept)."), "entries={entries}");
+    assert!(entries.contains("@tester"), "sub-agent card missing: {entries}");
+    assert!(entries.contains("All 12 tests pass."), "sub-agent answer missing: {entries}");
+    assert!(entries.contains("agent_wait"), "wait step missing: {entries}");
+
+    let team = rpc.call("external.team", json!({ "sessionId": session_id })).await.expect("external.team");
+    assert_eq!(team["source"], "codex", "team={team}");
+    assert_eq!(team["sessionId"], session_id);
+    let members = team["members"].as_array().expect("members");
+    assert_eq!(members.len(), 2, "team={team}");
+    assert_eq!(members[0]["kind"], "lead");
+    assert_eq!(members[0]["status"], "idle", "the lead is idle once the chat is: {team}");
+    assert_eq!(members[1]["id"], "thread-child-7");
+    assert_eq!(members[1]["name"], "tester");
+    assert_eq!(members[1]["status"], "done");
+    assert_eq!(members[1]["model"], "gpt-5.3-codex");
+    assert_eq!(members[1]["depth"], 1);
+    let posts = team["posts"].as_array().expect("posts");
+    assert!(posts.iter().any(|post| post["text"] == "Run the test suite" && post["to"] == json!(["tester"])), "posts={team}");
+    assert!(posts.iter().any(|post| post["from"] == "tester" && post["text"] == "All 12 tests pass."), "posts={team}");
+    // Only newer posts when asked for them.
+    let last = team["lastPost"].as_u64().unwrap();
+    let newer = rpc.call("external.team", json!({ "sessionId": session_id, "after": last })).await.expect("external.team after");
+    assert!(newer["posts"].as_array().unwrap().is_empty(), "newer={newer}");
+
+    let steps = rpc.call("external.teamMember", json!({ "sessionId": session_id, "memberId": "thread-child-7" })).await.expect("external.teamMember");
+    let steps = steps.to_string();
+    assert!(steps.contains("pytest -q"), "steps={steps}");
+    assert!(steps.contains("All 12 tests pass."), "steps={steps}");
+    assert!(rpc.call("external.teamMember", json!({ "sessionId": session_id, "memberId": "nobody" })).await.is_err());
+
+    let log = std::fs::read_to_string(work.path().join("codex_mock_log.jsonl")).expect("codex log");
+    assert!(log.lines().any(|line| line.contains("child_decision") && line.contains("\"accept\"")), "log={log}");
+
+    // Multi-agent v2 in the next turn: the same team grows, the card opens on the spawn and closes on the wait.
+    rpc.call("chat.send", json!({ "sessionId": session_id, "text": "team_v2" })).await.expect("chat.send v2");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut ran = false;
+    while tokio::time::Instant::now() < deadline {
+        let (event, data) = rpc.next_event(Duration::from_secs(10)).await;
+        if event == "session.state" && data["sessionId"] == session_id {
+            ran |= data["status"] == "running";
+            if ran && data["status"] == "idle" {
+                break;
+            }
+        }
+    }
+    let snap = rpc.call("sessions.get", json!({ "sessionId": session_id })).await.expect("sessions.get v2");
+    let entries = snap["entries"].to_string();
+    assert!(entries.contains("V2 done."), "entries={entries}");
+    assert!(entries.contains("@abcdef"), "v2 card missing: {entries}");
+    assert!(entries.contains("Logs look clean."), "v2 card answer missing: {entries}");
+    let team = rpc.call("external.team", json!({ "sessionId": session_id })).await.expect("external.team v2");
+    let members = team["members"].as_array().expect("members");
+    assert_eq!(members.len(), 3, "team={team}");
+    assert_eq!(members[2]["name"], "abcdef");
+    assert_eq!(members[2]["status"], "done");
+    let posts = team["posts"].as_array().expect("posts");
+    assert!(posts.iter().any(|post| post["text"] == "Summarize the logs" && post["to"] == json!(["abcdef"])), "posts={team}");
+    assert_eq!(posts.iter().filter(|post| post["text"] == "Summarize the logs").count(), 1, "a spawn is posted once: {team}");
+}
+
+fn write_file(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// Antigravity's own `/swarm` goes to it as typed, its commands reach the interface, and the swarm it runs is read
+/// from its folders (`~/.gemini/antigravity/brain/<conversation>/.system_generated`) and followed as it changes.
+#[tokio::test]
+async fn acp_antigravity_swarm_command_team_and_commands() {
+    let user_home = tempfile::tempdir().expect("user home");
+    // Staged where Antigravity's folders are not; the mock moves them there once the swarm starts.
+    let staged = user_home.path().join("staged-brain");
+    let brain = user_home.path().join(".gemini").join("antigravity").join("brain");
+    let generated = |id: &str| staged.join(id).join(".system_generated");
+    // The mock's ACP session id is the conversation id.
+    let lead = "acp-sess-1";
+    write_file(&generated(lead).join("subagents/w1.json"), r#"{"conversationId":"w1","subagentDescriptor":{"typeName":"worker","role":"Swarm Worker (parser)"},"state":"SUBAGENT_STATE_ALIVE","spawnStepIndex":10}"#);
+    write_file(&generated(lead).join("subagents/w2.json"), r#"{"conversationId":"w2","subagentDescriptor":{"typeName":"worker","role":"Swarm Worker (verifier)"},"state":"SUBAGENT_STATE_KILLED","spawnStepIndex":11}"#);
+    write_file(
+        &generated(lead).join("swarm/members.json"),
+        r#"{"title":"Port the parser","members":{"coordinator":{"conversation_id":"acp-sess-1","role":"coordinator"},"parser":{"conversation_id":"w1","role":"worker","phase":"RUNNING","applied_model":"gemini-x"},"verifier":{"conversation_id":"w2","role":"worker","phase":"KILLED","killed":true}}}"#,
+    );
+    write_file(&generated(lead).join("swarm/plan.json"), r#"{"goal":{"title":"Parser","line":"Port it."},"tasks":{"parser":"Write the parser","verifier":"Check it"},"threads":[{"id":"t-a","title":"Core","goal":"Parse","tasks":["parser","verifier"]}]}"#);
+    write_file(&generated(lead).join("swarm/board.jsonl"), "{\"seq\":1,\"agent\":\"coordinator\",\"text\":\"@parser start\",\"time\":\"2026-11-23 10:00:00\"}\n");
+    let step = r#"{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-23T01:00:05Z","tool_calls":[{"name":"run_command","args":{"CommandLine":"\"cargo test\""}}]}"#;
+    write_file(&generated("w1").join("logs/transcript.jsonl"), &format!("{step}\n"));
+    let generated = |id: &str| brain.join(id).join(".system_generated");
+
+    let host = HostProcess::spawn_with_user_home(Some(user_home.path()));
+    let cookie = host.auth_cookie().await;
+    let ws = WsClient::connect(host.port, &cookie).await;
+    let mut rpc = RpcSession::new(ws);
+    let work = tempfile::tempdir().expect("workdir");
+    let mock_bin = write_mock_cli(work.path(), "mock-agy", MOCK_ACP_PY);
+    rpc.call("external.configure", json!({ "config": { "kind": "antigravity", "enabled": true, "binary": mock_bin.to_string_lossy(), "args": ["acp"] } }))
+        .await
+        .expect("configure antigravity");
+    let created = rpc
+        .call("sessions.create", json!({ "cwd": work.path().to_string_lossy(), "permission": "ask", "externalBackend": { "kind": "antigravity" } }))
+        .await
+        .expect("sessions.create agy");
+    let session_id = created["id"].as_str().unwrap().to_owned();
+
+    rpc.call("chat.send", json!({ "sessionId": session_id, "text": "/swarm Port the parser" })).await.expect("/swarm goes to Antigravity");
+    let mut commands: Option<Value> = None;
+    let mut ran = false;
+    let mut found_live = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while tokio::time::Instant::now() < deadline {
+        let (event, data) = rpc.next_event(Duration::from_secs(10)).await;
+        if event == "external.commands" && data["kind"] == "antigravity" {
+            commands = Some(data["commands"].clone());
+        }
+        if event == "external.teamChanged" && data["sessionId"] == session_id {
+            found_live = true;
+        }
+        if event == "session.state" && data["sessionId"] == session_id {
+            ran |= data["status"] == "running";
+            if ran && data["status"] == "idle" {
+                break;
+            }
+        }
+    }
+    assert!(found_live, "the folder that appears while the chat runs is found then, not on the next message");
+    // The commands listed right after `session/new`, the malformed one left out.
+    let commands = commands.expect("the commands Antigravity listed reach the interface");
+    assert_eq!(
+        commands,
+        json!([
+            { "name": "swarm", "description": "Start a swarm", "hint": "task" },
+            { "name": "teamwork", "description": "Start a team", "hint": "goal" },
+            { "name": "plan", "description": "Plan first" }
+        ])
+    );
+    let status = rpc.call("external.status", json!({})).await.expect("external.status");
+    let agy = status["agents"].as_array().unwrap().iter().find(|agent| agent["kind"] == "antigravity").expect("agy row");
+    assert_eq!(agy["commands"], commands, "a new chat with it knows them too");
+    let log = std::fs::read_to_string(work.path().join("acp_mock_log.jsonl")).expect("acp log");
+    assert!(log.contains("\"text\": \"/swarm Port the parser\""), "the command goes as typed: {log}");
+    let snap = rpc.call("sessions.get", json!({ "sessionId": session_id })).await.expect("sessions.get");
+    assert!(snap["entries"].to_string().contains("Swarm started."));
+
+    let team = rpc.call("external.team", json!({ "sessionId": session_id })).await.expect("external.team");
+    assert_eq!(team["source"], "antigravity", "team={team}");
+    assert_eq!(team["sessionId"], session_id);
+    assert_eq!(team["title"], "Parser");
+    let members: Vec<(String, String, String)> = team["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| (member["name"].as_str().unwrap().to_owned(), member["kind"].as_str().unwrap().to_owned(), member["status"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("lead".to_owned(), "lead".to_owned(), "idle".to_owned()),
+            ("parser".to_owned(), "worker".to_owned(), "idle".to_owned()),
+            ("verifier".to_owned(), "verifier".to_owned(), "killed".to_owned()),
+        ]
+    );
+    assert_eq!(team["threads"][0]["members"], json!(["parser", "verifier"]));
+    assert_eq!(team["posts"].as_array().unwrap().len(), 1);
+    let steps = rpc.call("external.teamMember", json!({ "sessionId": session_id, "memberId": "w1" })).await.expect("external.teamMember");
+    assert!(steps.to_string().contains("cargo test"), "steps={steps}");
+    assert!(rpc.call("external.teamMember", json!({ "sessionId": session_id, "memberId": "../w1" })).await.is_err());
+
+    // A new post on the board is noticed while nobody asks.
+    let mut board = std::fs::OpenOptions::new().append(true).open(generated(lead).join("swarm/board.jsonl")).unwrap();
+    board.write_all(b"{\"seq\":2,\"agent\":\"parser\",\"text\":\"lexer done @coordinator\"}\n").unwrap();
+    drop(board);
+    let mut noticed = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while noticed.is_none() && tokio::time::Instant::now() < deadline {
+        let (event, data) = rpc.next_event(Duration::from_secs(15)).await;
+        if event == "external.teamChanged" && data["sessionId"] == session_id {
+            noticed = Some(data);
+        }
+    }
+    let noticed = noticed.expect("the board's new post is noticed");
+    assert_eq!(noticed["lastPost"], 2);
+    let newer = rpc.call("external.team", json!({ "sessionId": session_id, "after": 1 })).await.expect("external.team after");
+    let posts = newer["posts"].as_array().unwrap();
+    assert_eq!(posts.len(), 1, "newer={newer}");
+    assert_eq!((posts[0]["from"].as_str(), posts[0]["to"].clone()), (Some("parser"), json!(["lead"])));
+}
+
 #[tokio::test]
 async fn acp_antigravity_probe_stream_permission_resume_and_abort() {
     let host = HostProcess::spawn();
@@ -790,7 +1100,6 @@ async fn acp_antigravity_probe_stream_permission_resume_and_abort() {
         .await
         .expect("sessions.create agy");
     let session_id = created["id"].as_str().unwrap().to_owned();
-    assert!(rpc.call("chat.send", json!({ "sessionId": session_id, "text": "/swarm forbidden" })).await.is_err());
 
     // 3. Turn 1: thought + message chunks + permission request answered with `always` (allow_always).
     rpc.call("chat.send", json!({ "sessionId": session_id, "text": "Refactor app.py" })).await.expect("send agy 1");

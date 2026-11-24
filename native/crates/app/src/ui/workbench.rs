@@ -271,7 +271,7 @@ impl Workbench {
                         this.sidebar_peek = false;
                         cx.notify();
                     }
-                    StoreEvent::SummariesChanged | StoreEvent::SelectionChanged => this.follow_swarm(window, cx),
+                    StoreEvent::SummariesChanged | StoreEvent::SelectionChanged | StoreEvent::TeamChanged(_) => this.follow_swarm(window, cx),
                     StoreEvent::HostExited(code) => crate::ui::ssh::host_exited(this.store.clone(), *code, window, cx),
                     StoreEvent::ResourcesDamaged(error) => resources_damaged(error, window, cx),
                     StoreEvent::Update(notice) => crate::ui::update::show(notice, window, cx),
@@ -491,14 +491,18 @@ impl Workbench {
     /// mode); close it when the chat shown has none.
     fn follow_swarm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
+        let summary = store.selected.as_ref().and_then(|id| store.summaries.iter().find(|summary| summary.id == *id));
+        // A swarm of Rainy's own, or the team an external agent runs for the chat (shown in the same panel).
         let now = store.selected.as_ref().map(|id| {
-            let coordinator = store.summaries.iter().find(|summary| summary.id == *id).and_then(agent::swarm::coordinator_of);
+            let coordinator = summary.and_then(agent::swarm::coordinator_of).or_else(|| store.has_team(id).then(|| id.clone()));
             (id.clone(), coordinator)
         });
+        // An external agent's team opens the panel only when it appears while the chat runs, not on showing an old one.
+        let opens = summary.is_some_and(|summary| summary.swarm.is_some() || summary.status == "running");
         let before = std::mem::replace(&mut self.selected_swarm, now.clone());
         // A new chat not saved yet is no chat of a swarm either.
         let (id, coordinator) = now.unwrap_or_default();
-        if coordinator.is_some() && before.as_ref().is_some_and(|(was, had)| *was == id && had.is_none()) {
+        if coordinator.is_some() && opens && before.as_ref().is_some_and(|(was, had)| *was == id && had.is_none()) {
             if self.agent() {
                 self.show_tool(Tool::Swarm, cx);
             } else {
@@ -713,7 +717,7 @@ impl Workbench {
     fn render_agent_title_bar(&self, fit: Fit, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let store = self.store.read(cx);
         let summary = store.selected.as_ref().and_then(|id| store.summaries.iter().find(|summary| summary.id == *id)).cloned();
-        let summary_swarm = summary.as_ref().is_some_and(|summary| summary.swarm.is_some());
+        let summary_swarm = summary.as_ref().is_some_and(|summary| summary.swarm.is_some() || store.has_team(&summary.id));
         let toggle = |on: bool, button: Button| button.toggled(on).selected(on).when(on, |this| this.custom(crate::theme::selected_button(cx)));
         let sidebar = toggle(
             fit.sidebar.is_some() || self.sidebar_peek,

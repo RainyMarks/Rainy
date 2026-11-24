@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use rainy_protocol::chat::{
-    AssistantBlock, AssistantMessage, ChatChange, ContextBreakdown, ContextBreakdownSegments, ContextUsage, ExternalBackendRef, ImageContent, PendingApproval, QueuedMessage, ResultContent,
-    RetryWait, RevertFailure, RevertResult, SessionSnapshot, SessionStateEvent, SessionSummary, TranscriptEntry, UsageSummary,
+    AssistantBlock, AssistantMessage, ChatChange, ContextBreakdown, ContextBreakdownSegments, ContextUsage, ExternalBackendRef, ExternalTeam, ImageContent, PendingApproval, QueuedMessage,
+    ResultContent, RetryWait, RevertFailure, RevertResult, SessionSnapshot, SessionStateEvent, SessionSummary, TeamActivity, TranscriptEntry, UsageSummary,
 };
 use regex::Regex;
 use serde_json::{Value, json};
@@ -21,6 +21,7 @@ use super::budget::{Budget, Calibration, Reported, estimate_breakdown, estimate_
 use super::changes::{self, change_text, line_counts, path_for_model, path_key};
 use super::compaction::{self, CompactionRequest, SHARED_CACHE_WINDOW_MS, Strategy, add_usage, usage_of};
 use super::context::{build_context, cleared_ids, model_user_text};
+use super::external::team::AntigravityTeam;
 use super::external::{ApprovalDecision, ExternalEvent, ExternalManager, ExternalTurnHandle, TurnRequest, external_provider_id};
 use super::hooks::{self, HookContext, PreHookOutcome};
 use super::instructions::{load_baseline, loaded_from, render_additional, render_baseline};
@@ -279,6 +280,11 @@ struct Inner {
     external_diff: Option<String>,
     /// Queued user prompts for an external agent chat, keyed by `QueuedMessage::id`.
     external_pending: HashMap<String, (String, Vec<ImageContent>)>,
+    /// The team the external agent runs (Codex sub-agents), as it last sent it.
+    external_team: Option<ExternalTeam>,
+    /// Antigravity's team of this chat, read from its folders, and the task that follows it.
+    agy_team: Option<Arc<Mutex<AntigravityTeam>>>,
+    agy_watch: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// A loaded chat.
@@ -353,6 +359,9 @@ impl Session {
                     external_turn: None,
                     external_diff: None,
                     external_pending: HashMap::new(),
+                    external_team: None,
+                    agy_team: None,
+                    agy_watch: None,
                 }),
                 services,
                 observations: Arc::default(),
@@ -963,6 +972,9 @@ impl Session {
         if self.chat().external_backend.is_some() {
             self.services.external.close_session(&self.id).await;
         }
+        if let Some(watch) = self.inner.lock().unwrap().agy_watch.take() {
+            watch.abort();
+        }
     }
 
     // ── changes ──
@@ -1273,10 +1285,12 @@ impl Session {
 
     /// Send a user message to an external CLI agent (`codex app-server --stdio` or ACP such as `agy acp`).
     async fn send_external(self: &Arc<Self>, backend: ExternalBackendRef, text: &str, images: Vec<ImageContent>, steer: bool) -> HostResult<bool> {
-        if super::swarm::swarm_command(text).is_some() {
+        // Rainy's own /swarm is no command of an external agent. Antigravity and other ACP agents have commands of
+        // their own (Antigravity's /swarm and /teamwork among them) and get the text as typed; Codex has none.
+        if backend.kind == "codex" && super::swarm::swarm_command(text).is_some() {
             return Err(HostError::invalid(l(
-                "外部 Agent 对话不支持 Rainy 内置 /swarm，请切换到内置模型对话使用。",
-                "External agent chats do not support Rainy's built-in /swarm. Switch to a built-in model chat instead.",
+                "Codex 没有 /swarm 命令。要它分头干活，直接用文字让它派子 Agent，例如“派两个子 Agent 分别检查前端和后端”。",
+                "Codex has no /swarm command. To split the work, ask it in words to start sub-agents, e.g. \"start two sub-agents to check the frontend and the backend\".",
             )));
         }
         let mut steer = steer;
@@ -1427,6 +1441,17 @@ impl Session {
                             self.inner.lock().unwrap().chat = updated;
                             self.services.rpc.emit("sessions.changed", self.summary());
                         }
+                        // An Antigravity swarm or teamwork the conversation starts is followed from here on.
+                        let _ = self.watch_antigravity_team();
+                    }
+                    ExternalEvent::CommandsUpdated(commands) => {
+                        self.services.external.remember_commands(&backend.kind, commands.clone());
+                        self.services.rpc.emit("external.commands", json!({ "kind": backend.kind, "commands": commands }));
+                    }
+                    ExternalEvent::TeamUpdated(team) => {
+                        let (revision, last_post) = (team.revision, team.last_post);
+                        self.inner.lock().unwrap().external_team = Some(team);
+                        self.services.rpc.emit("external.teamChanged", json!({ "sessionId": self.id, "revision": revision, "lastPost": last_post }));
                     }
                     ExternalEvent::ThinkingDelta(delta) => {
                         if delta.is_empty() {
@@ -1633,6 +1658,137 @@ impl Session {
                 None => break,
             }
         }
+    }
+
+    /// Follow the chat's Antigravity team (a swarm, teamwork or other subagents): read Antigravity's folder of the
+    /// conversation again every 1.5 s while anyone works, every 5 s otherwise, and tell the interface when it changed.
+    /// A new conversation's folder appears only once Antigravity works in it, so while the chat runs it is looked for
+    /// every 1.5 s; an idle chat without one is looked at again when it runs or is shown.
+    fn watch_antigravity_team(self: &Arc<Self>) -> Option<Arc<Mutex<AntigravityTeam>>> {
+        let chat = self.chat();
+        if chat.external_backend.as_ref()?.kind != "antigravity" {
+            return None;
+        }
+        let conversation = chat.external_thread_id.clone()?;
+        {
+            let inner = self.inner.lock().unwrap();
+            if let Some(team) = &inner.agy_team {
+                return Some(team.clone());
+            }
+            if inner.closing || inner.agy_watch.as_ref().is_some_and(|task| !task.is_finished()) {
+                return None;
+            }
+        }
+        // Two folder checks: found at once when it is there.
+        let found = AntigravityTeam::locate(&conversation).map(|mut team| {
+            team.refresh();
+            Arc::new(Mutex::new(team))
+        });
+        let weak = Arc::downgrade(self);
+        let mut follow = found.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let fast = {
+                    let Some(session) = weak.upgrade() else { break };
+                    if session.inner.lock().unwrap().closing {
+                        break;
+                    }
+                    let running = session.running();
+                    match &follow {
+                        None if !running => break,
+                        None => true,
+                        Some(team) => running || team.lock().unwrap().busy(),
+                    }
+                };
+                tokio::time::sleep(Duration::from_millis(if fast { 1500 } else { 5000 })).await;
+                let changed = match follow.clone() {
+                    None => {
+                        let conversation = conversation.clone();
+                        let located = tokio::task::spawn_blocking(move || {
+                            AntigravityTeam::locate(&conversation).map(|mut team| {
+                                team.refresh();
+                                team
+                            })
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        let Some(team) = located else { continue };
+                        let marks = team.has_members().then(|| team.marks());
+                        let team = Arc::new(Mutex::new(team));
+                        let Some(session) = weak.upgrade() else { break };
+                        session.inner.lock().unwrap().agy_team = Some(team.clone());
+                        follow = Some(team);
+                        marks
+                    }
+                    Some(team) => tokio::task::spawn_blocking(move || {
+                        let mut team = team.lock().unwrap();
+                        (team.refresh() && team.has_members()).then(|| team.marks())
+                    })
+                    .await
+                    .ok()
+                    .flatten(),
+                };
+                let Some(session) = weak.upgrade() else { break };
+                if let Some((revision, last_post)) = changed {
+                    session.services.rpc.emit("external.teamChanged", json!({ "sessionId": session.id, "revision": revision, "lastPost": last_post }));
+                }
+            }
+        });
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(team) = &found {
+                inner.agy_team = Some(team.clone());
+            }
+            inner.agy_watch = Some(task);
+        }
+        // A team found at once is news to the interface too (it opens the swarm pane while the chat runs).
+        if let Some((revision, last_post)) = found.as_ref().and_then(|team| {
+            let team = team.lock().unwrap();
+            team.has_members().then(|| team.marks())
+        }) {
+            self.services.rpc.emit("external.teamChanged", json!({ "sessionId": self.id, "revision": revision, "lastPost": last_post }));
+        }
+        found
+    }
+
+    /// The team the chat's external agent runs, with the board posts newer than `after`; `None` without one.
+    pub fn external_team(self: &Arc<Self>, after: Option<u64>) -> Option<ExternalTeam> {
+        let mut team = match self.watch_antigravity_team() {
+            Some(agy) => {
+                let team = agy.lock().unwrap();
+                if !team.has_members() {
+                    return None;
+                }
+                team.snapshot(after)
+            }
+            None => {
+                let mut team = self.inner.lock().unwrap().external_team.clone()?;
+                if let Some(after) = after {
+                    team.posts.retain(|post| post.seq > after);
+                }
+                team
+            }
+        };
+        team.session_id = self.id.clone();
+        // The chat's own agent works while the chat runs.
+        let running = self.running();
+        if let Some(lead) = team.members.first_mut()
+            && (running || team.source == "codex")
+        {
+            lead.status = if running { "running" } else { "idle" }.into();
+        }
+        Some(team)
+    }
+
+    /// The latest steps of a member of the chat's external team.
+    pub async fn team_activity(self: &Arc<Self>, member: &str) -> HostResult<Vec<TeamActivity>> {
+        let not_found = || HostError::new("not-found", l("这个成员不在当前对话的团队里。", "This member is not in this chat's team."));
+        if let Some(agy) = self.watch_antigravity_team() {
+            return agy.lock().unwrap().activity(member, 120).ok_or_else(not_found);
+        }
+        let main = self.chat().external_thread_id.ok_or_else(not_found)?;
+        self.services.external.codex_activity(&main, member, 120).await.ok_or_else(not_found)
     }
 
     async fn finish_external_run(&self, provider: &str, model: &str) -> Option<(String, Vec<ImageContent>)> {
@@ -2136,6 +2292,7 @@ impl Session {
                 rule: text("rule"),
                 path: text("path"),
                 workdir: text("workdir"),
+                agent: None,
             };
             match self.wait_for_approval(approval, cancel).await {
                 Answer::Allow | Answer::AllowSession => {}
@@ -3032,6 +3189,7 @@ mod tests {
                     rule: Some("git push".into()),
                     path: None,
                     workdir: None,
+                    agent: None,
                 },
                 settle: tx,
             });

@@ -35,6 +35,8 @@ use crate::ui::{tr, trf};
 #[derive(Clone)]
 enum Suggestion {
     Command { name: &'static str, description: &'static str },
+    /// A command of the chat's external agent; the text goes to it as `/name …`. `input`: it takes text after it.
+    Agent { name: String, description: Option<String>, input: bool },
     Completion { kind: String, insert: String, label: String, detail: Option<String> },
 }
 
@@ -212,6 +214,7 @@ impl ChatPane {
                 | StoreEvent::HostExited(_)
                 | StoreEvent::ResourcesDamaged(_)
                 | StoreEvent::Update(_)
+                | StoreEvent::TeamChanged(_)
                 | StoreEvent::CredentialAlert(_) => {}
             }),
             cx.observe(&store, |_, _, cx| cx.notify()),
@@ -509,8 +512,10 @@ impl ChatPane {
         if text.is_empty() && self.attachments.is_empty() {
             return;
         }
+        // In an external agent's chat only /new is Rainy's; any other command goes to the agent as typed.
+        let external = self.is_external_chat(cx);
         if self.attachments.is_empty()
-            && let Some(name) = text.strip_prefix('/').filter(|name| crate::ui::composer::COMMANDS.iter().any(|(command, _)| command == name))
+            && let Some(name) = text.strip_prefix('/').filter(|name| crate::ui::composer::COMMANDS.iter().any(|(command, _)| command == name) && (!external || *name == "new"))
         {
             let name = name.to_owned();
             self.run_command(&name, window, cx);
@@ -624,11 +629,23 @@ impl ChatPane {
             }
             Some(crate::ui::composer::Trigger::Command { query }) => {
                 let has_chat = self.session_id(cx).is_some();
-                self.suggestions = crate::ui::composer::COMMANDS
+                let query = query.to_lowercase();
+                // An external agent's chat: Rainy's /new, then the agent's own commands (Antigravity's /swarm, /teamwork…).
+                let external = self.external_kind(cx);
+                let mut suggestions: Vec<Suggestion> = crate::ui::composer::COMMANDS
                     .iter()
-                    .filter(|(name, _)| name.starts_with(&query.to_lowercase()) && (*name != "compact" || has_chat))
+                    .filter(|(name, _)| name.starts_with(&query) && if external.is_some() { *name == "new" } else { *name != "compact" || has_chat })
                     .map(|(name, description)| Suggestion::Command { name, description })
                     .collect();
+                if let Some(kind) = &external {
+                    suggestions.extend(
+                        external_commands(self.store.read(cx), kind)
+                            .into_iter()
+                            .filter(|command| command.name.to_lowercase().starts_with(&query))
+                            .map(|command| Suggestion::Agent { input: command.hint.is_some(), name: command.name, description: command.description }),
+                    );
+                }
+                self.suggestions = suggestions;
             }
             Some(crate::ui::composer::Trigger::Reference { query, .. }) => {
                 self.completion_seq += 1;
@@ -699,6 +716,23 @@ impl ChatPane {
                     state.set_cursor_position(gpui_kit::component::input::Position { line: 0, character }, window, cx);
                 });
                 self.update_trigger(window, cx);
+            }
+            Suggestion::Agent { name, input, .. } => {
+                // Sent at once by Enter when it takes nothing after it, else written out with a space for the text.
+                let now = run && !input;
+                let text = if now { format!("/{name}") } else { format!("/{name} ") };
+                let character = text.chars().count() as u32;
+                self.composer.update(cx, |state, cx| {
+                    state.set_value(text, window, cx);
+                    state.set_cursor_position(gpui_kit::component::input::Position { line: 0, character }, window, cx);
+                });
+                if now {
+                    self.trigger = None;
+                    self.suggestions.clear();
+                    self.send(false, window, cx);
+                } else {
+                    self.update_trigger(window, cx);
+                }
             }
             Suggestion::Completion { kind, insert, .. } => {
                 let Some(crate::ui::composer::Trigger::Reference { start, .. }) = self.trigger.clone() else { return };
@@ -919,6 +953,7 @@ impl ChatPane {
                     .children(self.suggestions.iter().enumerate().map(|(index, suggestion)| {
                         let (label, detail, icon) = match suggestion {
                             Suggestion::Command { name, description } => (format!("/{name}"), Some(tr(cx, description).to_string()), IconName::SquareTerminal),
+                            Suggestion::Agent { name, description, .. } => (format!("/{name}"), description.clone(), IconName::SquareTerminal),
                             Suggestion::Completion { kind, label, detail, .. } => (
                                 label.clone(),
                                 detail.clone(),
@@ -1067,6 +1102,11 @@ impl ChatPane {
             "file-change" => i18n::text(locale, "external.approvalFileChange").to_owned(),
             "permission" => i18n::text(locale, "external.approvalPermission").to_owned(),
             _ => i18n::text(locale, "chat.approvalCommand").to_owned(),
+        };
+        // A member of the external agent's team asks, not the agent itself.
+        let text = match approval.agent.as_deref().filter(|agent| !agent.is_empty()) {
+            Some(agent) => format!("{agent} · {text}"),
+            None => text,
         };
         let detail_path = (!path.trim().is_empty()
             && matches!(approval.reason.as_str(), "outside-read" | "outside-workdir" | "outside-write" | "file-change"))
@@ -1270,6 +1310,18 @@ impl ChatPane {
                 )
             }
         }
+    }
+
+    /// The kind of external agent the active (or pending new) chat runs on.
+    fn external_kind(&self, cx: &App) -> Option<String> {
+        if let Some(chat) = &self.chat {
+            let model = chat.read(cx);
+            if let Some(view) = &model.view {
+                return view.snapshot.summary.external_backend.as_ref().map(|backend| backend.kind.clone());
+            }
+            return self.store.read(cx).summaries.iter().find(|s| s.id == model.id).and_then(|s| s.external_backend.as_ref().map(|backend| backend.kind.clone()));
+        }
+        self.store.read(cx).pending_external.as_ref().map(|backend| backend.kind.clone())
     }
 
     /// Whether the active (or pending new) chat runs on an external CLI agent rather than Rainy's built-in engine.
@@ -3165,6 +3217,20 @@ fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0)
 }
 
+/// The commands an external agent offers, as it last listed them; Antigravity's swarm and teamwork before it has.
+fn external_commands(store: &Store, kind: &str) -> Vec<rainy_protocol::ExternalCommand> {
+    let listed = store.external_agents.iter().find(|agent| agent.kind == kind).map(|agent| agent.commands.clone()).unwrap_or_default();
+    if listed.is_empty() && kind == "antigravity" { antigravity_fallback(store.locale()) } else { listed }
+}
+
+/// Antigravity's `/swarm` and `/teamwork` (antigravity.google/docs/swarm, /teamwork), offered before it lists its commands.
+fn antigravity_fallback(locale: Locale) -> Vec<rainy_protocol::ExternalCommand> {
+    [("swarm", "chat.commandAgySwarm"), ("teamwork", "chat.commandAgyTeamwork")]
+        .into_iter()
+        .map(|(name, key)| rainy_protocol::ExternalCommand { name: name.into(), description: Some(i18n::text(locale, key).to_owned()), hint: Some(i18n::text(locale, "chat.commandAgyHint").to_owned()) })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use ::core::prelude::v1::test;
@@ -3207,6 +3273,13 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_offers_swarm_and_teamwork_until_it_lists_its_own() {
+        let fallback = antigravity_fallback(Locale::En);
+        assert_eq!(fallback.iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), vec!["swarm", "teamwork"]);
+        assert!(fallback.iter().all(|command| command.hint.is_some() && command.description.is_some()));
+    }
+
+    #[test]
     fn unprobed_external_agent_defaults_to_default_sentinel() {
         let status = ExternalAgentStatus {
             kind: "codex".into(),
@@ -3223,6 +3296,7 @@ mod tests {
             install_hint: None,
             login_hint: None,
             error: None,
+            commands: Vec::new(),
         };
         let sel = external_default_selection(&status, None);
         assert_eq!(sel.provider, "external:codex");
