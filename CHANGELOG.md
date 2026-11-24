@@ -4,6 +4,13 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.12.1 · 2026-11-24
+
+- **Antigravity fitted to the real agy**: checked against agy 1.5.16, a few things it really does differently are fixed. The thinking level now takes effect (the setting sent before was one agy refuses, so it always ran at its default, high). The model list shows the models themselves (Gemini 4 Neon, Claude Opus 5.5 and so on), each with only the levels it offers (Claude has no X-high, GPT-OSS none), instead of one entry per model and level. Usage is what agy reports for each turn; before, how full the context was counted as input on every tool step, so a turn's input could show several times too high and its output as 0.
+- **An external agent's steps read clearly**: a command row shows the command it runs (already while it waits for approval) and its exit code; a file row shows the file and how many lines changed, and opens to the change; one file is no longer listed several times because the agent spelled its path differently. The changes bar no longer shows a misleading "+0 −0" when there is no earlier text to compare against.
+- **Swarm members are named**: in an Antigravity swarm, a member's commands, changes and approvals say which member it is, e.g. "runner · This command needs your approval". agy gives a member's approval 60 seconds; after that the step fails and the approval bar goes away instead of leaving a button that no longer does anything.
+- **External agents' models survive a restart**: the models an agent offers are kept from its probe or chats, so after a restart the composer offers them and their thinking levels without probing again in Settings.
+
 ## 4.12.0 · 2026-11-23
 
 - **External agents**: turn on Codex (`codex app-server`), Antigravity (`agy acp`) or any ACP agent in Settings → Models. They have their own section in the model picker, apart from the models you configured, and the two do not affect each other. An external agent uses its own sign-in, models and tools; the chat shows its thinking and tool calls as usual, commands and file changes that need approval show the approval bar, and changes are reviewed in the changes bar (they cannot be undone with one click). Switch the model and reasoning effort beside the composer; after a restart the chat continues the same session.
