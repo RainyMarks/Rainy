@@ -71,7 +71,8 @@ pub fn parse_manifest(text: &str) -> Result<Offer> {
 pub fn version_key(text: &str) -> Option<(Vec<u64>, bool, String)> {
     let text = text.trim();
     let (base, pre) = match text.split_once('-') {
-        Some((base, pre)) if !pre.is_empty() => (base, Some(pre)),
+        // The version names a folder, so the pre-release part must stay one plain name (no separators, no trailing dot).
+        Some((base, pre)) if !pre.is_empty() && !pre.ends_with('.') && pre.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)) => (base, Some(pre)),
         Some(_) => return None,
         None => (text, None),
     };
@@ -284,6 +285,12 @@ windows-x86_64 0.1.53 strata-control-0.1.53-windows-x86_64.zip 72CB29F2BB0FC534D
         assert!(parse_manifest("linux-x86_64 0.1.53 a.tar.gz 00 1").is_err());
         assert!(parse_manifest("windows-x86_64 0.1.53 ../x.zip 72cb29f2bb0fc534d4a2d7ea7d76afce0f7e2d41c72cb54a88fe2080eb2cf5ac 5").is_err());
         assert!(parse_manifest("windows-x86_64 x.y a.zip 72cb29f2bb0fc534d4a2d7ea7d76afce0f7e2d41c72cb54a88fe2080eb2cf5ac 5").is_err());
+        // The version becomes a folder name under `control`, so a pre-release part cannot leave it.
+        for version in ["0.1.0-/../../x", "0.1.0-a\\..\\..\\x", "0.1.0-rc:1", "0.1.0-rc."] {
+            let line = format!("windows-x86_64 {version} a.zip 72cb29f2bb0fc534d4a2d7ea7d76afce0f7e2d41c72cb54a88fe2080eb2cf5ac 5");
+            assert!(parse_manifest(&line).is_err(), "{version}");
+        }
+        assert!(parse_manifest("windows-x86_64 0.2.2-rc.1+b5 a.zip 72cb29f2bb0fc534d4a2d7ea7d76afce0f7e2d41c72cb54a88fe2080eb2cf5ac 5").is_ok());
     }
 
     #[test]
