@@ -420,7 +420,7 @@ fn salvage(raw: Option<Value>) -> SettingsData {
         mcp_servers: each("mcpServers").into_iter().filter_map(|item| serde_json::from_value(item).ok()).filter(|server| check_server(server).is_ok()).collect(),
         ui: serde_json::from_value(field("ui")).unwrap_or_default(),
         workbench: serde_json::from_value(field("workbench")).unwrap_or_default(),
-        security: serde_json::from_value(field("security")).unwrap_or_default(),
+        security: salvage_security(&field("security")),
         proxy: serde_json::from_value(field("proxy")).unwrap_or_default(),
         hooks: each("hooks")
             .into_iter()
@@ -437,10 +437,37 @@ fn salvage(raw: Option<Value>) -> SettingsData {
         ..SettingsData::default()
     };
     data.ui.retain(|key, value| valid_pref(key, value));
-    if check_data(&data).is_err() {
-        data.security = None;
-    }
     if check_data(&data).is_err() { SettingsData::default() } else { data }
+}
+
+/// The valid parts of saved security settings. Each rule list keeps its valid entries, so one bad entry does not drop
+/// every project's deny rules and leave the chats under looser defaults.
+fn salvage_security(raw: &Value) -> Option<Security> {
+    let Value::Object(raw) = raw else { return None };
+    let strings = |value: Option<&Value>, max: usize, keep: usize| -> Vec<String> {
+        let Some(Value::Array(items)) = value else { return Vec::new() };
+        items.iter().filter_map(Value::as_str).filter(|item| (1..=max).contains(&item.chars().count())).take(keep).map(str::to_owned).collect()
+    };
+    let rules = raw.get("rules").and_then(Value::as_object).map(|rules| {
+        rules
+            .iter()
+            .filter_map(|(project, rule)| {
+                let rule = rule.as_object()?;
+                Some((
+                    project.clone(),
+                    PermissionRules {
+                        commands: strings(rule.get("commands"), 200, MAX_RULES),
+                        tools: strings(rule.get("tools"), 128, MAX_RULES),
+                        deny_commands: strings(rule.get("denyCommands"), 200, MAX_RULES),
+                        deny_paths: strings(rule.get("denyPaths"), 260, MAX_RULES),
+                        deny_tools: strings(rule.get("denyTools"), 128, MAX_RULES),
+                    },
+                ))
+            })
+            .collect()
+    });
+    let trusted_workspaces = strings(raw.get("trustedWorkspaces"), 1024, MAX_TRUSTED_WORKSPACES).into_iter().filter(|item| !item.trim().is_empty()).collect();
+    Some(Security { default_mode: raw.get("defaultMode").and_then(Value::as_str).map(str::to_owned), rules, trusted_workspaces })
 }
 
 /// Credential name of a provider: the DeepSeek preset uses `DEEPSEEK_API_KEY`, both Claude presets share
@@ -888,5 +915,28 @@ mod tests {
         })));
         assert_eq!(salvaged.external_agents.len(), 1);
         assert_eq!(salvaged.external_agents[0].kind, "antigravity");
+    }
+
+    #[test]
+    fn salvage_keeps_the_valid_deny_rules_of_damaged_security_settings() {
+        let salvaged = salvage(Some(json!({
+            "version": 1,
+            "security": {
+                "defaultMode": "ask",
+                "rules": {
+                    "w1": { "commands": ["git status", 7], "denyPaths": ["secrets/**", "", "x".repeat(300)], "denyTools": ["bash"] },
+                    "w2": { "denyCommands": ["rm -rf /"] }
+                },
+                "trustedWorkspaces": ["/home/a/project", "  "]
+            }
+        })));
+        let security = salvaged.security.expect("security kept");
+        assert_eq!(security.default_mode.as_deref(), Some("ask"));
+        let rules = security.rules.expect("rules kept");
+        assert_eq!(rules["w1"].commands, ["git status"]);
+        assert_eq!(rules["w1"].deny_paths, ["secrets/**"]);
+        assert_eq!(rules["w1"].deny_tools, ["bash"]);
+        assert_eq!(rules["w2"].deny_commands, ["rm -rf /"]);
+        assert_eq!(security.trusted_workspaces, ["/home/a/project"]);
     }
 }
