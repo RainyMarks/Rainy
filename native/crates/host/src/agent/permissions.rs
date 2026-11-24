@@ -1182,11 +1182,12 @@ fn tool_paths(tool: &str, args: &Value, cwd: &Path) -> Vec<PathBuf> {
             .collect();
     }
     if matches!(tool, "grep" | "glob" | "lsp_diagnostics" | "symbol_outline" | "module_deps") {
-        return string_arg(args, "path")
-            .or_else(|| string_arg(args, "file_path"))
+        // Both spellings are checked: the tools differ in which one wins when a call gives both.
+        return ["path", "file_path"]
+            .into_iter()
+            .filter_map(|name| string_arg(args, name))
             .filter(|path| !path.trim().is_empty())
             .map(|path| crate::paths::normalize(&cwd.join(path)))
-            .into_iter()
             .collect();
     }
     if SHELL_TOOLS.contains(&tool) {
@@ -1492,6 +1493,9 @@ mod tests {
         assert!(matches!(decide(&make("read-only", "read", outside_file)), Decision::Ask(a) if a["reason"] == "outside-read"));
         let outside_grep = Box::leak(Box::new(json!({ "pattern": "x", "path": outside_dir.path().to_string_lossy() })));
         assert!(matches!(decide(&make("ask", "grep", outside_grep)), Decision::Ask(a) if a["reason"] == "outside-read"));
+        // lsp_diagnostics reads `file_path` before `path`: an inside `path` cannot cover an outside `file_path`.
+        let both = Box::leak(Box::new(json!({ "path": root.join("src/main.rs").to_string_lossy(), "file_path": outside_dir.path().join("note.txt").to_string_lossy() })));
+        assert!(matches!(decide(&make("read-only", "lsp_diagnostics", both)), Decision::Ask(a) if a["reason"] == "outside-read"));
 
         // Reads inside project root or spill dir remain allowed.
         let inside_file = Box::leak(Box::new(json!({ "file_path": root.join("src/main.rs").to_string_lossy() })));
