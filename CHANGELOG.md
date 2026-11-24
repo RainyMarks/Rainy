@@ -4,6 +4,18 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 4.12.0 · 2026-11-23
+
+- **External agents**: turn on Codex (`codex app-server`), Antigravity (`agy acp`) or any ACP agent in Settings → Models. They have their own section in the model picker, apart from the models you configured, and the two do not affect each other. An external agent uses its own sign-in, models and tools; the chat shows its thinking and tool calls as usual, commands and file changes that need approval show the approval bar, and changes are reviewed in the changes bar (they cannot be undone with one click). Switch the model and reasoning effort beside the composer; after a restart the chat continues the same session.
+- **Teams of external agents**: Antigravity's swarm (`/swarm`), teamwork (`/teamwork`) and other subagents, and Codex's sub-agents, show in the Swarm panel: the board with who wrote to whom, the member tree (state, model, what each is doing, checklist progress, and its latest steps when opened) and the swarm's plan. The panel opens when a team appears while the chat runs. Each Codex sub-agent is a card in the chat with its progress and answer, and an approval a sub-agent asks for names it.
+- **External agents' slash commands**: in an external chat the `/` menu lists the agent's own commands (such as Antigravity's `/swarm` and `/teamwork`), which go to the agent as typed. Rainy's own `/swarm` is for the models you configured.
+- **Background experiments**: a new Experiments tab in the terminal panel starts long jobs on the SSH server (or WSL, or this PC) that run apart from the session, so a dropped connection or closing Rainy does not stop them; set `CUDA_VISIBLE_DEVICES` and the log location, follow the log live, stop or kill.
+- **Port forwarding**: with an SSH connection, Ports in the status bar (at the bottom of the sidebar in Agent mode) forwards services on the server (TensorBoard, Jupyter and so on) to this PC, lists the ports listening on the server, and opens a forwarded one in one click.
+- **Remote resources**: with an SSH or WSL connection the status bar shows free GPUs, CPU cores (with the cgroup limit) and load; open it for memory, each GPU's memory and processes, and free disk space.
+- **Research settings per host**: Settings → Runtime sets, for each SSH host, the Rainy data folder (kept across container restarts), the default working folder, bookmarked folders, preset environment variables, keep-alive, port forwards (optionally started on connect) and notes about the host that the agent is told (which GPU is often busy, say).
+- **Upload and download files**: the file tree uploads files from this PC into a project folder (up to 512 MB each) and downloads a file to this PC.
+- **Steadier SSH**: the host list reads configs that `~/.ssh/config` pulls in with `Include`; a dropped connection reconnects by itself (up to 3 tries, or retry now); the command palette switches the execution target directly.
+
 ## 4.11.5 · 2026-11-23
 
 - **Settings → Security**: a new page that manages per-project Allow and Deny rules (commands, paths and tools, with `*` and `**` wildcards; Deny wins) and trusted workspaces. Only trusted workspaces run the repository's lifecycle hooks (`.rainy/hooks.json`, which can block a tool call before it runs and run commands after a call or when a chat ends); `AGENTS.md` and project skills load in every workspace as before.
