@@ -595,7 +595,7 @@ impl Git {
         if count > 0 {
             // `--full-index` gives `git apply -3` exact blob object IDs for three-way merging.
             let outcome = self
-                .git(&tree, &["diff", "--cached", "--binary", "--full-index", "--no-color", &worktree.base], COMMAND_TIMEOUT, None)
+                .git(&tree, &["diff", "--cached", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", &worktree.base], COMMAND_TIMEOUT, None)
                 .await
                 .map_err(|()| Self::missing())?;
             if outcome.code != Some(0) {
@@ -605,6 +605,9 @@ impl Git {
             let patch = scratch.join(format!("handoff-{}.patch", uuid::Uuid::new_v4().simple()));
             std::fs::write(&patch, &outcome.stdout)?;
             let file = patch.to_string_lossy().into_owned();
+            // `git apply` in a folder below the repository's top would skip the changes outside that folder.
+            let top = self.text(&local, &["rev-parse", "--show-toplevel"]).await?.trim().to_owned();
+            let local = Self::at(Path::new(&top));
 
             // Fast path: clean direct patch apply.
             let applied = if self.check(&local, &["apply", "--check", "--whitespace=nowarn", &file]).await.is_ok() {
@@ -665,7 +668,7 @@ impl Git {
             let _ = self.git_with_env(&top_root, &add_args, COMMAND_TIMEOUT, None, &extra_env).await;
         }
         let outcome = self
-            .git_with_env(local, &["apply", "-3", "--whitespace=nowarn", patch_file], COMMAND_TIMEOUT, None, &extra_env)
+            .git_with_env(&top_root, &["apply", "-3", "--whitespace=nowarn", patch_file], COMMAND_TIMEOUT, None, &extra_env)
             .await
             .map_err(|()| Self::missing())?;
         let _ = std::fs::remove_file(&scratch_index);
@@ -789,6 +792,33 @@ mod tests {
         assert!(!repo.join("sub").join("scratch.tmp").exists(), "untracked .tmp junk must not be handed off");
         assert!(!Path::new(&worktree.path).exists());
         assert!(run(&repo, &["branch", "--list", "rainy/test"]).contains("rainy/test"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hand_off_ignores_diff_settings_and_moves_changes_outside_the_projects_folder() {
+        let dir = std::env::temp_dir().join(format!("rainy-worktree-config-{}", uuid::Uuid::new_v4().simple()));
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("sub").join("a.txt"), "one\n").unwrap();
+        std::fs::write(repo.join("top.txt"), "top\n").unwrap();
+        std::fs::write(repo.join(".gitattributes"), "*.txt diff=shout\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "first"]);
+        // Settings that change what `git diff` prints, and so what `git apply` would be handed.
+        run(&repo, &["config", "diff.noprefix", "true"]);
+        run(&repo, &["config", "diff.mnemonicPrefix", "true"]);
+        run(&repo, &["config", "diff.shout.textconv", "tr a-z A-Z <"]);
+        let context = crate::agent::tools::test_context(&dir);
+        let git = Git::new(Arc::new(Projects::load(dir.join("projects.json")).unwrap()), context.runtime.clone());
+        let (worktree, cwd) = git.worktree_add(&repo.join("sub"), &dir.join("worktrees")).await.unwrap();
+        std::fs::write(Path::new(&cwd).join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(Path::new(&worktree.path).join("top.txt"), "top\nmore\n").unwrap();
+        let moved = git.worktree_hand_off(&worktree, &dir.join("worktrees")).await.unwrap();
+        assert_eq!(moved, 2);
+        assert_eq!(std::fs::read_to_string(repo.join("sub").join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\n");
+        assert_eq!(std::fs::read_to_string(repo.join("top.txt")).unwrap().replace("\r\n", "\n"), "top\nmore\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
