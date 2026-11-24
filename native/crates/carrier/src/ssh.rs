@@ -878,7 +878,13 @@ fn run_command(
         line.clear();
     }
     let stdout = collector.join().unwrap_or_default();
-    let status = child.lock().unwrap().wait()?;
+    // Poll instead of waiting with the lock held, so the timeout can still stop an `ssh` that closed its output.
+    let status = loop {
+        if let Some(status) = child.lock().unwrap().try_wait()? {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
     let _ = done_tx.send(());
     let _ = feeder.join();
     Ok(RunOutput { code: status.code(), stdout: String::from_utf8_lossy(&stdout).into_owned(), stderr: Vec::from(errors).join("\n") })
@@ -1553,6 +1559,17 @@ mod tests {
         assert!(parse_destination("host", Some(70000)).is_err());
         assert_eq!(name(&Destination { destination: "box".into(), port: Some(2200) }), "box:2200");
         assert!(matches!(target(&Destination { destination: "box".into(), port: None }), ExecutionTarget::Ssh { ref id, .. } if id == "ssh:box"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_timeout_stops_a_command_that_closed_its_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec >&- 2>&-; sleep 30"]);
+        let started = std::time::Instant::now();
+        let output = run_command(command, None, &mut |_| {}, Some(Duration::from_millis(300))).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert_eq!(output.code, None);
     }
 
     #[test]
