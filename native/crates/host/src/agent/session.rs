@@ -242,6 +242,8 @@ struct Inner {
     stream_armed: bool,
     running_tools: HashMap<String, u64>,
     tool_updates: HashMap<String, u64>,
+    /// What each running tool last reported besides its output (`ToolOutput::details`), as sent to the page.
+    tool_details: HashMap<String, Value>,
     calibration: Calibration,
     last_estimate: u64,
     /// `provider/model` key of the latest prepared request, so `Calibration` stays isolated per model.
@@ -336,6 +338,7 @@ impl Session {
                     stream_armed: false,
                     running_tools: HashMap::new(),
                     tool_updates: HashMap::new(),
+                    tool_details: HashMap::new(),
                     calibration: Calibration::default(),
                     last_estimate: 0,
                     last_model_key: String::new(),
@@ -2123,18 +2126,32 @@ impl Session {
                 let now = now_ms();
                 {
                     let mut inner = self.inner.lock().unwrap();
-                    if now.saturating_sub(inner.tool_updates.get(id).copied().unwrap_or(0)) < TOOL_UPDATE_THROTTLE_MS {
+                    // Output alone goes out at most every TOOL_UPDATE_THROTTLE_MS; a change of what the tool reports besides
+                    // it (a sub-agent's next step) at once, or the card would miss the steps that follow a reply closely.
+                    let changed = output.details.as_ref().is_some_and(|details| inner.tool_details.get(id) != Some(details));
+                    if !changed && now.saturating_sub(inner.tool_updates.get(id).copied().unwrap_or(0)) < TOOL_UPDATE_THROTTLE_MS {
                         return;
                     }
                     inner.tool_updates.insert(id.to_owned(), now);
+                    if let Some(details) = &output.details {
+                        inner.tool_details.insert(id.to_owned(), details.clone());
+                    }
                 }
                 let text = text_parts(&output.content);
                 let skip = text.chars().count().saturating_sub(16384);
                 let partial: String = text.chars().skip(skip).collect();
-                self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "update", "partial": partial }));
+                let mut event = json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "update", "partial": partial });
+                if let Some(details) = &output.details {
+                    event["details"] = details.clone();
+                }
+                self.services.rpc.emit("session.tool", event);
             }
             Event::ToolEnded { id, name } => {
-                self.inner.lock().unwrap().tool_updates.remove(id);
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.tool_updates.remove(id);
+                    inner.tool_details.remove(id);
+                }
                 self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "end" }));
             }
             Event::Result(result) => {
@@ -2897,6 +2914,8 @@ impl Session {
             let planner = self.selection().map(|selection| selection.model).unwrap_or_default();
             orchestrate::prompt_section(phase, &planner, &executor.model, note.as_deref())
         });
+        let profile = self.request_resolved().map_or_else(|| Profile::of(""), |resolved| Profile::of(&resolved.model.id));
+        let settings = self.services.settings.get();
         let built = prompt::build(&PromptInputs {
             cwd: &chat.cwd,
             windows: env.windows,
@@ -2904,10 +2923,11 @@ impl Session {
             mcp_instructions: &self.services.mcp.instructions(),
             extra_roots: &extra_roots,
             skills: &skills,
-            global_prompt: &self.services.settings.get().global_prompt,
+            global_prompt: &settings.global_prompt,
+            builtin_prompt: settings.builtin_prompts.get(profile.prompt_group()).map_or("", String::as_str),
             remote: env.kind() == "SSH",
             powershell_core,
-            profile: self.request_resolved().map_or_else(|| Profile::of(""), |resolved| Profile::of(&resolved.model.id)),
+            profile,
         });
         let swarm = chat.swarm.as_ref().map(|link| super::swarm::prompt_section(link, &self.id)).unwrap_or_default();
         built + &orchestration.unwrap_or_default() + &swarm

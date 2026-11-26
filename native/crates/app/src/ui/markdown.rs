@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use gpui_kit::component::text::{
     InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView, markdown_ast::Node,
 };
-use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::base::text::CodeBlock;
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
 use latex_rust::{Color, Dim, MathFont, MathStyle, SvgOptions};
 
@@ -22,6 +23,34 @@ pub fn markdown(id: impl Into<ElementId>, text: &SharedString) -> TextView {
         .markdown_extensions(extensions().clone())
         .selectable(true)
         .on_link_click(|url, _, window, cx| crate::ui::open_link(url, window, cx))
+        .code_block_actions(code_block_corner)
+}
+
+/// The corner of a code block: its language, and a button that copies the code.
+fn code_block_corner(block: &CodeBlock, _: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
+    let code = block.code();
+    let key = crate::ui::copy::key_of(&code);
+    let theme = cx.theme();
+    let foreground = theme.foreground;
+    let hint = crate::ui::tr(cx, "chat.copyCode");
+    h_flex()
+        .gap_2()
+        .items_center()
+        .pl_1()
+        .font_family(theme.font_family.clone())
+        .text_xs()
+        .text_color(theme.muted_foreground)
+        .children(block.lang().filter(|lang| !lang.is_empty()))
+        .child(
+            div()
+                .id("copy")
+                .p_0p5()
+                .cursor_pointer()
+                .hover(move |style| style.text_color(foreground))
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+                .child(Icon::new(crate::ui::copy::icon(key)).xsmall())
+                .on_click(move |_, _, cx| crate::ui::copy::copy(key, &code, cx)),
+        )
 }
 
 fn extensions() -> &'static MarkdownExtensions {

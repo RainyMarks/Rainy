@@ -126,6 +126,7 @@ fn commands(cx: &App) -> Vec<Command> {
         entry("catSettings", tr(cx, "app.cmdSsh"), "", true, action(OpenRuntimeSettings)),
         entry("catSettings", tr(cx, "settings.navAppearance"), "", true, settings(Section::Appearance)),
         entry("catSettings", tr(cx, "settings.navModels"), "", true, settings(Section::Models)),
+        entry("catSettings", tr(cx, "settings.navPrompts"), "", true, settings(Section::Prompts)),
         entry("catSettings", tr(cx, "settings.navExtensions"), "", true, settings(Section::Extensions)),
         entry("catSettings", tr(cx, "settings.navMemory"), "", true, settings(Section::Memory)),
         entry("catSettings", tr(cx, "settings.navSecurity"), "", true, settings(Section::Security)),

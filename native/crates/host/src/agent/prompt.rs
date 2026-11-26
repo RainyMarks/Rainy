@@ -17,6 +17,8 @@ pub struct PromptInputs<'a> {
     /// The skills section from [`super::skills::section`].
     pub skills: &'a str,
     pub global_prompt: &'a str,
+    /// The user's built-in prompt for the model's group, in place of Rainy's opening guidance; empty keeps Rainy's.
+    pub builtin_prompt: &'a str,
     /// The Host runs on a Linux server reached over SSH rather than in WSL.
     pub remote: bool,
     /// PowerShell 7 (`Some(true)`) or Windows PowerShell 5.1, on Windows.
@@ -67,10 +69,18 @@ fn truncate_bytes(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+/// Rainy's built-in prompt for a group of models ([`super::profile::PROMPT_GROUPS`]), as a custom one replaces it.
+pub fn default_builtin(group: &str) -> Option<String> {
+    Profile::of_group(group).map(|profile| format!("{}\n\n{CONTEXT}", profile.guidance(true)))
+}
+
 /// Build the system prompt.
 pub fn build(inputs: &PromptInputs<'_>) -> String {
     let has = |name: &str| inputs.tools.iter().any(|tool| tool == name);
-    let mut sections: Vec<String> = vec![inputs.profile.guidance(inputs.tools.iter().any(|tool| plan::is_plan(tool))), CONTEXT.into()];
+    let mut sections: Vec<String> = match inputs.builtin_prompt.trim() {
+        "" => vec![inputs.profile.guidance(inputs.tools.iter().any(|tool| plan::is_plan(tool))), CONTEXT.into()],
+        custom => vec![custom.to_owned()],
+    };
     if has("read") {
         sections.push(FILE_REFERENCES.into());
     }
@@ -137,6 +147,7 @@ mod tests {
             extra_roots: &["/x".into()],
             skills: "",
             global_prompt: "  Be brief. ",
+            builtin_prompt: "",
             remote: false,
             powershell_core: None,
             profile: Profile::of("claude-opus-5-5"),
@@ -162,11 +173,42 @@ mod tests {
             extra_roots: &[],
             skills: "",
             global_prompt: "",
+            builtin_prompt: "",
             remote: true,
             powershell_core: None,
             profile: Profile::of("claude-opus-5-5"),
         });
         assert!(prompt.contains("Working directory: /root/kube-user/proj. Commands execute in Bash on a remote Linux server reached over SSH"));
         assert!(prompt.contains("Remote environment limits:"));
+    }
+
+    #[test]
+    fn a_custom_builtin_prompt_replaces_the_opening_only() {
+        // With the plan tool, as the default the page shows is written.
+        let tools: Vec<String> = vec!["read".into(), "bash".into(), "todo_write".into()];
+        let inputs = |builtin_prompt| PromptInputs {
+            cwd: "/w",
+            windows: false,
+            tools: &tools,
+            mcp_instructions: &[],
+            extra_roots: &[],
+            skills: "",
+            global_prompt: "Be brief.",
+            builtin_prompt,
+            remote: false,
+            powershell_core: None,
+            profile: Profile::of("claude-opus-5-5"),
+        };
+        let custom = build(&inputs(" You are my reviewer. "));
+        assert!(custom.starts_with("You are my reviewer.\n\nTokens prefixed with @"));
+        assert!(!custom.contains("# Doing tasks") && !custom.contains("Follow the user and applicable project instructions."));
+        assert!(custom.contains("Check the [exit code") && custom.ends_with("Be brief.\n\nWorking directory: /w. Commands execute in Bash on Linux (WSL)."));
+        // Rainy's own opening is what the page shows as the default of the model's group.
+        let own = build(&inputs(""));
+        let default = default_builtin(Profile::of("claude-opus-5-5").prompt_group()).unwrap();
+        assert!(own.starts_with(&default));
+        assert_eq!(Profile::of("gpt-5.5").prompt_group(), "gpt");
+        assert_eq!(Profile::of("deepseek-v4").prompt_group(), "claude");
+        assert!(default_builtin("gemini").unwrap().contains("Follow the user and applicable project instructions.") && default_builtin("other").is_none());
     }
 }

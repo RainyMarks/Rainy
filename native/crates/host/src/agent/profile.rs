@@ -43,6 +43,9 @@ pub struct Profile {
     pub claude: Option<Claude>,
 }
 
+/// Groups of models that share one built-in prompt, which the user may replace (`builtinPrompts` in the settings).
+pub const PROMPT_GROUPS: [&str; 3] = ["claude", "gpt", "gemini"];
+
 /// A model id as vendors spell it: lowercase, without a router's `vendor/` prefix.
 fn normalized(id: &str) -> String {
     let id = id.trim().to_lowercase();
@@ -84,6 +87,26 @@ impl Profile {
             Family::Other
         };
         Self { family, claude: None }
+    }
+
+    /// The group whose built-in prompt this model gets: GPT and Gemini models have their own, all others Claude's.
+    pub fn prompt_group(self) -> &'static str {
+        match self.family {
+            Family::Gpt => "gpt",
+            Family::Gemini => "gemini",
+            Family::Claude | Family::Open | Family::Other => "claude",
+        }
+    }
+
+    /// A group's models as its default built-in prompt is shown: without the additions of single models.
+    pub fn of_group(group: &str) -> Option<Self> {
+        let family = match group {
+            "claude" => Family::Claude,
+            "gpt" => Family::Gpt,
+            "gemini" => Family::Gemini,
+            _ => return None,
+        };
+        Some(Self { family, claude: None })
     }
 
     /// GPT models edit with `apply_patch` instead of `write` and `edit`.

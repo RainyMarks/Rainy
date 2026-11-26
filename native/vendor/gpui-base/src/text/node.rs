@@ -2469,7 +2469,8 @@ impl CodeBlock {
             .w_full()
             .min_w_0()
             .px_4()
-            .pt(if lang_label.is_some() {
+            // Rainy: actions take the language's corner, so they keep the first line clear the same way.
+            .pt(if lang_label.is_some() || node_cx.code_block_actions.is_some() {
                 px(28.)
             } else {
                 px(14.)

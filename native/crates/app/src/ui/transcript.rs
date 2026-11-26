@@ -45,6 +45,23 @@ pub struct ToolRow {
     pub result: Option<Arc<ResultView>>,
     /// The user undid the change.
     pub reverted: bool,
+    /// A `task` call: what its sub-agent did.
+    pub subagent: Option<Arc<SubagentView>>,
+}
+
+/// What a `task` call's sub-agent did, from its progress while it runs and from its result once it reported.
+#[derive(Debug, Default, PartialEq)]
+pub struct SubagentView {
+    /// Its latest tool calls: what each did and how it went.
+    pub steps: Vec<(SharedString, ToolState)>,
+    /// Calls made before those listed.
+    pub earlier: usize,
+    /// Calls made in all.
+    pub calls: usize,
+    /// The configured model the call chose for it.
+    pub model: Option<SharedString>,
+    /// The limit that ended it: `steps`, `time` or `budget`.
+    pub stopped: Option<SharedString>,
 }
 
 /// Why the call did not run (`details.refused`).
@@ -155,6 +172,8 @@ pub struct TurnRow {
     /// The live turn waits for the agent with nothing to show (it starts, or thinks between steps): for how many
     /// milliseconds.
     pub waiting: Option<f64>,
+    /// The chat compacts its earlier conversation while this turn is the last.
+    pub compacting: bool,
     pub source: RowSource,
 }
 
@@ -377,6 +396,38 @@ fn titled_arguments(cwd: &str, arguments: &Map<String, Value>) -> Map<String, Va
     shown
 }
 
+/// A sub-agent's steps from a `task` call's `details`.
+fn subagent_view(locale: Locale, cwd: &str, details: &Value) -> SubagentView {
+    let empty = Map::new();
+    let steps: Vec<(SharedString, ToolState)> = details["activity"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|call| match call {
+            // Chats from before 4.13 kept only each step's tool.
+            Value::String(name) => (SharedString::from(name.clone()), ToolState::Done),
+            _ => {
+                let name = call["name"].as_str().unwrap_or_default();
+                let arguments = call["args"].as_object().unwrap_or(&empty);
+                let state = match call["state"].as_str() {
+                    Some("running") => ToolState::Running,
+                    Some("failed") => ToolState::Failed,
+                    _ => ToolState::Done,
+                };
+                (tool_title(locale, name, &titled_arguments(cwd, arguments)).into(), state)
+            }
+        })
+        .collect();
+    let calls = details["calls"].as_u64().map_or(0, |calls| calls as usize).max(steps.len());
+    SubagentView {
+        earlier: calls - steps.len(),
+        calls,
+        steps,
+        model: details["model"].as_str().map(|model| model.to_owned().into()),
+        stopped: details["stopped"].as_str().map(|stopped| stopped.to_owned().into()),
+    }
+}
+
 /// A path as the Host reaches it: relative ones are in the chat's folder.
 fn host_path(cwd: &str, path: &str) -> String {
     let absolute = path.starts_with('/') || path.starts_with('\\') || path.as_bytes().get(1) == Some(&b':');
@@ -394,6 +445,7 @@ struct Context<'a> {
     /// The chat runs a turn (not a compaction), and how long ago it last changed.
     turn_running: bool,
     quiet_ms: f64,
+    compacting: bool,
 }
 
 /// Parts of an earlier build of a turn that come out the same: the text and thinking of its entries, and the views
@@ -438,6 +490,10 @@ fn tool_row(
     } else {
         ToolState::Failed
     };
+    let subagent = (name == "task").then(|| {
+        let details = result.and_then(|result| result.details).or_else(|| running.and_then(|tool| tool.details.as_ref()));
+        Arc::new(details.map_or_else(SubagentView::default, |details| subagent_view(ctx.locale, ctx.cwd, details)))
+    });
     let result = result.map(|result| match reuse.and_then(|reuse| reuse.results.get(result.id)) {
         Some(view) => Arc::clone(view),
         None => Arc::new(result_view(result, ctx.locale)),
@@ -470,6 +526,7 @@ fn tool_row(
         file,
         result,
         reverted,
+        subagent,
     }
 }
 
@@ -689,6 +746,7 @@ fn build_turn(
     let busy_block = blocks.last().is_some_and(|block| matches!(block, Block::Tool(tool) if matches!(tool.state, ToolState::Running | ToolState::Waiting)));
     let streaming = stream.is_some_and(|stream| !stream.content.is_empty());
     let waiting = (live && ctx.turn_running && !streaming && !busy_block).then_some(ctx.quiet_ms);
+    let compacting = live && ctx.compacting;
     TurnRow {
         key: key.to_owned().into(),
         user,
@@ -700,6 +758,7 @@ fn build_turn(
         work_steps,
         summary: summary.into(),
         waiting,
+        compacting,
         source: RowSource { chat: chat.clone(), locale, entries, live: live || stream.is_some() },
     }
 }
@@ -717,6 +776,7 @@ fn rows_from(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Vec<TurnR
         thinking_since: view.thinking_since.as_ref(),
         turn_running: snapshot.summary.status == "running",
         quiet_ms: view.changed_at.elapsed().as_secs_f64() * 1000.,
+        compacting: snapshot.summary.status == "compacting",
     };
     let busy = view.busy();
     let ranges = view.turn_ranges();
@@ -928,10 +988,109 @@ fn report_revert(result: Result<Value, RpcError>, window: &mut Window, cx: &mut 
     });
 }
 
+/// Lines of a working sub-agent's text its card shows.
+const SUBAGENT_LIVE_LINES: usize = 6;
+
+/// The key a tool card's open state goes by. A working sub-agent's card has its own: it starts open, and folding it
+/// while it works does not leave the finished card open.
+fn tool_key(tool: &ToolRow) -> SharedString {
+    if tool.subagent.is_some() && tool.state == ToolState::Running { format!("tool-live:{}", tool.call_id) } else { format!("tool:{}", tool.call_id) }.into()
+}
+
+/// A sub-agent's report as its card shows it: without the note to the model that it stopped at a limit (the card says
+/// so in the interface language) or the placeholder of an empty report.
+fn report_text(text: &str, stopped: bool) -> &str {
+    let text = if stopped { text.rfind("\n\n[the sub-agent reached").map_or(text, |at| &text[..at]) } else { text };
+    if text.trim() == "(the sub-agent reported nothing)" { "" } else { text }
+}
+
+/// The end of a working sub-agent's text: its last lines, with the fence of a code block the cut falls inside put back
+/// in front, so the Markdown comes out as it will in the report.
+fn live_tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let (mut start, mut shown) = (lines.len(), 0);
+    while start > 0 && shown < SUBAGENT_LIVE_LINES {
+        start -= 1;
+        if !lines[start].trim().is_empty() {
+            shown += 1;
+        }
+    }
+    let open = lines[..start].iter().map(|line| line.trim()).filter(|line| line.starts_with("```")).fold(None, |open: Option<&str>, fence| match open {
+        Some(_) => None,
+        None => Some(fence),
+    });
+    let tail = lines[start..].join("\n");
+    match open {
+        Some(fence) => format!("{fence}\n{tail}"),
+        None => tail,
+    }
+}
+
+/// A `task` card's body: the sub-agent's steps, then what it is writing, or the report it handed back.
+fn subagent_body(tool: &ToolRow, agent: &SubagentView, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let text = tool.output.as_deref().unwrap_or_default();
+    let mut body = v_flex().w_full().gap_1();
+    if let Some(model) = &agent.model {
+        body = body.child(div().child(trf(cx, "chat.subagentModel", &[("model", model)])));
+    }
+    if agent.earlier > 0 {
+        body = body.child(div().child(trf(cx, "chat.subagentEarlier", &[("count", &agent.earlier)])));
+    }
+    body = body.children(agent.steps.iter().map(|(title, state)| {
+        let mark = match state {
+            ToolState::Running | ToolState::Waiting => Spinner::new().xsmall().into_any_element(),
+            ToolState::Failed => div().size(px(6.)).rounded_full().bg(theme.danger).into_any_element(),
+            ToolState::Done => div().child("✓").into_any_element(),
+        };
+        h_flex()
+            .w_full()
+            .gap_1p5()
+            .items_center()
+            .child(h_flex().w_3().flex_shrink_0().justify_center().child(mark))
+            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title.clone()))
+    }));
+    match tool.state {
+        ToolState::Running | ToolState::Waiting => {
+            let tail = live_tail(text);
+            if !tail.trim().is_empty() {
+                let id = ElementId::Name(format!("task-live-{}", tool.call_id).into());
+                body = body.child(div().w_full().pt_1().text_sm().child(crate::ui::markdown::markdown(id, &SharedString::from(tail))));
+            } else if agent.steps.is_empty() {
+                body = body.child(div().child(tr(cx, "chat.subagentStarting")));
+            }
+        }
+        ToolState::Failed => {
+            body = body.child(div().whitespace_normal().text_color(readable(theme.danger, cx)).child(text.to_owned()));
+        }
+        ToolState::Done => {
+            let report = report_text(text, agent.stopped.is_some());
+            if !agent.steps.is_empty() {
+                body = body.child(div().pt_1().font_medium().text_color(theme.foreground).child(tr(cx, "chat.subagentReport")));
+            }
+            body = if report.trim().is_empty() {
+                body.child(div().child(tr(cx, "chat.subagentNoReport")))
+            } else {
+                let id = ElementId::Name(format!("task-md-{}", tool.call_id).into());
+                body.child(div().w_full().text_sm().child(crate::ui::markdown::markdown(id, &SharedString::from(report.to_owned()))))
+            };
+            if let Some(stopped) = &agent.stopped {
+                let key = match stopped.as_ref() {
+                    "steps" => "chat.subagentStoppedSteps",
+                    "budget" => "chat.subagentStoppedBudget",
+                    _ => "chat.subagentStoppedTime",
+                };
+                body = body.child(div().text_color(crate::theme::warning_text(cx)).child(tr(cx, key)));
+            }
+        }
+    }
+    body.into_any_element()
+}
+
 fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &TurnStyle, cx: &App) -> AnyElement {
     let locale = style.locale;
     let theme = cx.theme();
-    let key: SharedString = format!("tool:{}", tool.call_id).into();
+    let key = tool_key(tool);
     let toggle = toggle.clone();
     let mono = theme.mono_font_family.clone();
     let muted = theme.muted_foreground;
@@ -967,6 +1126,12 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
                         .when(tool.command.is_some(), |this| this.font_family(mono.clone()))
                         .child(title),
                 )
+                .when_some(tool.subagent.as_deref().filter(|agent| agent.calls > 0), |this, agent| {
+                    this.child(badge(trf(cx, "chat.subagentCalls", &[("count", &agent.calls)]), muted))
+                })
+                .when(tool.subagent.as_deref().is_some_and(|agent| agent.stopped.is_some()), |this| {
+                    this.child(badge(tr(cx, "chat.subagentLimited"), crate::theme::warning_text(cx)))
+                })
                 .when(tool.state == ToolState::Waiting, |this| this.child(badge(tr(cx, "chat.approvalWaiting"), crate::theme::warning_text(cx))))
                 .when(refused.is_some(), |this| this.child(badge(tr(cx, "chat.toolDenied"), muted)))
                 .when(tool.reverted, |this| this.child(badge(tr(cx, "chat.undone"), muted)))
@@ -1062,6 +1227,8 @@ fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &
                                 .child(text.clone()),
                         )
                 })));
+            } else if let Some(agent) = tool.subagent.as_deref() {
+                body = body.child(subagent_body(tool, agent, cx));
             } else if let Some(diff) = diff {
                 body = body.child(v_flex().w_full().font_family(mono.clone()).children(diff.lines.iter().map(|(kind, text)| {
                     let tint = match kind {
@@ -1179,11 +1346,14 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
                 crate::ui::markdown::markdown(ElementId::Name(format!("md-{key}").into()), text).into_any_element()
             }
             Block::Tool(tool) => {
-                let key: SharedString = format!("tool:{}", tool.call_id).into();
+                let key = tool_key(tool);
                 // The detailed style opens cards; a click toggles away from the default either way.
-                // Plan cards open in either style: the checklist is what the user follows.
+                // Plan cards open in either style: the checklist is what the user follows. So does a sub-agent's card
+                // while it works; it folds once it reported.
                 let plan = tool.result.as_ref().is_some_and(|result| result.plan.is_some());
-                let open = expanded.contains(&key) != (detailed || plan) || (tool.state == ToolState::Running && tool.output.is_some());
+                let working_agent = tool.subagent.is_some() && tool.state == ToolState::Running;
+                let streams = tool.subagent.is_none() && tool.state == ToolState::Running && tool.output.is_some();
+                let open = expanded.contains(&key) != (detailed || plan || working_agent) || streams;
                 render_tool(tool, open, index, toggle, style, cx)
             }
             Block::Notice { level, text } => {
@@ -1226,6 +1396,17 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
                 .child(label),
         );
     }
+    if row.compacting {
+        column = column.child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(thinking_mark(&format!("compact-{}", row.key).into(), true))
+                .child(i18n::text(locale, "chat.compactingNow")),
+        );
+    }
     if row.footer.is_some() || row.copy.is_some() {
         let mut parts = Vec::new();
         if let Some(footer) = &row.footer {
@@ -1248,13 +1429,14 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .when_some(copy, |this, copy| {
+                    let key = crate::ui::copy::key_of(&format!("reply:{}:{}", row.source.chat, row.key));
                     this.child(
                         div()
                             .id(ElementId::Name(format!("copy-{}", row.key).into()))
                             .cursor_pointer()
                             .hover(|style| style.text_color(theme.foreground))
-                            .child(Icon::new(IconName::Copy).xsmall())
-                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.to_string()))),
+                            .child(Icon::new(crate::ui::copy::icon(key)).xsmall())
+                            .on_click(move |_, _, cx| crate::ui::copy::copy(key, &copy, cx)),
                     )
                 })
                 .when_some(fork_from, |this, entry| {
@@ -1317,6 +1499,53 @@ mod tests {
     }
 
     #[test]
+    fn a_sub_agents_card_lists_its_steps_and_its_report() {
+        let user = json!({"id": "u1", "kind": "user", "ts": 1, "text": "找登录"});
+        let task = call("t1", "task", json!({"description": "Find the login flow", "prompt": "Where is the login?"}));
+        // While it works: its latest steps, the last one running, and how many it made in all.
+        let mut running = view(json!([user.clone(), assistant("a1", json!([task.clone()]), "toolUse")]), Value::Null, "running");
+        running.tools.insert("t1".into(), RunningTool {
+            tool_name: "task".into(),
+            args: None,
+            partial: Some("Looking at the auth module".into()),
+            details: Some(json!({"steps": 2, "calls": 14, "activity": [
+                {"id": "s1", "name": "grep", "args": {"pattern": "login"}, "state": "done"},
+                {"id": "s2", "name": "read", "args": {"file_path": "/p/src/auth.rs"}, "state": "running"},
+            ]})),
+        });
+        let rows = build_rows(&running, Locale::Zh);
+        let tool = tools(&rows[0])[0];
+        let agent = tool.subagent.as_deref().expect("a sub-agent card");
+        assert_eq!(tool.state, ToolState::Running);
+        let steps: Vec<(&str, ToolState)> = agent.steps.iter().map(|(title, state)| (title.as_ref(), *state)).collect();
+        assert_eq!(steps, [("搜索内容 login", ToolState::Done), ("读取 src/auth.rs", ToolState::Running)]);
+        assert_eq!((agent.calls, agent.earlier), (14, 12));
+        assert_eq!(tool.output.as_deref(), Some("Looking at the auth module"));
+        // Just started: no steps yet, still a sub-agent card.
+        let mut starting = view(json!([user.clone(), assistant("a1", json!([task.clone()]), "toolUse")]), Value::Null, "running");
+        starting.tools.insert("t1".into(), RunningTool::default());
+        assert_eq!(tools(&build_rows(&starting, Locale::Zh)[0])[0].subagent.as_deref(), Some(&SubagentView::default()));
+        // Its result: the report and the limit it hit. Chats from before 4.13 kept only each step's tool.
+        let report = "Found it in `src/auth.rs`.\n\n[the sub-agent reached its step limit; its report may be incomplete]";
+        let done = json!([user, assistant("a1", json!([task]), "toolUse"),
+            result("r1", "t1", "task", json!([{"type": "text", "text": report}]), false, json!({"steps": 24, "activity": ["grep", "read"], "stopped": "steps"}))]);
+        let rows = build_rows(&view(done, Value::Null, "idle"), Locale::Zh);
+        let tool = tools(&rows[0])[0];
+        let agent = tool.subagent.as_deref().expect("a sub-agent card");
+        assert_eq!(agent.steps.iter().map(|(title, _)| title.as_ref()).collect::<Vec<_>>(), ["grep", "read"]);
+        assert_eq!((agent.calls, agent.earlier, agent.stopped.as_deref()), (2, 0, Some("steps")));
+        assert_eq!(report_text(tool.output.as_deref().unwrap(), true), "Found it in `src/auth.rs`.");
+        assert_eq!(report_text("(the sub-agent reported nothing)", false), "");
+        // What it is writing: the last lines, inside the code block they belong to.
+        let writing = "## Found\n\n```rust\nfn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\nfn e() {}\nfn f() {}";
+        assert_eq!(live_tail(writing), "```rust\nfn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\nfn e() {}\nfn f() {}");
+        assert_eq!(live_tail("one\n\ntwo"), "one\n\ntwo");
+        assert_eq!(live_tail("```\nx\n```\n1\n2\n3\n4\n5\n6"), "1\n2\n3\n4\n5\n6");
+        // Other tools have no sub-agent card.
+        assert!(tools(&build_rows(&view(json!([assistant("a2", json!([call("c1", "read", json!({"file_path": "a.txt"}))]), "toolUse")]), Value::Null, "idle"), Locale::Zh)[0])[0].subagent.is_none());
+    }
+
+    #[test]
     fn a_running_turn_waits_while_nothing_streams_or_runs() {
         let user = json!({"id": "u1", "kind": "user", "ts": 1, "text": "你好"});
         // Just sent: the agent has said nothing yet.
@@ -1336,7 +1565,10 @@ mod tests {
         assert!(build_rows(&view(between, Value::Null, "running"), Locale::Zh)[0].waiting.is_some());
         // Idle, or compacting.
         assert!(build_rows(&view(json!([user.clone()]), Value::Null, "idle"), Locale::Zh)[0].waiting.is_none());
-        assert!(build_rows(&view(json!([user]), Value::Null, "compacting"), Locale::Zh)[0].waiting.is_none());
+        // Compacting says so instead.
+        let compacting = &build_rows(&view(json!([user.clone()]), Value::Null, "compacting"), Locale::Zh)[0];
+        assert!(compacting.waiting.is_none() && compacting.compacting);
+        assert!(!build_rows(&view(json!([user]), Value::Null, "running"), Locale::Zh)[0].compacting);
     }
 
     #[test]

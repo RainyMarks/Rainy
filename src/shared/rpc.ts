@@ -553,7 +553,7 @@ export interface HostEvents {
   /** The chat's list of changed files may have changed: a write or edit finished, or changes were kept or undone. */
   'session.changes': { sessionId: SessionId }
   /** Partial output of a running tool. */
-  'session.tool': { sessionId: SessionId; toolCallId: string; toolName: string; phase: 'start' | 'update' | 'end'; args?: unknown; partial?: string | undefined }
+  'session.tool': { sessionId: SessionId; toolCallId: string; toolName: string; phase: 'start' | 'update' | 'end'; args?: unknown; partial?: string | undefined; details?: unknown }
   /** Run status, queue or model changed. */
   'session.state': { sessionId: SessionId; status: SessionRunStatus }
   /** A chat was created or its summary changed. */

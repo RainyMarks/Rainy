@@ -14,6 +14,7 @@ pub mod instructions;
 pub mod permissions;
 pub mod profile;
 pub mod prompt;
+pub mod prompts;
 pub mod skills;
 pub mod snapshots;
 pub mod mcp;

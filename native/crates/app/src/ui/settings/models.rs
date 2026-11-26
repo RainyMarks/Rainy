@@ -1,8 +1,8 @@
-//! Models: saved models and the default, the model form with presets, discovery and the probe, and the global prompt
-//! (`ModelsSection.tsx`, `GlobalPromptSettings.tsx`).
+//! Models: saved models and the default, the model form with presets, discovery and the probe (`ModelsSection.tsx`).
+//! The global prompt has moved to the prompts page.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
@@ -42,7 +42,6 @@ pub struct ModelsPage {
     context: Entity<InputState>,
     output: Entity<InputState>,
     api_key: Entity<InputState>,
-    prompt: Entity<TextareaState>,
     local: bool,
     api: &'static str,
     thinking: String,
@@ -71,8 +70,6 @@ impl ModelsPage {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = |window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx));
         let api_key = cx.new(|cx| InputState::new(window, cx).masked(true));
-        let placeholder = tr(cx, "settings.settingsGlobalPromptPlaceholder");
-        let prompt = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).placeholder(placeholder));
         let subscriptions = vec![cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
             if matches!(event, StoreEvent::PrefsChanged) {
                 this.load_saved(window, cx);
@@ -90,7 +87,6 @@ impl ModelsPage {
             context: input(window, cx),
             output: input(window, cx),
             api_key,
-            prompt,
             store,
             local: true,
             api: "openai-completions",
@@ -116,17 +112,13 @@ impl ModelsPage {
         self.store.read(cx).models.clone()
     }
 
-    /// The first time models are known, the form shows the default model, and the prompt the saved prompt.
+    /// The first time models are known, the form shows the default model.
     fn load_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.loaded {
             return;
         }
         let Some(status) = self.status(cx) else { return };
         self.loaded = true;
-        if let Some(prompt) = &status.global_prompt {
-            let text = prompt.text.clone();
-            self.prompt.update(cx, |state, cx| state.set_value(text, window, cx));
-        }
         let selected = status.selected.as_ref().and_then(|selected| {
             status.models.iter().find(|model| model.provider == selected.provider && model.model == selected.model).cloned()
         });
@@ -687,36 +679,6 @@ impl ModelsPage {
         }
         form.into_any_element()
     }
-
-    fn render_prompt(&self, status: Option<&ModelsStatus>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let max = status.and_then(|status| status.global_prompt.as_ref().map(|prompt| prompt.max_chars)).unwrap_or(4000);
-        let count = self.prompt.read(cx).value().chars().count();
-        v_flex()
-            .gap_2()
-            .p_4()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.group_box)
-            .child(div().text_sm().font_semibold().child(tr(cx, "settings.settingsGlobalPrompt")))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.settingsGlobalPromptNote")))
-            .child(Textarea::new(&self.prompt))
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child(div().text_xs().text_color(if count > max { theme.danger } else { theme.muted_foreground }).child(trf(cx, "settings.settingsGlobalPromptCount", &[("count", &count), ("max", &max)])))
-                    .child(Button::new("prompt-save").small().outline().label(tr(cx, "chat.save")).disabled(self.busy || count > max).on_click(cx.listener(|this, _, window, cx| {
-                        let text = this.prompt.read(cx).value().to_string();
-                        this.request("prompt.global", json!({ "text": text }), |this, status, window, cx| {
-                            this.accept_status(status, cx);
-                            this.notify_success("settings.settingsSaved", window, cx);
-                        }, window, cx);
-                    }))),
-            )
-            .into_any_element()
-    }
 }
 
 impl Render for ModelsPage {
@@ -725,7 +687,6 @@ impl Render for ModelsPage {
         let status = self.status(cx);
         let list = status.as_ref().map(|status| self.render_list(status, cx));
         let form = self.render_form(status.as_ref(), cx);
-        let prompt = self.render_prompt(status.as_ref(), cx);
         let prefs = self.store.read(cx).prefs.clone();
         let editor_ai = super::models_extra::editor_ai(&prefs, status.as_ref(), cx);
         let web_search = super::models_extra::web_search(&prefs, status.as_ref(), cx);
@@ -766,7 +727,25 @@ impl Render for ModelsPage {
             )
             .child(editor_ai)
             .child(web_search)
-            .child(prompt)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .p_4()
+                    .items_center()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.group_box)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(div().text_sm().font_semibold().child(tr(cx, "settings.settingsGlobalPrompt")))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.promptsMoved"))),
+                    )
+                    .child(Button::new("model-prompts").outline().small().label(tr(cx, "settings.promptsOpen")).on_click(cx.listener(|_, _, _, cx| cx.emit(super::ShowSection(super::Section::Prompts))))),
+            )
             .child(self.proxy.clone())
     }
 }

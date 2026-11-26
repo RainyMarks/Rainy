@@ -74,7 +74,7 @@ fn files_in(directory: &Path, root: &Path) -> Result<Vec<File>, String> {
 }
 
 /// The directories from the root down to `target`; none when `target` is outside the root.
-fn directories_between(root: &Path, target: &Path) -> Vec<PathBuf> {
+pub(crate) fn directories_between(root: &Path, target: &Path) -> Vec<PathBuf> {
     let Some(rest) = crate::paths::relative_to(root, target) else { return Vec::new() };
     let mut directories = vec![root.to_path_buf()];
     let mut current = root.to_path_buf();

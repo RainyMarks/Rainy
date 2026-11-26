@@ -7,6 +7,7 @@ mod general;
 mod memory;
 mod models;
 mod models_extra;
+mod prompts;
 mod runtime;
 mod security;
 mod shortcuts;
@@ -28,6 +29,7 @@ pub enum Section {
     General,
     Appearance,
     Models,
+    Prompts,
     Tools,
     Extensions,
     Runtime,
@@ -36,10 +38,11 @@ pub enum Section {
     Shortcuts,
 }
 
-const SECTIONS: [(Section, &str); 8] = [
+const SECTIONS: [(Section, &str); 9] = [
     (Section::General, "settings.navGeneral"),
     (Section::Appearance, "settings.navAppearance"),
     (Section::Models, "settings.navModels"),
+    (Section::Prompts, "settings.navPrompts"),
     (Section::Tools, "settings.navTools"),
     (Section::Extensions, "settings.navExtensions"),
     (Section::Runtime, "settings.navRuntime"),
@@ -57,6 +60,7 @@ pub struct SettingsView {
     store: Entity<Store>,
     section: Section,
     models: Entity<models::ModelsPage>,
+    prompts: Option<Entity<prompts::PromptsPage>>,
     extensions: Option<Entity<extensions::ExtensionsPage>>,
     tools: Option<Entity<tools::ToolsPage>>,
     runtime: Option<Entity<runtime::RuntimePage>>,
@@ -80,7 +84,7 @@ impl SettingsView {
                 cx.notify();
             }),
         ];
-        Self { store, section, models, tools: None, extensions: None, runtime: None, memory: None, security: None, focus, _subscriptions: subscriptions }
+        Self { store, section, models, prompts: None, tools: None, extensions: None, runtime: None, memory: None, security: None, focus, _subscriptions: subscriptions }
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -154,6 +158,20 @@ impl Render for SettingsView {
             Section::General => general::render(&self.store, window, cx).into_any_element(),
             Section::Appearance => appearance::render(&self.store, window, cx).into_any_element(),
             Section::Models => self.models.clone().into_any_element(),
+            Section::Prompts => {
+                let page = match &self.prompts {
+                    Some(page) => page.clone(),
+                    None => {
+                        let store = self.store.clone();
+                        let page = cx.new(|cx| prompts::PromptsPage::new(store, window, cx));
+                        // Opening a file in the editor closes the settings.
+                        self._subscriptions.push(cx.subscribe(&page, |_, _, _: &CloseSettings, cx| cx.emit(CloseSettings)));
+                        self.prompts = Some(page.clone());
+                        page
+                    }
+                };
+                page.into_any_element()
+            }
             // Pages that read the Host are made when first shown and kept while the window is open.
             Section::Tools => {
                 let store = self.store.clone();
@@ -217,7 +235,8 @@ impl Render for SettingsView {
                     .child(nav)
                     .child(
                         div()
-                            .id("settings-content")
+                            // Each section keeps its own scroll position; another starts at its top.
+                            .id(ElementId::Name(format!("settings-content-{:?}", self.section).into()))
                             .flex_1()
                             .min_w_0()
                             .h_full()

@@ -16,5 +16,8 @@ Changes from the published package:
   - an item's `additionalTextEdits` (the import line of an automatic import from ty, for one) are applied with it as
     one undo step, and the cursor ends after the completion; they were dropped.
 
+- `src/text/node.rs`, `CodeBlock::render`: a code block with actions (`TextView::code_block_actions`) gets the same
+  room above its first line as one with a language label; the actions covered the end of the first line.
+
 Each change is marked `Rainy:` where it is made. To move to another gpui-base, copy the new package here the same way
 and apply the changes again, or drop them once the package has its own.

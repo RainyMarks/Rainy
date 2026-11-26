@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rainy_protocol::chat::{AssistantMessage, UsageSummary};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::compaction::usage_of;
@@ -27,6 +27,21 @@ pub const MAX_TIME: Duration = Duration::from_secs(5 * 60);
 pub const MAX_TOKENS: u64 = 1_500_000;
 /// Tool calls kept in the progress list shown on the card.
 const ACTIVITY_KEPT: usize = 12;
+/// Characters of one argument value kept for the card.
+const ARGUMENT_CHARS: usize = 300;
+
+/// The arguments of a sub-agent's tool call as the card shows them: text (cut short), numbers and switches.
+fn shown_arguments(args: &Map<String, Value>) -> Value {
+    let kept: Map<String, Value> = args
+        .iter()
+        .filter_map(|(key, value)| match value {
+            Value::String(text) => Some((key.clone(), Value::String(text.chars().take(ARGUMENT_CHARS).collect()))),
+            Value::Number(_) | Value::Bool(_) => Some((key.clone(), value.clone())),
+            _ => None,
+        })
+        .collect();
+    Value::Object(kept)
+}
 
 /// The sub-agent's system prompt; it never sees the conversation, so it is told to answer in full.
 pub fn system_prompt(cwd: &str, windows: bool) -> String {
@@ -62,7 +77,9 @@ pub type Guard = Arc<dyn Fn(&str, &Value) -> Option<String> + Send + Sync>;
 
 #[derive(Default)]
 struct Track {
-    activity: Vec<String>,
+    /// Its latest calls: `{ "id", "name", "args", "state" }`.
+    activity: Vec<Value>,
+    calls: usize,
     steps: usize,
     tokens: u64,
     text: String,
@@ -93,13 +110,21 @@ impl Hooks for SubHooks {
         {
             let mut track = self.track.lock().unwrap();
             match event {
-                Event::ToolStarted { name, .. } => {
-                    track.activity.push(name.to_owned());
+                Event::ToolStarted { id, name, args } => {
+                    track.activity.push(json!({ "id": id, "name": name, "args": shown_arguments(args), "state": "running" }));
+                    track.calls += 1;
                     if track.activity.len() > ACTIVITY_KEPT {
                         track.activity.remove(0);
                     }
                     let text = if track.text.is_empty() { track.partial.clone() } else { track.text.clone() };
-                    emit_progress = Some(Progress { activity: track.activity.clone(), steps: track.steps, text });
+                    emit_progress = Some(Progress { activity: track.activity.clone(), calls: track.calls, steps: track.steps, text });
+                }
+                Event::Result(result) => {
+                    if let Some(call) = track.activity.iter_mut().find(|call| call["id"] == result.tool_call_id.as_str()) {
+                        call["state"] = json!(if result.is_error { "failed" } else { "done" });
+                        let text = if track.text.is_empty() { track.partial.clone() } else { track.text.clone() };
+                        emit_progress = Some(Progress { activity: track.activity.clone(), calls: track.calls, steps: track.steps, text });
+                    }
                 }
                 Event::Reply(message) => {
                     track.steps += 1;
@@ -117,7 +142,7 @@ impl Hooks for SubHooks {
                         track.stopped = Some("budget");
                         self.limit.cancel();
                     }
-                    emit_progress = Some(Progress { activity: track.activity.clone(), steps: track.steps, text: track.text.clone() });
+                    emit_progress = Some(Progress { activity: track.activity.clone(), calls: track.calls, steps: track.steps, text: track.text.clone() });
                 }
                 _ => {}
             }
@@ -134,7 +159,7 @@ impl Hooks for SubHooks {
         let progress = {
             let mut track = self.track.lock().unwrap();
             track.partial = reply_text(reply);
-            Progress { activity: track.activity.clone(), steps: track.steps, text: track.partial.clone() }
+            Progress { activity: track.activity.clone(), calls: track.calls, steps: track.steps, text: track.partial.clone() }
         };
         (self.progress)(progress);
     }
@@ -181,7 +206,13 @@ pub async fn run_subagent(llm: &Llm, input: Input, cancel: CancellationToken) ->
     if timed_out.load(Ordering::SeqCst) && track.stopped.is_none() {
         track.stopped = Some("time");
     }
-    Ok(Report { text: track.text, steps: track.steps, activity: track.activity, stopped: track.stopped })
+    // A call cut short by a limit or the stop never got its result.
+    for call in &mut track.activity {
+        if call["state"] == "running" {
+            call["state"] = json!("failed");
+        }
+    }
+    Ok(Report { text: track.text, steps: track.steps, activity: track.activity, calls: track.calls, stopped: track.stopped })
 }
 
 #[cfg(test)]
@@ -202,6 +233,36 @@ mod tests {
         assert!(hooks.before_tool("2", "read", &serde_json::json!({ "file_path": "src/main.rs" }), &cancel).await.is_none());
         hooks.limit.cancel();
         assert!(hooks.before_tool("3", "read", &serde_json::json!({ "file_path": "src/main.rs" }), &cancel).await.unwrap().terminate);
+    }
+
+    #[tokio::test]
+    async fn progress_names_each_step_and_how_it_went() {
+        let seen: Arc<Mutex<Vec<Progress>>> = Arc::default();
+        let progress: Arc<dyn Fn(Progress) + Send + Sync> = {
+            let seen = seen.clone();
+            Arc::new(move |progress| seen.lock().unwrap().push(progress))
+        };
+        let hooks = SubHooks { track: Mutex::default(), progress, usage: Arc::new(|_| {}), limit: CancellationToken::new(), guard: Arc::new(|_: &str, _: &Value| None) };
+        let last = || seen.lock().unwrap().last().cloned().expect("progress");
+        let args = json!({ "pattern": "x".repeat(ARGUMENT_CHARS + 50), "path": "src", "head_limit": 5, "globs": ["*.rs"] });
+        hooks.event(Event::ToolStarted { id: "1", name: "grep", args: args.as_object().unwrap() }).await;
+        let step = &last().activity[0];
+        assert_eq!((step["name"].as_str(), step["state"].as_str()), (Some("grep"), Some("running")));
+        // Text is cut short, numbers kept, lists left out.
+        assert_eq!(step["args"]["pattern"].as_str().unwrap().chars().count(), ARGUMENT_CHARS);
+        assert_eq!((step["args"]["path"].as_str(), step["args"]["head_limit"].as_i64()), (Some("src"), Some(5)));
+        assert!(step["args"].get("globs").is_none());
+        let failed = llm::ToolResult { tool_call_id: "1".into(), tool_name: "grep".into(), content: Vec::new(), is_error: true, details: None, timestamp: 0. };
+        hooks.event(Event::Result(&failed)).await;
+        assert_eq!(last().activity[0]["state"], "failed");
+        // The card keeps the latest calls and counts them all.
+        for n in 2..=ACTIVITY_KEPT + 3 {
+            let id = n.to_string();
+            hooks.event(Event::ToolStarted { id: &id, name: "read", args: json!({ "file_path": "a.rs" }).as_object().unwrap() }).await;
+        }
+        let progress = last();
+        assert_eq!((progress.activity.len(), progress.calls), (ACTIVITY_KEPT, ACTIVITY_KEPT + 3));
+        assert_eq!(progress.activity[0]["id"], "4");
     }
 
     #[test]

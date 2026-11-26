@@ -17,6 +17,8 @@ use crate::store::write_json;
 
 /// Longest global prompt, in characters.
 pub const GLOBAL_PROMPT_MAX_CHARS: usize = 4000;
+/// Characters of the built-in prompt the user writes for one group of models.
+pub const BUILTIN_PROMPT_MAX_CHARS: usize = 20000;
 /// Placeholder stored for local models that accept any key.
 pub const LOCAL_NO_KEY: &str = "rainy-local-no-key";
 /// Remembered approvals per project are capped, so a runaway model cannot grow the file without bound.
@@ -202,6 +204,9 @@ pub struct SettingsData {
     pub models: Vec<ModelSetup>,
     pub selected: Option<ModelSelection>,
     pub global_prompt: String,
+    /// The built-in prompt the user wrote for a group of models (`claude`, `gpt`, `gemini`), used instead of Rainy's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub builtin_prompts: BTreeMap<String, String>,
     pub mcp_servers: Vec<McpServerConfig>,
     /// Interface preferences as stored; values this version does not accept are dropped when read.
     pub ui: Map<String, Value>,
@@ -219,7 +224,20 @@ pub struct SettingsData {
 
 impl Default for SettingsData {
     fn default() -> Self {
-        Self { version: 1, models: Vec::new(), selected: None, global_prompt: String::new(), mcp_servers: Vec::new(), ui: Map::new(), workbench: None, security: None, proxy: None, hooks: Vec::new(), external_agents: Vec::new() }
+        Self {
+            version: 1,
+            models: Vec::new(),
+            selected: None,
+            global_prompt: String::new(),
+            builtin_prompts: BTreeMap::new(),
+            mcp_servers: Vec::new(),
+            ui: Map::new(),
+            workbench: None,
+            security: None,
+            proxy: None,
+            hooks: Vec::new(),
+            external_agents: Vec::new(),
+        }
     }
 }
 
@@ -348,6 +366,10 @@ pub fn check_server(server: &McpServerConfig) -> HostResult<()> {
     Ok(())
 }
 
+fn valid_builtin(group: &str, text: &str) -> bool {
+    crate::agent::profile::PROMPT_GROUPS.contains(&group) && !text.trim().is_empty() && text.chars().count() <= BUILTIN_PROMPT_MAX_CHARS
+}
+
 fn check_data(data: &SettingsData) -> HostResult<()> {
     for model in &data.models {
         check_model(model)?;
@@ -357,6 +379,9 @@ fn check_data(data: &SettingsData) -> HostResult<()> {
     }
     if data.global_prompt.chars().count() > GLOBAL_PROMPT_MAX_CHARS {
         return Err(HostError::invalid(l("全局提示词太长。", "The global prompt is too long.")));
+    }
+    if data.builtin_prompts.iter().any(|(group, text)| !valid_builtin(group, text)) {
+        return Err(HostError::invalid(l("内置提示词无效或太长。", "A built-in prompt is invalid or too long.")));
     }
     if let Some(security) = &data.security {
         if let Some(rules) = &security.rules {
@@ -417,6 +442,11 @@ fn salvage(raw: Option<Value>) -> SettingsData {
             .ok()
             .filter(|prompt| prompt.chars().count() <= GLOBAL_PROMPT_MAX_CHARS)
             .unwrap_or_default(),
+        builtin_prompts: serde_json::from_value::<BTreeMap<String, String>>(field("builtinPrompts"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(group, text)| valid_builtin(group, text))
+            .collect(),
         mcp_servers: each("mcpServers").into_iter().filter_map(|item| serde_json::from_value(item).ok()).filter(|server| check_server(server).is_ok()).collect(),
         ui: serde_json::from_value(field("ui")).unwrap_or_default(),
         workbench: serde_json::from_value(field("workbench")).unwrap_or_default(),

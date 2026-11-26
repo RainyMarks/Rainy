@@ -5,6 +5,7 @@ pub mod agent;
 pub mod attention;
 pub mod changes;
 pub mod composer;
+pub mod copy;
 pub mod chat;
 pub mod history;
 pub mod markdown;

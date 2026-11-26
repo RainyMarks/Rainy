@@ -18,6 +18,8 @@ pub struct RunningTool {
     pub tool_name: String,
     pub args: Option<Value>,
     pub partial: Option<String>,
+    /// What it reports besides its output: a sub-agent's steps.
+    pub details: Option<Value>,
 }
 
 /// Index range of one turn inside `SessionSnapshot::entries`, maintained incrementally on append.
@@ -146,6 +148,9 @@ impl ChatView {
             }
             if event.partial.is_some() {
                 tool.partial = event.partial;
+            }
+            if event.details.is_some() {
+                tool.details = event.details;
             }
         }
         self.touched()

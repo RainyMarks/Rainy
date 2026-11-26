@@ -17,8 +17,11 @@ pub const MAX_PARALLEL_TASKS: usize = 4;
 /// Progress of a running sub-agent, for the chat's tool card.
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
-    /// Tool calls it made, newest last.
-    pub activity: Vec<String>,
+    /// Its latest tool calls, newest last: `{ "id", "name", "args" (short values only), "state": "running" | "done" |
+    /// "failed" }`, so the card can say what each one read or searched for.
+    pub activity: Vec<Value>,
+    /// Tool calls made so far, including those no longer in `activity`.
+    pub calls: usize,
     pub steps: usize,
     /// Its answer so far.
     pub text: String,
@@ -28,7 +31,8 @@ pub struct Progress {
 pub struct Report {
     pub text: String,
     pub steps: usize,
-    pub activity: Vec<String>,
+    pub activity: Vec<Value>,
+    pub calls: usize,
     /// `steps`, `time` or `budget` when it stopped at a limit.
     pub stopped: Option<&'static str>,
 }
@@ -101,7 +105,10 @@ impl Tool for Task {
             let model = params.model.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
             let description = params.description.clone();
             let progress: Arc<dyn Fn(Progress) + Send + Sync> = Arc::new(move |progress: Progress| {
-                updates(ToolOutput::text(progress.text.clone(), json!({ "description": description, "steps": progress.steps, "activity": progress.activity })));
+                updates(ToolOutput::text(
+                    progress.text.clone(),
+                    json!({ "description": description, "steps": progress.steps, "calls": progress.calls, "activity": progress.activity }),
+                ));
             });
             let report = self.runner.run(params.prompt, params.description.clone(), model.clone(), progress, cancel).await?;
             let note = match report.stopped {
@@ -111,7 +118,7 @@ impl Tool for Task {
                 None => "",
             };
             let text = if report.text.trim().is_empty() { "(the sub-agent reported nothing)".to_owned() } else { report.text };
-            let mut details = json!({ "description": params.description, "steps": report.steps, "activity": report.activity });
+            let mut details = json!({ "description": params.description, "steps": report.steps, "calls": report.calls, "activity": report.activity });
             if let Some(model) = model {
                 details["model"] = json!(model);
             }

@@ -174,6 +174,8 @@ impl ChatPane {
         let pane = cx.weak_entity();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| match event {
+                // Shift+Enter: the text area has put in a line break, and still reports the key; it sends nothing.
+                InputEvent::PressEnter { shift: true, .. } => {}
                 InputEvent::PressEnter { secondary, .. } => {
                     // Enter takes the highlighted suggestion while the list is open.
                     if !this.suggestions.is_empty() && this.trigger.is_some() {
@@ -788,7 +790,7 @@ impl ChatPane {
         match name {
             "compact" => {
                 if let Some(session) = self.session_id(cx) {
-                    self.call("chat.compact", json!({ "sessionId": session }), window, cx);
+                    report_outcome(self.store.read(cx).call("chat.compact", json!({ "sessionId": session })), window, cx);
                 }
             }
             _ => self.store.update(cx, |store, cx| store.select(None, cx)),
@@ -1780,6 +1782,24 @@ fn report_failure(request: impl Future<Output = Result<Value, RpcError>> + 'stat
             if let Err(error) = request.await {
                 let _ = cx.update(|window, cx| window.push_notification(crate::ui::error_notification(cx, &error), cx));
             }
+        })
+        .detach();
+}
+
+/// Like [`report_failure`], and also say what a request that went through answers (`message`), such as what a
+/// compaction did or that there was nothing to compact.
+fn report_outcome(request: impl Future<Output = Result<Value, RpcError>> + 'static, window: &mut Window, cx: &mut App) {
+    window
+        .spawn(cx, async move |cx| {
+            let result = request.await;
+            let _ = cx.update(|window, cx| match result {
+                Ok(value) => {
+                    if let Some(message) = value["message"].as_str().filter(|message| !message.is_empty()) {
+                        window.push_notification(message.to_owned(), cx);
+                    }
+                }
+                Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
+            });
         })
         .detach();
 }

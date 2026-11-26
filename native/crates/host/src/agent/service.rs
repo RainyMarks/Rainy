@@ -21,6 +21,7 @@ use super::llm::{Level, Llm, reply_text};
 use super::mcp::McpManager;
 use super::memory::{self, ProjectMemory};
 use super::models::{Completion, Models, deepseek_flash};
+use super::prompts;
 use super::session::{Services, Session, summary_of};
 use super::skills;
 use super::snapshots::Snapshots;
@@ -355,6 +356,23 @@ impl Agent {
         self.on("models.probe", |agent, input: Value| async move { agent.services.models.probe(&input).await });
         self.on("models.connectStrata", |agent, input: Value| async move { agent.services.models.connect_strata(&input).await });
         self.on("prompt.global", |agent, params: TextParams| async move { agent.services.models.set_global_prompt(&params.text) });
+        self.on("prompts.status", |agent, params: prompts::StatusParams| async move {
+            let cwd = agent.project_folder(params.workspace_id.as_deref());
+            Ok(json!({
+                "builtin": prompts::builtin_status(&agent.services.settings),
+                "instructions": prompts::instructions_status(&agent.services.env.home, cwd.as_deref()),
+            }))
+        });
+        self.on("prompts.builtin", |agent, params: prompts::BuiltinParams| async move { prompts::set_builtin(&agent.services.settings, &params) });
+        self.on("prompts.saveInstructions", |agent, params: prompts::SaveParams| async move {
+            let cwd = agent.project_folder(params.workspace_id.as_deref());
+            prompts::save_instructions(&agent.services.env.home, cwd.as_deref(), &params)
+        });
+    }
+
+    /// The primary folder of a project, where its chats start.
+    fn project_folder(&self, workspace_id: Option<&str>) -> Option<PathBuf> {
+        workspace_id.and_then(|id| self.services.projects.get(id)).map(|project| PathBuf::from(project.path))
     }
 
     fn register_sessions(self: &Arc<Self>) {

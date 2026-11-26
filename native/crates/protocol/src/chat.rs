@@ -774,6 +774,9 @@ pub struct SessionToolEvent {
     pub args: Option<Value>,
     #[serde(default)]
     pub partial: Option<String>,
+    /// What the tool reports besides its output so far: a sub-agent's steps (`task`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 /// A file the agent changed in a chat that the user has neither kept nor undone (`chat.changes`).
