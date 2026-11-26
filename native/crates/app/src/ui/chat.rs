@@ -135,6 +135,12 @@ pub struct ChatPane {
     breakdown_loading: Option<(String, u64)>,
     /// Drawn as the middle of Agent mode rather than as the IDE's side pane.
     wide: bool,
+    /// The optical look's page clock and usage overview, made the first time a new chat shows them.
+    backdrop: Option<Entity<crate::ui::optics::backdrop::Backdrop>>,
+    usage: Option<Entity<crate::ui::optics::usage::UsageCard>>,
+    /// Whether the last render drew the optical page: the field wakes when the page comes back, not when the page
+    /// that was showing is repainted for an unrelated update.
+    optics_shown: bool,
     _subscriptions: Vec<Subscription>,
     chat_subscription: Option<Subscription>,
 }
@@ -263,6 +269,9 @@ impl ChatPane {
             breakdown: None,
             breakdown_loading: None,
             wide: false,
+            backdrop: None,
+            usage: None,
+            optics_shown: false,
             _subscriptions: subscriptions,
             chat_subscription: None,
         };
@@ -1445,7 +1454,12 @@ impl ChatPane {
     }
 
     /// Agent mode's new chat: a greeting and the project above the composer, in the middle of the window.
-    fn render_greeting(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_greeting(&mut self, locale: Locale, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if crate::ui::optics::enabled(cx) {
+            return self.render_optics_greeting(locale, window, cx);
+        }
+        // The look was turned off: its page clock and overview go (the clock would still wake with the window).
+        (self.optics_shown, self.backdrop, self.usage) = (false, None, None);
         let ide = crate::store::ide::Ide::global(cx).read(cx);
         let (project, path): (SharedString, SharedString) = match &ide.workspace {
             Some(workspace) => (workspace.title.clone().into(), workspace.path.clone().into()),
@@ -1457,7 +1471,7 @@ impl ChatPane {
         );
         let suggestions = (!self.suggestions.is_empty() && self.trigger.is_some()).then(|| self.render_suggestions(cx));
         let composer = self.render_composer_wide(locale, cx);
-        let footer = self.render_composer_footer(locale, cx);
+        let footer = self.render_composer_footer(locale, false, cx);
         v_flex()
             .id("greeting")
             .flex_1()
@@ -1484,6 +1498,105 @@ impl ChatPane {
                     .child(composer)
                     .child(footer),
             )
+            .into_any_element()
+    }
+
+    /// The optical look's new chat: the field of characters behind the page, the greeting with the user's name and
+    /// the project, the usage overview, the pet on the composer and the glow behind it. The overview gives way
+    /// in a short window, so the composer stays in view.
+    fn render_optics_greeting(&mut self, locale: Locale, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        use crate::ui::optics::{self, backdrop::Backdrop, look::Look, pet, usage::UsageCard};
+        let backdrop = self.backdrop.get_or_insert_with(|| cx.new(|cx| Backdrop::new(window, cx))).clone();
+        // The page came (back): a new chat after a conversation, Agent mode after the IDE, the look just turned on.
+        if !std::mem::replace(&mut self.optics_shown, true) {
+            backdrop.update(cx, |backdrop, cx| backdrop.wake(window, cx));
+        }
+        let store = self.store.clone();
+        let usage = self.usage.get_or_insert_with(|| cx.new(|_| UsageCard::new(store))).clone();
+        let ide = crate::store::ide::Ide::global(cx).read(cx);
+        let (project, path): (SharedString, SharedString) = match &ide.workspace {
+            Some(workspace) => (workspace.title.clone().into(), workspace.path.clone().into()),
+            None => (tr(cx, "agent.chooseProject"), tr(cx, "native.projects")),
+        };
+        let project = crate::ui::agent::with_project_menu(
+            Button::new("greeting-project").ghost().small().icon(Icon::new(IconName::FolderOpen)).label(project).dropdown_caret(true).tooltip(path),
+            cx,
+        );
+        let title: SharedString = match optics::user_name() {
+            Some(name) => i18n::format(locale, "optics.greeting", &[("name", &name)]).into(),
+            None => i18n::text(locale, "optics.greetingPlain").into(),
+        };
+        let suggestions = (!self.suggestions.is_empty() && self.trigger.is_some()).then(|| self.render_suggestions(cx));
+        let composer = self.render_composer_wide(locale, cx);
+        let look = Look::of(cx.theme());
+        let card = (window.viewport_size().height >= px(OPTICS_CARD_HEIGHT)).then(|| div().px_3().pb_2().child(usage));
+        // The pet stands on the composer's top edge, unless the suggestion list is there; either keeps the greeting
+        // clear of the glow (`optics::greeting_clearance`).
+        let companions = suggestions.is_none().then(|| h_flex().h(px(pet::row_height())).px_3().pr_8().justify_end().items_end().child(pet::render(&backdrop, window, cx)));
+        // Auto margins centre the column while it fits and let it scroll from its top when it does not. The column is
+        // laid out from the bottom up, so the glow behind the composer is painted first and the pet, a suggestion
+        // list, the overview and the greeting are painted over its light, not under it.
+        let page = v_flex()
+            .id("greeting")
+            .size_full()
+            .overflow_y_scroll()
+            .items_center()
+            .px_4()
+            .py_6()
+            .child(
+                v_flex()
+                    .flex_col_reverse()
+                    .my_auto()
+                    .flex_shrink_0()
+                    .w_full()
+                    .max_w(px(crate::ui::agent::COLUMN))
+                    .px_1()
+                    .child(div().relative().child(optics::glow(&look)).child(composer))
+                    .children(suggestions.map(|list| div().min_h(px(pet::row_height())).flex().flex_col().justify_end().child(list)))
+                    .children(companions)
+                    .children(card)
+                    .child(
+                        h_flex()
+                            .px_3()
+                            .pb(px(optics::GREETING_GAP))
+                            .gap_3()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                h_flex()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(img("brand/rainy-mark.svg").flex_shrink_0().size(px(26.)))
+                                    .child(div().min_w_0().text_xl().font_semibold().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title)),
+                            )
+                            .child(project),
+                    ),
+            );
+        div()
+            .id("optics-page")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if let Some(backdrop) = this.backdrop.clone() {
+                    backdrop.update(cx, |backdrop, cx| backdrop.pointer_moved(event.position, window, cx));
+                }
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && let Some(backdrop) = this.backdrop.clone() {
+                    backdrop.update(cx, |backdrop, _| backdrop.pointer_left());
+                }
+            }))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                if let Some(backdrop) = this.backdrop.clone() {
+                    backdrop.update(cx, |backdrop, cx| backdrop.ripple(event.position, window, cx));
+                }
+            }))
+            .child(div().absolute().inset_0().child(backdrop))
+            .child(page)
+            .into_any_element()
     }
 
     /// Agent mode's composer, one slim bar as Claude's: attach on the left, the text in the middle, send or stop on the
@@ -1494,19 +1607,16 @@ impl ChatPane {
         let creating = self.creating_here();
         let session = self.session_id(cx);
         let attachments = (!self.attachments.is_empty()).then(|| div().px_1().pt_1().child(self.render_attachments(cx)));
+        // The optical look puts the pickers in the glass, under the text.
+        let inside = crate::ui::optics::enabled(cx).then(|| self.render_composer_footer(locale, true, cx));
         let theme = cx.theme();
-        v_flex()
-            .id("composer")
-            .flex_shrink_0()
-            .mx_3()
-            .px_2()
-            .py_2()
-            .gap_1()
-            .rounded(theme.radius_lg * 1.5)
-            .border_1()
-            .border_color(theme.input)
-            .bg(theme.popover)
-            .shadow_sm()
+        let composer = v_flex().id("composer").flex_shrink_0().mx_3().px_2().py_2().gap_1();
+        let composer = if inside.is_some() {
+            crate::ui::optics::glaze(composer, &crate::ui::optics::look::Look::of(theme), theme.radius_lg * 1.5)
+        } else {
+            composer.rounded(theme.radius_lg * 1.5).border_1().border_color(theme.input).bg(theme.popover).shadow_sm()
+        };
+        composer
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.border_color(cx.theme().ring))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.attach_paths(paths.paths().to_vec(), window, cx)))
             .children(attachments)
@@ -1545,6 +1655,7 @@ impl ChatPane {
                             .on_click(cx.listener(|this, _, window, cx| this.send(false, window, cx)))
                     })),
             )
+            .children(inside)
     }
 
     /// Under Agent mode's composer, on the right as in Claude: the model and its reasoning, the permission mode and how
@@ -1575,7 +1686,7 @@ impl ChatPane {
     }
 
     /// full the context is. The model gives way in a narrow window; the mode and the ring never leave it.
-    fn render_composer_footer(&self, locale: Locale, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_composer_footer(&self, locale: Locale, inside: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_external = self.is_external_chat(cx);
         let chat_meta = (!is_external)
             .then(|| {
@@ -1632,9 +1743,7 @@ impl ChatPane {
         });
         h_flex()
             .flex_shrink_0()
-            .mx_3()
-            .mt_1()
-            .mb_2()
+            .when(!inside, |this| this.mx_3().mt_1().mb_2())
             .gap_1()
             .items_center()
             .children(where_picker)
@@ -1806,6 +1915,9 @@ fn report_outcome(request: impl Future<Output = Result<Value, RpcError>> + 'stat
 
 /// Height of one line of Agent mode's composer bar: its text and its buttons are centred in it.
 const COMPOSER_LINE: f32 = 32.;
+/// A window shorter than this leaves the optical look's usage overview out, so the composer stays in view (the page
+/// without the map is about 420 pixels tall).
+const OPTICS_CARD_HEIGHT: f32 = 500.;
 
 /// The card the model control opens.
 const CARD_WIDTH: f32 = 280.;
@@ -2039,7 +2151,7 @@ fn thinking_info(locale: Locale, level: Level, toggle: bool) -> &'static str {
 
 /// A model's name as the composer shows it: a preset's without the vendor ("Opus 5.5"), a known id in its vendor's
 /// spelling ("GPT-6.1 Sol", "Gemini 3.1 Pro"), else the id.
-fn short_model_name(id: &str, preset: Option<&str>) -> String {
+pub(crate) fn short_model_name(id: &str, preset: Option<&str>) -> String {
     if let Some(name) = preset {
         return name.strip_prefix("Claude ").unwrap_or(name).to_owned();
     }
@@ -2097,10 +2209,16 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
             None => state.name.clone(),
         },
     );
-    let level = state
-        .as_ref()
-        .filter(|state| state.adjustable())
-        .and_then(|state| state.level.map(|level| thinking_label(locale, level, state.toggle())));
+    let optics = crate::ui::optics::enabled(cx).then(|| crate::ui::optics::look::Look::of(theme).worst_glass(theme.background));
+    let level = state.as_ref().filter(|state| state.adjustable()).and_then(|state| {
+        state.level.map(|level| {
+            let color = match optics {
+                Some(glass) => crate::ui::optics::look::level_color(level, theme, &[theme.popover, glass]),
+                None => theme.muted_foreground,
+            };
+            (thinking_label(locale, level, state.toggle()), color)
+        })
+    });
     // An external agent close to its limit says what is left, so it shows before a turn fails.
     let low = state.as_ref().and_then(|state| {
         let backend = state.external.as_ref()?;
@@ -2130,7 +2248,7 @@ pub fn model_control(store: &Entity<Store>, chat: Option<&Entity<ChatModel>>, cx
                 )
             })
             .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
-            .when_some(level, |this, level| this.child(div().flex_shrink_0().text_color(theme.muted_foreground).child(level)))
+            .when_some(level, |this, (level, color)| this.child(div().flex_shrink_0().text_color(color).child(level)))
             .when_some(low, |this, left| this.child(div().flex_shrink_0().text_color(low_color).child(i18n::format(locale, "external.quotaLeft", &[("percent", &left)])))),
     );
     let (store, chat) = (store.clone(), chat.cloned());
@@ -2159,6 +2277,8 @@ struct CardState {
     orchestrate: bool,
     /// The external agent whose usage limits this opening already asked the Host to read again.
     quota_asked: Option<String>,
+    /// The level under the pointer while the reasoning slider is dragged.
+    drag: Option<usize>,
 }
 
 /// The card the control opens: the levels for a model with reasoning levels, the list of saved models on request,
@@ -2312,14 +2432,79 @@ fn level_list(store: &Entity<Store>, session: Option<String>, state: &ModelState
             })
     });
     let orchestrate = state.external.is_none().then(|| orchestrate_entry(state, card, locale, cx));
+    let levels = if crate::ui::optics::enabled(cx) {
+        level_slider(store, session.clone(), state, card, shown, locale, cx).into_any_element()
+    } else {
+        v_flex().child(heading).child(v_flex().id("reasoning-levels").max_h(px(320.)).overflow_y_scroll().gap_0p5().children(rows)).into_any_element()
+    };
     v_flex()
         .gap_0p5()
         .child(model)
         .children(quota)
-        .child(heading)
-        .child(v_flex().id("reasoning-levels").max_h(px(320.)).overflow_y_scroll().gap_0p5().children(rows))
+        .child(levels)
         .children(orchestrate)
         .into_any_element()
+}
+
+/// The optical look's levels: the level shown in its color, the slider, and what the level trades.
+fn level_slider(store: &Entity<Store>, session: Option<String>, state: &ModelState, card: &Entity<CardState>, shown: Option<usize>, locale: Locale, cx: &App) -> impl IntoElement + use<> {
+    use crate::ui::optics::{look, slider};
+    let theme = cx.theme();
+    let (muted, dark) = (theme.muted_foreground, theme.mode.is_dark());
+    let toggle = state.toggle();
+    let drag = card.read(cx).drag;
+    let index = drag.or(shown).unwrap_or(0).min(state.levels.len().saturating_sub(1));
+    let level = state.levels.get(index).copied();
+    let fills: Vec<Hsla> = state.levels.iter().map(|level| look::level_fill(*level, dark)).collect();
+    // The drag lives in the card, so what a move or a release means is read when it comes, not when the slider was
+    // last drawn (`slider::follow`).
+    let on_gesture: slider::OnGesture = Rc::new({
+        let (store, card, current, levels) = (store.clone(), card.clone(), state.current.clone(), state.levels.clone());
+        move |gesture, window, cx| {
+            let dragging = card.read(cx).drag;
+            let Some((drag, release)) = slider::follow(dragging, gesture) else { return };
+            if drag != dragging {
+                card.update(cx, |card, cx| {
+                    card.drag = drag;
+                    cx.notify();
+                });
+            }
+            if let Some(stop) = release
+                && let Some(level) = levels.get(stop)
+            {
+                send_level(&store, session.clone(), &card, &current, *level, stop, window, cx);
+            }
+        }
+    });
+    v_flex()
+        .mt_1()
+        .px_2()
+        .pt_2()
+        .pb_1()
+        .gap_2()
+        .border_t_1()
+        .border_color(theme.border)
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(div().text_xs().font_medium().text_color(muted).child(i18n::text(locale, "optics.sliderTitle")))
+                .when_some(level, |this, level| {
+                    this.child(div().text_sm().font_semibold().text_color(look::level_color(level, theme, &[theme.popover])).child(thinking_label(locale, level, toggle)))
+                }),
+        )
+        .child(div().id("reasoning-slider").child(slider::render(fills, index, dark, on_gesture)))
+        .when_some(level, |this, level| {
+            this.child(
+                h_flex()
+                    .gap_1p5()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(thinking_info(locale, level, toggle)))
+                    .when(state.default_level == Some(level), |this| this.child(div().flex_shrink_0().child(i18n::text(locale, "chat.thinkingDefault")))),
+            )
+        })
 }
 
 /// The row under the levels and the model list that opens the orchestration page, with its current choice.
@@ -2510,6 +2695,7 @@ fn model_list(
         theme.border,
     );
     let active_external_kind = state.external.as_ref().map(|ext| ext.kind.as_str());
+    let colored_levels = crate::ui::optics::enabled(cx);
     let mut rows: Vec<AnyElement> = Vec::new();
     let mut row_idx: usize = 0;
 
@@ -2604,6 +2790,15 @@ fn model_list(
             } else {
                 format!("{} · {}", model.model, model.provider)
             };
+            // The level this model answers with: the chat's for the chosen one, its own default for the others.
+            let tag = colored_levels
+                .then(|| {
+                    let reasoning = model.reasoning();
+                    let level = if selected { state.level } else { reasoning.choose(model.thinking.as_deref()) };
+                    let shows = reasoning.levels().count() > 1 || reasoning.always;
+                    level.filter(|_| shows).map(|level| (thinking_label(locale, level, reasoning.toggle()), crate::ui::optics::look::level_color(level, theme, &[theme.popover])))
+                })
+                .flatten();
             rows.push(
                 h_flex()
                     .id(("model-row", idx))
@@ -2618,7 +2813,14 @@ fn model_list(
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(short_model_name(&model.model, preset)))
+                            .child(
+                                h_flex()
+                                    .min_w_0()
+                                    .gap_1p5()
+                                    .items_baseline()
+                                    .child(div().min_w_0().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(short_model_name(&model.model, preset)))
+                                    .when_some(tag, |this, (label, color)| this.child(div().flex_shrink_0().text_sm().font_medium().text_color(color).child(label))),
+                            )
                             .child(div().text_xs().text_color(muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(subtitle)),
                     )
                     .when(selected, |this| this.child(Icon::new(IconName::Check).small().text_color(accent)))
@@ -2965,8 +3167,11 @@ impl Render for ChatPane {
         let wide = self.wide;
         // Agent mode greets a new chat with the composer in the middle of the window.
         let greeting = wide && failed.is_none() && rows.is_empty() && self.is_blank(cx);
+        if !greeting {
+            self.optics_shown = false;
+        }
         let body = if greeting {
-            self.render_greeting(locale, cx).into_any_element()
+            self.render_greeting(locale, window, cx)
         } else if rows.is_empty() {
             match failed {
                 Some(error) => div().flex_1().p_4().text_sm().text_color(cx.theme().danger).child(error).into_any_element(),
@@ -3057,7 +3262,13 @@ impl Render for ChatPane {
                 .when(!self.suggestions.is_empty() && self.trigger.is_some(), |this| this.child(self.render_suggestions(cx)))
                 .map(|this| {
                     if wide {
-                        this.child(self.render_composer_wide(locale, cx)).child(self.render_composer_footer(locale, cx))
+                        let this = this.child(self.render_composer_wide(locale, cx));
+                        // The optical look has the pickers in the glass: the gap their row kept under it stays.
+                        if crate::ui::optics::enabled(cx) {
+                            this.child(div().flex_shrink_0().h_3())
+                        } else {
+                            this.child(self.render_composer_footer(locale, false, cx))
+                        }
                     } else {
                         this.child(self.render_composer(locale, cx))
                     }

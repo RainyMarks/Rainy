@@ -41,6 +41,10 @@ pub struct UiPreferences {
     /// Windows notifications when a chat finishes or waits for an approval while Rainy is in the background.
     #[serde(default = "default_notify")]
     pub notify: bool,
+    /// The optical look: a drifting field of characters and a glow behind a new chat, glass cards, the usage overview
+    /// and the reasoning slider. Off unless chosen.
+    #[serde(default)]
+    pub optics: bool,
 }
 
 fn default_notify() -> bool {
@@ -79,6 +83,7 @@ impl Default for UiPreferences {
             markdown_images: default_markdown_images(),
             context_strategy: default_context_strategy(),
             notify: true,
+            optics: false,
         }
     }
 }

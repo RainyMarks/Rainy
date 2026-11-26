@@ -208,6 +208,8 @@ pub struct ChatStore {
     index_lock: Mutex<()>,
     /// What searches read of each chat file, kept so the next one reads only what was appended since.
     searched: Mutex<HashMap<String, Searched>>,
+    /// What usage counts read of each chat file (`usage.rs`).
+    pub(super) tallied: Mutex<HashMap<String, super::usage::Tally>>,
 }
 
 /// The message texts read from a chat file for search, and how far it was read.
@@ -369,6 +371,7 @@ impl ChatStore {
             locks: Mutex::default(),
             index_lock: Mutex::new(()),
             searched: Mutex::default(),
+            tallied: Mutex::default(),
         });
         let index = read_json::<Value>(&store.dir.join("index.json"));
         let parsed = match index {
@@ -402,6 +405,10 @@ impl ChatStore {
         }
         self.state.lock().unwrap().chats = chats;
         self.write_index()
+    }
+
+    pub(super) fn chat_path(&self, id: &str) -> PathBuf {
+        self.path(id)
     }
 
     fn path(&self, id: &str) -> PathBuf {

@@ -14,6 +14,7 @@ pub mod models;
 pub mod prefs;
 pub mod search;
 pub mod stream;
+pub mod usage;
 
 pub use chat::*;
 pub use experiments::*;
@@ -25,3 +26,4 @@ pub use models::*;
 pub use prefs::*;
 pub use search::*;
 pub use stream::*;
+pub use usage::*;

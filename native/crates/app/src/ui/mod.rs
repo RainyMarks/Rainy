@@ -11,6 +11,7 @@ pub mod history;
 pub mod markdown;
 pub mod metrics;
 pub mod notify;
+pub mod optics;
 pub mod palette;
 pub mod prompt;
 pub mod quota;

@@ -3,6 +3,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -210,6 +211,14 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                 })),
             ),
         ]))
+        .child(group(cx, Some("settings.groupEffects"), vec![row(
+            cx,
+            t("opticsTitle"),
+            Some(t("opticsDescription")),
+            Switch::new("optics").checked(prefs.optics).on_click(|checked: &bool, window, cx| {
+                set_prefs(json!({ "optics": *checked }), window, cx);
+            }),
+        )]))
         .child(group(
             cx,
             Some("settings.groupFonts"),
@@ -254,7 +263,7 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
         .child(h_flex().justify_end().child(
             Button::new("appearance-reset").ghost().small().label(t("appearanceReset")).on_click(|_, window, cx| {
                 set_prefs(
-                    json!({ "theme": "system", "colorScheme": "graphite", "accent": "auto", "rainEffects": true, "uiFont": "", "codeFont": "", "uiFontSize": 14, "codeFontSize": 13 }),
+                    json!({ "theme": "system", "colorScheme": "graphite", "accent": "auto", "rainEffects": true, "optics": false, "uiFont": "", "codeFont": "", "uiFontSize": 14, "codeFontSize": 13 }),
                     window,
                     cx,
                 );

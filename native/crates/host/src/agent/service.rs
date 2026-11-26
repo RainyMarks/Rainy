@@ -449,6 +449,14 @@ impl Agent {
             let found = tokio::task::spawn_blocking(move || store.search(&words, 40)).await.map_err(|error| HostError::other(error.to_string()))?;
             Ok(found.into_iter().map(|(id, snippet)| json!({ "sessionId": id, "snippet": snippet })).collect::<Vec<_>>())
         });
+        self.on("usage.stats", |agent, params: rainy_protocol::UsageStatsParams| async move {
+            if params.workspace_id.as_ref().is_some_and(|id| id.len() > 128) || params.days > 3660 {
+                return Err(HostError::new("invalid", l("用量统计的参数无效。", "The usage request is not valid.")));
+            }
+            let store = agent.services.store.clone();
+            let now = crate::text::now_ms() as f64;
+            tokio::task::spawn_blocking(move || store.usage_stats(&params, now)).await.map_err(|error| HostError::other(error.to_string()))
+        });
         self.on("sessions.branch", |agent, params: BranchParams| async move {
             let chat = agent.services.store.get(&params.session_id).ok_or_else(not_found_chat)?;
             let mut worktree = chat.worktree.ok_or_else(no_worktree)?;

@@ -195,7 +195,7 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 | **Fonts** | Change the interface and code fonts: Windows' Segoe UI, Microsoft YaHei, DengXian, Consolas and Cascadia Code, and open-source fonts downloaded when chosen: Inter, Geist, Noto Sans SC, LXGW WenKai, JetBrains Mono, Fira Code, Geist Mono and LXGW WenKai Mono. |
 | **Light** | A 16 MB installer; editor tools, PHP, the Linux runtime and extra fonts download only when needed. |
 | **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
-| **Details** | A light rain falls behind empty views and ripples where you click; turn it off in **Settings → Appearance**. |
+| **Optical look** | Turn it on in **Settings → Appearance**: a new chat shows a slowly changing cloud of characters that ripples where you click, a glow behind the composer, a usage overview above it (chats, messages, tokens, active days, cache hit rate, most used model and an activity map, all counted from your own chat history) and a pixel pet that blinks, strolls and hops when you point at it; reasoning is set with a starry slider. Nothing moves, and no CPU is used, while the window is in the background, after a while without input, or when Windows' animation effects are off. |
 
 <a id="run"></a>
 ## Quick start

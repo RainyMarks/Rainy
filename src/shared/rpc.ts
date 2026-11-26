@@ -76,6 +76,8 @@ export interface UiPreferences {
   autoKeepChanges: boolean
   /** Empty views show falling rain, and a click on them makes a ripple. */
   rainEffects: boolean
+  /** The optical look of the native interface (Settings → Appearance). */
+  optics: boolean
   /** Chats get web_search and web_fetch when a DeepSeek model has an API key. */
   webSearch: boolean
   /** Typora's focus mode in the rich Markdown editor: blocks other than the one being written fade. */
