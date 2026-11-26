@@ -1299,7 +1299,7 @@ pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &To
                     .py_2()
                     .rounded(theme.radius_lg)
                     .bg(theme.muted)
-                    .child(crate::ui::markdown::markdown(ElementId::Name(format!("user-{}", row.key).into()), text))
+                    .child(crate::ui::markdown::typed_text(ElementId::Name(format!("user-{}", row.key).into()), text))
                     .when(*images > 0, |this| {
                         this.child(div().text_xs().text_color(theme.muted_foreground).child(format!("🖼 × {images}")))
                     }),

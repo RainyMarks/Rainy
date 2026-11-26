@@ -26,6 +26,100 @@ pub fn markdown(id: impl Into<ElementId>, text: &SharedString) -> TextView {
         .code_block_actions(code_block_corner)
 }
 
+/// A message as the person typed it, shown verbatim and selectable: its line breaks and indents, and text such as
+/// `Vec<String>` or `2*3*4`. Read as Markdown, the lines of a message ran together, `<String>` vanished as an unknown
+/// HTML tag and `*` turned text italic. Web addresses stay links.
+pub fn typed_text(id: impl Into<ElementId>, text: &str) -> TextView {
+    TextView::html(id, verbatim_html(text))
+        .selectable(true)
+        .on_link_click(|url, _, window, cx| crate::ui::open_link(url, window, cx))
+}
+
+/// HTML that shows `text` as it is: escaped, inside `<pre>`, which keeps white space, with each web address a link.
+/// The parser drops a line feed right after `<pre>`, so one goes there and the text's own lines stay whole. Blank
+/// lines before and after the text are left out.
+fn verbatim_html(text: &str) -> String {
+    let text = text.trim_end().trim_start_matches(['\r', '\n']);
+    let mut html = String::with_capacity(text.len() + 16);
+    html.push_str("<pre>\n");
+    let mut rest = text;
+    while let Some(start) = next_web_address(rest) {
+        escape_html(&mut html, &rest[..start]);
+        let address = &rest[start..start + web_address_len(&rest[start..])];
+        html.push_str("<a href=\"");
+        escape_html(&mut html, address);
+        html.push_str("\">");
+        escape_html(&mut html, address);
+        html.push_str("</a>");
+        rest = &rest[start + address.len()..];
+    }
+    escape_html(&mut html, rest);
+    html.push_str("</pre>");
+    html
+}
+
+fn escape_html(html: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => html.push_str("&amp;"),
+            '<' => html.push_str("&lt;"),
+            '>' => html.push_str("&gt;"),
+            '"' => html.push_str("&quot;"),
+            c => html.push(c),
+        }
+    }
+}
+
+/// Where the first `http://` or `https://` address in `text` starts. One right after a Latin letter or a digit is
+/// part of a longer word; one right after a Chinese character is not.
+fn next_web_address(text: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(found) = text[from..].find("http") {
+        let start = from + found;
+        let rest = &text[start..];
+        let scheme = if rest.starts_with("https://") {
+            "https://".len()
+        } else if rest.starts_with("http://") {
+            "http://".len()
+        } else {
+            0
+        };
+        let word_start = text[..start].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
+        if scheme > 0 && word_start && web_address_len(rest) > scheme {
+            return Some(start);
+        }
+        from = start + "http".len();
+    }
+    None
+}
+
+/// The length of the web address at the start of `text`: up to white space, a quote, an angle bracket or Chinese
+/// punctuation, without the sentence punctuation after it or a closing bracket it does not open.
+fn web_address_len(text: &str) -> usize {
+    let mut end = text
+        .char_indices()
+        .find(|&(_, c)| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`') || is_cjk_punctuation(c))
+        .map_or(text.len(), |(at, _)| at);
+    while let Some(last) = text[..end].chars().next_back() {
+        let address = &text[..end];
+        let dangling = match last {
+            '.' | ',' | ';' | ':' | '!' | '?' => true,
+            ')' => address.matches('(').count() < address.matches(')').count(),
+            ']' => address.matches('[').count() < address.matches(']').count(),
+            _ => false,
+        };
+        if !dangling {
+            break;
+        }
+        end -= last.len_utf8();
+    }
+    end
+}
+
+fn is_cjk_punctuation(c: char) -> bool {
+    matches!(c, '，' | '。' | '、' | '；' | '：' | '！' | '？' | '（' | '）' | '【' | '】' | '「' | '」' | '『' | '』' | '“' | '”' | '‘' | '’' | '《' | '》' | '…')
+}
+
 /// The corner of a code block: its language, and a button that copies the code.
 fn code_block_corner(block: &CodeBlock, _: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
     let code = block.code();
@@ -524,6 +618,25 @@ mod tests {
     use ::core::prelude::v1::test;
 
     use super::*;
+
+    #[test]
+    fn a_typed_message_is_escaped_inside_pre() {
+        assert_eq!(verbatim_html("Vec<String> & <div>\n  *星号* 2*3*4"), "<pre>\nVec&lt;String&gt; &amp; &lt;div&gt;\n  *星号* 2*3*4</pre>");
+        // Blank lines around the text are left out; the indent of its first line and the blank lines inside stay.
+        assert_eq!(verbatim_html("\r\n\n  缩进\n\n\n空两行\n\n"), "<pre>\n  缩进\n\n\n空两行</pre>");
+        assert_eq!(verbatim_html("引号 \"a\" 'b'"), "<pre>\n引号 &quot;a&quot; 'b'</pre>");
+    }
+
+    #[test]
+    fn web_addresses_in_a_typed_message_are_links() {
+        assert_eq!(
+            verbatim_html("看下https://a.com/x?a=1&b=2，然后 (http://b.org/p_(1)). 不是 xhttp://c.d"),
+            "<pre>\n看下<a href=\"https://a.com/x?a=1&amp;b=2\">https://a.com/x?a=1&amp;b=2</a>，然后 \
+             (<a href=\"http://b.org/p_(1)\">http://b.org/p_(1)</a>). 不是 xhttp://c.d</pre>"
+        );
+        assert_eq!(verbatim_html("只有 https:// 和 http"), "<pre>\n只有 https:// 和 http</pre>");
+        assert_eq!(verbatim_html("<https://a.com/[1]>"), "<pre>\n&lt;<a href=\"https://a.com/[1]\">https://a.com/[1]</a>&gt;</pre>");
+    }
 
     #[test]
     fn delimiters() {
