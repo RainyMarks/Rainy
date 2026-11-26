@@ -8,7 +8,9 @@
  * 2. check that RainyAgent.exe carries the public release keys and sign the resources with the release key
  *    (`scripts/sign-release.mjs`); with --skip-sign, check that it carries none;
  * 3. build `Rainy-<version>-windows-x64-setup.exe` from `native/installer/rainy.nsi` with NSIS 3.04, extracted afresh from
- *    the pinned electron-builder archives. Setup also deletes what an earlier 4.x installed and this version no longer
+ *    the pinned electron-builder archives (kept in RAINY_TOOLCHAIN_DIR, default ~/.rainy-release/toolchain, so clearing
+ *    caches does not lose them; taken from electron-builder's cache, or downloaded from electron-builder-binaries and
+ *    checked against the pins, when missing there). Setup also deletes what an earlier 4.x installed and this version no longer
  *    ships (`native/installer/shipped-files.txt`, which a release extends);
  * 4. write `latest.yml` (the electron-builder shape every 3.x and 4.x updater reads) and `latest.yml.sig`.
  *
@@ -36,13 +38,17 @@ const root = resolve(import.meta.dirname, '..')
 const native = join(root, 'native')
 const UPDATE_DOMAIN = 'Rainy/update/v1\0'
 /** electron-builder's 7-Zip and NSIS archives with the SHA-256 electron-builder pins them by (app-builder-lib toolsets). */
+const BINARIES = 'https://github.com/electron-userland/electron-builder-binaries/releases/download'
 const PINNED_7ZIP = { folder: '7zip@1.0.0', archive: '7zip-win-x64.tar.gz', sha256: 'be071f15bd6da2f78fe81c6ddef2009b0c4d8a51f36b780cb806c7e6df95e1b3',
-  member: '7zip/bin/7za.exe' }
+  member: '7zip/bin/7za.exe', url: `${BINARIES}/7zip%401.0.0/7zip-win-x64.tar.gz` }
 const PINNED_NSIS = [
-  { folder: 'nsis-3.0.4.1', archive: 'nsis-3.0.4.1.7z', sha256: '9877df902530f96357d13a7a31ae2b9df67f48b11ffc9a1700a7c961574ec5fa', marker: 'makensis.exe' },
+  { folder: 'nsis-3.0.4.1', archive: 'nsis-3.0.4.1.7z', sha256: '9877df902530f96357d13a7a31ae2b9df67f48b11ffc9a1700a7c961574ec5fa', marker: 'makensis.exe',
+    url: `${BINARIES}/nsis-3.0.4.1/nsis-3.0.4.1.7z` },
   { folder: 'nsis-resources-3.4.1', archive: 'nsis-resources-3.4.1.7z', sha256: '593a9a92ef958321293ac6a2ee61e64bf1bd543142a5bd6b3d310709cc924103',
-    marker: 'plugins/x86-unicode/StdUtils.dll' },
+    marker: 'plugins/x86-unicode/StdUtils.dll', url: `${BINARIES}/nsis-resources-3.4.1/nsis-resources-3.4.1.7z` },
 ]
+/** Where the pinned archives are kept between releases: not a cache folder, so a cache cleanup leaves them. */
+const TOOLCHAIN = resolve(process.env.RAINY_TOOLCHAIN_DIR ?? join(homedir(), '.rainy-release/toolchain'))
 const PLUGINS = ['StdUtils.dll', 'UAC.dll', 'WinShell.dll']
 const WINDOWS_HOST = /^resources\\windows-host(?:\\|$)/iu
 const HISTORY = join(native, 'installer/shipped-files.txt')
@@ -184,12 +190,29 @@ async function toolchain(work, owner) {
     return { makensis: join(folder, 'makensis.exe'), plugins }
   }
   const cache = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData/Local'), 'electron-builder/Cache')
+  const digestOf = bytes => createHash('sha256').update(bytes).digest('hex')
+  // The kept copy, else electron-builder's cache, else a download; whatever is used is kept, checked against its pin.
   const pinned = async pin => {
-    const path = join(cache, pin.folder, pin.archive)
-    if (!await exists(path)) throw new Error(`The pinned archive is missing: ${path} (electron-builder downloads it; set RAINY_NSIS_DIR to use another NSIS)`)
-    const bytes = await readFile(path)
-    const digest = createHash('sha256').update(bytes).digest('hex')
-    if (digest !== pin.sha256) throw new Error(`${path} has SHA-256 ${digest}, not the pinned ${pin.sha256}`)
+    const kept = join(TOOLCHAIN, pin.folder, pin.archive)
+    for (const path of [kept, join(cache, pin.folder, pin.archive)]) {
+      if (!await exists(path)) continue
+      const bytes = await readFile(path)
+      const digest = digestOf(bytes)
+      if (digest !== pin.sha256) throw new Error(`${path} has SHA-256 ${digest}, not the pinned ${pin.sha256}`)
+      if (path !== kept) {
+        await mkdir(dirname(kept), { recursive: true })
+        await writeFile(kept, bytes)
+      }
+      return bytes
+    }
+    console.log(`Downloading ${pin.url}`)
+    const response = await fetch(pin.url, { redirect: 'follow', signal: AbortSignal.timeout(120_000) })
+    if (!response.ok) throw new Error(`${pin.url}: HTTP ${response.status} (set RAINY_NSIS_DIR to use another NSIS)`)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const digest = digestOf(bytes)
+    if (digest !== pin.sha256) throw new Error(`${pin.url} has SHA-256 ${digest}, not the pinned ${pin.sha256}`)
+    await mkdir(dirname(kept), { recursive: true })
+    await writeFile(kept, bytes)
     return bytes
   }
   await clean(work, owner)
@@ -531,6 +554,8 @@ async function main() {
   const compiling = Date.now()
   makensis(tool, defines, join(native, 'installer/rainy.nsi'))
   const compiled = Date.now() - compiling
+  // The extracted toolchain and the file list are rebuilt by the next run; the installer is what remains.
+  await clean(nsis, out)
 
   const size = (await stat(setup)).size
   const sha512 = await sha(setup, 'sha512', 'base64')

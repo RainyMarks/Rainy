@@ -59,6 +59,11 @@ try {
     } finally { Remove-Item Env:\RAINY_RELEASE_PUBLIC_KEYS -ErrorAction SilentlyContinue }
     & node (Join-Path $PSScriptRoot 'package-native.mjs'); Check-Exit
     $rainyInstaller = Join-Path $rainyApp "release/Rainy-$rainyVersion-windows-x64-setup.exe"
+    # The offline release carries this version's installer only. The folder moves on from release to release, so
+    # earlier installers (each on its own GitHub release) would otherwise pile up in it.
+    Get-ChildItem -LiteralPath $rainyOffline -File |
+        Where-Object { $_.Name -match '^Rainy(Agent)?-\d+\.\d+\.\d+-windows-x64-setup\.exe$' -and $_.Name -ne (Split-Path $rainyInstaller -Leaf) } |
+        ForEach-Object { Write-Host "Removing the earlier installer $($_.Name) from the offline release"; Remove-Item -LiteralPath $_.FullName -Force }
     Copy-Item -LiteralPath $rainyInstaller -Destination $rainyOffline -Force
     Copy-Item -LiteralPath (Join-Path $rainyApp 'native/installer/offline-readme.txt') -Destination (Join-Path $rainyOffline '安装说明.txt') -Force
     $rainyChecksums = Get-ChildItem -LiteralPath $rainyOffline -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object FullName | ForEach-Object {

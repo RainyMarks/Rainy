@@ -5,7 +5,9 @@
 #   scripts/release.sh <version> build       offline inputs renamed and restored, then scripts/package.ps1
 #   scripts/release.sh <version> resources   the v<version>-resources prerelease with every module piece, checked
 #   scripts/release.sh <version> qa          the installer QA (tmp/qa/installer/run-qa.ps1 -Build), all checks passing
-#   scripts/release.sh <version> publish     validation record, the release with installer and signed latest.yml, main
+#   scripts/release.sh <version> publish     validation record, the release with installer and signed latest.yml, main;
+#                                            then the clean stage
+#   scripts/release.sh <version> clean       what the build and the QA left that the next release makes again
 #
 # Several stages run in order: `scripts/release.sh 4.10.0 bump build resources qa publish`.
 #
@@ -192,11 +194,45 @@ stage_publish() {
     (cd ../RainyAgent && git fetch -q origin && git merge --ff-only -q origin/main && git log --oneline -1)
   fi
   say "Rainy $version is published"
+  stage_clean
+}
+
+# Megabytes under the given paths.
+megabytes() {
+  { du -sm "$@" 2>/dev/null || true; } | awk '{ total += $1 } END { print total + 0 }'
+}
+
+# What a release leaves behind that the next one builds again, often tens of gigabytes: the build outputs
+# (native/target, the Windows and the Linux Hosts included), the staged payload and the NSIS work folder, earlier
+# installers and resource pieces (each on its GitHub release), the installer QA's installations and the unpacked
+# overlay copies. Kept: this version's installer, latest.yml and its signature, release/offline-<version>,
+# release/resources-<version>, tmp/qa/installer/run-qa.ps1 and the QA results, and the pinned NSIS archives in
+# ~/.rainy-release/toolchain. The next build compiles from scratch (about 40 minutes instead of a few).
+stage_clean() {
+  say "clearing what the build and the QA left"
+  local before after path
+  before="$(megabytes native/target release tmp/qa/installer tmp/overlay-*)"
+  rm -rf native/target release/win-unpacked release/nsis
+  for path in release/Rainy-*-windows-x64-setup.exe; do
+    [ -e "$path" ] && [ "$path" != "release/Rainy-$version-windows-x64-setup.exe" ] && rm -f "$path"
+  done
+  for path in release/resources-*; do
+    [ -d "$path" ] && [ "$path" != "release/resources-$version" ] && rm -rf "$path"
+  done
+  for path in tmp/qa/installer/*; do
+    case "$(basename "$path")" in
+      run-qa.ps1 | qa-results.txt) ;;
+      *) rm -rf "$path" ;;
+    esac
+  done
+  rm -rf tmp/overlay-*/app
+  after="$(megabytes native/target release tmp/qa/installer tmp/overlay-*)"
+  say "freed $((before - after)) MB (left: release/offline-$version, release/resources-$version, this installer)"
 }
 
 for stage in "$@"; do
   case "$stage" in
-    bump | build | resources | qa | publish) "stage_$stage" ;;
+    bump | build | resources | qa | publish | clean) "stage_$stage" ;;
     *) fail "unknown stage $stage" ;;
   esac
 done
