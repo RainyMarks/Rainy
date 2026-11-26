@@ -4,7 +4,7 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
-## 4.13.0 · 2026-11-25
+## 4.13.0 · 2026-11-26
 
 - **See what a sub-agent is doing**: while a sub-agent (the task tool) works, its card opens and lists each step: the file it read, what it searched for, the page it opened. The step in progress has a spinner, a failed one a red dot, and below them is what it is writing. When it is done the card folds, with the number of steps beside its title; opened, it shows each step and the report it handed back, laid out as Markdown. A sub-agent that ran out of steps, time or token budget is marked "Hit a limit", with a note that its report may be incomplete.
 - **A new Prompts page in Settings**: one page explains what the built-in prompt, the global prompt, instruction files (AGENTS.md) and project memory are each for, where they live, when they apply and which comes first. The built-in prompt comes in three model groups (Claude and others, GPT and Codex, Gemini); each can be read, changed and restored to the default. The global prompt has moved here from the Models page. This Host's own AGENTS.md and the current project's AGENTS.md, CLAUDE.md and their .local versions can be read and edited right there, or opened in the editor.
