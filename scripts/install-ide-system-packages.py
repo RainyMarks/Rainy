@@ -13,8 +13,8 @@ parser.add_argument('directory')
 parser.add_argument('--verify-only', action='store_true')
 options = parser.parse_args()
 root = Path(options.directory).resolve()
-manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
-release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text(encoding='utf-8').splitlines() if '=' in line)
+manifest = json.loads((root / 'manifest.json').read_text())
+release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
 if manifest.get('version') != 1 or release.get('ID', '').strip('"') != manifest.get('os') or release.get('VERSION_ID', '').strip('"') != manifest.get('osVersion'):
     raise RuntimeError('The offline development layer supports Ubuntu 26.04 only')
 architecture = subprocess.check_output(['dpkg', '--print-architecture'], text=True).strip()
@@ -40,7 +40,7 @@ if os.geteuid() != 0:
 environment = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
 with tempfile.TemporaryDirectory(prefix='rainy-ide-apt-') as temporary:
     sources = Path(temporary) / 'sources.list'
-    sources.write_text('', encoding='utf-8')
+    sources.write_text('')
     source_parts = Path(temporary) / 'sources.list.d'
     source_parts.mkdir()
     archives = Path(temporary) / 'archives'
@@ -57,6 +57,5 @@ with tempfile.TemporaryDirectory(prefix='rainy-ide-apt-') as temporary:
 if result.returncode:
     raise RuntimeError('Offline development package installation did not complete')
 for command in ['python3', 'gcc', 'g++', 'gdb', 'cmake', 'ninja', 'clangd', 'clang-format', 'php']:
-    if shutil.which(command) is None:
-        raise RuntimeError(f'Required development command was not found after installation: {command}')
+    subprocess.run(['/usr/bin/which', command], check=True, stdout=subprocess.DEVNULL)
 print(json.dumps({'installedPackages': len(files), 'offline': True}))

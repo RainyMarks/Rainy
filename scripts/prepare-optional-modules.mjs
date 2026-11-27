@@ -40,12 +40,12 @@ export async function prepareOptionalModules(options) {
     const licenses = (await readdir(join(tools, 'licenses'))).sort()
     const pythonLicenses = licenses.filter(name => /^(ruff|ty)-/u.test(name)).map(name => `licenses/${name}`)
     const webLicenses = licenses.filter(name => !/^(ruff|ty)-/u.test(name)).map(name => `licenses/${name}`)
-    const toolArchive = (name, entries) => tar.c({ cwd: tools, file: join(scratch, name), gzip: { level: 9 }, portable: true, mtime: new Date(0) }, entries)
+    const toolArchive = (name, entries) => tar.c({ cwd: tools, file: join(scratch, name), gzip: true, portable: true, mtime: new Date(0) }, entries)
     await toolArchive('ide-python.tar.gz', ['bin', 'python', ...pythonLicenses, 'manifest.json'])
     await toolArchive('ide-web.tar.gz', ['typescript', 'js-debug', ...webLicenses, 'manifest.json'])
     const php = join(app, 'runtime/component-stage/windows-basic/php')
     const names = (await readdir(php)).filter(name => name !== 'dev').sort()
-    await tar.c({ cwd: php, file: join(scratch, 'php.tar.gz'), gzip: { level: 9 }, portable: true, mtime: new Date(0) }, names)
+    await tar.c({ cwd: php, file: join(scratch, 'php.tar.gz'), gzip: true, portable: true, mtime: new Date(0) }, names)
     // The .deb files are compressed already; the archive only bundles them with their manifest.
     const devPackages = join(app, 'resources/ide/system-packages')
     await tar.c({ cwd: devPackages, file: join(scratch, 'linux-dev-packages.tar.gz'), gzip: { level: 1 }, portable: true, mtime: new Date(0) },

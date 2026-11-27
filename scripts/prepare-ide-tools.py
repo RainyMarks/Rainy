@@ -105,61 +105,7 @@ def unpack(asset, archive, target):
             package.extractall(target)
     else:
         with tarfile.open(archive, 'r:gz') as package:
-            if hasattr(tarfile, 'data_filter'):
-                package.extractall(target, filter='data')
-            else:
-                for member in package.getmembers():
-                    safe(member.name)
-                    if member.isdev() or member.isfifo():
-                        raise RuntimeError('Unsafe IDE tool archive entry: ' + member.name)
-                package.extractall(target)
-
-
-def prune_prepared_tools(output_dir, is_linux):
-    """Drop non-runtime assets and other-platform binaries from debugpy and js-debug."""
-    py_root = output_dir / 'python'
-    if py_root.is_dir():
-        attach = py_root / 'debugpy/_vendored/pydevd/pydevd_attach_to_process'
-        if is_linux:
-            for unwanted in (attach / 'winappdbg', attach / 'windows'):
-                if unwanted.is_dir():
-                    shutil.rmtree(unwanted)
-            mac_script = attach / 'linux_and_mac/compile_mac.sh'
-            if mac_script.is_file():
-                mac_script.unlink()
-        else:
-            linux_mac = attach / 'linux_and_mac'
-            if linux_mac.is_dir():
-                shutil.rmtree(linux_mac)
-        for path in list(py_root.rglob('*')):
-            if not path.is_file():
-                continue
-            name = path.name
-            if path.suffix in PRUNED:
-                path.unlink()
-            elif not is_linux and (
-                name.endswith('.cp39-win_amd64.pyd')
-                or name.endswith('_x86.exe')
-                or name.endswith('_x86.dll')
-            ):
-                path.unlink()
-
-    js_debug = output_dir / 'js-debug'
-    if js_debug.is_dir():
-        # VS Code extension README screenshots, localization strings and diagnostic web UI are unused by DAP.
-        js_resources = js_debug / 'resources'
-        if js_resources.is_dir():
-            shutil.rmtree(js_resources)
-        for rel in ('.vscodeignore', 'README.md', 'package.nls.json', 'src/diagnosticTool.js', 'src/diagnosticTool.css'):
-            candidate = js_debug / rel
-            if candidate.is_file():
-                candidate.unlink()
-        js_src = js_debug / 'src'
-        if js_src.is_dir():
-            for native_addon in js_src.glob('win32-app-container-tokens.*.node'):
-                # Linux never loads Win32 .node addons; x64 Windows never loads arm64 addons.
-                if is_linux or '.win32-arm64-' in native_addon.name:
-                    native_addon.unlink()
+            package.extractall(target, filter='data')
 
 
 cache.mkdir(parents=True, exist_ok=True)
@@ -183,7 +129,9 @@ with tempfile.TemporaryDirectory(prefix='rainy-ide-') as scratch:
             else:
                 raise RuntimeError(f'{asset["id"]} {asset["version"]} has no {place["from"]}')
         print(f'Prepared {asset["id"]} {asset["version"]}', flush=True)
-prune_prepared_tools(output, linux)
+for path in list((output / 'python').rglob('*')):
+    if path.is_file() and path.suffix in PRUNED:
+        path.unlink()
 for license in sources['licenses']:
     destination = output / safe(license['path'])
     destination.parent.mkdir(parents=True, exist_ok=True)
