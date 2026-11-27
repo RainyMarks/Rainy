@@ -164,9 +164,25 @@ fn about(store: &Entity<Store>, cx: &App) -> AnyElement {
                 Store::global(cx).update(cx, |store, cx| store.set_auto_update(on, cx));
             }),
         ),
+        // GPLv3's "Appropriate Legal Notices" (section 0, kept by modified versions under section 5(d)): the copyright,
+        // the absence of warranty, the right to convey under the license, and where to read it. The installer also puts
+        // LICENSE and NOTICE next to RainyAgent.exe; they have no extension, so the button opens the published copy.
+        row(
+            cx,
+            tr(cx, "settings.licenseTitle"),
+            Some(tr(cx, "settings.licenseDescription")),
+            Button::new("view-license")
+                .outline()
+                .small()
+                .label(tr(cx, "settings.licenseView"))
+                .on_click(|_, _, cx| cx.open_url(LICENSE_URL)),
+        ),
     ])
     .into_any_element()
 }
+
+/// The license text published with the source.
+const LICENSE_URL: &str = "https://github.com/RainyMarks/Rainy/blob/main/LICENSE";
 
 /// Explorer's "Open with Rainy", the file types Rainy is offered for, and the way to Windows' Default apps. Only an
 /// installed Rainy can change them.

@@ -38,7 +38,8 @@ fn path_arg<'a>(args: &'a Map<String, Value>, key: &str, cwd: Option<&str>) -> O
     }
 }
 
-/// The summary of a call to `name` with `args`.
+/// The summary of a call to `name` with `args`; the transcript calls [`tool_title_in`] with the chat's folder.
+#[cfg(test)]
 pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> String {
     tool_title_in(locale, name, args, None)
 }
