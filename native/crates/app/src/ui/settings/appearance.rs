@@ -94,9 +94,10 @@ fn cached_swatch(scheme: &str, accent: &str, dark: bool) -> SwatchColors {
     } else {
         ACCENTS.iter().find(|(id, _)| *id == accent && *id != "auto").map_or("blue", |(id, _)| *id)
     };
-    *swatch_cache()
-        .get(&(resolved_scheme, resolved_accent, dark))
-        .expect("precomputed swatch")
+    swatch_cache().get(&(resolved_scheme, resolved_accent, dark)).copied().unwrap_or_else(|| {
+        let (light, dark_theme) = themes_for(resolved_scheme, resolved_accent);
+        extract_swatch(if dark { &dark_theme } else { &light })
+    })
 }
 
 /// A font menu: Windows' own fonts, then open-source ones downloaded when chosen (`fonts.rs`).

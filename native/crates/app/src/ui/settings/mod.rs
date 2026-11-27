@@ -18,9 +18,9 @@ mod widgets;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use gpui_kit::base::{ElementExt as _, GlobalState, TextSelection, TextSelectionScopeId, box_shadow};
+use gpui_kit::base::{ElementExt as _, GlobalState, TextSelection, box_shadow};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::shell::ShellIntegration;
@@ -96,8 +96,8 @@ impl GeneralFingerprint {
 pub struct SettingsView {
     store: Entity<Store>,
     section: Section,
-    selection_scope: TextSelectionScopeId,
     open_generation: u64,
+    section_generation: u64,
     general_fingerprint: GeneralFingerprint,
     models: Entity<models::ModelsPage>,
     prompts: Option<Entity<prompts::PromptsPage>>,
@@ -114,7 +114,6 @@ impl EventEmitter<CloseSettings> for SettingsView {}
 
 impl SettingsView {
     pub fn new(store: Entity<Store>, section: Section, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let selection_scope = TextSelectionScopeId::new();
         let open_generation = NEXT_OPEN_GENERATION.fetch_add(1, Ordering::Relaxed);
         // Clear any selection in the underlying chat before opening the modal settings layer.
         TextSelection::clear(window, cx);
@@ -139,22 +138,18 @@ impl SettingsView {
                 }
             }),
             cx.subscribe(&models, |this, _, ShowSection(section), cx| {
-                this.section = *section;
-                cx.notify();
+                this.switch_section(*section, cx);
             }),
             cx.on_release_in(window, |_, window, cx| {
                 TextSelection::clear(window, cx);
                 TextSelection::end(window, cx);
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    TextSelection::activate_scope(TextSelectionScopeId::default(), window, cx);
-                }
             }),
         ];
         Self {
             store,
             section,
-            selection_scope,
             open_generation,
+            section_generation: 0,
             general_fingerprint,
             models,
             prompts: None,
@@ -168,20 +163,24 @@ impl SettingsView {
         }
     }
 
+    fn switch_section(&mut self, next: Section, cx: &mut Context<Self>) {
+        if self.section != next {
+            self.section = next;
+            self.section_generation = self.section_generation.wrapping_add(1);
+            cx.notify();
+        }
+    }
+
     /// Switch the active settings section while preserving already-open page state and drafts.
     #[allow(dead_code)]
     pub fn set_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
-        self.section = section;
+        self.switch_section(section, cx);
         self.focus.focus(window, cx);
-        cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         TextSelection::clear(window, cx);
         TextSelection::end(window, cx);
-        if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-            TextSelection::activate_scope(TextSelectionScopeId::default(), window, cx);
-        }
         cx.emit(CloseSettings);
     }
 
@@ -194,15 +193,14 @@ impl SettingsView {
         let target = active_index.and_then(|index| bounds.borrow().vertical_target(index));
         let slide = spring_slide(SharedString::from(format!("settings-nav-bar-{}", self.open_generation)), target, window, cx);
         let has_slide = slide.is_some();
-        if has_slide {
-            bounds.borrow_mut().placed = true;
-        }
         let container_bounds = bounds.clone();
         let list = v_flex()
             .relative()
             .gap_1()
-            .on_prepaint(move |rect, _, _| {
-                container_bounds.borrow_mut().container = Some(rect);
+            .on_prepaint(move |rect, window, _| {
+                if container_bounds.borrow_mut().record_container(rect) {
+                    window.request_animation_frame();
+                }
             })
             .when_some(slide, |this, (top, height)| {
                 let inset = px(6.);
@@ -231,6 +229,11 @@ impl SettingsView {
                     .rounded(theme.radius)
                     .text_sm()
                     .cursor_pointer()
+                    .on_prepaint(move |rect, window, _| {
+                        if item_bounds.borrow_mut().record_item(index, rect) {
+                            window.request_animation_frame();
+                        }
+                    })
                     .when(active, |this| {
                         this.bg(theme.list_active)
                             .font_semibold()
@@ -246,20 +249,10 @@ impl SettingsView {
                                         .bg(theme.primary),
                                 )
                             })
-                            .on_prepaint(move |rect, window, _| {
-                                let mut b = item_bounds.borrow_mut();
-                                let needs_kick = !b.placed && b.container.is_some();
-                                b.active_index = index;
-                                b.active_bounds = Some(rect);
-                                if needs_kick {
-                                    window.request_animation_frame();
-                                }
-                            })
                     })
                     .when(!active, |this| this.hover(|style| style.bg(theme.list_hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.section = section;
-                        cx.notify();
+                        this.switch_section(section, cx);
                     }))
                     .child(tr(cx, key))
             }));
@@ -312,8 +305,7 @@ impl SettingsView {
                             })
                             .when(!shortcuts_active, |this| this.hover(|style| style.bg(theme.list_hover)))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.section = Section::Shortcuts;
-                                cx.notify();
+                                this.switch_section(Section::Shortcuts, cx);
                             }))
                             .child(tr(cx, "settings.shortcutsTitle")),
                     )
@@ -335,11 +327,13 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-            TextSelection::activate_scope(self.selection_scope, window, cx);
-        }
         let open_delta = enter_progress(format!("settings-open-{}", self.open_generation), Duration::from_millis(150), window, cx);
-        let page_delta = enter_progress(format!("settings-section-{:?}", self.section), Duration::from_millis(120), window, cx);
+        let page_delta = enter_progress(
+            format!("settings-section-{}-{}", self.open_generation, self.section_generation),
+            Duration::from_millis(120),
+            window,
+            cx,
+        );
         let nav = self.render_nav(window, cx);
         let page = match self.section {
             Section::General => general::render(&self.store, window, cx).into_any_element(),
@@ -489,7 +483,6 @@ impl Render for SettingsView {
                             ),
                     ),
             )
-            .text_selection_scope(self.selection_scope)
     }
 }
 
@@ -557,9 +550,6 @@ pub(super) fn segmented(
     let target = active_index.and_then(|index| bounds.borrow().horizontal_target(index));
     let slide = spring_slide(SharedString::from(format!("seg-pill-{id}")), target, window, cx);
     let has_slide = slide.is_some();
-    if has_slide {
-        bounds.borrow_mut().placed = true;
-    }
     let container_bounds = bounds.clone();
     h_flex()
         .relative()
@@ -570,8 +560,10 @@ pub(super) fn segmented(
         .border_1()
         .border_color(theme.border)
         .bg(theme.muted)
-        .on_prepaint(move |rect, _, _| {
-            container_bounds.borrow_mut().container = Some(rect);
+        .on_prepaint(move |rect, window, _| {
+            if container_bounds.borrow_mut().record_container(rect) {
+                window.request_animation_frame();
+            }
         })
         .when_some(slide, |this, (left, width)| {
             this.child(
@@ -599,18 +591,14 @@ pub(super) fn segmented(
                 .font_medium()
                 .whitespace_nowrap()
                 .cursor_pointer()
+                .on_prepaint(move |rect, window, _| {
+                    if item_bounds.borrow_mut().record_item(index, rect) {
+                        window.request_animation_frame();
+                    }
+                })
                 .when(selected, |this| {
                     this.text_color(theme.primary_foreground)
                         .when(!has_slide, |this| this.bg(theme.primary))
-                        .on_prepaint(move |rect, window, _| {
-                            let mut b = item_bounds.borrow_mut();
-                            let needs_kick = !b.placed && b.container.is_some();
-                            b.active_index = index;
-                            b.active_bounds = Some(rect);
-                            if needs_kick {
-                                window.request_animation_frame();
-                            }
-                        })
                 })
                 .when(!selected, |this| {
                     this.text_color(theme.muted_foreground)

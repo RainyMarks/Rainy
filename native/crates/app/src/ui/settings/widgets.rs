@@ -92,17 +92,18 @@ pub(super) fn enter_progress(id: impl Into<gpui_kit::base::TransitionId>, durati
     if cx.reduce_motion() || duration.is_zero() {
         return 1.0;
     }
-    let keyframes = Keyframes::try_new([Keyframe::new(0.0, 0.0_f32).ease(Easing::EaseOut), Keyframe::new(1.0, 1.0_f32)]).expect("valid keyframes");
+    let Ok(keyframes) = Keyframes::try_new([Keyframe::new(0.0, 0.0_f32).ease(Easing::EaseOut), Keyframe::new(1.0, 1.0_f32)]) else {
+        return 1.0;
+    };
     animate_keyframes(id, &keyframes, Timing::new(duration), window, cx).value.clamp(0.0, 1.0)
 }
 
-/// Measured container and active item bounds for a sliding indicator (`on_prepaint` + `spring`).
+/// Measured container and per-item bounds for a sliding indicator (`on_prepaint` + `spring`).
+/// Caching every item's bounds lets switching tabs/segments start sliding on the very first frame with zero hard jump.
 #[derive(Default)]
 pub(super) struct SlidingBounds {
-    pub container: Option<Bounds<Pixels>>,
-    pub active_index: usize,
-    pub active_bounds: Option<Bounds<Pixels>>,
-    pub placed: bool,
+    container: Option<Bounds<Pixels>>,
+    items: Vec<Option<Bounds<Pixels>>>,
 }
 
 impl SlidingBounds {
@@ -111,12 +112,26 @@ impl SlidingBounds {
         state.read(cx).clone()
     }
 
-    pub fn horizontal_target(&self, active_index: usize) -> Option<(Pixels, Pixels)> {
-        if self.active_index != active_index {
-            return None;
+    /// Records container bounds; returns `true` only when transitioning from unmeasured to measured while items exist.
+    pub fn record_container(&mut self, rect: Bounds<Pixels>) -> bool {
+        let first = self.container.is_none();
+        self.container = Some(rect);
+        first && self.items.iter().any(Option::is_some)
+    }
+
+    /// Records bounds for item `index`; returns `true` only when that slot first becomes measurable with a ready container.
+    pub fn record_item(&mut self, index: usize, rect: Bounds<Pixels>) -> bool {
+        if self.items.len() <= index {
+            self.items.resize(index + 1, None);
         }
+        let first = self.items[index].is_none();
+        self.items[index] = Some(rect);
+        first && self.container.is_some()
+    }
+
+    pub fn horizontal_target(&self, active_index: usize) -> Option<(Pixels, Pixels)> {
         let container = self.container?;
-        let active = self.active_bounds?;
+        let active = (*self.items.get(active_index)?)?;
         if container.size.width <= px(0.) || active.size.width <= px(0.) {
             return None;
         }
@@ -124,11 +139,8 @@ impl SlidingBounds {
     }
 
     pub fn vertical_target(&self, active_index: usize) -> Option<(Pixels, Pixels)> {
-        if self.active_index != active_index {
-            return None;
-        }
         let container = self.container?;
-        let active = self.active_bounds?;
+        let active = (*self.items.get(active_index)?)?;
         if container.size.height <= px(0.) || active.size.height <= px(0.) {
             return None;
         }
@@ -193,5 +205,28 @@ mod tests {
         assert!(!guard.end_write(w2));
         assert!(!guard.busy());
         assert!(!guard.loading());
+    }
+
+    #[test]
+    fn sliding_bounds_caches_all_items_and_kicks_once_per_slot() {
+        let mut bounds = SlidingBounds::default();
+        let container = Bounds { origin: point(px(10.), px(20.)), size: size(px(200.), px(120.)) };
+        let item0 = Bounds { origin: point(px(12.), px(24.)), size: size(px(60.), px(28.)) };
+        let item1 = Bounds { origin: point(px(76.), px(56.)), size: size(px(80.), px(28.)) };
+
+        assert!(!bounds.record_container(container));
+        assert!(bounds.record_item(0, item0));
+        assert!(bounds.record_item(1, item1));
+        // Subsequent prepaints with already-measured slots never re-kick animation frames.
+        assert!(!bounds.record_container(container));
+        assert!(!bounds.record_item(0, item0));
+        assert!(!bounds.record_item(1, item1));
+
+        // Switching to any previously laid-out item resolves its target immediately on the same frame.
+        assert_eq!(bounds.horizontal_target(0), Some((px(2.), px(60.))));
+        assert_eq!(bounds.horizontal_target(1), Some((px(66.), px(80.))));
+        assert_eq!(bounds.vertical_target(0), Some((px(4.), px(28.))));
+        assert_eq!(bounds.vertical_target(1), Some((px(36.), px(28.))));
+        assert_eq!(bounds.horizontal_target(2), None);
     }
 }
