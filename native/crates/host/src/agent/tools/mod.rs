@@ -152,9 +152,16 @@ pub struct ToolContext {
     pub languages: Option<Arc<crate::ide::language::Languages>>,
     /// Shared Host ProjectMap index; absent in headless unit tests.
     pub maps: Option<Arc<crate::map::ProjectMaps>>,
+    /// Predicate returning true when a path is blocked by explicit `deny_paths` rules (for `grep`/`glob` walks).
+    pub deny_paths: Option<Arc<dyn Fn(&Path) -> bool + Send + Sync>>,
 }
 
 impl ToolContext {
+    /// Whether `path` is blocked by this chat's explicit `deny_paths` rules.
+    pub fn is_path_denied(&self, path: &Path) -> bool {
+        self.deny_paths.as_ref().is_some_and(|check| check(path))
+    }
+
     /// A tool path against the working directory, and the spelling the model is shown.
     pub fn resolve(&self, requested: &str) -> Result<(PathBuf, String), String> {
         if requested.trim().is_empty() || requested.contains('\0') {
@@ -191,12 +198,11 @@ impl ToolContext {
             Ok(()) => format!("\n[Output limited; full result: {}]\nUse read with offset/limit, or grep this path to search within it.\n", path.display()),
             Err(_) => "\n[Output limited]\n".to_owned(),
         };
-        let chars: Vec<char> = text.chars().collect();
         let mut window = (cap * 3) as usize;
         loop {
-            let head: String = chars[..(window * 3 / 4).min(chars.len())].iter().collect();
-            let tail: String = chars[chars.len().saturating_sub(window / 4)..].iter().collect();
-            let candidate = format!("{head}{note}{tail}");
+            let head_end = super::util::floor_char_boundary(&text, (window * 3 / 4).min(text.len()));
+            let tail_start = super::util::ceil_char_boundary(&text, text.len().saturating_sub(window / 4));
+            let candidate = if head_end >= tail_start { text.clone() } else { format!("{}{note}{}", &text[..head_end], &text[tail_start..]) };
             if estimate_text(&candidate) <= cap || window < 64 {
                 return candidate;
             }
@@ -298,6 +304,7 @@ pub fn test_context(cwd: &Path) -> ToolContext {
         jobs: None,
         languages: None,
         maps: None,
+        deny_paths: None,
     }
 }
 

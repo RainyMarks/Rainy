@@ -150,7 +150,9 @@ impl Shell {
     /// The program, its arguments and its environment for one command.
     fn prepare(&self, command: &str, cwd: &std::path::Path) -> Result<(PathBuf, Vec<String>, std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>), String> {
         let runtime = self.context.runtime.resolve(cwd).map_err(|error| error.message)?;
-        let mut env = crate::process::child_env(&runtime.environment);
+        let mut overlay = crate::experiments::ssh_extra_env();
+        overlay.extend(runtime.environment);
+        let mut env = crate::process::child_env(&overlay);
         for (name, value) in [("NO_COLOR", "1"), ("TERM", "dumb"), ("PAGER", "cat"), ("GIT_PAGER", "cat")] {
             env.insert(name.into(), value.into());
         }
@@ -256,7 +258,7 @@ impl Shell {
             Some(status) => Some(status),
             None => {
                 crate::process::kill_tree(&mut child, Duration::from_secs(3)).await;
-                child.wait().await.ok()
+                tokio::time::timeout(Duration::from_secs(3), child.wait()).await.ok().and_then(Result::ok)
             }
         };
         if cancel.is_cancelled() {

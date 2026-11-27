@@ -12,6 +12,8 @@ const MAX_RESULTS: usize = 20;
 const MAX_ENTRIES: usize = 50_000;
 /// Index entries are reused for this long.
 const INDEX_TTL_MS: u64 = 10_000;
+/// Maximum cached directory trees held in memory (LRU evicted).
+const MAX_CACHED_INDEXES: usize = 8;
 const EXCLUDED: [&str; 15] =
     [".git", "node_modules", "dist", "build", "out", "coverage", "target", ".next", ".nuxt", ".turbo", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".gradle"];
 
@@ -19,17 +21,29 @@ const EXCLUDED: [&str; 15] =
 struct Indexed {
     /// Relative to the root, with `/`.
     path: String,
+    /// Lowercased `path` cached at index build time to avoid re-lowercasing 50k paths per keystroke.
+    lower: String,
     directory: bool,
 }
 
-static INDEXES: LazyLock<Mutex<HashMap<PathBuf, (u64, Arc<Vec<Indexed>>)>>> = LazyLock::new(Mutex::default);
+struct CachedIndex {
+    built_at: u64,
+    last_used: u64,
+    entries: Arc<Vec<Indexed>>,
+}
+
+static INDEXES: LazyLock<Mutex<HashMap<PathBuf, CachedIndex>>> = LazyLock::new(Mutex::default);
 
 fn index(root: &Path) -> Arc<Vec<Indexed>> {
     let now = crate::text::now_ms();
-    if let Some((at, entries)) = INDEXES.lock().unwrap().get(root)
-        && now.saturating_sub(*at) < INDEX_TTL_MS
     {
-        return entries.clone();
+        let mut cache = INDEXES.lock().unwrap();
+        if let Some(entry) = cache.get_mut(root)
+            && now.saturating_sub(entry.built_at) < INDEX_TTL_MS
+        {
+            entry.last_used = now;
+            return entry.entries.clone();
+        }
     }
     let mut found = Vec::new();
     let mut builder = ignore::WalkBuilder::new(root);
@@ -56,34 +70,41 @@ fn index(root: &Path) -> Arc<Vec<Indexed>> {
             continue;
         };
         if kind.is_dir() {
-            found.push(Indexed { path: relative, directory: true });
+            let lower = relative.to_lowercase();
+            found.push(Indexed { path: relative, lower, directory: true });
         } else if kind.is_file() {
-            found.push(Indexed { path: relative, directory: false });
+            let lower = relative.to_lowercase();
+            found.push(Indexed { path: relative, lower, directory: false });
         }
     }
     let entries = Arc::new(found);
-    INDEXES.lock().unwrap().insert(root.to_path_buf(), (now, entries.clone()));
+    let mut cache = INDEXES.lock().unwrap();
+    cache.insert(root.to_path_buf(), CachedIndex { built_at: now, last_used: now, entries: entries.clone() });
+    while cache.len() > MAX_CACHED_INDEXES {
+        let Some(oldest) = cache.iter().min_by_key(|(_, entry)| entry.last_used).map(|(key, _)| key.clone()) else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
     entries
 }
 
-fn score(path: &str, query: &str) -> Option<u8> {
-    let lower = path.to_lowercase();
-    let query = query.to_lowercase();
-    let name = lower.rsplit('/').next().unwrap_or(&lower);
-    if name == query {
+fn score(lower: &str, query_lower: &str) -> Option<u8> {
+    let name = lower.rsplit('/').next().unwrap_or(lower);
+    if name == query_lower {
         return Some(0);
     }
-    if name.starts_with(&query) {
+    if name.starts_with(query_lower) {
         return Some(1);
     }
-    if name.contains(&query) {
+    if name.contains(query_lower) {
         return Some(2);
     }
-    if lower.contains(&query) {
+    if lower.contains(query_lower) {
         return Some(3);
     }
-    let mut rest = lower.as_str();
-    for char in query.chars() {
+    let mut rest = lower;
+    for char in query_lower.chars() {
         let at = rest.find(char)?;
         rest = &rest[at + char.len_utf8()..];
     }
@@ -108,12 +129,16 @@ pub fn files(root: &Path, query: &str) -> Vec<Value> {
         };
         let mut matches: Vec<&Indexed> = all
             .iter()
-            .filter(|entry| entry.path.strip_prefix(directory).is_some_and(|rest| !rest.is_empty() && !rest.contains('/') && rest.to_lowercase().starts_with(&fragment)))
+            .filter(|entry| {
+                entry.path.strip_prefix(directory).is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+                    && entry.lower.rsplit('/').next().is_some_and(|name| name.starts_with(&fragment))
+            })
             .collect();
         matches.sort_by(|left, right| right.directory.cmp(&left.directory).then_with(|| left.path.cmp(&right.path)));
         matches
     } else {
-        let mut ranked: Vec<(u8, &Indexed)> = all.iter().filter_map(|entry| Some((score(&entry.path, normalized)?, entry))).collect();
+        let query_lower = normalized.to_lowercase();
+        let mut ranked: Vec<(u8, &Indexed)> = all.iter().filter_map(|entry| Some((score(&entry.lower, &query_lower)?, entry))).collect();
         ranked.sort_by(|(left_rank, left), (right_rank, right)| left_rank.cmp(right_rank).then(left.path.len().cmp(&right.path.len())).then_with(|| left.path.cmp(&right.path)));
         ranked.into_iter().map(|(_, entry)| entry).collect()
     };

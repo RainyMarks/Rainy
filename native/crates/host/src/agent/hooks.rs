@@ -10,17 +10,21 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
+use tokio_util::sync::CancellationToken;
 
+use super::permissions::wildcard_match;
 use crate::error::{HostError, HostResult};
 use crate::ide::format;
 use crate::ide::tools::Tools as IdeTools;
 use crate::locale::l;
-use crate::process::{child_env, console_text, kill_tree, read_limited, resolve_powershell};
+use crate::process::{console_text, kill_tree, read_limited, resolve_powershell};
 
 /// Maximum number of hook rules loaded from one source.
 pub const MAX_HOOKS: usize = 64;
 /// Largest `.rainy/hooks.json` file read.
 const MAX_HOOKS_FILE_BYTES: u64 = 128 * 1024;
+/// Largest edited file formatted in place by the built-in `format` action.
+const MAX_FORMAT_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Default and maximum timeout per hook invocation.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
@@ -201,37 +205,6 @@ pub fn matches_file(extensions: &[String], file_path: &Path) -> bool {
     })
 }
 
-/// Simple wildcard matcher supporting `*` and `?`.
-fn wildcard_match(pattern: &str, text: &str, case_insensitive: bool) -> bool {
-    let (p, t): (Vec<char>, Vec<char>) = if case_insensitive {
-        (pattern.to_lowercase().chars().collect(), text.to_lowercase().chars().collect())
-    } else {
-        (pattern.chars().collect(), text.chars().collect())
-    };
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star_p, mut star_t) = (None, 0usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star_p = Some(pi);
-            pi += 1;
-            star_t = ti;
-        } else if let Some(sp) = star_p {
-            pi = sp + 1;
-            star_t += 1;
-            ti = star_t;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
-}
-
 /// Map a file extension to an `ide::format` language id.
 pub fn format_language(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -246,8 +219,16 @@ pub fn format_language(path: &Path) -> Option<&'static str> {
 }
 
 /// Run matching `PreToolUse` hooks. First hook exiting with code 2 blocks execution and feeds output to the model.
+#[allow(dead_code)]
 pub async fn run_pre_tool(rules: &[HookRule], ctx: &HookContext, tool: &str, args: &Value) -> PreHookOutcome {
+    run_pre_tool_cancellable(rules, ctx, tool, args, None).await
+}
+
+pub async fn run_pre_tool_cancellable(rules: &[HookRule], ctx: &HookContext, tool: &str, args: &Value, cancel: Option<&CancellationToken>) -> PreHookOutcome {
     for rule in rules {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
         if !rule.enabled || rule.event != "PreToolUse" || !matches_tool(rule.matcher.as_deref(), tool) {
             continue;
         }
@@ -259,7 +240,7 @@ pub async fn run_pre_tool(rules: &[HookRule], ctx: &HookContext, tool: &str, arg
             "sessionId": ctx.session_id,
         });
         let file_path = args.get("file_path").or_else(|| args.get("path")).and_then(Value::as_str);
-        match exec_command_hook(rule, ctx, "PreToolUse", Some(tool), file_path, &payload).await {
+        match exec_command_hook(rule, ctx, "PreToolUse", Some(tool), file_path, &payload, cancel).await {
             Ok((Some(2), output)) => {
                 let feedback = if output.trim().is_empty() {
                     format!("Blocked by PreToolUse hook (exit code 2) for tool `{tool}`.")
@@ -281,9 +262,17 @@ pub async fn run_pre_tool(rules: &[HookRule], ctx: &HookContext, tool: &str, arg
 }
 
 /// Run matching `PostToolUse` hooks after a tool finishes.
+#[allow(dead_code)]
 pub async fn run_post_tool(rules: &[HookRule], ctx: &HookContext, tool: &str, args: &Value, is_error: bool) -> PostHookReport {
+    run_post_tool_cancellable(rules, ctx, tool, args, is_error, None).await
+}
+
+pub async fn run_post_tool_cancellable(rules: &[HookRule], ctx: &HookContext, tool: &str, args: &Value, is_error: bool, cancel: Option<&CancellationToken>) -> PostHookReport {
     let mut report = PostHookReport::default();
     for rule in rules {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
         if !rule.enabled || rule.event != "PostToolUse" || !matches_tool(rule.matcher.as_deref(), tool) {
             continue;
         }
@@ -296,7 +285,7 @@ pub async fn run_post_tool(rules: &[HookRule], ctx: &HookContext, tool: &str, ar
             "sessionId": ctx.session_id,
         });
         let file_path = args.get("file_path").or_else(|| args.get("path")).and_then(Value::as_str);
-        match exec_command_hook(rule, ctx, "PostToolUse", Some(tool), file_path, &payload).await {
+        match exec_command_hook(rule, ctx, "PostToolUse", Some(tool), file_path, &payload, cancel).await {
             Ok((code, output)) => {
                 let trimmed = output.trim();
                 if !trimmed.is_empty() && (code == Some(2) || code != Some(0)) {
@@ -310,17 +299,28 @@ pub async fn run_post_tool(rules: &[HookRule], ctx: &HookContext, tool: &str, ar
 }
 
 /// Run matching `PostEdit` hooks for each edited file (supports built-in `ide::format` or user command).
+#[allow(dead_code)]
 pub async fn run_post_edit(rules: &[HookRule], ctx: &HookContext, tool: &str, edited_files: &[PathBuf]) -> PostHookReport {
+    run_post_edit_cancellable(rules, ctx, tool, edited_files, None).await
+}
+
+pub async fn run_post_edit_cancellable(rules: &[HookRule], ctx: &HookContext, tool: &str, edited_files: &[PathBuf], cancel: Option<&CancellationToken>) -> PostHookReport {
     let mut report = PostHookReport::default();
     if edited_files.is_empty() {
         return report;
     }
     for file in edited_files {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
         if !file.is_file() {
             continue;
         }
         let file_str = file.to_string_lossy().into_owned();
         for rule in rules {
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                break;
+            }
             if !rule.enabled || rule.event != "PostEdit" || !matches_tool(rule.matcher.as_deref(), tool) || !matches_file(&rule.extensions, file) {
                 continue;
             }
@@ -338,7 +338,7 @@ pub async fn run_post_edit(rules: &[HookRule], ctx: &HookContext, tool: &str, ed
                 "cwd": ctx.cwd.to_string_lossy(),
                 "sessionId": ctx.session_id,
             });
-            match exec_command_hook(rule, ctx, "PostEdit", Some(tool), Some(&file_str), &payload).await {
+            match exec_command_hook(rule, ctx, "PostEdit", Some(tool), Some(&file_str), &payload, cancel).await {
                 Ok((code, output)) => {
                     let trimmed = output.trim();
                     if !trimmed.is_empty() && code != Some(0) {
@@ -353,8 +353,16 @@ pub async fn run_post_edit(rules: &[HookRule], ctx: &HookContext, tool: &str, ed
 }
 
 /// Run matching `Stop` hooks when a session run finishes.
+#[allow(dead_code)]
 pub async fn run_stop(rules: &[HookRule], ctx: &HookContext, aborted: bool) {
+    run_stop_cancellable(rules, ctx, aborted, None).await;
+}
+
+pub async fn run_stop_cancellable(rules: &[HookRule], ctx: &HookContext, aborted: bool, cancel: Option<&CancellationToken>) {
     for rule in rules {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
         if !rule.enabled || rule.event != "Stop" {
             continue;
         }
@@ -364,7 +372,7 @@ pub async fn run_stop(rules: &[HookRule], ctx: &HookContext, aborted: bool) {
             "cwd": ctx.cwd.to_string_lossy(),
             "sessionId": ctx.session_id,
         });
-        if let Err(error) = exec_command_hook(rule, ctx, "Stop", None, None, &payload).await {
+        if let Err(error) = exec_command_hook(rule, ctx, "Stop", None, None, &payload, cancel).await {
             log::warn!("[hooks] Stop hook failed: {error}");
         }
     }
@@ -377,6 +385,10 @@ async fn run_builtin_format(ctx: &HookContext, file: &Path) -> bool {
     let Some(relative) = crate::paths::relative_to(&ctx.cwd, file).filter(|rel| !rel.is_empty()) else {
         return false;
     };
+    let Ok(meta) = std::fs::metadata(file) else { return false };
+    if !meta.is_file() || meta.len() > MAX_FORMAT_FILE_BYTES {
+        return false;
+    }
     let Ok(bytes) = std::fs::read(file) else { return false };
     let Ok(text) = std::str::from_utf8(&bytes) else { return false };
     let request = json!({ "path": relative, "language": language, "text": text });
@@ -398,9 +410,13 @@ async fn exec_command_hook(
     tool: Option<&str>,
     file_path: Option<&str>,
     payload: &Value,
+    cancel: Option<&CancellationToken>,
 ) -> Result<(Option<i32>, String), String> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return Err("hook cancelled".into());
+    }
     let command_text = rule.command.as_deref().map(str::trim).filter(|c| !c.is_empty()).ok_or("hook command is empty")?;
-    let mut env = child_env(&ctx.environment);
+    let mut env = crate::agent::util::scrubbed_child_env(&ctx.environment);
     env.insert("RAINY_HOOK_EVENT".into(), event.into());
     env.insert("RAINY_SESSION_ID".into(), ctx.session_id.clone().into());
     env.insert("RAINY_CWD".into(), ctx.cwd.as_os_str().to_owned());
@@ -436,12 +452,25 @@ async fn exec_command_hook(
         let (out, err, status) = tokio::join!(read_limited(stdout, MAX_OUTPUT_BYTES), read_limited(stderr, MAX_OUTPUT_BYTES), child.wait());
         (out, err, status)
     };
-    let (out, err, status) = match tokio::time::timeout(timeout, work).await {
-        Ok(done) => done,
-        Err(_) => {
+    let cancelled_fut = async {
+        match cancel {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let (out, err, status) = tokio::select! {
+        res = tokio::time::timeout(timeout, work) => match res {
+            Ok(done) => done,
+            Err(_) => {
+                kill_tree(&mut child, Duration::from_secs(2)).await;
+                let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+                return Err(format!("hook timed out after {}ms", timeout.as_millis()));
+            }
+        },
+        () = cancelled_fut => {
             kill_tree(&mut child, Duration::from_secs(2)).await;
-            let _ = child.wait().await;
-            return Err(format!("hook timed out after {}ms", timeout.as_millis()));
+            let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+            return Err("hook cancelled".into());
         }
     };
     let status = status.map_err(|error| error.to_string())?;
@@ -533,7 +562,7 @@ mod tests {
         } else {
             "echo 'policy denied' >&2; exit 2"
         };
-        let allow_cmd = if cfg!(windows) { "exit 0" } else { "exit 0" };
+        let allow_cmd = "exit 0";
         let rules = vec![
             HookRule {
                 id: Some("allow".into()),

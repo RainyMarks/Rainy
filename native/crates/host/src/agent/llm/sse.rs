@@ -1,27 +1,59 @@
 //! Server-sent events: `event:` and `data:` lines, an empty line ending each event.
 
+/// Hard ceiling on one buffered SSE line (16 MiB) and one accumulated event (32 MiB) to prevent OOM on malformed streams.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_EVENT_BYTES: usize = 32 * 1024 * 1024;
+
 /// Splits a byte stream into events; a line may arrive in pieces and a character across chunks.
 #[derive(Default)]
 pub struct Events {
     buffer: Vec<u8>,
     name: String,
     data: Vec<String>,
+    data_bytes: usize,
+    discarding_line: bool,
+    discarding_event: bool,
 }
 
 impl Events {
     /// The events a chunk completes, as `(event name, data)`.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<(String, String)> {
-        self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
-        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n' || *byte == b'\r') {
-            // A CR LF pair is one line break; a lone CR at the end may still be followed by its LF.
-            if self.buffer[end] == b'\r' && end + 1 == self.buffer.len() {
-                break;
+        let mut offset = 0;
+        while offset < chunk.len() {
+            if self.discarding_line {
+                match chunk[offset..].iter().position(|byte| *byte == b'\n' || *byte == b'\r') {
+                    Some(end) => {
+                        let at = offset + end;
+                        let skip = if chunk[at] == b'\r' && chunk.get(at + 1) == Some(&b'\n') { 2 } else { 1 };
+                        offset = at + skip;
+                        self.discarding_line = false;
+                    }
+                    None => break,
+                }
+                continue;
             }
-            let line = String::from_utf8_lossy(&self.buffer[..end]).into_owned();
-            let skip = if self.buffer[end] == b'\r' && self.buffer.get(end + 1) == Some(&b'\n') { 2 } else { 1 };
-            self.buffer.drain(..end + skip);
-            self.line(&line, &mut events);
+            let room = MAX_LINE_BYTES.saturating_sub(self.buffer.len());
+            let take = (chunk.len() - offset).min(room.max(1));
+            self.buffer.extend_from_slice(&chunk[offset..offset + take]);
+            offset += take;
+            while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n' || *byte == b'\r') {
+                // A CR LF pair is one line break; a lone CR at the end may still be followed by its LF.
+                if self.buffer[end] == b'\r' && end + 1 == self.buffer.len() && offset == chunk.len() {
+                    break;
+                }
+                let line = String::from_utf8_lossy(&self.buffer[..end]).into_owned();
+                let skip = if self.buffer[end] == b'\r' && self.buffer.get(end + 1) == Some(&b'\n') { 2 } else { 1 };
+                self.buffer.drain(..end + skip);
+                self.line(&line, &mut events);
+            }
+            if self.buffer.len() >= MAX_LINE_BYTES {
+                self.buffer.clear();
+                self.discarding_line = true;
+                self.discarding_event = true;
+                self.data.clear();
+                self.data_bytes = 0;
+            }
         }
         events
     }
@@ -29,30 +61,43 @@ impl Events {
     /// The last event of a stream that ended without an empty line.
     pub fn finish(&mut self) -> Vec<(String, String)> {
         let mut events = Vec::new();
-        if !self.buffer.is_empty() {
+        if !self.discarding_line && !self.buffer.is_empty() {
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.buffer)).trim_end_matches('\r').to_owned();
             self.line(&line, &mut events);
         }
+        self.buffer.clear();
+        self.discarding_line = false;
         self.line("", &mut events);
         events
     }
 
     fn line(&mut self, line: &str, events: &mut Vec<(String, String)>) {
         if line.is_empty() {
-            if !self.data.is_empty() {
+            if !self.discarding_event && !self.data.is_empty() {
                 events.push((std::mem::take(&mut self.name), self.data.join("\n")));
-                self.data.clear();
             }
+            self.data.clear();
+            self.data_bytes = 0;
             self.name.clear();
+            self.discarding_event = false;
             return;
         }
-        if line.starts_with(':') {
+        if self.discarding_event || line.starts_with(':') {
             return;
         }
         let (field, value) = line.split_once(':').map_or((line, ""), |(field, value)| (field, value.strip_prefix(' ').unwrap_or(value)));
         match field {
             "event" => self.name = value.to_owned(),
-            "data" => self.data.push(value.to_owned()),
+            "data" => {
+                if self.data_bytes.saturating_add(value.len() + 1) > MAX_EVENT_BYTES {
+                    self.discarding_event = true;
+                    self.data.clear();
+                    self.data_bytes = 0;
+                    return;
+                }
+                self.data_bytes += value.len() + 1;
+                self.data.push(value.to_owned());
+            }
             _ => {}
         }
     }

@@ -425,7 +425,16 @@ impl Reader for ResponsesReader {
                     Some(Slot::Call(index)) if item["type"] == "custom_tool_call" => {
                         let written = self.arguments.remove(&index).unwrap_or_default();
                         let input = item["input"].as_str().filter(|text| !text.is_empty()).map_or(written, str::to_owned);
-                        if let AssistantBlock::ToolCall { arguments, .. } = &mut output.content[index] {
+                        if let AssistantBlock::ToolCall { id, name, arguments, .. } = &mut output.content[index] {
+                            let done_id = format!("{}|{}", item["call_id"].as_str().unwrap_or_default(), item["id"].as_str().unwrap_or_default());
+                            if (id.is_empty() || id == "|") && done_id != "|" {
+                                *id = done_id;
+                            }
+                            if name.is_empty()
+                                && let Some(done_name) = item["name"].as_str().filter(|n| !n.is_empty())
+                            {
+                                *name = done_name.to_owned();
+                            }
                             *arguments = input_arguments(&input);
                         }
                         self.slots.remove(&at);
@@ -434,7 +443,16 @@ impl Reader for ResponsesReader {
                     Some(Slot::Call(index)) if item["type"] == "function_call" => {
                         let written = self.arguments.remove(&index).unwrap_or_default();
                         let text = item["arguments"].as_str().filter(|text| !text.is_empty()).map_or(written, str::to_owned);
-                        if let AssistantBlock::ToolCall { arguments, .. } = &mut output.content[index] {
+                        if let AssistantBlock::ToolCall { id, name, arguments, .. } = &mut output.content[index] {
+                            let done_id = format!("{}|{}", item["call_id"].as_str().unwrap_or_default(), item["id"].as_str().unwrap_or_default());
+                            if (id.is_empty() || id == "|") && done_id != "|" {
+                                *id = done_id;
+                            }
+                            if name.is_empty()
+                                && let Some(done_name) = item["name"].as_str().filter(|n| !n.is_empty())
+                            {
+                                *name = done_name.to_owned();
+                            }
                             *arguments = parse_arguments(if text.is_empty() { "{}" } else { &text });
                         }
                         self.slots.remove(&at);
@@ -479,7 +497,24 @@ impl Reader for ResponsesReader {
         {
             return Err(format!("OpenAI Responses stream completed with an unfinished tool call: {name} ({id})"));
         }
+        unique_call_ids(&mut output.content);
         Ok(())
+    }
+}
+
+/// Ensure every tool call in one response carries a unique non-empty id so results always pair back cleanly.
+fn unique_call_ids(blocks: &mut [AssistantBlock]) {
+    let mut seen = std::collections::HashSet::new();
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let AssistantBlock::ToolCall { id, .. } = block else { continue };
+        let base = if id.is_empty() || id == "|" { format!("call_{index}") } else { id.clone() };
+        let mut candidate = base.clone();
+        let mut suffix = 2usize;
+        while !seen.insert(candidate.clone()) {
+            candidate = format!("{base}_{suffix}");
+            suffix += 1;
+        }
+        *id = candidate;
     }
 }
 

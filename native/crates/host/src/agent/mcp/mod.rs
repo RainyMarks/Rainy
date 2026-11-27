@@ -78,7 +78,7 @@ pub struct McpManager {
     network: Arc<Network>,
     runtime: Option<tokio::runtime::Handle>,
     connections: Mutex<Vec<Arc<Mutex<Connection>>>>,
-    listeners: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
+    listeners: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl McpManager {
@@ -96,11 +96,12 @@ impl McpManager {
     }
 
     pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
-        self.listeners.lock().unwrap().push(Box::new(listener));
+        self.listeners.lock().unwrap().push(Arc::new(listener));
     }
 
     fn notify(&self) {
-        for listener in self.listeners.lock().unwrap().iter() {
+        let listeners = self.listeners.lock().unwrap().clone();
+        for listener in listeners {
             listener();
         }
     }
@@ -317,23 +318,33 @@ impl McpManager {
         if retired.is_cancelled() {
             return;
         }
-        let attempt = tokio::select! {
-            attempt = self.open(&config) => attempt,
-            () = retired.cancelled() => return,
-        };
+        // Pass `retired` into `open` so a stdio child process is explicitly closed via `kill_tree` on cancellation
+        // instead of leaking when a `tokio::select!` drops the future.
+        let attempt = self.open(&config, &retired).await;
+        if retired.is_cancelled() {
+            if let Ok((client, _, _)) = attempt {
+                client.close().await;
+            }
+            return;
+        }
         match attempt {
             Ok((client, tools, sse)) => {
-                if retired.is_cancelled() {
+                let installed = {
+                    let mut held = connection.lock().unwrap();
+                    if held.retired.is_cancelled() {
+                        false
+                    } else {
+                        held.instructions = client.instructions();
+                        held.tools = tools;
+                        held.client = Some(client.clone());
+                        held.state = "ready";
+                        held.error = None;
+                        true
+                    }
+                };
+                if !installed {
                     client.close().await;
                     return;
-                }
-                {
-                    let mut held = connection.lock().unwrap();
-                    held.instructions = client.instructions();
-                    held.tools = tools;
-                    held.client = Some(client.clone());
-                    held.state = "ready";
-                    held.error = None;
                 }
                 self.notify();
                 let connected = std::time::Instant::now();
@@ -422,7 +433,7 @@ impl McpManager {
     }
 
     /// Connect, shake hands and list the tools; whether the server speaks the older HTTP+SSE transport.
-    async fn open(&self, config: &McpServerConfig) -> Result<(Arc<Client>, Vec<ServerTool>, bool), String> {
+    async fn open(&self, config: &McpServerConfig, retired: &CancellationToken) -> Result<(Arc<Client>, Vec<ServerTool>, bool), String> {
         let headers: Vec<(String, String)> = config.headers.iter().flatten().map(|(name, value)| (name.clone(), value.clone())).collect();
         if config.transport == "stdio" {
             let command = config.command.clone().unwrap_or_default();
@@ -430,7 +441,7 @@ impl McpManager {
             if let Some(env) = &config.env {
                 overlay.extend(env.clone());
             }
-            let env = crate::process::child_env(&overlay);
+            let env = crate::agent::util::scrubbed_child_env(&overlay);
             let program = crate::process::resolve_executable(&command, Some(&env)).unwrap_or_else(|| command.clone().into());
             let cwd = crate::env::home_dir();
             let (client, stderr) = Client::stdio(&program, config.args.as_deref().unwrap_or_default(), &env, &cwd, &config.name).map_err(|error| {
@@ -441,11 +452,15 @@ impl McpManager {
                 }
             })?;
             let ready = async {
-                client.initialize(STDIO_CONNECT_TIMEOUT).await?;
-                client.list_tools(STDIO_CONNECT_TIMEOUT).await
+                client.initialize_cancellable(STDIO_CONNECT_TIMEOUT, retired).await?;
+                client.list_tools_cancellable(STDIO_CONNECT_TIMEOUT, retired).await
             };
             return match ready.await {
-                Ok(tools) => Ok((client, parse_tools(&tools), false)),
+                Ok(tools) if !retired.is_cancelled() => Ok((client, parse_tools(&tools), false)),
+                Ok(_) => {
+                    client.close().await;
+                    Err(Failure::Cancelled.to_string())
+                }
                 Err(failure) => {
                     client.close().await;
                     let output = stderr.lock().unwrap().trim().lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
@@ -463,19 +478,27 @@ impl McpManager {
         let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
         let client = Client::http(&self.network, &url, headers.clone()).await;
         let streamable = async {
-            client.initialize(CONNECT_TIMEOUT).await?;
-            client.list_tools(CONNECT_TIMEOUT).await
+            client.initialize_cancellable(CONNECT_TIMEOUT, retired).await?;
+            client.list_tools_cancellable(CONNECT_TIMEOUT, retired).await
         };
         match streamable.await {
-            Ok(tools) => Ok((client, parse_tools(&tools), false)),
+            Ok(tools) if !retired.is_cancelled() => Ok((client, parse_tools(&tools), false)),
+            Ok(_) => {
+                client.close().await;
+                Err(Failure::Cancelled.to_string())
+            }
             // A server from before Streamable HTTP refuses its POST with a 4xx status and speaks HTTP+SSE at the same
             // address. Authorization failures are reported as they are.
-            Err(Failure::Http(status, text)) if (400..500).contains(&status) && status != 401 && status != 403 => {
+            Err(Failure::Http(status, text)) if (400..500).contains(&status) && status != 401 && status != 403 && !retired.is_cancelled() => {
                 let first = Failure::Http(status, text).to_string();
                 log::info!("[mcp:{}] {first}; trying HTTP+SSE", config.name);
                 client.close().await;
                 let left = deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_secs(5));
-                let sse = match Client::sse(&self.network, &url, headers, left).await {
+                let sse = tokio::select! {
+                    res = Client::sse(&self.network, &url, headers, left) => res,
+                    () = retired.cancelled() => return Err(Failure::Cancelled.to_string()),
+                };
+                let sse = match sse {
                     Ok(sse) => sse,
                     // An address that is no SSE endpoint either adds nothing to the first error.
                     Err(Failure::Http(404 | 405, _)) => return Err(first),
@@ -483,13 +506,17 @@ impl McpManager {
                     Err(other) => return Err(other.to_string()),
                 };
                 let ready = async {
-                    sse.initialize(left).await?;
-                    sse.list_tools(left).await
+                    sse.initialize_cancellable(left, retired).await?;
+                    sse.list_tools_cancellable(left, retired).await
                 };
                 match ready.await {
-                    Ok(tools) => {
+                    Ok(tools) if !retired.is_cancelled() => {
                         log::info!("[mcp:{}] connected over HTTP+SSE", config.name);
                         Ok((sse, parse_tools(&tools), true))
+                    }
+                    Ok(_) => {
+                        sse.close().await;
+                        Err(Failure::Cancelled.to_string())
                     }
                     Err(failure) => {
                         sse.close().await;
@@ -528,15 +555,15 @@ fn limit_mcp_text(tool: &str, text: String, limiter: Option<&OutputLimiter>) -> 
     if let Some(limit) = limiter {
         return limit(tool, text);
     }
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= FALLBACK_MAX_CHARS {
+    let total_chars = text.chars().count();
+    if total_chars <= FALLBACK_MAX_CHARS {
         return text;
     }
     let head = FALLBACK_MAX_CHARS * 3 / 4;
     let tail = FALLBACK_MAX_CHARS - head;
-    let first: String = chars[..head].iter().collect();
-    let last: String = chars[chars.len() - tail..].iter().collect();
-    format!("{first}\n[Output limited ({} chars omitted)]\n{last}", chars.len() - FALLBACK_MAX_CHARS)
+    let head_byte = text.char_indices().nth(head).map_or(text.len(), |(idx, _)| idx);
+    let tail_byte = text.char_indices().nth(total_chars.saturating_sub(tail)).map_or(text.len(), |(idx, _)| idx);
+    format!("{}\n[Output limited ({} chars omitted)]\n{}", &text[..head_byte], total_chars - FALLBACK_MAX_CHARS, &text[tail_byte..])
 }
 
 /// One server tool as the model calls it.

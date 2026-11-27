@@ -407,11 +407,13 @@ impl Models {
             let status = response.status().as_u16();
             return Err(failed(l(&format!("模型列表请求失败（HTTP {status}）。"), &format!("The model list request failed (HTTP {status})."))));
         }
-        let text = response.text().await.map_err(|error| failed(error.to_string()))?;
-        if text.len() > 8 * 1024 * 1024 {
+        let bytes = crate::agent::util::read_http_body_limited(response, 8 * 1024 * 1024 + 1)
+            .await
+            .map_err(|error| failed(crate::agent::llm::transport_error(&error)))?;
+        if bytes.len() > 8 * 1024 * 1024 {
             return Err(failed(l("模型列表过大。", "The model list is too large.")));
         }
-        let body: Value = serde_json::from_str(&text).map_err(|error| failed(error.to_string()))?;
+        let body: Value = serde_json::from_slice(&bytes).map_err(|error| failed(error.to_string()))?;
         let listed: Vec<Value> = match (&body["data"], &body["models"]) {
             (Value::Array(data), _) => data.clone(),
             (_, Value::Array(models)) => models.clone(),

@@ -91,6 +91,31 @@ struct ActParams {
     text: Option<String>,
 }
 
+/// Strictly validate that `raw` is an HTTP(S) loopback URL with no backslashes or userinfo (prevents WHATWG URL parser discrepancy).
+fn validate_loopback_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('\\') {
+        return Err("invalid url: only loopback http:// or https:// URLs without backslashes are allowed".into());
+    }
+    let parsed = url::Url::parse(trimmed).map_err(|error| format!("invalid url: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("invalid url: only http:// and https:// loopback addresses are allowed".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("invalid url: userinfo is not allowed in preview URLs".into());
+    }
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    if !loopback {
+        return Err("invalid url: only loopback addresses (localhost, 127.0.0.1, ::1) may be opened".into());
+    }
+    Ok(parsed.into())
+}
+
 impl Browser {
     /// The browser tools; the screenshot only when the chat's model reads images.
     pub fn tools(context: &ToolContext, preview: Preview, vision: bool) -> Vec<Arc<dyn Tool>> {
@@ -132,9 +157,12 @@ impl Browser {
         tools
     }
 
-    async fn run(&self, args: Value) -> Result<ToolOutput, String> {
+    async fn run(&self, args: Value, cancel: CancellationToken) -> Result<ToolOutput, String> {
         let command = match self.kind {
-            Kind::Open => json!({ "action": "open", "url": params::<OpenParams>(args)?.url }),
+            Kind::Open => {
+                let url = validate_loopback_url(&params::<OpenParams>(args)?.url)?;
+                json!({ "action": "open", "url": url })
+            }
             Kind::Read => json!({ "action": "read" }),
             Kind::Screenshot => json!({ "action": "screenshot" }),
             Kind::Act => {
@@ -152,7 +180,10 @@ impl Browser {
                 }
             }
         };
-        let answer = (self.preview)(command).await?;
+        let answer = tokio::select! {
+            result = (self.preview)(command) => result?,
+            () = cancel.cancelled() => return Err("tool call aborted".into()),
+        };
         if self.kind == Kind::Screenshot {
             let Some(image) = answer["image"].as_str() else {
                 let mut output = ToolOutput::text(render_page(&answer), details(&answer));
@@ -179,7 +210,23 @@ impl Tool for Browser {
         &self.spec
     }
 
-    fn execute(&self, _call_id: String, args: Value, _cancel: CancellationToken, _updates: Updates) -> BoxFuture<'_, Result<ToolOutput, String>> {
-        Box::pin(self.run(args))
+    fn execute(&self, _call_id: String, args: Value, cancel: CancellationToken, _updates: Updates) -> BoxFuture<'_, Result<ToolOutput, String>> {
+        Box::pin(self.run(args, cancel))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_backslash_and_non_loopback_preview_urls() {
+        assert!(validate_loopback_url("http://localhost:5173/").is_ok());
+        assert!(validate_loopback_url("http://127.0.0.1:8080/app").is_ok());
+        assert!(validate_loopback_url("http://[::1]:3000/").is_ok());
+        assert!(validate_loopback_url(r"http://attacker.example\@127.0.0.1/?d=secret").is_err());
+        assert!(validate_loopback_url("http://user:pass@127.0.0.1:8080/").is_err());
+        assert!(validate_loopback_url("http://169.254.169.254/latest/meta-data/").is_err());
+        assert!(validate_loopback_url("file:///etc/passwd").is_err());
     }
 }

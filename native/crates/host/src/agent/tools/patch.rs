@@ -307,10 +307,10 @@ fn seek(lines: &[String], pattern: &[String], start: usize, end_of_file: bool) -
         return None;
     }
     let last = lines.len() - pattern.len();
-    let from = if end_of_file { last } else { start };
-    if from > last {
+    if start > last {
         return None;
     }
+    let from = if end_of_file { last } else { start };
     type Equal = dyn Fn(&str, &str) -> bool;
     let passes: [&Equal; 4] = [
         &|a, b| a == b,
@@ -362,7 +362,15 @@ pub fn apply_chunks(text: &str, chunks: &[Chunk], display: &str) -> Result<Strin
         at = index + old.len();
     }
     replacements.sort_by_key(|(index, _, _)| *index);
+    for pair in replacements.windows(2) {
+        if pair[0].0.saturating_add(pair[0].1) > pair[1].0 {
+            return Err(format!("Overlapping patch hunks in {display}"));
+        }
+    }
     for (index, length, new) in replacements.into_iter().rev() {
+        if index.saturating_add(length) > lines.len() {
+            return Err(format!("Patch hunk out of range in {display}"));
+        }
         lines.splice(index..index + length, new);
     }
     let mut result = lines.join("\n");
@@ -372,6 +380,9 @@ pub fn apply_chunks(text: &str, chunks: &[Chunk], display: &str) -> Result<Strin
     Ok(result)
 }
 
+/// Largest file or patch payload read/written by `apply_patch`, preventing OOM on huge files.
+const MAX_PATCH_FILE_BYTES: u64 = MAX_SNAPSHOT_BYTES;
+
 /// A file's planned state: its bytes now on disk and after the patch (`None`: absent).
 struct Planned {
     absolute: PathBuf,
@@ -379,6 +390,8 @@ struct Planned {
     original: Option<Vec<u8>>,
     result: Option<Vec<u8>>,
     moved_from: Option<String>,
+    #[cfg(unix)]
+    mode: Option<u32>,
 }
 
 pub struct ApplyPatch {
@@ -418,12 +431,32 @@ impl ApplyPatch {
             if let Some(at) = index.get(&key) {
                 return Ok(*at);
             }
-            let original = match std::fs::metadata(&absolute) {
+            let (original, _mode) = match std::fs::metadata(&absolute) {
                 Ok(info) if info.is_dir() => return Err(format!("cannot patch \"{display}\": it is a directory")),
-                Ok(_) => Some(std::fs::read(&absolute).map_err(|error| format!("cannot read \"{display}\": {error}"))?),
-                Err(_) => None,
+                Ok(info) if info.len() > MAX_PATCH_FILE_BYTES => {
+                    return Err(format!("cannot patch \"{display}\": file is too large ({} bytes, limit {MAX_PATCH_FILE_BYTES})", info.len()));
+                }
+                Ok(_info) => {
+                    #[cfg(unix)]
+                    let mode = {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        Some(_info.permissions().mode())
+                    };
+                    #[cfg(not(unix))]
+                    let mode: Option<u32> = None;
+                    (Some(std::fs::read(&absolute).map_err(|error| format!("cannot read \"{display}\": {error}"))?), mode)
+                }
+                Err(_) => (None, None),
             };
-            planned.push(Planned { absolute, display, result: original.clone(), original, moved_from: None });
+            planned.push(Planned {
+                absolute,
+                display,
+                result: original.clone(),
+                original,
+                moved_from: None,
+                #[cfg(unix)]
+                mode: _mode,
+            });
             index.insert(key, planned.len() - 1);
             Ok(planned.len() - 1)
         };
@@ -488,6 +521,10 @@ impl ApplyPatch {
                                 planned[at].result = None;
                                 planned[to].result = Some(output);
                                 planned[to].moved_from = Some(display);
+                                #[cfg(unix)]
+                                {
+                                    planned[to].mode = planned[at].mode;
+                                }
                             }
                         }
                         None => planned[at].result = Some(output),
@@ -500,6 +537,9 @@ impl ApplyPatch {
 
     async fn run(&self, call_id: String, args: Value) -> Result<ToolOutput, String> {
         let input = args.get("input").and_then(Value::as_str).or_else(|| args.get("patch").and_then(Value::as_str)).ok_or("apply_patch needs the patch text in `input`")?;
+        if input.len() as u64 > MAX_PATCH_FILE_BYTES {
+            return Err(format!("patch input is too large ({} bytes, limit {MAX_PATCH_FILE_BYTES})", input.len()));
+        }
         let hunks = parse(input)?;
         let planned = self.plan(&hunks)?;
         let context = &self.context;
@@ -508,10 +548,20 @@ impl ApplyPatch {
         for file in planned.iter().filter(|file| file.result != file.original) {
             match &file.result {
                 Some(bytes) => {
+                    if bytes.len() as u64 > MAX_PATCH_FILE_BYTES {
+                        return Err(applied_so_far(&summary, format!("cannot write \"{}\": result exceeds {MAX_PATCH_FILE_BYTES} bytes", file.display)));
+                    }
                     if let Some(parent) = file.absolute.parent() {
                         std::fs::create_dir_all(parent).map_err(|error| applied_so_far(&summary, format!("cannot create the folder of \"{}\": {error}", file.display)))?;
                     }
                     std::fs::write(&file.absolute, bytes).map_err(|error| applied_so_far(&summary, format!("cannot write \"{}\": {error}", file.display)))?;
+                    #[cfg(unix)]
+                    if let Some(mode) = file.mode
+                        && file.moved_from.is_some()
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        let _ = std::fs::set_permissions(&file.absolute, std::fs::Permissions::from_mode(mode));
+                    }
                     if let Some(written) = version_of(&file.absolute)? {
                         context.observations.record(&file.absolute, Some(written));
                     }
@@ -663,5 +713,17 @@ mod tests {
         context.observations.record(&long_path, version_of(&long_path).unwrap());
         tool.run("c6".into(), json!({ "input": "*** Begin Patch\n*** Update File: long_crlf.txt\n-old\n+new\n*** End Patch" })).await.unwrap();
         assert_eq!(std::fs::read(&long_path).unwrap(), format!("{long_header}\r\nnew\r\nend\r\n").into_bytes());
+    }
+
+    #[test]
+    fn end_of_file_hunk_cannot_overlap_earlier_chunk_or_panic() {
+        let text = "l0\nl1\nl2\nl3\nl4\nl5\nl6\n";
+        // Chunk 1 consumes lines 2..5 (at = 5); Chunk 2 marked End of File tries to match lines 3..7 (last = 3 < 5).
+        // Previously `seek` ignored `start` and caused an out-of-bounds panic in `Vec::splice`.
+        let chunks = vec![
+            Chunk { context: Vec::new(), old: lines(&["l2", "l3", "l4"]), new: lines(&["X"]), end_of_file: false },
+            Chunk { context: Vec::new(), old: lines(&["l3", "l4", "l5", "l6"]), new: Vec::new(), end_of_file: true },
+        ];
+        assert!(apply_chunks(text, &chunks, "overlap.txt").is_err());
     }
 }

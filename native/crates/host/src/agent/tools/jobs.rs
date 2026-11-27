@@ -74,29 +74,34 @@ impl Jobs {
 
     /// Start a command that keeps running.
     pub fn start(self: &Arc<Self>, spec: Spec) -> Result<Job, String> {
-        let live = self.entries.lock().unwrap().iter().filter(|entry| entry.lock().unwrap().job.state == "running").count();
-        if live >= MAX_JOBS {
-            return Err(format!("too many background commands are running ({live}); stop one with stop_command before starting another"));
-        }
-        let id = {
-            let mut next = self.next.lock().unwrap();
-            *next += 1;
-            format!("cmd-{}", *next - 1)
-        };
+        let handle = tokio::runtime::Handle::try_current().map_err(|_| "background commands require an active Tokio runtime".to_owned())?;
         let (exited_tx, exited) = watch::channel(false);
-        let job = Job {
-            id: id.clone(),
-            command: spec.command,
-            description: spec.description,
-            cwd: spec.cwd.to_string_lossy().into_owned(),
-            started_at: crate::text::now_ms(),
-            state: "running",
-            exit_code: None,
-            signal: None,
-            pending: 0,
+        let (job, entry) = {
+            let mut entries = self.entries.lock().unwrap();
+            let live = entries.iter().filter(|entry| entry.lock().unwrap().job.state == "running").count();
+            if live >= MAX_JOBS {
+                return Err(format!("too many background commands are running ({live}); stop one with stop_command before starting another"));
+            }
+            let id = {
+                let mut next = self.next.lock().unwrap();
+                *next += 1;
+                format!("cmd-{}", *next - 1)
+            };
+            let job = Job {
+                id,
+                command: spec.command,
+                description: spec.description,
+                cwd: spec.cwd.to_string_lossy().into_owned(),
+                started_at: crate::text::now_ms(),
+                state: "running",
+                exit_code: None,
+                signal: None,
+                pending: 0,
+            };
+            let entry = Arc::new(Mutex::new(Entry { job: job.clone(), pid: None, output: Vec::new(), dropped: 0, exited }));
+            entries.push(entry.clone());
+            (job, entry)
         };
-        let entry = Arc::new(Mutex::new(Entry { job: job.clone(), pid: None, output: Vec::new(), dropped: 0, exited }));
-        self.entries.lock().unwrap().push(entry.clone());
         match crate::process::spawn(&spec.program, &spec.args, &spec.cwd, &spec.env, false) {
             Ok(mut child) => {
                 entry.lock().unwrap().pid = child.id();
@@ -105,7 +110,7 @@ impl Jobs {
                     .flatten()
                     .map(|mut stream| {
                         let entry = entry.clone();
-                        tokio::spawn(async move {
+                        handle.spawn(async move {
                             let mut buffer = [0u8; 8192];
                             while let Ok(read) = stream.read(&mut buffer).await {
                                 if read == 0 {
@@ -117,7 +122,7 @@ impl Jobs {
                     })
                     .collect();
                 let (jobs, entry) = (self.clone(), entry.clone());
-                tokio::spawn(async move {
+                handle.spawn(async move {
                     let status = child.wait().await;
                     for reader in readers {
                         let _ = reader.await;
@@ -159,6 +164,7 @@ impl Jobs {
         };
         if job.state == "exited" {
             self.entries.lock().unwrap().retain(|other| !Arc::ptr_eq(other, &entry));
+            (self.on_change)();
         }
         Ok((job, text))
     }

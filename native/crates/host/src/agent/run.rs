@@ -175,9 +175,10 @@ async fn run_tools<H: Hooks>(state: &State, hooks: &H, reply: &AssistantMessage,
         }
         return (results, terminate);
     }
-    let sequential = calls.iter().any(|(_, name, _)| state.tools.iter().any(|tool| tool.spec().name == *name && tool.sequential()));
+    let sequential = calls.iter().any(|(_, name, _)| state.tools.iter().any(|tool| tool.spec().name.eq_ignore_ascii_case(name) && tool.sequential()));
     if sequential {
-        for (id, name, args) in calls {
+        let mut iter = calls.into_iter();
+        while let Some((id, name, args)) = iter.next() {
             hooks.event(Event::ToolStarted { id, name, args }).await;
             let output = match prepare(state, hooks, id, name, args, cancel).await {
                 Prepared::Done { output, .. } => output,
@@ -188,12 +189,19 @@ async fn run_tools<H: Hooks>(state: &State, hooks: &H, reply: &AssistantMessage,
             hooks.event(Event::Result(&result)).await;
             results.push((result, terminate));
             if cancel.is_cancelled() {
+                for (skipped_id, skipped_name, _) in iter {
+                    let (result, _) = result_of(skipped_id, skipped_name, failed("Tool call aborted."));
+                    hooks.event(Event::Result(&result)).await;
+                    results.push((result, false));
+                }
                 break;
             }
         }
     } else {
         let mut prepared = Vec::new();
-        for (id, name, args) in calls {
+        let mut skipped = Vec::new();
+        let mut iter = calls.into_iter();
+        while let Some((id, name, args)) = iter.next() {
             hooks.event(Event::ToolStarted { id, name, args }).await;
             let call = prepare(state, hooks, id, name, args, cancel).await;
             if let Prepared::Done { .. } = &call {
@@ -201,6 +209,7 @@ async fn run_tools<H: Hooks>(state: &State, hooks: &H, reply: &AssistantMessage,
             }
             prepared.push(call);
             if cancel.is_cancelled() {
+                skipped.extend(iter.map(|(skipped_id, skipped_name, _)| (skipped_id.to_owned(), skipped_name.to_owned())));
                 break;
             }
         }
@@ -219,6 +228,11 @@ async fn run_tools<H: Hooks>(state: &State, hooks: &H, reply: &AssistantMessage,
             let (result, terminate) = result_of(&id, &name, output);
             hooks.event(Event::Result(&result)).await;
             results.push((result, terminate));
+        }
+        for (skipped_id, skipped_name) in skipped {
+            let (result, _) = result_of(&skipped_id, &skipped_name, failed("Tool call aborted."));
+            hooks.event(Event::Result(&result)).await;
+            results.push((result, false));
         }
     }
     let terminate = !results.is_empty() && results.iter().all(|(_, terminate)| *terminate);
@@ -267,3 +281,120 @@ pub async fn run<H: Hooks>(llm: &Llm, state: &mut State, prompts: Vec<(Message, 
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::future::BoxFuture;
+    use serde_json::json;
+
+    use super::*;
+    use crate::agent::llm::{Api, Model, ToolSpec};
+    use crate::settings::ModelSetup;
+
+    struct CancelAfterFirst {
+        spec: ToolSpec,
+        cancel: CancellationToken,
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    impl Tool for CancelAfterFirst {
+        fn spec(&self) -> &ToolSpec {
+            &self.spec
+        }
+
+        fn execute(&self, call_id: String, _args: Value, _cancel: CancellationToken, _updates: Updates) -> BoxFuture<'_, Result<ToolOutput, String>> {
+            let cancel = self.cancel.clone();
+            let active = self.active.clone();
+            let max_active = self.max_active.clone();
+            Box::pin(async move {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                if call_id == "c1" {
+                    cancel.cancel();
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(ToolOutput::text("ok", json!({})))
+            })
+        }
+    }
+
+    struct RecordingHooks {
+        results: Mutex<Vec<(String, bool)>>,
+    }
+
+    impl Hooks for RecordingHooks {
+        type Meta = ();
+        fn steering(&self) -> Vec<(Message, ())> {
+            Vec::new()
+        }
+        async fn event(&self, event: Event<'_, ()>) {
+            if let Event::Result(result) = event {
+                self.results.lock().unwrap().push((result.tool_call_id.clone(), result.is_error));
+            }
+        }
+        fn streaming(&self, _event: llm::Event, _reply: &AssistantMessage) {}
+        async fn before_tool(&self, _id: &str, _name: &str, _args: &Value, _cancel: &CancellationToken) -> Option<Blocked> {
+            None
+        }
+        async fn prepare_request(&self, _state: &mut State, _cancel: &CancellationToken) {}
+    }
+
+    #[tokio::test]
+    async fn run_tools_matches_sequential_case_insensitively_and_completes_aborted_calls() {
+        let cancel = CancellationToken::new();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let tool = Arc::new(CancelAfterFirst {
+            spec: ToolSpec { name: "edit".into(), description: String::new(), parameters: json!({ "type": "object", "properties": {} }), freeform: None },
+            cancel: cancel.clone(),
+            active,
+            max_active: max_active.clone(),
+        });
+        let setup = ModelSetup {
+            provider: "p".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            model: "m".into(),
+            context_window: 16_000,
+            max_tokens: None,
+            local: true,
+            api: Some(Api::Completions.as_str().into()),
+            thinking: None,
+            thinking_format: None,
+            max_tokens_field: None,
+            images: None,
+        };
+        let state = State {
+            model: Model::from_setup(&setup, 4096),
+            reasoning: None,
+            system: String::new(),
+            tools: vec![tool],
+            messages: Vec::new(),
+            session_id: None,
+            api_key: None,
+            thread: None,
+        };
+        // Capitalized "Edit" must still run sequentially and fill aborted ToolResult for c2.
+        let reply: AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [
+                { "type": "toolCall", "id": "c1", "name": "Edit", "arguments": {} },
+                { "type": "toolCall", "id": "c2", "name": "Edit", "arguments": {} }
+            ],
+            "api": "openai-completions", "provider": "p", "model": "m", "stopReason": "toolUse", "timestamp": 1, "usage": {}
+        }))
+        .unwrap();
+        let hooks = RecordingHooks { results: Mutex::default() };
+        let (results, _) = run_tools(&state, &hooks, &reply, &cancel).await;
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].tool_call_id, "c1");
+        assert!(!results[0].is_error);
+        assert_eq!(results[1].tool_call_id, "c2");
+        assert!(results[1].is_error);
+        assert_eq!(hooks.results.lock().unwrap().len(), 2);
+    }
+}

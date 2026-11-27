@@ -1,11 +1,15 @@
 //! Skills (3.x `skills.ts`): `SKILL.md` files the model reads when relevant; the system prompt lists only their
 //! descriptions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde::Serialize;
 
 use super::budget::estimate_text;
+use super::util::truncate_bytes_ellipsis;
+
+static CLOSE_SKILLS_TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)</\s*untrusted-skills\s*>").unwrap());
 
 /// Largest SKILL.md that is listed.
 const MAX_SKILL_BYTES: u64 = 256 * 1024;
@@ -23,17 +27,6 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: String,
-}
-
-fn truncate_bytes(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_owned();
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &text[..end])
 }
 
 /// A front-matter scalar: plain, quoted, or a `|` / `>` block of the indented lines that follow.
@@ -75,7 +68,7 @@ pub fn describe(text: &str, fallback_name: &str) -> (String, String) {
     if description.is_empty() {
         description = body.split("\n\n").map(str::trim).find(|part| !part.is_empty() && !part.starts_with('#')).map(|part| part.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
     }
-    (name, truncate_bytes(&description, MAX_DESCRIPTION_BYTES))
+    (name, truncate_bytes_ellipsis(&description, MAX_DESCRIPTION_BYTES))
 }
 
 fn scan(root: &Path, scope: &'static str) -> Vec<Skill> {
@@ -100,22 +93,22 @@ fn scan(root: &Path, scope: &'static str) -> Vec<Skill> {
     skills
 }
 
-/// Skills for a working directory: the project's `<cwd>/.rainy/skills`, then the user's `~/.rainy-agent/skills`. Project
-/// skills load whether or not the workspace is trusted, like AGENTS.md: they are only text, fenced in the prompt as
-/// untrusted data (see [`section`]).
+/// Skills for a working directory: the project's `<cwd>/.rainy/skills`, then the user's `<RAINY_HOME>/skills`
+/// (default `~/.rainy-agent/skills`). Project skills load whether or not the workspace is trusted, like AGENTS.md:
+/// they are only text, fenced in the prompt as untrusted data (see [`section`]).
 pub fn discover(cwd: Option<&Path>) -> Vec<Skill> {
     let mut skills = cwd.map(|cwd| scan(&cwd.join(".rainy").join("skills"), "project")).unwrap_or_default();
-    skills.extend(scan(&crate::env::home_dir().join(".rainy-agent").join("skills"), "user"));
+    let user_root = std::env::var("RAINY_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::env::home_dir().join(".rainy-agent"));
+    skills.extend(scan(&user_root.join("skills"), "user"));
     skills
 }
 
-fn escape_close_tag(text: &str, tag: &str) -> String {
-    let pattern = format!(r"(?i)</\s*{}\s*>", regex::escape(tag));
-    if let Ok(re) = regex::Regex::new(&pattern) {
-        re.replace_all(text, format!("<\\/{tag}>")).into_owned()
-    } else {
-        text.to_owned()
-    }
+fn escape_close_tag(text: &str) -> String {
+    CLOSE_SKILLS_TAG.replace_all(text, r"<\/untrusted-skills>").into_owned()
 }
 
 /// The system-prompt text listing skills, wrapped in an untrusted XML boundary within [`PROMPT_TOKENS`].
@@ -126,10 +119,10 @@ pub fn section(skills: &[Skill]) -> String {
         let desc = if skill.description.is_empty() { &skill.name } else { &skill.description };
         let text = format!(
             "Skill \"{}\" (scope: {}): {}\nRead \"{}\" for the full instructions when this skill is relevant.",
-            escape_close_tag(&skill.id, "untrusted-skills"),
+            escape_close_tag(&skill.id),
             skill.scope,
-            escape_close_tag(desc, "untrusted-skills"),
-            escape_close_tag(&skill.path, "untrusted-skills"),
+            escape_close_tag(desc),
+            escape_close_tag(&skill.path),
         );
         let cost = estimate_text(&text);
         if tokens + cost > PROMPT_TOKENS {

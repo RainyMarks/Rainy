@@ -35,6 +35,9 @@ pub struct Report {
     pub calls: usize,
     /// `steps`, `time` or `budget` when it stopped at a limit.
     pub stopped: Option<&'static str>,
+    pub usage: rainy_protocol::chat::UsageSummary,
+    pub provider: String,
+    pub model: String,
 }
 
 /// Runs sub-agents for one chat.
@@ -61,6 +64,7 @@ pub struct Task {
     context: ToolContext,
     runner: Arc<dyn Subagents>,
     spec: ToolSpec,
+    slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl Task {
@@ -80,7 +84,7 @@ impl Task {
                 "required": ["description", "prompt"],
             }),
         );
-        Self { context, runner, spec }
+        Self { context, runner, spec, slots: Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_TASKS)) }
     }
 }
 
@@ -102,6 +106,10 @@ impl Tool for Task {
             if params.description.trim().is_empty() {
                 return Err("invalid description: expected a short label".into());
             }
+            let _permit = tokio::select! {
+                permit = self.slots.acquire() => permit.map_err(|_| "sub-agent runner closed".to_owned())?,
+                () = cancel.cancelled() => return Err("tool call aborted".into()),
+            };
             let model = params.model.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
             let description = params.description.clone();
             let progress: Arc<dyn Fn(Progress) + Send + Sync> = Arc::new(move |progress: Progress| {
@@ -119,8 +127,16 @@ impl Tool for Task {
             };
             let text = if report.text.trim().is_empty() { "(the sub-agent reported nothing)".to_owned() } else { report.text };
             let mut details = json!({ "description": params.description, "steps": report.steps, "calls": report.calls, "activity": report.activity });
-            if let Some(model) = model {
+            if !report.provider.is_empty() {
+                details["provider"] = json!(report.provider);
+            }
+            if !report.model.is_empty() {
+                details["model"] = json!(report.model);
+            } else if let Some(model) = model {
                 details["model"] = json!(model);
+            }
+            if report.usage.input + report.usage.output + report.usage.cache_read + report.usage.cache_write > 0.0 {
+                details["usage"] = json!(report.usage);
             }
             if let Some(stopped) = report.stopped {
                 details["stopped"] = json!(stopped);

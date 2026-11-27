@@ -3,13 +3,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rainy_protocol::chat::{AssistantMessage, UsageSummary};
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::compaction::usage_of;
+use super::compaction::{add_usage, usage_of};
 use super::llm::{self, Llm, Message, reply_text};
 use super::models::Resolved;
 use super::run::{self, Blocked, Event, Hooks, State};
@@ -82,8 +82,11 @@ struct Track {
     calls: usize,
     steps: usize,
     tokens: u64,
+    usage: UsageSummary,
     text: String,
     partial: String,
+    last_stream_emit: Option<Instant>,
+    error: Option<String>,
     stopped: Option<&'static str>,
 }
 
@@ -131,8 +134,12 @@ impl Hooks for SubHooks {
                     let said = reply_text(message);
                     if !said.trim().is_empty() {
                         track.text = said;
+                        track.error = None;
+                    } else if message.stop_reason == "error" {
+                        track.error = Some(message.error_message.clone().unwrap_or_else(|| "Sub-agent model request failed.".into()));
                     }
                     let used = usage_of(message);
+                    track.usage = add_usage(&track.usage, &used);
                     track.tokens = track.tokens.saturating_add(fresh_tokens(&used));
                     emit_usage = Some(used);
                     if track.steps >= MAX_STEPS {
@@ -156,8 +163,13 @@ impl Hooks for SubHooks {
     }
 
     fn streaming(&self, _event: llm::Event, reply: &AssistantMessage) {
+        let now = Instant::now();
         let progress = {
             let mut track = self.track.lock().unwrap();
+            if track.last_stream_emit.is_some_and(|last| now.duration_since(last) < Duration::from_millis(80)) {
+                return;
+            }
+            track.last_stream_emit = Some(now);
             track.partial = reply_text(reply);
             Progress { activity: track.activity.clone(), calls: track.calls, steps: track.steps, text: track.partial.clone() }
         };
@@ -212,7 +224,21 @@ pub async fn run_subagent(llm: &Llm, input: Input, cancel: CancellationToken) ->
             call["state"] = json!("failed");
         }
     }
-    Ok(Report { text: track.text, steps: track.steps, activity: track.activity, calls: track.calls, stopped: track.stopped })
+    if track.text.trim().is_empty()
+        && let Some(error) = track.error
+    {
+        return Err(error);
+    }
+    Ok(Report {
+        text: track.text,
+        steps: track.steps,
+        activity: track.activity,
+        calls: track.calls,
+        stopped: track.stopped,
+        usage: track.usage,
+        provider: input.resolved.model.provider,
+        model: input.resolved.model.id,
+    })
 }
 
 #[cfg(test)]

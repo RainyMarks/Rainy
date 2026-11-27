@@ -76,13 +76,20 @@ async fn post(web: &WebAccess, path: &str, body: Value, timeout: Duration, cance
             Err(error) => return Err(format!("web {what} could not reach DeepSeek: {}", crate::agent::llm::transport_error(&error))),
         };
         let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
+        let bytes = tokio::select! {
+            body = crate::agent::util::read_http_body_limited(response, 16 * 1024 * 1024) => body.unwrap_or_default(),
+            () = cancel.cancelled() => return Err("tool call aborted".into()),
+        };
+        let text = String::from_utf8_lossy(&bytes);
         if (200..300).contains(&status) {
             return serde_json::from_str(&text).map_err(|_| format!("web {what} returned an unreadable answer"));
         }
         // One quiet retry for the per-second limit and passing server errors.
         if attempt == 0 && (status == 429 || status >= 500) {
-            tokio::time::sleep(Duration::from_millis(1200)).await;
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(1200)) => {}
+                () = cancel.cancelled() => return Err("tool call aborted".into()),
+            }
             continue;
         }
         return Err(failure(status, &text, what));

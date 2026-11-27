@@ -1,5 +1,8 @@
 //! `read`: a line-numbered window of a text file.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -26,12 +29,24 @@ pub struct Window {
 }
 
 /// The window `offset..offset+limit` (1-based) of a sequence of lines.
+#[allow(dead_code)]
 pub fn window(lines: impl Iterator<Item = String>, offset: usize, limit: usize, display: &str) -> Result<Window, String> {
+    window_cancellable(lines, offset, limit, display, None, false)
+}
+
+fn window_cancellable(lines: impl Iterator<Item = String>, offset: usize, limit: usize, display: &str, cancelled: Option<&AtomicBool>, stop_after_window: bool) -> Result<Window, String> {
     let mut window = Window { lines: Vec::new(), total: 0, capped: false };
     let mut bytes = 0;
     for raw in lines {
+        if window.total & 1023 == 0 && cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err("tool call aborted".into());
+        }
         window.total += 1;
         if window.capped || window.total < offset || window.lines.len() >= limit {
+            if stop_after_window && (window.capped || window.lines.len() >= limit) {
+                window.capped = true;
+                break;
+            }
             continue;
         }
         let line = raw.strip_suffix('\r').unwrap_or(&raw);
@@ -39,6 +54,9 @@ pub fn window(lines: impl Iterator<Item = String>, offset: usize, limit: usize, 
         let size = text.len() + usize::from(!window.lines.is_empty());
         if bytes + size > MAX_BYTES {
             window.capped = true;
+            if stop_after_window {
+                break;
+            }
             continue;
         }
         bytes += size;
@@ -152,12 +170,15 @@ impl Read {
         Self { context, spec }
     }
 
-    fn run(&self, args: Value) -> Result<ToolOutput, String> {
+    fn run(&self, args: Value, cancelled: &AtomicBool) -> Result<ToolOutput, String> {
         let params: Params = params(args)?;
         let offset = positive(params.offset, "offset", 1)?;
         let limit = positive(params.limit, "limit", MAX_LINES)?;
         if limit > MAX_LINES {
             return Err(format!("invalid limit: must be at most {MAX_LINES}"));
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("tool call aborted".into());
         }
         let (absolute, display) = self.context.resolve(&params.file_path)?;
         let Some(version) = version_of(&absolute)? else {
@@ -178,10 +199,12 @@ impl Read {
             } else {
                 None
             };
-            (window(split_lines(&decoded.text), offset, limit, &display)?, encoding)
+            (window_cancellable(split_lines(&decoded.text), offset, limit, &display, Some(cancelled), false)?, encoding)
         } else {
+            // For files larger than `DECODE_MAX_BYTES`, stop streaming once the requested window is full so reading
+            // lines 1..50 of a multi-gigabyte log does not scan the entire file to EOF.
             let file = std::fs::File::open(&absolute).map_err(|error| error.to_string())?;
-            (window(capped_lines(std::io::BufReader::new(file)), offset, limit, &display)?, None)
+            (window_cancellable(capped_lines(std::io::BufReader::new(file)), offset, limit, &display, Some(cancelled), true)?, None)
         };
         self.context.observations.record(&absolute, Some(version));
         self.context.touched(&absolute);
@@ -195,8 +218,20 @@ impl Tool for Read {
         &self.spec
     }
 
-    fn execute(&self, _call_id: String, args: Value, _cancel: CancellationToken, _updates: Updates) -> BoxFuture<'_, Result<ToolOutput, String>> {
-        Box::pin(async move { self.run(args) })
+    fn execute(&self, _call_id: String, args: Value, cancel: CancellationToken, _updates: Updates) -> BoxFuture<'_, Result<ToolOutput, String>> {
+        Box::pin(async move {
+            let tool = Read { context: self.context.clone(), spec: self.spec.clone() };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flag = cancelled.clone();
+            let task = tokio::task::spawn_blocking(move || tool.run(args, &flag));
+            tokio::select! {
+                result = task => result.map_err(|error| error.to_string())?,
+                () = cancel.cancelled() => {
+                    cancelled.store(true, Ordering::Relaxed);
+                    Err("tool call aborted".into())
+                }
+            }
+        })
     }
 }
 

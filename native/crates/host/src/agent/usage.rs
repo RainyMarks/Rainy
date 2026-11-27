@@ -2,13 +2,13 @@
 //! from where the last count stopped, as searches read them, so asking again costs the lines appended since.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use rainy_protocol::{ACTIVITY_DAYS, ModelUsage, UsageStats, UsageStatsParams};
 use serde::Deserialize;
 
 use super::store::ChatStore;
+use super::util::JsonlTail;
 
 const DAY_MS: f64 = 86_400_000.0;
 
@@ -21,16 +21,23 @@ struct Message {
     tokens: [f64; 4],
 }
 
+/// Non-message token usage recorded in compaction or `task` sub-agent entries (counted in tokens, not message count).
+#[derive(Clone, Debug, PartialEq)]
+struct ExtraUsage {
+    ts: f64,
+    model: Option<usize>,
+    tokens: [f64; 4],
+}
+
 /// What was counted of one chat file, and how far it was read.
 #[derive(Default)]
 pub struct Tally {
     read: u64,
-    /// The file's first bytes and when it was made: a file written anew is counted again from the start.
-    head: Vec<u8>,
-    created: Option<std::time::SystemTime>,
+    tail: JsonlTail,
     /// `(provider, model)` of the replies, each once.
     models: Vec<(String, String)>,
     messages: Vec<Message>,
+    extra: Vec<ExtraUsage>,
 }
 
 #[derive(Deserialize)]
@@ -39,12 +46,35 @@ struct Line {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Entry {
     kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "number")]
     ts: f64,
     #[serde(default)]
     message: Option<Reply>,
+    #[serde(default)]
+    request: Option<CompactionRequest>,
+    #[serde(default)]
+    tool_name: Option<String>,
+    #[serde(default)]
+    details: Option<TaskDetails>,
+}
+
+#[derive(Deserialize)]
+struct CompactionRequest {
+    #[serde(default)]
+    usage: Option<Tokens>,
+}
+
+#[derive(Deserialize)]
+struct TaskDetails {
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    usage: Option<Tokens>,
 }
 
 #[derive(Deserialize)]
@@ -55,7 +85,7 @@ struct Reply {
     model: String,
     #[serde(default)]
     usage: Tokens,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "number")]
     timestamp: f64,
 }
 
@@ -78,55 +108,71 @@ fn number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::E
 }
 
 impl Tally {
+    fn intern_model(&mut self, provider: String, model: String) -> usize {
+        let key = (provider, model);
+        match self.models.iter().position(|known| *known == key) {
+            Some(index) => index,
+            None => {
+                self.models.push(key);
+                self.models.len() - 1
+            }
+        }
+    }
+
     /// Bring the count up to date with the file at `path`.
     fn update(&mut self, path: &Path) -> std::io::Result<()> {
-        let mut file = std::fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        let (length, created) = (metadata.len(), metadata.created().ok());
-        let mut head = vec![0u8; length.min(64) as usize];
-        file.read_exact(&mut head)?;
-        let shared = self.head.len().min(head.len());
-        if length < self.read || created != self.created || head[..shared] != self.head[..shared] {
-            *self = Self::default();
+        let delta = self.tail.update(path)?;
+        if delta.reset {
+            self.models.clear();
+            self.messages.clear();
+            self.extra.clear();
         }
-        (self.head, self.created) = (head, created);
-        if length == self.read {
-            return Ok(());
+        self.read = delta.offset;
+        if !delta.added.is_empty() {
+            self.add_lines(&delta.added);
         }
-        file.seek(SeekFrom::Start(self.read))?;
-        let mut added = Vec::new();
-        file.take(length - self.read).read_to_end(&mut added)?;
-        // A line still being written is counted next time.
-        let Some(end) = added.iter().rposition(|byte| *byte == b'\n') else {
-            return Ok(());
-        };
-        self.read += end as u64 + 1;
-        self.add_lines(&String::from_utf8_lossy(&added[..end]));
         Ok(())
     }
 
     fn add_lines(&mut self, lines: &str) {
         for line in lines.split('\n') {
-            // Most lines are tool results and stream records: skip them before parsing. The test does not depend on how
-            // the JSON was spaced; a line it lets through that is no message is dropped once parsed.
-            if !line.contains("\"entry\"") || !(line.contains("\"user\"") || line.contains("\"assistant\"")) {
+            // Most lines are regular tool results and stream records: skip them before parsing.
+            if !line.contains("\"entry\"")
+                || !(line.contains("\"user\"")
+                    || line.contains("\"assistant\"")
+                    || line.contains("\"compaction\"")
+                    || (line.contains("\"toolResult\"") && line.contains("\"task\"") && line.contains("\"usage\"")))
+            {
                 continue;
             }
             let Ok(Line { entry }) = serde_json::from_str::<Line>(line) else { continue };
-            match (entry.kind.as_str(), entry.message) {
-                ("user", _) => self.messages.push(Message { ts: entry.ts, model: None, tokens: [0.0; 4] }),
-                ("assistant", Some(reply)) => {
-                    let key = (reply.provider, reply.model);
-                    let model = match self.models.iter().position(|known| *known == key) {
-                        Some(index) => index,
-                        None => {
-                            self.models.push(key);
-                            self.models.len() - 1
-                        }
-                    };
+            match entry.kind.as_str() {
+                "user" => self.messages.push(Message { ts: entry.ts, model: None, tokens: [0.0; 4] }),
+                "assistant" => {
+                    let Some(reply) = entry.message else { continue };
+                    let model = self.intern_model(reply.provider, reply.model);
                     let usage = reply.usage;
                     let ts = if entry.ts > 0.0 { entry.ts } else { reply.timestamp };
                     self.messages.push(Message { ts, model: Some(model), tokens: [usage.input, usage.output, usage.cache_read, usage.cache_write] });
+                }
+                "compaction" => {
+                    if let Some(usage) = entry.request.and_then(|req| req.usage) {
+                        let total = usage.input + usage.output + usage.cache_read + usage.cache_write;
+                        if total > 0.0 {
+                            self.extra.push(ExtraUsage { ts: entry.ts, model: None, tokens: [usage.input, usage.output, usage.cache_read, usage.cache_write] });
+                        }
+                    }
+                }
+                "toolResult" if entry.tool_name.as_deref() == Some("task") => {
+                    if let Some(details) = entry.details
+                        && let Some(usage) = details.usage
+                    {
+                        let total = usage.input + usage.output + usage.cache_read + usage.cache_write;
+                        if total > 0.0 {
+                            let model = (!details.model.is_empty()).then(|| self.intern_model(details.provider, details.model));
+                            self.extra.push(ExtraUsage { ts: entry.ts, model, tokens: [usage.input, usage.output, usage.cache_read, usage.cache_write] });
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -182,6 +228,24 @@ impl ChatStore {
                 let share = models.entry((provider.clone(), name.clone())).or_insert_with(|| ModelUsage { provider: provider.clone(), model: name.clone(), ..ModelUsage::default() });
                 share.replies += 1;
                 share.tokens += input + output + cache_read + cache_write;
+            }
+            for extra in &tally.extra {
+                let day = day_of(extra.ts, offset_ms);
+                if first_day.is_some_and(|first| day < first) {
+                    continue;
+                }
+                let [input, output, cache_read, cache_write] = extra.tokens;
+                stats.input += input;
+                stats.output += output;
+                stats.cache_read += cache_read;
+                stats.cache_write += cache_write;
+                if let Some(model) = extra.model {
+                    let (provider, name) = &tally.models[model];
+                    if !name.is_empty() {
+                        let share = models.entry((provider.clone(), name.clone())).or_insert_with(|| ModelUsage { provider: provider.clone(), model: name.clone(), ..ModelUsage::default() });
+                        share.tokens += input + output + cache_read + cache_write;
+                    }
+                }
             }
             stats.sessions += u64::from(counted);
         }

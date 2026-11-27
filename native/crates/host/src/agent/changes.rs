@@ -1,7 +1,8 @@
 //! The files a chat's write, edit and apply_patch calls changed, for review, keep and undo (3.x `session.ts` and
 //! `shared/line-diff.ts`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use rainy_protocol::chat::TranscriptEntry;
@@ -173,12 +174,21 @@ pub fn diff_paths(unified_diff: &str) -> Vec<String> {
     paths
 }
 
-fn git_cmd(cwd: &Path, args: &[&str]) -> Option<std::process::Output> {
-    let mut cmd = std::process::Command::new("git");
+fn git_cmd(cwd: &Path, args: &[&str], env: Option<&BTreeMap<OsString, OsString>>) -> Option<std::process::Output> {
+    let owned_env;
+    let env = match env {
+        Some(env) => env,
+        None => {
+            owned_env = crate::process::scrubbed_env();
+            &owned_env
+        }
+    };
+    let program = crate::process::resolve_executable("git", Some(env)).unwrap_or_else(|| PathBuf::from("git"));
+    let mut cmd = std::process::Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()
-        .envs(crate::process::scrubbed_env())
+        .envs(env)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -215,17 +225,35 @@ fn git_cmd(cwd: &Path, args: &[&str]) -> Option<std::process::Output> {
 }
 
 /// Read `HEAD:<rel>` bytes of a file in a Git repository for external-agent side-by-side Diff review.
+#[allow(dead_code)]
 pub fn git_head_content(cwd: &Path, path: &Path) -> Option<Vec<u8>> {
-    let top_out = git_cmd(cwd, &["rev-parse", "--show-toplevel"])?;
+    git_head_content_with_env(cwd, path, None)
+}
+
+/// Read `HEAD:<rel>` bytes using an explicit child environment (e.g. `Runtime::resolve` with bundled MinGit).
+pub fn git_head_content_with_env(cwd: &Path, path: &Path, env: Option<&BTreeMap<OsString, OsString>>) -> Option<Vec<u8>> {
+    let top_out = git_cmd(cwd, &["rev-parse", "--show-toplevel"], env)?;
     let top = PathBuf::from(String::from_utf8_lossy(&top_out.stdout).trim());
     let rel = crate::paths::relative_to(&top, path)?;
     let spec = format!("HEAD:{}", rel.replace('\\', "/"));
-    let out = git_cmd(&top, &["show", &spec])?;
+    let out = git_cmd(&top, &["show", &spec], env)?;
     (out.stdout.len() <= 4 * 1024 * 1024).then_some(out.stdout)
 }
 
 /// Merge dirty Git files and unified-diff paths into an external chat's pending review groups (`undoable: false`).
+#[allow(dead_code)]
 pub fn pending_external(entries: &[TranscriptEntry], kept: &HashSet<String>, cwd: &str, external_diff: Option<&str>) -> Vec<Group> {
+    pending_external_with_env(entries, kept, cwd, external_diff, None)
+}
+
+/// Variant of [`pending_external`] accepting a resolved runtime environment so bundled MinGit is found on Windows.
+pub fn pending_external_with_env(
+    entries: &[TranscriptEntry],
+    kept: &HashSet<String>,
+    cwd: &str,
+    external_diff: Option<&str>,
+    env: Option<&BTreeMap<OsString, OsString>>,
+) -> Vec<Group> {
     let mut groups = pending(entries, kept, cwd);
     let mut seen: HashSet<String> = groups.iter().map(|g| path_key(&g.path)).collect();
     let cwd_path = Path::new(cwd);
@@ -239,14 +267,14 @@ pub fn pending_external(entries: &[TranscriptEntry], kept: &HashSet<String>, cwd
             if kept.contains(&id) || !seen.insert(path_key(&abs_str)) {
                 continue;
             }
-            let created = git_head_content(cwd_path, &abs).is_none();
+            let created = git_head_content_with_env(cwd_path, &abs, env).is_none();
             groups.push(Group { path: abs_str, calls: vec![Call { id, created, undoable: false }] });
         }
     }
 
     // 2) Git workspace dirty files (catches edits made via shell commands or ACP tools without fileChange events).
-    if let Some(out) = git_cmd(cwd_path, &["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."])
-        && let Some(top_out) = git_cmd(cwd_path, &["rev-parse", "--show-toplevel"])
+    if let Some(out) = git_cmd(cwd_path, &["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."], env)
+        && let Some(top_out) = git_cmd(cwd_path, &["rev-parse", "--show-toplevel"], env)
     {
         let top = PathBuf::from(String::from_utf8_lossy(&top_out.stdout).trim());
         let text = String::from_utf8_lossy(&out.stdout);

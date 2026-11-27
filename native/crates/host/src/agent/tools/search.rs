@@ -46,16 +46,21 @@ fn search_root(context: &ToolContext, requested: Option<&str>) -> Result<PathBuf
     Ok(crate::paths::normalize(&context.cwd.join(requested)))
 }
 
-/// The files of a walk: .gitignore honoured inside repositories, hidden files included, `.git` left out.
-fn walk(root: &Path, glob: Option<&str>, cancelled: &AtomicBool, deadline: Instant) -> Result<Vec<PathBuf>, String> {
+/// The files of a walk: .gitignore honoured inside repositories, hidden files included, `.git` and `deny_paths` left out.
+fn walk(root: &Path, glob: Option<&str>, context: &ToolContext, cancelled: &AtomicBool, deadline: Instant) -> Result<Vec<PathBuf>, String> {
     let mut overrides = ignore::overrides::OverrideBuilder::new(root);
     overrides.add("!.git").map_err(|error| error.to_string())?;
     if let Some(glob) = glob.filter(|glob| !glob.trim().is_empty()) {
         overrides.add(glob).map_err(|error| format!("invalid glob: {error}"))?;
     }
     let overrides = overrides.build().map_err(|error| error.to_string())?;
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.hidden(false).overrides(overrides);
+    if let Some(deny) = context.deny_paths.clone() {
+        builder.filter_entry(move |entry| entry.depth() == 0 || !deny(entry.path()));
+    }
     let mut files = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).hidden(false).overrides(overrides).build().flatten() {
+    for entry in builder.build().flatten() {
         if cancelled.load(Ordering::Relaxed) {
             return Err("tool call aborted".into());
         }
@@ -63,7 +68,10 @@ fn walk(root: &Path, glob: Option<&str>, cancelled: &AtomicBool, deadline: Insta
             break;
         }
         if entry.file_type().is_some_and(|kind| kind.is_file()) {
-            files.push(entry.into_path());
+            let path = entry.into_path();
+            if !context.is_path_denied(&path) {
+                files.push(path);
+            }
         }
     }
     Ok(files)
@@ -73,11 +81,7 @@ fn preview(line: &str) -> String {
     if line.len() <= MAX_COLUMNS {
         return line.to_owned();
     }
-    let mut end = MAX_COLUMNS;
-    while !line.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{} [... omitted end of long line]", &line[..end])
+    format!("{} [... omitted end of long line]", crate::agent::util::truncate_bytes_slice(line, MAX_COLUMNS))
 }
 
 /// A file's text for searching, or None when it cannot be opened or is binary data found by a walk. The first 8 KiB
@@ -233,7 +237,10 @@ impl Grep {
         let around = params.context.map_or(0, |lines| lines.floor().clamp(0.0, 20.0) as usize);
         let info = std::fs::metadata(&root).map_err(|_| format!("path not found: {}", params.path.as_deref().unwrap_or(".")))?;
         let deadline = Instant::now() + SEARCH_TIMEOUT;
-        let mut files = if info.is_dir() { walk(&root, params.glob.as_deref(), cancelled, deadline)? } else { vec![root.clone()] };
+        if self.context.is_path_denied(&root) {
+            return Err(format!("Access to `{}` is blocked by deny path rule.", root.display()));
+        }
+        let mut files = if info.is_dir() { walk(&root, params.glob.as_deref(), &self.context, cancelled, deadline)? } else { vec![root.clone()] };
         files.sort();
         let explicit = !info.is_dir();
         let (mut found_files, mut counts, mut rows) = (Vec::new(), Vec::new(), Vec::new());
@@ -247,6 +254,9 @@ impl Grep {
             if size > MAX_OUTPUT_BYTES || Instant::now() > deadline {
                 truncated = true;
                 break;
+            }
+            if self.context.is_path_denied(&file) {
+                continue;
             }
             let Some(mut reader) = open_text(&file, explicit) else { continue };
             let shown = self.context.display(&file);
@@ -448,8 +458,11 @@ impl Glob {
         if !std::fs::metadata(&root).is_ok_and(|info| info.is_dir()) {
             return Err(format!("not a directory: {}", params.path.as_deref().unwrap_or(".")));
         }
+        if self.context.is_path_denied(&root) {
+            return Err(format!("Access to `{}` is blocked by deny path rule.", root.display()));
+        }
         let limit = clamp_limit(params.limit);
-        let files = walk(&root, Some(&params.pattern), cancelled, Instant::now() + SEARCH_TIMEOUT)?;
+        let files = walk(&root, Some(&params.pattern), &self.context, cancelled, Instant::now() + SEARCH_TIMEOUT)?;
         let mut timed: Vec<(PathBuf, std::time::SystemTime)> =
             files.iter().take(GLOB_SORT_LIMIT).map(|file| (file.clone(), std::fs::metadata(file).and_then(|info| info.modified()).unwrap_or(std::time::UNIX_EPOCH))).collect();
         timed.sort_by(|left, right| right.1.cmp(&left.1));
@@ -572,5 +585,26 @@ src/a.rs:3:fn helper() {}"));
         assert_eq!(line, b"gh");
         assert!(!next_line(&mut reader, &mut line, 4).unwrap());
     }
-}
 
+    #[test]
+    fn grep_and_glob_skip_denied_paths() {
+        let root = std::env::temp_dir().join(format!("rainy-deny-search-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("secrets")).unwrap();
+        std::fs::write(root.join(".env"), "API_SECRET=topsecret\n").unwrap();
+        std::fs::write(root.join("secrets/token.txt"), "API_SECRET=hidden\n").unwrap();
+        std::fs::write(root.join("public.txt"), "API_SECRET=public\n").unwrap();
+        let mut ctx = context(&root);
+        let cwd = root.clone();
+        let rules = vec![".env".to_owned(), "secrets/**".to_owned()];
+        ctx.deny_paths = Some(Arc::new(move |path: &Path| crate::agent::permissions::path_denied(path, &cwd, &rules, cfg!(windows)).is_some()));
+        let flag = AtomicBool::new(false);
+        let grep = Grep::new(ctx.clone())
+            .search(GrepParams { pattern: "API_SECRET".into(), path: None, glob: None, output_mode: Some("content".into()), ignore_case: None, context: None, limit: None }, &flag)
+            .unwrap();
+        let body = text(&grep);
+        assert!(body.contains("public.txt") && !body.contains(".env") && !body.contains("token.txt"), "{body}");
+        let glob = Glob::new(ctx).search(GlobParams { pattern: "*".into(), path: None, limit: None }, &flag).unwrap();
+        assert_eq!(glob.details.unwrap()["paths"], json!(["public.txt"]));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

@@ -197,6 +197,10 @@ impl Edit {
         let (absolute, display) = context.resolve(&params.file_path)?;
         let current = version_of(&absolute)?.ok_or_else(|| format!("cannot modify \"{display}\": not found"))?;
         context.observations.assert_current(&absolute, Some(current), &display, "modify")?;
+        let file_len = std::fs::metadata(&absolute).map_err(|error| error.to_string())?.len();
+        if file_len > MAX_SNAPSHOT_BYTES {
+            return Err(format!("cannot modify \"{display}\": file is too large ({file_len} bytes, limit {MAX_SNAPSHOT_BYTES})"));
+        }
         let bytes = std::fs::read(&absolute).map_err(|error| error.to_string())?;
         let decoded = editable(&bytes, &display)?;
         // The file keeps its dominant line ending across its full text.

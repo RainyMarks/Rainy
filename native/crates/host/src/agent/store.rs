@@ -2,7 +2,7 @@
 //! `chats/index.json`. A 3.x or 4.0 Host reads what this one writes and the other way round.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -212,15 +212,16 @@ pub struct ChatStore {
     pub(super) tallied: Mutex<HashMap<String, super::usage::Tally>>,
 }
 
+/// Maximum chat search caches retained in memory (LRU evicted).
+const MAX_SEARCHED_CACHE: usize = 512;
+
 /// The message texts read from a chat file for search, and how far it was read.
 #[derive(Default)]
 struct Searched {
     /// Bytes read, up to the end of the last complete line.
     read: u64,
-    /// The file's first bytes and when it was made: a file written anew (in place of another, as chat files are
-    /// written whole) is read again from the start.
-    head: Vec<u8>,
-    created: Option<std::time::SystemTime>,
+    tail: super::util::JsonlTail,
+    last_used: u64,
     texts: Vec<String>,
     lower: Vec<String>,
 }
@@ -228,30 +229,18 @@ struct Searched {
 impl Searched {
     /// Bring the texts up to date with the file at `path`.
     fn update(&mut self, path: &Path) -> std::io::Result<()> {
-        let mut file = std::fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        let (length, created) = (metadata.len(), metadata.created().ok());
-        let mut head = vec![0u8; length.min(64) as usize];
-        file.read_exact(&mut head)?;
-        let shared = self.head.len().min(head.len());
-        if length < self.read || created != self.created || head[..shared] != self.head[..shared] {
-            *self = Self::default();
+        let delta = self.tail.update(path)?;
+        if delta.reset {
+            self.texts.clear();
+            self.lower.clear();
         }
-        (self.head, self.created) = (head, created);
-        if length == self.read {
-            return Ok(());
-        }
-        file.seek(SeekFrom::Start(self.read))?;
-        let mut added = Vec::new();
-        file.take(length - self.read).read_to_end(&mut added)?;
-        // A line still being written is read next time.
-        let Some(end) = added.iter().rposition(|byte| *byte == b'\n') else {
-            return Ok(());
-        };
-        self.read += end as u64 + 1;
-        for text in message_texts(&String::from_utf8_lossy(&added[..end])) {
-            self.lower.push(text.to_lowercase());
-            self.texts.push(text);
+        self.read = delta.offset;
+        self.last_used = crate::text::now_ms();
+        if !delta.added.is_empty() {
+            for text in message_texts(&delta.added) {
+                self.lower.push(text.to_lowercase());
+                self.texts.push(text);
+            }
         }
         Ok(())
     }
@@ -292,13 +281,26 @@ fn message_texts(lines: &str) -> Vec<String> {
 /// tool call's arguments as `null` or another JSON value, and counts the provider did not send as `null` (NaN in
 /// JavaScript). Such an entry is brought into shape rather than skipped, so no history is lost; `None` when it is
 /// still no entry.
-fn parse_entry(entry: &Value) -> Option<TranscriptEntry> {
+fn parse_entry_owned(mut entry: Value) -> Option<TranscriptEntry> {
     if let Ok(parsed) = serde_json::from_value(entry.clone()) {
         return Some(parsed);
     }
-    let mut entry = entry.clone();
     repair_entry(&mut entry);
     serde_json::from_value(entry).ok()
+}
+
+#[cfg(test)]
+fn parse_entry(entry: &Value) -> Option<TranscriptEntry> {
+    parse_entry_owned(entry.clone())
+}
+
+/// Parse an optional `meta` patch field: explicit `null` clears (`Some(None)`), valid value sets (`Some(Some(v))`),
+/// and an unparseable future variant is ignored (`None`) rather than silently wiping existing metadata.
+fn parse_meta_opt<T: serde::de::DeserializeOwned>(value: Option<&Value>) -> Option<Option<T>> {
+    match value? {
+        Value::Null => Some(None),
+        other => serde_json::from_value::<T>(other.clone()).ok().map(Some),
+    }
 }
 
 fn repair_entry(entry: &mut Value) {
@@ -499,13 +501,16 @@ impl ChatStore {
             return Ok(None);
         }
         let path = self.path(id);
-        let text = match std::fs::read(&path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let mut lines = text.split('\n');
-        let header: Value = serde_json::from_str(lines.next().unwrap_or_default()).map_err(|error| unreadable(id, &error.to_string()))?;
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let mut raw_line = Vec::new();
+        reader.read_until(b'\n', &mut raw_line)?;
+        let header_text = String::from_utf8_lossy(&raw_line);
+        let header: Value = serde_json::from_str(header_text.trim_end_matches(['\r', '\n'])).map_err(|error| unreadable(id, &error.to_string()))?;
         if header["type"] != "header" || header["version"] != CHAT_FORMAT_VERSION || !header["id"].is_string() {
             return Err(unreadable(id, &l("文件头的格式未知。", "its header has an unknown format.")));
         }
@@ -531,9 +536,23 @@ impl ChatStore {
             external_thread_id: None,
         };
         let (mut entries, mut kept, mut damaged) = (Vec::new(), Vec::new(), 0);
-        for line in lines.filter(|line| !line.is_empty()) {
+        loop {
+            raw_line.clear();
+            let read = reader.read_until(b'\n', &mut raw_line)?;
+            if read == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&raw_line);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                continue;
+            }
+            // During `header_only` index rebuilds, skip huge entry/image lines without JSON-parsing them.
+            if header_only && !line.contains("\"meta\"") {
+                continue;
+            }
             // A crash can leave a partial line; records appended later start on the next one.
-            let Ok(record) = serde_json::from_str::<Value>(line) else {
+            let Ok(mut record) = serde_json::from_str::<Value>(line) else {
                 damaged += 1;
                 continue;
             };
@@ -543,26 +562,39 @@ impl ChatStore {
                         title: record["title"].as_str().map(str::to_owned),
                         archived: record["archived"].as_bool(),
                         pinned: record["pinned"].as_bool(),
-                        model: record.get("model").map(|model| serde_json::from_value(model.clone()).ok()),
+                        model: parse_meta_opt(record.get("model")),
                         permission: record["permission"].as_str().filter(|mode| ["read-only", "ask", "auto"].contains(mode)).map(str::to_owned),
                         read_at: record["readAt"].as_f64(),
                         cwd: record["cwd"].as_str().filter(|cwd| !cwd.is_empty()).map(str::to_owned),
-                        worktree: record.get("worktree").map(|worktree| serde_json::from_value(worktree.clone()).ok()),
-                        swarm: record.get("swarm").map(|swarm| serde_json::from_value(swarm.clone()).ok()),
-                        orchestrate: record.get("orchestrate").map(|model| serde_json::from_value(model.clone()).ok()),
-                        orchestrate_phase: record
-                            .get("orchestratePhase")
-                            .map(|phase| phase.as_str().filter(|p| matches!(*p, "plan" | "execute")).map(str::to_owned)),
-                        orchestrate_note: record.get("orchestrateNote").map(|note| note.as_str().map(str::to_owned)),
-                        external_backend: record.get("externalBackend").map(|b| serde_json::from_value(b.clone()).ok()),
-                        external_thread_id: record.get("externalThreadId").map(|id| id.as_str().map(str::to_owned)),
+                        worktree: parse_meta_opt(record.get("worktree")),
+                        swarm: parse_meta_opt(record.get("swarm")),
+                        orchestrate: parse_meta_opt(record.get("orchestrate")),
+                        orchestrate_phase: match record.get("orchestratePhase") {
+                            Some(Value::Null) => Some(None),
+                            Some(phase) => phase.as_str().filter(|p| matches!(*p, "plan" | "execute")).map(|p| Some(p.to_owned())),
+                            None => None,
+                        },
+                        orchestrate_note: match record.get("orchestrateNote") {
+                            Some(Value::Null) => Some(None),
+                            Some(note) => note.as_str().map(|n| Some(n.to_owned())),
+                            None => None,
+                        },
+                        external_backend: parse_meta_opt(record.get("externalBackend")),
+                        external_thread_id: match record.get("externalThreadId") {
+                            Some(Value::Null) => Some(None),
+                            Some(id) => id.as_str().map(|s| Some(s.to_owned())),
+                            None => None,
+                        },
                     };
                     patch.apply(&mut chat);
                 }
-                Some("entry") if !header_only => match parse_entry(&record["entry"]) {
-                    Some(entry) => entries.push(entry),
-                    None => damaged += 1,
-                },
+                Some("entry") if !header_only => {
+                    let raw = record.get_mut("entry").map(Value::take).unwrap_or(Value::Null);
+                    match parse_entry_owned(raw) {
+                        Some(entry) => entries.push(entry),
+                        None => damaged += 1,
+                    }
+                }
                 Some("review") if !header_only => kept.extend(record["kept"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned)),
                 _ => {}
             }
@@ -682,6 +714,8 @@ impl ChatStore {
             state.line_ended.remove(id);
         }
         self.locks.lock().unwrap().remove(id);
+        self.searched.lock().unwrap().remove(id);
+        self.tallied.lock().unwrap().remove(id);
         self.schedule_index();
         Ok(())
     }
@@ -754,6 +788,12 @@ impl ChatStore {
                 .map(|(text, _)| snippet(text, &words[0]))
                 .unwrap_or_default();
             found.push((chat.id, snippet));
+        }
+        while searched.len() > MAX_SEARCHED_CACHE {
+            let Some(oldest) = searched.iter().min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| id.clone()) else {
+                break;
+            };
+            searched.remove(&oldest);
         }
         found
     }

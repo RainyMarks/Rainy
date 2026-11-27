@@ -10,7 +10,7 @@ use regex::Regex;
 use super::llm::{Message, Part, ToolResult, UserContent};
 
 /// `@[title](rainy-session:<id>)` syntax stored verbatim in user entries for the UI, rendered as `@title` for the model.
-static SESSION_REFERENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@\[([^\]\n]{1,200})\]\(rainy-session:([A-Za-z0-9-]{1,64})\)").unwrap());
+pub(super) static SESSION_REFERENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@\[([^\]\n]{1,200})\]\(rainy-session:([A-Za-z0-9-]{1,64})\)").unwrap());
 
 /// Replace `@[title](rainy-session:<id>)` links with `@title` so live turns and transcript replays produce identical
 /// model messages (preserving Anthropic thread hashes and prompt caches).

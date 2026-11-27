@@ -55,6 +55,22 @@ impl Snapshots {
         crate::store::write_atomic(&directory.join(format!("{stem}.json")), serde_json::to_string(&record)?.as_bytes())
     }
 
+    /// Refresh only the recorded `after` hash of an existing snapshot (for example after a `PostEdit` formatter
+    /// rewrites the file on disk), keeping the original `before` snapshot so Undo still restores pre-edit bytes.
+    pub fn update_after(&self, session: &str, call_id: &str, after: Option<&[u8]>) -> std::io::Result<bool> {
+        let directory = self.root.join(session);
+        let stem = stem(call_id);
+        let meta_path = directory.join(format!("{stem}.json"));
+        let Ok(raw) = std::fs::read(&meta_path) else { return Ok(false) };
+        let Ok(mut record) = serde_json::from_slice::<Record>(&raw) else { return Ok(false) };
+        if record.version != 1 {
+            return Ok(false);
+        }
+        record.after = after.map(digest);
+        crate::store::write_atomic(&meta_path, serde_json::to_string(&record)?.as_bytes())?;
+        Ok(true)
+    }
+
     fn find(&self, sessions: &[String], call_id: &str) -> Option<(PathBuf, Record)> {
         let stem = stem(call_id);
         sessions.iter().find_map(|session| {

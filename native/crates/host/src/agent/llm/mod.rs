@@ -334,7 +334,7 @@ pub fn context_overflow(message: &AssistantMessage, context_window: u64) -> bool
     {
         return true;
     }
-    let input = message.usage.input + message.usage.cache_read;
+    let input = message.usage.input + message.usage.cache_read + message.usage.cache_write;
     (message.stop_reason == "stop" && input > context_window as f64) || (message.stop_reason == "length" && message.usage.output == 0.0 && input >= context_window as f64 * 0.99)
 }
 
@@ -585,7 +585,12 @@ impl Llm {
             Some("false") => false,
             _ => matches!(status.as_u16(), 408 | 409 | 429) || status.is_server_error(),
         };
-        let text = tokio::time::timeout(STREAM_IDLE_TIMEOUT, response.text()).await.ok().and_then(Result::ok).unwrap_or_default();
+        let text = tokio::time::timeout(STREAM_IDLE_TIMEOUT, crate::agent::util::read_http_body_limited(response, 256 * 1024))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
         Err(Failure { message: http_error(status.as_u16(), &text), status: Some(status.as_u16()), body: text, retry, delay })
     }
 }

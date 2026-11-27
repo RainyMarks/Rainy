@@ -275,11 +275,14 @@ pub(crate) fn request(model: &Model, request: &Request<'_>, api_key: Option<&str
                 budget = budget.min(ceiling.saturating_sub(MIN_ANSWER_TOKENS));
             }
             max_tokens = super::clamp_to_context(model, request, ceiling);
-            body.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": budget.min(max_tokens.saturating_sub(1024)), "display": "summarized" }));
-            if let Wire::Effort(effort) = wire {
-                body.insert("output_config".into(), json!({ "effort": effort }));
-            } else {
-                betas.push(INTERLEAVED_THINKING);
+            let effective_budget = budget.min(max_tokens.saturating_sub(1024));
+            if effective_budget >= 1024 {
+                body.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": effective_budget, "display": "summarized" }));
+                if let Wire::Effort(effort) = wire {
+                    body.insert("output_config".into(), json!({ "effort": effort }));
+                } else {
+                    betas.push(INTERLEAVED_THINKING);
+                }
             }
         }
         _ => {}
@@ -394,6 +397,7 @@ impl Reader for AnthropicReader {
             "content_block_stop" => {
                 let Some(index) = self.blocks.remove(&number(&event["index"])) else { return Ok(()) };
                 if let Some(partial) = self.arguments.remove(&index)
+                    && !partial.is_empty()
                     && let AssistantBlock::ToolCall { arguments, .. } = &mut output.content[index]
                 {
                     *arguments = parse_arguments(&partial);

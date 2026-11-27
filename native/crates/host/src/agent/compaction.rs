@@ -333,7 +333,7 @@ pub async fn compact(request: CompactionRequest<'_>) -> HostResult<Option<Transc
         start += 1;
     }
     let items = &request.items[start..=end];
-    if items.is_empty() {
+    if items.is_empty() || !tool_pairs_balanced(request.items, start, end) {
         return Ok(None);
     }
     let available = summary_budget.input_limit.saturating_sub(fixed).max(512);
@@ -433,5 +433,33 @@ mod tests {
         assert_eq!(ids, ["e2"]);
         let (ids, _) = select_clearable(&items, &HashSet::from(["e2".to_owned()]), 1000);
         assert_eq!(ids, ["e6"]);
+    }
+
+    #[test]
+    fn lone_tool_result_is_not_balanced_for_separate_compaction() {
+        use rainy_protocol::chat::{AssistantMessage, ResultContent};
+        let reply: AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [{ "type": "toolCall", "id": "call-1", "name": "bash", "arguments": {} }],
+            "api": "x", "provider": "p", "model": "m", "stopReason": "toolUse", "timestamp": 1, "usage": {}
+        }))
+        .unwrap();
+        let items = [
+            Item { entry_id: "e0".into(), number: 1, message: Message::Assistant(reply) },
+            Item {
+                entry_id: "e1".into(),
+                number: 2,
+                message: Message::ToolResult(llm::ToolResult {
+                    tool_call_id: "call-1".into(),
+                    tool_name: "bash".into(),
+                    content: vec![ResultContent::Text { text: "huge".into() }],
+                    is_error: false,
+                    details: None,
+                    timestamp: 2.0,
+                }),
+            },
+        ];
+        assert!(tool_pairs_balanced(&items, 0, 1));
+        assert!(!tool_pairs_balanced(&items, 1, 1));
     }
 }

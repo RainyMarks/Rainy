@@ -20,6 +20,13 @@ pub const PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 /// Wait for a notification or an answer to the server's request to be taken.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Hard cap on one stdio JSON-RPC line (16 MiB), stderr line (64 KiB), and HTTP JSON body (16 MiB).
+const MAX_STDIO_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STDERR_LINE_BYTES: usize = 64 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Hard caps on early SSE events buffered before the `endpoint` event arrives.
+const MAX_EARLY_EVENTS: usize = 256;
+const MAX_EARLY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Why a request failed.
 #[derive(Debug)]
@@ -99,6 +106,12 @@ impl Waiting {
             let _ = waiting.send(Err(Failure::Closed));
         }
     }
+
+    fn fail_one(&self, id: u64) {
+        if let Some(waiting) = self.answers.lock().unwrap().remove(&id) {
+            let _ = waiting.send(Err(Failure::Closed));
+        }
+    }
 }
 
 /// How messages leave.
@@ -127,13 +140,25 @@ pub struct Client {
 }
 
 /// Read a stream of server-sent events into `waiting` until it ends or the connection closes.
-fn pump_events(mut body: impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin + Send + 'static, waiting: Arc<Waiting>, reply: mpsc::UnboundedSender<Value>, closed: CancellationToken, end_closes: bool) {
+fn pump_events(
+    mut body: impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin + Send + 'static,
+    waiting: Arc<Waiting>,
+    reply: mpsc::UnboundedSender<Value>,
+    closed: CancellationToken,
+    end_closes: bool,
+    request_id: Option<u64>,
+) {
     tokio::spawn(async move {
         let mut events = Events::default();
+        let mut ended_normally = true;
         loop {
             tokio::select! {
                 chunk = body.next() => {
-                    let Some(Ok(chunk)) = chunk else { break };
+                    let Some(item) = chunk else { break };
+                    let Ok(chunk) = item else {
+                        ended_normally = false;
+                        break;
+                    };
                     for (name, data) in events.push(&chunk) {
                         if (name.is_empty() || name == "message")
                             && let Ok(message) = serde_json::from_str::<Value>(&data)
@@ -142,26 +167,75 @@ fn pump_events(mut body: impl futures::Stream<Item = reqwest::Result<bytes::Byte
                         }
                     }
                 }
-                () = closed.cancelled() => break,
+                () = closed.cancelled() => {
+                    ended_normally = false;
+                    break;
+                }
+            }
+        }
+        if ended_normally && !closed.is_cancelled() {
+            for (name, data) in events.finish() {
+                if (name.is_empty() || name == "message")
+                    && let Ok(message) = serde_json::from_str::<Value>(&data)
+                {
+                    waiting.incoming(message, &reply);
+                }
             }
         }
         if end_closes {
             closed.cancel();
             waiting.fail_all();
+        } else if let Some(id) = request_id {
+            // Streamable HTTP per-request SSE stream ended without delivering the response: wake the waiter immediately.
+            waiting.fail_one(id);
         }
     });
 }
 
+/// Read one `\n`-terminated line up to `cap` bytes; returns `Ok((bytes_read, truncated))`.
+/// Bytes past `cap` on the same line are drained until `\n` or EOF so framing stays intact without unbounded growth.
+async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R, out: &mut Vec<u8>, cap: usize) -> std::io::Result<(usize, bool)> {
+    out.clear();
+    let mut total = 0usize;
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok((total, truncated));
+        }
+        let (piece, used, ended) = match available.iter().position(|byte| *byte == b'\n') {
+            Some(at) => (&available[..=at], at + 1, true),
+            None => (available, available.len(), false),
+        };
+        total += used;
+        let room = cap.saturating_sub(out.len());
+        if room > 0 {
+            out.extend_from_slice(&piece[..piece.len().min(room)]);
+        }
+        if piece.len() > room {
+            truncated = true;
+        }
+        reader.consume(used);
+        if ended {
+            return Ok((total, truncated));
+        }
+    }
+}
+
 /// Route every message a local program writes, one per line, until its output ends. Lines are read as bytes, so one
-/// that is not UTF-8 is dropped like any other that is no message, and the pipe is drained to its end.
+/// that is not UTF-8 or exceeds `MAX_STDIO_LINE_BYTES` is dropped like any other that is no message.
 async fn read_messages(stdout: impl tokio::io::AsyncRead + Unpin, waiting: &Waiting, reply: &mpsc::UnboundedSender<Value>) {
     let mut stdout = tokio::io::BufReader::new(stdout);
     let mut line = Vec::new();
-    while stdout.read_until(b'\n', &mut line).await.is_ok_and(|read| read > 0) {
-        if let Ok(message) = serde_json::from_str::<Value>(String::from_utf8_lossy(&line).trim()) {
+    while let Ok((read, truncated)) = read_line_limited(&mut stdout, &mut line, MAX_STDIO_LINE_BYTES).await {
+        if read == 0 {
+            break;
+        }
+        if !truncated
+            && let Ok(message) = serde_json::from_str::<Value>(String::from_utf8_lossy(&line).trim())
+        {
             waiting.incoming(message, reply);
         }
-        line.clear();
     }
 }
 
@@ -170,9 +244,11 @@ async fn read_messages(stdout: impl tokio::io::AsyncRead + Unpin, waiting: &Wait
 async fn keep_errors(stderr: impl tokio::io::AsyncRead + Unpin, kept: Stderr, server: String) {
     let mut stderr = tokio::io::BufReader::new(stderr);
     let mut bytes = Vec::new();
-    while stderr.read_until(b'\n', &mut bytes).await.is_ok_and(|read| read > 0) {
+    while let Ok((read, _)) = read_line_limited(&mut stderr, &mut bytes, MAX_STDERR_LINE_BYTES).await {
+        if read == 0 {
+            break;
+        }
         let line = crate::process::console_text(&bytes);
-        bytes.clear();
         let line = line.trim_end_matches(['\r', '\n']);
         log::info!("[mcp:{server}] {}", line.trim_end());
         let mut text = kept.lock().unwrap();
@@ -255,7 +331,10 @@ impl Client {
         for (name, value) in &headers {
             request = request.header(name, value);
         }
-        let response = tokio::time::timeout(timeout, request.send()).await.map_err(|_| Failure::Timeout)?.map_err(|error| Failure::Other(error.to_string()))?;
+        let response = tokio::time::timeout(timeout, request.send())
+            .await
+            .map_err(|_| Failure::Timeout)?
+            .map_err(|error| Failure::Other(crate::agent::llm::transport_error(&error)))?;
         let status = response.status().as_u16();
         let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok()).unwrap_or_default().to_owned();
         if !(200..300).contains(&status) {
@@ -268,6 +347,7 @@ impl Client {
         let mut events = Events::default();
         let deadline = Instant::now() + timeout;
         let mut early: Vec<String> = Vec::new();
+        let mut early_bytes: usize = 0;
         let endpoint = 'found: loop {
             let chunk = tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), body.next())
                 .await
@@ -281,7 +361,10 @@ impl Client {
                     }
                     break 'found endpoint.to_string();
                 }
-                early.push(data);
+                if early.len() < MAX_EARLY_EVENTS && early_bytes.saturating_add(data.len()) <= MAX_EARLY_BYTES {
+                    early_bytes += data.len();
+                    early.push(data);
+                }
             }
         };
         let client = Self::new(Outgoing::Sse { client: http, endpoint, headers }, None);
@@ -290,7 +373,7 @@ impl Client {
                 client.waiting.incoming(message, &client.replies);
             }
         }
-        pump_events(body, client.waiting.clone(), client.replies.clone(), client.closed.clone(), true);
+        pump_events(body, client.waiting.clone(), client.replies.clone(), client.closed.clone(), true, None);
         Ok(client)
     }
 
@@ -333,13 +416,16 @@ impl Client {
                     return Ok(());
                 }
                 let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok()).unwrap_or_default().to_lowercase();
+                let request_id = message.get("id").and_then(Value::as_u64);
                 if content_type.starts_with("application/json") {
-                    let text = response.text().await.map_err(|error| Failure::Other(error.to_string()))?;
-                    if let Ok(message) = serde_json::from_str::<Value>(&text) {
+                    let bytes = crate::agent::util::read_http_body_limited(response, MAX_HTTP_BODY_BYTES)
+                        .await
+                        .map_err(|error| Failure::Other(crate::agent::llm::transport_error(&error)))?;
+                    if let Ok(message) = serde_json::from_slice::<Value>(&bytes) {
                         self.waiting.incoming(message, &self.replies);
                     }
                 } else if content_type.starts_with("text/event-stream") {
-                    pump_events(response.bytes_stream(), self.waiting.clone(), self.replies.clone(), self.closed.clone(), false);
+                    pump_events(response.bytes_stream(), self.waiting.clone(), self.replies.clone(), self.closed.clone(), false, request_id);
                 } else if message.get("id").is_some() && message.get("method").is_some() {
                     return Err(Failure::Other(format!("Unexpected content type: {content_type}")));
                 }
@@ -411,9 +497,14 @@ impl Client {
     }
 
     /// The MCP handshake; the server's instructions are kept.
+    #[allow(dead_code)]
     pub async fn initialize(self: &Arc<Self>, timeout: Duration) -> Result<(), Failure> {
+        self.initialize_cancellable(timeout, &CancellationToken::new()).await
+    }
+
+    pub async fn initialize_cancellable(self: &Arc<Self>, timeout: Duration, cancel: &CancellationToken) -> Result<(), Failure> {
         let params = json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": { "name": "Rainy", "version": env!("CARGO_PKG_VERSION") } });
-        let result = self.request("initialize", params, timeout, timeout, &CancellationToken::new()).await?;
+        let result = self.request("initialize", params, timeout, timeout, cancel).await?;
         let version = result["protocolVersion"].as_str().unwrap_or_default();
         if !SUPPORTED_VERSIONS.contains(&version) {
             return Err(Failure::Other(format!("Server's protocol version is not supported: {version}")));
@@ -422,7 +513,11 @@ impl Client {
             *held.lock().unwrap() = Some(version.to_owned());
         }
         *self.instructions.lock().unwrap() = result["instructions"].as_str().unwrap_or_default().to_owned();
-        self.send_within(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} }), timeout).await
+        let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} });
+        tokio::select! {
+            res = self.send_within(&initialized, timeout) => res,
+            () = cancel.cancelled() => Err(Failure::Cancelled),
+        }
     }
 
     pub fn instructions(&self) -> String {
@@ -430,14 +525,19 @@ impl Client {
     }
 
     /// Every tool the server lists, page by page, all pages within `timeout`.
+    #[allow(dead_code)]
     pub async fn list_tools(self: &Arc<Self>, timeout: Duration) -> Result<Vec<Value>, Failure> {
+        self.list_tools_cancellable(timeout, &CancellationToken::new()).await
+    }
+
+    pub async fn list_tools_cancellable(self: &Arc<Self>, timeout: Duration, cancel: &CancellationToken) -> Result<Vec<Value>, Failure> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
         let deadline = Instant::now() + timeout;
         for _ in 0..100 {
             let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
             let left = deadline.saturating_duration_since(Instant::now());
-            let result = self.request("tools/list", params, left, left, &CancellationToken::new()).await?;
+            let result = self.request("tools/list", params, left, left, cancel).await?;
             tools.extend(result["tools"].as_array().cloned().unwrap_or_default());
             cursor = result["nextCursor"].as_str().filter(|next| !next.is_empty()).map(str::to_owned);
             if cursor.is_none() {
