@@ -32,6 +32,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(120);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const WS_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const WS_PING_INTERVAL: Duration = Duration::from_secs(15);
 const WS_IDLE_DEADLINE: Duration = Duration::from_secs(45);
 
@@ -331,7 +333,13 @@ async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destinati
             if name.eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked") {
                 chunked = true;
             } else if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse::<u64>().ok();
+                let parsed = value.trim().parse::<u64>().map_err(|_| anyhow!(invalid()))?;
+                if let Some(prev) = content_length
+                    && prev != parsed
+                {
+                    bail!(invalid());
+                }
+                content_length = Some(parsed);
             }
         }
     }
@@ -366,6 +374,29 @@ async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destinati
                 let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| anyhow!(invalid()))?;
                 buf.drain(..line_end + 2);
                 if size == 0 {
+                    // Require the terminating CRLF (allowing optional trailer header lines before the empty CRLF).
+                    let mut trailer_bytes = 0usize;
+                    loop {
+                        while !buf.windows(2).any(|w| w == b"\r\n") {
+                            if buf.len() > MAX_CHUNK_LINE || trailer_bytes + buf.len() > MAX_CHUNK_LINE {
+                                bail!(invalid());
+                            }
+                            let n = with_timeout(STREAM_IO_TIMEOUT, async { Ok(stream.read(&mut io_buf[..MAX_CHUNK_LINE]).await?) }).await?;
+                            if n == 0 {
+                                bail!(invalid());
+                            }
+                            buf.extend_from_slice(&io_buf[..n]);
+                        }
+                        let line_end = buf.windows(2).position(|w| w == b"\r\n").unwrap();
+                        trailer_bytes = trailer_bytes.saturating_add(line_end + 2);
+                        if trailer_bytes > MAX_CHUNK_LINE {
+                            bail!(invalid());
+                        }
+                        buf.drain(..line_end + 2);
+                        if line_end == 0 {
+                            break;
+                        }
+                    }
                     break;
                 }
                 let mut left = size;
@@ -605,7 +636,10 @@ async fn serve(
     let mut sent: HashSet<u64> = HashSet::new();
     let mut unsent = None;
     if let Some((id, frame)) = held {
-        if sink.send(Message::text(frame.clone())).await.is_err() {
+        if with_timeout(WS_SEND_TIMEOUT, async { sink.send(Message::text(frame.clone())).await.map_err(|e| anyhow!("{e}")) })
+            .await
+            .is_err()
+        {
             return Some((id, frame));
         }
         sent.insert(id);
@@ -621,7 +655,10 @@ async fn serve(
                 }
                 Some(Ok(Message::Ping(payload))) => {
                     last_incoming = Instant::now();
-                    if sink.send(Message::Pong(payload)).await.is_err() {
+                    if with_timeout(WS_SEND_TIMEOUT, async { sink.send(Message::Pong(payload)).await.map_err(|e| anyhow!("{e}")) })
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -636,24 +673,30 @@ async fn serve(
             outgoing = queue.recv().fuse() => match outgoing {
                 Ok((id, frame)) => {
                     // A request whose caller gave up still goes out; its answer is dropped.
-                    if sink.send(Message::text(frame.clone())).await.is_err() {
+                    if with_timeout(WS_SEND_TIMEOUT, async { sink.send(Message::text(frame.clone())).await.map_err(|e| anyhow!("{e}")) })
+                        .await
+                        .is_err()
+                    {
                         unsent = Some((id, frame));
                         break;
                     }
                     sent.insert(id);
                 }
                 Err(_) => {
-                    let _ = sink.close(None).await;
+                    let _ = with_timeout(WS_CLOSE_TIMEOUT, async { sink.close(None).await.map_err(|e| anyhow!("{e}")) }).await;
                     break;
                 }
             },
             _ = next_ping => {
                 if last_incoming.elapsed() >= WS_IDLE_DEADLINE {
                     log::warn!("Host WebSocket did not answer keepalive ping within {} s; reconnecting", WS_IDLE_DEADLINE.as_secs());
-                    let _ = sink.close(None).await;
+                    let _ = with_timeout(WS_CLOSE_TIMEOUT, async { sink.close(None).await.map_err(|e| anyhow!("{e}")) }).await;
                     break;
                 }
-                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                if with_timeout(WS_SEND_TIMEOUT, async { sink.send(Message::Ping(Vec::new().into())).await.map_err(|e| anyhow!("{e}")) })
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 next_ping = futures::FutureExt::fuse(smol::Timer::after(WS_PING_INTERVAL));
@@ -811,5 +854,51 @@ mod tests {
         let err2 = smol::block_on(client.call("ping", Value::Null)).unwrap_err();
         assert_eq!(err2.code, "disconnected");
         assert!(client.inner.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn http_get_to_file_rejects_bad_content_length_and_truncated_chunked_tail() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let responses: Vec<&'static [u8]> = vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: bad\r\nConnection: close\r\n\r\nhello",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\nX-Check: 1\r\n\r\n",
+        ];
+        let server = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap() == 0 {
+                        break;
+                    }
+                    head.push(byte[0]);
+                }
+                stream.write_all(response).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        std::fs::write(&target, b"keep").unwrap();
+
+        smol::block_on(async {
+            // Malformed Content-Length must fail without clobbering existing destination.
+            assert!(http_get_to_file(port, "/bad-len", Some("rainy_auth=tok"), &target).await.is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+
+            // Chunked response truncated right after `0\r\n` (missing terminating `\r\n`) must fail.
+            assert!(http_get_to_file(port, "/trunc-chunk", Some("rainy_auth=tok"), &target).await.is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+
+            // Complete chunked response with a trailer line and terminating `\r\n` succeeds.
+            assert_eq!(http_get_to_file(port, "/ok-trailer", Some("rainy_auth=tok"), &target).await.unwrap(), 200);
+            assert_eq!(std::fs::read(&target).unwrap(), b"hello");
+        });
+
+        server.join().unwrap();
     }
 }

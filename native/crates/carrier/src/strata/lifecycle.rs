@@ -30,6 +30,48 @@ const START_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
 const SETTINGS_FILE: &str = "rainy.json";
 const RECORD_FILE: &str = "rainy-strata.json";
 
+/// Shared state for the single stdio management server, protected by one short-lived lock.
+#[derive(Default)]
+pub(super) struct SessionSlot {
+    /// Idle management server handle ready for reuse.
+    idle: Option<mcp::Session>,
+    /// Abort handle of the currently starting or in-flight management server.
+    active_abort: Option<mcp::AbortHandle>,
+    /// Monotonically incremented whenever `end_session()` / `close()` invalidates the session.
+    epoch: u64,
+}
+
+impl SessionSlot {
+    /// Register an active abort handle for `expected_epoch`; returns `false` if the slot was already invalidated.
+    pub(super) fn register_abort(&mut self, expected_epoch: u64, handle: mcp::AbortHandle) -> bool {
+        if self.epoch == expected_epoch {
+            self.active_abort = Some(handle);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear `active_abort` and return `idle` only when the epoch still matches and `keep` is true.
+    /// Returns `Some(session)` when the caller must stop the session outside the lock.
+    pub(super) fn finish(&mut self, expected_epoch: u64, keep: bool, session: mcp::Session) -> Option<mcp::Session> {
+        if self.epoch == expected_epoch {
+            self.active_abort = None;
+            if keep {
+                self.idle = Some(session);
+                return None;
+            }
+        }
+        Some(session)
+    }
+
+    /// Invalidate the current epoch and extract any active abort handle and idle session to terminate off-lock.
+    pub(super) fn invalidate(&mut self) -> (Option<mcp::AbortHandle>, Option<mcp::Session>) {
+        self.epoch = self.epoch.wrapping_add(1);
+        (self.active_abort.take(), self.idle.take())
+    }
+}
+
 /// The one owner of Rainy's Strata.
 pub struct Manager {
     folders: Folders,
@@ -41,10 +83,8 @@ pub struct Manager {
     pub(super) inner: Mutex<Inner>,
     /// Serializes RPC calls against the single stdio management server without blocking `end_session()`/`close()`.
     session_call: Mutex<()>,
-    /// Idle management server handle; held only briefly while checking out or returning a session.
-    session: Mutex<Option<mcp::Session>>,
-    /// Concurrent kill handle for the active management server so `close()`/`end_session()` wakes blocked calls immediately.
-    session_abort: Mutex<Option<mcp::AbortHandle>>,
+    /// Single short-lived lock guarding idle session, active abort handle, and invalidation epoch.
+    pub(super) session: Mutex<SessionSlot>,
     changed: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -102,8 +142,7 @@ impl Manager {
             temp: Mutex::new(None),
             inner: Mutex::new(Inner { settings, ..Inner::default() }),
             session_call: Mutex::new(()),
-            session: Mutex::new(None),
-            session_abort: Mutex::new(None),
+            session: Mutex::new(SessionSlot::default()),
             changed: Arc::new(changed),
         });
         let installed = manager.read_installed();
@@ -777,56 +816,86 @@ impl Manager {
     // ---------------------------------------------------------------------------------------------- management server
 
     /// Call a tool of the management server, starting it when needed.
-    /// The `self.session` mutex is held only while checking out / returning the session, never across the IPC wait,
-    /// so `close()`, `end_session()`, and `tidy()` remain responsive during 5-30 minute operations.
+    /// `self.session` is held only briefly when checking out, registering the abort handle, or returning a session,
+    /// and every transition checks `SessionSlot::epoch` + `inner.closed` so concurrent `close()` / `end_session()`
+    /// immediately aborts newly spawned processes and never lets a stale/aborted session be returned to `idle`.
     fn call(&self, tool: &str, arguments: Value, timeout: Duration) -> Result<Value> {
         let terminal = self.terminal()?;
         let _call_guard = self.session_call.lock().unwrap();
+        let closing = || anyhow!(localized("Rainy 正在关闭，无法修改 Strata。", "Rainy is closing and cannot change Strata."));
         if self.inner.lock().unwrap().closed {
-            bail!(localized("Rainy 正在关闭，无法修改 Strata。", "Rainy is closing and cannot change Strata."));
+            return Err(closing());
         }
-        let mut session = self.session.lock().unwrap().take();
-        if session.as_ref().is_some_and(|existing| !existing.alive() || existing.root != terminal.root) {
-            *self.session_abort.lock().unwrap() = None;
+        let (mut session, my_epoch) = {
+            let mut slot = self.session.lock().unwrap();
+            let my_epoch = slot.epoch;
+            let existing = slot.idle.take();
+            if existing.as_ref().is_some_and(|s| s.alive() && s.root == terminal.root) {
+                slot.active_abort = existing.as_ref().map(mcp::Session::abort_handle);
+            } else {
+                slot.active_abort = None;
+            }
+            (existing, my_epoch)
+        };
+        if self.inner.lock().unwrap().closed {
             if let Some(old) = session.take() {
                 old.stop();
             }
+            let mut slot = self.session.lock().unwrap();
+            if slot.epoch == my_epoch {
+                slot.active_abort = None;
+            }
+            return Err(closing());
+        }
+        if session.as_ref().is_some_and(|existing| !existing.alive() || existing.root != terminal.root)
+            && let Some(old) = session.take()
+        {
+            old.stop();
         }
         let mut session = match session {
             Some(existing) => existing,
             None => {
                 let install = if self.external() { self.own_install_folder()? } else { self.folders.install.clone() };
                 let log = self.folders.logs.join("management.log");
+                let aborted_on_start = AtomicBool::new(false);
                 match mcp::Session::start_with_hook(&terminal, &install, &log, |handle| {
-                    *self.session_abort.lock().unwrap() = Some(handle);
+                    let registered = self.session.lock().unwrap().register_abort(my_epoch, handle.clone());
+                    if !registered || self.inner.lock().unwrap().closed {
+                        aborted_on_start.store(true, Ordering::SeqCst);
+                        handle.abort();
+                    }
                 }) {
                     Ok(started) => started,
                     Err(error) => {
-                        *self.session_abort.lock().unwrap() = None;
+                        let mut slot = self.session.lock().unwrap();
+                        if slot.epoch == my_epoch {
+                            slot.active_abort = None;
+                        }
+                        if aborted_on_start.load(Ordering::SeqCst) && self.inner.lock().unwrap().closed {
+                            return Err(closing());
+                        }
                         return Err(error);
                     }
                 }
             }
         };
         let abort_handle = session.abort_handle();
-        *self.session_abort.lock().unwrap() = Some(abort_handle.clone());
         let result = session.call(tool, arguments, timeout);
-        if self.inner.lock().unwrap().closed || abort_handle.is_aborted() || !session.alive() {
-            *self.session_abort.lock().unwrap() = None;
-            session.stop();
-        } else {
-            *self.session.lock().unwrap() = Some(session);
+        let keep = !self.inner.lock().unwrap().closed && !abort_handle.is_aborted() && session.alive();
+        let discard = self.session.lock().unwrap().finish(my_epoch, keep, session);
+        if let Some(old) = discard {
+            old.stop();
         }
         result
     }
 
     /// Terminate any idle or in-flight management server immediately without waiting on long-running IPC calls.
     fn end_session(&self) {
-        let abort = self.session_abort.lock().unwrap().take();
+        let (abort, idle) = self.session.lock().unwrap().invalidate();
         if let Some(handle) = abort {
             handle.abort();
         }
-        if let Some(idle) = self.session.lock().unwrap().take() {
+        if let Some(idle) = idle {
             idle.stop();
         }
     }
@@ -838,9 +907,8 @@ impl Manager {
         }
         let expired = {
             let mut slot = self.session.lock().unwrap();
-            if slot.as_ref().is_some_and(|session| session.last_used.elapsed() > IDLE_SESSION) {
-                *self.session_abort.lock().unwrap() = None;
-                slot.take()
+            if slot.idle.as_ref().is_some_and(|session| session.last_used.elapsed() > IDLE_SESSION) {
+                slot.idle.take()
             } else {
                 None
             }

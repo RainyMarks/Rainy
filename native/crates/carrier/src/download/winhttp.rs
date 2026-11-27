@@ -447,7 +447,7 @@ mod platform {
         let mut req = AsyncRequest::open(address, options)?;
         let handle = req.handle.ok_or(DownloadError::Cancelled)?;
         let features: u32 = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS;
-        let timeout = options.stall_timeout.as_millis().min(i32::MAX as u128) as i32;
+        let timeout = options.stall_timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
         let range: Vec<u16> = span
             .header()
             .map(|range| format!("Range: {range}\r\n").encode_utf16().collect())

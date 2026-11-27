@@ -342,3 +342,24 @@ fn real_partial_download_is_found_and_resumed() {
         say(format!("removed {}", scratch.display()));
     }
 }
+
+#[test]
+fn session_slot_epoch_rejects_stale_registration_after_close_or_invalidation() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::with_own(dir.path(), None, || {});
+    let active = super::mcp::AbortHandle::new_for_test();
+    let initial_epoch = {
+        let mut slot = manager.session.lock().unwrap();
+        let (abort, idle) = slot.invalidate();
+        assert!(abort.is_none() && idle.is_none());
+        // After one invalidation, epoch is 1; registering for stale epoch 0 must fail.
+        assert!(!slot.register_abort(0, super::mcp::AbortHandle::new_for_test()));
+        assert!(slot.register_abort(1, active.clone()));
+        1u64
+    };
+    manager.close();
+    // `close()` invalidated epoch 1 -> 2 and aborted the registered active handle.
+    assert!(active.is_aborted());
+    let mut slot = manager.session.lock().unwrap();
+    assert!(!slot.register_abort(initial_epoch, super::mcp::AbortHandle::new_for_test()));
+}

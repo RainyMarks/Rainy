@@ -23,18 +23,25 @@ const PROTOCOL: &str = "2025-06-18";
 /// on any session RPC mutex.
 #[derive(Clone)]
 pub(crate) struct AbortHandle {
-    owned: Arc<Owned>,
+    owned: Option<Arc<Owned>>,
     aborted: Arc<AtomicBool>,
 }
 
 impl AbortHandle {
     pub(crate) fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
-        self.owned.stop();
+        if let Some(owned) = &self.owned {
+            owned.stop();
+        }
     }
 
     pub(crate) fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_for_test() -> Self {
+        Self { owned: None, aborted: Arc::new(AtomicBool::new(false)) }
     }
 }
 
@@ -109,7 +116,7 @@ impl Session {
             last_used: Instant::now(),
             root: terminal.root.clone(),
         };
-        on_started(AbortHandle { owned, aborted });
+        on_started(AbortHandle { owned: Some(owned), aborted });
         // A fresh interpreter can wait minutes for the antivirus on its first start.
         session.request(
             "initialize",
@@ -122,7 +129,7 @@ impl Session {
 
     pub(crate) fn abort_handle(&self) -> AbortHandle {
         AbortHandle {
-            owned: self.owned.clone(),
+            owned: Some(self.owned.clone()),
             aborted: self.aborted.clone(),
         }
     }

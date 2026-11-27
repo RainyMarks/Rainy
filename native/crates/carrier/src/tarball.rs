@@ -113,6 +113,10 @@ pub fn unpack(mut reader: impl Read, destination: &Path, cancel: &AtomicBool) ->
             return Ok(unpacked);
         }
         check_sum(&header)?;
+        entries += 1;
+        if entries > MAX_ENTRIES {
+            return Err(TarError::Refused("the archive contains too many entries".into()));
+        }
         let size = number(&header[124..136])?;
         match header[156] {
             b'x' => pending.read_pax(&read_meta(&mut reader, size)?)?,
@@ -125,10 +129,6 @@ pub fn unpack(mut reader: impl Read, destination: &Path, cancel: &AtomicBool) ->
             b'L' => pending.path = Some(meta_name(&read_meta(&mut reader, size)?)?),
             b'K' => pending.link = Some(meta_name(&read_meta(&mut reader, size)?)?),
             kind => {
-                entries += 1;
-                if entries > MAX_ENTRIES {
-                    return Err(TarError::Refused("the archive contains too many entries".into()));
-                }
                 let name = match pending.path.take() {
                     Some(name) => name,
                     None => header_name(&header)?,
@@ -528,5 +528,38 @@ mod tests {
         pax(&mut bomb_tar, &[("size", &(MAX_UNPACKED_BYTES + 1).to_string())]);
         raw(&mut bomb_tar, header("bomb", "", b'0', 0), b"");
         assert!(matches!(unpacked(&finish(bomb_tar)).1, Err(TarError::Refused(_))));
+    }
+
+    #[test]
+    fn refuses_flood_of_metadata_headers() {
+        struct RepeatingHeader {
+            block: [u8; BLOCK],
+            offset: usize,
+            remaining: u64,
+        }
+        impl Read for RepeatingHeader {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Ok(0);
+                }
+                let avail = BLOCK - self.offset;
+                let take = out.len().min(avail);
+                out[..take].copy_from_slice(&self.block[self.offset..self.offset + take]);
+                self.offset += take;
+                if self.offset == BLOCK {
+                    self.offset = 0;
+                    self.remaining -= 1;
+                }
+                Ok(take)
+            }
+        }
+        let reader = RepeatingHeader {
+            block: header("PaxHeaders/g", "", b'g', 0),
+            offset: 0,
+            remaining: MAX_ENTRIES + 5,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let result = unpack(reader, dir.path(), &AtomicBool::new(false));
+        assert!(matches!(result, Err(TarError::Refused(_))), "{result:?}");
     }
 }
