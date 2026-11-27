@@ -1051,7 +1051,7 @@
    "accentDescription": "链接、开关和焦点框的颜色；“自动”使用配色自带的颜色",
    "groupEffects": "效果",
    "opticsTitle": "光学质感",
-   "opticsDescription": "新对话页铺上缓慢漂移的字符，输入框背后透出光晕，并显示使用概览和一只像素小宠物；卡片和输入框换成玻璃质感，模型菜单里的推理等级换成滑块。窗口在后台、一段时间没有操作或系统关闭了动画效果时，画面静止不动。",
+   "opticsDescription": "新对话页铺上缓慢漂移的字符，输入框背后透出光晕，并显示使用概览和一只像素小宠物；卡片和输入框换成玻璃质感，模型菜单里的推理强度换成滑块。窗口在后台、一段时间没有操作或系统关闭了动画效果时，画面静止不动。",
    "accentAuto": "自动",
    "accentBlue": "蓝色",
    "accentViolet": "紫色",
@@ -2658,7 +2658,7 @@
    "rangeAll": "全部",
    "range30": "30 天",
    "range7": "7 天",
-   "sessions": "会话数",
+   "sessions": "对话数",
    "messages": "消息数",
    "tokens": "Token 总量",
    "activeDays": "活跃天数",
@@ -2672,13 +2672,13 @@
    "dayNone": "{date} · 没有消息",
    "replies": "{count} 次回复",
    "noModels": "这段时间没有模型回复。",
-   "noLimits": "接入 Codex 或 Antigravity 后，这里显示它们的用量额度。",
+   "noLimits": "接入 Codex 或 Antigravity 后，这里显示它们的额度。",
    "funPages": "这些 Token 约合 {count} 页 A4 文稿。",
    "funBook": "这些 Token 约等于 {count} 本{book}的篇幅。",
    "bookLittlePrince": "《小王子》",
    "bookRedChamber": "《红楼梦》",
    "bookBritannica": "《大英百科全书》",
-   "sliderTitle": "推理等级"
+   "sliderTitle": "推理强度"
   },
   "en": {
    "greeting": "What's next, {name}?",
@@ -2710,7 +2710,7 @@
    "bookLittlePrince": "The Little Prince",
    "bookRedChamber": "Dream of the Red Chamber",
    "bookBritannica": "the Encyclopædia Britannica",
-   "sliderTitle": "Reasoning"
+   "sliderTitle": "Reasoning effort"
   }
  }
 }
