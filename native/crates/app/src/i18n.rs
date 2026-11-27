@@ -52,7 +52,6 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "Windows 上导入“Windows C/C++”组件（含 {program}），WSL 或服务器上用“准备 Ubuntu 开发工具”；也可以自己安装 {program} 并加入 PATH。",
         "On Windows import the Windows C/C++ component (it includes {program}); on WSL or a server use Prepare Ubuntu development tools. You can also install {program} yourself and add it to PATH.",
     ),
-    ("native.switchConfirm", "切换到 {target} 后 Rainy 会重新启动。已有对话保留在原来的执行环境。", "Rainy restarts in {target}. Existing chats stay in their execution environment."),
     ("native.switch", "切换", "Switch"),
     ("native.busyBeforeSwitch", "执行环境里还有任务在运行，请先结束再切换。", "Tasks are still running in this execution environment. Finish them before you switch."),
     ("native.retry", "重试", "Retry"),
@@ -68,10 +67,8 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.sshVerify", "SSH 需要验证", "SSH needs to verify you"),
     ("native.continue", "继续", "Continue"),
     ("native.sshLost", "与 {target} 的连接已断开", "The connection to {target} was lost"),
-    ("native.sshLostDetail", "远程后端随连接一起停止了，会话历史保存在服务器上。重新连接会重新打开 Rainy。", "The remote backend stopped with the connection. Chat history is kept on the server. Reconnecting reopens Rainy."),
-    ("native.reconnect", "重新连接", "Reconnect"),
     ("native.later", "稍后", "Later"),
-    ("native.hostStoppedDetail", "{reason}。会话历史已保留，重新启动 Rainy 即可继续。", "{reason}. Your chat history is kept; restart Rainy to continue."),
+    ("native.hostStoppedDetail", "{reason}。对话历史已保留，重新启动 Rainy 即可继续。", "{reason}. Your chat history is kept; restart Rainy to continue."),
     ("native.processKilled", "进程已被终止", "The process was terminated"),
     ("native.exitCode", "退出代码：{code}", "Exit code: {code}"),
     ("native.restart", "重新启动", "Restart"),
@@ -364,10 +361,10 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "There is no terminal output to send yet",
     ),
     // Hunk diff review
-    ("native.diffHunks", "按块审阅", "Hunk review"),
+    ("native.diffHunks", "按块审查", "Hunk review"),
     ("native.diffSideBySide", "并排视图", "Side-by-side"),
-    ("native.diffAcceptHunk", "采纳此块", "Accept hunk"),
-    ("native.diffRevertHunk", "回滚此块", "Revert hunk"),
+    ("native.diffAcceptHunk", "保留此块", "Accept hunk"),
+    ("native.diffRevertHunk", "撤销此块", "Revert hunk"),
     ("native.diffNoChanges", "文件内容没有差异", "No differences in this file"),
     ("native.diffHunkCount", "{count} 处变更块", "{count} change hunks"),
     ("native.diffHunkApplied", "已更新文件变更块", "Updated file hunk"),
@@ -400,11 +397,6 @@ const NATIVE: &[(&str, &str, &str)] = &[
         "重新连接 {target} 失败：{error}",
         "Could not reconnect to {target}: {error}",
     ),
-    (
-        "native.sshLostReconnectDetail",
-        "远程后端随连接一起停止了，会话历史保存在服务器上。点击“重新连接”可在当前窗口恢复连接。",
-        "The remote backend stopped with the connection. Chat history is kept on the server. Choose Reconnect to restore the connection in this window.",
-    ),
     // Approval outside-read / outside-workdir badges
     (
         "native.approvalOutsideRead",
@@ -430,7 +422,7 @@ const NATIVE: &[(&str, &str, &str)] = &[
     ("native.contextBreakdownTitle", "上下文构成", "Context breakdown"),
     ("native.contextBreakdownLoading", "正在统计上下文占用…", "Measuring context usage…"),
     ("native.contextBreakdownUnavailable", "暂时无法获取上下文拆解", "Context breakdown is unavailable"),
-    ("native.contextSegSystem", "系统提示", "System"),
+    ("native.contextSegSystem", "系统提示词", "System"),
     ("native.contextSegInstructions", "项目指令", "Instructions"),
     ("native.contextSegMcpTools", "MCP 工具", "MCP tools"),
     ("native.contextSegCoreTools", "内置工具", "Core tools"),
@@ -693,5 +685,97 @@ mod tests {
         for key in en.keys() {
             assert!(zh.contains_key(key), "missing zh key: {key}");
         }
+    }
+
+    #[test]
+    fn cleaned_orphans_are_removed_and_terminology_is_unified() {
+        let (zh, en) = tables();
+        for removed in [
+            "agent.noProject",
+            "agent.teamNoPlan",
+            "agent.where",
+            "chat.hideArchived",
+            "chat.showArchived",
+            "chat.thinkingReset",
+            "settings.securityNoRules",
+            "settings.securityRemoveRule",
+            "settings.securityRuleCommand",
+            "settings.securityRuleTool",
+            "settings.securityRuleWeb",
+            "settings.securityRules",
+            "settings.securityRulesNote",
+            "settings.settingsRetry",
+            "ssh.exhaustedDetail",
+            "native.reconnect",
+            "native.sshLostDetail",
+            "native.sshLostReconnectDetail",
+            "native.switchConfirm",
+        ] {
+            assert!(!zh.contains_key(removed), "orphan zh key still present: {removed}");
+            assert!(!en.contains_key(removed), "orphan en key still present: {removed}");
+        }
+        assert!(zh.contains_key("ssh.portInvalid") && en.contains_key("ssh.portInvalid"));
+        assert!(zh.contains_key("ssh.profileInvalidPositiveInt") && en.contains_key("ssh.profileInvalidPositiveInt"));
+        assert_eq!(text(Locale::Zh, "native.diffHunks"), "按块审查");
+        assert_eq!(text(Locale::Zh, "native.diffAcceptHunk"), "保留此块");
+        assert_eq!(text(Locale::Zh, "native.diffRevertHunk"), "撤销此块");
+        assert_eq!(text(Locale::Zh, "native.contextSegSystem"), "系统提示词");
+        assert!(!text(Locale::Zh, "native.hostStoppedDetail").contains("会话"));
+        assert!(!text(Locale::Zh, "experiments.empty").contains("会话"));
+        assert!(!text(Locale::Zh, "external.settingsLead").contains("审阅"));
+        assert!(!text(Locale::Zh, "external.settingsLead").contains("审批"));
+        assert!(!text(Locale::Zh, "settings.busyEnterDescription").contains("智能体"));
+        assert!(text(Locale::Zh, "viewers.hostOffline").contains("执行后端"));
+    }
+
+    #[test]
+    fn literal_tr_calls_in_app_sources_resolve_to_known_keys() {
+        use std::path::Path;
+
+        fn visit(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        visit(&path, out);
+                    } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+
+        let (zh, _) = tables();
+        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        visit(&src_dir, &mut files);
+        let mut missing = Vec::new();
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            let prod = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            for call in ["tr(", "trf(", "i18n::text(", "i18n::format("] {
+                let mut rest = prod;
+                while let Some(pos) = rest.find(call) {
+                    let before = &rest[..pos];
+                    let boundary_ok = before.chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+                    rest = &rest[pos + call.len()..];
+                    if !boundary_ok {
+                        continue;
+                    }
+                    // Skip first argument (`cx` / `locale`), then inspect literal key if present.
+                    let Some(comma) = rest.find(',') else { break };
+                    let after_comma = rest[comma + 1..].trim_start();
+                    if let Some(after_quote) = after_comma.strip_prefix('"')
+                        && let Some(end_quote) = after_quote.find('"')
+                    {
+                        let key = &after_quote[..end_quote];
+                        if !key.contains('{') && key.contains('.') && !zh.contains_key(key) {
+                            missing.push(format!("{}: {key}", file.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "missing i18n keys in literal calls: {missing:?}");
     }
 }

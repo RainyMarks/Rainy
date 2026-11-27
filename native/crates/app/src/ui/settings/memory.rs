@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::models_extra::notice;
+use super::widgets::{AsyncPageGuard, bind_textarea_change};
 use super::{group, heading, row};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
@@ -67,9 +68,9 @@ pub struct MemoryPage {
     workspace: Option<String>,
     snapshot: Option<Snapshot>,
     error: Option<SharedString>,
-    busy: bool,
-    /// The note being edited, its field and the revision the edit started from.
-    editing: Option<(String, Entity<TextareaState>, u64)>,
+    guard: AsyncPageGuard,
+    /// The note being edited, its field, the revision the edit started from, and its change subscription.
+    editing: Option<(String, Entity<TextareaState>, u64, Subscription)>,
     clearing: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -83,16 +84,31 @@ impl MemoryPage {
                     this.reload(window, cx);
                 }
             }),
-            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
-                if let StoreEvent::Host { name, data } = event
-                    && name == "memory.changed"
-                    && data.get("workspaceId").and_then(Value::as_str) == this.workspace.as_deref()
+            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
+                StoreEvent::Host { name, data }
+                    if name == "memory.changed"
+                        && data.get("workspaceId").and_then(Value::as_str) == this.workspace.as_deref() =>
                 {
                     this.reload(window, cx);
                 }
+                StoreEvent::HostReconnected(_) => {
+                    this.guard.invalidate();
+                    this.reload(window, cx);
+                }
+                StoreEvent::PrefsChanged => cx.notify(),
+                _ => {}
             }),
         ];
-        let mut page = Self { store, workspace: None, snapshot: None, error: None, busy: false, editing: None, clearing: false, _subscriptions: subscriptions };
+        let mut page = Self {
+            store,
+            workspace: None,
+            snapshot: None,
+            error: None,
+            guard: AsyncPageGuard::default(),
+            editing: None,
+            clearing: false,
+            _subscriptions: subscriptions,
+        };
         page.reload(window, cx);
         page
     }
@@ -100,6 +116,7 @@ impl MemoryPage {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let workspace = Ide::global(cx).read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
         if workspace != self.workspace {
+            self.guard.invalidate();
             self.snapshot = None;
             self.editing = None;
             self.clearing = false;
@@ -117,15 +134,14 @@ impl MemoryPage {
         let call = self.store.read(cx).call(method, params);
         let workspace = self.workspace.clone();
         let reading = method == "memory.status";
-        if !reading {
-            self.busy = true;
-        }
+        let generation = if reading { self.guard.begin_read() } else { self.guard.begin_write() };
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                if this.workspace != workspace {
+                let current = if reading { this.guard.end_read(generation) } else { this.guard.end_write(generation) };
+                if !current || this.workspace != workspace {
+                    cx.notify();
                     return;
                 }
                 match result.map(serde_json::from_value::<Snapshot>) {
@@ -149,7 +165,8 @@ impl MemoryPage {
 
     fn render_item(&self, item: &Item, revision: u64, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let editing = self.editing.as_ref().filter(|(id, _, _)| *id == item.id).map(|(_, field, _)| field.clone());
+        let busy = self.guard.busy();
+        let editing = self.editing.as_ref().filter(|(id, _, _, _)| *id == item.id).map(|(_, field, _, _)| field.clone());
         let id = item.id.clone();
         let mut sources: Vec<AnyElement> = Vec::new();
         for source in &item.sources {
@@ -164,9 +181,10 @@ impl MemoryPage {
                 let (save_id, empty) = (id.clone(), field.read(cx).value().trim().is_empty());
                 h_flex()
                     .gap_2()
-                    .child(Button::new(SharedString::from(format!("memory-save-{id}"))).primary().small().label(tr(cx, "settings.settingsSave")).disabled(self.busy || empty).on_click(
+                    .child(Button::new(SharedString::from(format!("memory-save-{id}"))).primary().small().label(tr(cx, "settings.settingsSave")).disabled(busy || empty).on_click(
                         cx.listener(move |this, _, window, cx| {
-                            let Some((_, field, revision)) = this.editing.clone() else { return };
+                            let Some((_, field, revision, _)) = this.editing.as_ref() else { return };
+                            let (field, revision) = (field.clone(), *revision);
                             let text = field.read(cx).value().to_string();
                             let workspace = this.workspace.clone();
                             this.apply("memory.edit", json!({ "workspaceId": workspace, "id": save_id, "text": text, "expectedRevision": revision }), Some("settings.settingsSaved"), window, cx);
@@ -181,15 +199,16 @@ impl MemoryPage {
                 let (edit_id, delete_id, text) = (id.clone(), id.clone(), item.text.clone());
                 h_flex()
                     .gap_2()
-                    .child(Button::new(SharedString::from(format!("memory-edit-{id}"))).outline().small().label(tr(cx, "settings.settingsMemoryEdit")).disabled(self.busy).on_click(cx.listener(
+                    .child(Button::new(SharedString::from(format!("memory-edit-{id}"))).outline().small().label(tr(cx, "settings.settingsMemoryEdit")).disabled(busy).on_click(cx.listener(
                         move |this, _, window, cx| {
                             let value = text.clone();
                             let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 12).default_value(value));
-                            this.editing = Some((edit_id.clone(), field, revision));
+                            let sub = bind_textarea_change(&field, window, cx);
+                            this.editing = Some((edit_id.clone(), field, revision, sub));
                             cx.notify();
                         },
                     )))
-                    .child(Button::new(SharedString::from(format!("memory-delete-{id}"))).ghost().small().label(tr(cx, "settings.settingsMemoryDelete")).disabled(self.busy).on_click(
+                    .child(Button::new(SharedString::from(format!("memory-delete-{id}"))).ghost().small().label(tr(cx, "settings.settingsMemoryDelete")).disabled(busy).on_click(
                         cx.listener(move |this, _, window, cx| {
                             let workspace = this.workspace.clone();
                             this.apply("memory.delete", json!({ "workspaceId": workspace, "id": delete_id }), Some("settings.settingsApplied"), window, cx);
@@ -218,11 +237,12 @@ impl MemoryPage {
 impl Render for MemoryPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let busy = self.guard.busy();
         let mut page = v_flex().gap_4().child(heading(cx, "settings.settingsMemory", "settings.settingsMemoryNote"));
         let Some(workspace) = self.workspace.clone() else {
             return page.child(notice(cx, tr(cx, "settings.settingsOpenProject"), false));
         };
-        page = page.child(h_flex().child(Button::new("memory-refresh").outline().small().label(tr(cx, "settings.settingsRefresh")).disabled(self.busy).on_click(
+        page = page.child(h_flex().child(Button::new("memory-refresh").outline().small().label(tr(cx, "settings.settingsRefresh")).disabled(busy).on_click(
             cx.listener(|this, _, window, cx| this.reload(window, cx)),
         )));
         if let Some(error) = &self.error {
@@ -237,7 +257,7 @@ impl Render for MemoryPage {
                 cx,
                 tr(cx, "settings.settingsMemoryUse"),
                 None,
-                Switch::new("memory-enabled").checked(snapshot.enabled).disabled(self.busy).on_click(cx.listener(move |this, checked: &bool, window, cx| {
+                Switch::new("memory-enabled").checked(snapshot.enabled).disabled(busy).on_click(cx.listener(move |this, checked: &bool, window, cx| {
                     this.apply("memory.setEnabled", json!({ "workspaceId": use_workspace, "enabled": *checked }), Some("settings.settingsApplied"), window, cx);
                 })),
             ),
@@ -245,7 +265,7 @@ impl Render for MemoryPage {
                 cx,
                 tr(cx, "settings.settingsMemoryGenerate"),
                 Some(tr(cx, "settings.settingsMemoryGenerateNote")),
-                Switch::new("memory-generate").checked(snapshot.generation_enabled).disabled(self.busy).on_click(cx.listener(move |this, checked: &bool, window, cx| {
+                Switch::new("memory-generate").checked(snapshot.generation_enabled).disabled(busy).on_click(cx.listener(move |this, checked: &bool, window, cx| {
                     this.apply("memory.setEnabled", json!({ "workspaceId": generate_workspace, "generationEnabled": *checked }), Some("settings.settingsApplied"), window, cx);
                 })),
             ),
@@ -271,7 +291,7 @@ impl Render for MemoryPage {
             page = page.child(if self.clearing {
                 h_flex()
                     .gap_2()
-                    .child(Button::new("memory-clear-confirm").danger().small().label(tr(cx, "settings.settingsMemoryClearConfirm")).disabled(self.busy).on_click(cx.listener(
+                    .child(Button::new("memory-clear-confirm").danger().small().label(tr(cx, "settings.settingsMemoryClearConfirm")).disabled(busy).on_click(cx.listener(
                         move |this, _, window, cx| {
                             this.clearing = false;
                             this.apply("memory.clear", json!({ "workspaceId": clear_workspace }), Some("settings.settingsApplied"), window, cx);
@@ -282,7 +302,7 @@ impl Render for MemoryPage {
                         cx.notify();
                     })))
             } else {
-                h_flex().child(Button::new("memory-clear").outline().small().label(tr(cx, "settings.settingsMemoryClear")).disabled(self.busy).on_click(cx.listener(|this, _, _, cx| {
+                h_flex().child(Button::new("memory-clear").outline().small().label(tr(cx, "settings.settingsMemoryClear")).disabled(busy).on_click(cx.listener(|this, _, _, cx| {
                     this.clearing = true;
                     cx.notify();
                 })))

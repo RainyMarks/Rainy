@@ -16,11 +16,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::models_extra::{card, notice};
+use super::widgets::{AsyncPageGuard, bind_input_change};
 use super::{group, heading, row};
-use crate::store::Store;
 use crate::store::ide::{Ide, IdeEvent};
-use crate::ui::{tr, trf};
+use crate::store::{Store, StoreEvent};
 use crate::ui::workbench::confirm_switch;
+use crate::ui::{tr, trf};
 
 const LANGUAGES: [&str; 5] = ["python", "node", "php", "c", "cpp"];
 
@@ -78,12 +79,13 @@ struct ProfileEditor {
 
 pub struct RuntimePage {
     store: Entity<Store>,
+    target_id: Option<String>,
     workspace: Option<String>,
     snapshot: Option<Snapshot>,
     language: &'static str,
     manual: Entity<InputState>,
     error: Option<SharedString>,
-    busy: bool,
+    guard: AsyncPageGuard,
     /// SSH hosts added here and the aliases of `~/.ssh/config`.
     ssh_hosts: Vec<ssh::Host>,
     /// Per-host SSH research profiles persisted in `desktop.json`.
@@ -103,15 +105,37 @@ impl RuntimePage {
         let placeholder = tr(cx, "settings.sshHostPlaceholder");
         let ssh_destination = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let ssh_port = cx.new(|cx| InputState::new(window, cx).placeholder("22"));
-        let submit = |this: &mut Self, _: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
-            if let InputEvent::PressEnter { .. } = event {
-                this.add_ssh_host(window, cx);
-            }
+        let target_id = store.read(cx).target.as_ref().map(|target| target.id().to_owned());
+        let submit = |this: &mut Self, _: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>| match event {
+            InputEvent::PressEnter { .. } => this.add_ssh_host(window, cx),
+            InputEvent::Change => cx.notify(),
+            _ => {}
         };
         let subscriptions = vec![
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            bind_input_change(&manual, window, cx),
+            cx.observe(&store, |this, store, cx| {
+                let current = store.read(cx).target.as_ref().map(|target| target.id());
+                if this.target_id.as_deref() != current {
+                    this.target_id = current.map(str::to_owned);
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
+                StoreEvent::PrefsChanged => {
+                    let placeholder = tr(cx, "settings.sshHostPlaceholder");
+                    this.ssh_destination.update(cx, |input, cx| input.set_placeholder(placeholder, window, cx));
+                    cx.notify();
+                }
+                StoreEvent::HostReconnected(_) => {
+                    this.guard.invalidate();
+                    this.read_ssh_hosts(cx);
+                    this.read(window, cx);
+                }
+                _ => {}
+            }),
             cx.subscribe_in(&Ide::global(cx), window, |this, _, event: &IdeEvent, window, cx| {
                 if *event == IdeEvent::WorkspaceChanged {
+                    this.guard.invalidate();
                     this.read(window, cx);
                 }
             }),
@@ -120,12 +144,13 @@ impl RuntimePage {
         ];
         let mut page = Self {
             store,
+            target_id,
             workspace: None,
             snapshot: None,
             language: "python",
             manual,
             error: None,
-            busy: false,
+            guard: AsyncPageGuard::default(),
             ssh_hosts: Vec::new(),
             ssh_profiles: BTreeMap::new(),
             profile_editor: None,
@@ -267,15 +292,15 @@ impl RuntimePage {
         };
         let keepalive_interval = match parse_opt_u16(&ed.keepalive_interval.read(cx).value()) {
             Ok(val) => val,
-            Err(msg) => {
-                window.push_notification(Notification::error(msg), cx);
+            Err(key) => {
+                window.push_notification(Notification::error(tr(cx, key)), cx);
                 return;
             }
         };
         let keepalive_count_max = match parse_opt_u8(&ed.keepalive_count_max.read(cx).value()) {
             Ok(val) => val,
-            Err(msg) => {
-                window.push_notification(Notification::error(msg), cx);
+            Err(key) => {
+                window.push_notification(Notification::error(tr(cx, key)), cx);
                 return;
             }
         };
@@ -373,7 +398,7 @@ impl RuntimePage {
         let destination = match destination {
             Ok(destination) => destination,
             Err(_) if port_text.parse::<u32>().is_err() && !port_text.is_empty() => {
-                window.push_notification(Notification::error(rainy_carrier::locale::localized("SSH 端口必须是 1 到 65535 之间的整数。", "The SSH port must be a whole number from 1 to 65535.")), cx);
+                window.push_notification(Notification::error(tr(cx, "ssh.portInvalid")), cx);
                 return;
             }
             Err(error) => {
@@ -531,12 +556,16 @@ impl RuntimePage {
         params["workspaceId"] = json!(workspace);
         let reading = params["op"] == "status";
         let call = self.store.read(cx).call("runtime", params);
-        self.busy = !reading;
+        let generation = if reading { self.guard.begin_read() } else { self.guard.begin_write() };
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
+                let current = if reading { this.guard.end_read(generation) } else { this.guard.end_write(generation) };
+                if !current {
+                    cx.notify();
+                    return;
+                }
                 match result.map(serde_json::from_value::<Snapshot>) {
                     Ok(Ok(snapshot)) if Some(&snapshot.workspace_id) == this.workspace.as_ref() => {
                         this.snapshot = Some(snapshot);
@@ -563,7 +592,7 @@ impl RuntimePage {
         let label: SharedString = current.label().to_owned().into();
         let current_id = current.id().to_owned();
         let ssh_choices: Vec<ExecutionTarget> = self.ssh_hosts.iter().map(|host| host.target.clone()).collect();
-        let picker = Button::new("runtime-target").outline().small().label(label).disabled(self.busy).dropdown_menu(move |mut menu, _, _| {
+        let picker = Button::new("runtime-target").outline().small().label(label).disabled(self.guard.busy()).dropdown_menu(move |mut menu, _, _| {
             let mut choices = vec![ExecutionTarget::windows()];
             choices.extend(targets::wsl_distributions());
             choices.extend(ssh_choices.iter().cloned());
@@ -608,7 +637,7 @@ impl RuntimePage {
             .collect();
         let view = cx.entity();
         let current = selected.clone();
-        let interpreter = Button::new("runtime-interpreter").outline().small().label(chosen).disabled(self.busy).dropdown_menu(move |mut menu, _, _| {
+        let interpreter = Button::new("runtime-interpreter").outline().small().label(chosen).disabled(self.guard.busy()).dropdown_menu(move |mut menu, _, _| {
             let select = |path: Option<String>, view: Entity<RuntimePage>| {
                 move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                     let path = path.clone();
@@ -641,7 +670,7 @@ impl RuntimePage {
         items.push(
             v_flex()
                 .gap_2()
-                .child(h_flex().child(Button::new("runtime-discover").outline().small().label(tr(cx, "settings.settingsDiscoverEnvironments")).disabled(self.busy).on_click(
+                .child(h_flex().child(Button::new("runtime-discover").outline().small().label(tr(cx, "settings.settingsDiscoverEnvironments")).disabled(self.guard.busy()).on_click(
                     cx.listener(|this, _, window, cx| this.run(json!({ "op": "discover" }), None, window, cx)),
                 )))
                 .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.settingsEnvironmentPath")))
@@ -649,7 +678,7 @@ impl RuntimePage {
                     h_flex()
                         .gap_2()
                         .child(div().flex_1().child(Input::new(&self.manual).small()))
-                        .child(Button::new("runtime-probe").outline().small().label(tr(cx, "settings.settingsProbeEnvironment")).disabled(self.busy || probe_empty).on_click(
+                        .child(Button::new("runtime-probe").outline().small().label(tr(cx, "settings.settingsProbeEnvironment")).disabled(self.guard.busy() || probe_empty).on_click(
                             cx.listener(move |this, _, window, cx| {
                                 let path = this.manual.read(cx).value().trim().to_owned();
                                 this.run(json!({ "op": "probe", "language": language, "path": path }), None, window, cx);
@@ -740,26 +769,20 @@ fn non_empty(raw: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn parse_opt_u16(raw: &str) -> Result<Option<u16>, String> {
+fn parse_opt_u16(raw: &str) -> Result<Option<u16>, &'static str> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-    trimmed
-        .parse::<u16>()
-        .map(Some)
-        .map_err(|_| rainy_carrier::locale::localized("请输入有效的正整数。", "Enter a valid positive integer.").to_owned())
+    trimmed.parse::<u16>().map(Some).map_err(|_| "ssh.profileInvalidPositiveInt")
 }
 
-fn parse_opt_u8(raw: &str) -> Result<Option<u8>, String> {
+fn parse_opt_u8(raw: &str) -> Result<Option<u8>, &'static str> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-    trimmed
-        .parse::<u8>()
-        .map(Some)
-        .map_err(|_| rainy_carrier::locale::localized("请输入有效的正整数。", "Enter a valid positive integer.").to_owned())
+    trimmed.parse::<u8>().map(Some).map_err(|_| "ssh.profileInvalidPositiveInt")
 }
 
 fn format_env_lines(env: &BTreeMap<String, String>) -> String {

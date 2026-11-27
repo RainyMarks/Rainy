@@ -13,6 +13,7 @@ use gpui_kit::*;
 use rainy_protocol::{ModelSetup, ModelsStatus};
 use serde_json::{Value, json};
 
+use super::widgets::bind_input_change;
 use super::{heading, segmented};
 use crate::store::{Store, StoreEvent};
 use crate::ui::chat::thinking_label;
@@ -69,23 +70,47 @@ impl EventEmitter<super::ShowSection> for ModelsPage {}
 impl ModelsPage {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = |window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx));
+        let provider = input(window, cx);
+        let model = input(window, cx);
+        let base_url = input(window, cx);
+        let context = input(window, cx);
+        let output = input(window, cx);
         let api_key = cx.new(|cx| InputState::new(window, cx).masked(true));
-        let subscriptions = vec![cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| {
-            if matches!(event, StoreEvent::PrefsChanged) {
-                this.load_saved(window, cx);
-            }
-            cx.notify();
-        })];
+        let subscriptions = vec![
+            bind_input_change(&provider, window, cx),
+            bind_input_change(&model, window, cx),
+            bind_input_change(&base_url, window, cx),
+            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
+                StoreEvent::PrefsChanged => {
+                    this.load_saved(window, cx);
+                    cx.notify();
+                }
+                StoreEvent::HostReconnected(_) => {
+                    this.refresh_status(window, cx);
+                    cx.notify();
+                }
+                StoreEvent::Host { name, .. } if name == "models.changed" => {
+                    this.load_saved(window, cx);
+                    cx.notify();
+                }
+                _ => {}
+            }),
+            cx.observe_in(&store, window, |this, store, window, cx| {
+                if !this.loaded && store.read(cx).models.is_some() {
+                    this.load_saved(window, cx);
+                }
+            }),
+        ];
         let external_agents = cx.new(|cx| super::external_agents::ExternalAgentsCard::new(store.clone(), window, cx));
         let proxy = cx.new(|cx| super::models_extra::ProxyCard::new(store.clone(), window, cx));
         let mut page = Self {
             external_agents,
             proxy,
-            provider: input(window, cx),
-            model: input(window, cx),
-            base_url: input(window, cx),
-            context: input(window, cx),
-            output: input(window, cx),
+            provider,
+            model,
+            base_url,
+            context,
+            output,
             api_key,
             store,
             local: true,
@@ -480,7 +505,7 @@ impl ModelsPage {
         )
     }
 
-    fn render_form(&self, status: Option<&ModelsStatus>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_form(&self, status: Option<&ModelsStatus>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let provider = self.value(&self.provider, cx);
         let key_stored = status.is_some_and(|status| status.credentials.contains(&provider));
@@ -502,6 +527,30 @@ impl ModelsPage {
         let levels: Vec<(String, SharedString)> = reasoning.levels().map(|level| (level.as_str().to_owned(), thinking_label(locale, level, reasoning.toggle()).into())).collect();
         let shown_thinking = reasoning.choose(Some(&self.thinking)).map_or_else(|| self.thinking.clone(), |level| level.as_str().to_owned());
         let local = self.local;
+        let kind_items = vec![("local", tr(cx, "settings.settingsLocalModel")), ("api", tr(cx, "settings.settingsApiModel"))];
+        let kind_page = cx.weak_entity();
+        let kind_seg = segmented(
+            "model-kind",
+            kind_items,
+            if local { "local" } else { "api" },
+            window,
+            cx,
+            move |value, window, cx| {
+                let _ = kind_page.update(cx, |this, cx| {
+                    let local = value == "local";
+                    if this.local != local {
+                        this.local = local;
+                        this.api = if local { "openai-completions" } else { "openai-responses" };
+                        if this.editing.is_none() && this.draft_preset.is_none() {
+                            let context = this.context.clone();
+                            let value = format!("{}", if local { LOCAL_CONTEXT } else { API_CONTEXT });
+                            context.update(cx, |state, cx| state.set_value(value, window, cx));
+                        }
+                        cx.notify();
+                    }
+                });
+            },
+        );
         let mut form = v_flex()
             .gap_3()
             .p_4()
@@ -510,29 +559,7 @@ impl ModelsPage {
             .border_color(theme.border)
             .bg(theme.group_box)
             .child(div().text_sm().font_semibold().child(title))
-            .child(segmented(
-                "model-kind",
-                vec![("local", tr(cx, "settings.settingsLocalModel")), ("api", tr(cx, "settings.settingsApiModel"))],
-                if local { "local" } else { "api" },
-                {
-                    let page = cx.weak_entity();
-                    move |value, window, cx| {
-                        let _ = page.update(cx, |this, cx| {
-                            let local = value == "local";
-                            if this.local != local {
-                                this.local = local;
-                                this.api = if local { "openai-completions" } else { "openai-responses" };
-                                if this.editing.is_none() && this.draft_preset.is_none() {
-                                    let context = this.context.clone();
-                                    let value = format!("{}", if local { LOCAL_CONTEXT } else { API_CONTEXT });
-                                    context.update(cx, |state, cx| state.set_value(value, window, cx));
-                                }
-                                cx.notify();
-                            }
-                        });
-                    }
-                },
-            ))
+            .child(kind_seg)
             .child(h_flex().gap_3().flex_wrap().child(self.field(tr(cx, "settings.settingsProvider"), &self.provider, cx)).child(self.field(tr(cx, "settings.settingsModelId"), &self.model, cx)))
             .child(self.field(tr(cx, "settings.settingsBaseUrl"), &self.base_url, cx))
             .child(h_flex().gap_3().flex_wrap().child(self.field(tr(cx, "settings.settingsContext"), &self.context, cx)).child(self.field(tr(cx, "settings.settingsOutput"), &self.output, cx)))
@@ -686,7 +713,7 @@ impl Render for ModelsPage {
         self.load_saved(window, cx);
         let status = self.status(cx);
         let list = status.as_ref().map(|status| self.render_list(status, cx));
-        let form = self.render_form(status.as_ref(), cx);
+        let form = self.render_form(status.as_ref(), window, cx);
         let prefs = self.store.read(cx).prefs.clone();
         let editor_ai = super::models_extra::editor_ai(&prefs, status.as_ref(), cx);
         let web_search = super::models_extra::web_search(&prefs, status.as_ref(), cx);

@@ -16,11 +16,32 @@ use gpui_kit::*;
 use rainy_carrier::strata::{Catalog, Choice, Fit, Job, JobKind, Phase, Settings, Size, Source, Status};
 
 use super::models_extra::notice;
-use crate::store::Store;
+use super::widgets::bind_input_change;
+use crate::store::{Store, StoreEvent};
 use crate::ui::{tr, trf};
 
 /// Families shown before "more models": the original model, its coding version and the smaller model.
 const MAIN_FAMILIES: [&str; 3] = ["qwen", "coder", "qwen36"];
+
+/// Lightweight fingerprint of `Store::strata` so streaming chat notifications do not repaint the Strata card.
+#[derive(Clone, PartialEq)]
+struct StrataFingerprint {
+    available: bool,
+    connecting: bool,
+    status: Option<Status>,
+}
+
+impl StrataFingerprint {
+    fn capture(store: &Store) -> Self {
+        Self { available: store.strata.manager.is_some(), connecting: store.strata.connecting, status: store.strata.status.clone() }
+    }
+
+    fn matches(&self, store: &Store) -> bool {
+        self.available == store.strata.manager.is_some()
+            && self.connecting == store.strata.connecting
+            && self.status.as_ref() == store.strata.status.as_ref()
+    }
+}
 
 pub struct StrataCard {
     store: Entity<Store>,
@@ -29,6 +50,7 @@ pub struct StrataCard {
     all: bool,
     /// The port the field was last filled with.
     shown_port: Option<u16>,
+    fingerprint: StrataFingerprint,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -96,7 +118,7 @@ fn size_about(family: &str, size: &Size, zh: bool) -> String {
         ("qwen36", "Q8_0") => "8 位，最接近完整模型",
         ("deepseek41", "IST-DAS-1.75bpw") => "官方最小的版本，占硬盘 239 GB",
         ("deepseek41", "IST-DAS-2.00bpw") => "官方较小的版本，占硬盘 257 GB，每秒约 5～7 个词",
-        ("deepseek41", "IST-DAS-2.25bpw") => "官方较好的版本，占硬盘 274 GB，适合写代码和智能体",
+        ("deepseek41", "IST-DAS-2.25bpw") => "官方较好的版本，占硬盘 274 GB，适合写代码和 Agent",
         ("deepseek41", "UD-Q8_K_XL") => "Unsloth 8 位，508 GB，适合有几百 GB 内存的多显卡机器",
         _ => "",
     };
@@ -148,9 +170,24 @@ fn step_text(job: &Job, cx: &App) -> SharedString {
 impl StrataCard {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let port = cx.new(|cx| InputState::new(window, cx).placeholder("8080"));
-        let subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let fingerprint = StrataFingerprint::capture(store.read(cx));
+        let subscriptions = vec![
+            bind_input_change(&port, window, cx),
+            cx.observe(&store, |this, store, cx| {
+                let state = store.read(cx);
+                if !this.fingerprint.matches(state) {
+                    this.fingerprint = StrataFingerprint::capture(state);
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&store, |_, _, event: &StoreEvent, cx| {
+                if matches!(event, StoreEvent::PrefsChanged) {
+                    cx.notify();
+                }
+            }),
+        ];
         store.update(cx, |store, cx| store.refresh_strata(cx));
-        Self { store, port, all: false, shown_port: None, _subscriptions: subscriptions }
+        Self { store, port, all: false, shown_port: None, fingerprint, _subscriptions: subscriptions }
     }
 
     /// Show how a request ended: a refusal as an error notification.
@@ -647,12 +684,34 @@ impl StrataCard {
     }
 
     /// Where downloads go and where they come from.
-    fn render_download_settings(&self, status: &Status, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_download_settings(&self, status: &Status, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme().clone();
         let busy = status.job.is_some();
         let free = status.data_free_gb.map(|free| trf(cx, "settings.strataFree", &[("size", &gb_text(free))])).unwrap_or_default();
         let source = status.settings.source;
         let folder: SharedString = if status.data_dir.is_empty() { tr(cx, "settings.strataOwnDataDir") } else { status.data_dir.clone().into() };
+        let source_items = vec![("huggingface", tr(cx, "settings.strataSourceHf")), ("modelscope", tr(cx, "settings.strataSourceMs"))];
+        let source_entity = cx.entity().downgrade();
+        let source_seg = super::segmented(
+            "strata-source",
+            source_items,
+            if source == Source::Modelscope { "modelscope" } else { "huggingface" },
+            window,
+            cx,
+            move |value, window, cx| {
+                let source = if value == "modelscope" { Source::Modelscope } else { Source::Huggingface };
+                let _ = source_entity.update(cx, |this, cx| {
+                    this.save(
+                        move |settings| {
+                            settings.source = source;
+                            settings.source_chosen = true;
+                        },
+                        window,
+                        cx,
+                    )
+                });
+            },
+        );
         vec![
             div().mt_2().text_sm().font_semibold().child(tr(cx, "settings.strataLocalTitle")).into_any_element(),
             Self::muted(tr(cx, "settings.strataLocalHint"), cx),
@@ -674,27 +733,7 @@ impl StrataCard {
                 .gap_2()
                 .items_center()
                 .child(div().w(px(84.)).flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.strataSource")))
-                .child(super::segmented(
-                    "strata-source",
-                    vec![("huggingface", tr(cx, "settings.strataSourceHf")), ("modelscope", tr(cx, "settings.strataSourceMs"))],
-                    if source == Source::Modelscope { "modelscope" } else { "huggingface" },
-                    {
-                        let entity = cx.entity().downgrade();
-                        move |value, window, cx| {
-                            let source = if value == "modelscope" { Source::Modelscope } else { Source::Huggingface };
-                            let _ = entity.update(cx, |this, cx| {
-                                this.save(
-                                    move |settings| {
-                                        settings.source = source;
-                                        settings.source_chosen = true;
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            });
-                        }
-                    },
-                ))
+                .child(source_seg)
                 .into_any_element(),
             Self::muted(tr(cx, "settings.strataSourceHint"), cx),
         ]
@@ -867,7 +906,7 @@ impl Render for StrataCard {
                     body.extend(self.render_server(&status, None, cx));
                 }
             }
-            body.extend(self.render_download_settings(&status, cx));
+            body.extend(self.render_download_settings(&status, window, cx));
         }
         if status.legacy_bytes > 0 {
             body.push(

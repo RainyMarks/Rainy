@@ -1,14 +1,18 @@
 //! Appearance: color mode, color scheme, accent and fonts (`AppearanceSection.tsx`; 3.x's rain effects have no
 //! counterpart here, so their switch is gone while the stored `rainEffects` stays).
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use gpui_kit::base::{Transition, transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::json;
 
+use super::widgets::TRANSITION_RING;
 use super::{group, heading, row, segmented, set_prefs};
 use crate::fonts::{self, CHOICES, FontLibrary, Use};
 use crate::i18n::Locale;
@@ -34,8 +38,66 @@ const ACCENTS: [(&str, &str); 7] = [
     ("pink", "accentPink"),
     ("teal", "accentTeal"),
 ];
-/// `FONT_SIZE_RANGE` in the renderer.
-const FONT_SIZES: std::ops::RangeInclusive<f32> = 11.0..=20.0;
+/// Match `theme::apply` clamps: UI font 11..=20, code font 10..=24.
+const UI_FONT_SIZES: std::ops::RangeInclusive<f32> = 11.0..=20.0;
+const CODE_FONT_SIZES: std::ops::RangeInclusive<f32> = 10.0..=24.0;
+
+#[derive(Clone, Copy)]
+struct SwatchColors {
+    sidebar: Hsla,
+    muted_fg: Hsla,
+    background: Hsla,
+    muted_bg: Hsla,
+    primary: Hsla,
+}
+
+fn color(hex: &str) -> Hsla {
+    let value = u32::from_str_radix(hex.trim_start_matches('#').get(..6).unwrap_or("808080"), 16).unwrap_or(0x808080);
+    rgb(value).into()
+}
+
+fn extract_swatch(config: &gpui_kit::component::ThemeConfig) -> SwatchColors {
+    let value = serde_json::to_value(&config.colors).ok();
+    let pick = |key: &str| {
+        let text = value.as_ref().and_then(|colors| colors.get(key)).and_then(|value| value.as_str()).unwrap_or("#808080");
+        color(text)
+    };
+    SwatchColors {
+        sidebar: pick("sidebar.background"),
+        muted_fg: pick("muted.foreground"),
+        background: pick("background"),
+        muted_bg: pick("muted.background"),
+        primary: pick("primary.background"),
+    }
+}
+
+/// Precompute every (scheme, resolved_accent, dark) swatch once so Appearance renders with zero JSON serialization.
+fn swatch_cache() -> &'static HashMap<(&'static str, &'static str, bool), SwatchColors> {
+    static CACHE: OnceLock<HashMap<(&'static str, &'static str, bool), SwatchColors>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut map = HashMap::with_capacity(SCHEMES.len() * (ACCENTS.len() - 1) * 2);
+        for (scheme, _) in SCHEMES {
+            for (accent, _) in ACCENTS.iter().filter(|(id, _)| *id != "auto") {
+                let (light, dark) = themes_for(scheme, accent);
+                map.insert((scheme, *accent, false), extract_swatch(&light));
+                map.insert((scheme, *accent, true), extract_swatch(&dark));
+            }
+        }
+        map
+    })
+}
+
+fn cached_swatch(scheme: &str, accent: &str, dark: bool) -> SwatchColors {
+    let resolved_scheme = SCHEMES.iter().find(|(id, _)| *id == scheme).map_or("graphite", |(id, _)| *id);
+    let resolved_accent = if accent == "auto" {
+        scheme_accent(resolved_scheme)
+    } else {
+        ACCENTS.iter().find(|(id, _)| *id == accent && *id != "auto").map_or("blue", |(id, _)| *id)
+    };
+    *swatch_cache()
+        .get(&(resolved_scheme, resolved_accent, dark))
+        .expect("precomputed swatch")
+}
 
 /// A font menu: Windows' own fonts, then open-source ones downloaded when chosen (`fonts.rs`).
 fn font_row(used: Use, preference: &str, cx: &App) -> AnyElement {
@@ -98,17 +160,14 @@ fn i18n_format(cx: &App, key: &str, vars: &[(&str, &dyn std::fmt::Display)]) -> 
     crate::i18n::format(Store::global(cx).read(cx).locale(), key, vars)
 }
 
-fn color(hex: &str) -> Hsla {
-    let value = u32::from_str_radix(hex.trim_start_matches('#').get(..6).unwrap_or("808080"), 16).unwrap_or(0x808080);
-    rgb(value).into()
-}
-
 /// A small picture of a scheme in the current mode: side bar, main area and an accent mark.
-fn swatch(scheme: &'static str, label: SharedString, selected: bool, dark: bool, accent: &str, cx: &App) -> impl IntoElement {
-    let (light, night) = themes_for(scheme, accent);
-    let config = if dark { night } else { light };
-    let pick = |key: &str| config_color(&config, key);
-    let theme = cx.theme();
+fn swatch(scheme: &'static str, label: SharedString, selected: bool, dark: bool, accent: &str, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    let colors = cached_swatch(scheme, accent, dark);
+    let (radius, target_border) = {
+        let theme = cx.theme();
+        (theme.radius, if selected { theme.ring } else { theme.border })
+    };
+    let border = transition(format!("scheme-ring-{scheme}"), target_border, Transition::new(TRANSITION_RING), window, cx);
     v_flex()
         .id(ElementId::Name(format!("scheme-{scheme}").into()))
         .gap_1()
@@ -123,98 +182,108 @@ fn swatch(scheme: &'static str, label: SharedString, selected: bool, dark: bool,
             h_flex()
                 .w(px(76.))
                 .h(px(48.))
-                .rounded(theme.radius)
+                .rounded(radius)
                 .overflow_hidden()
                 .border_2()
-                .border_color(if selected { theme.ring } else { theme.border })
-                .child(v_flex().w(px(22.)).h_full().p_1().gap_1().bg(pick("sidebar.background")).child(div().h(px(3.)).w_full().rounded_sm().bg(pick("muted.foreground"))))
+                .border_color(border)
+                .child(v_flex().w(px(22.)).h_full().p_1().gap_1().bg(colors.sidebar).child(div().h(px(3.)).w_full().rounded_sm().bg(colors.muted_fg)))
                 .child(
                     v_flex()
                         .flex_1()
                         .h_full()
                         .p_1()
                         .gap_1()
-                        .bg(pick("background"))
-                        .child(div().h(px(3.)).w(px(30.)).rounded_sm().bg(pick("muted.foreground")))
-                        .child(div().h(px(10.)).w(px(24.)).rounded_sm().bg(pick("muted.background")))
-                        .child(div().h(px(4.)).w(px(14.)).rounded_sm().bg(pick("primary.background"))),
+                        .bg(colors.background)
+                        .child(div().h(px(3.)).w(px(30.)).rounded_sm().bg(colors.muted_fg))
+                        .child(div().h(px(10.)).w(px(24.)).rounded_sm().bg(colors.muted_bg))
+                        .child(div().h(px(4.)).w(px(14.)).rounded_sm().bg(colors.primary)),
                 ),
         )
         .child(div().text_xs().child(label))
 }
 
-fn config_color(config: &gpui_kit::component::ThemeConfig, key: &str) -> Hsla {
-    let value = serde_json::to_value(&config.colors).ok();
-    let text = value.as_ref().and_then(|colors| colors.get(key)).and_then(|value| value.as_str()).unwrap_or("#808080");
-    color(text)
+fn t(cx: &App, key: &str) -> SharedString {
+    tr(cx, &format!("settings.{key}"))
 }
 
-pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
+pub fn render(store: &Entity<Store>, window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
     let prefs = store.read(cx).prefs.clone();
     let dark = cx.theme().is_dark();
-    let t = |key: &str| tr(cx, &format!("settings.{key}"));
-    let accent_colors: Vec<(&'static str, Hsla)> = ACCENTS
+    let accent_colors: Vec<(&'static str, &'static str, Hsla)> = ACCENTS
         .iter()
-        .map(|(id, _)| {
-            let accent = if *id == "auto" { scheme_accent(&prefs.color_scheme) } else { id };
-            let (light, night) = themes_for(&prefs.color_scheme, accent);
-            (*id, config_color(if dark { &night } else { &light }, "primary.background"))
+        .map(|(id, key)| (*id, *key, cached_swatch(&prefs.color_scheme, id, dark).primary))
+        .collect();
+    let (foreground, transparent, muted_foreground, mono_font_family, mono_font_size) = {
+        let theme = cx.theme();
+        (theme.foreground, theme.transparent, theme.muted_foreground, theme.mono_font_family.clone(), theme.mono_font_size)
+    };
+    let sizes = [
+        ("uiFontSize", prefs.ui_font_size, UI_FONT_SIZES, "fontSizeTitle", "fontSizeDescription"),
+        ("codeFontSize", prefs.code_font_size, CODE_FONT_SIZES, "codeFontSizeTitle", "codeFontSizeDescription"),
+    ];
+    let color_mode_items = vec![("light", t(cx, "appearanceLight")), ("dark", t(cx, "appearanceDark")), ("system", t(cx, "appearanceSystem"))];
+    let color_mode_seg = segmented(
+        "color-mode",
+        color_mode_items,
+        &prefs.theme,
+        window,
+        cx,
+        |value, window, cx| set_prefs(json!({ "theme": value }), window, cx),
+    );
+    let scheme_swatches: Vec<AnyElement> = SCHEMES
+        .iter()
+        .map(|(id, key)| {
+            let label = t(cx, key);
+            swatch(id, label, prefs.color_scheme == *id, dark, &prefs.accent, window, cx).into_any_element()
         })
         .collect();
-    let theme = cx.theme();
-    let sizes = [("uiFontSize", prefs.ui_font_size, "fontSizeTitle", "fontSizeDescription"), ("codeFontSize", prefs.code_font_size, "codeFontSizeTitle", "codeFontSizeDescription")];
+    let accent_dots: Vec<AnyElement> = accent_colors
+        .into_iter()
+        .map(|(id, key, fill)| {
+            let selected = prefs.accent == id;
+            let label = t(cx, key);
+            let ring = transition(
+                format!("accent-ring-{id}"),
+                if selected { foreground } else { transparent },
+                Transition::new(TRANSITION_RING),
+                window,
+                cx,
+            );
+            div()
+                .id(ElementId::Name(format!("accent-{id}").into()))
+                .size(px(22.))
+                .rounded_full()
+                .bg(fill)
+                .border_2()
+                .border_color(ring)
+                .cursor_pointer()
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label.clone()).build(window, cx))
+                .on_click(move |_, window, cx| {
+                    if !selected {
+                        set_prefs(json!({ "accent": id }), window, cx);
+                    }
+                })
+                .into_any_element()
+        })
+        .collect();
     v_flex()
         .gap_4()
         .child(heading(cx, "settings.navAppearance", "settings.appearanceLead"))
         .child(group(cx, Some("settings.groupColors"), vec![
-            row(
-                cx,
-                t("colorModeTitle"),
-                Some(t("colorModeDescription")),
-                segmented(
-                    "color-mode",
-                    vec![("light", t("appearanceLight")), ("dark", t("appearanceDark")), ("system", t("appearanceSystem"))],
-                    &prefs.theme,
-                    |value, window, cx| set_prefs(json!({ "theme": value }), window, cx),
-                ),
-            ),
+            row(cx, t(cx, "colorModeTitle"), Some(t(cx, "colorModeDescription")), color_mode_seg),
             v_flex()
                 .px_4()
                 .py_3()
                 .gap_3()
-                .child(v_flex().gap_0p5().child(div().text_sm().child(t("colorSchemeTitle"))).child(div().text_xs().text_color(theme.muted_foreground).child(t("colorSchemeDescription"))))
-                .child(h_flex().gap_3().flex_wrap().children(SCHEMES.iter().map(|(id, key)| {
-                    swatch(id, t(key), prefs.color_scheme == *id, dark, &prefs.accent, cx)
-                })))
+                .child(v_flex().gap_0p5().child(div().text_sm().child(t(cx, "colorSchemeTitle"))).child(div().text_xs().text_color(muted_foreground).child(t(cx, "colorSchemeDescription"))))
+                .child(h_flex().gap_3().flex_wrap().children(scheme_swatches))
                 .into_any_element(),
-            row(
-                cx,
-                t("accentTitle"),
-                Some(t("accentDescription")),
-                h_flex().gap_2().items_center().children(accent_colors.into_iter().map(|(id, fill)| {
-                    let selected = prefs.accent == id;
-                    let label = t(ACCENTS.iter().find(|(value, _)| *value == id).map_or("accentAuto", |(_, key)| key));
-                    div()
-                        .id(ElementId::Name(format!("accent-{id}").into()))
-                        .size(px(22.))
-                        .rounded_full()
-                        .bg(fill)
-                        .border_2()
-                        .border_color(if selected { theme.foreground } else { theme.transparent })
-                        .cursor_pointer()
-                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label.clone()).build(window, cx))
-                        .on_click(move |_, window, cx| {
-                            if !selected {
-                                set_prefs(json!({ "accent": id }), window, cx);
-                            }
-                        })
-                })),
-            ),
+            row(cx, t(cx, "accentTitle"), Some(t(cx, "accentDescription")), h_flex().gap_2().items_center().children(accent_dots)),
         ]))
         .child(group(cx, Some("settings.groupEffects"), vec![row(
             cx,
-            t("opticsTitle"),
-            Some(t("opticsDescription")),
+            t(cx, "opticsTitle"),
+            Some(t(cx, "opticsDescription")),
             Switch::new("optics").checked(prefs.optics).on_click(|checked: &bool, window, cx| {
                 set_prefs(json!({ "optics": *checked }), window, cx);
             }),
@@ -224,7 +293,9 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
             Some("settings.groupFonts"),
             sizes
                 .into_iter()
-                .map(|(field, value, title, description)| {
+                .map(|(field, value, range, title, description)| {
+                    let min = *range.start();
+                    let max = *range.end();
                     let stepper = h_flex()
                         .gap_1()
                         .items_center()
@@ -233,8 +304,8 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                                 .outline()
                                 .xsmall()
                                 .icon(IconName::Minus)
-                                .disabled(value <= *FONT_SIZES.start())
-                                .on_click(move |_, window, cx| set_prefs(json!({ field: value - 1.0 }), window, cx)),
+                                .disabled(value <= min)
+                                .on_click(move |_, window, cx| set_prefs(json!({ field: (value - 1.0).max(min) }), window, cx)),
                         )
                         .child(div().w(px(32.)).text_center().text_sm().child(format!("{value}")))
                         .child(
@@ -242,11 +313,11 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                                 .outline()
                                 .xsmall()
                                 .icon(IconName::Plus)
-                                .disabled(value >= *FONT_SIZES.end())
-                                .on_click(move |_, window, cx| set_prefs(json!({ field: value + 1.0 }), window, cx)),
+                                .disabled(value >= max)
+                                .on_click(move |_, window, cx| set_prefs(json!({ field: (value + 1.0).min(max) }), window, cx)),
                         )
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(t("fontSizeUnit")));
-                    row(cx, t(title), Some(t(description)), stepper)
+                        .child(div().text_xs().text_color(muted_foreground).child(t(cx, "fontSizeUnit")));
+                    row(cx, t(cx, title), Some(t(cx, description)), stepper)
                 })
                 .chain([font_row(Use::Ui, &prefs.ui_font, cx), font_row(Use::Code, &prefs.code_font, cx)])
                 .chain(std::iter::once(
@@ -254,14 +325,14 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                         .px_4()
                         .py_3()
                         .gap_2()
-                        .child(div().child(t("fontPreviewText")))
-                        .child(div().font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).child(t("fontPreviewCode")))
+                        .child(div().child(t(cx, "fontPreviewText")))
+                        .child(div().font_family(mono_font_family).text_size(mono_font_size).child(t(cx, "fontPreviewCode")))
                         .into_any_element(),
                 ))
                 .collect(),
         ))
         .child(h_flex().justify_end().child(
-            Button::new("appearance-reset").ghost().small().label(t("appearanceReset")).on_click(|_, window, cx| {
+            Button::new("appearance-reset").ghost().small().label(t(cx, "appearanceReset")).on_click(|_, window, cx| {
                 set_prefs(
                     json!({ "theme": "system", "colorScheme": "graphite", "accent": "auto", "rainEffects": true, "optics": false, "uiFont": "", "codeFont": "", "uiFontSize": 14, "codeFontSize": 13 }),
                     window,
@@ -269,5 +340,23 @@ pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoE
                 );
             }),
         ))
-        .when(false, |this| this)
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    #[test]
+    fn swatch_cache_covers_every_preset_and_aligns_font_ranges() {
+        assert_eq!(UI_FONT_SIZES, 11.0..=20.0);
+        assert_eq!(CODE_FONT_SIZES, 10.0..=24.0);
+        let cache = swatch_cache();
+        assert_eq!(cache.len(), SCHEMES.len() * (ACCENTS.len() - 1) * 2);
+        // Unknown scheme/accent falls back cleanly without panicking.
+        let light = cached_swatch("unknown", "auto", false);
+        let dark = cached_swatch("graphite", "blue", true);
+        assert_ne!(light.background, dark.background);
+    }
 }

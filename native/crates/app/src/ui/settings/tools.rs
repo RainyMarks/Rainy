@@ -14,22 +14,55 @@ use super::heading;
 use super::models_extra::{card, notice};
 use super::runtime::file_size_text;
 use super::strata::StrataCard;
-use crate::store::Store;
 use crate::store::modules::OFFERED;
+use crate::store::{Store, StoreEvent};
 use crate::ui::{tr, trf};
+
+/// Lightweight fingerprint of `Store::modules` so unrelated store notifications do not repaint the Tools page.
+#[derive(Clone, PartialEq, Eq)]
+struct ModulesFingerprint {
+    busy: bool,
+    state: State,
+    statuses: Option<Result<Vec<Status>, ModuleError>>,
+}
+
+impl ModulesFingerprint {
+    fn capture(store: &Store) -> Self {
+        Self { busy: store.modules.busy, state: store.modules.state.clone(), statuses: store.modules.statuses.clone() }
+    }
+
+    fn matches(&self, store: &Store) -> bool {
+        self.busy == store.modules.busy && self.state == store.modules.state && self.statuses == store.modules.statuses
+    }
+}
 
 pub struct ToolsPage {
     store: Entity<Store>,
     strata: Entity<StrataCard>,
+    fingerprint: ModulesFingerprint,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ToolsPage {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let strata = cx.new(|cx| StrataCard::new(store.clone(), window, cx));
-        let subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let fingerprint = ModulesFingerprint::capture(store.read(cx));
+        let subscriptions = vec![
+            cx.observe(&store, |this, store, cx| {
+                let state = store.read(cx);
+                if !this.fingerprint.matches(state) {
+                    this.fingerprint = ModulesFingerprint::capture(state);
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&store, |_, _, event: &StoreEvent, cx| {
+                if matches!(event, StoreEvent::PrefsChanged) {
+                    cx.notify();
+                }
+            }),
+        ];
         store.update(cx, |store, cx| store.refresh_modules(cx));
-        Self { store, strata, _subscriptions: subscriptions }
+        Self { store, strata, fingerprint, _subscriptions: subscriptions }
     }
 
     /// The optional components: each offered module with its size and state, and download, cancel or remove.

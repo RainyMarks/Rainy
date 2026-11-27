@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::models_extra::notice;
+use super::widgets::AsyncPageGuard;
 use super::{group, heading, row, set_prefs};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
@@ -60,7 +61,7 @@ pub struct SecurityPage {
     workspace: Option<String>,
     status: Option<Status>,
     error: Option<SharedString>,
-    busy: bool,
+    guard: AsyncPageGuard,
     rule_kind: &'static str,
     rule_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
@@ -73,14 +74,20 @@ impl SecurityPage {
         let subscriptions = vec![
             cx.subscribe_in(&Ide::global(cx), window, |this, _, event: &IdeEvent, window, cx| {
                 if *event == IdeEvent::WorkspaceChanged {
+                    this.guard.invalidate();
                     this.read(window, cx);
                 }
             }),
             cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
                 StoreEvent::Host { name, .. } if name == "security.changed" => this.read(window, cx),
+                StoreEvent::HostReconnected(_) => {
+                    this.guard.invalidate();
+                    this.read(window, cx);
+                }
                 StoreEvent::PrefsChanged => {
                     let placeholder = tr(cx, "native.securityRulePlaceholder");
                     this.rule_input.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
+                    cx.notify();
                 }
                 _ => {}
             }),
@@ -95,7 +102,7 @@ impl SecurityPage {
             workspace: None,
             status: None,
             error: None,
-            busy: false,
+            guard: AsyncPageGuard::default(),
             rule_kind: "denyCommand",
             rule_input,
             _subscriptions: subscriptions,
@@ -126,13 +133,14 @@ impl SecurityPage {
         let call = self.store.read(cx).call(method, params);
         let workspace = self.workspace.clone();
         let reading = method == "security.status";
-        self.busy = !reading;
+        let generation = if reading { self.guard.begin_read() } else { self.guard.begin_write() };
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                if this.workspace != workspace {
+                let current = if reading { this.guard.end_read(generation) } else { this.guard.end_write(generation) };
+                if !current || this.workspace != workspace {
+                    cx.notify();
                     return;
                 }
                 match result.map(serde_json::from_value::<Status>) {
@@ -227,7 +235,7 @@ impl SecurityPage {
                             .ghost()
                             .xsmall()
                             .label(tr(cx, "native.securityRemoveRule"))
-                            .disabled(self.busy)
+                            .disabled(self.guard.busy())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.call("security.removeRule", json!({ "workspaceId": workspace, "kind": kind, "rule": rule }), None, false, window, cx);
                             })),
@@ -253,7 +261,7 @@ impl Render for SecurityPage {
         let current = status.default_mode.clone();
         let modes = [("read-only", "settings.securityModeReadOnly"), ("ask", "settings.securityModeAsk"), ("auto", "settings.securityModeAuto")];
         let chooser = h_flex().gap_1().children(modes.into_iter().map(|(mode, key)| {
-            let button = Button::new(SharedString::from(format!("mode-{mode}"))).small().label(tr(cx, key)).disabled(self.busy);
+            let button = Button::new(SharedString::from(format!("mode-{mode}"))).small().label(tr(cx, key)).disabled(self.guard.busy());
             let button = if current == mode { button.primary() } else { button.outline() };
             button.on_click(cx.listener(move |this, _, window, cx| {
                 // Changing the default mode answers without this project's rules.
@@ -304,7 +312,7 @@ impl Render for SecurityPage {
                             .small()
                             .map(|b| if trusted { b.outline() } else { b.primary() })
                             .label(tr(cx, if trusted { "native.securityUntrustCurrent" } else { "native.securityTrustCurrent" }))
-                            .disabled(self.busy)
+                            .disabled(self.guard.busy())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.call(
                                     "settings.trustWorkspace",
@@ -338,7 +346,7 @@ impl Render for SecurityPage {
                                 .ghost()
                                 .xsmall()
                                 .label(tr(cx, "native.securityUntrustCurrent"))
-                                .disabled(self.busy)
+                                .disabled(self.guard.busy())
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.call(
                                         "settings.trustWorkspace",
@@ -370,7 +378,7 @@ impl Render for SecurityPage {
             .small()
             .dropdown_caret(true)
             .label(tr(cx, Self::rule_kind_label(selected_kind)))
-            .disabled(self.busy)
+            .disabled(self.guard.busy())
             .dropdown_menu(move |mut menu, _, cx| {
                 for (kind, label_key) in RULE_KINDS {
                     let entity = entity.clone();
@@ -393,7 +401,7 @@ impl Render for SecurityPage {
                     .primary()
                     .small()
                     .label(tr(cx, "native.securityAddRule"))
-                    .disabled(self.busy)
+                    .disabled(self.guard.busy())
                     .on_click(cx.listener(|this, _, window, cx| this.add_rule(window, cx))),
             );
         page = page.child(add_bar);

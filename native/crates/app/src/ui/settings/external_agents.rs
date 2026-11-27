@@ -17,10 +17,17 @@ use super::models_extra::{card, notice};
 use crate::store::{Store, StoreEvent};
 use crate::ui::{tr, trf};
 
-/// Editing fields for one external agent entry (binary path and extra arguments).
+/// Editing fields for one external agent entry (binary path and extra arguments), tracking the last server-synced values
+/// so background status refreshes never clobber in-progress user edits.
 struct AgentDraft {
     binary: Entity<InputState>,
     args: Entity<InputState>,
+    synced_binary: String,
+    synced_args: String,
+}
+
+fn should_sync_draft(current: &str, synced: &str, force: bool) -> bool {
+    force || current == synced
 }
 
 /// Manages detection, configuration, custom ACP creation, and OS-aware install/login guides for external agents.
@@ -149,24 +156,32 @@ impl ExternalAgentsCard {
         let custom_name = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "external.customNamePlaceholder")));
         let custom_binary = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "external.customBinaryPlaceholder")));
         let custom_args = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "external.customArgsPlaceholder")));
-        let subscriptions = vec![
-            cx.observe(&store, |this, store, cx| {
-                let latest = store.read(cx).external_agents.clone();
-                if !latest.is_empty() && this.agents != latest {
-                    this.agents = latest;
-                    cx.notify();
+        let subscriptions = vec![cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
+            StoreEvent::Host { name, data } if name == "external.changed" => {
+                if let Ok(resp) = serde_json::from_value::<ExternalStatusResponse>(data.clone()) {
+                    this.apply_agents(resp.agents, None, window, cx);
                 }
-            }),
-            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
-                StoreEvent::Host { name, data } if name == "external.changed" => {
-                    if let Ok(resp) = serde_json::from_value::<ExternalStatusResponse>(data.clone()) {
-                        this.apply_agents(resp.agents, window, cx);
-                    }
+            }
+            StoreEvent::HostReconnected(_) => this.load_status(window, cx),
+            StoreEvent::PrefsChanged => {
+                let name_ph = tr(cx, "external.customNamePlaceholder");
+                let bin_ph = tr(cx, "external.customBinaryPlaceholder");
+                let args_ph = tr(cx, "external.customArgsPlaceholder");
+                this.custom_name.update(cx, |input, cx| input.set_placeholder(name_ph, window, cx));
+                this.custom_binary.update(cx, |input, cx| input.set_placeholder(bin_ph, window, cx));
+                this.custom_args.update(cx, |input, cx| input.set_placeholder(args_ph, window, cx));
+                let draft_bin_ph = tr(cx, "external.binaryPlaceholder");
+                let draft_args_ph = tr(cx, "external.argsPlaceholder");
+                for draft in this.drafts.values() {
+                    let bin_ph = draft_bin_ph.clone();
+                    let args_ph = draft_args_ph.clone();
+                    draft.binary.update(cx, |input, cx| input.set_placeholder(bin_ph, window, cx));
+                    draft.args.update(cx, |input, cx| input.set_placeholder(args_ph, window, cx));
                 }
-                StoreEvent::HostReconnected(_) => this.load_status(window, cx),
-                _ => {}
-            }),
-        ];
+                cx.notify();
+            }
+            _ => {}
+        })];
         let initial = store.read(cx).external_agents.clone();
         let mut card = Self {
             store,
@@ -193,7 +208,7 @@ impl ExternalAgentsCard {
         }
     }
 
-    fn apply_agents(&mut self, agents: Vec<ExternalAgentStatus>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_agents(&mut self, agents: Vec<ExternalAgentStatus>, force_sync_kind: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.agents = agents.clone();
         self.store.update(cx, |store, cx| {
             store.external_agents = agents;
@@ -201,11 +216,24 @@ impl ExternalAgentsCard {
         });
         for agent in &self.agents {
             let key = agent_key(agent);
-            if let Some(draft) = self.drafts.get(&key) {
+            if let Some(draft) = self.drafts.get_mut(&key) {
                 let binary = agent.binary.clone().unwrap_or_default();
                 let args = format_args(&agent.args);
-                draft.binary.update(cx, |input, cx| input.set_value(binary, window, cx));
-                draft.args.update(cx, |input, cx| input.set_value(args, window, cx));
+                let force = force_sync_kind == Some(key.as_str());
+                let current_binary = draft.binary.read(cx).value().to_string();
+                if should_sync_draft(&current_binary, &draft.synced_binary, force) {
+                    if current_binary != binary {
+                        draft.binary.update(cx, |input, cx| input.set_value(binary.clone(), window, cx));
+                    }
+                    draft.synced_binary = binary;
+                }
+                let current_args = draft.args.read(cx).value().to_string();
+                if should_sync_draft(&current_args, &draft.synced_args, force) {
+                    if current_args != args {
+                        draft.args.update(cx, |input, cx| input.set_value(args.clone(), window, cx));
+                    }
+                    draft.synced_args = args;
+                }
             }
         }
         cx.notify();
@@ -220,9 +248,11 @@ impl ExternalAgentsCard {
         let args_placeholder = tr(cx, "external.argsPlaceholder");
         let binary_val = agent.binary.clone().unwrap_or_default();
         let args_val = format_args(&agent.args);
+        let synced_binary = binary_val.clone();
+        let synced_args = args_val.clone();
         let binary = cx.new(|cx| InputState::new(window, cx).placeholder(binary_placeholder).default_value(binary_val));
         let args = cx.new(|cx| InputState::new(window, cx).placeholder(args_placeholder).default_value(args_val));
-        self.drafts.insert(key, AgentDraft { binary, args });
+        self.drafts.insert(key, AgentDraft { binary, args, synced_binary, synced_args });
     }
 
     fn load_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -232,7 +262,7 @@ impl ExternalAgentsCard {
             let _ = this.update_in(cx, |this, window, cx| match result.map(serde_json::from_value::<ExternalStatusResponse>) {
                 Ok(Ok(resp)) => {
                     this.error = None;
-                    this.apply_agents(resp.agents, window, cx);
+                    this.apply_agents(resp.agents, None, window, cx);
                     this.refresh_quotas(false, cx);
                 }
                 Ok(Err(err)) => {
@@ -267,7 +297,7 @@ impl ExternalAgentsCard {
                 match result.map(serde_json::from_value::<ExternalStatusResponse>) {
                     Ok(Ok(resp)) => {
                         this.error = None;
-                        this.apply_agents(resp.agents, window, cx);
+                        this.apply_agents(resp.agents, None, window, cx);
                         this.refresh_quotas(true, cx);
                         window.push_notification(Notification::success(tr(cx, "external.probeDone")), cx);
                     }
@@ -280,7 +310,8 @@ impl ExternalAgentsCard {
         .detach();
     }
 
-    fn configure(&mut self, config: ExternalAgentConfig, remove: bool, probe_after: bool, label: String, window: &mut Window, cx: &mut Context<Self>) {
+    #[allow(clippy::too_many_arguments)]
+    fn configure(&mut self, config: ExternalAgentConfig, remove: bool, probe_after: bool, sync_draft: bool, label: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
@@ -300,7 +331,8 @@ impl ExternalAgentsCard {
                 match result.map(serde_json::from_value::<ExternalStatusResponse>) {
                     Ok(Ok(resp)) => {
                         this.error = None;
-                        this.apply_agents(resp.agents, window, cx);
+                        let force_sync = (sync_draft && !remove).then_some(kind_for_probe.as_str());
+                        this.apply_agents(resp.agents, force_sync, window, cx);
                         let msg = if remove {
                             trf(cx, "external.removed", &[("name", &label)])
                         } else {
@@ -339,7 +371,7 @@ impl ExternalAgentsCard {
             default_model: agent.default_model.clone(),
             default_thinking: agent.default_thinking.clone(),
         };
-        self.configure(config, false, true, agent.label, window, cx);
+        self.configure(config, false, true, true, agent.label, window, cx);
     }
 
     fn add_custom_acp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -366,7 +398,7 @@ impl ExternalAgentsCard {
         self.custom_binary.update(cx, |input, cx| input.set_value("", window, cx));
         self.custom_args.update(cx, |input, cx| input.set_value("", window, cx));
         self.show_custom_form = false;
-        self.configure(config, false, true, label, window, cx);
+        self.configure(config, false, true, false, label, window, cx);
     }
 
     fn render_copy_row(&self, id: String, label: SharedString, command: String, cx: &App) -> AnyElement {
@@ -489,7 +521,7 @@ impl ExternalAgentsCard {
                                     default_model: toggle_agent.default_model.clone(),
                                     default_thinking: toggle_agent.default_thinking.clone(),
                                 };
-                                this.configure(cfg, false, false, toggle_agent.label.clone(), window, cx);
+                                this.configure(cfg, false, false, false, toggle_agent.label.clone(), window, cx);
                             })),
                     )
                     .child(
@@ -523,7 +555,7 @@ impl ExternalAgentsCard {
                                         default_model: None,
                                         default_thinking: None,
                                     };
-                                    this.configure(cfg, true, false, remove_agent.label.clone(), window, cx);
+                                    this.configure(cfg, true, false, false, remove_agent.label.clone(), window, cx);
                                 })),
                         )
                     }),
@@ -746,5 +778,12 @@ mod tests {
         assert!(!is_custom_kind("antigravity"));
         assert_eq!(default_hints("antigravity", false).1, Some("agy acp --login"));
         assert_eq!(default_hints("antigravity", true).1, Some("agy acp --login"));
+    }
+
+    #[test]
+    fn draft_sync_preserves_unsaved_user_edits() {
+        assert!(should_sync_draft("/usr/bin/codex", "/usr/bin/codex", false));
+        assert!(!should_sync_draft("/custom/codex", "/usr/bin/codex", false));
+        assert!(should_sync_draft("/custom/codex", "/usr/bin/codex", true));
     }
 }

@@ -13,9 +13,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::models_extra::notice;
+use super::widgets::{AsyncPageGuard, bind_textarea_change};
 use super::{heading, segmented};
 use crate::store::ide::{Ide, IdeEvent};
-use crate::store::Store;
+use crate::store::{Store, StoreEvent};
 use crate::ui::{tr, trf};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -74,7 +75,7 @@ pub struct PromptsPage {
     workspace: Option<String>,
     status: Option<Status>,
     error: Option<SharedString>,
-    busy: bool,
+    guard: AsyncPageGuard,
     /// The model group whose built-in prompt is shown.
     group: &'static str,
     builtin: Entity<TextareaState>,
@@ -98,19 +99,48 @@ impl PromptsPage {
         let file_field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(6, 20).placeholder(file_placeholder));
         let ide = Ide::global(cx);
         let subscriptions = vec![
+            bind_textarea_change(&builtin, window, cx),
+            bind_textarea_change(&global, window, cx),
+            bind_textarea_change(&file_field, window, cx),
             cx.subscribe_in(&ide, window, |this, _, event: &IdeEvent, window, cx| {
                 if *event == IdeEvent::WorkspaceChanged {
+                    this.guard.invalidate();
                     this.reload(window, cx);
                 }
             }),
-            cx.observe_in(&store, window, |this, _, window, cx| this.load_global(window, cx)),
+            cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
+                StoreEvent::PrefsChanged => {
+                    let global_placeholder = tr(cx, "settings.settingsGlobalPromptPlaceholder");
+                    let file_placeholder = tr(cx, "settings.promptsFilePlaceholder");
+                    this.global.update(cx, |state, cx| state.set_placeholder(global_placeholder, window, cx));
+                    this.file_field.update(cx, |state, cx| state.set_placeholder(file_placeholder, window, cx));
+                    this.load_global(window, cx);
+                    cx.notify();
+                }
+                StoreEvent::HostReconnected(_) => {
+                    this.guard.invalidate();
+                    this.global_loaded = false;
+                    this.load_global(window, cx);
+                    this.reload(window, cx);
+                }
+                StoreEvent::Host { name, .. } if name == "models.changed" => {
+                    this.load_global(window, cx);
+                    cx.notify();
+                }
+                _ => {}
+            }),
+            cx.observe_in(&store, window, |this, store, window, cx| {
+                if !this.global_loaded && store.read(cx).models.is_some() {
+                    this.load_global(window, cx);
+                }
+            }),
         ];
         let mut page = Self {
             store,
             workspace: None,
             status: None,
             error: None,
-            busy: false,
+            guard: AsyncPageGuard::default(),
             group: "claude",
             builtin,
             global,
@@ -138,10 +168,13 @@ impl PromptsPage {
         self.workspace = Ide::global(cx).read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
         let call = self.store.read(cx).call("prompts.status", json!({ "workspaceId": self.workspace }));
         let workspace = self.workspace.clone();
+        let generation = self.guard.begin_read();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.workspace != workspace {
+                let current = this.guard.end_read(generation);
+                if !current || this.workspace != workspace {
+                    cx.notify();
                     return;
                 }
                 match result.map(serde_json::from_value::<Status>) {
@@ -203,12 +236,16 @@ impl PromptsPage {
         cx: &mut Context<Self>,
     ) {
         let call = self.store.read(cx).call(method, params);
-        self.busy = true;
+        let generation = self.guard.begin_write();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
+                let current = this.guard.end_write(generation);
+                if !current {
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(value) => {
                         done(this, value, window, cx);
@@ -267,7 +304,7 @@ impl PromptsPage {
             .into_any_element()
     }
 
-    fn render_builtin(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_builtin(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let Some(status) = &self.status else { return h_flex().child(Spinner::new().small()).into_any_element() };
         let max = status.builtin.max_chars;
@@ -290,7 +327,7 @@ impl PromptsPage {
                     .child(if custom { Tag::primary().small().child(tr(cx, "settings.promptsCustom")) } else { Tag::secondary().small().child(tr(cx, "settings.promptsDefault")) }),
             )
             .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.promptsBuiltinNote")))
-            .child(segmented("prompts-group", items, self.group, move |group, window, cx| {
+            .child(segmented("prompts-group", items, self.group, window, cx, move |group, window, cx| {
                 let _ = change.update(cx, |this, cx| this.show_group(group, window, cx));
             }))
             .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, match self.group {
@@ -304,10 +341,10 @@ impl PromptsPage {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().text_xs().text_color(if count > max { theme.danger } else { theme.muted_foreground }).child(trf(cx, "settings.settingsGlobalPromptCount", &[("count", &count), ("max", &max)])))
-                    .child(Button::new("prompts-builtin-default").small().ghost().label(tr(cx, "settings.promptsRestore")).disabled(self.busy || !custom).on_click(cx.listener(|this, _, window, cx| {
+                    .child(Button::new("prompts-builtin-default").small().ghost().label(tr(cx, "settings.promptsRestore")).disabled(self.guard.busy() || !custom).on_click(cx.listener(|this, _, window, cx| {
                         this.save_builtin(String::new(), window, cx);
                     })))
-                    .child(Button::new("prompts-builtin-save").small().outline().label(tr(cx, "chat.save")).disabled(self.busy || count > max || count == 0).on_click(cx.listener(|this, _, window, cx| {
+                    .child(Button::new("prompts-builtin-save").small().outline().label(tr(cx, "chat.save")).disabled(self.guard.busy() || count > max || count == 0).on_click(cx.listener(|this, _, window, cx| {
                         let text = this.builtin.read(cx).value().to_string();
                         this.save_builtin(text, window, cx);
                     }))),
@@ -335,7 +372,7 @@ impl PromptsPage {
                     .justify_between()
                     .items_center()
                     .child(div().text_xs().text_color(if count > max { theme.danger } else { theme.muted_foreground }).child(trf(cx, "settings.settingsGlobalPromptCount", &[("count", &count), ("max", &max)])))
-                    .child(Button::new("prompts-global-save").small().outline().label(tr(cx, "chat.save")).disabled(self.busy || count > max).on_click(cx.listener(|this, _, window, cx| {
+                    .child(Button::new("prompts-global-save").small().outline().label(tr(cx, "chat.save")).disabled(self.guard.busy() || count > max).on_click(cx.listener(|this, _, window, cx| {
                         let text = this.global.read(cx).value().to_string();
                         this.save("prompt.global", json!({ "text": text }), "settings.settingsSaved", |this, value, _, cx| {
                             if let Ok(status) = serde_json::from_value::<ModelsStatus>(value) {
@@ -408,7 +445,7 @@ impl PromptsPage {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().text_xs().text_color(if bytes > budget { theme.danger } else { theme.muted_foreground }).child(size_text(bytes)))
-                    .child(Button::new("prompts-file-reload").small().ghost().label(tr(cx, "settings.promptsReload")).disabled(self.busy).on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))))
+                    .child(Button::new("prompts-file-reload").small().ghost().label(tr(cx, "settings.promptsReload")).disabled(self.guard.busy()).on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))))
                     .when(editable, |this| {
                         this.child(Button::new("prompts-file-open").small().ghost().label(tr(cx, "settings.promptsOpenInEditor")).on_click(cx.listener(move |_, _, window, cx| {
                             let ide = Ide::global(cx);
@@ -419,7 +456,7 @@ impl PromptsPage {
                             }
                         })))
                     })
-                    .child(Button::new("prompts-file-save").small().outline().label(tr(cx, "chat.save")).disabled(self.busy || too_large || bytes > budget).on_click(cx.listener(move |this, _, window, cx| {
+                    .child(Button::new("prompts-file-save").small().outline().label(tr(cx, "chat.save")).disabled(self.guard.busy() || too_large || bytes > budget).on_click(cx.listener(move |this, _, window, cx| {
                         let text = this.file_field.read(cx).value().to_string();
                         let params = json!({ "workspaceId": this.workspace, "path": save_path, "text": text, "expected": expected });
                         this.save("prompts.saveInstructions", params, "settings.settingsSaved", |this, _, window, cx| this.reload(window, cx), window, cx);
@@ -431,12 +468,12 @@ impl PromptsPage {
 }
 
 impl Render for PromptsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut page = v_flex().gap_4().child(heading(cx, "settings.navPrompts", "settings.promptsLead"));
         if let Some(error) = &self.error {
             page = page.child(notice(cx, error.clone(), true));
         }
-        page.child(self.render_kinds(cx)).child(self.render_builtin(cx)).child(self.render_global(cx)).child(self.render_files(cx))
+        page.child(self.render_kinds(cx)).child(self.render_builtin(window, cx)).child(self.render_global(cx)).child(self.render_files(cx))
     }
 }
 

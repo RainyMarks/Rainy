@@ -13,16 +13,24 @@ mod security;
 mod shortcuts;
 mod strata;
 mod tools;
+mod widgets;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use gpui_kit::base::{ElementExt as _, GlobalState, TextSelection, TextSelectionScopeId, box_shadow};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use rainy_carrier::shell::ShellIntegration;
 use serde_json::Value;
 
-use crate::store::Store;
+use crate::store::update::UpdatePhase;
+use crate::store::{Store, StoreEvent};
 use crate::ui::actions::run;
 use crate::ui::{tr, trf};
+use widgets::{SlidingBounds, enter_progress, spring_slide};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -50,15 +58,47 @@ const SECTIONS: [(Section, &str); 9] = [
     (Section::Security, "settings.navSecurity"),
 ];
 
+static NEXT_OPEN_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Asks the workbench to close the settings window.
 pub struct CloseSettings;
 
 /// Asks the settings window to show another section.
 pub struct ShowSection(pub Section);
 
+/// Only the store fields that affect the stateless General/Appearance pages, so unrelated chat streaming never
+/// triggers a SettingsView re-render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GeneralFingerprint {
+    update_phase: UpdatePhase,
+    update_automatic: bool,
+    update_busy: bool,
+    shell_available: bool,
+    shell_busy: bool,
+    shell_choice: ShellIntegration,
+    diagnostics_exporting: bool,
+}
+
+impl GeneralFingerprint {
+    fn of(store: &Store) -> Self {
+        Self {
+            update_phase: store.updates.phase.clone(),
+            update_automatic: store.updates.automatic,
+            update_busy: store.updates.busy(),
+            shell_available: store.shell.available,
+            shell_busy: store.shell.busy,
+            shell_choice: store.shell.choice,
+            diagnostics_exporting: store.diagnostics.exporting,
+        }
+    }
+}
+
 pub struct SettingsView {
     store: Entity<Store>,
     section: Section,
+    selection_scope: TextSelectionScopeId,
+    open_generation: u64,
+    general_fingerprint: GeneralFingerprint,
     models: Entity<models::ModelsPage>,
     prompts: Option<Entity<prompts::PromptsPage>>,
     extensions: Option<Entity<extensions::ExtensionsPage>>,
@@ -74,78 +114,220 @@ impl EventEmitter<CloseSettings> for SettingsView {}
 
 impl SettingsView {
     pub fn new(store: Entity<Store>, section: Section, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let selection_scope = TextSelectionScopeId::new();
+        let open_generation = NEXT_OPEN_GENERATION.fetch_add(1, Ordering::Relaxed);
+        // Clear any selection in the underlying chat before opening the modal settings layer.
+        TextSelection::clear(window, cx);
+        TextSelection::end(window, cx);
         let models = cx.new(|cx| models::ModelsPage::new(store.clone(), window, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let general_fingerprint = GeneralFingerprint::of(store.read(cx));
         let subscriptions = vec![
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe(&store, |_, _, event: &StoreEvent, cx| {
+                if matches!(event, StoreEvent::PrefsChanged | StoreEvent::HostReconnected(_) | StoreEvent::Update(_)) {
+                    cx.notify();
+                }
+            }),
+            cx.observe(&store, |this, store, cx| {
+                let next = GeneralFingerprint::of(store.read(cx));
+                if next != this.general_fingerprint {
+                    this.general_fingerprint = next;
+                    if matches!(this.section, Section::General | Section::Appearance) {
+                        cx.notify();
+                    }
+                }
+            }),
             cx.subscribe(&models, |this, _, ShowSection(section), cx| {
                 this.section = *section;
                 cx.notify();
             }),
+            cx.on_release_in(window, |_, window, cx| {
+                TextSelection::clear(window, cx);
+                TextSelection::end(window, cx);
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    TextSelection::activate_scope(TextSelectionScopeId::default(), window, cx);
+                }
+            }),
         ];
-        Self { store, section, models, prompts: None, tools: None, extensions: None, runtime: None, memory: None, security: None, focus, _subscriptions: subscriptions }
+        Self {
+            store,
+            section,
+            selection_scope,
+            open_generation,
+            general_fingerprint,
+            models,
+            prompts: None,
+            tools: None,
+            extensions: None,
+            runtime: None,
+            memory: None,
+            security: None,
+            focus,
+            _subscriptions: subscriptions,
+        }
     }
 
-    fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Switch the active settings section while preserving already-open page state and drafts.
+    #[allow(dead_code)]
+    pub fn set_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        self.section = section;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        TextSelection::clear(window, cx);
+        TextSelection::end(window, cx);
+        if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+            TextSelection::activate_scope(TextSelectionScopeId::default(), window, cx);
+        }
+        cx.emit(CloseSettings);
+    }
+
+    fn render_nav(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let version = env!("CARGO_PKG_VERSION");
         let shortcuts_active = self.section == Section::Shortcuts;
-        let theme = cx.theme();
-        v_flex()
-            .w(px(220.))
-            .h_full()
-            .flex_shrink_0()
-            .p_3()
+        let active_index = SECTIONS.iter().position(|(section, _)| *section == self.section);
+        let theme = cx.theme().clone();
+        let bounds = SlidingBounds::shared(("settings-nav-bounds", self.open_generation), window, cx);
+        let target = active_index.and_then(|index| bounds.borrow().vertical_target(index));
+        let slide = spring_slide(SharedString::from(format!("settings-nav-bar-{}", self.open_generation)), target, window, cx);
+        let has_slide = slide.is_some();
+        if has_slide {
+            bounds.borrow_mut().placed = true;
+        }
+        let container_bounds = bounds.clone();
+        let list = v_flex()
+            .relative()
             .gap_1()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.border)
-            .child(div().px_2().py_2().text_lg().font_semibold().child(tr(cx, "settings.title")))
-            .children(SECTIONS.iter().map(|(section, key)| {
+            .on_prepaint(move |rect, _, _| {
+                container_bounds.borrow_mut().container = Some(rect);
+            })
+            .when_some(slide, |this, (top, height)| {
+                let inset = px(6.);
+                let bar_h = (height - inset * 2.).max(px(12.));
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(top + inset)
+                        .w(px(2.5))
+                        .h(bar_h)
+                        .rounded_full()
+                        .bg(theme.primary),
+                )
+            })
+            .children(SECTIONS.iter().enumerate().map(|(index, (section, key))| {
                 let section = *section;
                 let active = self.section == section;
+                let item_bounds = bounds.clone();
                 div()
                     .id(ElementId::Name(format!("settings-nav-{key}").into()))
-                    .px_2()
+                    .relative()
+                    .pl_3()
+                    .pr_2()
                     .py_1p5()
                     .rounded(theme.radius)
                     .text_sm()
                     .cursor_pointer()
-                    .when(active, |this| this.bg(theme.list_active).font_semibold())
+                    .when(active, |this| {
+                        this.bg(theme.list_active)
+                            .font_semibold()
+                            .when(!has_slide, |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(0.))
+                                        .top(px(6.))
+                                        .bottom(px(6.))
+                                        .w(px(2.5))
+                                        .rounded_full()
+                                        .bg(theme.primary),
+                                )
+                            })
+                            .on_prepaint(move |rect, window, _| {
+                                let mut b = item_bounds.borrow_mut();
+                                let needs_kick = !b.placed && b.container.is_some();
+                                b.active_index = index;
+                                b.active_bounds = Some(rect);
+                                if needs_kick {
+                                    window.request_animation_frame();
+                                }
+                            })
+                    })
                     .when(!active, |this| this.hover(|style| style.bg(theme.list_hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.section = section;
                         cx.notify();
                     }))
                     .child(tr(cx, key))
-            }))
-            .child(div().flex_1())
+            }));
+        v_flex()
+            .w(px(220.))
+            .h_full()
+            .flex_shrink_0()
+            .p_3()
+            .gap_2()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.border)
+            .child(div().flex_none().px_2().py_1p5().text_lg().font_semibold().child(tr(cx, "settings.title")))
             .child(
                 div()
-                    .id("settings-nav-shortcuts")
-                    .px_2()
-                    .py_1p5()
-                    .rounded(theme.radius)
-                    .text_sm()
-                    .cursor_pointer()
-                    .when(shortcuts_active, |this| this.bg(theme.list_active).font_semibold())
-                    .when(!shortcuts_active, |this| this.hover(|style| style.bg(theme.list_hover)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.section = Section::Shortcuts;
-                        cx.notify();
-                    }))
-                    .child(tr(cx, "settings.shortcutsTitle")),
+                    .id("settings-nav-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list),
             )
             .child(
-                h_flex()
+                v_flex()
+                    .flex_none()
                     .gap_2()
-                    .px_2()
-                    .items_center()
-                    .child(img("brand/rainy-mark.svg").size(px(28.)))
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(theme.border)
                     .child(
-                        v_flex()
-                            .child(div().text_sm().font_semibold().child("Rainy"))
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(trf(cx, "settings.appVersion", &[("version", &version)]))),
+                        div()
+                            .id("settings-nav-shortcuts")
+                            .relative()
+                            .pl_3()
+                            .pr_2()
+                            .py_1p5()
+                            .rounded(theme.radius)
+                            .text_sm()
+                            .cursor_pointer()
+                            .when(shortcuts_active, |this| {
+                                this.bg(theme.list_active).font_semibold().child(
+                                    div()
+                                        .absolute()
+                                        .left(px(0.))
+                                        .top(px(6.))
+                                        .bottom(px(6.))
+                                        .w(px(2.5))
+                                        .rounded_full()
+                                        .bg(theme.primary),
+                                )
+                            })
+                            .when(!shortcuts_active, |this| this.hover(|style| style.bg(theme.list_hover)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.section = Section::Shortcuts;
+                                cx.notify();
+                            }))
+                            .child(tr(cx, "settings.shortcutsTitle")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .px_2()
+                            .items_center()
+                            .child(img("brand/rainy-mark.svg").size(px(28.)))
+                            .child(
+                                v_flex()
+                                    .child(div().text_sm().font_semibold().child("Rainy"))
+                                    .child(div().text_xs().text_color(theme.muted_foreground).child(trf(cx, "settings.appVersion", &[("version", &version)]))),
+                            ),
                     ),
             )
     }
@@ -153,7 +335,12 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let nav = self.render_nav(cx);
+        if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+            TextSelection::activate_scope(self.selection_scope, window, cx);
+        }
+        let open_delta = enter_progress(format!("settings-open-{}", self.open_generation), Duration::from_millis(150), window, cx);
+        let page_delta = enter_progress(format!("settings-section-{:?}", self.section), Duration::from_millis(120), window, cx);
+        let nav = self.render_nav(window, cx);
         let page = match self.section {
             Section::General => general::render(&self.store, window, cx).into_any_element(),
             Section::Appearance => appearance::render(&self.store, window, cx).into_any_element(),
@@ -165,7 +352,7 @@ impl Render for SettingsView {
                         let store = self.store.clone();
                         let page = cx.new(|cx| prompts::PromptsPage::new(store, window, cx));
                         // Opening a file in the editor closes the settings.
-                        self._subscriptions.push(cx.subscribe(&page, |_, _, _: &CloseSettings, cx| cx.emit(CloseSettings)));
+                        self._subscriptions.push(cx.subscribe_in(&page, window, |this, _, _: &CloseSettings, window, cx| this.close(window, cx)));
                         self.prompts = Some(page.clone());
                         page
                     }
@@ -196,30 +383,48 @@ impl Render for SettingsView {
             Section::Shortcuts => shortcuts::render(cx).into_any_element(),
         };
         let theme = cx.theme();
+        let overlay = Hsla { a: theme.overlay.a * open_delta, ..theme.overlay };
+        let shadow_alpha = open_delta * open_delta * open_delta;
+        let shadows = vec![
+            box_shadow(px(0.), px(10.), px(24.), px(-4.), hsla(0., 0., 0., 0.16 * shadow_alpha)),
+            box_shadow(px(0.), px(4.), px(8.), px(-2.), hsla(0., 0., 0., 0.08 * shadow_alpha)),
+        ];
         div()
+            .id("settings-root")
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
             .items_center()
             .justify_center()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    cx.emit(CloseSettings);
+                    this.close(window, cx);
                 }
             }))
             .child(
                 div()
                     .id("settings-mask")
+                    .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(theme.overlay)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseSettings))),
+                    .bg(overlay)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            GlobalState::suppress_text_selection(cx);
+                            cx.stop_propagation();
+                            this.close(window, cx);
+                        }),
+                    ),
             )
             .child(
                 h_flex()
                     .id("settings-panel")
+                    .occlude()
                     .relative()
+                    .mt(px(8.0 * (1.0 - open_delta)))
                     .w(px(1040.))
                     .max_w(relative(0.94))
                     .h(relative(0.88))
@@ -228,32 +433,63 @@ impl Render for SettingsView {
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.background)
-                    .shadow_lg()
+                    .shadow(shadows)
                     .overflow_hidden()
-                    // Clicks inside the panel do not reach the mask.
-                    .on_click(|_, _, cx| cx.stop_propagation())
+                    // Bubble phase: let inputs/textareas inside focus and select text first, then stop the press from
+                    // reaching the window-level TextSelectionLayer or the backdrop mask.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        GlobalState::suppress_text_selection(cx);
+                        cx.stop_propagation();
+                    })
                     .child(nav)
                     .child(
-                        div()
-                            // Each section keeps its own scroll position; another starts at its top.
-                            .id(ElementId::Name(format!("settings-content-{:?}", self.section).into()))
+                        v_flex()
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .overflow_y_scroll()
-                            .child(v_flex().w_full().px_8().py_6().gap_4().max_w(px(760.)).child(page)),
-                    )
-                    .child(
-                        div().absolute().top_3().right_3().child(
-                            Button::new("settings-close")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Close)
-                                .tooltip(tr(cx, "settings.close"))
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseSettings))),
-                        ),
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .w_full()
+                                    .justify_end()
+                                    .px_3()
+                                    .pt_2p5()
+                                    .pb_0()
+                                    .child(
+                                        div().id("settings-close-wrap").occlude().child(
+                                            Button::new("settings-close")
+                                                .ghost()
+                                                .small()
+                                                .icon(IconName::Close)
+                                                .tooltip(tr(cx, "settings.close"))
+                                                .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                                        ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    // Each section keeps its own scroll position; another starts at its top.
+                                    .id(ElementId::Name(format!("settings-content-{:?}", self.section).into()))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .child(
+                                        v_flex()
+                                            .w_full()
+                                            .px_8()
+                                            .pt_1()
+                                            .pb_6()
+                                            .gap_4()
+                                            .max_w(px(760.))
+                                            .opacity(0.65 + 0.35 * page_delta)
+                                            .mt(px(4.0 * (1.0 - page_delta)))
+                                            .child(page),
+                                    ),
+                            ),
                     ),
             )
+            .text_selection_scope(self.selection_scope)
     }
 }
 
@@ -305,20 +541,92 @@ pub(super) fn row(cx: &App, title: SharedString, description: Option<SharedStrin
         .into_any_element()
 }
 
-/// Mutually exclusive choices as a row of buttons; `change` gets the chosen id.
+/// Mutually exclusive choices as a segmented pill bar with a spring-sliding active capsule; `change` gets the chosen id.
 pub(super) fn segmented(
     id: &str,
     items: Vec<(&'static str, SharedString)>,
     current: &str,
+    window: &mut Window,
+    cx: &mut App,
     change: impl Fn(&'static str, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
+    let theme = cx.theme().clone();
     let change = std::rc::Rc::new(change);
-    h_flex().gap_1().children(items.into_iter().map(|(value, label)| {
-        let change = change.clone();
-        let button = Button::new(ElementId::Name(format!("{id}-{value}").into())).small().label(label);
-        let button = if current == value { button.primary() } else { button.outline() };
-        button.on_click(move |_, window, cx| change(value, window, cx))
-    }))
+    let active_index = items.iter().position(|(value, _)| *value == current);
+    let bounds = SlidingBounds::shared(ElementId::Name(format!("seg-bounds-{id}").into()), window, cx);
+    let target = active_index.and_then(|index| bounds.borrow().horizontal_target(index));
+    let slide = spring_slide(SharedString::from(format!("seg-pill-{id}")), target, window, cx);
+    let has_slide = slide.is_some();
+    if has_slide {
+        bounds.borrow_mut().placed = true;
+    }
+    let container_bounds = bounds.clone();
+    h_flex()
+        .relative()
+        .flex_none()
+        .p_0p5()
+        .gap_0p5()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.muted)
+        .on_prepaint(move |rect, _, _| {
+            container_bounds.borrow_mut().container = Some(rect);
+        })
+        .when_some(slide, |this, (left, width)| {
+            this.child(
+                div()
+                    .absolute()
+                    .top(px(2.))
+                    .bottom(px(2.))
+                    .left(left)
+                    .w(width)
+                    .rounded(theme.radius - px(2.))
+                    .bg(theme.primary),
+            )
+        })
+        .children(items.into_iter().enumerate().map(|(index, (value, label))| {
+            let change = change.clone();
+            let selected = current == value;
+            let item_bounds = bounds.clone();
+            div()
+                .id(ElementId::Name(format!("{id}-{value}").into()))
+                .relative()
+                .px_2p5()
+                .py_1()
+                .rounded(theme.radius - px(2.))
+                .text_xs()
+                .font_medium()
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .when(selected, |this| {
+                    this.text_color(theme.primary_foreground)
+                        .when(!has_slide, |this| this.bg(theme.primary))
+                        .on_prepaint(move |rect, window, _| {
+                            let mut b = item_bounds.borrow_mut();
+                            let needs_kick = !b.placed && b.container.is_some();
+                            b.active_index = index;
+                            b.active_bounds = Some(rect);
+                            if needs_kick {
+                                window.request_animation_frame();
+                            }
+                        })
+                })
+                .when(!selected, |this| {
+                    this.text_color(theme.muted_foreground)
+                        .hover(|style| style.text_color(theme.foreground))
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    GlobalState::suppress_text_selection(cx);
+                })
+                .on_click(move |_, window, cx| {
+                    if !selected {
+                        change(value, window, cx);
+                    }
+                })
+                .child(label)
+        }))
+        .into_any_element()
 }
 
 /// Store changed preferences (`prefs.set`); the Host answers every window with `prefs.changed`.

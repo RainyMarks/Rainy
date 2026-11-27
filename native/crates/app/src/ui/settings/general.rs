@@ -15,64 +15,59 @@ use crate::store::update::UpdatePhase;
 use crate::store::{Store, shell};
 use crate::ui::{tr, trf};
 
-pub fn render(store: &Entity<Store>, _: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
+fn t(cx: &App, key: &str) -> SharedString {
+    tr(cx, &format!("settings.{key}"))
+}
+
+pub fn render(store: &Entity<Store>, window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
     let prefs = store.read(cx).prefs.clone();
-    let t = |key: &str| tr(cx, &format!("settings.{key}"));
+    let locale_items = vec![("zh", t(cx, "languageZh")), ("en", t(cx, "languageEn"))];
+    let locale_seg = segmented("locale", locale_items, &prefs.locale, window, cx, |value, window, cx| {
+        set_prefs(json!({ "locale": value }), window, cx);
+    });
+    let busy_enter_items = vec![("queue", t(cx, "busyEnterQueue")), ("steer", t(cx, "busyEnterSteer"))];
+    let busy_enter_seg = segmented("busy-enter", busy_enter_items, &prefs.busy_enter, window, cx, |value, window, cx| {
+        set_prefs(json!({ "busyEnter": value }), window, cx);
+    });
+    let step_detail_items = vec![("compact", t(cx, "stepDetailCompact")), ("standard", t(cx, "stepDetailStandard")), ("detailed", t(cx, "stepDetailDetailed"))];
+    let step_detail_seg = segmented(
+        "step-detail",
+        step_detail_items,
+        &prefs.step_detail,
+        window,
+        cx,
+        |value, window, cx| set_prefs(json!({ "stepDetail": value }), window, cx),
+    );
+    let context_strategy_items = vec![("recall", t(cx, "contextStrategyRecall")), ("summary", t(cx, "contextStrategySummary"))];
+    let context_strategy_seg = segmented(
+        "context-strategy",
+        context_strategy_items,
+        // 4.6's `auto` reads back like `recall`.
+        if prefs.context_strategy == "summary" { "summary" } else { "recall" },
+        window,
+        cx,
+        |value, window, cx| set_prefs(json!({ "contextStrategy": value }), window, cx),
+    );
     v_flex()
         .gap_4()
         .child(heading(cx, "settings.navGeneral", "settings.generalLead"))
-        .child(group(cx, None, vec![row(
-            cx,
-            t("languageTitle"),
-            None,
-            segmented("locale", vec![("zh", t("languageZh")), ("en", t("languageEn"))], &prefs.locale, |value, window, cx| {
-                set_prefs(json!({ "locale": value }), window, cx);
-            }),
-        )]))
+        .child(group(cx, None, vec![row(cx, t(cx, "languageTitle"), None, locale_seg)]))
         .child(group(cx, Some("settings.groupChat"), vec![
+            row(cx, t(cx, "busyEnterTitle"), Some(t(cx, "busyEnterDescription")), busy_enter_seg),
+            row(cx, t(cx, "stepDetailTitle"), Some(t(cx, "stepDetailDescription")), step_detail_seg),
+            row(cx, t(cx, "contextStrategyTitle"), Some(t(cx, "contextStrategyDescription")), context_strategy_seg),
             row(
                 cx,
-                t("busyEnterTitle"),
-                Some(t("busyEnterDescription")),
-                segmented("busy-enter", vec![("queue", t("busyEnterQueue")), ("steer", t("busyEnterSteer"))], &prefs.busy_enter, |value, window, cx| {
-                    set_prefs(json!({ "busyEnter": value }), window, cx);
-                }),
-            ),
-            row(
-                cx,
-                t("stepDetailTitle"),
-                Some(t("stepDetailDescription")),
-                segmented(
-                    "step-detail",
-                    vec![("compact", t("stepDetailCompact")), ("standard", t("stepDetailStandard")), ("detailed", t("stepDetailDetailed"))],
-                    &prefs.step_detail,
-                    |value, window, cx| set_prefs(json!({ "stepDetail": value }), window, cx),
-                ),
-            ),
-            row(
-                cx,
-                t("contextStrategyTitle"),
-                Some(t("contextStrategyDescription")),
-                segmented(
-                    "context-strategy",
-                    vec![("recall", t("contextStrategyRecall")), ("summary", t("contextStrategySummary"))],
-                    // 4.6's `auto` reads back like `recall`.
-                    if prefs.context_strategy == "summary" { "summary" } else { "recall" },
-                    |value, window, cx| set_prefs(json!({ "contextStrategy": value }), window, cx),
-                ),
-            ),
-            row(
-                cx,
-                t("usageTitle"),
-                Some(t("usageDescription")),
+                t(cx, "usageTitle"),
+                Some(t(cx, "usageDescription")),
                 Switch::new("show-usage").checked(prefs.show_usage).on_click(|checked: &bool, window, cx| {
                     set_prefs(json!({ "showUsage": *checked }), window, cx);
                 }),
             ),
             row(
                 cx,
-                t("notifyTitle"),
-                Some(t("notifyDescription")),
+                t(cx, "notifyTitle"),
+                Some(t(cx, "notifyDescription")),
                 Switch::new("notify").checked(prefs.notify).on_click(|checked: &bool, window, cx| {
                     set_prefs(json!({ "notify": *checked }), window, cx);
                 }),

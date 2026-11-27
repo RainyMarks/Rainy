@@ -169,12 +169,15 @@ impl ProxyCard {
                 }
             }),
             // The address in effect is the one for the default model's service, so it is read again when models change.
-            cx.subscribe_in(&store, window, |this, _, event: &crate::store::StoreEvent, window, cx| {
-                if let crate::store::StoreEvent::Host { name, .. } = event
-                    && name == "models.changed"
-                {
+            cx.subscribe_in(&store, window, |this, _, event: &crate::store::StoreEvent, window, cx| match event {
+                crate::store::StoreEvent::Host { name, .. } if name == "models.changed" => {
                     this.load(false, window, cx);
                 }
+                crate::store::StoreEvent::HostReconnected(_) => {
+                    this.load(false, window, cx);
+                }
+                crate::store::StoreEvent::PrefsChanged => cx.notify(),
+                _ => {}
             }),
         ];
         let mut card = Self { store, status: None, mode: "system".into(), url, error: None, test: None, testing: false, saving: false, _subscriptions: subscriptions };
