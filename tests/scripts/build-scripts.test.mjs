@@ -125,6 +125,16 @@ test('install-runtime.py validates piece URLs, RAINY_HOME paths, and legacy tar 
     '        raise AssertionError(f"accepted bad URL: {bad}")',
     '    except RuntimeError:',
     '        pass',
+    'handler = mod._SafeRedirectHandler()',
+    'orig_req = mod.Request("https://github.com/RainyMarks/Rainy/releases/download/v5.0.0/a.001")',
+    'ok_req = handler.redirect_request(orig_req, None, 302, "Found", {}, "https://objects.githubusercontent.com/a.001")',
+    'assert ok_req.full_url == "https://objects.githubusercontent.com/a.001"',
+    'for bad_redir in ("http://169.254.169.254/latest/meta-data/", "file:///etc/passwd", "http://example.com/downgrade"):',
+    '    try:',
+    '        handler.redirect_request(orig_req, None, 302, "Found", {}, bad_redir)',
+    '        raise AssertionError(f"accepted bad redirect: {bad_redir}")',
+    '    except RuntimeError:',
+    '        pass',
     'assert str(mod.resolve_rainy_home("/opt/rainy-agent")).replace("\\\\", "/") == "/opt/rainy-agent"',
     'for bad_home in ("relative/dir", "/opt/../etc", "/", "/tmp/bad\\npath"):',
     '    try:',
@@ -184,7 +194,10 @@ test('package.json and native/Cargo.toml share the exact version and rainy.nsi p
   const reparseAt = sectionBody.indexOf('!insertmacro rainyRejectReparse "$INSTDIR"')
   const existsAt = sectionBody.indexOf('${If} ${FileExists} "$INSTDIR\\*.*"')
   assert(reparseAt > 0 && existsAt > reparseAt, 'rainyRejectReparse must run unconditionally before checking $INSTDIR contents')
+  const prevReparseAt = sectionBody.indexOf('!insertmacro rainyRejectReparse "$INSTDIR\\.rainy-prev"')
+  const prevExistsAt = sectionBody.indexOf('${If} ${FileExists} "$INSTDIR\\.rainy-prev\\*.*"')
+  assert(prevReparseAt > 0 && prevExistsAt > prevReparseAt, 'rainyRejectReparse on .rainy-prev must run unconditionally before checking contents')
   assert.match(nsi, /!macro rainyPickLanguage[\s\S]*?!ifdef QA[\s\S]*?!macroend/u)
-  assert.match(nsi, /EnumRegKey \$R1 HKCU "Software\\Classes"[\s\S]*?"Rainy\."/u)
+  assert.match(nsi, /EnumRegKey \$R1 HKCU "Software\\Classes"[\s\S]*?"Rainy\."[\s\S]*?IntOp \$R0 \$R0 - 1[\s\S]*?\$\{Continue\}/u)
   assert.match(nsi, /\.rainy-prev/u)
 })

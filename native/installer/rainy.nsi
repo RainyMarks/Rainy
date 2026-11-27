@@ -277,6 +277,7 @@ VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductVersion" "${VERSION}"
     ${EndIf}
   ${EndIf}
   !insertmacro rainyRejectReparse "$INSTDIR" "${message}"
+  !insertmacro rainyRejectReparse "$INSTDIR\.rainy-prev" "${message}"
   !insertmacro rainyRejectReparse "$INSTDIR\resources" "${message}"
   !insertmacro rainyRejectReparse "$INSTDIR\resources\environment" "${message}"
   !insertmacro rainyRejectReparse "$INSTDIR\resources\windows-host" "${message}"
@@ -742,8 +743,8 @@ Section "-Rainy"
   ${EndIf}
   ; Move the previous executable, uninstaller and signed resource files aside before deleting anything: verifies none
   ; is locked and lets .onInstFailed restore a working installation if replacing files stops halfway through.
+  !insertmacro rainyRejectReparse "$INSTDIR\.rainy-prev" "$(rainyReparseInstall)"
   ${If} ${FileExists} "$INSTDIR\.rainy-prev\*.*"
-    !insertmacro rainyRejectReparse "$INSTDIR\.rainy-prev" "$(rainyReparseInstall)"
     Push "$INSTDIR\.rainy-prev"
     Call rainyRemoveTree
   ${EndIf}
@@ -869,6 +870,10 @@ FunctionEnd
           DeleteRegKey /ifempty HKCU "Software\Classes\.$R3"
           DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.$R3\OpenWithProgids" "$R1"
           DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\ApplicationAssociationToasts" "$R1_.$R3"
+        ${EndIf}
+        ; Deleting `Rainy.<ext>` and possibly `.<ext>` (sorted before `R`) can shift the next entry left by 2.
+        ${If} $R0 > 0
+          IntOp $R0 $R0 - 1
         ${EndIf}
         ${Continue}
       ${EndIf}

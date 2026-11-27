@@ -40,9 +40,24 @@ import tarfile
 import tempfile
 import time
 from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DIGEST = re.compile('[0-9a-f]{64}')
 CHUNK = 1024 * 1024
+
+
+def _flock_ex(lock, nonblocking=False):
+    """Acquire an exclusive advisory lock when POSIX `fcntl` is available."""
+    if fcntl is None:
+        return
+    flags = fcntl.LOCK_EX | fcntl.LOCK_NB if nonblocking else fcntl.LOCK_EX
+    fcntl.flock(lock, flags)
+
+
+def _drain_stdin():
+    """Discard remaining bytes on stdin in bounded chunks to avoid loading an arbitrary stream into RAM."""
+    while sys.stdin.buffer.read(CHUNK):
+        pass
 # A server that downloads slower than this after a minute leaves the transfer to the desktop's upload.
 SLOW_BYTES_PER_SECOND = 256 * 1024
 SLOW_AFTER_SECONDS = 60
@@ -145,7 +160,7 @@ def prune(owned, metadata):
     current = metadata['app']['sha256']
     with (owned / '.install.lock').open('a', encoding='utf-8') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _flock_ex(lock, nonblocking=True)
         except BlockingIOError:
             return removed
         busy = running_runtimes(owned)
@@ -254,6 +269,17 @@ def validate_piece_url(url):
     raise RuntimeError(f'Unsupported download URL scheme or host: {parsed.scheme}://{parsed.hostname or ""}')
 
 
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    """Validate every HTTP redirect target against `validate_piece_url` to prevent scheme downgrade or SSRF."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_piece_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_opener():
+    return build_opener(_SafeRedirectHandler())
+
+
 def installed(target):
     return {'host': str(target / 'rainy-host')}
 
@@ -268,7 +294,7 @@ def install(owned, base_archive, app_archive, metadata):
     target = owned / app['sha256']
     base = owned / ('base-' + identity)
     with (owned / '.install.lock').open('a', encoding='utf-8') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _flock_ex(lock)
         if (target / '.complete').is_file():
             return installed(target)
         if target.exists():
@@ -321,7 +347,7 @@ def progress(done, total):
 
 def fetch(owned, metadata, pieces):
     """Download the base piece by piece; verified pieces are kept, so a dropped connection resumes from there."""
-    from urllib.request import Request, urlopen
+    opener = _build_opener()
     folder = owned / f'.download-{metadata["sha256"]}'
     folder.mkdir(mode=0o700, exist_ok=True)
     total = sum(piece['bytes'] for piece in pieces)
@@ -338,7 +364,7 @@ def fetch(owned, metadata, pieces):
             digest = hashlib.sha256()
             written = 0
             try:
-                with urlopen(Request(url, headers={'User-Agent': 'Rainy'}), timeout=60) as response, partial.open('wb') as file:
+                with opener.open(Request(url, headers={'User-Agent': 'Rainy'}), timeout=60) as response, partial.open('wb') as file:
                     reported = done
                     for block in iter(lambda: response.read(CHUNK), b''):
                         written += len(block)
@@ -390,7 +416,7 @@ def probe(owned, metadata, do_prune=False):
     target = owned / metadata['app']['sha256']
     base = owned / ('base-' + metadata['content'])
     with (owned / '.install.lock').open('a', encoding='utf-8') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _flock_ex(lock)
         if (target / '.complete').is_file():
             result = installed(target)
         elif target.exists():
@@ -408,7 +434,7 @@ def probe(owned, metadata, do_prune=False):
 def remote(owned, mode, metadata, pieces, do_prune=False):
     """Install on an SSH server. Standard input starts with the application layer; with --receive the base follows."""
     if platform.system() != 'Linux' or platform.machine() not in ('x86_64', 'amd64'):
-        sys.stdin.buffer.read()
+        _drain_stdin()
         return {'unsupported': f'{platform.system()} {platform.machine()}'}
     folder = Path(tempfile.mkdtemp(prefix='.download-', dir=owned))
     try:
@@ -420,7 +446,7 @@ def remote(owned, mode, metadata, pieces, do_prune=False):
             # Cap reads to declared size + 1 byte so an oversized stream cannot exhaust disk before digest checking.
             read_exactly(sys.stdin.buffer, int(metadata['bytes']) + 1, base_archive)
         else:
-            sys.stdin.buffer.read()
+            _drain_stdin()
         if not matches(app_archive, metadata['app']):
             return {'needsArchive': True, 'error': 'the application layer did not arrive intact'}
         result = install(owned, base_archive, app_archive, metadata)
