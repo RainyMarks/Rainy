@@ -3015,8 +3015,32 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
 
     let mouse_move_state = state.downgrade();
     window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+        let Some(state) = mouse_move_state.upgrade() else {
+            return;
+        };
+        // Rainy: never extend a mouse selection without the primary button held;
+        // if a MouseUp was missed (e.g. released outside the window), recover on
+        // capture before any child can stop propagation.
+        if event.pressed_button != Some(MouseButton::Left) {
+            if phase.capture() {
+                let stale = {
+                    let guard = state.read(cx);
+                    (guard.is_selecting
+                        || guard.mouse_down_prepared
+                        || guard.pending_extension_anchor.is_some())
+                        && guard.touch.drag.is_none()
+                        && !window.has_long_press_capture(&state)
+                };
+                if stale {
+                    state.update(cx, |state, cx| {
+                        state.mouse_down_prepared = false;
+                        state.end(cx);
+                    });
+                }
+            }
+            return;
+        }
         if phase.bubble()
-            && let Some(state) = mouse_move_state.upgrade()
             // Moving the pointer only moves a selection being made.
             && state.read(cx).is_selecting
         {
@@ -3034,13 +3058,24 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
 
     let mouse_up_state = state.downgrade();
     window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-        if phase.bubble()
+        // Rainy: finish the gesture and reset mouse_down_prepared on capture so
+        // a child calling stop_propagation() on MouseUp/on_click cannot deadlock
+        // the selection state machine.
+        if phase.capture()
             && let Some(state) = mouse_up_state.upgrade()
         {
-            state.update(cx, |state, cx| {
-                state.mouse_down_prepared = false;
-                state.end(cx)
-            });
+            let needs_finish = {
+                let guard = state.read(cx);
+                guard.is_selecting
+                    || guard.mouse_down_prepared
+                    || guard.pending_extension_anchor.is_some()
+            };
+            if needs_finish {
+                state.update(cx, |state, cx| {
+                    state.mouse_down_prepared = false;
+                    state.end(cx)
+                });
+            }
         }
     });
 
@@ -4841,6 +4876,234 @@ mod tests {
             let selection = view.read(cx).selection.clone();
             selection.update_runs(&[text_run(0, text, layout)], cx);
             assert_eq!(TextSelection::selected_text(window, cx), "alpha beta");
+        });
+    }
+
+    #[gpui::test]
+    fn child_stopping_mouse_up_propagation_does_not_deadlock_selection(cx: &mut TestAppContext) {
+        use gpui::StatefulInteractiveElement as _;
+
+        struct StopPropagationChildView {
+            selection: TextSelectionHandle,
+            blocker_clicks: Rc<Cell<usize>>,
+            suppressed_clicks: Rc<Cell<usize>>,
+        }
+
+        impl Render for StopPropagationChildView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let selection = self.selection.clone();
+                let blocker_clicks = self.blocker_clicks.clone();
+                let suppressed_clicks = self.suppressed_clicks.clone();
+                div()
+                    .size_full()
+                    .child(TextSelectionLayer)
+                    .child(
+                        div()
+                            .size_full()
+                            .on_prepaint(move |bounds, window, cx| {
+                                let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                                selection.register(
+                                    TextSelectionRegistration::new(hitbox, bounds)
+                                        .with_text_bounds(vec![bounds]),
+                                    window,
+                                    cx,
+                                );
+                            })
+                            .child(
+                                div()
+                                    .id("stop-on-click-only")
+                                    .absolute()
+                                    .left(px(0.))
+                                    .top(px(0.))
+                                    .w(px(40.))
+                                    .h(px(40.))
+                                    .on_click(move |_, _, cx| {
+                                        blocker_clicks.set(blocker_clicks.get() + 1);
+                                        cx.stop_propagation();
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id("stop-on-click-suppressed")
+                                    .absolute()
+                                    .left(px(50.))
+                                    .top(px(0.))
+                                    .w(px(40.))
+                                    .h(px(40.))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        GlobalState::init(cx);
+                                        GlobalState::suppress_text_selection(cx);
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        suppressed_clicks.set(suppressed_clicks.get() + 1);
+                                        cx.stop_propagation();
+                                    }),
+                            ),
+                    )
+            }
+        }
+
+        let blocker_clicks = Rc::new(Cell::new(0));
+        let suppressed_clicks = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let blocker_clicks = blocker_clicks.clone();
+            let suppressed_clicks = suppressed_clicks.clone();
+            move |_, cx| StopPropagationChildView {
+                selection: TextSelectionHandle::new("underlying text", cx),
+                blocker_clicks,
+                suppressed_clicks,
+            }
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        // Clicking a child that stops propagation on MouseUp/on_click without
+        // suppressing selection must still finish the gesture on capture.
+        cx.simulate_mouse_down(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(blocker_clicks.get(), 1);
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(!state.read(cx).is_selecting());
+            assert!(!state.read(cx).mouse_down_prepared);
+        });
+
+        // Moving without a button pressed afterwards must not drag-select text.
+        cx.simulate_mouse_move(
+            point(px(120.), px(60.)),
+            None::<MouseButton>,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            assert!(!TextSelection::has_selection(window, cx));
+        });
+
+        // Normal drag selection still works across the underlying text.
+        cx.simulate_mouse_down(
+            point(px(10.), px(80.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(120.), px(80.)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(120.), px(80.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(!state.read(cx).is_selecting());
+            assert!(!state.read(cx).mouse_down_prepared);
+            assert!(TextSelection::has_selection(window, cx));
+        });
+
+        // Clicking a suppressed child that stops MouseUp propagation clears
+        // the prior selection and resets mouse_down_prepared for future clicks.
+        cx.simulate_mouse_down(
+            point(px(60.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(60.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(suppressed_clicks.get(), 1);
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(!state.read(cx).is_selecting());
+            assert!(!state.read(cx).mouse_down_prepared);
+            assert!(!TextSelection::has_selection(window, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn mouse_move_without_left_button_ends_stale_selection_and_resets_prepared(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, cx| WindowOwnedSelectionView {
+            selection: TextSelectionHandle::new("dragged text", cx),
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        // Start a real drag and intentionally omit MouseUp (e.g. released outside the window).
+        cx.simulate_mouse_down(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(40.), px(10.)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        let cursor_before = cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(state.read(cx).is_selecting());
+            assert!(state.read(cx).mouse_down_prepared);
+            state.read(cx).snapshot().unwrap().cursor().content_point()
+        });
+
+        // Moving without MouseButton::Left must auto-end and never extend selection.
+        cx.simulate_mouse_move(
+            point(px(150.), px(10.)),
+            None::<MouseButton>,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(!state.read(cx).is_selecting());
+            assert!(!state.read(cx).mouse_down_prepared);
+            assert!(TextSelection::has_selection(window, cx));
+            assert_eq!(
+                state.read(cx).snapshot().unwrap().cursor().content_point(),
+                cursor_before
+            );
+        });
+
+        // A stale mouse_down_prepared without is_selecting is also cleared on buttonless move,
+        // so the next click can clear the previous selection normally.
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            state.update(cx, |state, _| state.mouse_down_prepared = true);
+        });
+        cx.simulate_mouse_move(
+            point(px(160.), px(10.)),
+            None::<MouseButton>,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(!state.read(cx).mouse_down_prepared);
+        });
+        cx.simulate_mouse_down(
+            point(px(20.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(20.), px(10.)),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            assert!(!TextSelection::has_selection(window, cx));
         });
     }
 }

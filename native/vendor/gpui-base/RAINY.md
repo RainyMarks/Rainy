@@ -18,6 +18,15 @@ Changes from the published package:
 
 - `src/text/node.rs`, `CodeBlock::render`: a code block with actions (`TextView::code_block_actions`) gets the same
   room above its first line as one with a language label; the actions covered the end of the first line.
+- `src/text_selection.rs`, `paint_text_selection`:
+  - the `MouseUp` listener finishes selection and resets `mouse_down_prepared` in the capture phase instead of bubble,
+    so a child element stopping propagation in `on_click`/`MouseUp` cannot deadlock `is_selecting` and
+    `mouse_down_prepared`;
+  - the `MouseMove` listener requires `event.pressed_button == Some(MouseButton::Left)` before extending a selection
+    and automatically calls `end` / resets `mouse_down_prepared` on capture when moving without the primary button held
+    (e.g. after a missed `MouseUp` outside the window).
+- `src/switch.rs`, `Switch::render`: an enabled switch calls `GlobalState::suppress_text_selection` on primary mouse
+  down (matching `Button`), so clicking a switch over selectable text does not start window-level text selection.
 
 Each change is marked `Rainy:` where it is made. To move to another gpui-base, copy the new package here the same way
 and apply the changes again, or drop them once the package has its own.

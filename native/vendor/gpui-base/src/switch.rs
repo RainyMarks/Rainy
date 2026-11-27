@@ -8,7 +8,10 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{StateStyle, StyledExt as _, TestSupportExt as _, a11y_disabled::A11yDisabledExt as _};
+use crate::{
+    GlobalState, StateStyle, StyledExt as _, TestSupportExt as _,
+    a11y_disabled::A11yDisabledExt as _,
+};
 
 type ChangeHandler = Rc<dyn Fn(bool, &ClickEvent, &mut Window, &mut App)>;
 
@@ -379,6 +382,11 @@ impl RenderOnce for Switch {
                         .tab_index(self.tab_index)
                         .tab_stop(self.tab_stop),
                 )
+                // Rainy: pressing a switch must not start window-level text selection.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    GlobalState::init(cx);
+                    GlobalState::suppress_text_selection(cx);
+                })
             })
             .when(disabled, |this| {
                 this.on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -738,5 +746,111 @@ mod tests {
         assert!(!disabled.supports_action(accesskit::Action::Click));
         assert!(!enabled.is_disabled());
         assert!(disabled.is_disabled());
+    }
+
+    #[gpui::test]
+    fn enabled_switch_suppresses_text_selection_on_pointer_press(cx: &mut TestAppContext) {
+        use crate::{
+            ElementExt as _,
+            text_selection::{
+                TextSelection, TextSelectionHandle, TextSelectionLayer, TextSelectionRegistration,
+            },
+        };
+        use gpui::HitboxBehavior;
+
+        struct SwitchOverTextHarness {
+            selection: TextSelectionHandle,
+            toggles: Rc<Cell<usize>>,
+            last_value: Rc<Cell<bool>>,
+        }
+
+        impl Render for SwitchOverTextHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let selection = self.selection.clone();
+                let toggles = self.toggles.clone();
+                let last_value = self.last_value.clone();
+                div()
+                    .size_full()
+                    .child(TextSelectionLayer)
+                    .child(
+                        div()
+                            .size_full()
+                            .on_prepaint(move |bounds, window, cx| {
+                                let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                                selection.register(
+                                    TextSelectionRegistration::new(hitbox, bounds)
+                                        .with_text_bounds(vec![bounds]),
+                                    window,
+                                    cx,
+                                );
+                            })
+                            .child(
+                                div()
+                                    .id("panel")
+                                    .size(px(120.))
+                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                    .child(
+                                        Switch::new("settings-switch")
+                                            .checked(false)
+                                            .size(px(60.))
+                                            .on_change(move |next, _, _, _| {
+                                                toggles.set(toggles.get() + 1);
+                                                last_value.set(next);
+                                            }),
+                                    ),
+                            ),
+                    )
+            }
+        }
+
+        let toggles = Rc::new(Cell::new(0));
+        let last_value = Rc::new(Cell::new(false));
+        let (_, cx) = cx.add_window_view({
+            let toggles = toggles.clone();
+            let last_value = last_value.clone();
+            move |_, cx| SwitchOverTextHarness {
+                selection: TextSelectionHandle::new("chat message", cx),
+                toggles,
+                last_value,
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Pressing and dragging from an enabled switch must suppress window text selection.
+        cx.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            assert!(GlobalState::is_text_selection_suppressed(cx));
+            assert!(!TextSelection::has_selection(window, cx));
+        });
+        cx.simulate_mouse_move(
+            point(px(100.), px(20.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(100.), px(20.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            assert!(!TextSelection::has_selection(window, cx));
+        });
+
+        // Clicking the switch toggles it and leaves no lingering selection on subsequent moves.
+        cx.simulate_click(point(px(20.), px(20.)), Modifiers::default());
+        assert_eq!(toggles.get(), 1);
+        assert!(last_value.get());
+        cx.simulate_mouse_move(
+            point(px(140.), px(80.)),
+            None::<MouseButton>,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            assert!(!TextSelection::has_selection(window, cx));
+        });
     }
 }
