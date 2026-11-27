@@ -1,8 +1,8 @@
-//! The pixel pet on the edge of a new chat's composer: a small white-haired cat girl with an amber hair clip set with
-//! a blue gem, a blue sailor jacket, an orange scarf and a white tail, as 44 x 54 pixel art. She blinks, twitches an
-//! ear and looks towards the pointer; now and then she strolls a few steps along the composer and back; pointed at,
-//! she hops and a heart rises; while the page's clock is paused she sleeps. Everything follows the page's clock
-//! ([`Backdrop`]), so she costs nothing while it stands still.
+//! The pixel pet on the edge of a new chat's composer: a small white-haired cat girl with dot eyes and round blush,
+//! an ahoge, a leaf clip, a white dress with a pale blue sailor collar, and a white tail, as 44 x 54 pixel art. She
+//! blinks, twitches an ear and looks towards the pointer; now and then she strolls a few steps along the composer and
+//! back; pointed at, she hops and a heart rises; while the page's clock is paused she sleeps. Everything follows the
+//! page's clock ([`Backdrop`]), so she costs nothing while it stands still.
 
 use gpui_kit::*;
 
@@ -17,128 +17,121 @@ pub const PIXEL: f32 = 1.34;
 const STROLL: f32 = 48.0;
 const HOP: f32 = 7.0;
 
-/// `o` outline, `w`/`s`/`S` hair, `q`/`l` its pink and blue tips, `p`/`P` inner ear, `y`/`Y` amber clip and scarf,
-/// `x` the scarf's star, `j`/`J` gem, `f`/`F` skin, `D`/`d`/`v`/`i`/`I`/`h` eyes, `b`/`B` blush, `m` mouth,
-/// `c`/`C` jacket, `k`/`K` collar, `n` its stripe and the cuffs, `u` frill and socks.
+/// `o` outline, `w`/`s` hair, `p`/`P` inner ear and its fur, `g`/`G` leaf and stem, `f`/`F` skin and the shadow under
+/// the bangs, `e` eyes, `b` blush, `c`/`C` collar and skirt hem, `n` the collar's star, `u`/`U` dress, `K` shoes.
 const ART: [&str; HEIGHT] = [
-    "...................ooooo....................",
-    "..................oyyyyYo...................",
-    ".........o........oyJjyYo.........o.........",
-    "........owo.......oyJjyYo........owo........",
-    "........owwoo.....oyJjyYo......oowwo........",
-    "........owpwwo....oyjjyYo.....owwpwo........",
-    "........owppwwo...oyjjyYo....owwppwo........",
-    "........owPppwwooooyjjyYooooowwppPwo........",
-    "........owPPpppwwwwyyyyYwwwwwpppPPwo........",
-    "........owPPppppwwwyyyyYwwwwppppPPwo........",
-    "........owPppppwwwwwsssswwwwwppppPwo........",
-    "........owpppwwwwwwwwwwwwwwwwwwpppwo........",
-    "........owpwwwwwwwwwwwwwwwwwwwwwwpwo........",
-    "........owwwwwwwwwwwwwwwwwwwwwwwwwwo........",
-    ".........owwwwwwwwwwwwwwwwwwwwsssso.........",
-    "........owwwwwwwwwwwwwwwwwwwwwssssso........",
-    "........owwwwwwwwwwwwwwwwwwwwwssssso........",
-    "........owwwwwwwwwwwwwwwwwwwwwssssso........",
-    ".......owwwswwwwwwwwwwwwwwwwwwsswssso.......",
-    ".......owwwswswwwwwwwwwwwwwwwwsswssso.......",
-    ".......owwwsSfSwwwsswwwwsswwwSfSwssso.......",
-    ".......owwwsfffSwSffSwwSffSwSfffwssso.......",
-    "........owwsffffSfffSwwSfffSffffwsso........",
-    "........owwsfDDDDfffSwwSfffDDDDfwsso........",
-    "........owwsfdvvvDfffSSfffDvvvdfwsso........",
-    "........owwsfvhhvvfffSSfffvvhhvfwsso........",
-    "........owwsfvhvviffffffffivvhvfwsso........",
-    "........owwsfiiiIiffffffffiIiiifwsso........",
-    "........owwsffIIIffffffffffIIIffwsso........",
-    "........owwsSbBbBffffffffffBbBbSwsso........",
-    "........owwswSbbfffffmmfffffbbSswsso........",
-    "........owwswwSffffffffffffffSsswsso........",
-    "........owwswwwwSfffFFFFfffSwwsswsso........",
-    ".........owsssskknKKuuuuKKnkkssswsso...o....",
-    ".........owssssccnKKuuuuKKnccssswsso..olo...",
-    ".........owsssccccnKuuuuKnccccsswsso.olllo..",
-    ".........owssscccknyyxxyynkcccsswso...ollo..",
-    ".........oqqscccckkyyxxyykkccccsllo...osso..",
-    ".........oqqccccckkkYyyYkkkcccccllo..owsso..",
-    ".........oqqcccccckkyyyykkccccccllo..owso...",
-    ".........oqqccccccccyYYyccccccccllo..owso...",
-    ".........oqnnncccccccyycccccccnnnlooowwso...",
-    ".........oqnnnnccccccccccccccnnnnlowwwwo....",
-    "..........offffccccccccccccccfffflssssso....",
-    "...........offfccccccccccccccfffSssssso.....",
-    "...........offfCCCCCCCCCCCCCCfffosssoo......",
-    "...........oCCCCCfffCCCCfffCCCCCoooo........",
+    "......................oooooo................",
+    ".....................owwwwwwo...............",
+    ".......o............owwwoowwwo......o.......",
+    "......owoo..........owoo..oowo....oowo......",
+    "......owwwo........owwo.....o....owwwo......",
+    "......owwwwoo......owwo........oowwwwo......",
+    "......owppwwwo.....owwo.......owwwppwo......",
+    "......owpppwwwoo.oooowooooo.oowwwpppwo......",
+    "......owppppwwwwowwwwwwwwwwowwwwppppwo......",
+    "......owppppppwwwwwwwwwwwwwwwwppppppwo......",
+    "......owpppppppwwwwwwwwwwwwwwpppppppwo......",
+    "......owpPppppwwwwwwwwwwwwwwwwppppPpwo......",
+    "......owPPpppwwwwwwwwwwwwwwwwwwpppPPwo......",
+    "......owppPPwwwwwwwwwwwwwwwwwwwwPPppwo......",
+    "......owPPPwwwwwwwwwwwwwwwwwwwwwwPgPwo......",
+    "......owwwwwwwwwwwwwwwwwwwwwwwwwwggwwo......",
+    "......owwwwwwwwwwwwwwwwwwwwwwwwwwgwwwo......",
+    ".......owwwwwwwwwwwwwwwwwwwwwwgwwGwgo.......",
+    ".......owwwswwwwwwswwwwwwswwwwggsGggo.......",
+    ".......owwwswswwwwswwwwwwswwwwsgGgwwo.......",
+    "......owwwwswswwwwswwwwwwswwwgswGggwwo......",
+    "......owwwwswswwwwswwwwwwswwwwggGgwwwo......",
+    "......owwwwswswwwwswwwwwwswwwwsGswwwwo......",
+    "......owwwwswswwwwswwwwwwswwwwsGswwwwo......",
+    ".......owwwswwwwwwwwwwwwwwwwwwwGswwwo.......",
+    ".......owwwsFwwFFFFFwwwwFFFFFwwFswwwo.......",
+    ".......owwwsfFFfffffFwwFfffffFFfswwwo.......",
+    ".......owwwsfffeeffffFFffffeefffswwwo.......",
+    ".......owwwsfffeeffffffffffeefffswwwo.......",
+    ".......owwwsfffeeffffffffffeefffswwwo.......",
+    ".......owwwsfffeeffffffffffeefffswwwo.......",
+    ".......owwwsfffeeffffffffffeefffswwwo.......",
+    ".......owwwsbbffffffffffffffffbbswwwo.......",
+    ".......owwwbbbbffffffffffffffbbbbwwwo.......",
+    ".......owwwsbbwffffffffffffffwbbswwwo..o....",
+    ".......owwwswwwwffffffffffffwwwwswwwo.oso...",
+    ".......owwwswwwwwwwwffffwwwwwwwwswwwoosso...",
+    ".......owwwswwccccccccccccccccwwswwwoossso..",
+    ".......owwwswwccccccccccccccccwwswwwoossso..",
+    ".......owwwswccccccccnnccccccccwswwwoossso..",
+    ".......owwwswCCCccccnnnnccccCCCwswwwoosso...",
+    ".......owwwwwuuuCCCccnnccCCCuuuwwsssoosso...",
+    ".......owwwwuuuuuuuCnccnCuUuuuuwwsssossso...",
+    ".......ossssuuuuuuuuCCCCuuUuuuuusssssssso...",
+    ".......ossssuuuuuuuuuuuuuuUUuuuussssssso....",
+    ".......ossssffffuuuuuuuuuuUUffffsssssso.....",
+    ".......ossssffffuuuuuuuuuuUUffffssssso......",
+    "........oooofffccccccccccccccfffossoo.......",
+    "............occcccccccccccccccco.oo.........",
+    "...........occcccfffccccfffccccco...........",
     "............ooooofffoooofffooooo............",
-    "................offfo..offfo................",
-    "................ouuuo..ouuuo................",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "................ooooo..ooooo................",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKooKKKKKo...............",
 ];
-/// The eyes: 5 x 6 blocks on rows 23 to 28, the left one from column 13, the right one from column 26 and drawn
-/// mirrored; open, closed and smiling.
-const EYE_ROW: usize = 23;
-const EYES_AT: [(usize, bool); 2] = [(13, false), (26, true)];
-const EYE_WIDTH: usize = 5;
-const EYE_HEIGHT: usize = 6;
+/// The eyes: 4 x 5 blocks on rows 27 to 31 holding a dot eye with room to look aside, the left one from column 14,
+/// the right one from column 26 and drawn mirrored; open, closed and smiling.
+const EYE_ROW: usize = 27;
+const EYES_AT: [(usize, bool); 2] = [(14, false), (26, true)];
+const EYE_WIDTH: usize = 4;
+const EYE_HEIGHT: usize = 5;
 const EYES_OPEN: [&str; EYE_HEIGHT] = [
-    "DDDDf",
-    "dvvvD",
-    "vhhvv",
-    "vhvvi",
-    "iiiIi",
-    "fIIIf",
+    "feef",
+    "feef",
+    "feef",
+    "feef",
+    "feef",
 ];
 const EYES_CLOSED: [&str; EYE_HEIGHT] = [
-    "fffff",
-    "fffff",
-    "fffff",
-    "DfffD",
-    "fDDDf",
-    "fffff",
+    "ffff",
+    "ffff",
+    "ffff",
+    "eeee",
+    "ffff",
 ];
 const EYES_HAPPY: [&str; EYE_HEIGHT] = [
-    "fffff",
-    "fffff",
-    "fDDDf",
-    "DfffD",
-    "fffff",
-    "fffff",
+    "ffff",
+    "ffff",
+    "feef",
+    "effe",
+    "ffff",
 ];
 /// The legs (the rows from `LEG_ROW` down) standing and in the two steps of a walk.
-const LEG_ROW: usize = 48;
+const LEG_ROW: usize = 49;
 const LEGS_STAND: [&str; HEIGHT - LEG_ROW] = [
-    "................offfo..offfo................",
-    "................ouuuo..ouuuo................",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "................ooooo..ooooo................",
+    "...........occcccfffccccfffccccco...........",
+    "............ooooofffoooofffooooo............",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKooKKKKKo...............",
 ];
 const LEGS_LEFT: [&str; HEIGHT - LEG_ROW] = [
-    "................ouuuo..offfo................",
-    "...............okkkkko.ouuuo................",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "................ooooo.okkkkko...............",
-    ".......................ooooo................",
+    "...........occcoofffooccfffccccco...........",
+    "............ooooKKKKKooofffooooo............",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKooKKKKKo...............",
+    "......................oKKKKKo...............",
 ];
 const LEGS_RIGHT: [&str; HEIGHT - LEG_ROW] = [
-    "................offfo..ouuuo................",
-    "................ouuuo.okkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkkookkkkko...............",
-    "...............okkkkko.ooooo................",
-    "................ooooo.......................",
+    "...........occcccfffccoofffooccco...........",
+    "............ooooofffoooKKKKKoooo............",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKooKKKKKo...............",
+    "...............oKKKKKo......................",
 ];
-/// The right ear's top bent outwards for a twitch: these rows from column 30, row 2.
-const FLICK_AT: (usize, usize) = (30, 2);
+/// The right ear's top bent outwards for a twitch: these rows from column 33, row 2.
+const FLICK_AT: (usize, usize) = (33, 2);
 const FLICK: [&str; 4] = [
-    "....oo.",
-    "...oowo",
-    ".ooowwo",
-    ".owwpwo",
+    "...oo.",
+    ".ooowo",
+    "oowwwo",
+    "owwwwo",
 ];
 const HEART: [&str; 8] = [
     ".rr...rr.",
@@ -161,35 +154,25 @@ const ZED: [&str; 5] = [
 fn color(mark: char) -> Option<Hsla> {
     let rgb = |r: u8, g: u8, b: u8| Some(Hsla::from(Rgba { r: f32::from(r) / 255.0, g: f32::from(g) / 255.0, b: f32::from(b) / 255.0, a: 1.0 }));
     match mark {
-        'o' => rgb(70, 72, 120),
-        'w' => rgb(250, 250, 255),
-        's' => rgb(218, 220, 248),
-        'S' => rgb(186, 190, 232),
-        'q' => rgb(250, 196, 220),
-        'l' => rgb(176, 208, 250),
-        'p' => rgb(168, 206, 248),
-        'P' => rgb(216, 236, 255),
-        'y' => rgb(250, 182, 70),
-        'Y' => rgb(222, 138, 46),
-        'x' => rgb(255, 232, 124),
-        'j' => rgb(60, 138, 236),
-        'J' => rgb(160, 216, 255),
-        'f' => rgb(255, 241, 234),
-        'F' => rgb(246, 210, 200),
-        'D' => rgb(96, 34, 70),
-        'd' => rgb(176, 50, 88),
-        'v' => rgb(50, 60, 158),
-        'i' => rgb(98, 124, 230),
-        'I' => rgb(164, 192, 254),
-        'h' | 'u' | 'n' => rgb(255, 255, 255),
-        'b' => rgb(255, 190, 204),
-        'B' => rgb(244, 150, 174),
-        'm' => rgb(206, 102, 124),
-        'c' => rgb(100, 150, 234),
-        'C' => rgb(70, 110, 205),
-        'k' => rgb(40, 56, 140),
-        'K' => rgb(64, 84, 170),
+        'o' => rgb(86, 92, 140),
+        'w' => rgb(240, 243, 253),
+        's' => rgb(212, 219, 245),
+        'p' => rgb(241, 176, 182),
+        'P' => rgb(255, 255, 255),
+        'g' => rgb(116, 176, 122),
+        'G' => rgb(74, 132, 86),
+        'f' => rgb(253, 238, 232),
+        'F' => rgb(240, 214, 208),
+        'e' => rgb(38, 38, 48),
+        'b' => rgb(244, 170, 166),
+        'c' => rgb(168, 198, 242),
+        'C' => rgb(126, 160, 222),
+        'n' => rgb(255, 255, 255),
+        'u' => rgb(255, 255, 255),
+        'U' => rgb(226, 232, 248),
+        'K' => rgb(108, 142, 214),
         'r' => rgb(236, 84, 116),
+        'h' => rgb(255, 255, 255),
         'z' => rgb(132, 136, 186),
         _ => None,
     }
