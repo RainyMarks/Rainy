@@ -419,6 +419,19 @@ async fn codex_app_server_probe_stream_approval_resume_and_abort() {
         .expect("external.configure");
     assert!(cfg_res["agents"].as_array().unwrap().iter().any(|a| a["kind"] == "codex"));
 
+    // While no Codex models are known, `external.status` lists them in the background (`model/list`, no thread).
+    let mut listed = Value::Null;
+    for _ in 0..100 {
+        let status = rpc.call("external.status", json!({})).await.expect("external.status");
+        let row = status["agents"].as_array().unwrap().iter().find(|a| a["kind"] == "codex").expect("codex row").clone();
+        if row["models"].as_array().is_some_and(|models| !models.is_empty()) {
+            listed = row["models"].clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(listed[0]["id"], "gpt-5.3-codex", "listed before any probe or chat");
+
     let probe_res = rpc
         .call("external.probe", json!({ "kind": "codex", "cwd": work.path().to_string_lossy() }))
         .await

@@ -19,17 +19,31 @@ use crate::settings::{ModelSelection, check_server};
 
 impl Agent {
     pub(super) fn register_external(self: &Arc<Self>) {
-        self.on("external.status", |agent, _: Value| async move { Ok(agent.services.external.status()) });
+        // The models of Codex and Antigravity, while none are known, are listed in the background (neither opens a
+        // conversation); `external.changed` carries them.
+        self.on("external.status", |agent, _: Value| async move {
+            let background = agent.clone();
+            tokio::spawn(async move {
+                let (external, home) = (&background.services.external, &background.services.env.home);
+                let (codex, agy) = tokio::join!(external.list_models_if_unknown("codex", home), external.list_models_if_unknown("antigravity", home));
+                if codex || agy {
+                    background.services.rpc.emit("external.changed", &external.status());
+                }
+            });
+            Ok(agent.services.external.status())
+        });
         // Read an agent's usage limits again (Codex and Antigravity), unless read within the last minute and not
-        // `force`d; the answer and `external.changed` carry them.
+        // `force`d, and its models while none are known; the answer and `external.changed` carry them.
         self.on("external.quota", |agent, params: Value| async move {
             let kind = params.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
             let force = params.get("force").and_then(Value::as_bool).unwrap_or(false);
             let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from).filter(|path| path.is_dir()).unwrap_or_else(|| agent.services.env.home.clone());
-            if agent.services.external.refresh_quota(&kind, force, &cwd).await {
-                agent.services.rpc.emit("external.changed", &agent.services.external.status());
+            let external = &agent.services.external;
+            let (quota, models) = tokio::join!(external.refresh_quota(&kind, force, &cwd), external.list_models_if_unknown(&kind, &cwd));
+            if quota || models {
+                agent.services.rpc.emit("external.changed", &external.status());
             }
-            Ok(agent.services.external.status())
+            Ok(external.status())
         });
         self.on("external.probe", |agent, params: ExternalProbeParams| async move {
             let cwd = match params.cwd.as_deref().map(str::trim).filter(|p| !p.is_empty()) {

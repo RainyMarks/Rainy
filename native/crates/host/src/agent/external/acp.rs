@@ -659,6 +659,68 @@ pub fn parse_acp_session_meta(res: &Value) -> AcpSessionMeta {
     AcpSessionMeta { session_id, models, modes, thought_option }
 }
 
+/// Read what `agy models` prints, one `id<TAB>name` line per model and thinking level (`gemini-4-neon-high` and
+/// `Gemini 4 Neon (High)`), into the models `session/set_model` takes, each with the levels it is listed with: what
+/// `session/new` gives, without leaving an empty conversation in Antigravity. An id ends in a level only when its name
+/// does too and the model is listed with two levels or more (GPT-OSS's one entry, `gpt-oss-120b-medium`, is the id
+/// `session/set_model` takes). The first line is the model and level a conversation starts with (`session/new` reports
+/// the same as current).
+pub fn parse_agy_models(text: &str) -> Vec<ExternalModelInfo> {
+    fn split_level<'a>(id: &'a str, name: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
+        let (base, level) = id.rsplit_once('-')?;
+        let (base_name, named) = name.strip_suffix(')')?.rsplit_once(" (")?;
+        (!base.is_empty() && LEVEL_NAMES.contains(&level) && named.eq_ignore_ascii_case(level)).then_some((base, base_name.trim_end(), level))
+    }
+    let entries: Vec<(&str, &str)> = text
+        .lines()
+        .filter_map(|line| {
+            let (id, name) = line.split_once('\t')?;
+            let id = id.trim();
+            (!id.is_empty() && !id.contains(char::is_whitespace)).then_some((id, name.trim()))
+        })
+        .collect();
+    let mut variants: HashMap<&str, usize> = HashMap::new();
+    for (id, name) in &entries {
+        if let Some((base, _, _)) = split_level(id, name) {
+            *variants.entry(base).or_default() += 1;
+        }
+    }
+    let mut models: Vec<ExternalModelInfo> = Vec::new();
+    let mut first_level = None;
+    for (index, (id, name)) in entries.iter().enumerate() {
+        let (model_id, model_name, level) = match split_level(id, name) {
+            Some((base, base_name, level)) if variants.get(base).copied().unwrap_or(0) >= 2 => (base, base_name, Some(level)),
+            _ => (*id, *name, None),
+        };
+        if index == 0 {
+            first_level = level;
+        }
+        let at = match models.iter().position(|model| model.id == model_id) {
+            Some(at) => at,
+            None => {
+                models.push(ExternalModelInfo {
+                    id: model_id.to_owned(),
+                    display_name: (!model_name.is_empty()).then(|| model_name.to_owned()),
+                    reasoning_efforts: Vec::new(),
+                    default_effort: None,
+                    is_default: (index == 0).then_some(true),
+                });
+                models.len() - 1
+            }
+        };
+        if let Some(level) = level {
+            models[at].reasoning_efforts.push(level.to_owned());
+        }
+    }
+    let rank = |level: &String| LEVEL_NAMES.iter().position(|name| name == level).unwrap_or(LEVEL_NAMES.len());
+    for model in &mut models {
+        model.reasoning_efforts.sort_by_key(rank);
+        model.reasoning_efforts.dedup();
+        model.default_effort = first_level.filter(|level| model.reasoning_efforts.iter().any(|offered| offered == level)).map(str::to_owned);
+    }
+    models
+}
+
 /// The tokens a `session/prompt` result reports for its turn (`inputTokens` leaves out the cached part).
 fn acp_turn_usage(usage: &Value) -> Option<UsageSummary> {
     let num = |key: &str| usage.get(key).and_then(Value::as_f64);
@@ -1206,6 +1268,49 @@ mod tests {
             assert!(model(id).reasoning_efforts.is_empty(), "{id}");
             assert_eq!(model(id).default_effort, None, "{id}");
         }
+    }
+
+    /// `agy models` (agy 1.5.18) gives the models `session/new` lists under `configOptions`, with their levels.
+    #[test]
+    fn reads_the_models_agy_lists() {
+        let printed = "Fetching available models...\r\n\
+            gemini-4-neon-high\tGemini 4 Neon (High)\r\ngemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\r\n\
+            gemini-4-neon-medium\tGemini 4 Neon (Medium)\r\ngemini-4-neon-low\tGemini 4 Neon (Low)\r\n\
+            gemini-4-carbon-medium\tGemini 4 Carbon (Medium)\ngemini-4-carbon-high\tGemini 4 Carbon (High)\ngemini-4-carbon-low\tGemini 4 Carbon (Low)\n\
+            gemini-4-argon-medium\tGemini 4 Argon (Medium)\ngemini-4-argon-high\tGemini 4 Argon (High)\ngemini-4-argon-low\tGemini 4 Argon (Low)\n\
+            gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\ngemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)\n\
+            gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)\ngemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)\n\
+            gemini-pro-orchestrator-neon\tOrchestrator (Neon)\ngemini-pro-orchestrator\tOrchestrator (Carbon)\ngemini-pro-orchestrator-argon\tOrchestrator (Argon)\n\
+            gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n\
+            claude-opus-5-5-low\tClaude Opus 5.5 (Low)\nclaude-opus-5-5-medium\tClaude Opus 5.5 (Medium)\nclaude-opus-5-5-high\tClaude Opus 5.5 (High)\n\
+            claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\nclaude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\nclaude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\n\
+            gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n";
+        let models = parse_agy_models(printed);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "gemini-4-neon", "gemini-4-carbon", "gemini-4-argon", "gemini-4-hydrogen", "gemini-pro-orchestrator-neon", "gemini-pro-orchestrator",
+                "gemini-pro-orchestrator-argon", "gemini-3.8-flash", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-oss-120b-medium",
+            ]
+        );
+        let model = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(model("gemini-4-neon").display_name.as_deref(), Some("Gemini 4 Neon"));
+        assert_eq!(model("gemini-4-neon").reasoning_efforts, ["low", "medium", "high", "xhigh"]);
+        assert_eq!(model("gemini-4-neon").default_effort.as_deref(), Some("high"));
+        assert_eq!(model("gemini-4-neon").is_default, Some(true));
+        assert_eq!(model("gemini-4-carbon").reasoning_efforts, ["low", "medium", "high"]);
+        assert_eq!(model("claude-opus-5-5").reasoning_efforts, ["low", "medium", "high"]);
+        assert_eq!(model("claude-opus-5-5").default_effort.as_deref(), Some("high"));
+        assert_eq!(model("claude-opus-5-5").is_default, None);
+        assert_eq!(model("gemini-pro-orchestrator").display_name.as_deref(), Some("Orchestrator (Carbon)"));
+        assert_eq!(model("gpt-oss-120b-medium").display_name.as_deref(), Some("GPT-OSS 120B (Medium)"));
+        for id in ["gemini-pro-orchestrator", "gemini-pro-orchestrator-neon", "gpt-oss-120b-medium"] {
+            assert!(model(id).reasoning_efforts.is_empty(), "{id}");
+            assert_eq!(model(id).default_effort, None, "{id}");
+        }
+        // Nothing listed (not signed in, an error) is no model.
+        assert!(parse_agy_models("Fetching available models...\nError: not signed in\n").is_empty());
     }
 
     #[test]

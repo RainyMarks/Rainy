@@ -39,6 +39,10 @@ const PROBE_MODELS_TIMEOUT: Duration = Duration::from_secs(15);
 const QUOTA_FRESH_MS: i64 = 60_000;
 /// `agy -p /usage` asks Google's servers; it answers within seconds.
 const QUOTA_TIMEOUT: Duration = Duration::from_secs(40);
+/// `agy models` asks Google's servers too.
+const AGY_MODELS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Models that could not be listed are not asked for again sooner.
+const MODELS_RETRY_MS: i64 = 60_000;
 
 /// User decision answering an external agent's approval/permission prompt.
 #[derive(Debug, Clone)]
@@ -164,10 +168,12 @@ pub struct ExternalManager {
     /// The slash commands each kind of agent last listed.
     commands: Mutex<HashMap<String, Vec<ExternalCommand>>>,
     /// The models each kind of agent last listed, kept in `external-models.json` so the model menu has them after
-    /// a restart without starting the agent (a probe leaves an empty conversation in Antigravity's history).
+    /// a restart without starting the agent (a probe over ACP leaves an empty conversation in Antigravity's history).
     known_models: Mutex<HashMap<String, Vec<ExternalModelInfo>>>,
     models_write_lock: Mutex<()>,
     models_file: PathBuf,
+    /// When each kind's models were last listed for want of any known ones.
+    models_asked: Mutex<HashMap<String, i64>>,
     /// Each kind's usage limits as last read, and the kinds being read now.
     quotas: Mutex<HashMap<String, ExternalQuota>>,
     quota_reading: Mutex<HashSet<String>>,
@@ -215,6 +221,7 @@ impl ExternalManager {
             known_models: Mutex::new(known_models),
             models_write_lock: Mutex::new(()),
             models_file,
+            models_asked: Mutex::new(HashMap::new()),
             quotas: Mutex::new(HashMap::new()),
             quota_reading: Mutex::new(HashSet::new()),
         });
@@ -442,6 +449,60 @@ impl ExternalManager {
             log::warn!("could not save {}: {error}", self.models_file.display());
         }
         true
+    }
+
+    /// List the models of Codex (`model/list`) or Antigravity (`agy models`) while none are known, so the model menu
+    /// offers them before the first chat (which lists them again); neither opens a conversation. At most once a
+    /// minute per kind. Whether what is known changed.
+    pub async fn list_models_if_unknown(&self, kind: &str, cwd: &Path) -> bool {
+        if !matches!(kind, "codex" | "antigravity") || self.known_models.lock().map_or(true, |known| known.get(kind).is_some_and(|models| !models.is_empty())) {
+            return false;
+        }
+        {
+            let Ok(mut asked) = self.models_asked.lock() else { return false };
+            let now = quota::now_ms();
+            if asked.get(kind).is_some_and(|at| now - at < MODELS_RETRY_MS) {
+                return false;
+            }
+            asked.insert(kind.to_owned(), now);
+        }
+        let Some(cfg) = self.effective_configs().into_iter().find(|cfg| cfg.kind == kind && cfg.enabled) else { return false };
+        let env = external_env();
+        let Some(binary) = resolve_cli(&command_name_for(&cfg), &env) else { return false };
+        let listed = if kind == "codex" {
+            let args = if cfg.args.is_empty() { default_args(kind) } else { cfg.args.clone() };
+            self.list_codex_models(&binary, &args, cwd).await
+        } else {
+            list_agy_models(&binary, cwd, &env).await
+        };
+        match listed {
+            Ok(models) => self.remember_models(kind, models),
+            Err(error) => {
+                log::info!("{kind}: {error}");
+                false
+            }
+        }
+    }
+
+    /// The models a Codex already running for a chat lists, else one started for this.
+    async fn list_codex_models(&self, binary: &Path, args: &[String], cwd: &Path) -> Result<Vec<ExternalModelInfo>, String> {
+        let running = self.codex_pool.lock().await.values().find(|process| process.is_alive()).cloned();
+        let started = running.is_none();
+        let process = match running {
+            Some(process) => process,
+            None => CodexProcess::spawn(binary, args, cwd).await.map_err(|error| error.message)?,
+        };
+        let cancel = CancellationToken::new();
+        let listed = tokio::time::timeout(PROBE_MODELS_TIMEOUT, process.list_models(&cancel)).await;
+        if started {
+            process.close().await;
+        }
+        match listed {
+            Ok(Ok(models)) if !models.is_empty() => Ok(models),
+            Ok(Ok(_)) => Err(l("Codex 没有列出模型。", "Codex listed no models.")),
+            Ok(Err(error)) => Err(error.message),
+            Err(_) => Err(l("Codex 获取模型列表超时。", "Codex's model list timed out.")),
+        }
     }
 
     pub fn remember_commands(&self, kind: &str, commands: Vec<ExternalCommand>) {
@@ -753,24 +814,45 @@ async fn probe_one(cfg: &ExternalAgentConfig, env: &std::collections::BTreeMap<s
             Err(err) => (Vec::new(), Some(err.message)),
         }
     } else {
-        match AcpProcess::spawn(&cfg.kind, &binary, &probe_args, cwd).await {
-            Ok(proc) => {
-                let outcome = tokio::time::timeout(PROBE_MODELS_TIMEOUT, proc.probe_session(cwd, &cancel)).await;
-                proc.close().await;
-                match outcome {
-                    Ok(Ok(meta)) => (meta.models, None),
-                    Ok(Err(err)) => (Vec::new(), Some(err.message)),
-                    Err(_) => (
-                        Vec::new(),
-                        Some(l("外部 ACP Agent 探测超时，请确认已完成登录。", "External ACP probe timed out; verify CLI login.")),
-                    ),
+        // Antigravity lists its models without the empty conversation a probe over ACP leaves in its history.
+        let listed = if cfg.kind == "antigravity" { list_agy_models(&binary, cwd, env).await.ok() } else { None };
+        match listed {
+            Some(models) => (models, None),
+            None => match AcpProcess::spawn(&cfg.kind, &binary, &probe_args, cwd).await {
+                Ok(proc) => {
+                    let outcome = tokio::time::timeout(PROBE_MODELS_TIMEOUT, proc.probe_session(cwd, &cancel)).await;
+                    proc.close().await;
+                    match outcome {
+                        Ok(Ok(meta)) => (meta.models, None),
+                        Ok(Err(err)) => (Vec::new(), Some(err.message)),
+                        Err(_) => (
+                            Vec::new(),
+                            Some(l("外部 ACP Agent 探测超时，请确认已完成登录。", "External ACP probe timed out; verify CLI login.")),
+                        ),
+                    }
                 }
-            }
-            Err(err) => (Vec::new(), Some(err.message)),
+                Err(err) => (Vec::new(), Some(err.message)),
+            },
         }
     };
 
     CachedProbe { installed: true, binary_path, version, models, error }
+}
+
+/// The models `agy models` lists (it opens no conversation), or what it said instead.
+async fn list_agy_models(binary: &Path, cwd: &Path, env: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>) -> Result<Vec<ExternalModelInfo>, String> {
+    let output = crate::process::run(binary, &["models"], cwd, env, 256 * 1024, Some(AGY_MODELS_TIMEOUT))
+        .await
+        .map_err(|error| l(&format!("无法运行 agy 列出模型：{error}"), &format!("Could not run agy to list the models: {error}")))?;
+    let text = crate::process::console_text(&output.stdout);
+    let models = acp::parse_agy_models(&text);
+    if !models.is_empty() {
+        return Ok(models);
+    }
+    // The progress line comes first on stderr, an error after it.
+    let errors = crate::process::console_text(&output.stderr);
+    let said: String = text.lines().map(str::trim).find(|line| !line.is_empty()).or_else(|| errors.lines().map(str::trim).filter(|line| !line.is_empty()).last()).unwrap_or_default().chars().take(160).collect();
+    Err(l(&format!("agy 没有列出模型：{said}"), &format!("agy listed no models: {said}")))
 }
 
 async fn probe_version(
@@ -954,5 +1036,59 @@ mod tests {
         let again = ExternalManager::new(settings, cfg!(windows));
         assert_eq!(agy(&again).models, models);
         again.close().await;
+    }
+
+    /// An `agy` that notes each run in `calls.txt` and prints `listed`.
+    async fn fake_agy(dir: &Path, listed: &str) -> (Arc<ExternalManager>, PathBuf) {
+        let calls = dir.join("calls.txt");
+        let output = dir.join("listed.txt");
+        std::fs::write(&output, listed).unwrap();
+        let script = if cfg!(windows) {
+            let script = dir.join("agy.cmd");
+            std::fs::write(&script, format!("@echo off\r\necho run>>\"{}\"\r\ntype \"{}\"\r\n", calls.display(), output.display())).unwrap();
+            script
+        } else {
+            let script = dir.join("agy");
+            std::fs::write(&script, format!("#!/bin/sh\necho run >> '{}'\ncat '{}'\n", calls.display(), output.display())).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            script
+        };
+        let settings = Arc::new(Settings::load(dir, None).unwrap());
+        let mgr = ExternalManager::new(settings, cfg!(windows));
+        let config = ExternalAgentConfig { binary: Some(script.to_string_lossy().into_owned()), ..default_config("antigravity") };
+        mgr.configure(config, false).await.unwrap();
+        (mgr, calls)
+    }
+
+    fn runs(calls: &Path) -> usize {
+        std::fs::read_to_string(calls).map(|text| text.lines().count()).unwrap_or(0)
+    }
+
+    /// Until Antigravity's models are known, `agy models` lists them (no conversation), at most once a minute.
+    #[tokio::test]
+    async fn lists_antigravity_models_while_none_are_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, calls) = fake_agy(dir.path(), "gemini-4-neon-high\tGemini 4 Neon (High)\ngemini-4-neon-low\tGemini 4 Neon (Low)\n").await;
+        assert!(!mgr.list_models_if_unknown("custom-acp", dir.path()).await, "only Codex and Antigravity");
+        assert!(mgr.list_models_if_unknown("antigravity", dir.path()).await);
+        let agy = mgr.status().agents.into_iter().find(|agent| agent.kind == "antigravity").unwrap();
+        assert_eq!(agy.models.len(), 1);
+        assert_eq!(agy.models[0].id, "gemini-4-neon");
+        assert_eq!(agy.models[0].reasoning_efforts, ["low", "high"]);
+        assert!(!mgr.list_models_if_unknown("antigravity", dir.path()).await, "known now");
+        assert_eq!(runs(&calls), 1);
+        mgr.close().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, calls) = fake_agy(dir.path(), "Error: not signed in\n").await;
+        assert!(!mgr.list_models_if_unknown("antigravity", dir.path()).await);
+        assert!(!mgr.list_models_if_unknown("antigravity", dir.path()).await);
+        assert_eq!(runs(&calls), 1, "not asked again within a minute");
+        assert!(mgr.status().agents.into_iter().find(|agent| agent.kind == "antigravity").unwrap().models.is_empty());
+        mgr.close().await;
     }
 }
