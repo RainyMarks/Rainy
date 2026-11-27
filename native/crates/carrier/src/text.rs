@@ -69,18 +69,24 @@ pub(crate) fn wildcard_match(pattern: &str, text: &str, case_insensitive: bool, 
     p == pat.len()
 }
 
+/// Fill `bytes` from the operating system's cryptographic random generator.
+pub(crate) fn fill_random(bytes: &mut [u8]) -> Result<(), ring::error::Unspecified> {
+    use ring::rand::{SecureRandom as _, SystemRandom};
+    SystemRandom::new().fill(bytes)
+}
+
 /// A random version-4 UUID (`xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`).
 #[cfg(test)]
 pub(crate) fn uuid_v4() -> std::io::Result<String> {
     let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|error| std::io::Error::other(error.to_string()))?;
+    fill_random(&mut bytes).map_err(|error| std::io::Error::other(error.to_string()))?;
     Ok(format_uuid_v4(bytes))
 }
 
 /// A random version-4 UUID with a best-effort timestamp+PID fallback when system entropy fails.
 pub(crate) fn uuid_v4_lossy() -> String {
     let mut bytes = [0u8; 16];
-    if getrandom::fill(&mut bytes).is_err() {
+    if fill_random(&mut bytes).is_err() {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
         bytes = (nanos ^ (u128::from(std::process::id()) << 96)).to_le_bytes();
     }

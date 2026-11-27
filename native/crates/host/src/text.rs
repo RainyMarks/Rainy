@@ -16,15 +16,20 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// SHA-256 of text, in hexadecimal.
 pub fn sha256_hex(data: impl AsRef<[u8]>) -> String {
-    use sha2::Digest as _;
-    hex(&sha2::Sha256::digest(data.as_ref()))
+    hex(ring::digest::digest(&ring::digest::SHA256, data.as_ref()).as_ref())
+}
+
+/// Fill `bytes` from the operating system's cryptographic random generator.
+pub fn fill_random(bytes: &mut [u8]) {
+    use ring::rand::{SecureRandom as _, SystemRandom};
+    SystemRandom::new().fill(bytes).expect("random bytes");
 }
 
 /// Cryptographically random URL-safe base64 token (256 bits).
 pub fn random_token() -> String {
     use base64::Engine as _;
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("random bytes");
+    fill_random(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 

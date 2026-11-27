@@ -182,7 +182,7 @@ fn watch(mut stream: TcpStream, open: &AtomicBool) {
 
 fn random_token() -> String {
     let mut bytes = [0u8; 24];
-    getrandom::fill(&mut bytes).expect("system random source");
+    crate::text::fill_random(&mut bytes).expect("system random source");
     crate::text::hex(&bytes)
 }
 

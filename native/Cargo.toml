@@ -7,7 +7,7 @@ default-members = ["crates/app"]
 version = "5.0.0"
 edition = "2024"
 publish = false
-license-file = "../LICENSE"
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 rainy-protocol = { path = "crates/protocol" }
@@ -35,6 +35,22 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Optimize dependencies for binary size while keeping UI and rendering hot paths at opt-level 3.
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.release.package.rainy]
+opt-level = 3
+
+[profile.release.package.gpui-pre]
+opt-level = 3
+
+[profile.release.package.gpui-base]
+opt-level = 3
+
+[profile.release.package.tiny-skia]
+opt-level = 3
 
 # QA and review builds (RAINY_PROFILE=qa in native/scripts/build-*.sh, output in target/qa): release optimisation, but
 # thin LTO on every core instead of one fat-LTO thread. Packages that are published always use [profile.release].

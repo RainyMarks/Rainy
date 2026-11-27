@@ -788,19 +788,58 @@ pub fn import_key(entry: &ImportedServer) -> String {
     serde_json::json!([entry.source, server_identity(&entry.server)]).to_string()
 }
 
+fn decode_utf16(bytes: &[u8], big_endian: bool) -> String {
+    let mut chunks = bytes.chunks_exact(2);
+    let units = (&mut chunks).map(|pair| if big_endian { u16::from_be_bytes([pair[0], pair[1]]) } else { u16::from_le_bytes([pair[0], pair[1]]) });
+    let mut out: String = char::decode_utf16(units).map(|decoded| decoded.unwrap_or(char::REPLACEMENT_CHARACTER)).collect();
+    if !chunks.remainder().is_empty() {
+        out.push(char::REPLACEMENT_CHARACTER);
+    }
+    out
+}
+
+#[cfg(windows)]
+fn decode_gb18030(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
+    const CP_GB18030: u32 = 54936;
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let Ok(byte_len) = i32::try_from(bytes.len()) else {
+        return String::from_utf8_lossy(bytes).into_owned();
+    };
+    // SAFETY: `bytes` is a valid non-empty slice of length `byte_len`; `cchWideChar = 0` queries the required UTF-16 length.
+    let needed = unsafe { MultiByteToWideChar(CP_GB18030, 0, bytes.as_ptr(), byte_len, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; needed as usize];
+    // SAFETY: `wide` holds `needed` UTF-16 code units as returned by the size query above.
+    let written = unsafe { MultiByteToWideChar(CP_GB18030, 0, bytes.as_ptr(), byte_len, wide.as_mut_ptr(), needed) };
+    if written <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    String::from_utf16_lossy(&wide[..written as usize])
+}
+
+#[cfg(not(windows))]
+fn decode_gb18030(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 /// Text of a chosen configuration file: UTF-8, UTF-16 with its byte-order mark (Windows PowerShell's `>`), or else
 /// GB18030, which covers the GBK that Chinese Windows writes.
 pub fn decode_config_file(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return encoding_rs::UTF_16LE.decode_with_bom_removal(rest).0.into_owned();
+        return decode_utf16(rest, false);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return encoding_rs::UTF_16BE.decode_with_bom_removal(rest).0.into_owned();
+        return decode_utf16(rest, true);
     }
     let text = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     match std::str::from_utf8(text) {
         Ok(text) => text.to_owned(),
-        Err(_) => encoding_rs::GB18030.decode_without_bom_handling(bytes).0.into_owned(),
+        Err(_) => decode_gb18030(bytes),
     }
 }
 

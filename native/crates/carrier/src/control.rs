@@ -528,7 +528,7 @@ fn wait_for_loopback(port: u16, deadline: Instant) -> Result<()> {
 
 fn random_id() -> String {
     let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("system random source");
+    crate::text::fill_random(&mut bytes).expect("system random source");
     crate::text::hex(&bytes)
 }
 

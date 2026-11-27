@@ -336,7 +336,7 @@ mod network {
     use ::core::prelude::v1::test;
     use std::sync::Mutex;
 
-    use sha2::{Digest as _, Sha512};
+    use ring::digest::{SHA512, digest};
 
     use super::super::*;
     use super::{LATEST_3_9_1, Signer, version};
@@ -349,7 +349,7 @@ mod network {
     }
 
     fn latest_yml(release: &str, setup: &[u8]) -> String {
-        let sha512 = STANDARD.encode(Sha512::digest(setup));
+        let sha512 = STANDARD.encode(digest(&SHA512, setup).as_ref());
         format!(
             "version: {release}\nfiles:\n  - url: {SETUP}\n    sha512: {sha512}\n    size: {}\npath: {SETUP}\nsha512: {sha512}\nreleaseDate: '2026-11-01T00:00:00.000Z'\n",
             setup.len()

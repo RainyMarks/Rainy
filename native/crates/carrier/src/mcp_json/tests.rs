@@ -819,6 +819,9 @@ fn decodes_configuration_files_written_as_utf8_utf16_or_gbk() {
     let mut utf16 = vec![0xFF, 0xFE];
     utf16.extend(json.encode_utf16().flat_map(u16::to_le_bytes));
     assert_eq!(decode_config_file(&utf16), json);
+    let mut utf16_be = vec![0xFE, 0xFF];
+    utf16_be.extend(json.encode_utf16().flat_map(u16::to_be_bytes));
+    assert_eq!(decode_config_file(&utf16_be), json);
     let mut bom = vec![0xEF, 0xBB, 0xBF];
     bom.extend(json.as_bytes());
     assert_eq!(decode_config_file(&bom), json);
@@ -826,6 +829,11 @@ fn decodes_configuration_files_written_as_utf8_utf16_or_gbk() {
     gbk.extend([0xD5, 0xC5, 0xC8, 0xFD]);
     gbk.extend(b"\"]");
     assert_eq!(decode_config_file(&gbk), "[\"张三\"]");
+    // Common Chinese GB18030 text: "中文配置/文档".
+    let mut gb18030 = b"[\"".to_vec();
+    gb18030.extend([0xD6, 0xD0, 0xCE, 0xC4, 0xC5, 0xE4, 0xD6, 0xC3, b'/', 0xCE, 0xC4, 0xB5, 0xB5]);
+    gb18030.extend(b"\"]");
+    assert_eq!(decode_config_file(&gb18030), "[\"中文配置/文档\"]");
     assert_eq!(read(&decode_config_file(&utf16), &[], None).servers[0].server.args, Some(words(&[r"C:\Users\张三\文档"])));
 }
 

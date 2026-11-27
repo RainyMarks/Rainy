@@ -5,7 +5,9 @@ A copy of the crates.io package `gpui-pre` 0.3.9 (Zed's GPUI, snapshot of zed@93
 
 Changes from the published package:
 
-- `Cargo.toml`: the `[[example]]` targets are removed, and so is `examples/`.
+- `Cargo.toml`: the `[[example]]` targets are removed, and so is `examples/`; `image` features are trimmed to `bmp`,
+  `gif`, `ico`, `jpeg`, `png`, and `webp`, dropping unused exotic decoders (`dds`, `exr`, `ff`, `hdr`, `pnm`, `qoi`,
+  `tga`, `tiff`) and `rayon` to reduce binary size and dependency footprint.
 - `src/text_system/line_wrapper.rs` and `src/text_system/line_layout.rs`: Chinese and Japanese line breaking. GPUI
   allows a break before every CJK character, so a closing mark such as `。` or `，` could start a line on its own and
   an opening one such as `（` or `《` could end one. Closing punctuation now counts as part of the word before it

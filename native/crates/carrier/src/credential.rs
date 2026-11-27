@@ -9,11 +9,10 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use serde_json::{Map, Value};
 
 use crate::fs_util;
@@ -233,7 +232,7 @@ fn os_crypt_key(
     }
     // Verify DPAPI protection works before touching or backing up any existing file.
     let mut key = [0u8; 32];
-    getrandom::fill(&mut key).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
+    crate::text::fill_random(&mut key).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
     let protected = protector.protect(&key).map_err(|error| {
         fs_util::zeroize_bytes(&mut key);
         CredentialError::ProtectionUnavailable { detail: error.to_string() }
@@ -310,13 +309,25 @@ fn decode_os_crypt_key(encoded: &str, protector: &dyn Protector) -> std::result:
     key.try_into().map_err(|_| KeyProblem::Lost("Local State key has the wrong length".to_owned()))
 }
 
+fn seal_with_nonce(key: &[u8; 32], nonce: [u8; NONCE_LEN], text: &str) -> Result<Vec<u8>> {
+    let unbound = UnboundKey::new(&AES_256_GCM, key).map_err(|_| anyhow!("Encryption failed"))?;
+    let cipher = LessSafeKey::new(unbound);
+    let mut in_out = text.as_bytes().to_vec();
+    cipher
+        .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::empty(), &mut in_out)
+        .map_err(|_| anyhow!("Encryption failed"))?;
+    let mut out = Vec::with_capacity(VERSION.len() + NONCE_LEN + in_out.len());
+    out.extend_from_slice(VERSION);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&in_out);
+    Ok(out)
+}
+
 /// OSCrypt `EncryptString`.
 pub fn seal(key: &[u8; 32], text: &str) -> Result<Vec<u8>> {
     let mut nonce = [0u8; NONCE_LEN];
-    getrandom::fill(&mut nonce).map_err(|error| anyhow!("{error}"))?;
-    let cipher = Aes256Gcm::new(key.into());
-    let sealed = cipher.encrypt(Nonce::from_slice(&nonce), text.as_bytes()).map_err(|_| anyhow!("Encryption failed"))?;
-    Ok([VERSION, &nonce, &sealed].concat())
+    crate::text::fill_random(&mut nonce).map_err(|error| anyhow!("{error}"))?;
+    seal_with_nonce(key, nonce, text)
 }
 
 /// OSCrypt `DecryptString`.
@@ -326,9 +337,13 @@ pub fn open(key: &[u8; 32], data: &[u8]) -> Result<String> {
         bail!("Encrypted data is too short");
     }
     let (nonce, sealed) = body.split_at(NONCE_LEN);
-    let cipher = Aes256Gcm::new(key.into());
-    let plain = cipher.decrypt(Nonce::from_slice(nonce), sealed).map_err(|_| anyhow!("Decryption failed"))?;
-    String::from_utf8(plain).context("Decrypted text is not UTF-8")
+    let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| anyhow!("Decryption failed"))?;
+    let unbound = UnboundKey::new(&AES_256_GCM, key).map_err(|_| anyhow!("Decryption failed"))?;
+    let cipher = LessSafeKey::new(unbound);
+    let mut in_out = sealed.to_vec();
+    let plain_len = cipher.open_in_place(nonce, Aad::empty(), &mut in_out).map_err(|_| anyhow!("Decryption failed"))?.len();
+    in_out.truncate(plain_len);
+    String::from_utf8(in_out).context("Decrypted text is not UTF-8")
 }
 
 fn valid_key(key: &str) -> bool {
@@ -372,7 +387,7 @@ pub fn load_credential_key(
         }
     }
     let mut raw = [0u8; 32];
-    if let Err(error) = getrandom::fill(&mut raw) {
+    if let Err(error) = crate::text::fill_random(&mut raw) {
         fs_util::zeroize_bytes(&mut os_key);
         return Err(CredentialError::Crypto { detail: error.to_string() });
     }
@@ -577,5 +592,23 @@ mod tests {
         let key = [7u8; 32];
         assert_eq!(open(&key, &seal(&key, "密钥").unwrap()).unwrap(), "密钥");
         assert!(open(&[8u8; 32], &seal(&key, "x").unwrap()).is_err());
+    }
+
+    #[test]
+    fn opens_and_matches_legacy_aes_gcm_v10_vector() {
+        let key = [7u8; 32];
+        let nonce = [2u8; NONCE_LEN];
+        // Fixed OSCrypt v10 vector produced by AES-256-GCM (key = [7; 32], nonce = [2; 12], AAD = b"", plaintext = "密钥").
+        let legacy_v10: [u8; 37] = [
+            b'v', b'1', b'0',
+            0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+            0xff, 0x1b, 0x6f, 0xee, 0xc9, 0x4e,
+            0x0f, 0xb5, 0x9f, 0x65, 0x24, 0x54, 0xba, 0x18, 0x68, 0x93, 0x38, 0x7e, 0xb0, 0xc7, 0x81, 0x6e,
+        ];
+        assert_eq!(open(&key, &legacy_v10).unwrap(), "密钥");
+        assert_eq!(seal_with_nonce(&key, nonce, "密钥").unwrap(), legacy_v10);
+        let mut tampered = legacy_v10;
+        tampered[36] ^= 1;
+        assert!(open(&key, &tampered).is_err());
     }
 }

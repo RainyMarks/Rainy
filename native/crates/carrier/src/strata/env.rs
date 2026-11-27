@@ -137,7 +137,7 @@ fn short_name(_path: &Path) -> Option<PathBuf> {
 /// Whether a file can be created, written and removed in `folder`.
 fn writable(folder: &Path) -> bool {
     let mut bytes = [0u8; 6];
-    let _ = getrandom::fill(&mut bytes);
+    let _ = crate::text::fill_random(&mut bytes);
     let probe = folder.join(format!("rainy-probe-{}-{}.tmp", std::process::id(), crate::text::hex(&bytes)));
     let written = fs::OpenOptions::new().write(true).create_new(true).open(&probe).and_then(|mut file| file.write_all(b"x"));
     let removed = fs::remove_file(&probe).is_ok();

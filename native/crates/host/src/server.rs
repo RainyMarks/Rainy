@@ -190,7 +190,7 @@ impl HostServer {
                 .map(|(name, value)| format!("window.{name}={};", value.to_string().replace('<', "\\u003c")))
                 .collect();
             let mut nonce = [0u8; 16];
-            getrandom::fill(&mut nonce).expect("random bytes");
+            crate::text::fill_random(&mut nonce);
             let nonce = STANDARD.encode(nonce);
             let body = html.replacen("<head>", &format!("<head><script nonce=\"{nonce}\">{globals}</script>"), 1);
             let mut response = Response::new(Body::from(body));

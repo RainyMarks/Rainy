@@ -1,14 +1,14 @@
 //! The public keys that sign Rainy's release files: `release-public-keys.json` (`release-trust.ts` in 3.x).
 //! `app/build.rs` compiles this file as well to check the keyring it embeds, so it uses only std, anyhow, base64,
-//! serde_json and sha2.
+//! serde_json and ring.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use ring::digest::{SHA256, digest};
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
 
 /// The DER encoding of an Ed25519 public key (SubjectPublicKeyInfo) starts with these bytes; the 32-byte key follows.
 const ED25519_SPKI: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
@@ -63,7 +63,7 @@ impl Keyring {
 pub fn key_id(key: &[u8; 32]) -> String {
     let mut der = ED25519_SPKI.to_vec();
     der.extend_from_slice(key);
-    Sha256::digest(&der).iter().take(16).map(|byte| format!("{byte:02x}")).collect()
+    digest(&SHA256, &der).as_ref().iter().take(16).map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The raw key of a PEM-encoded Ed25519 public key.

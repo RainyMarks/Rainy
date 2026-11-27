@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ring::digest::{Context, SHA256, digest as sha256_digest};
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 use crate::fs_util::{file_info, is_reparse_point, write_private_record};
 use crate::keyring::Keyring;
@@ -153,7 +153,7 @@ pub fn authenticate(text: &str, keyring: &Keyring) -> Result<Authenticated, Trus
     if !verifies(key, DOMAIN, &bytes, &signature) {
         return Err(TrustError::Signature);
     }
-    Ok(Authenticated { manifest, manifest_sha256: hex(&Sha256::digest(envelope.payload.as_bytes())) })
+    Ok(Authenticated { manifest, manifest_sha256: hex(sha256_digest(&SHA256, envelope.payload.as_bytes()).as_ref()) })
 }
 
 /// Whether `signature` is an Ed25519 signature by one of the release keys over `domain` followed by `message`: for
@@ -396,22 +396,22 @@ fn walk_files(walk: &Walk, files: &[ManifestFile]) -> Result<String, TrustError>
 }
 
 fn fingerprint(signatures: &[String]) -> String {
-    let mut hash = Sha256::new();
+    let mut hash = Context::new(&SHA256);
     for (index, signature) in signatures.iter().enumerate() {
         if index > 0 {
             hash.update(b"\n");
         }
         hash.update(signature.as_bytes());
     }
-    hex(&hash.finalize())
+    hex(hash.finish().as_ref())
 }
 
 fn digest(path: &Path, buffer: &mut [u8]) -> io::Result<String> {
     let mut file = File::open(path)?;
-    let mut hash = Sha256::new();
+    let mut hash = Context::new(&SHA256);
     loop {
         match file.read(buffer) {
-            Ok(0) => return Ok(hex(&hash.finalize())),
+            Ok(0) => return Ok(hex(hash.finish().as_ref())),
             Ok(read) => hash.update(&buffer[..read]),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
@@ -609,7 +609,7 @@ mod tests {
     }
 
     fn listed(path: &str, content: &[u8]) -> Listed {
-        (path.to_owned(), hex(&Sha256::digest(content)), content.len() as u64)
+        (path.to_owned(), hex(sha256_digest(&SHA256, content).as_ref()), content.len() as u64)
     }
 
     /// An installed resources folder, signed by its own key, and a user-data folder for the record.
@@ -1036,7 +1036,7 @@ mod tests {
         assert_eq!(read, files);
         // The record names the list by the SHA-256 of the payload text, as 3.x does.
         let payload_text = URL_SAFE_NO_PAD.encode(&bytes);
-        assert_eq!(read_stamp(&stamp).unwrap().manifest_sha256, hex(&Sha256::digest(payload_text.as_bytes())));
+        assert_eq!(read_stamp(&stamp).unwrap().manifest_sha256, hex(sha256_digest(&SHA256, payload_text.as_bytes()).as_ref()));
         assert_eq!(URL_SAFE_NO_PAD.decode(&payload_text).unwrap(), bytes);
     }
 
@@ -1101,7 +1101,7 @@ mod tests {
     #[test]
     fn streaming_fingerprint_matches_joined_sha256() {
         for sample in [vec![], vec!["a\x001\x002\x003".to_owned()], vec!["a\x001".to_owned(), "b\x002".to_owned(), "c\x003".to_owned()]] {
-            assert_eq!(fingerprint(&sample), hex(&Sha256::digest(sample.join("\n").as_bytes())));
+            assert_eq!(fingerprint(&sample), hex(sha256_digest(&SHA256, sample.join("\n").as_bytes()).as_ref()));
         }
     }
 

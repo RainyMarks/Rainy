@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
-use sha2::{Digest as _, Sha256, Sha512};
+use ring::digest::{Context, SHA256, SHA512};
 
 use crate::fs_util;
 use crate::text::is_hex;
@@ -120,22 +120,21 @@ impl Digest {
 
 /// Computes the digest of what passes through it, of the kind it was made for.
 pub enum HashSink {
-    Sha256(Sha256),
-    Sha512(Sha512),
+    Sha256(Context),
+    Sha512(Context),
 }
 
 impl HashSink {
     pub fn new(like: &Digest) -> Self {
         match like {
-            Digest::Sha256(_) => Self::Sha256(Sha256::new()),
-            Digest::Sha512(_) => Self::Sha512(Sha512::new()),
+            Digest::Sha256(_) => Self::Sha256(Context::new(&SHA256)),
+            Digest::Sha512(_) => Self::Sha512(Context::new(&SHA512)),
         }
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
         match self {
-            Self::Sha256(hash) => hash.update(bytes),
-            Self::Sha512(hash) => hash.update(bytes),
+            Self::Sha256(hash) | Self::Sha512(hash) => hash.update(bytes),
         }
     }
 
@@ -143,12 +142,12 @@ impl HashSink {
         match self {
             Self::Sha256(hash) => {
                 let mut digest = [0u8; 32];
-                digest.copy_from_slice(&hash.finalize());
+                digest.copy_from_slice(hash.finish().as_ref());
                 Digest::Sha256(digest)
             }
             Self::Sha512(hash) => {
                 let mut digest = [0u8; 64];
-                digest.copy_from_slice(&hash.finalize());
+                digest.copy_from_slice(hash.finish().as_ref());
                 Digest::Sha512(digest)
             }
         }

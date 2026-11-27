@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
     INVALID_HANDLE_VALUE, LocalFree, SetLastError, WAIT_OBJECT_0,
@@ -166,8 +166,8 @@ fn claim_profile(key: &str, launch: &Launch, replaces: Option<u32>, timeout: Dur
 /// user-data folder, without a trailing separator.
 pub fn profile_key(user_data: &Path) -> String {
     let folder = user_data.to_string_lossy().replace('/', "\\").to_lowercase();
-    let digest = Sha256::digest(folder.trim_end_matches('\\').as_bytes());
-    digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+    let hash = digest(&SHA256, folder.trim_end_matches('\\').as_bytes());
+    hash.as_ref().iter().take(8).map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn mutex_name(key: &str) -> String {
@@ -524,7 +524,7 @@ mod tests {
     /// A profile key no running Rainy uses.
     fn test_key() -> String {
         let mut bytes = [0u8; 8];
-        getrandom::fill(&mut bytes).unwrap();
+        crate::text::fill_random(&mut bytes).unwrap();
         format!("test-{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
     }
 

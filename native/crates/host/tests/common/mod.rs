@@ -9,6 +9,7 @@ use std::time::Duration;
 use axum::http::{StatusCode, header};
 use base64::Engine as _;
 use rainy_protocol::frames::ServerFrame;
+use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
@@ -24,7 +25,7 @@ impl WsClient {
     pub async fn handshake(port: u16, path: &str, cookie: Option<&str>, origin: Option<&str>) -> (u16, Option<Self>) {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.expect("connect host");
         let mut key_bytes = [0u8; 16];
-        getrandom::fill(&mut key_bytes).expect("random");
+        SystemRandom::new().fill(&mut key_bytes).expect("random");
         let ws_key = base64::engine::general_purpose::STANDARD.encode(key_bytes);
         let mut req = format!(
             "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {ws_key}\r\nSec-WebSocket-Version: 13\r\n"
@@ -83,7 +84,7 @@ impl WsClient {
             frame.extend_from_slice(&(len as u64).to_be_bytes());
         }
         let mut mask = [0u8; 4];
-        getrandom::fill(&mut mask).expect("mask");
+        SystemRandom::new().fill(&mut mask).expect("mask");
         frame.extend_from_slice(&mask);
         for (i, &b) in payload.iter().enumerate() {
             frame.push(b ^ mask[i % 4]);

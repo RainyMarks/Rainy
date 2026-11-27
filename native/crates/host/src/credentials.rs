@@ -9,10 +9,9 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead as _, KeyInit as _, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use serde::{Deserialize, Serialize};
 
 use crate::store::{read_json, write_json};
@@ -27,7 +26,7 @@ pub type Keys = BTreeMap<String, String>;
 
 /// Encrypts one credential value, bound to its name so values cannot be swapped between names.
 pub struct Seal {
-    cipher: Aes256Gcm,
+    cipher: LessSafeKey,
 }
 
 impl Seal {
@@ -35,16 +34,28 @@ impl Seal {
         if key.len() != 32 {
             return Err(io::Error::other("The credential key must be 32 bytes"));
         }
-        Ok(Self { cipher: Aes256Gcm::new_from_slice(key).map_err(|_| io::Error::other("Invalid credential key"))? })
+        let unbound = UnboundKey::new(&AES_256_GCM, key).map_err(|_| io::Error::other("Invalid credential key"))?;
+        Ok(Self { cipher: LessSafeKey::new(unbound) })
+    }
+
+    fn seal_with_iv(&self, name: &str, value: &str, iv: [u8; IV_BYTES]) -> String {
+        let mut data = value.as_bytes().to_vec();
+        let tag = self
+            .cipher
+            .seal_in_place_separate_tag(Nonce::assume_unique_for_key(iv), Aad::from(name.as_bytes()), &mut data)
+            .expect("encryption");
+        let mut combined = Vec::with_capacity(IV_BYTES + TAG_BYTES + data.len());
+        combined.extend_from_slice(&iv);
+        combined.extend_from_slice(tag.as_ref());
+        combined.extend_from_slice(&data);
+        STANDARD.encode(combined)
     }
 
     /// `base64(iv | tag | ciphertext)`, as Node's `createCipheriv('aes-256-gcm')` wrote it.
     pub fn seal(&self, name: &str, value: &str) -> String {
         let mut iv = [0u8; IV_BYTES];
-        getrandom::fill(&mut iv).expect("random bytes");
-        let sealed = self.cipher.encrypt(Nonce::from_slice(&iv), Payload { msg: value.as_bytes(), aad: name.as_bytes() }).expect("encryption");
-        let (data, tag) = sealed.split_at(sealed.len() - TAG_BYTES);
-        STANDARD.encode([&iv[..], tag, data].concat())
+        crate::text::fill_random(&mut iv);
+        self.seal_with_iv(name, value, iv)
     }
 
     /// The value, or `None` when it was sealed with another key or changed.
@@ -55,9 +66,13 @@ impl Seal {
         }
         let (iv, rest) = bytes.split_at(IV_BYTES);
         let (tag, data) = rest.split_at(TAG_BYTES);
-        let message = [data, tag].concat();
-        let opened = self.cipher.decrypt(Nonce::from_slice(iv), Payload { msg: &message, aad: name.as_bytes() }).ok()?;
-        String::from_utf8(opened).ok()
+        let nonce = Nonce::try_assume_unique_for_key(iv).ok()?;
+        let mut message = Vec::with_capacity(data.len() + TAG_BYTES);
+        message.extend_from_slice(data);
+        message.extend_from_slice(tag);
+        let plain_len = self.cipher.open_in_place(nonce, Aad::from(name.as_bytes()), &mut message).ok()?.len();
+        message.truncate(plain_len);
+        String::from_utf8(message).ok()
     }
 }
 
@@ -233,17 +248,19 @@ mod tests {
         assert_eq!(STANDARD.decode(&sealed).unwrap().len(), 12 + 16 + 4);
     }
 
-    /// A value sealed by 3.x's Node code: `iv | tag | ciphertext` under key 0x07…, AAD `NAME`, plaintext `secret`.
+    /// A value sealed by 3.x's Node code and legacy `aes-gcm`: `iv | tag | ciphertext` under key 0x07…, AAD `NAME`, plaintext `secret`.
     #[test]
     fn opens_a_value_node_sealed() {
+        const LEGACY_NODE_VECTOR: &str = "AQEBAQEBAQEBAQEBJm4nqONaV7oEuUBYkrEzLgWE6sX1yw==";
         let seal = Seal::new(&[7; 32]).unwrap();
-        // Produced with Node: createCipheriv('aes-256-gcm', Buffer.alloc(32, 7), Buffer.alloc(12, 1)), setAAD('NAME').
-        let iv = [1u8; 12];
-        let cipher = Aes256Gcm::new_from_slice(&[7; 32]).unwrap();
-        let out = cipher.encrypt(Nonce::from_slice(&iv), Payload { msg: b"secret", aad: b"NAME" }).unwrap();
-        let (data, tag) = out.split_at(out.len() - 16);
-        let node = STANDARD.encode([&iv[..], tag, data].concat());
-        assert_eq!(seal.open("NAME", &node).as_deref(), Some("secret"));
+        // Fixed vector from Node `createCipheriv('aes-256-gcm', Buffer.alloc(32, 7), Buffer.alloc(12, 1))`, setAAD('NAME'), plaintext 'secret'.
+        assert_eq!(seal.open("NAME", LEGACY_NODE_VECTOR).as_deref(), Some("secret"));
+        // Ring sealing with the same IV must emit byte-identical output for backward/forward interoperability.
+        assert_eq!(seal.seal_with_iv("NAME", "secret", [1u8; IV_BYTES]), LEGACY_NODE_VECTOR);
+        assert_eq!(seal.open("WRONG_NAME", LEGACY_NODE_VECTOR), None);
+        let mut raw = STANDARD.decode(LEGACY_NODE_VECTOR).unwrap();
+        raw[IV_BYTES] ^= 1;
+        assert_eq!(seal.open("NAME", &STANDARD.encode(raw)), None);
     }
 
     #[test]
