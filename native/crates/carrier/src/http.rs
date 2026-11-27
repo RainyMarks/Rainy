@@ -23,6 +23,12 @@ pub(crate) fn parse(raw: &[u8], invalid: impl Fn() -> String) -> Result<Response
     if headers.iter().any(|(name, value)| name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")) {
         let Some(joined) = dechunk(&body) else { bail!(invalid()) };
         body = joined;
+    } else if let Some((_, value)) = headers.iter().find(|(name, _)| name == "content-length") {
+        let Ok(expected) = value.trim().parse::<usize>() else { bail!(invalid()) };
+        if body.len() < expected {
+            bail!(invalid());
+        }
+        body.truncate(expected);
     }
     Ok(Response { status, headers, body })
 }
@@ -35,14 +41,18 @@ fn dechunk(mut data: &[u8]) -> Option<Vec<u8>> {
         let size = usize::from_str_radix(std::str::from_utf8(&data[..line]).ok()?.split(';').next()?.trim(), 16).ok()?;
         data = &data[line + 2..];
         if size == 0 {
-            return Some(body);
+            // Final chunk must end with CRLF (optionally preceded by trailer headers).
+            if data.starts_with(b"\r\n") || data.windows(4).any(|w| w == b"\r\n\r\n") {
+                return Some(body);
+            }
+            return None;
         }
         // Compared without adding to it: a size near usize::MAX must not wrap around.
-        if size > data.len() {
+        if size > data.len() || data.len() - size < 2 || &data[size..size + 2] != b"\r\n" {
             return None;
         }
         body.extend_from_slice(&data[..size]);
-        data = data.get(size + 2..).unwrap_or_default();
+        data = &data[size + 2..];
     }
 }
 
@@ -61,7 +71,15 @@ mod tests {
         assert!(plain.body.is_empty());
         let chunked = parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=1\r\nde\r\n0\r\n\r\n", invalid).unwrap();
         assert_eq!(chunked.body, b"abcde");
-        for bad in [&b"HTTP/1.1 200 OK\r\n"[..], b"garbage\r\n\r\n", b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nab"] {
+        for bad in [
+            &b"HTTP/1.1 200 OK\r\n"[..],
+            b"garbage\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nab",
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabcXX0\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort",
+            b"HTTP/1.1 200 OK\r\nContent-Length: bad\r\n\r\n",
+        ] {
             assert_eq!(parse(bad, invalid).err().map(|error| error.to_string()).as_deref(), Some("invalid"));
         }
         // A size that would wrap around when added to is refused, not sliced.

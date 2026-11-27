@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -17,9 +17,10 @@ use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::fs_util::{file_info, is_reparse_point, write_private_record};
 use crate::keyring::Keyring;
 use crate::paths::canonical;
-use crate::text::hex;
+use crate::text::{hex, is_hex, utf16_len};
 
 /// The signed list, in the resources folder.
 pub const MANIFEST_FILE: &str = "release-manifest.signed.json";
@@ -38,6 +39,7 @@ const MAX_PAYLOAD: usize = 32 * 1024 * 1024;
 const MAX_SIGNATURE: usize = 128;
 const MAX_FILES: usize = 100_000;
 /// Windows file times count 100 ns from 1601; Node's `mtimeNs` counts nanoseconds from 1970.
+#[cfg(test)]
 const UNIX_EPOCH_FILETIME: i128 = 116_444_736_000_000_000;
 
 /// Why the installed resources were not accepted.
@@ -252,13 +254,16 @@ fn is_iso_datetime(text: &str) -> bool {
     }
 }
 
-fn is_hex(text: &str, length: usize) -> bool {
-    text.len() == length && text.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+fn js_length(text: &str) -> usize {
+    utf16_len(text)
 }
 
-/// The length JavaScript gives a string, in UTF-16 units.
-fn js_length(text: &str) -> usize {
-    text.encode_utf16().count()
+fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
 }
 
 fn unreadable(path: &str, error: io::Error) -> TrustError {
@@ -294,7 +299,7 @@ impl Walk {
             }
             Err(error) => return Err(unreadable(&file.path, error)),
         };
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() != file.bytes {
+        if !metadata.file_type().is_file() || is_reparse_point(&metadata) || metadata.len() != file.bytes {
             return Err(TrustError::Damaged(file.path.clone()));
         }
         let parent = path.parent().unwrap_or(&self.root).to_path_buf();
@@ -302,7 +307,8 @@ impl Walk {
         let same = match known {
             Some(same) => same,
             None => {
-                let same = canonical(&parent).map_err(|error| unreadable(&file.path, error))? == parent;
+                let resolved = canonical(&parent).map_err(|error| unreadable(&file.path, error))?;
+                let same = same_path(&resolved, &parent);
                 self.folders.lock().unwrap().insert(parent, same);
                 same
             }
@@ -317,37 +323,9 @@ impl Walk {
 }
 
 /// The last write time (nanoseconds since 1970) and file index of a file, read without following a link.
-#[cfg(windows)]
 fn identity(path: &Path) -> io::Result<(i128, u64)> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use std::os::windows::io::AsRawHandle as _;
-
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        GetFileInformationByHandle,
-    };
-
-    let file = fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    // SAFETY: plain data, filled by the call below.
-    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: the handle stays open for the call, and `information` is writable.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let written = (u64::from(information.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(information.ftLastWriteTime.dwLowDateTime);
-    let index = (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
-    Ok(((i128::from(written) - UNIX_EPOCH_FILETIME) * 100, index))
-}
-
-#[cfg(not(windows))]
-fn identity(path: &Path) -> io::Result<(i128, u64)> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let metadata = fs::symlink_metadata(path)?;
-    Ok((i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec()), metadata.ino()))
+    let info = file_info(path)?;
+    Ok((info.mtime_ns, info.file_index))
 }
 
 /// Run `work` over the listed files on up to eight threads; the first failure stops the rest. The results keep the
@@ -418,7 +396,14 @@ fn walk_files(walk: &Walk, files: &[ManifestFile]) -> Result<String, TrustError>
 }
 
 fn fingerprint(signatures: &[String]) -> String {
-    hex(&Sha256::digest(signatures.join("\n").as_bytes()))
+    let mut hash = Sha256::new();
+    for (index, signature) in signatures.iter().enumerate() {
+        if index > 0 {
+            hash.update(b"\n");
+        }
+        hash.update(signature.as_bytes());
+    }
+    hex(&hash.finalize())
 }
 
 fn digest(path: &Path, buffer: &mut [u8]) -> io::Result<String> {
@@ -459,33 +444,7 @@ pub fn read_stamp(path: &Path) -> Option<Stamp> {
 pub fn write_stamp(path: &Path, stamp: &Stamp) -> io::Result<()> {
     let mut text = serde_json::to_string(stamp).map_err(io::Error::other)?;
     text.push('\n');
-    write_record(path, text.as_bytes())
-}
-
-/// Replace `path` with `bytes` in one step (`writePrivateRecord`): a new file in the same folder, flushed, then renamed
-/// over it. A link or folder at `path` is refused, not followed.
-fn write_record(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let folder = path.parent().ok_or_else(|| io::Error::other("The local record has no folder."))?;
-    fs::create_dir_all(folder)?;
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if !metadata.file_type().is_file() => return Err(io::Error::other("The local record path is not a regular file.")),
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let mut suffix = [0u8; 16];
-    getrandom::fill(&mut suffix).map_err(|error| io::Error::other(error.to_string()))?;
-    let temporary = folder.join(format!(".rainy-{}.tmp", hex(&suffix)));
-    let written = fs::OpenOptions::new().write(true).create_new(true).open(&temporary).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, path)
-    });
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    written
+    write_private_record(path, text.as_bytes())
 }
 
 pub use crate::text::now_ms;
@@ -545,7 +504,7 @@ pub fn ensure(options: &Options<'_>, now: u64) -> Result<Integrity, TrustError> 
     let root = canonical(options.resources).map_err(|error| unreadable(&options.resources.display().to_string(), error))?;
     let root_text = root.to_string_lossy().into_owned();
     let (verified, stamp) = match read_stamp(options.stamp) {
-        Some(stamp) if stamp.manifest_sha256 == manifest_sha256 && stamp.root == root_text => (Verified::Stamp, stamp),
+        Some(stamp) if stamp.manifest_sha256 == manifest_sha256 && same_path(Path::new(&stamp.root), &root) => (Verified::Stamp, stamp),
         _ => {
             let fingerprint = verify_files(&Walk::new(root.clone()), &manifest.files, options.progress)?;
             let stamp = Stamp { version: STAMP_VERSION, manifest_sha256, root: root_text, fingerprint, checked_at: now };
@@ -1137,6 +1096,22 @@ mod tests {
         ] {
             assert!(!is_iso_datetime(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn streaming_fingerprint_matches_joined_sha256() {
+        for sample in [vec![], vec!["a\x001\x002\x003".to_owned()], vec!["a\x001".to_owned(), "b\x002".to_owned(), "c\x003".to_owned()]] {
+            assert_eq!(fingerprint(&sample), hex(&Sha256::digest(sample.join("\n").as_bytes())));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_case_differing_folder_names_on_windows() {
+        let installation = Installation::new(&[("windows-host/app/host.js", b"host")]);
+        let mixed = vec![listed("Windows-Host/App/host.js", b"host")];
+        installation.sign(&mixed);
+        assert_eq!(installation.ensure(100).unwrap().verified, Verified::Full);
     }
 
     /// A packaged 3.x resources folder, read only: `RAINY_TRUST_RESOURCES=<…\release\win-unpacked\resources>`, with the

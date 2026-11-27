@@ -6,6 +6,7 @@ pub mod control;
 pub mod credential;
 pub mod diagnostics;
 pub mod download;
+pub(crate) mod fs_util;
 mod http;
 #[cfg(windows)]
 pub mod instance;
@@ -18,7 +19,10 @@ pub mod maintenance;
 pub mod mcp_json;
 pub mod modules;
 pub mod paths;
+pub(crate) mod process_win;
 pub mod proxy;
+#[cfg(windows)]
+pub(crate) mod registry_win;
 pub mod rpc;
 pub mod shell;
 pub mod ssh;

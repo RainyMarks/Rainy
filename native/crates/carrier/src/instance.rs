@@ -30,7 +30,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
+    PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
@@ -383,15 +383,45 @@ fn write_message(mut pipe: &File, bytes: &[u8]) -> Result<()> {
     pipe.write_all(&message).context("Writing to the pipe")
 }
 
-fn read_message(mut pipe: &File) -> Result<Vec<u8>> {
+/// Maximum time to wait for a single pipe message so a stalled peer cannot lock up the single-instance thread.
+const PIPE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn read_exact_timeout(mut pipe: &File, out: &mut [u8], timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut filled = 0usize;
+    while filled < out.len() {
+        let mut available = 0u32;
+        // SAFETY: `pipe` is a valid connected named pipe handle; we only query bytes available.
+        let ok = unsafe { PeekNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error()).context("Reading from the pipe");
+        }
+        if available > 0 {
+            let want = (out.len() - filled).min(available as usize);
+            let read = pipe.read(&mut out[filled..filled + want]).context("Reading from the pipe")?;
+            if read == 0 {
+                bail!("The pipe closed before the message ended");
+            }
+            filled += read;
+            continue;
+        }
+        if Instant::now() >= deadline {
+            bail!("Timed out reading from the single-instance pipe");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn read_message(pipe: &File) -> Result<Vec<u8>> {
     let mut length = [0u8; 4];
-    pipe.read_exact(&mut length).context("Reading from the pipe")?;
+    read_exact_timeout(pipe, &mut length, PIPE_READ_TIMEOUT)?;
     let length = u32::from_le_bytes(length) as usize;
     if length > MESSAGE_LIMIT {
         bail!("The message from the pipe is too long");
     }
     let mut bytes = vec![0u8; length];
-    pipe.read_exact(&mut bytes).context("Reading from the pipe")?;
+    read_exact_timeout(pipe, &mut bytes, PIPE_READ_TIMEOUT)?;
     Ok(bytes)
 }
 

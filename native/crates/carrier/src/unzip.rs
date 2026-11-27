@@ -4,7 +4,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -19,6 +19,9 @@ const LOCAL: u32 = 0x0403_4b50;
 /// The end record, its largest comment, and the ZIP64 locator before it.
 const TAIL: u64 = 22 + 65_535 + 20;
 const MAX_DIRECTORY: u64 = 256 * 1024 * 1024;
+/// Upper bounds guarding against zip bombs and integer overflow.
+const MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_ENTRIES: u64 = 200_000;
 
 /// One file of the archive, as its central directory describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,11 +33,17 @@ pub struct Entry {
     pub compressed: u64,
     pub size: u64,
     offset: u64,
+    version_made_by_os: u8,
+    external_attr: u32,
 }
 
 impl Entry {
     pub fn is_dir(&self) -> bool {
-        self.name.ends_with('/')
+        self.name.ends_with('/') || self.name.ends_with('\\')
+    }
+
+    fn is_symlink(&self) -> bool {
+        self.version_made_by_os == 3 && ((self.external_attr >> 16) & 0o170000) == 0o120000
     }
 }
 
@@ -61,7 +70,10 @@ pub fn entries(file: &mut File) -> Result<Vec<Entry>> {
     file.seek(SeekFrom::Start(length - tail))?;
     let mut buffer = vec![0u8; tail as usize];
     file.read_exact(&mut buffer)?;
-    let end = (0..=buffer.len().saturating_sub(22)).rev().find(|&at| u32_at(&buffer, at) == END).context("The file is not a ZIP archive.")?;
+    let end = (0..=buffer.len().saturating_sub(22))
+        .rev()
+        .find(|&at| u32_at(&buffer, at) == END && at + 22 + usize::from(u16_at(&buffer, at + 20)) == buffer.len())
+        .context("The file is not a ZIP archive.")?;
     let mut count = u64::from(u16_at(&buffer, end + 10));
     let mut size = u64::from(u32_at(&buffer, end + 12));
     let mut start = u64::from(u32_at(&buffer, end + 16));
@@ -80,6 +92,9 @@ pub fn entries(file: &mut File) -> Result<Vec<Entry>> {
         size = u64_at(&head, 40);
         start = u64_at(&head, 48);
     }
+    if count > MAX_ENTRIES {
+        bail!("The ZIP archive contains too many entries.");
+    }
     if size > MAX_DIRECTORY || start.checked_add(size).is_none_or(|stop| stop > length) {
         return Err(damaged());
     }
@@ -89,9 +104,10 @@ pub fn entries(file: &mut File) -> Result<Vec<Entry>> {
     let mut list = Vec::new();
     let mut at = 0usize;
     for _ in 0..count {
-        if at + 46 > directory.len() || u32_at(&directory, at) != CENTRAL {
+        if at.checked_add(46).is_none_or(|end| end > directory.len()) || u32_at(&directory, at) != CENTRAL {
             return Err(damaged());
         }
+        let version_made_by_os = directory[at + 5];
         let flags = u16_at(&directory, at + 8);
         let method = u16_at(&directory, at + 10);
         let crc = u32_at(&directory, at + 16);
@@ -100,10 +116,12 @@ pub fn entries(file: &mut File) -> Result<Vec<Entry>> {
         let name_length = usize::from(u16_at(&directory, at + 28));
         let extra_length = usize::from(u16_at(&directory, at + 30));
         let comment_length = usize::from(u16_at(&directory, at + 32));
+        let external_attr = u32_at(&directory, at + 38);
         let mut offset = u64::from(u32_at(&directory, at + 42));
-        let name_end = at + 46 + name_length;
-        let extra_end = name_end + extra_length;
-        if extra_end + comment_length > directory.len() {
+        let name_end = at.checked_add(46).and_then(|n| n.checked_add(name_length)).ok_or_else(damaged)?;
+        let extra_end = name_end.checked_add(extra_length).ok_or_else(damaged)?;
+        let next = extra_end.checked_add(comment_length).ok_or_else(damaged)?;
+        if next > directory.len() {
             return Err(damaged());
         }
         let name = String::from_utf8(directory[at + 46..name_end].to_vec()).map_err(|_| anyhow!("The ZIP archive names a file in an unknown encoding."))?;
@@ -125,28 +143,19 @@ pub fn entries(file: &mut File) -> Result<Vec<Entry>> {
             }
             extra = &extra[4 + length..];
         }
-        list.push(Entry { name, method, flags, crc, compressed, size: unpacked, offset });
-        at = extra_end + comment_length;
+        list.push(Entry { name, method, flags, crc, compressed, size: unpacked, offset, version_made_by_os, external_attr });
+        at = next;
     }
     Ok(list)
 }
 
-/// Where `name` goes inside `into`, or an error when it would leave it.
+/// Where `name` goes inside `into`, or an error when it would leave it or is not portable on Windows.
 fn place(into: &Path, name: &str) -> Result<PathBuf> {
-    let mut path = into.to_path_buf();
-    let mut parts = 0;
-    for part in name.split(['/', '\\']).filter(|part| !part.is_empty()) {
-        let component = Path::new(part).components().next();
-        if part.contains(':') || !matches!(component, Some(Component::Normal(_))) || Path::new(part).components().count() != 1 {
-            bail!("The ZIP archive contains a file outside its folder: {name}");
-        }
-        path.push(part);
-        parts += 1;
+    match crate::fs_util::safe_archive_relative(name) {
+        Ok(Some(relative)) => Ok(into.join(relative)),
+        Ok(None) => bail!("The ZIP archive contains a file without a name."),
+        Err(why) => bail!("The ZIP archive contains an unsafe path ({why}): {name}"),
     }
-    if parts == 0 {
-        bail!("The ZIP archive contains a file without a name.");
-    }
-    Ok(path)
 }
 
 /// A reader that counts what passes through it into a CRC.
@@ -168,13 +177,22 @@ impl<R: Read> Read for Checked<R> {
 pub fn unpack(archive: &Path, into: &Path, cancel: &AtomicBool, progress: &dyn Fn(u64, u64)) -> Result<usize> {
     let mut file = File::open(archive).with_context(|| format!("Opening {}", archive.display()))?;
     let list = entries(&mut file)?;
-    let total: u64 = list.iter().map(|entry| entry.size).sum();
+    let mut total = 0u64;
+    for entry in &list {
+        total = total.checked_add(entry.size).ok_or_else(damaged)?;
+        if total > MAX_UNPACKED_BYTES {
+            bail!("The ZIP archive exceeds the maximum unpacked size.");
+        }
+    }
     fs::create_dir_all(into).with_context(|| format!("Creating {}", into.display()))?;
     let (mut done, mut files) = (0u64, 0usize);
     let mut buffer = vec![0u8; 256 * 1024];
     for entry in &list {
         if cancel.load(Ordering::Relaxed) {
             bail!("cancelled");
+        }
+        if entry.is_symlink() {
+            bail!("The ZIP archive contains a symbolic link: {}", entry.name);
         }
         let target = place(into, &entry.name)?;
         if entry.is_dir() {
@@ -320,5 +338,44 @@ mod tests {
         assert!(unpack(&zip, &dir.path().join("out2"), &AtomicBool::new(false), &|_, _| {}).is_err());
         fs::write(&zip, b"not a zip").unwrap();
         assert!(unpack(&zip, &dir.path().join("out3"), &AtomicBool::new(false), &|_, _| {}).is_err());
+    }
+
+    #[test]
+    fn refuses_windows_reserved_names_leading_slashes_symlinks_and_handles_eocd_in_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["/etc/passwd", "\\abs\\x", "CON.txt", "dir/nul", "bad?.txt", "dot."] {
+            let zip = dir.path().join("unsafe.zip");
+            fs::write(&zip, archive(&[(name, b"x", false)])).unwrap();
+            assert!(unpack(&zip, &dir.path().join("out-unsafe"), &AtomicBool::new(false), &|_, _| {}).is_err(), "{name}");
+        }
+
+        // Backslash directory entry is treated as a directory.
+        let bs_zip = dir.path().join("backslash-dir.zip");
+        fs::write(&bs_zip, archive(&[("sub\\", b"", false), ("sub/ok.txt", b"ok", false)])).unwrap();
+        let bs_out = dir.path().join("bs-out");
+        assert_eq!(unpack(&bs_zip, &bs_out, &AtomicBool::new(false), &|_, _| {}).unwrap(), 1);
+        assert!(bs_out.join("sub").is_dir());
+
+        // Unix symlink entry (version_made_by OS = 3, mode = 0o120777) must be refused.
+        let mut sym_bytes = archive(&[("link", b"/etc/passwd", false)]);
+        let central = sym_bytes.windows(4).position(|w| w == CENTRAL.to_le_bytes()).unwrap();
+        sym_bytes[central + 5] = 3; // Unix
+        let attr = (0o120777u32 << 16).to_le_bytes();
+        sym_bytes[central + 38..central + 42].copy_from_slice(&attr);
+        let sym_zip = dir.path().join("symlink.zip");
+        fs::write(&sym_zip, sym_bytes).unwrap();
+        assert!(unpack(&sym_zip, &dir.path().join("sym-out"), &AtomicBool::new(false), &|_, _| {}).is_err());
+
+        // A fake EOCD signature inside the archive comment must not fool EOCD scanning.
+        let mut commented = archive(&[("ok.txt", b"hello", false)]);
+        let eocd = commented.len() - 22;
+        let fake_comment = [END.to_le_bytes().as_slice(), &[0u8; 20]].concat();
+        commented[eocd + 20..eocd + 22].copy_from_slice(&(fake_comment.len() as u16).to_le_bytes());
+        commented.extend_from_slice(&fake_comment);
+        let c_zip = dir.path().join("comment.zip");
+        fs::write(&c_zip, commented).unwrap();
+        let c_out = dir.path().join("c-out");
+        assert_eq!(unpack(&c_zip, &c_out, &AtomicBool::new(false), &|_, _| {}).unwrap(), 1);
+        assert_eq!(fs::read(c_out.join("ok.txt")).unwrap(), b"hello");
     }
 }

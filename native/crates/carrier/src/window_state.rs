@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// The record's name in the user-data folder.
 pub const FILE_NAME: &str = "window-state.json";
@@ -53,26 +53,26 @@ pub fn read(path: &Path) -> Option<WindowState> {
     parse(&std::fs::read_to_string(path).ok()?)
 }
 
-/// The 3.x schema, strictly: `version` 1, integer bounds with a positive size, a boolean `maximized`, and no other field
-/// at any level.
+/// Parse the 3.x/4.x schema: `version` 1, integer bounds with a positive size, and a boolean `maximized`.
+/// Leading UTF-8 BOM and unknown forward-compatible fields are ignored.
 pub fn parse(text: &str) -> Option<WindowState> {
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let value: Value = serde_json::from_str(text).ok()?;
-    let state = exactly(&value, &["version", "bounds", "maximized"])?;
-    if integer(&state["version"])? != 1 {
+    let state = value.as_object()?;
+    if integer(state.get("version")?)? != 1 {
         return None;
     }
-    let bounds = exactly(&state["bounds"], &["x", "y", "width", "height"])?;
-    let bounds = Rect { x: integer(&bounds["x"])?, y: integer(&bounds["y"])?, width: integer(&bounds["width"])?, height: integer(&bounds["height"])? };
+    let bounds = state.get("bounds")?.as_object()?;
+    let bounds = Rect {
+        x: integer(bounds.get("x")?)?,
+        y: integer(bounds.get("y")?)?,
+        width: integer(bounds.get("width")?)?,
+        height: integer(bounds.get("height")?)?,
+    };
     if bounds.width <= 0 || bounds.height <= 0 {
         return None;
     }
-    Some(WindowState { bounds, maximized: state["maximized"].as_bool()? })
-}
-
-/// An object with exactly these keys.
-fn exactly<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Map<String, Value>> {
-    let object = value.as_object()?;
-    (object.len() == keys.len() && keys.iter().all(|key| object.contains_key(*key))).then_some(object)
+    Some(WindowState { bounds, maximized: state.get("maximized")?.as_bool()? })
 }
 
 /// A JSON number that JavaScript takes for a safe integer, `2.0` included.
@@ -99,21 +99,7 @@ pub fn serialize(state: &WindowState) -> String {
 
 /// Write the record through a temporary file in the same folder, so a crash leaves the old one or the new one.
 pub fn write(path: &Path, state: &WindowState) -> Result<()> {
-    let folder = path.parent().context("The window state has no folder")?;
-    let temporary = folder.join(format!(".window-state-{}.tmp", random_uuid()?));
-    let written = std::fs::write(&temporary, serialize(state)).and_then(|()| std::fs::rename(&temporary, path));
-    let _ = std::fs::remove_file(&temporary);
-    written.with_context(|| format!("Writing {}", path.display()))
-}
-
-/// A random (version 4) UUID, as `randomUUID` names the temporary file.
-fn random_uuid() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|error| anyhow::anyhow!("{error}"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok(format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]))
+    crate::fs_util::write_atomic(path, serialize(state).as_bytes(), false).with_context(|| format!("Writing {}", path.display()))
 }
 
 /// The smallest window on one display: the designed minimum, or the whole work area when that is smaller, as on a
@@ -216,12 +202,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_anything_but_the_exact_shape() {
-        let good = r#"{"version":1,"bounds":{"x":0,"y":0,"width":10,"height":10},"maximized":false}"#;
-        assert!(parse(good).is_some());
-        for bad in [
+    fn accepts_bom_and_extra_fields_while_rejecting_invalid_shapes() {
+        let expected = WindowState { bounds: rect(0, 0, 10, 10), maximized: false };
+        for good in [
+            r#"{"version":1,"bounds":{"x":0,"y":0,"width":10,"height":10},"maximized":false}"#,
             r#"{"version":1,"bounds":{"x":0,"y":0,"width":10,"height":10},"maximized":false,"display":"x"}"#,
             r#"{"version":1,"bounds":{"x":0,"y":0,"width":10,"height":10,"scale":2},"maximized":false}"#,
+            "\u{feff}{\"version\":1,\"bounds\":{\"x\":0,\"y\":0,\"width\":10,\"height\":10},\"maximized\":false}",
+        ] {
+            assert_eq!(parse(good), Some(expected), "{good}");
+        }
+        for bad in [
             r#"{"version":1,"bounds":{"x":0,"y":0,"width":10},"maximized":false}"#,
             r#"{"version":1,"bounds":{"x":0,"y":0,"width":10,"height":10}}"#,
             r#"{"version":2,"bounds":{"x":0,"y":0,"width":10,"height":10},"maximized":false}"#,
@@ -235,7 +226,6 @@ mod tests {
             r#"{"version":1,"bounds":[0,0,10,10],"maximized":false}"#,
             "[]",
             "",
-            "\u{feff}{\"version\":1,\"bounds\":{\"x\":0,\"y\":0,\"width\":10,\"height\":10},\"maximized\":false}",
         ] {
             assert_eq!(parse(bad), None, "{bad}");
         }
@@ -253,7 +243,7 @@ mod tests {
         assert_eq!(read(&path), Some(state));
         let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names, [FILE_NAME]);
-        let uuid = random_uuid().unwrap();
+        let uuid = crate::text::uuid_v4().unwrap();
         assert_eq!((uuid.len(), &uuid[14..15], uuid.matches('-').count()), (36, "4", 4));
         assert!(write(&dir.path().join("missing").join(FILE_NAME), &state).is_err());
     }

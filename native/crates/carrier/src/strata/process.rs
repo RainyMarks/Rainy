@@ -119,14 +119,23 @@ impl Terminal {
         log::info!("Strata: strata {}", args.join(" "));
         let mut child = command.spawn().with_context(|| format!("Starting {}", self.python.display()))?;
         contain(&child);
-        let stdout = child.stdout.take().context("No output of the Strata command")?;
+        let stdout = child.stdout.take();
         let owned = Owned::new(child);
+        let stdout = stdout.context("No output of the Strata command")?;
         let (sender, receiver) = std::sync::mpsc::channel::<String>();
         let reader = std::thread::Builder::new().name("strata-output".into()).spawn(move || {
-            for text in BufReader::new(stdout).lines() {
-                let Ok(text) = text else { break };
-                if sender.send(text).is_err() {
-                    break;
+            let mut reader = BufReader::new(stdout);
+            let mut raw = Vec::new();
+            loop {
+                raw.clear();
+                match reader.read_until(b'\n', &mut raw) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(&raw).into_owned();
+                        if sender.send(text).is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         })?;
@@ -224,13 +233,7 @@ impl Owned {
         if child.try_wait().ok().flatten().is_some() {
             return;
         }
-        #[cfg(windows)]
-        {
-            let mut taskkill = Command::new("taskkill.exe");
-            taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null());
-            hide(&mut taskkill);
-            let _ = taskkill.status();
-        }
+        crate::process_win::kill_process_tree(child.id());
         let deadline = Instant::now() + Duration::from_secs(5);
         while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
@@ -247,65 +250,14 @@ impl Drop for Owned {
 }
 
 pub fn hide(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
+    crate::process_win::hide(command);
 }
 
 /// Tie a process Rainy started, and those it starts, to Rainy's own: they are in a job that ends them when its one
-/// handle closes, which is when Rainy's process ends, also after a crash. The job allows no breakaway, so what Strata
-/// starts in the background (its runtime host, a model download) ends with Rainy too. A process outside it (the job
-/// could not be made) is only stopped by a normal quit.
-#[cfg(windows)]
+/// handle closes, which is when Rainy's process ends, also after a crash.
 pub fn contain(child: &Child) {
-    use std::os::windows::io::AsRawHandle as _;
-
-    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-
-    let job = job();
-    // SAFETY: both handles are open: the job's for the life of the process, the child's as long as `child` lives.
-    if job.is_null() || unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
-        log::warn!("A Strata process does not end with Rainy: {}", std::io::Error::last_os_error());
-    }
+    crate::process_win::contain(child);
 }
-
-/// The job of [`contain`], made once; null when it could not be.
-#[cfg(windows)]
-fn job() -> windows_sys::Win32::Foundation::HANDLE {
-    use std::sync::OnceLock;
-
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::JobObjects::{
-        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
-    };
-
-    static JOB: OnceLock<usize> = OnceLock::new();
-    // SAFETY: the job is created without a name and with a handle child processes do not inherit; the limits are
-    // plain data of the size given. The handle stays open for the life of the process.
-    let job = *JOB.get_or_init(|| unsafe {
-        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        if job.is_null() {
-            return 0;
-        }
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
-        if SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), size) == 0 {
-            CloseHandle(job);
-            return 0;
-        }
-        job as usize
-    });
-    job as windows_sys::Win32::Foundation::HANDLE
-}
-
-#[cfg(not(windows))]
-pub fn contain(_child: &Child) {}
 
 /// The error a command reported in its JSON answer (`{"ok": false, "error": {"message": ...}}`), if any.
 pub fn reported_error(answer: &Value) -> Option<String> {
@@ -363,9 +315,10 @@ mod tests {
         let mut child = Command::new("cmd.exe").args(["/c", "ping -n 30 127.0.0.1 >NUL"]).stdout(Stdio::null()).spawn().unwrap();
         contain(&child);
         let mut inside = 0;
-        assert!(!job().is_null());
+        let job = crate::process_win::shared_job();
+        assert!(!job.is_null());
         // SAFETY: the child's handle is open while `child` lives, and the job's for the life of the process.
-        assert_ne!(unsafe { IsProcessInJob(child.as_raw_handle(), job(), &mut inside) }, 0);
+        assert_ne!(unsafe { IsProcessInJob(child.as_raw_handle(), job, &mut inside) }, 0);
         assert_ne!(inside, 0);
         let _ = child.kill();
         let _ = child.wait();

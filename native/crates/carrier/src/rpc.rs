@@ -8,13 +8,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
+use async_tungstenite::tungstenite::Message;
 use async_tungstenite::tungstenite::client::IntoClientRequest as _;
 use async_tungstenite::tungstenite::http::HeaderValue;
 use async_tungstenite::tungstenite::protocol::WebSocketConfig;
-use async_tungstenite::tungstenite::Message;
 use futures::channel::oneshot;
 use futures::{FutureExt as _, StreamExt as _};
 use rainy_protocol::{RequestFrame, RpcError, ServerFrame};
@@ -24,8 +24,16 @@ use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use smol::net::TcpStream;
 
 use crate::control::HostReady;
+use crate::fs_util;
 use crate::http;
 use crate::locale::localized;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(120);
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const WS_PING_INTERVAL: Duration = Duration::from_secs(15);
+const WS_IDLE_DEADLINE: Duration = Duration::from_secs(45);
 
 /// Whether the interface is connected to the Host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,14 +51,18 @@ pub enum RpcEvent {
 }
 
 type Answer = oneshot::Sender<Result<Value, RpcError>>;
+type CookieWaiters = Mutex<Option<Vec<oneshot::Sender<Result<String, String>>>>>;
 
 struct Inner {
     port: u16,
     launch_path: String,
     cookie: Mutex<Option<String>>,
+    /// Coalesces concurrent cookie exchanges so only one request consumes the launch token at a time.
+    cookie_waiters: CookieWaiters,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, Answer>>,
     outgoing: async_channel::Sender<(u64, String)>,
+    stop: async_channel::Sender<()>,
     stopped: AtomicBool,
 }
 
@@ -65,23 +77,44 @@ fn disconnected() -> RpcError {
     RpcError { code: "disconnected".into(), message, data: None }
 }
 
+fn timed_out() -> anyhow::Error {
+    anyhow!(localized("与执行后端的通信超时。", "Communication with the execution Host timed out."))
+}
+
+async fn with_timeout<T>(duration: Duration, future: impl Future<Output = Result<T>>) -> Result<T> {
+    let timer = futures::FutureExt::fuse(smol::Timer::after(duration));
+    let work = future.fuse();
+    futures::pin_mut!(timer, work);
+    futures::select_biased! {
+        result = work => result,
+        _ = timer => Err(timed_out()),
+    }
+}
+
+async fn connect_loopback(port: u16) -> Result<TcpStream> {
+    with_timeout(CONNECT_TIMEOUT, async move { Ok(TcpStream::connect(("127.0.0.1", port)).await?) }).await
+}
+
 impl RpcClient {
     /// Connect to a ready Host; events and connection changes arrive on the returned channel.
     pub fn connect(ready: &HostReady) -> Result<(Self, async_channel::Receiver<RpcEvent>)> {
         let launch_path = ready.url.strip_prefix(&format!("http://127.0.0.1:{}", ready.port)).unwrap_or("/").to_owned();
         let (outgoing, queue) = async_channel::unbounded();
         let (events, receiver) = async_channel::unbounded();
+        let (stop, stop_rx) = async_channel::bounded(1);
         let inner = Arc::new(Inner {
             port: ready.port,
             launch_path: if launch_path.is_empty() { "/".into() } else { launch_path },
             cookie: Mutex::new(None),
+            cookie_waiters: Mutex::new(None),
             next_id: AtomicU64::new(1),
             pending: Mutex::default(),
             outgoing,
+            stop,
             stopped: AtomicBool::new(false),
         });
         let worker = inner.clone();
-        thread::Builder::new().name("rainy-rpc".into()).spawn(move || smol::block_on(run(worker, queue, events)))?;
+        thread::Builder::new().name("rainy-rpc".into()).spawn(move || smol::block_on(run(worker, queue, events, stop_rx)))?;
         Ok((Self { inner }, receiver))
     }
 
@@ -92,6 +125,9 @@ impl RpcClient {
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);
         let sent = self.inner.outgoing.try_send((id, frame));
+        if sent.is_err() {
+            self.inner.pending.lock().unwrap().remove(&id);
+        }
         async move {
             if sent.is_err() {
                 return Err(disconnected());
@@ -145,10 +181,11 @@ impl RpcClient {
         open_route(&self.inner, route).await
     }
 
-    /// Stop reconnecting; pending requests fail.
+    /// Stop reconnecting; pending requests fail immediately.
     pub fn close(&self) {
         self.inner.stopped.store(true, Ordering::SeqCst);
         self.inner.outgoing.close();
+        self.inner.stop.close();
     }
 }
 
@@ -161,16 +198,19 @@ async fn http_get(port: u16, path: &str, cookie: Option<&str>) -> Result<http::R
     if !path.starts_with('/') || !valid_header_token(path) {
         bail!(localized("无效的请求路径。", "Invalid HTTP request path."));
     }
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut stream = connect_loopback(port).await?;
     let mut request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
     if let Some(cookie) = cookie {
         request.push_str(&format!("Cookie: {cookie}\r\n"));
     }
     request.push_str("\r\n");
-    stream.write_all(request.as_bytes()).await?;
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).await?;
-    http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+    with_timeout(HTTP_TIMEOUT, async {
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+    })
+    .await
 }
 
 /// A minimal HTTP/1.1 POST over loopback carrying the session cookie and same-origin headers.
@@ -178,17 +218,20 @@ async fn http_post(port: u16, path: &str, cookie: &str, content_type: &str, body
     if !path.starts_with('/') || !valid_header_token(path) || !valid_header_token(content_type) {
         bail!(localized("无效的 HTTP 请求参数。", "Invalid HTTP request parameters."));
     }
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut stream = connect_loopback(port).await?;
     let header = format!(
         "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    stream.write_all(header.as_bytes()).await?;
-    stream.write_all(body).await?;
-    stream.flush().await?;
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).await?;
-    http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+    with_timeout(HTTP_TIMEOUT, async {
+        stream.write_all(header.as_bytes()).await?;
+        stream.write_all(body).await?;
+        stream.flush().await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+    })
+    .await
 }
 
 /// Stream a local file into an HTTP/1.1 POST over loopback in 256 KiB chunks.
@@ -203,11 +246,15 @@ async fn http_post_file(port: u16, path: &str, cookie: &str, content_type: &str,
     }
     let total = metadata.len();
     let mut reader = std::fs::File::open(file)?;
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut stream = connect_loopback(port).await?;
     let header = format!(
         "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: {content_type}\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
     );
-    stream.write_all(header.as_bytes()).await?;
+    with_timeout(STREAM_IO_TIMEOUT, async {
+        stream.write_all(header.as_bytes()).await?;
+        Ok(())
+    })
+    .await?;
     let mut buffer = vec![0u8; 256 * 1024];
     let mut remaining = total;
     while remaining > 0 {
@@ -216,32 +263,44 @@ async fn http_post_file(port: u16, path: &str, cookie: &str, content_type: &str,
         if read == 0 {
             bail!(localized("上传过程中文件被截断。", "The file was truncated while uploading."));
         }
-        stream.write_all(&buffer[..read]).await?;
+        with_timeout(STREAM_IO_TIMEOUT, async {
+            stream.write_all(&buffer[..read]).await?;
+            Ok(())
+        })
+        .await?;
         remaining -= read as u64;
     }
-    stream.flush().await?;
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).await?;
-    http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+    with_timeout(STREAM_IO_TIMEOUT, async {
+        stream.flush().await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        http::parse(&raw, || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer."))
+    })
+    .await
 }
 
 /// The longest chunk-size line (with its extensions) a streamed answer may send.
 const MAX_CHUNK_LINE: usize = 4096;
 
 /// Stream an HTTP/1.1 GET response directly to `destination` without buffering the whole body in memory.
+/// Only 2xx responses are atomically written to `destination` via a sibling temporary file.
 async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destination: &std::path::Path) -> Result<u16> {
     use std::io::Write as _;
     if !path.starts_with('/') || !valid_header_token(path) {
         bail!(localized("无效的请求路径。", "Invalid HTTP request path."));
     }
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut stream = connect_loopback(port).await?;
     let mut request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
     if let Some(cookie) = cookie {
         request.push_str(&format!("Cookie: {cookie}\r\n"));
     }
     request.push_str("\r\n");
-    stream.write_all(request.as_bytes()).await?;
-    stream.flush().await?;
+    with_timeout(HTTP_TIMEOUT, async {
+        stream.write_all(request.as_bytes()).await?;
+        stream.flush().await?;
+        Ok(())
+    })
+    .await?;
 
     let invalid = || localized("执行后端返回了无效的 HTTP 回答。", "The execution Host sent an invalid HTTP answer.");
     let mut head_buf = Vec::new();
@@ -253,7 +312,7 @@ async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destinati
         if head_buf.len() > 64 * 1024 {
             bail!(invalid());
         }
-        let n = stream.read(&mut chunk).await?;
+        let n = with_timeout(HTTP_TIMEOUT, async { Ok(stream.read(&mut chunk).await?) }).await?;
         if n == 0 {
             bail!(invalid());
         }
@@ -264,77 +323,127 @@ async fn http_get_to_file(port: u16, path: &str, cookie: Option<&str>, destinati
     let Some(status) = lines.next().and_then(|line| line.split_whitespace().nth(1)).and_then(|code| code.parse::<u16>().ok()) else {
         bail!(invalid());
     };
-    let chunked = lines.any(|line| {
-        line.split_once(':')
-            .is_some_and(|(name, value)| name.trim().eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked"))
-    });
-    let mut file = std::fs::File::create(destination)?;
-    let initial = &head_buf[split + 4..];
-    if chunked {
-        let mut buf = initial.to_vec();
-        let mut io_buf = vec![0u8; 256 * 1024];
-        loop {
-            while !buf.windows(2).any(|w| w == b"\r\n") {
-                // A chunk's size line is a few hex digits and optional extensions.
-                if buf.len() > MAX_CHUNK_LINE {
-                    bail!(invalid());
-                }
-                let n = stream.read(&mut io_buf[..MAX_CHUNK_LINE]).await?;
-                if n == 0 {
-                    bail!(invalid());
-                }
-                buf.extend_from_slice(&io_buf[..n]);
+    let mut chunked = false;
+    let mut content_length: Option<u64> = None;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked") {
+                chunked = true;
+            } else if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<u64>().ok();
             }
-            let line_end = buf.windows(2).position(|w| w == b"\r\n").unwrap();
-            let size_text = std::str::from_utf8(&buf[..line_end]).map_err(|_| anyhow!(invalid()))?;
-            let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| anyhow!(invalid()))?;
-            buf.drain(..line_end + 2);
-            if size == 0 {
-                break;
-            }
-            let mut left = size;
-            if !buf.is_empty() {
-                let take = left.min(buf.len());
-                file.write_all(&buf[..take])?;
-                buf.drain(..take);
-                left -= take;
-            }
-            while left > 0 {
-                let want = left.min(io_buf.len());
-                let n = stream.read(&mut io_buf[..want]).await?;
-                if n == 0 {
-                    bail!(invalid());
-                }
-                file.write_all(&io_buf[..n])?;
-                left -= n;
-            }
-            while buf.len() < 2 {
-                let n = stream.read(&mut io_buf[..2 - buf.len()]).await?;
-                if n == 0 {
-                    bail!(invalid());
-                }
-                buf.extend_from_slice(&io_buf[..n]);
-            }
-            if &buf[..2] != b"\r\n" {
-                bail!(invalid());
-            }
-            buf.drain(..2);
-        }
-    } else {
-        if !initial.is_empty() {
-            file.write_all(initial)?;
-        }
-        let mut io_buf = vec![0u8; 256 * 1024];
-        loop {
-            let n = stream.read(&mut io_buf).await?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&io_buf[..n])?;
         }
     }
-    file.flush()?;
-    Ok(status)
+    // Non-2xx responses must not create or overwrite the destination file.
+    if !(200..300).contains(&status) {
+        return Ok(status);
+    }
+
+    let parent = destination.parent().ok_or_else(|| anyhow!(localized("目标文件路径无效。", "Invalid destination file path.")))?;
+    let name = destination.file_name().and_then(|n| n.to_str()).unwrap_or("download");
+    let temporary = parent.join(format!(".{name}.{}.tmp", crate::text::uuid_v4_lossy()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+
+    let initial = &head_buf[split + 4..];
+    let outcome: Result<()> = async {
+        if chunked {
+            let mut buf = initial.to_vec();
+            let mut io_buf = vec![0u8; 256 * 1024];
+            loop {
+                while !buf.windows(2).any(|w| w == b"\r\n") {
+                    if buf.len() > MAX_CHUNK_LINE {
+                        bail!(invalid());
+                    }
+                    let n = with_timeout(STREAM_IO_TIMEOUT, async { Ok(stream.read(&mut io_buf[..MAX_CHUNK_LINE]).await?) }).await?;
+                    if n == 0 {
+                        bail!(invalid());
+                    }
+                    buf.extend_from_slice(&io_buf[..n]);
+                }
+                let line_end = buf.windows(2).position(|w| w == b"\r\n").unwrap();
+                let size_text = std::str::from_utf8(&buf[..line_end]).map_err(|_| anyhow!(invalid()))?;
+                let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| anyhow!(invalid()))?;
+                buf.drain(..line_end + 2);
+                if size == 0 {
+                    break;
+                }
+                let mut left = size;
+                if !buf.is_empty() {
+                    let take = left.min(buf.len());
+                    file.write_all(&buf[..take])?;
+                    buf.drain(..take);
+                    left -= take;
+                }
+                while left > 0 {
+                    let want = left.min(io_buf.len());
+                    let n = with_timeout(STREAM_IO_TIMEOUT, async { Ok(stream.read(&mut io_buf[..want]).await?) }).await?;
+                    if n == 0 {
+                        bail!(invalid());
+                    }
+                    file.write_all(&io_buf[..n])?;
+                    left -= n;
+                }
+                while buf.len() < 2 {
+                    let want = 2 - buf.len();
+                    let n = with_timeout(STREAM_IO_TIMEOUT, async { Ok(stream.read(&mut io_buf[..want]).await?) }).await?;
+                    if n == 0 {
+                        bail!(invalid());
+                    }
+                    buf.extend_from_slice(&io_buf[..n]);
+                }
+                if &buf[..2] != b"\r\n" {
+                    bail!(invalid());
+                }
+                buf.drain(..2);
+            }
+        } else {
+            let mut written = 0u64;
+            if !initial.is_empty() {
+                let take = content_length.map_or(initial.len(), |limit| (limit as usize).min(initial.len()));
+                file.write_all(&initial[..take])?;
+                written += take as u64;
+            }
+            let mut io_buf = vec![0u8; 256 * 1024];
+            loop {
+                if let Some(limit) = content_length
+                    && written >= limit
+                {
+                    break;
+                }
+                let n = with_timeout(STREAM_IO_TIMEOUT, async { Ok(stream.read(&mut io_buf).await?) }).await?;
+                if n == 0 {
+                    break;
+                }
+                let take = content_length.map_or(n, |limit| (limit.saturating_sub(written) as usize).min(n));
+                file.write_all(&io_buf[..take])?;
+                written += take as u64;
+            }
+            if let Some(limit) = content_length
+                && written < limit
+            {
+                bail!(invalid());
+            }
+        }
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    }
+    .await;
+    drop(file);
+    match outcome {
+        Ok(()) => {
+            if let Err(error) = fs_util::rename_retried(&temporary, destination) {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(error.into());
+            }
+            Ok(status)
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
 }
 
 /// Exchange the launch token for the session cookie (`name=value`).
@@ -353,6 +462,63 @@ async fn session_cookie(inner: &Inner) -> Result<String> {
         .ok_or_else(|| anyhow!(localized("执行后端没有设置会话 Cookie。", "The execution Host did not set a session cookie.")))
 }
 
+/// Obtain or exchange the session cookie while coalescing concurrent callers so the launch token is never raced.
+async fn ensure_cookie(inner: &Inner) -> Result<String> {
+    let waiter = {
+        let mut waiters = inner.cookie_waiters.lock().unwrap();
+        if let Some(cookie) = inner.cookie.lock().unwrap().clone() {
+            return Ok(cookie);
+        }
+        match waiters.as_mut() {
+            Some(list) => {
+                let (tx, rx) = oneshot::channel();
+                list.push(tx);
+                Some(rx)
+            }
+            None => {
+                *waiters = Some(Vec::new());
+                None
+            }
+        }
+    };
+    if let Some(rx) = waiter {
+        return rx
+            .await
+            .map_err(|_| anyhow!(localized("会话 Cookie 获取被中断。", "Session cookie exchange was interrupted.")))?
+            .map_err(|message| anyhow!(message));
+    }
+    struct Guard<'a>(&'a Inner, bool);
+    impl Drop for Guard<'_> {
+        fn drop(&mut self) {
+            if !self.1 {
+                // Dropped before completing (e.g. cancelled by close()): release waiters cleanly.
+                let _ = self.0.cookie_waiters.lock().unwrap().take();
+            }
+        }
+    }
+    let mut guard = Guard(inner, false);
+    let result = session_cookie(inner).await;
+    if let Ok(cookie) = &result {
+        *inner.cookie.lock().unwrap() = Some(cookie.clone());
+    }
+    let pending = inner.cookie_waiters.lock().unwrap().take().unwrap_or_default();
+    guard.1 = true;
+    match &result {
+        Ok(cookie) => {
+            for tx in pending {
+                let _ = tx.send(Ok(cookie.clone()));
+            }
+        }
+        Err(error) => {
+            let text = format!("{error:#}");
+            for tx in pending {
+                let _ = tx.send(Err(text.clone()));
+            }
+        }
+    }
+    result
+}
+
 pub(crate) type Socket = async_tungstenite::WebSocketStream<TcpStream>;
 
 async fn open_socket(inner: &Inner) -> Result<Socket> {
@@ -361,36 +527,43 @@ async fn open_socket(inner: &Inner) -> Result<Socket> {
 
 /// A WebSocket to a Host route (`/rpc`, `/rainy/ide/lsp?…`) with the session cookie.
 async fn open_route(inner: &Inner, route: &str) -> Result<Socket> {
-    let cookie = {
-        let known = inner.cookie.lock().unwrap().clone();
-        match known {
-            Some(cookie) => cookie,
-            None => {
-                let cookie = session_cookie(inner).await?;
-                *inner.cookie.lock().unwrap() = Some(cookie.clone());
-                cookie
-            }
-        }
-    };
+    let cookie = ensure_cookie(inner).await?;
     let origin = format!("http://127.0.0.1:{}", inner.port);
     let mut request = format!("ws://127.0.0.1:{}{route}", inner.port).into_client_request()?;
     request.headers_mut().insert("Cookie", HeaderValue::from_str(&cookie)?);
     request.headers_mut().insert("Origin", HeaderValue::from_str(&origin)?);
-    let stream = TcpStream::connect(("127.0.0.1", inner.port)).await?;
+    let stream = connect_loopback(inner.port).await?;
     stream.set_nodelay(true)?;
     // Snapshots of long chats with images arrive as one message; allow them.
     let config = WebSocketConfig::default().max_message_size(Some(1 << 30)).max_frame_size(Some(1 << 30));
-    let (socket, _) = async_tungstenite::client_async_with_config(request, stream, Some(config)).await?;
+    let (socket, _) = with_timeout(WS_HANDSHAKE_TIMEOUT, async move {
+        Ok(async_tungstenite::client_async_with_config(request, stream, Some(config)).await?)
+    })
+    .await?;
     Ok(socket)
 }
 
-async fn run(inner: Arc<Inner>, queue: async_channel::Receiver<(u64, String)>, events: async_channel::Sender<RpcEvent>) {
+async fn run(
+    inner: Arc<Inner>,
+    queue: async_channel::Receiver<(u64, String)>,
+    events: async_channel::Sender<RpcEvent>,
+    stop: async_channel::Receiver<()>,
+) {
     let mut delay = Duration::from_millis(250);
     // A frame taken from the queue while the socket was failing; sent first on the next connection.
     let mut held: Option<(u64, String)> = None;
     while !inner.stopped.load(Ordering::SeqCst) {
         let _ = events.send(RpcEvent::State(ConnectionState::Connecting)).await;
-        match open_socket(&inner).await {
+        let opened = {
+            let connect = open_socket(&inner).fuse();
+            let stopping = stop.recv().fuse();
+            futures::pin_mut!(connect, stopping);
+            futures::select_biased! {
+                _ = stopping => break,
+                result = connect => result,
+            }
+        };
+        match opened {
             Ok(socket) => {
                 delay = Duration::from_millis(250);
                 let _ = events.send(RpcEvent::State(ConnectionState::Open)).await;
@@ -403,10 +576,16 @@ async fn run(inner: Arc<Inner>, queue: async_channel::Receiver<(u64, String)>, e
             }
         }
         let _ = events.send(RpcEvent::State(ConnectionState::Closed)).await;
-        if queue.is_closed() && queue.is_empty() {
+        if inner.stopped.load(Ordering::SeqCst) || (queue.is_closed() && queue.is_empty()) {
             break;
         }
-        smol::Timer::after(delay).await;
+        let timer = futures::FutureExt::fuse(smol::Timer::after(delay));
+        let stopping = stop.recv().fuse();
+        futures::pin_mut!(timer, stopping);
+        futures::select_biased! {
+            _ = stopping => break,
+            _ = timer => {}
+        }
         delay = (delay * 2).min(Duration::from_secs(5));
     }
     for (_, answer) in inner.pending.lock().unwrap().drain() {
@@ -431,12 +610,28 @@ async fn serve(
         }
         sent.insert(id);
     }
+    let mut last_incoming = Instant::now();
+    let mut next_ping = futures::FutureExt::fuse(smol::Timer::after(WS_PING_INTERVAL));
     loop {
         futures::select_biased! {
             incoming = stream.next().fuse() => match incoming {
-                Some(Ok(Message::Text(text))) => dispatch(inner, events, &mut sent, text.as_str()).await,
+                Some(Ok(Message::Text(text))) => {
+                    last_incoming = Instant::now();
+                    dispatch(inner, events, &mut sent, text.as_str()).await;
+                }
+                Some(Ok(Message::Ping(payload))) => {
+                    last_incoming = Instant::now();
+                    if sink.send(Message::Pong(payload)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Pong(_))) => {
+                    last_incoming = Instant::now();
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => {
+                    last_incoming = Instant::now();
+                }
             },
             outgoing = queue.recv().fuse() => match outgoing {
                 Ok((id, frame)) => {
@@ -452,6 +647,17 @@ async fn serve(
                     break;
                 }
             },
+            _ = next_ping => {
+                if last_incoming.elapsed() >= WS_IDLE_DEADLINE {
+                    log::warn!("Host WebSocket did not answer keepalive ping within {} s; reconnecting", WS_IDLE_DEADLINE.as_secs());
+                    let _ = sink.close(None).await;
+                    break;
+                }
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+                next_ping = futures::FutureExt::fuse(smol::Timer::after(WS_PING_INTERVAL));
+            }
         }
     }
     // Requests sent on the lost connection never get answers.
@@ -492,7 +698,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut head = Vec::new();
                 let mut byte = [0u8; 1];
@@ -524,6 +730,8 @@ mod tests {
                     stream
                         .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
                         .unwrap();
+                } else if text.starts_with("GET /missing ") {
+                    stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror").unwrap();
                 }
             }
         });
@@ -544,6 +752,11 @@ mod tests {
             let out = dir.path().join("out.bin");
             let status = http_get_to_file(port, "/chunked", Some("rainy_auth=tok"), &out).await.unwrap();
             assert_eq!(status, 200);
+            assert_eq!(std::fs::read(&out).unwrap(), b"hello world");
+
+            // Non-2xx status leaves existing file untouched.
+            let status = http_get_to_file(port, "/missing", Some("rainy_auth=tok"), &out).await.unwrap();
+            assert_eq!(status, 404);
             assert_eq!(std::fs::read(&out).unwrap(), b"hello world");
 
             // Rejects CRLF injection in path or content-type.
@@ -576,7 +789,27 @@ mod tests {
         let result = smol::block_on(http_get_to_file(port, "/file", None, &destination));
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(5), "the answer must be refused before the server gives up");
-        let _ = std::fs::remove_file(&destination);
+        assert!(!destination.exists(), "failed download must not leave partial destination file");
         drop(server);
+    }
+
+    #[test]
+    fn close_wakes_reconnect_backoff_and_call_cleans_pending() {
+        // Closed port ensures reconnect backoff is entered quickly.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let ready = HostReady { url: format!("http://127.0.0.1:{port}/?token=x"), port, pid: 1, home: "/h".into() };
+        let (client, _events) = RpcClient::connect(&ready).unwrap();
+        let pending_call = client.call("ping", Value::Null);
+        let started = Instant::now();
+        client.close();
+        let err = smol::block_on(pending_call).unwrap_err();
+        assert_eq!(err.code, "disconnected");
+        assert!(started.elapsed() < Duration::from_secs(2), "close() took {:?}", started.elapsed());
+        // Calling after close must not leak entries in `pending`.
+        let err2 = smol::block_on(client.call("ping", Value::Null)).unwrap_err();
+        assert_eq!(err2.code, "disconnected");
+        assert!(client.inner.pending.lock().unwrap().is_empty());
     }
 }

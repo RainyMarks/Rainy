@@ -10,6 +10,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+use crate::fs_util::{is_reparse_point, is_sharing_violation};
+
 /// Below `resources`: what earlier installers shipped and Rainy now downloads on demand or no longer uses.
 pub const RETIRED_RESOURCES: [&str; 8] = [
     "strata-runtime",
@@ -83,7 +85,7 @@ impl Removed {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return,
             Err(error) => return self.failed.push(format!("{name}: {error}")),
         };
-        if metadata.file_type().is_symlink() {
+        if is_reparse_point(&metadata) {
             return;
         }
         match retried(|| if metadata.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }) {
@@ -110,11 +112,11 @@ pub fn remove_retired(install_root: &Path, resources: &Path, signed: &HashSet<St
         removed.remove(&name.split('/').fold(install_root.to_path_buf(), |path, segment| path.join(segment)), name.to_owned());
     }
     let locales = install_root.join(LOCALES);
-    if fs::symlink_metadata(&locales).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()) {
+    if fs::symlink_metadata(&locales).is_ok_and(|metadata| metadata.is_dir() && !is_reparse_point(&metadata)) {
         let packs: Vec<String> = match fs::read_dir(&locales) {
             Ok(entries) => entries
                 .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .filter(|entry| fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.file_type().is_file() && !is_reparse_point(&meta)))
                 .filter_map(|entry| entry.file_name().into_string().ok())
                 .filter(|name| name.to_ascii_lowercase().ends_with(".pak"))
                 .collect(),
@@ -141,7 +143,7 @@ pub fn remove_retired(install_root: &Path, resources: &Path, signed: &HashSet<St
 /// links, then empty folders and `windows-host` itself. The bytes removed; 0 when the inventory is missing or unreadable.
 pub fn prune_windows_host(resources: &Path, everything: bool) -> Result<u64> {
     let root = resources.join("windows-host");
-    if !fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()) {
+    if !fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir() && !is_reparse_point(&metadata)) {
         return Ok(0);
     }
     let Some(mut listed) = inventory(&root) else { return Ok(0) };
@@ -211,10 +213,10 @@ fn prune(folder: &Path, relative: &str, listed: &HashSet<String>, everything: bo
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = if relative.is_empty() { name } else { format!("{relative}/{name}") };
         let full = entry.path();
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
+        let meta = fs::symlink_metadata(&full)?;
+        if is_reparse_point(&meta) {
             pruned.empty = false;
-        } else if kind.is_dir() {
+        } else if meta.is_dir() {
             let inner = prune(&full, &path, listed, everything, removed)?;
             if inner.may_go(everything) {
                 remove_folder(&full)?;
@@ -229,7 +231,7 @@ fn prune(folder: &Path, relative: &str, listed: &HashSet<String>, everything: bo
             pruned.empty = false;
             pruned.shipped = true;
         } else {
-            *removed += fs::symlink_metadata(&full)?.len();
+            *removed += meta.len();
             retried(|| fs::remove_file(&full)).with_context(|| format!("Removing {}", full.display()))?;
             pruned.changed = true;
         }
@@ -250,27 +252,16 @@ fn remove_folder(full: &Path) -> Result<()> {
     retried(|| fs::remove_dir(full)).with_context(|| format!("Removing {}", full.display()))
 }
 
-/// A removal tried up to four times, for a file another process holds for a moment.
+/// A removal tried up to four times on Windows sharing violations; non-transient errors such as `NotFound` fail immediately.
 fn retried(mut remove: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     for _ in 0..3 {
-        if remove().is_ok() {
-            return Ok(());
+        match remove() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_sharing_violation(&error) => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(error),
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
     remove()
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-
-    metadata.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 #[cfg(test)]

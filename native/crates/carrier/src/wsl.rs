@@ -11,13 +11,14 @@ use serde_json::Value;
 
 use crate::HostCommand;
 use crate::locale::localized;
+use crate::process_win;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Converting paths also waits for a cold VM to start (3.x `wslPaths`).
 const PATHS_TIMEOUT: Duration = Duration::from_secs(120);
 /// Installing unpacks at most the application layer and the base (3.x `prepareWsl`).
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const PRUNE_TIMEOUT: Duration = Duration::from_secs(600);
+const WARM_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Makes `wsl.exe` write its own messages in UTF-8 rather than UTF-16; Linux programs' output is unaffected, and the
 /// variable does not reach the distribution.
@@ -32,15 +33,11 @@ fn wsl(distro: &str, args: &[&str]) -> Command {
         command.args(["env", &format!("HOME={home}")]);
     }
     command.args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    process_win::hide(&mut command);
     command
 }
 
-/// Run `command` to completion with its output captured; it is stopped after `timeout`.
+/// Run `command` to completion with its output captured; its entire process tree is stopped after `timeout`.
 fn output_within(mut command: Command, timeout: Duration, what: &str) -> Result<Output> {
     let mut child = command
         .stdin(Stdio::null())
@@ -48,23 +45,42 @@ fn output_within(mut command: Command, timeout: Duration, what: &str) -> Result<
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| localized("无法启动 wsl.exe，请确认已安装 WSL。", "wsl.exe could not be started. Make sure WSL is installed."))?;
-    let collect = |mut pipe: Box<dyn std::io::Read + Send>| {
-        std::thread::spawn(move || {
+    process_win::contain(&child);
+    let collect = |name: &str, mut pipe: Box<dyn std::io::Read + Send>| {
+        std::thread::Builder::new().name(name.into()).spawn(move || {
             let mut bytes = Vec::new();
             let _ = pipe.read_to_end(&mut bytes);
             bytes
         })
     };
-    let stdout = collect(Box::new(child.stdout.take().expect("piped stdout")));
-    let stderr = collect(Box::new(child.stderr.take().expect("piped stderr")));
+    let stdout = collect("wsl-stdout", Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = collect("wsl-stderr", Box::new(child.stderr.take().expect("piped stderr")));
+    let (stdout, stderr) = match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        (stdout_res, stderr_res) => {
+            process_win::kill_process_tree(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Ok(handle) = stdout_res {
+                let _ = handle.join();
+            }
+            if let Ok(handle) = stderr_res {
+                let _ = handle.join();
+            }
+            bail!(localized("无法启动 WSL 输出读取线程。", "Starting WSL output reader threads failed."));
+        }
+    };
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
         if started.elapsed() >= timeout {
+            process_win::kill_process_tree(child.id());
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout.join();
+            let _ = stderr.join();
             let seconds = timeout.as_secs();
             bail!(localized(&format!("{what}在 {seconds} 秒内没有完成。"), &format!("{what} did not finish within {seconds} s.")));
         }
@@ -73,36 +89,85 @@ fn output_within(mut command: Command, timeout: Duration, what: &str) -> Result<
     Ok(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
 }
 
+/// Decode UTF-16LE bytes using standard library primitives (no `encoding_rs` needed).
+fn decode_utf16le(bytes: &[u8]) -> String {
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    let mut units = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        units.push(u16::from_le_bytes(*pair));
+    }
+    let mut text = String::from_utf16_lossy(&units);
+    if !remainder.is_empty() {
+        text.push('\u{FFFD}');
+    }
+    text
+}
+
 /// Output of `wsl.exe`: its own messages in UTF-16LE when an older WSL ignores `WSL_UTF8` (with or without a byte
 /// order mark, possibly followed by a Linux program's UTF-8), otherwise UTF-8.
 pub fn decode_output(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return encoding_rs::UTF_16LE.decode_without_bom_handling(rest).0.into_owned();
+        return decode_utf16le(rest);
     }
     let mut text = String::new();
     let mut rest = bytes;
     while let Some(length) = utf16_line(rest) {
-        text.push_str(&encoding_rs::UTF_16LE.decode_without_bom_handling(&rest[..length]).0);
+        text.push_str(&decode_utf16le(&rest[..length]));
         rest = &rest[length..];
     }
     text.push_str(&String::from_utf8_lossy(rest));
     text
 }
 
-/// The length of a leading UTF-16LE line, through its `\n` or to the end. An ASCII character of it has a zero high
-/// byte, which UTF-8 text never has.
+fn is_plausible_cjk_utf16(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) || std::str::from_utf8(bytes).is_ok() {
+        return false;
+    }
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    char::decode_utf16(units).all(|decoded| {
+        decoded.is_ok_and(|ch| {
+            matches!(
+                ch,
+                '\u{3000}'..='\u{303F}'
+                    | '\u{4E00}'..='\u{9FFF}'
+                    | '\u{FF00}'..='\u{FFEF}'
+                    | '\u{2000}'..='\u{206F}'
+            ) || ch.is_ascii_whitespace()
+        })
+    })
+}
+
+/// The length of a leading UTF-16LE line, through its `\n` or to the end.
+/// Handles both ASCII-bearing UTF-16LE lines (zero high byte) and pure-Chinese UTF-16LE lines (with or without newline).
 fn utf16_line(bytes: &[u8]) -> Option<usize> {
-    let mut ascii = false;
-    for (index, pair) in bytes.chunks(2).enumerate() {
-        let [low, high] = *pair else { return None };
+    if bytes.len() < 2 {
+        return None;
+    }
+    let mut has_ascii_u16 = false;
+    let (pairs, _) = bytes.as_chunks::<2>();
+    for (index, &[low, high]) in pairs.iter().enumerate() {
         match (low, high) {
             (0, 0) => return None,
-            (b'\n', 0) => return Some(index * 2 + 2),
-            (_, 0) => ascii = true,
+            (b'\n', 0) => {
+                let end = index * 2 + 2;
+                let prefix = &bytes[..index * 2];
+                // A UTF-16LE newline `\n\0` at an even offset is conclusive unless the prefix is valid NUL-free UTF-8
+                // followed by a stray NUL (e.g. a NUL-terminated UTF-8 C string).
+                if has_ascii_u16 || prefix.is_empty() || std::str::from_utf8(prefix).is_err() {
+                    return Some(end);
+                }
+                return None;
+            }
+            (low, 0) if low == b'\r' || low == b'\t' || (0x20..=0x7E).contains(&low) => has_ascii_u16 = true,
+            (_, 0) => return None,
             _ => {}
         }
     }
-    ascii.then_some(bytes.len())
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    (has_ascii_u16 || is_plausible_cjk_utf16(bytes)).then_some(bytes.len())
 }
 
 /// What the distribution or `wsl.exe` said about a failure: the last lines of both outputs.
@@ -138,9 +203,9 @@ fn checked(output: Output, distro: &str, what: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Start the distribution's VM early; the first `wsl.exe` call of a boot can take seconds.
+/// Start the distribution's VM early with a bounded timeout; the first `wsl.exe` call of a boot can take seconds.
 pub fn warm_up(distro: &str) {
-    let _ = wsl(distro, &["true"]).output();
+    let _ = output_within(wsl(distro, &["true"]), WARM_UP_TIMEOUT, "WSL warm-up");
 }
 
 /// Translate Windows paths with one `wsl.exe` call; one absolute Linux path per input.
@@ -183,7 +248,6 @@ pub enum Installed {
 
 /// Install (or find) this version's runtime in the distribution (`install-runtime.py BASE APP METADATA`).
 pub fn install_runtime(distro: &str, files: &RuntimeFiles) -> Result<Installed> {
-    // A missing base archive is passed as a path that does not exist; the installer then only checks what is installed.
     let base = files.base.clone().unwrap_or_else(|| files.metadata.with_file_name("linux-runtime.tar.xz"));
     let paths = linux_paths(distro, &[&base, &files.app, &files.metadata, &files.installer])?;
     let what = localized("在 WSL 中安装 Linux 运行环境", "Installing the Linux runtime in WSL");
@@ -215,7 +279,11 @@ pub fn prune_runtimes(distro: &str, files: &RuntimeFiles) -> Result<Vec<String>>
     let what = "install-runtime.py --prune";
     let text = checked(output_within(wsl(distro, &["python3", &paths[0], "--prune", &paths[1]]), PRUNE_TIMEOUT, what)?, distro, what)?;
     let value: Value = serde_json::from_str(text.lines().last().unwrap_or("{}")).unwrap_or(Value::Null);
-    Ok(value.get("removed").and_then(Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()).unwrap_or_default())
+    Ok(value
+        .get("removed")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default())
 }
 
 /// Ends the process `argv[1]` and everything it started, with SIGKILL, while `/proc/<pid>/cmdline` still begins with
@@ -260,7 +328,6 @@ pub(crate) fn force_stop(distro: &str, host: &str, pid: u32) -> Result<()> {
     let output = output_within(wsl(distro, &["python3", "-c", FORCE_STOP, &pid.to_string(), host]), Duration::from_secs(20), &what)?;
     match output.status.code() {
         Some(0) => Ok(()),
-        // The pid is no longer the Host: it ended meanwhile.
         Some(3) => Ok(()),
         _ => Err(failure(distro, &output, &what)),
     }
@@ -277,11 +344,9 @@ pub fn host_command(distro: &str, host: &str, env: &[(String, String)]) -> HostC
     HostCommand {
         program: "wsl.exe".into(),
         args,
-        // What wsl.exe says about a distribution that cannot start reaches the log readable.
         env: vec![(UTF8.0.into(), UTF8.1.into())],
         cwd: None,
         scrub_environment: false,
-        // WSL reports readiness before Windows loopback forwarding accepts connections.
         wait_for_loopback: true,
         expected_port: None,
     }
@@ -311,16 +376,22 @@ mod tests {
 
     #[test]
     fn reads_what_wsl_exe_says_in_any_encoding() {
-        // As wsl.exe wrote it here for a missing distribution: UTF-16LE without a byte order mark.
         let missing = "There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n";
         assert_eq!(decode_output(&utf16(missing)), missing);
         let mut marked = vec![0xFF, 0xFE];
         marked.extend(utf16("不存在具有所提供名称的分发。\r\n"));
         assert_eq!(decode_output(&marked), "不存在具有所提供名称的分发。\r\n");
-        // A Chinese line of wsl.exe, then the distribution's own UTF-8 error on the same stream.
+        // Pure Chinese UTF-16LE without BOM (with and without newline).
+        assert_eq!(decode_output(&utf16("不存在具有所提供名称的分发。\r\n")), "不存在具有所提供名称的分发。\r\n");
+        assert_eq!(decode_output(&utf16("不存在具有所提供名称的分发。")), "不存在具有所提供名称的分发。");
         let mut mixed = utf16("wsl: 检测到 localhost 代理配置\r\n");
         mixed.extend("<3>WSL (1599 - Relay) ERROR: CreateProcessCommon:818: execvpe(python3) failed: No such file or directory\n".as_bytes());
-        assert_eq!(decode_output(&mixed), "wsl: 检测到 localhost 代理配置\r\n<3>WSL (1599 - Relay) ERROR: CreateProcessCommon:818: execvpe(python3) failed: No such file or directory\n");
+        assert_eq!(
+            decode_output(&mixed),
+            "wsl: 检测到 localhost 代理配置\r\n<3>WSL (1599 - Relay) ERROR: CreateProcessCommon:818: execvpe(python3) failed: No such file or directory\n"
+        );
+        // UTF-8 ending with a trailing NUL byte should not be misclassified as UTF-16LE.
+        assert_eq!(decode_output(b"ok\n\0"), "ok\n\0");
         for plain in ["", "a", "ok\n", "路径/中文\n", "/mnt/c/Users/x\n/mnt/c/y\n"] {
             assert_eq!(decode_output(plain.as_bytes()), plain);
         }
@@ -331,7 +402,6 @@ mod tests {
     fn explains_failed_wsl_calls() {
         use std::os::windows::process::ExitStatusExt as _;
         let output = |code: u32, stdout: Vec<u8>, stderr: &[u8]| Output { status: std::process::ExitStatus::from_raw(code), stdout, stderr: stderr.to_vec() };
-        // Other tests switch the language at any time, so either is accepted.
         let either = |text: &str, chinese: &str, english: &str| assert!(text.starts_with(chinese) || text.starts_with(english), "{text}");
         let gone = failure("Ubuntu", &output(0xFFFF_FFFF, utf16("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n"), b""), "x").to_string();
         either(&gone, "找不到 WSL 发行版 Ubuntu", "The WSL distribution Ubuntu was not found");
@@ -368,16 +438,12 @@ mod tests {
         assert!(args.contains(&"RAINY_HOME=/home/u/.rainy-agent".to_owned()));
         assert_eq!(args.last().map(String::as_str), Some("/r/rainy-host"));
         assert!(command.wait_for_loopback);
-        // What a force stop needs to find the Host in the distribution.
         assert_eq!(host_of(&command), Some(("Ubuntu".to_owned(), "/r/rainy-host".to_owned())));
         assert_eq!(host_of(&host_command("Debian", "/r/rainy-host", &[])), Some(("Debian".to_owned(), "/r/rainy-host".to_owned())));
         assert_eq!(host_of(&HostCommand { program: r"C:\Rainy\resources\windows-host\rainy-host.exe".into(), ..command.clone() }), None);
         assert_eq!(host_of(&HostCommand { args: command.args[..3].to_vec(), ..command }), None);
     }
 
-    /// A WSL Host that ignores `stop` is ended in the distribution, with what it started, not only `wsl.exe` on
-    /// Windows. Run with `--ignored` where WSL has a distribution with python3 (`RAINY_TEST_WSL`, default Ubuntu); it
-    /// uses only a folder in `/tmp`.
     #[cfg(windows)]
     #[test]
     #[ignore = "needs a WSL distribution"]
@@ -393,8 +459,6 @@ mod tests {
         let folder = format!("/tmp/rainy-force-stop-{}", std::process::id());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        // bash under another name runs BASH_ENV before it reads its input: this Host announces itself, starts a child
-        // and never reads `stop`.
         let script = format!(
             r#"trap '' TERM HUP INT
 (exec -a "$0-child" sleep 600) &
@@ -417,7 +481,6 @@ while :; do sleep 1; done
         process.stop();
         assert!(started.elapsed() < Duration::from_secs(40));
         assert_eq!(count(), 0);
-        // A pid that is no longer the Host is left alone.
         force_stop(&distro, &host, process.ready().pid).unwrap();
         let _ = output_within(wsl(&distro, &["rm", "-rf", &folder]), Duration::from_secs(60), "cleanup");
     }

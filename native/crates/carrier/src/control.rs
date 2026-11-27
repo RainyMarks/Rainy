@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,6 +20,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::locale::localized;
+use crate::process_win::{contain, hide, kill_process_tree};
 
 /// How long the Host may take to report readiness.
 const START_DEADLINE: Duration = Duration::from_secs(90);
@@ -26,6 +28,8 @@ const START_DEADLINE: Duration = Duration::from_secs(90);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// How long a stopping Host gets before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(8);
+/// Upper bound on concurrent background worker threads answering Host control requests.
+const MAX_CONTROL_WORKERS: usize = 32;
 
 /// How to start one Host.
 #[derive(Debug, Clone)]
@@ -95,6 +99,7 @@ pub struct HostProcess {
     pending: Pending,
     ready: HostReady,
     exited: Arc<Mutex<Option<Option<i32>>>>,
+    stopped: AtomicBool,
     /// The distribution and Linux path of a Host in WSL, which outlives `wsl.exe` when it does not stop by itself.
     wsl: Option<(String, String)>,
     /// The SSH target and Linux path of a remote Host, tracked for remote `/proc` force-stop and reconnect.
@@ -153,18 +158,18 @@ fn write_line(stdin: &Mutex<Option<impl Write>>, value: &Value) -> bool {
     false
 }
 
-fn kill_tree(pid: u32) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        let _ = Command::new("taskkill.exe")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags(0x0800_0000)
-            .status();
+fn terminate_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        kill_process_tree(child.id());
+        let _ = child.kill();
     }
-    #[cfg(not(windows))]
-    {
-        let _ = pid;
+    let _ = child.wait();
+}
+
+fn record_exit(exited: &Mutex<Option<Option<i32>>>, reported: &AtomicBool, events: &dyn HostEvents, code: Option<i32>) {
+    *exited.lock().unwrap() = Some(code);
+    if !reported.swap(true, Ordering::SeqCst) {
+        events.exited(code);
     }
 }
 
@@ -185,22 +190,19 @@ impl HostProcess {
         if let Some(cwd) = &command.cwd {
             process.current_dir(cwd);
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            process.creation_flags(CREATE_NO_WINDOW);
-        }
+        hide(&mut process);
         let mut child = process.spawn().with_context(|| localized(&format!("无法启动 {}", command.program.display()), &format!("Starting {}", command.program.display())))?;
+        contain(&child);
         let stdin = Arc::new(Mutex::new(child.stdin.take()));
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let pending: Pending = Arc::default();
         let exited = Arc::new(Mutex::new(None));
+        let exit_reported = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel::<Result<HostReady>>();
         let child = Arc::new(Mutex::new(child));
 
-        {
+        let spawn_stderr = {
             let events = events.clone();
             thread::Builder::new().name("host-stderr".into()).spawn(move || {
                 let mut reader = BufReader::new(stderr);
@@ -209,9 +211,13 @@ impl HostProcess {
                     events.diagnostic(String::from_utf8_lossy(&line).trim_end());
                     line.clear();
                 }
-            })?;
+            })
+        };
+        if let Err(error) = spawn_stderr {
+            terminate_child(&mut child.lock().unwrap());
+            return Err(error.into());
         }
-        {
+        let spawn_control = {
             let events = events.clone();
             let stdin = stdin.clone();
             let pending = pending.clone();
@@ -219,7 +225,11 @@ impl HostProcess {
             let local = crate::ssh::host_of(command).is_none() && !is_ssh_program(&command.program);
             thread::Builder::new().name("host-control".into()).spawn(move || {
                 read_control(stdout, &stdin, &pending, &ready_tx, &events, local);
-            })?;
+            })
+        };
+        if let Err(error) = spawn_control {
+            terminate_child(&mut child.lock().unwrap());
+            return Err(error.into());
         }
 
         let deadline = Instant::now() + START_DEADLINE;
@@ -267,31 +277,39 @@ impl HostProcess {
                         log::warn!("The SSH Host did not stop after failed start: {stop_err:#}");
                     }
                 }
-                let mut child = child.lock().unwrap();
-                kill_tree(child.id());
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_child(&mut child.lock().unwrap());
                 return Err(error);
             }
         };
 
-        let host = Self { child: child.clone(), stdin, pending, ready, exited: exited.clone(), wsl, ssh };
+        let host = Self {
+            child: child.clone(),
+            stdin,
+            pending,
+            ready,
+            exited: exited.clone(),
+            stopped: AtomicBool::new(false),
+            wsl,
+            ssh,
+        };
         // Report the exit once, from a thread that only polls the child.
         let child_ref = child;
-        thread::Builder::new().name("host-exit".into()).spawn(move || {
+        if let Err(error) = thread::Builder::new().name("host-exit".into()).spawn(move || {
             loop {
                 let status = child_ref.lock().unwrap().try_wait();
                 match status {
                     Ok(Some(status)) => {
-                        *exited.lock().unwrap() = Some(status.code());
-                        events.exited(status.code());
+                        record_exit(&exited, &exit_reported, &*events, status.code());
                         return;
                     }
                     Ok(None) => thread::sleep(Duration::from_millis(250)),
                     Err(_) => return,
                 }
             }
-        })?;
+        }) {
+            host.stop();
+            return Err(error.into());
+        }
         Ok(host)
     }
 
@@ -331,20 +349,7 @@ impl HostProcess {
         answer.get("active").and_then(Value::as_bool).ok_or_else(invalid)
     }
 
-    /// Ask the Host to stop, and kill it when it has not exited after the grace period.
-    pub fn stop(&self) {
-        if self.has_exited() {
-            return;
-        }
-        write_line(&self.stdin, &json!({ "type": "stop" }));
-        self.stdin.lock().unwrap().take();
-        let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline {
-            if self.has_exited() || matches!(self.child.lock().unwrap().try_wait(), Ok(Some(_))) {
-                return;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
+    fn force_stop_remote(&self) {
         if let Some((distro, host)) = &self.wsl
             && let Err(error) = crate::wsl::force_stop(distro, host, self.ready.pid)
         {
@@ -355,10 +360,36 @@ impl HostProcess {
         {
             log::warn!("The SSH Host did not stop: {error:#}");
         }
+    }
+
+    /// Ask the Host to stop, and kill it when it has not exited after the grace period.
+    pub fn stop(&self) {
+        if self.stopped.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // If `wsl.exe` or `ssh.exe` died unexpectedly before `stop()`, the remote Host may still be alive.
+        if self.has_exited() {
+            self.force_stop_remote();
+            return;
+        }
+        write_line(&self.stdin, &json!({ "type": "stop" }));
+        self.stdin.lock().unwrap().take();
+        let deadline = Instant::now() + STOP_GRACE;
+        while Instant::now() < deadline {
+            if self.has_exited() {
+                return;
+            }
+            if let Ok(Some(status)) = self.child.lock().unwrap().try_wait() {
+                *self.exited.lock().unwrap() = Some(status.code());
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        self.force_stop_remote();
         let mut child = self.child.lock().unwrap();
-        kill_tree(child.id());
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_child(&mut child);
+        let code = child.try_wait().ok().flatten().and_then(|status| status.code());
+        *self.exited.lock().unwrap() = Some(code);
     }
 }
 
@@ -371,6 +402,31 @@ impl Drop for HostProcess {
 /// Whether `program` is the `ssh` client, whose Host runs on another computer.
 fn is_ssh_program(program: &std::path::Path) -> bool {
     program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("ssh"))
+}
+
+/// Run a control-channel responder on a bounded pool of short-lived threads without ever panicking on spawn failure.
+fn dispatch_worker(active: &Arc<AtomicUsize>, task: impl FnOnce() + Send + 'static) {
+    let prev = active.fetch_add(1, Ordering::AcqRel);
+    if prev >= MAX_CONTROL_WORKERS {
+        active.fetch_sub(1, Ordering::AcqRel);
+        task();
+        return;
+    }
+    let counter = active.clone();
+    let spawned = thread::Builder::new().name("host-control-reply".into()).spawn(move || {
+        struct Release(Arc<AtomicUsize>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        let _guard = Release(counter);
+        task();
+    });
+    if let Err(error) = spawned {
+        active.fetch_sub(1, Ordering::AcqRel);
+        log::warn!("Control reply thread could not start: {error}");
+    }
 }
 
 /// Answers the Host's control messages. `local`: the Host runs on this computer and may drive the preview window,
@@ -386,6 +442,7 @@ fn read_control<W: Write + Send + 'static>(
     let mut reader = BufReader::new(stdout);
     let mut raw = Vec::new();
     let mut announced = false;
+    let active_workers = Arc::new(AtomicUsize::new(0));
     while reader.read_until(b'\n', &mut raw).map(|n| n > 0).unwrap_or(false) {
         let line = String::from_utf8_lossy(&raw).trim_end_matches(['\r', '\n']).to_owned();
         raw.clear();
@@ -407,12 +464,13 @@ fn read_control<W: Write + Send + 'static>(
                 let _ = ready.send(parse_ready(&message));
             }
             ("fatal", _) if !announced => {
+                announced = true;
                 let text = message.get("message").and_then(Value::as_str).map_or_else(|| localized("执行后端启动失败。", "Host startup failed."), str::to_owned);
                 let _ = ready.send(Err(anyhow!(text)));
             }
             ("credential-key", Some(id)) => {
                 let (events, stdin) = (events.clone(), stdin.clone());
-                thread::spawn(move || {
+                dispatch_worker(&active_workers, move || {
                     let key = events.credential_key();
                     write_line(&stdin, &json!({ "type": "reply", "id": id, "key": key }));
                 });
@@ -420,7 +478,7 @@ fn read_control<W: Write + Send + 'static>(
             ("system-proxy", Some(id)) => {
                 let url = message.get("url").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let (events, stdin) = (events.clone(), stdin.clone());
-                thread::spawn(move || {
+                dispatch_worker(&active_workers, move || {
                     let lower = url.to_ascii_lowercase();
                     let proxy = if lower.starts_with("http://") || lower.starts_with("https://") { events.system_proxy(&url) } else { None };
                     write_line(&stdin, &json!({ "type": "reply", "id": id, "url": proxy }));
@@ -433,7 +491,7 @@ fn read_control<W: Write + Send + 'static>(
             ("preview", Some(id)) => {
                 let command = message.get("command").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
                 let (events, stdin) = (events.clone(), stdin.clone());
-                thread::spawn(move || {
+                dispatch_worker(&active_workers, move || {
                     let answer = events.preview(command);
                     write_line(&stdin, &json!({ "type": "reply", "id": id, "answer": answer }));
                 });
@@ -451,9 +509,16 @@ fn read_control<W: Write + Send + 'static>(
 /// WSL and SSH can report readiness before Windows loopback forwarding accepts connections.
 fn wait_for_loopback(port: u16, deadline: Instant) -> Result<()> {
     loop {
-        match TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(2)) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let timeout = left.min(Duration::from_secs(2)).max(Duration::from_millis(50));
+        match TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), timeout) {
             Ok(_) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut | std::io::ErrorKind::ConnectionReset
+                ) && Instant::now() < deadline =>
+            {
                 thread::sleep(Duration::from_millis(100));
             }
             Err(error) => return Err(error).context(localized("无法通过本机回环地址连接执行后端。", "The execution Host is not reachable on this computer's loopback address.")),
@@ -464,11 +529,13 @@ fn wait_for_loopback(port: u16, deadline: Instant) -> Result<()> {
 fn random_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("system random source");
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    crate::text::hex(&bytes)
 }
 
 #[cfg(test)]
 mod tests {
+    use ::core::prelude::v1::test;
+
     use super::*;
 
     #[derive(Default)]
@@ -494,6 +561,18 @@ mod tests {
         let reply: Value = serde_json::from_slice(written.trim_ascii()).unwrap();
         assert_eq!((reply["type"].as_str(), reply["id"].as_str()), (Some("reply"), Some("p1")));
         assert!(reply["answer"]["error"].is_string());
+    }
+
+    #[test]
+    fn fatal_message_marks_announced_so_later_ready_is_ignored() {
+        let stream = b"RAINY_CONTROL {\"type\":\"fatal\",\"message\":\"boom\"}\nRAINY_CONTROL {\"type\":\"ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:4310/\",\"pid\":7,\"home\":\"/h\"}\n";
+        let events: Arc<dyn HostEvents> = Arc::new(PreviewEvents::default());
+        let stdin = Arc::new(Mutex::new(Some(Vec::<u8>::new())));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        read_control(&stream[..], &stdin, &Pending::default(), &ready_tx, &events, true);
+        let first = ready_rx.try_recv().unwrap();
+        assert!(first.is_err());
+        assert!(ready_rx.try_recv().is_err());
     }
 
     #[test]

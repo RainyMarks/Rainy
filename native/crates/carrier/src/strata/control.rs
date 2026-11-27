@@ -124,7 +124,7 @@ pub fn installed(folders: &Folders) -> Vec<Control> {
     if let Some(updated) = pointed(&folders.components) {
         found.push(updated);
     }
-    found.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)));
+    found.sort_by_key(|control| std::cmp::Reverse(version_key(&control.version)));
     found.dedup_by(|a, b| a.root == b.root);
     found
 }
@@ -246,7 +246,10 @@ pub fn install(folders: &Folders, offer: &Offer, cancel: Arc<AtomicBool>, progre
         ));
     }
     let _ = fs::remove_dir_all(&destination);
-    fs::rename(&root, &destination).with_context(|| format!("Moving {} to {}", root.display(), destination.display()))?;
+    if let Err(error) = crate::fs_util::rename_retried(&root, &destination) {
+        let _ = fs::remove_dir_all(&incoming);
+        return Err(error).with_context(|| format!("Moving {} to {}", root.display(), destination.display()));
+    }
     let _ = fs::remove_dir_all(&incoming);
     let _ = fs::remove_file(&archive);
     Ok(Control { version: offer.version.clone(), root: destination })

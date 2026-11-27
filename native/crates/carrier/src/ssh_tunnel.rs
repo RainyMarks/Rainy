@@ -13,12 +13,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::askpass::{Askpass, Session};
 use crate::locale::localized;
+use crate::process_win;
 use crate::ssh::{self, Destination};
 pub use crate::targets::PortForwardRule;
 use crate::targets::{DEFAULT_KEEPALIVE_COUNT_MAX, DEFAULT_KEEPALIVE_INTERVAL, SshHostProfile};
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STARTUP_CHECK_WINDOW: Duration = Duration::from_millis(350);
 
 /// Lifecycle state of the standalone SSH port-forwarding process.
@@ -115,7 +114,7 @@ fn check_local_ports(rules: &[PortForwardRule]) -> Result<()> {
 }
 
 fn terminate_child(mut child: Child) {
-    ssh::kill_process_tree(child.id());
+    process_win::kill_process_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -131,10 +130,11 @@ struct TunnelInner {
 
 /// Manages one lightweight standalone `ssh -N` child process for dynamic `-L` port forwarding.
 ///
-/// Applying new rules smoothly restarts only this lightweight tunnel child without touching the primary Host tunnel.
-/// Dropping the manager forcefully cleans up the child process tree.
+/// Operations (`apply_rules`, `stop_all`) are serialized under `op_lock` so concurrent updates never overwrite and
+/// orphan a running `ssh -N` process. Dropping the manager forcefully cleans up the child process tree.
 pub struct TunnelManager {
     askpass: Option<Arc<Askpass>>,
+    op_lock: Mutex<()>,
     inner: Arc<Mutex<TunnelInner>>,
 }
 
@@ -153,6 +153,7 @@ impl TunnelManager {
     pub fn new(askpass: Option<Arc<Askpass>>) -> Self {
         Self {
             askpass,
+            op_lock: Mutex::new(()),
             inner: Arc::new(Mutex::new(TunnelInner {
                 generation: 0,
                 child: None,
@@ -166,8 +167,9 @@ impl TunnelManager {
 
     /// Replace the active forwarding rules for `target`. Passing an empty list stops the tunnel cleanly.
     pub fn apply_rules(&self, target: &Destination, rules: Vec<PortForwardRule>, profile: Option<&SshHostProfile>) -> Result<TunnelStatus> {
+        let _op = self.op_lock.lock().unwrap();
         if rules.is_empty() {
-            self.stop_all();
+            self.stop_locked();
             return Ok(self.status());
         }
         let target = ssh::parse_destination(&target.destination, target.port.map(u32::from))?;
@@ -176,7 +178,7 @@ impl TunnelManager {
         let args = tunnel_arguments(&target, &normalized, keepalive)?;
 
         // Stop any existing forwarding child first so ports owned by our previous rules are released before preflight.
-        self.stop_all();
+        self.stop_locked();
 
         if let Err(error) = check_local_ports(&normalized) {
             let message = format!("{error:#}");
@@ -197,32 +199,34 @@ impl TunnelManager {
         if let Some(session) = &session {
             command.envs(session.env().iter().map(|(name, value)| (name, value)));
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
+        process_win::hide(&mut command);
 
-        let mut child = command.spawn().with_context(|| localized("无法启动 SSH 端口转发进程。", "Starting the SSH port forwarding process."))?;
+        let mut child = command
+            .spawn()
+            .with_context(|| localized("无法启动 SSH 端口转发进程。", "Starting the SSH port forwarding process."))?;
+        process_win::contain(&child);
         let stderr = child.stderr.take();
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
-        let generation = {
+        let (generation, replaced_child) = {
             let mut inner = self.inner.lock().unwrap();
             inner.generation += 1;
-            inner.child = Some(child);
+            let old = inner.child.replace(child);
             inner.target = Some(target.clone());
             inner.rules = normalized;
             inner.state = TunnelState::Active;
             inner.stderr_tail = stderr_tail.clone();
-            inner.generation
+            (inner.generation, old)
         };
+        if let Some(old) = replaced_child {
+            terminate_child(old);
+        }
 
         let (eof_tx, eof_rx) = mpsc::channel::<()>();
         if let Some(stderr) = stderr {
             let inner_ref = self.inner.clone();
             let target_ref = target.clone();
             let tail_ref = stderr_tail.clone();
-            let _ = thread::Builder::new().name("ssh-tunnel-stderr".into()).spawn(move || {
+            let spawned = thread::Builder::new().name("ssh-tunnel-stderr".into()).spawn(move || {
                 let mut reader = BufReader::new(stderr);
                 let mut line = Vec::new();
                 while reader.read_until(b'\n', &mut line).map(|n| n > 0).unwrap_or(false) {
@@ -236,7 +240,6 @@ impl TunnelManager {
                     }
                     line.clear();
                 }
-                // Pipe closed: process has exited (or is exiting). Report unexpected termination for this generation.
                 let child_to_reap: Option<Child> = {
                     let mut inner = inner_ref.lock().unwrap();
                     if inner.generation != generation {
@@ -253,18 +256,31 @@ impl TunnelManager {
                 }
                 let reason = format_tunnel_failure(&target_ref, code, &said);
                 let mut inner = inner_ref.lock().unwrap();
-                if inner.generation == generation && inner.state == TunnelState::Active {
+                // Update even if `status()` observed the exit slightly earlier with incomplete stderr.
+                if inner.generation == generation && inner.state != TunnelState::Stopped {
                     log::warn!("SSH port forwarding tunnel to {} stopped: {reason}", ssh::name(&target_ref));
                     inner.state = TunnelState::Error(reason);
                 }
                 let _ = eof_tx.send(());
             });
+            if let Err(error) = spawned {
+                let orphan = {
+                    let mut inner = self.inner.lock().unwrap();
+                    let child = if inner.generation == generation { inner.child.take() } else { None };
+                    if inner.generation == generation {
+                        inner.state = TunnelState::Error(error.to_string());
+                    }
+                    child
+                };
+                if let Some(child) = orphan {
+                    terminate_child(child);
+                }
+                return Err(error).with_context(|| localized("无法启动 SSH 端口转发监听线程。", "Starting the SSH port forwarding monitor thread."));
+            }
         } else {
             drop(eof_tx);
         }
 
-        // Wait briefly for immediate startup failure (e.g. ExitOnForwardFailure or invalid host); when the stderr
-        // thread signals EOF, the full stderr tail and TunnelState::Error have already been recorded without races.
         if eof_rx.recv_timeout(STARTUP_CHECK_WINDOW).is_ok() {
             let status = self.status();
             if let TunnelState::Error(message) = status.state {
@@ -282,7 +298,6 @@ impl TunnelManager {
         if inner.state == TunnelState::Active
             && let Some(status) = inner.child.as_mut().and_then(|child| child.try_wait().ok().flatten())
         {
-            inner.child = None;
             let said = Vec::from(inner.stderr_tail.lock().unwrap().clone()).join("\n");
             let reason = match &inner.target {
                 Some(target) => format_tunnel_failure(target, status.code(), &said),
@@ -293,8 +308,7 @@ impl TunnelManager {
         TunnelStatus { target: inner.target.clone(), rules: inner.rules.clone(), state: inner.state.clone() }
     }
 
-    /// Stop the active forwarding child process tree and clear all active rules.
-    pub fn stop_all(&self) {
+    fn stop_locked(&self) {
         let child = {
             let mut inner = self.inner.lock().unwrap();
             inner.generation += 1;
@@ -306,6 +320,12 @@ impl TunnelManager {
         if let Some(child) = child {
             terminate_child(child);
         }
+    }
+
+    /// Stop the active forwarding child process tree and clear all active rules.
+    pub fn stop_all(&self) {
+        let _op = self.op_lock.lock().unwrap();
+        self.stop_locked();
     }
 }
 
@@ -322,7 +342,7 @@ fn format_tunnel_failure(target: &Destination, code: Option<i32>, stderr: &str) 
             "SSH 端口转发绑定失败，本地端口可能已被占用。",
             "SSH local port forwarding failed; the local port may already be in use.",
         );
-        let tail = stderr.lines().map(str::trim).filter(|line| !line.is_empty()).last().unwrap_or_default();
+        let tail = stderr.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or_default();
         return if tail.is_empty() { base } else { format!("{base}\n{tail}") };
     }
     format!("{:#}", ssh::failure(target, code, stderr))
@@ -366,19 +386,15 @@ mod tests {
         assert!(args[..sep].windows(2).any(|p| p == ["-L", "127.0.0.1:6006:127.0.0.1:6006"]));
         assert!(args[..sep].windows(2).any(|p| p == ["-L", "127.0.0.1:8888:localhost:8889"]));
 
-        // Reject destination injection starting with `-`.
         let bad_target = Destination { destination: "-oProxyCommand=calc".into(), port: None };
         assert!(tunnel_arguments(&bad_target, &rules, (10, 3)).is_err());
 
-        // Reject duplicate local ports.
         let dup = vec![PortForwardRule::new(6006, 6006), PortForwardRule::new(6006, 6007)];
         assert!(tunnel_arguments(&target, &dup, (10, 3)).is_err());
 
-        // Reject unsafe remote_host.
         let bad_host = vec![PortForwardRule { remote_host: "127.0.0.1 -oFoo=bar".into(), ..PortForwardRule::new(6006, 6006) }];
         assert!(tunnel_arguments(&target, &bad_host, (10, 3)).is_err());
 
-        // Reject empty rule list for tunnel_arguments directly.
         assert!(tunnel_arguments(&target, &[], (10, 3)).is_err());
     }
 
@@ -396,7 +412,6 @@ mod tests {
         assert!(msg.contains(&port.to_string()), "error should name occupied port: {msg}");
         assert!(matches!(manager.status().state, TunnelState::Error(_)));
 
-        // Empty rules clear state back to Stopped cleanly.
         let cleared = manager.apply_rules(&target, Vec::new(), None).unwrap();
         assert_eq!(cleared.state, TunnelState::Stopped);
         assert!(cleared.rules.is_empty());

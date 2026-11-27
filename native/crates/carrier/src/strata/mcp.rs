@@ -6,6 +6,8 @@
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -17,8 +19,28 @@ use crate::locale::localized;
 
 const PROTOCOL: &str = "2025-06-18";
 
+/// Concurrent handle that aborts an in-flight management server call and terminates its process tree without waiting
+/// on any session RPC mutex.
+#[derive(Clone)]
+pub(crate) struct AbortHandle {
+    owned: Arc<Owned>,
+    aborted: Arc<AtomicBool>,
+}
+
+impl AbortHandle {
+    pub(crate) fn abort(&self) {
+        self.aborted.store(true, Ordering::SeqCst);
+        self.owned.stop();
+    }
+
+    pub(crate) fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::SeqCst)
+    }
+}
+
 pub struct Session {
-    owned: Owned,
+    owned: Arc<Owned>,
+    aborted: Arc<AtomicBool>,
     stdin: ChildStdin,
     answers: Receiver<Value>,
     next: u64,
@@ -30,6 +52,17 @@ pub struct Session {
 impl Session {
     /// Start the server for the run configs in `install` and agree on the protocol.
     pub fn start(terminal: &Terminal, install: &Path, log: &Path) -> Result<Self> {
+        Self::start_with_hook(terminal, install, log, |_| {})
+    }
+
+    /// Start the server and hand its [`AbortHandle`] to `on_started` before the initial `initialize` handshake waits,
+    /// so `close()` can interrupt even a slow first startup immediately.
+    pub(crate) fn start_with_hook(
+        terminal: &Terminal,
+        install: &Path,
+        log: &Path,
+        on_started: impl FnOnce(AbortHandle),
+    ) -> Result<Self> {
         std::fs::create_dir_all(install)?;
         if let Some(parent) = log.parent() {
             std::fs::create_dir_all(parent)?;
@@ -39,31 +72,63 @@ impl Session {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(errors);
         let mut child = command.spawn().with_context(|| format!("Starting {}", terminal.python.display()))?;
         contain(&child);
-        let stdin = child.stdin.take().context("No input of Strata's management server")?;
-        let stdout = child.stdout.take().context("No output of Strata's management server")?;
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let owned = Arc::new(Owned::new(child));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let stdin = stdin.context("No input of Strata's management server")?;
+        let stdout = stdout.context("No output of Strata's management server")?;
         let (sender, answers) = std::sync::mpsc::channel();
         std::thread::Builder::new().name("strata-management".into()).spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(message) => {
-                        if sender.send(message).is_err() {
-                            break;
+            let mut reader = BufReader::new(stdout);
+            let mut raw = Vec::new();
+            loop {
+                raw.clear();
+                match reader.read_until(b'\n', &mut raw) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let line = String::from_utf8_lossy(&raw);
+                        match serde_json::from_str::<Value>(line.trim()) {
+                            Ok(message) => {
+                                if sender.send(message).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => log::warn!("Strata's management server wrote a line that is not JSON"),
                         }
                     }
-                    Err(_) => log::warn!("Strata's management server wrote a line that is not JSON"),
                 }
             }
         })?;
-        let mut session = Self { owned: Owned::new(child), stdin, answers, next: 0, last_used: Instant::now(), root: terminal.root.clone() };
+        let mut session = Self {
+            owned: owned.clone(),
+            aborted: aborted.clone(),
+            stdin,
+            answers,
+            next: 0,
+            last_used: Instant::now(),
+            root: terminal.root.clone(),
+        };
+        on_started(AbortHandle { owned, aborted });
         // A fresh interpreter can wait minutes for the antivirus on its first start.
-        session.request("initialize", json!({ "protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": { "name": "Rainy", "version": env!("CARGO_PKG_VERSION") } }), Duration::from_secs(300))?;
+        session.request(
+            "initialize",
+            json!({ "protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": { "name": "Rainy", "version": env!("CARGO_PKG_VERSION") } }),
+            Duration::from_secs(300),
+        )?;
         session.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))?;
         Ok(session)
     }
 
+    pub(crate) fn abort_handle(&self) -> AbortHandle {
+        AbortHandle {
+            owned: self.owned.clone(),
+            aborted: self.aborted.clone(),
+        }
+    }
+
     pub fn alive(&self) -> bool {
-        !self.owned.finished()
+        !self.aborted.load(Ordering::SeqCst) && !self.owned.finished()
     }
 
     fn send(&mut self, message: &Value) -> Result<()> {
@@ -75,17 +140,23 @@ impl Session {
     }
 
     fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+        if self.aborted.load(Ordering::SeqCst) {
+            bail!(localized("Strata 的管理服务已停止。", "Strata's management server was stopped."));
+        }
         self.next += 1;
         let id = self.next;
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
         self.last_used = Instant::now();
         let deadline = Instant::now() + timeout;
         loop {
+            if self.aborted.load(Ordering::SeqCst) {
+                bail!(localized("Strata 的管理服务已停止。", "Strata's management server was stopped."));
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 bail!(localized("Strata 的管理服务没有及时回答。", "Strata's management server did not answer in time."));
             }
-            match self.answers.recv_timeout(left.min(Duration::from_millis(500))) {
+            match self.answers.recv_timeout(left.min(Duration::from_millis(200))) {
                 // Answers of an earlier call that timed out, and notifications, are passed over.
                 Ok(message) if message.get("id").and_then(Value::as_u64) == Some(id) => {
                     self.last_used = Instant::now();
@@ -117,6 +188,7 @@ impl Session {
     }
 
     pub fn stop(self) {
+        self.aborted.store(true, Ordering::SeqCst);
         drop(self.stdin);
         if self.owned.wait(Duration::from_secs(5)).is_none() {
             self.owned.stop();

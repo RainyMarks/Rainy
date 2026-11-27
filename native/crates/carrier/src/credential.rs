@@ -7,7 +7,6 @@
 
 use std::fmt;
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -17,6 +16,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value};
 
+use crate::fs_util;
 use crate::locale::localized;
 
 const KEY_FILE: &str = "credential-key.bin";
@@ -144,7 +144,8 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>> {
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
-    let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr().cast_mut() };
+    let len = u32::try_from(data.len()).context("DPAPI input is too large")?;
+    let input = CRYPT_INTEGER_BLOB { cbData: len, pbData: data.as_ptr().cast_mut() };
     let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     // SAFETY: the input blob points at `data`, which outlives the call; the output is allocated by Windows and freed below.
     let ok = unsafe {
@@ -158,7 +159,12 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>> {
         return Err(anyhow::Error::new(std::io::Error::last_os_error()).context("Windows data protection failed"));
     }
     // SAFETY: Windows returned `cbData` bytes at `pbData`, which stay valid until LocalFree.
-    let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    let slice = unsafe { std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize) };
+    let bytes = slice.to_vec();
+    if !protect {
+        // Zero decrypted plaintext key material in Windows' heap allocation before releasing it.
+        fs_util::zeroize_bytes(slice);
+    }
     unsafe { LocalFree(output.pbData.cast()) };
     Ok(bytes)
 }
@@ -189,12 +195,10 @@ fn os_crypt_key(
         Err(error) => return Err(CredentialError::Io { path, detail: error.to_string() }),
     };
     let mut state = Map::new();
-    let mut json_valid = false;
     let mut damaged: Option<String> = None;
     if let Some(bytes) = &existing {
         match serde_json::from_slice::<Map<String, Value>>(bytes) {
             Ok(parsed) => {
-                json_valid = true;
                 match parsed.get("os_crypt") {
                     None => {
                         state = parsed;
@@ -230,28 +234,12 @@ fn os_crypt_key(
     // Verify DPAPI protection works before touching or backing up any existing file.
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
-    let protected = protector.protect(&key).map_err(|error| CredentialError::ProtectionUnavailable { detail: error.to_string() })?;
+    let protected = protector.protect(&key).map_err(|error| {
+        fs_util::zeroize_bytes(&mut key);
+        CredentialError::ProtectionUnavailable { detail: error.to_string() }
+    })?;
     let mut blob = DPAPI_PREFIX.to_vec();
     blob.extend(protected);
-
-    let warning = if let Some(reason) = damaged {
-        let backup = unique_backup_path(user_data, "Local State.unreadable", "");
-        if let Some(raw) = &existing {
-            if json_valid {
-                write_atomic(&backup, raw).map_err(|error| CredentialError::Io { path: backup.clone(), detail: error.to_string() })?;
-            } else {
-                fs::rename(&path, &backup).map_err(|error| CredentialError::Io { path: path.clone(), detail: error.to_string() })?;
-            }
-        }
-        let warning = CredentialWarning::LocalStateRecovered { backup: backup.clone(), reason: reason.clone() };
-        log(&format!(
-            "Local State could not be opened ({reason}) and was backed up to {}; created a new DPAPI-protected key so API keys stay encrypted.",
-            backup.display()
-        ));
-        Some(warning)
-    } else {
-        None
-    };
 
     let mut os_crypt = match state.remove("os_crypt") {
         Some(Value::Object(existing_map)) => existing_map,
@@ -259,8 +247,35 @@ fn os_crypt_key(
     };
     os_crypt.insert("encrypted_key".into(), Value::String(STANDARD.encode(blob)));
     state.insert("os_crypt".into(), Value::Object(os_crypt));
-    let encoded_state = serde_json::to_vec(&state).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
-    write_atomic(&path, &encoded_state).map_err(|error| CredentialError::Io { path, detail: error.to_string() })?;
+    let encoded_state = serde_json::to_vec(&state).map_err(|error| {
+        fs_util::zeroize_bytes(&mut key);
+        CredentialError::Crypto { detail: error.to_string() }
+    })?;
+
+    // Copy damaged content to a backup first while leaving the original in place until the atomic replacement succeeds.
+    let backup_plan = damaged.map(|reason| (unique_backup_path(user_data, "Local State.unreadable", ""), reason));
+    if let Some((backup, _)) = &backup_plan
+        && let Some(raw) = &existing
+    {
+        write_atomic(backup, raw).map_err(|error| {
+            fs_util::zeroize_bytes(&mut key);
+            CredentialError::Io { path: backup.clone(), detail: error.to_string() }
+        })?;
+    }
+    if let Err(error) = write_atomic(&path, &encoded_state) {
+        fs_util::zeroize_bytes(&mut key);
+        if let Some((backup, _)) = &backup_plan {
+            let _ = fs::remove_file(backup);
+        }
+        return Err(CredentialError::Io { path, detail: error.to_string() });
+    }
+    let warning = backup_plan.map(|(backup, reason)| {
+        log(&format!(
+            "Local State could not be opened ({reason}) and was backed up to {}; created a new DPAPI-protected key so API keys stay encrypted.",
+            backup.display()
+        ));
+        CredentialWarning::LocalStateRecovered { backup, reason }
+    });
     Ok((key, warning))
 }
 
@@ -331,7 +346,7 @@ pub fn load_credential_key(
     protector: &dyn Protector,
     log: &dyn Fn(&str),
 ) -> std::result::Result<CredentialKey, CredentialError> {
-    let (os_key, mut warnings) = match os_crypt_key(user_data, protector, log) {
+    let (mut os_key, mut warnings) = match os_crypt_key(user_data, protector, log) {
         Ok((key, warning)) => (key, warning.into_iter().collect::<Vec<_>>()),
         Err(error) => {
             log(&format!("DPAPI credential protection failed; nothing was changed: {error}"));
@@ -339,32 +354,51 @@ pub fn load_credential_key(
         }
     };
     let path = user_data.join(KEY_FILE);
-    let mut needs_backup = false;
+    let mut unreadable_stored: Option<Vec<u8>> = None;
     match fs::read(&path) {
         Ok(stored) => {
             if let Ok(key) = open(&os_key, &stored)
                 && valid_key(&key)
             {
+                fs_util::zeroize_bytes(&mut os_key);
                 return Ok(CredentialKey { key, warnings });
             }
-            needs_backup = true;
+            unreadable_stored = Some(stored);
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(CredentialError::Io { path, detail: error.to_string() }),
+        Err(error) => {
+            fs_util::zeroize_bytes(&mut os_key);
+            return Err(CredentialError::Io { path, detail: error.to_string() });
+        }
     }
     let mut raw = [0u8; 32];
-    getrandom::fill(&mut raw).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
+    if let Err(error) = getrandom::fill(&mut raw) {
+        fs_util::zeroize_bytes(&mut os_key);
+        return Err(CredentialError::Crypto { detail: error.to_string() });
+    }
     let key = STANDARD.encode(raw);
-    let sealed = seal(&os_key, &key).map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
-    if needs_backup {
-        // Windows can no longer open it, for example after an administrator reset the account password or Local State
-        // had to be rebuilt. The file is kept for diagnosis; API keys stored with it have to be entered again.
+    fs_util::zeroize_bytes(&mut raw);
+    let sealed = seal(&os_key, &key);
+    fs_util::zeroize_bytes(&mut os_key);
+    let sealed = sealed.map_err(|error| CredentialError::Crypto { detail: error.to_string() })?;
+    let backup = if let Some(stored) = &unreadable_stored {
+        // Keep the original intact until atomic replacement succeeds, writing its backup copy first.
         let aside = unique_backup_path(user_data, "credential-key.unreadable", ".bin");
-        fs::rename(&path, &aside).map_err(|error| CredentialError::Io { path: path.clone(), detail: error.to_string() })?;
+        write_atomic(&aside, stored).map_err(|error| CredentialError::Io { path: aside.clone(), detail: error.to_string() })?;
+        Some(aside)
+    } else {
+        None
+    };
+    if let Err(error) = write_atomic(&path, &sealed) {
+        if let Some(aside) = &backup {
+            let _ = fs::remove_file(aside);
+        }
+        return Err(CredentialError::Io { path, detail: error.to_string() });
+    }
+    if let Some(aside) = backup {
         log(&format!("The credential key could not be read and was moved to {}; stored API keys must be entered again.", aside.display()));
         warnings.push(CredentialWarning::KeyFileRecovered { backup: aside });
     }
-    write_atomic(&path, &sealed).map_err(|error| CredentialError::Io { path, detail: error.to_string() })?;
     Ok(CredentialKey { key, warnings })
 }
 
@@ -391,19 +425,7 @@ fn unique_backup_path(user_data: &Path, stem: &str, suffix: &str) -> PathBuf {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let directory = path.parent().ok_or_else(|| anyhow!("No parent directory"))?;
-    fs::create_dir_all(directory)?;
-    let mut suffix = [0u8; 8];
-    getrandom::fill(&mut suffix).map_err(|error| anyhow!("{error}"))?;
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("record");
-    let temporary = directory.join(format!(".{name}.{}.tmp", suffix.iter().map(|b| format!("{b:02x}")).collect::<String>()));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temporary, path).inspect_err(|_| {
-        let _ = fs::remove_file(&temporary);
-    })?;
+    fs_util::write_atomic(path, bytes, true)?;
     Ok(())
 }
 

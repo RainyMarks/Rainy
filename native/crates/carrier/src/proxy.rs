@@ -3,6 +3,8 @@
 //! Reads the current user's proxy settings (manual proxy, bypass list including `<local>`, automatic detection and PAC
 //! scripts) through WinHTTP. Nothing here ever changes a setting.
 
+use crate::text::wildcard_match;
+
 /// The proxy for `url` from a manual setting such as `127.0.0.1:7890` or `http=a:1;https=b:2`, honoring the bypass list.
 /// Returns `http(s)://host:port`, or `None` for direct. SOCKS proxies count as none, as the Host cannot use them.
 pub fn manual_proxy(setting: &str, bypass: &str, url: &str) -> Option<String> {
@@ -41,7 +43,9 @@ pub fn proxy_from_answer(answer: &str) -> Option<String> {
         match kind.as_str() {
             "DIRECT" => return None,
             "PROXY" | "HTTP" => return proxy_address(address),
-            "HTTPS" => return proxy_address(address).map(|p| p.replacen("http://", "https://", 1)),
+            "HTTPS" => return proxy_address(address).map(|p| {
+                if p.starts_with("https://") { p } else { p.replacen("http://", "https://", 1) }
+            }),
             _ => {}
         }
     }
@@ -49,13 +53,22 @@ pub fn proxy_from_answer(answer: &str) -> Option<String> {
 }
 
 fn proxy_address(address: &str) -> Option<String> {
-    let address = address.trim().trim_start_matches("http://").trim_end_matches('/');
-    let (host, port) = address.rsplit_once(':')?;
+    let trimmed = address.trim().trim_end_matches('/');
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => ("http", rest),
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("https") => ("https", rest),
+        Some(_) => return None,
+        None => ("http", trimmed),
+    };
+    let (host, port) = rest.rsplit_once(':')?;
     let host_ok = !host.is_empty()
         && (host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
-            || (host.starts_with('[') && host.ends_with(']')));
-    let port_ok = !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit());
-    (host_ok && port_ok).then(|| format!("http://{host}:{port}"))
+            || host
+                .strip_prefix('[')
+                .and_then(|inner| inner.strip_suffix(']'))
+                .is_some_and(|inner| !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')));
+    let port_num = port.parse::<u16>().ok().filter(|&p| p > 0)?;
+    host_ok.then(|| format!("{scheme}://{host}:{port_num}"))
 }
 
 fn split_url(url: &str) -> Option<(String, String)> {
@@ -75,40 +88,41 @@ fn bypassed(list: &str, host: &str) -> bool {
     list.split([';', ' ', ',']).map(str::trim).filter(|entry| !entry.is_empty()).any(|entry| {
         let entry = entry.to_ascii_lowercase();
         if entry == "<local>" {
-            return !host.contains('.') && !host.contains(':');
+            return (!host.contains('.') && !host.contains(':')) || host == "[::1]";
         }
         let entry = entry.split_once("://").map_or(entry.as_str(), |(_, rest)| rest);
-        wildcard(entry, host)
+        wildcard_match(entry, host, true, false)
     })
-}
-
-fn wildcard(pattern: &str, text: &str) -> bool {
-    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
-    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
-    while ti < t.len() {
-        if pi < p.len() && p[pi] == t[ti] {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|c| *c == '*')
 }
 
 /// The system proxy for `url`, or `None` for direct.
 #[cfg(windows)]
 pub fn system_proxy(url: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
     use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::Networking::WinHttp::*;
+
+    use crate::text::wide;
+
+    const CACHE_TTL: Duration = Duration::from_secs(10);
+    const MAX_CACHE: usize = 128;
+
+    fn shared_session() -> *mut std::ffi::c_void {
+        static SESSION: OnceLock<usize> = OnceLock::new();
+        *SESSION.get_or_init(|| {
+            let agent = wide("Rainy");
+            // SAFETY: NUL-terminated user-agent string; session handle stays open for the process lifetime.
+            let handle = unsafe { WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_NO_PROXY, std::ptr::null(), std::ptr::null(), 0) };
+            handle as usize
+        }) as *mut std::ffi::c_void
+    }
+
+    type CacheKey = (String, String, Option<String>, Option<String>, String, bool);
+    type ProxyCache = Mutex<HashMap<CacheKey, (Instant, Option<String>)>>;
+    static CACHE: OnceLock<ProxyCache> = OnceLock::new();
 
     unsafe fn take(ptr: *mut u16) -> Option<String> {
         if ptr.is_null() {
@@ -122,7 +136,6 @@ pub fn system_proxy(url: &str) -> Option<String> {
         unsafe { GlobalFree(ptr.cast()) };
         Some(text)
     }
-    use crate::text::wide;
 
     // SAFETY: plain WinHTTP calls; every string WinHTTP returns is freed by `take`.
     unsafe {
@@ -133,9 +146,21 @@ pub fn system_proxy(url: &str) -> Option<String> {
         let auto_url = take(config.lpszAutoConfigUrl);
         let manual = take(config.lpszProxy);
         let bypass = take(config.lpszProxyBypass).unwrap_or_default();
-        if config.fAutoDetect != 0 || auto_url.is_some() {
-            let agent = wide("Rainy");
-            let session = WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_NO_PROXY, std::ptr::null(), std::ptr::null(), 0);
+        let auto_detect = config.fAutoDetect != 0;
+
+        if auto_detect || auto_url.is_some() {
+            let cache_key = split_url(url).map(|(s, h)| (s, h, auto_url.clone(), manual.clone(), bypass.clone(), auto_detect));
+            let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+            if let Some(key) = &cache_key
+                && let Ok(guard) = cache.lock()
+                && let Some((at, value)) = guard.get(key)
+                && at.elapsed() < CACHE_TTL
+            {
+                return value.clone();
+            }
+
+            let session = shared_session();
+            let mut resolved_proxy: Option<Option<String>> = None;
             if !session.is_null() {
                 let auto_wide = auto_url.as_deref().map(wide);
                 let mut options: WINHTTP_AUTOPROXY_OPTIONS = std::mem::zeroed();
@@ -149,19 +174,29 @@ pub fn system_proxy(url: &str) -> Option<String> {
                 }
                 let target = wide(url);
                 let mut info: WINHTTP_PROXY_INFO = std::mem::zeroed();
-                let resolved = WinHttpGetProxyForUrl(session, target.as_ptr(), &mut options, &mut info) != 0;
-                WinHttpCloseHandle(session);
-                if resolved {
+                if WinHttpGetProxyForUrl(session, target.as_ptr(), &mut options, &mut info) != 0 {
                     let answer = take(info.lpszProxy);
                     let _ = take(info.lpszProxyBypass);
                     if info.dwAccessType == WINHTTP_ACCESS_TYPE_NO_PROXY {
-                        return None;
-                    }
-                    if let Some(answer) = answer {
-                        return proxy_from_answer(&answer);
+                        resolved_proxy = Some(None);
+                    } else if let Some(answer) = answer {
+                        resolved_proxy = Some(proxy_from_answer(&answer));
                     }
                 }
             }
+            let result = match resolved_proxy {
+                Some(answer) => answer,
+                None => manual.as_deref().and_then(|manual| manual_proxy(manual, &bypass, url)),
+            };
+            if let Some(key) = cache_key
+                && let Ok(mut guard) = cache.lock()
+            {
+                if guard.len() >= MAX_CACHE {
+                    guard.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
+                }
+                guard.insert(key, (Instant::now(), result.clone()));
+            }
+            return result;
         }
         manual.and_then(|manual| manual_proxy(&manual, &bypass, url))
     }
@@ -179,9 +214,15 @@ mod tests {
     #[test]
     fn reads_manual_settings() {
         assert_eq!(manual_proxy("127.0.0.1:7890", "", "https://api.deepseek.com/v1"), Some("http://127.0.0.1:7890".into()));
+        assert_eq!(manual_proxy("HTTP://127.0.0.1:7890/", "", "https://api.deepseek.com/v1"), Some("http://127.0.0.1:7890".into()));
+        assert_eq!(manual_proxy("HTTPS://proxy.example:8443", "", "https://api.deepseek.com/v1"), Some("https://proxy.example:8443".into()));
         assert_eq!(manual_proxy("http=a:1;https=b:2", "", "https://x.com"), Some("http://b:2".into()));
         assert_eq!(manual_proxy("http=a:1", "", "https://x.com"), Some("http://a:1".into()));
         assert_eq!(manual_proxy("socks=s:1", "", "https://x.com"), None);
+        assert_eq!(manual_proxy("127.0.0.1:0", "", "https://x.com"), None);
+        assert_eq!(manual_proxy("127.0.0.1:99999", "", "https://x.com"), None);
+        assert_eq!(manual_proxy("[::1]:7890", "", "https://x.com"), Some("http://[::1]:7890".into()));
+        assert_eq!(manual_proxy("[bad\r\n]:7890", "", "https://x.com"), None);
     }
 
     #[test]
@@ -189,6 +230,7 @@ mod tests {
         let bypass = "localhost;127.*;*.corp.example;<local>";
         assert_eq!(manual_proxy("p:1", bypass, "http://localhost:3000/"), None);
         assert_eq!(manual_proxy("p:1", bypass, "http://127.0.0.1/"), None);
+        assert_eq!(manual_proxy("p:1", bypass, "http://[::1]:8080/"), None);
         assert_eq!(manual_proxy("p:1", bypass, "https://git.corp.example/x"), None);
         assert_eq!(manual_proxy("p:1", bypass, "http://intranet/"), None);
         assert_eq!(manual_proxy("p:1", bypass, "https://api.openai.com/"), Some("http://p:1".into()));

@@ -354,26 +354,44 @@ pub fn read_preferences(path: &Path) -> Result<Map<String, Value>> {
 }
 
 /// `desktop.json` for startup: a file that is not a JSON object (cut short by a crash or a full disk, or edited by
-/// hand) is moved aside to `desktop.json.damaged` and Rainy starts with defaults, rather than refusing every start
-/// until the user finds and deletes it. A file that cannot be read now (held by another program) is still an error.
+/// hand) is moved aside to `desktop.json.damaged` (or a timestamped sibling if one already exists) and Rainy starts
+/// with defaults, rather than refusing every start until the user finds and deletes it. A file that cannot be read now
+/// (held by another program) is still an error and is never renamed aside.
 pub fn recover_preferences(path: &Path) -> Result<Map<String, Value>> {
-    match std::fs::read(path) {
-        Ok(_) => {}
+    let _guard = UPDATES.lock().unwrap();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(error) => return Err(error).with_context(|| localized(&format!("无法读取 {}", path.display()), &format!("Reading {}", path.display()))),
-    }
-    let _guard = UPDATES.lock().unwrap();
-    match read_preferences(path) {
+    };
+    match serde_json::from_slice::<Map<String, Value>>(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)) {
         Ok(preferences) => Ok(preferences),
         Err(error) => {
-            let mut aside = path.as_os_str().to_owned();
-            aside.push(".damaged");
-            log::warn!("{error:#}; it is moved aside and Rainy starts with default settings");
-            std::fs::rename(path, &aside)
+            let aside = damaged_backup_path(path);
+            log::warn!("{} is not a JSON object ({error}); it is moved aside to {} and Rainy starts with default settings", path.display(), aside.display());
+            crate::fs_util::rename_retried(path, &aside)
                 .with_context(|| localized(&format!("无法把损坏的 {} 移到一旁", path.display()), &format!("Moving the damaged {} aside", path.display())))?;
             Ok(Map::new())
         }
     }
+}
+
+fn damaged_backup_path(path: &Path) -> std::path::PathBuf {
+    let mut base = path.as_os_str().to_owned();
+    base.push(".damaged");
+    let first = std::path::PathBuf::from(&base);
+    if !first.exists() {
+        return first;
+    }
+    let mut stamped = base.clone();
+    stamped.push(format!(".{}", crate::text::now_ms()));
+    let candidate = std::path::PathBuf::from(stamped);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let mut unique = base;
+    unique.push(format!(".{}", crate::text::uuid_v4_lossy()));
+    std::path::PathBuf::from(unique)
 }
 
 /// The remembered target, or Windows for a new installation (`savedExecutionTarget`).
@@ -403,24 +421,9 @@ pub fn edit_preferences(path: &Path, change: impl FnOnce(&mut Map<String, Value>
     let _guard = UPDATES.lock().unwrap();
     let mut preferences = read_preferences(path)?;
     change(&mut preferences);
-    if let Some(directory) = path.parent() {
-        std::fs::create_dir_all(directory)?;
-    }
     let mut text = serde_json::to_string_pretty(&Value::Object(preferences))?;
     text.push('\n');
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    // On disk before it takes the name, so a crash or power loss leaves the old file or the new one, never a torn one.
-    let written = std::fs::File::create(&temporary)
-        .and_then(|mut file| {
-            use std::io::Write as _;
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| std::fs::rename(&temporary, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    written?;
+    crate::fs_util::write_atomic(path, text.as_bytes(), true)?;
     Ok(())
 }
 
@@ -465,7 +468,17 @@ pub fn ssh_host_profiles(preferences: &Map<String, Value>) -> BTreeMap<String, S
 
 /// Read one SSH host's profile, or defaults when none is stored.
 pub fn ssh_host_profile(preferences: &Map<String, Value>, target_id: &str) -> SshHostProfile {
-    ssh_host_profiles(preferences).remove(target_id).unwrap_or_default()
+    if !target_id.starts_with("ssh:") || target_id.len() <= 4 {
+        return SshHostProfile::default();
+    }
+    preferences
+        .get("sshHostProfiles")
+        .and_then(Value::as_object)
+        .and_then(|entries| entries.get(target_id))
+        .and_then(|raw| serde_json::from_value::<SshHostProfile>(raw.clone()).ok())
+        .and_then(|profile| profile.normalized().ok())
+        .filter(|normalized| !normalized.is_empty())
+        .unwrap_or_default()
 }
 
 /// Save or update one SSH host's research profile in `desktop.json`. An empty profile removes the entry.
@@ -508,6 +521,7 @@ pub fn remove_ssh_host_profile(path: &Path, target_id: &str) -> Result<()> {
 /// Registered WSL 2 distributions, without starting any (`listExecutionTargets`).
 #[cfg(windows)]
 pub fn wsl_distributions() -> Vec<ExecutionTarget> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::*;
     use crate::text::wide;
     let mut found = Vec::new();
@@ -515,39 +529,50 @@ pub fn wsl_distributions() -> Vec<ExecutionTarget> {
     unsafe {
         let mut root = std::ptr::null_mut();
         let path = wide(r"Software\Microsoft\Windows\CurrentVersion\Lxss");
-        if RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_READ, &mut root) != 0 {
+        if RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_READ, &mut root) != ERROR_SUCCESS {
             return found;
         }
         for index in 0.. {
             let mut name = [0u16; 256];
             let mut length = name.len() as u32;
             let status = RegEnumKeyExW(root, index, name.as_mut_ptr(), &mut length, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-            if status != 0 {
+            if status == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if status == ERROR_MORE_DATA {
+                continue;
+            }
+            if status != ERROR_SUCCESS {
                 break;
             }
             let guid = String::from_utf16_lossy(&name[..length as usize]);
             let mut key = std::ptr::null_mut();
-            if RegOpenKeyExW(root, name.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+            if RegOpenKeyExW(root, name.as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
                 continue;
             }
             let read_dword = |value: &str| -> Option<u32> {
                 let mut data = 0u32;
                 let mut size = 4u32;
                 let value = wide(value);
-                (RegQueryValueExW(key, value.as_ptr(), std::ptr::null(), std::ptr::null_mut(), (&raw mut data).cast(), &mut size) == 0).then_some(data)
+                (RegGetValueW(key, std::ptr::null(), value.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), (&raw mut data).cast(), &mut size) == ERROR_SUCCESS).then_some(data)
             };
             let read_string = |value: &str| -> Option<String> {
                 let value = wide(value);
-                let mut size = 0u32;
-                if RegQueryValueExW(key, value.as_ptr(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), &mut size) != 0 {
+                let mut buffer = vec![0u16; 256];
+                for _ in 0..4 {
+                    let mut size = (buffer.len() * 2) as u32;
+                    let st = RegGetValueW(key, std::ptr::null(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size);
+                    if st == ERROR_SUCCESS {
+                        let units = &buffer[..(size as usize / 2).min(buffer.len())];
+                        return Some(crate::registry_win::until_nul(units));
+                    }
+                    if st == ERROR_MORE_DATA && (size as usize) < 64 * 1024 {
+                        buffer.resize((size as usize).saturating_add(2).div_ceil(2), 0);
+                        continue;
+                    }
                     return None;
                 }
-                let mut buffer = vec![0u16; (size as usize).div_ceil(2)];
-                if RegQueryValueExW(key, value.as_ptr(), std::ptr::null(), std::ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size) != 0 {
-                    return None;
-                }
-                let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
-                Some(String::from_utf16_lossy(&buffer[..end]))
+                None
             };
             let version = read_dword("Version");
             let distro = read_string("DistributionName");
@@ -620,6 +645,22 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("desktop.json.damaged")).unwrap(), vec![0u8; 300]);
         save_locale(&path, "zh").unwrap();
         assert_eq!(read_preferences(&path).unwrap()["locale"], "zh");
+        // A second corruption does not overwrite the original `.damaged` backup.
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(recover_preferences(&path).unwrap().is_empty());
+        assert_eq!(std::fs::read(dir.path().join("desktop.json.damaged")).unwrap(), vec![0u8; 300]);
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("desktop.json.damaged"))
+            .collect();
+        assert_eq!(backups.len(), 2);
+
+        // An I/O error (e.g. a directory in place of the file) fails without renaming it aside.
+        let as_dir = dir.path().join("unreadable.json");
+        std::fs::create_dir(&as_dir).unwrap();
+        assert!(recover_preferences(&as_dir).is_err());
+        assert!(as_dir.is_dir());
     }
 
     #[test]

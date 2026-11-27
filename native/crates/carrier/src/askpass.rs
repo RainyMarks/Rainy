@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
@@ -16,8 +16,11 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use crate::fs_util::zeroize_bytes;
+
 const ADDRESS: &str = "RAINY_ASKPASS_ADDR";
 const TOKEN: &str = "RAINY_ASKPASS_TOKEN";
+const MAX_ACTIVE_HANDLERS: usize = 16;
 
 /// What `ssh` asks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +46,35 @@ pub type Ask = Arc<dyn Fn(Question) -> Option<String> + Send + Sync>;
 /// Whether `ssh` asks to trust an unknown host key.
 pub fn is_host_key_question(prompt: &str) -> bool {
     prompt.contains("continue connecting (yes/no")
+}
+
+/// Whether `prompt` asks for a one-time / 2FA verification code that must never be cached and replayed.
+fn is_one_time_code_question(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        "verification code",
+        "one-time",
+        "onetime",
+        "otp",
+        "2fa",
+        "two-factor",
+        "authenticator",
+        "token code",
+        "passcode",
+        "security code",
+        "sms code",
+        "验证码",
+        "动态码",
+        "一次性",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn wipe_string(mut secret: String) {
+    // SAFETY: zeroing the UTF-8 buffer with all-zero NUL bytes preserves valid UTF-8 before drop.
+    unsafe { zeroize_bytes(secret.as_bytes_mut()) };
+    drop(secret);
 }
 
 /// One `ssh` run: the server it talks to and the questions it has used an answer for.
@@ -73,6 +105,23 @@ pub struct Askpass {
     /// One question at a time; a queued one may find the answer the previous one just received.
     asking: Mutex<()>,
     ask: Ask,
+    closed: AtomicBool,
+}
+
+impl Drop for Askpass {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.lock() {
+            for (_, secret) in state.remembered.drain() {
+                wipe_string(secret);
+            }
+            for (_, open) in state.questions.drain() {
+                open.store(false, Ordering::SeqCst);
+            }
+        }
+        // Wake the blocking `TcpListener::incoming()` thread so it observes `Weak::upgrade() == None` and exits cleanly.
+        let _ = TcpStream::connect_timeout(&self.address, Duration::from_millis(50));
+    }
 }
 
 /// The askpass identity of one `ssh` run.
@@ -95,7 +144,9 @@ impl Session {
             let Some(run) = state.sessions.get(&self.token) else { return };
             let used: Vec<(String, String)> = run.used.iter().map(|prompt| (run.scope.clone(), prompt.clone())).collect();
             for key in used {
-                state.remembered.remove(&key);
+                if let Some(secret) = state.remembered.remove(&key) {
+                    wipe_string(secret);
+                }
             }
         }
     }
@@ -132,20 +183,50 @@ fn watch(mut stream: TcpStream, open: &AtomicBool) {
 fn random_token() -> String {
     let mut bytes = [0u8; 24];
     getrandom::fill(&mut bytes).expect("system random source");
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    crate::text::hex(&bytes)
+}
+
+struct HandlerPermit(Arc<AtomicUsize>);
+
+impl Drop for HandlerPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Askpass {
     /// Listen on a loopback port; `program` is what `ssh` starts (Rainy.exe).
     pub fn start(program: PathBuf, ask: Ask) -> Result<Arc<Self>> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
-        let server = Arc::new(Self { address: listener.local_addr()?, program, state: Mutex::default(), asking: Mutex::new(()), ask });
+        let active_handlers = Arc::new(AtomicUsize::new(0));
+        let server = Arc::new(Self {
+            address: listener.local_addr()?,
+            program,
+            state: Mutex::default(),
+            asking: Mutex::new(()),
+            ask,
+            closed: AtomicBool::new(false),
+        });
         let weak = Arc::downgrade(&server);
         thread::Builder::new().name("askpass".into()).spawn(move || {
             for stream in listener.incoming() {
                 let Some(server) = weak.upgrade() else { return };
+                if server.closed.load(Ordering::SeqCst) {
+                    return;
+                }
                 let Ok(stream) = stream else { continue };
-                thread::spawn(move || server.serve(stream));
+                let prev = active_handlers.fetch_add(1, Ordering::AcqRel);
+                if prev >= MAX_ACTIVE_HANDLERS {
+                    active_handlers.fetch_sub(1, Ordering::AcqRel);
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                let permit = HandlerPermit(active_handlers.clone());
+                // If spawn fails, dropping the closure drops `permit`, which decrements `active_handlers` once.
+                let _ = thread::Builder::new().name("askpass-conn".into()).spawn(move || {
+                    let _permit = permit;
+                    server.serve(stream);
+                });
             }
         })?;
         Ok(server)
@@ -168,6 +249,7 @@ impl Askpass {
 
     fn serve(&self, stream: TcpStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
         let mut line = String::new();
         if BufReader::new((&stream).take(16384)).read_line(&mut line).is_err() {
             return;
@@ -188,15 +270,18 @@ impl Askpass {
             None
         };
         let body = reply.map_or_else(|| json!({}), |answer| json!({ "answer": answer }));
+        let mut serialized = body.to_string();
         let mut stream = stream;
-        let _ = stream.write_all(body.to_string().as_bytes());
-        // The watcher holds the socket too; the askpass process reads to its end.
+        let _ = stream.write_all(serialized.as_bytes());
         let _ = stream.shutdown(Shutdown::Both);
+        // Zeroize serialized reply containing credentials before freeing.
+        unsafe { zeroize_bytes(serialized.as_bytes_mut()) };
     }
 
     fn answer(&self, token: &str, prompt: &str, open: &Arc<AtomicBool>) -> Option<String> {
         let _turn = self.asking.lock().unwrap();
         let kind = if is_host_key_question(prompt) { QuestionKind::HostKey } else { QuestionKind::Secret };
+        let cacheable = kind == QuestionKind::Secret && !is_one_time_code_question(prompt);
         {
             let mut state = self.state.lock().unwrap();
             let State { remembered, sessions, cancelled, questions } = &mut *state;
@@ -205,7 +290,7 @@ impl Askpass {
             }
             let run = sessions.get_mut(token)?;
             let key = (run.scope.clone(), prompt.to_owned());
-            if kind == QuestionKind::Secret
+            if cacheable
                 && !run.used.contains(prompt)
                 && let Some(answer) = remembered.get(&key)
             {
@@ -213,8 +298,10 @@ impl Askpass {
                 return Some(answer.clone());
             }
             // A question asked twice in one run means its earlier answer did not work.
-            if run.used.contains(prompt) {
-                remembered.remove(&key);
+            if run.used.contains(prompt)
+                && let Some(secret) = remembered.remove(&key)
+            {
+                wipe_string(secret);
             }
             questions.insert(token.to_owned(), open.clone());
         }
@@ -223,14 +310,19 @@ impl Askpass {
         state.questions.remove(token);
         // Nobody waits for an answer the run gave up on; it is neither remembered nor taken as a cancel.
         if !open.load(Ordering::SeqCst) {
+            if let Some(secret) = reply {
+                wipe_string(secret);
+            }
             return None;
         }
         match &reply {
-            Some(answer) if kind == QuestionKind::Secret => {
+            Some(answer) if cacheable => {
                 if let Some(run) = state.sessions.get_mut(token) {
                     run.used.insert(prompt.to_owned());
                     let key = (run.scope.clone(), prompt.to_owned());
-                    state.remembered.insert(key, answer.clone());
+                    if let Some(previous) = state.remembered.insert(key, answer.clone()) {
+                        wipe_string(previous);
+                    }
                 }
             }
             Some(_) => {}
@@ -255,15 +347,19 @@ pub fn client() -> Option<i32> {
         stream.write_all(format!("{}\n", json!({ "token": token, "prompt": prompt })).as_bytes()).ok()?;
         let mut reply = String::new();
         stream.read_to_string(&mut reply).ok()?;
-        serde_json::from_str::<Value>(&reply).ok()?.get("answer")?.as_str().map(str::to_owned)
+        let answer = serde_json::from_str::<Value>(&reply).ok()?.get("answer")?.as_str().map(str::to_owned);
+        wipe_string(reply);
+        answer
     };
     Some(match ask() {
         Some(answer) => {
             let mut stdout = std::io::stdout();
-            match writeln!(stdout, "{answer}").and_then(|()| stdout.flush()) {
+            let status = match writeln!(stdout, "{answer}").and_then(|()| stdout.flush()) {
                 Ok(()) => 0,
                 Err(_) => 1,
-            }
+            };
+            wipe_string(answer);
+            status
         }
         None => 1,
     })
@@ -294,17 +390,36 @@ mod tests {
         let first = server.session("alice@one:22");
         assert!(first.env().iter().any(|(name, value)| name == "SSH_ASKPASS_REQUIRE" && value == "force"));
         assert_eq!(ask_once(&server, &first, "Password: ").as_deref(), Some("secret"));
-        // Another connection of the same start gets the answer without asking.
         let second = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &second, "Password: ").as_deref(), Some("secret"));
         assert_eq!(asked.load(Ordering::SeqCst), 1);
-        // Asked again in the same run: the answer was wrong, so the user is asked anew.
         assert_eq!(ask_once(&server, &second, "Password: ").as_deref(), Some("secret"));
         assert_eq!(asked.load(Ordering::SeqCst), 2);
-        // Host keys are never remembered, and unknown tokens get nothing.
         assert_eq!(ask_once(&server, &first, "Are you sure you want to continue connecting (yes/no/[fingerprint])? "), None);
         let stale = Session { token: "stale".into(), env: Vec::new(), owner: Weak::new() };
         assert_eq!(ask_once(&server, &stale, "Password: "), None);
+    }
+
+    #[test]
+    fn never_caches_one_time_verification_codes() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        let server = Askpass::start(
+            PathBuf::from("Rainy.exe"),
+            Arc::new(move |_question: Question| {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                Some(format!("code-{n}"))
+            }),
+        )
+        .unwrap();
+        for prompt in ["Verification code: ", "Enter OTP passcode:", "请输入动态验证码："] {
+            let s1 = server.session("alice@mfa:22");
+            let s2 = server.session("alice@mfa:22");
+            let first = ask_once(&server, &s1, prompt);
+            let second = ask_once(&server, &s2, prompt);
+            assert_ne!(first, second, "OTP prompt must not replay cached answer: {prompt}");
+        }
+        assert_eq!(asked.load(Ordering::SeqCst), 6);
     }
 
     #[test]
@@ -318,14 +433,12 @@ mod tests {
         .unwrap();
         let one = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &one, "Password: ").as_deref(), Some("secret-for-one"));
-        // A different server asking the same bare question gets a window, not the first server's password.
         let other = server.session("alice@other:22");
         assert_eq!(ask_once(&server, &other, "Password: ").as_deref(), Some("secret-for-one"));
         assert_eq!(asked.load(Ordering::SeqCst), 2);
         let same_host_other_port = server.session("alice@one:2222");
         ask_once(&server, &same_host_other_port, "Password: ");
         assert_eq!(asked.load(Ordering::SeqCst), 3);
-        // A failed login forgets only that server's answer.
         other.failed();
         let again = server.session("alice@one:22");
         ask_once(&server, &again, "Password: ");
@@ -336,22 +449,18 @@ mod tests {
     fn a_cancelled_question_ends_the_run_questions() {
         let asked = Arc::new(AtomicUsize::new(0));
         let counter = asked.clone();
-        // The user cancels the first question and would answer any later one.
         let server = Askpass::start(PathBuf::from("Rainy.exe"), Arc::new(move |_: Question| (counter.fetch_add(1, Ordering::SeqCst) > 0).then(|| "pw".to_owned()))).unwrap();
         let run = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &run, "Password: "), None);
-        // ssh asks again after the empty answer; no window opens for it.
         assert_eq!(ask_once(&server, &run, "Password: "), None);
         assert_eq!(ask_once(&server, &run, "Enter passphrase for key: "), None);
         assert_eq!(asked.load(Ordering::SeqCst), 1);
-        // The next run asks again.
         let next = server.session("alice@one:22");
         assert_eq!(ask_once(&server, &next, "Password: ").as_deref(), Some("pw"));
         drop(run);
         assert!(server.state.lock().unwrap().cancelled.is_empty());
     }
 
-    /// A window that keeps asking until the question closes, then answers too late.
     fn until_closed() -> Ask {
         Arc::new(|question: Question| {
             while question.open.load(Ordering::SeqCst) {
@@ -377,7 +486,6 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         drop(run);
-        // Nothing is answered, remembered or marked cancelled.
         assert_eq!(client.join().unwrap(), "{}");
         let state = server.state.lock().unwrap();
         assert!(state.remembered.is_empty() && state.cancelled.is_empty() && state.questions.is_empty());

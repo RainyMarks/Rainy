@@ -17,8 +17,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::download::{self, Digest, DownloadError, Expected, Options};
+use crate::download::{self, Digest, DownloadError, Expected, HashSink, Options};
+use crate::fs_util;
 use crate::tarball::{self, TarError};
+use crate::text::{is_hex, uuid_v4_lossy};
 
 /// The descriptor, in the resources folder.
 pub const DESCRIPTOR_FILE: &str = "optional-modules.json";
@@ -195,13 +197,13 @@ fn archive_name(name: &str) -> bool {
 
 /// `^[a-f0-9]{64}$`
 fn sha256_hex(text: &str) -> bool {
-    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    is_hex(text, 64)
 }
 
 /// `^rainy-[a-f0-9]{20}\.\d{3}$`
 fn piece_name(name: &str) -> bool {
     let Some((hash, index)) = name.strip_prefix("rainy-").and_then(|rest| rest.split_once('.')) else { return false };
-    hash.len() == 20 && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) && index.len() == 3 && index.bytes().all(|byte| byte.is_ascii_digit())
+    is_hex(hash, 20) && index.len() == 3 && index.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// `^https://github\.com/RainyMarks/(?:RainyAgent|Rainy)/releases/download/v\d+\.\d+\.\d+-resources/$`
@@ -531,14 +533,14 @@ impl Modules {
         }
         let partial = download::partial_path(&target);
         download::check_path(&partial)?;
-        join(&paths, &partial, &options.cancel)?;
-        if !download::matches(&partial, &whole, &options.cancel)? {
-            let _ = fs::remove_file(&partial);
-            return Err(DownloadError::FileMismatch.into());
-        }
+        join_and_verify(&paths, &partial, &whole, &options.cancel)?;
         download::rename(&partial, &target).map_err(|error| io_error(&target, error))?;
         for path in paths {
-            fs::remove_file(&path).map_err(|error| io_error(&path, error))?;
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                log::warn!("Joined piece was not removed: {}: {error}", path.display());
+            }
         }
         Ok(target)
     }
@@ -574,22 +576,23 @@ impl Modules {
             Err(error) => return Err(io_error(&self.root, error)),
         };
         let list = self.list()?;
-        let pinned: HashSet<String> = list
+        let pinned_bases: HashSet<String> = list
             .iter()
             .flat_map(|module| [module.file.clone()].into_iter().chain(module.pieces.iter().map(|piece| piece.file.clone())))
-            .flat_map(|name| [format!("{name}.partial"), name])
             .collect();
         for name in names.iter().filter(|name| name.starts_with(".staging-") || name.starts_with(".retired-")) {
             let path = self.root.join(name);
             remove_all(&path).map_err(|error| io_error(&path, error))?;
         }
         let downloads = self.root.join(DOWNLOADS);
-        if !fs::symlink_metadata(&downloads).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()) {
+        if !fs::symlink_metadata(&downloads).is_ok_and(|metadata| metadata.is_dir() && !fs_util::is_reparse_point(&metadata)) {
             return Ok(());
         }
         for entry in fs::read_dir(&downloads).map_err(|error| io_error(&downloads, error))?.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !pinned.contains(&name) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let keep = pinned_bases.contains(&name)
+                || download::strip_partial_suffix(&name).is_some_and(|base| pinned_bases.contains(base));
+            if !keep && entry.file_type().is_ok_and(|kind| kind.is_file()) {
                 fs::remove_file(entry.path()).map_err(|error| io_error(&entry.path(), error))?;
             }
         }
@@ -621,28 +624,40 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), ModuleError> {
     if cancel.load(Ordering::Relaxed) { Err(DownloadError::Cancelled.into()) } else { Ok(()) }
 }
 
-/// Concatenate the pieces into `partial`.
-fn join(paths: &[PathBuf], partial: &Path, cancel: &AtomicBool) -> Result<(), ModuleError> {
+/// Concatenate the pieces into `partial` while streaming their combined SHA-256 digest in a single pass.
+fn join_and_verify(paths: &[PathBuf], partial: &Path, expected: &Expected, cancel: &AtomicBool) -> Result<(), ModuleError> {
     let mut output = File::create(partial).map_err(|error| io_error(partial, error))?;
-    let mut buffer = vec![0u8; 1 << 20];
+    let mut sink = HashSink::new(&expected.digest);
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut total = 0u64;
     for path in paths {
         let mut input = File::open(path).map_err(|error| io_error(path, error))?;
         loop {
             cancelled(cancel)?;
-            let read = input.read(&mut buffer).map_err(|error| io_error(path, error))?;
-            if read == 0 {
-                break;
-            }
+            let read = match input.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(path, error)),
+            };
             output.write_all(&buffer[..read]).map_err(|error| io_error(partial, error))?;
+            sink.update(&buffer[..read]);
+            total = total.saturating_add(read as u64);
         }
     }
-    output.sync_all().map_err(|error| io_error(partial, error))
+    output.sync_all().map_err(|error| io_error(partial, error))?;
+    drop(output);
+    if total != expected.bytes || sink.finish() != expected.digest {
+        let _ = fs::remove_file(partial);
+        return Err(DownloadError::FileMismatch.into());
+    }
+    Ok(())
 }
 
 /// Remove a folder and everything in it, or only the link when it is one.
 fn remove_all(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
+    if fs_util::is_reparse_point(&metadata) {
         fs::remove_dir(path).or_else(|_| fs::remove_file(path))
     } else if metadata.is_dir() {
         fs::remove_dir_all(path)
@@ -651,37 +666,17 @@ fn remove_all(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Write the marker in one step (`writeToolPackRecord`): pretty JSON with a trailing newline, through `<path>.<uuid>.tmp`.
+/// Write the marker in one step (`writeToolPackRecord`): pretty JSON with a trailing newline, through a unique temp file.
 fn write_marker(path: &Path, marker: &Marker) -> Result<(), ModuleError> {
     download::check_path(path)?;
     let mut text = serde_json::to_string_pretty(marker).map_err(|error| ModuleError::Invalid(error.to_string()))?;
     text.push('\n');
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".{}.tmp", uuid()));
-    let temporary = PathBuf::from(name);
-    let written = fs::OpenOptions::new().write(true).create_new(true).open(&temporary).and_then(|mut file| {
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        download::rename(&temporary, path)
-    });
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    written.map_err(|error| io_error(path, error))
+    fs_util::write_atomic(path, text.as_bytes(), false).map_err(|error| io_error(path, error))
 }
 
 /// A random version 4 UUID, as Node's `randomUUID` names staging folders.
 fn uuid() -> String {
-    let mut bytes = [0u8; 16];
-    if getrandom::fill(&mut bytes).is_err() {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
-        bytes = (nanos ^ u128::from(std::process::id()) << 96).to_le_bytes();
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+    uuid_v4_lossy()
 }
 
 /// Download locations of a module's pieces, for a machine that fetches the archive itself (an SSH server); their
@@ -869,8 +864,21 @@ mod tests {
         fs::create_dir_all(root.join("php")).unwrap();
         fs::create_dir_all(&downloads).unwrap();
         let piece = php["pieces"][0]["file"].as_str().unwrap().to_owned();
-        let kept = [piece.clone(), format!("{piece}.partial"), "php.tar.gz".into(), "php.tar.gz.partial".into()];
-        for name in kept.iter().chain(&["strata-runtime.tar.gz".to_owned(), "rainy-00000000000000000000.001".to_owned()]) {
+        let kept = [
+            piece.clone(),
+            format!("{piece}.partial"),
+            format!("{piece}.partial.0"),
+            format!("{piece}.partial.5"),
+            "php.tar.gz".into(),
+            "php.tar.gz.partial".into(),
+            "php.tar.gz.partial.2".into(),
+        ];
+        for name in kept.iter().chain(&[
+            "strata-runtime.tar.gz".to_owned(),
+            "strata-runtime.tar.gz.partial.0".to_owned(),
+            "rainy-00000000000000000000.001".to_owned(),
+            "rainy-00000000000000000000.001.partial.1".to_owned(),
+        ]) {
             fs::write(downloads.join(name), b"x").unwrap();
         }
         Modules::new(resources.path(), user_data.path(), |_| {}).clean().unwrap();
@@ -882,6 +890,24 @@ mod tests {
         assert!(!root.join(".staging-php-1").exists());
         assert!(!root.join(".retired-php-2").exists());
         assert!(root.join("php").exists());
+    }
+
+    #[test]
+    fn join_and_verify_streams_hash_and_rejects_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("p1");
+        let p2 = dir.path().join("p2");
+        fs::write(&p1, b"hello ").unwrap();
+        fs::write(&p2, b"world").unwrap();
+        let partial = dir.path().join("whole.partial");
+        let ok = expected(11, &hex(b"hello world")).unwrap();
+        join_and_verify(&[p1.clone(), p2.clone()], &partial, &ok, &AtomicBool::new(false)).unwrap();
+        assert_eq!(fs::read(&partial).unwrap(), b"hello world");
+
+        let bad = expected(11, &hex(b"wrong bytes")).unwrap();
+        let err = join_and_verify(&[p1, p2], &partial, &bad, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(err, ModuleError::Download(DownloadError::FileMismatch));
+        assert!(!partial.exists());
     }
 
     /// A file held open without sharing, as a virus scanner may hold a file just unpacked.

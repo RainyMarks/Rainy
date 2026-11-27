@@ -82,30 +82,49 @@ fn secrets() -> &'static [(Regex, &'static str)] {
     })
 }
 
+/// Precompiled account-specific regexes so exporting many lines/files does not recompile per line.
+struct Scrubber {
+    home: Option<Regex>,
+    user: Option<Regex>,
+}
+
+impl Scrubber {
+    fn new(account: &Account) -> Self {
+        let home = (account.home.chars().count() > 3)
+            .then(|| Regex::new(&format!("(?i){}", regex::escape(&account.home))).ok())
+            .flatten();
+        let user = (account.name.chars().count() > 1)
+            .then(|| Regex::new(&format!("(?i){}", regex::escape(&account.name))).ok())
+            .flatten();
+        Self { home, user }
+    }
+
+    fn apply(&self, text: &str) -> String {
+        let mut result = text.to_owned();
+        for (pattern, replacement) in secrets() {
+            if let std::borrow::Cow::Owned(replaced) = pattern.replace_all(&result, *replacement) {
+                result = replaced;
+            }
+        }
+        if let Some(home) = &self.home {
+            result = home.replace_all(&result, regex::NoExpand("~")).into_owned();
+        }
+        if let Some(user) = &self.user {
+            result = hide_user_with(&result, user);
+        }
+        result
+    }
+}
+
 /// Remove secrets, the home folder (shown as `~`) and the account name between path separators (shown as `<user>`)
 /// from log text.
 pub fn scrub(text: &str, account: &Account) -> String {
-    let mut result = text.to_owned();
-    for (pattern, replacement) in secrets() {
-        if let std::borrow::Cow::Owned(replaced) = pattern.replace_all(&result, *replacement) {
-            result = replaced;
-        }
-    }
-    if account.home.chars().count() > 3
-        && let Ok(home) = Regex::new(&format!("(?i){}", regex::escape(&account.home)))
-    {
-        result = home.replace_all(&result, regex::NoExpand("~")).into_owned();
-    }
-    if account.name.chars().count() > 1 {
-        result = hide_user(&result, &account.name);
-    }
-    result
+    Scrubber::new(account).apply(text)
 }
 
 /// `name` wherever a `\` or `/` comes right before and right after it. The name cannot hold a separator, so a match
 /// that is not between separators never overlaps one that is.
-fn hide_user(text: &str, name: &str) -> String {
-    let Ok(pattern) = Regex::new(&format!("(?i){}", regex::escape(name))) else { return text.to_owned() };
+fn hide_user_with(text: &str, pattern: &Regex) -> String {
     let separator = |found: Option<char>| matches!(found, Some('\\' | '/'));
     let mut result = String::with_capacity(text.len());
     let mut last = 0;
@@ -136,14 +155,16 @@ pub fn newest_files(directories: &[PathBuf], suffix: &str, count: usize) -> io::
             if !entry.file_name().to_string_lossy().to_lowercase().ends_with(&suffix) {
                 continue;
             }
-            if let Ok(info) = entry.metadata()
-                && info.is_file()
+            let path = entry.path();
+            if let Ok(info) = std::fs::symlink_metadata(&path)
+                && info.file_type().is_file()
+                && !crate::fs_util::is_reparse_point(&info)
             {
-                found.push((info.modified().unwrap_or(SystemTime::UNIX_EPOCH), entry.path()));
+                found.push((info.modified().unwrap_or(SystemTime::UNIX_EPOCH), path));
             }
         }
     }
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     Ok(found.into_iter().take(count).map(|(_, path)| path).collect())
 }
 
@@ -194,9 +215,9 @@ pub fn default_name(now: DateTime<Utc>) -> String {
 /// Returns the names packed.
 pub fn export(target: &Path, about: &[(String, String)], files: &[DiagnosticFile], account: &Account) -> Result<Vec<String>> {
     let mut temporary = target.as_os_str().to_owned();
-    temporary.push(format!(".{}.tmp", std::process::id()));
+    temporary.push(format!(".{}.tmp", crate::text::uuid_v4_lossy()));
     let temporary = PathBuf::from(temporary);
-    let written = write(&temporary, about, files, account).and_then(|names| Ok(std::fs::rename(&temporary, target).map(|()| names)?));
+    let written = write(&temporary, about, files, account).and_then(|names| Ok(crate::fs_util::rename_retried(&temporary, target).map(|()| names)?));
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
@@ -206,13 +227,14 @@ pub fn export(target: &Path, about: &[(String, String)], files: &[DiagnosticFile
 fn write(path: &Path, about: &[(String, String)], files: &[DiagnosticFile], account: &Account) -> Result<Vec<String>> {
     let out = File::create(path)?;
     let mut zip = Zip::new(io::BufWriter::new(out), Local::now().naive_local());
+    let scrubber = Scrubber::new(account);
     let mut names = vec!["about.txt".to_owned()];
-    let lines: String = about.iter().map(|(key, value)| format!("{key}: {}\n", scrub(value, account))).collect();
+    let lines: String = about.iter().map(|(key, value)| format!("{key}: {}\n", scrubber.apply(value))).collect();
     zip.add("about.txt", lines.as_bytes())?;
     for file in files {
         let Some(data) = tail(&file.path, file.max_bytes).with_context(|| reading(&file.path))? else { continue };
         if file.text {
-            zip.add(&file.name, scrub(&String::from_utf8_lossy(&data), account).as_bytes())?;
+            zip.add(&file.name, scrubber.apply(&String::from_utf8_lossy(&data)).as_bytes())?;
         } else {
             zip.add(&file.name, &data)?;
         }
@@ -391,9 +413,9 @@ mod platform {
     use std::path::{Path, PathBuf};
 
     use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
-    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
-    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
+    use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX, OSVERSIONINFOW};
     use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
     use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -402,32 +424,21 @@ mod platform {
 
     use super::WindowsVersion;
     use crate::locale::localized;
+    use crate::registry_win::{read_dword, read_string, until_nul};
     use crate::text::wide;
 
     const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
-    fn until_nul(units: &[u16]) -> String {
-        let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
-        String::from_utf16_lossy(&units[..end])
-    }
-
     fn registry_text(name: &str) -> Option<String> {
-        let (key, value) = (wide(CURRENT_VERSION), wide(name));
-        let mut buffer = vec![0u16; 256];
-        let mut size = u32::try_from(buffer.len() * 2).ok()?;
-        // SAFETY: both names end with NUL, and `size` is the buffer's length in bytes.
-        let status = unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size) };
-        let text = until_nul(&buffer[..(size as usize / 2).min(buffer.len())]);
-        (status == ERROR_SUCCESS && !text.trim().is_empty()).then(|| text.trim().to_owned())
+        read_string(HKEY_LOCAL_MACHINE, CURRENT_VERSION, name, false)
+            .ok()
+            .flatten()
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
     }
 
     fn registry_number(name: &str) -> Option<u32> {
-        let (key, value) = (wide(CURRENT_VERSION), wide(name));
-        let mut number = 0u32;
-        let mut size = 4u32;
-        // SAFETY: both names end with NUL; a DWORD is read into `number`.
-        let status = unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), (&raw mut number).cast(), &mut size) };
-        (status == ERROR_SUCCESS).then_some(number)
+        read_dword(HKEY_LOCAL_MACHINE, CURRENT_VERSION, name)
     }
 
     pub fn windows_version() -> Option<WindowsVersion> {
@@ -542,8 +553,18 @@ mod platform {
             let (open, folder) = (wide("open"), wide_path(folder));
             // SAFETY: both strings end with NUL.
             let opened = unsafe { ShellExecuteW(std::ptr::null_mut(), open.as_ptr(), folder.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
-            // Success is a value above 32.
-            return if opened as usize > 32 { Ok(()) } else { Err(io::Error::last_os_error()) };
+            // Success is a value above 32; ShellExecuteW may not set GetLastError on failure.
+            let code = opened as usize;
+            return if code > 32 {
+                Ok(())
+            } else {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error().unwrap_or(0) == 0 {
+                    Err(io::Error::other(format!("ShellExecuteW failed with code {code}")))
+                } else {
+                    Err(error)
+                }
+            };
         }
         Err(io::Error::from_raw_os_error(result))
     }
@@ -724,6 +745,14 @@ mod tests {
             age(&path, seconds);
         }
         std::fs::create_dir(folder.path().join("folder.dmp")).unwrap();
+        // A symlink to a newer .dmp outside the crash folder must not be followed.
+        let outside = tempfile::tempdir().unwrap();
+        let outside_dmp = outside.path().join("linked.dmp");
+        std::fs::write(&outside_dmp, "secret").unwrap();
+        #[cfg(windows)]
+        let _ = std::os::windows::fs::symlink_file(&outside_dmp, folder.path().join("linked.dmp"));
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&outside_dmp, folder.path().join("linked.dmp"));
         let missing = folder.path().join("missing");
         let found = newest_files(&[folder.path().to_owned(), missing.clone()], ".dmp", 2).unwrap();
         assert_eq!(found, [folder.path().join("new.dmp"), folder.path().join("mid.DMP")]);

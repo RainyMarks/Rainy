@@ -6,7 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError, TryLockError};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -30,7 +30,7 @@ pub fn init(path: &Path) {
     log::set_max_level(LevelFilter::Info);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        logger.write(&format!("{} PANIC {}", timestamp(), panic_message(info)));
+        logger.write_panic(&format!("{} PANIC {}", timestamp(), panic_message(info)));
         previous(info);
     }));
 }
@@ -62,6 +62,30 @@ impl FileLog {
             eprintln!("{line}");
         }
         let mut file = self.file.lock().unwrap_or_else(PoisonError::into_inner);
+        self.write_locked(&mut file, line);
+    }
+
+    /// Panic-safe write: uses `try_lock` so a panic while holding the logger mutex never self-deadlocks.
+    fn write_panic(&self, line: &str) {
+        if cfg!(debug_assertions) {
+            eprintln!("{line}");
+        }
+        let mut file = match self.file.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                // Another frame on this thread (or a concurrently running writer) holds the mutex;
+                // never block in a panic hook to avoid re-entrant self-deadlock.
+                if !cfg!(debug_assertions) {
+                    eprintln!("{line}");
+                }
+                return;
+            }
+        };
+        self.write_locked(&mut file, line);
+    }
+
+    fn write_locked(&self, file: &mut Option<(File, u64)>, line: &str) {
         if file.is_none() {
             *file = open(&self.path);
         }
@@ -74,7 +98,7 @@ impl FileLog {
             *file = open(&self.path).map(|(handle, size)| (handle, if moved { size } else { 0 }));
         }
         if let Some((handle, size)) = file.as_mut()
-            && handle.write_all(format!("{line}\n").as_bytes()).is_ok()
+            && handle.write_all(line.as_bytes()).and_then(|()| handle.write_all(b"\n")).is_ok()
         {
             *size += line.len() as u64 + 1;
         }
@@ -138,5 +162,18 @@ mod tests {
         assert!(!enabled("rainydays::cloud", Level::Info));
         assert!(!enabled("gpui::window", Level::Info));
         assert!(enabled("gpui::window", Level::Warn));
+    }
+
+    #[test]
+    fn panic_write_does_not_deadlock_when_mutex_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let log = FileLog { path: path.clone(), file: Mutex::new(None) };
+        let _held = log.file.lock().unwrap();
+        // Must return immediately without deadlocking even while the same thread holds `file`.
+        log.write_panic("reentrant panic line");
+        drop(_held);
+        log.write_panic("normal panic line");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("normal panic line"));
     }
 }

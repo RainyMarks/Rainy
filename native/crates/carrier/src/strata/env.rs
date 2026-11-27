@@ -138,7 +138,7 @@ fn short_name(_path: &Path) -> Option<PathBuf> {
 fn writable(folder: &Path) -> bool {
     let mut bytes = [0u8; 6];
     let _ = getrandom::fill(&mut bytes);
-    let probe = folder.join(format!("rainy-probe-{}-{}.tmp", std::process::id(), bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()));
+    let probe = folder.join(format!("rainy-probe-{}-{}.tmp", std::process::id(), crate::text::hex(&bytes)));
     let written = fs::OpenOptions::new().write(true).create_new(true).open(&probe).and_then(|mut file| file.write_all(b"x"));
     let removed = fs::remove_file(&probe).is_ok();
     written.is_ok() && removed
@@ -154,16 +154,25 @@ fn usable(folder: &Path) -> Option<PathBuf> {
     writable(&spelled).then_some(spelled)
 }
 
+/// Fallback temp folder at the root of the system drive (e.g. `C:\RainyTemp`), preserving the drive letter.
+fn system_rainy_temp(drive: Option<&str>) -> PathBuf {
+    let drive = drive
+        .map(|text| text.trim().trim_end_matches(['\\', '/']))
+        .filter(|text| !text.is_empty())
+        .unwrap_or("C:");
+    PathBuf::from(format!("{drive}\\RainyTemp"))
+}
+
 /// The temporary folder of Strata's processes: the system's when the engine can use it, else Rainy's own, else one
 /// beside the system's program data or at the root of the system drive (Strata's own advice is `C:\Temp`).
 pub fn temporary_folder(own: &Path) -> PathBuf {
-    let system_drive = std::env::var_os("SystemDrive").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:"));
+    let system_drive = std::env::var("SystemDrive").ok();
     let candidates = [
         std::env::var_os("TEMP").map(PathBuf::from),
         std::env::var_os("TMP").map(PathBuf::from),
         Some(own.to_path_buf()),
         std::env::var_os("ProgramData").map(|data| PathBuf::from(data).join("RainyAgent").join("Temp")),
-        Some(system_drive.join("\\").join("RainyTemp")),
+        Some(system_rainy_temp(system_drive.as_deref())),
     ];
     for candidate in candidates.into_iter().flatten() {
         if let Some(folder) = usable(&candidate) {
@@ -281,6 +290,13 @@ mod tests {
         assert_eq!(usable(Path::new("relative")), None);
         let missing = dir.path().join("gone").join("Temp");
         assert_eq!(usable(&missing).map(|folder| folder.is_dir()), Some(true));
+    }
+
+    #[test]
+    fn preserves_drive_letter_for_system_rainy_temp() {
+        assert_eq!(system_rainy_temp(None), PathBuf::from(r"C:\RainyTemp"));
+        assert_eq!(system_rainy_temp(Some("C:")), PathBuf::from(r"C:\RainyTemp"));
+        assert_eq!(system_rainy_temp(Some(r"D:\")), PathBuf::from(r"D:\RainyTemp"));
     }
 
     #[cfg(windows)]

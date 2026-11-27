@@ -97,33 +97,50 @@ impl LspClient {
     }
 
     /// Send a request; resolves with its result, or the error message, after at most [`REQUEST_TIMEOUT`].
+    /// Dropping the returned future before it completes cleans up `pending` and sends `$/cancelRequest`.
     pub fn request(&self, method: &str, params: Value) -> impl Future<Output = Result<Value>> + Send + 'static + use<> {
+        struct CancelGuard {
+            inner: Arc<Inner>,
+            id: i64,
+            armed: bool,
+        }
+        impl Drop for CancelGuard {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.inner.pending.lock().unwrap().remove(&self.id);
+                    let cancel = json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": self.id } }).to_string();
+                    let _ = self.inner.outgoing.try_send(cancel);
+                }
+            }
+        }
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string();
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);
         let sent = self.inner.outgoing.try_send(frame).is_ok();
+        if !sent {
+            self.inner.pending.lock().unwrap().remove(&id);
+        }
         let inner = self.inner.clone();
         let method = method.to_owned();
         async move {
             if !sent {
-                inner.pending.lock().unwrap().remove(&id);
                 return Err(anyhow!(closed()));
             }
+            let mut guard = CancelGuard { inner, id, armed: true };
             let timeout = futures::FutureExt::fuse(smol::Timer::after(REQUEST_TIMEOUT));
             let answer = rx.fuse();
             futures::pin_mut!(timeout, answer);
             futures::select! {
-                result = answer => match result {
-                    Ok(Ok(value)) => Ok(value),
-                    Ok(Err(message)) => Err(anyhow!(message)),
-                    Err(_) => Err(anyhow!(closed())),
-                },
+                result = answer => {
+                    guard.armed = false;
+                    match result {
+                        Ok(Ok(value)) => Ok(value),
+                        Ok(Err(message)) => Err(anyhow!(message)),
+                        Err(_) => Err(anyhow!(closed())),
+                    }
+                }
                 _ = timeout => {
-                    inner.pending.lock().unwrap().remove(&id);
-                    // The server may still be working on it; tell it the answer is no longer wanted.
-                    let cancel = json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": id } }).to_string();
-                    let _ = inner.outgoing.try_send(cancel);
                     Err(anyhow!(localized(&format!("{method} 请求超时。"), &format!("{method} timed out."))))
                 }
             }
@@ -221,10 +238,18 @@ async fn dispatch(inner: &Inner, events: &async_channel::Sender<LspIncoming>, an
 }
 
 /// The file URI of a Host path (`directoryUri` in `src/editor/uri.ts`): `C:\a b` → `file:///C:/a%20b`, `/home/x` →
-/// `file:///home/x`, `\\server\share` → `file://server/share`.
+/// `file:///home/x`, `\\server\share` → `file://server/share`. Strips Windows `\\?\` verbatim prefixes.
 pub fn file_uri(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    let normalized = normalized.strip_suffix('/').filter(|rest| !rest.is_empty()).unwrap_or(&normalized);
+    let stripped = if let Some(unc) = path.strip_prefix(r"\\?\UNC\").or_else(|| path.strip_prefix(r"\\?\unc\")) {
+        format!(r"\\{unc}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        path.to_owned()
+    };
+    let normalized = stripped.replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    let normalized = if trimmed.is_empty() && normalized.starts_with('/') { "/" } else { trimmed };
     let bytes = normalized.as_bytes();
     // A drive root keeps its slash: `C:\` is `file:///C:/`.
     if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {

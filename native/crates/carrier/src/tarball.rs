@@ -14,6 +14,9 @@ const BLOCK: usize = 512;
 /// The largest pax record set or GNU long name read into memory.
 const MAX_META: u64 = 1 << 20;
 const CHUNK: usize = 256 * 1024;
+/// Upper bounds guarding against tar bombs and integer overflow.
+const MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_ENTRIES: u64 = 200_000;
 
 #[derive(Debug)]
 pub enum TarError {
@@ -97,6 +100,8 @@ pub fn unpack(mut reader: impl Read, destination: &Path, cancel: &AtomicBool) ->
     let mut unpacked = Unpacked::default();
     let mut pending = Pending::default();
     let mut header = [0u8; BLOCK];
+    let mut buffer = vec![0u8; CHUNK];
+    let mut entries = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(TarError::Cancelled);
@@ -111,15 +116,25 @@ pub fn unpack(mut reader: impl Read, destination: &Path, cancel: &AtomicBool) ->
         let size = number(&header[124..136])?;
         match header[156] {
             b'x' => pending.read_pax(&read_meta(&mut reader, size)?)?,
-            b'g' => skip(&mut reader, padded(size))?,
+            b'g' => {
+                if size > MAX_META {
+                    return Err(TarError::Invalid("a global pax header is too large".into()));
+                }
+                skip(&mut reader, padded(size)?)?;
+            }
             b'L' => pending.path = Some(meta_name(&read_meta(&mut reader, size)?)?),
             b'K' => pending.link = Some(meta_name(&read_meta(&mut reader, size)?)?),
             kind => {
+                entries += 1;
+                if entries > MAX_ENTRIES {
+                    return Err(TarError::Refused("the archive contains too many entries".into()));
+                }
                 let name = match pending.path.take() {
                     Some(name) => name,
                     None => header_name(&header)?,
                 };
                 let size = pending.size.take().unwrap_or(size);
+                let padded_size = padded(size)?;
                 let link = pending.link.take();
                 match kind {
                     b'0' | b'\0' | b'7' | b'5' => {}
@@ -131,20 +146,32 @@ pub fn unpack(mut reader: impl Read, destination: &Path, cancel: &AtomicBool) ->
                 let path = relative(&name)?.map(|relative| destination.join(relative));
                 match path {
                     Some(path) if folder => {
+                        if size > MAX_UNPACKED_BYTES {
+                            return Err(TarError::Refused(format!("{name} exceeds the maximum unpacked size")));
+                        }
                         fs::create_dir_all(&path)?;
-                        skip(&mut reader, padded(size))?;
+                        skip(&mut reader, padded_size)?;
                     }
                     Some(path) => {
+                        let next_bytes = unpacked.bytes.checked_add(size).ok_or_else(|| TarError::Invalid("archive size overflows".into()))?;
+                        if next_bytes > MAX_UNPACKED_BYTES {
+                            return Err(TarError::Refused(format!("{name} exceeds the maximum unpacked size")));
+                        }
                         if let Some(parent) = path.parent() {
                             fs::create_dir_all(parent)?;
                         }
-                        copy(&mut reader, &path, size, cancel)?;
-                        skip(&mut reader, padded(size) - size)?;
+                        copy(&mut reader, &path, size, cancel, &mut buffer)?;
+                        skip(&mut reader, padded_size - size)?;
                         unpacked.files += 1;
-                        unpacked.bytes += size;
+                        unpacked.bytes = next_bytes;
                     }
                     // The archive's own root, `./`.
-                    None => skip(&mut reader, padded(size))?,
+                    None => {
+                        if size > MAX_UNPACKED_BYTES {
+                            return Err(TarError::Refused(format!("{name} exceeds the maximum unpacked size")));
+                        }
+                        skip(&mut reader, padded_size)?;
+                    }
                 }
             }
         }
@@ -166,9 +193,11 @@ fn read_block(reader: &mut impl Read, block: &mut [u8; BLOCK]) -> Result<bool, T
     Ok(true)
 }
 
-/// `size` rounded up to whole blocks.
-fn padded(size: u64) -> u64 {
-    size.div_ceil(BLOCK as u64) * BLOCK as u64
+/// `size` rounded up to whole blocks without overflowing `u64`.
+fn padded(size: u64) -> Result<u64, TarError> {
+    size.div_ceil(BLOCK as u64)
+        .checked_mul(BLOCK as u64)
+        .ok_or_else(|| TarError::Invalid("an entry size overflows tar block alignment".into()))
 }
 
 fn skip(reader: &mut impl Read, bytes: u64) -> Result<(), TarError> {
@@ -184,7 +213,7 @@ fn read_meta(reader: &mut impl Read, size: u64) -> Result<Vec<u8>, TarError> {
     }
     let mut data = vec![0u8; size as usize];
     reader.read_exact(&mut data).map_err(|_| TarError::Invalid("the archive ends inside an entry".into()))?;
-    skip(reader, padded(size) - size)?;
+    skip(reader, padded(size)? - size)?;
     Ok(data)
 }
 
@@ -246,35 +275,12 @@ fn check_sum(header: &[u8; BLOCK]) -> Result<(), TarError> {
 /// The entry's path below the destination; `None` for the archive's root. Absolute paths, drive letters and `..` are
 /// refused, as are names Windows cannot hold or would read differently.
 fn relative(name: &str) -> Result<Option<PathBuf>, TarError> {
-    let refused = |why: &str| TarError::Refused(format!("{name} {why}"));
-    if name.starts_with(['/', '\\']) || name.contains(':') {
-        return Err(refused("is an absolute path"));
-    }
-    let mut path = PathBuf::new();
-    for part in name.split(['/', '\\']) {
-        match part {
-            "" | "." => {}
-            ".." => return Err(refused("leaves the destination")),
-            part if !portable(part) => return Err(refused("is not a valid Windows file name")),
-            part => path.push(part),
-        }
-    }
-    Ok((!path.as_os_str().is_empty()).then_some(path))
-}
-
-fn portable(part: &str) -> bool {
-    const RESERVED: [&str; 22] = [
-        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5",
-        "lpt6", "lpt7", "lpt8", "lpt9",
-    ];
-    let stem = part.split('.').next().unwrap_or_default().trim_end().to_ascii_lowercase();
-    !part.chars().any(|c| c.is_control() || "<>\"|?*".contains(c)) && !part.ends_with(['.', ' ']) && !RESERVED.contains(&stem.as_str())
+    crate::fs_util::safe_archive_relative(name).map_err(|why| TarError::Refused(format!("{name} {why}")))
 }
 
 /// Write exactly `size` bytes of the stream to a new regular file at `path`.
-fn copy(reader: &mut impl Read, path: &Path, size: u64, cancel: &AtomicBool) -> Result<(), TarError> {
+fn copy(reader: &mut impl Read, path: &Path, size: u64, cancel: &AtomicBool, buffer: &mut [u8]) -> Result<(), TarError> {
     let mut output = fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
-    let mut buffer = vec![0u8; CHUNK];
     let mut left = size;
     while left > 0 {
         if cancel.load(Ordering::Relaxed) {
@@ -504,5 +510,23 @@ mod tests {
         file(&mut tar, "a.txt", b"alpha");
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(unpack(&finish(tar)[..], dir.path(), &AtomicBool::new(true)), Err(TarError::Cancelled)));
+    }
+
+    #[test]
+    fn refuses_overflowing_sizes_and_oversized_entries() {
+        assert_eq!(padded(0).unwrap(), 0);
+        assert_eq!(padded(1).unwrap(), 512);
+        assert!(matches!(padded(u64::MAX), Err(TarError::Invalid(_))));
+        assert!(matches!(padded(u64::MAX - 510), Err(TarError::Invalid(_))));
+
+        let mut overflow_tar = Vec::new();
+        pax(&mut overflow_tar, &[("size", &u64::MAX.to_string())]);
+        raw(&mut overflow_tar, header("huge", "", b'0', 0), b"");
+        assert!(matches!(unpacked(&finish(overflow_tar)).1, Err(TarError::Invalid(_))));
+
+        let mut bomb_tar = Vec::new();
+        pax(&mut bomb_tar, &[("size", &(MAX_UNPACKED_BYTES + 1).to_string())]);
+        raw(&mut bomb_tar, header("bomb", "", b'0', 0), b"");
+        assert!(matches!(unpacked(&finish(bomb_tar)).1, Err(TarError::Refused(_))));
     }
 }
