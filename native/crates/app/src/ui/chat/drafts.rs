@@ -71,6 +71,7 @@ impl ChatPane {
         self.draft_order.retain(|k| k != &next);
         let draft = self.drafts.remove(&next).unwrap_or_default();
         self.attachments = draft.attachments;
+        self.composer_has_text = !draft.text.trim().is_empty();
         self.composer.update(cx, |state, cx| state.set_value(draft.text, window, cx));
         self.cancel_suggestions();
     }
@@ -105,6 +106,7 @@ impl ChatPane {
             if steer_first != alternate { "steer" } else { "queue" }
         });
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+        self.composer_has_text = false;
         self.list.set_follow_mode(FollowMode::Tail);
         self.list.scroll_to_end();
         self.scrolled_up = false;
@@ -167,6 +169,7 @@ impl ChatPane {
             let typed = self.composer.read(cx).value().to_string();
             let (text, attachments) = (merge_text(text, typed), merge_images(images, std::mem::take(&mut self.attachments)));
             self.attachments = attachments;
+            self.composer_has_text = !text.trim().is_empty();
             self.composer.update(cx, |state, cx| state.set_value(text, window, cx));
         } else {
             let draft = self.drafts.entry(key.clone()).or_default();

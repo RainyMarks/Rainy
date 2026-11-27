@@ -57,9 +57,15 @@ impl ChatPane {
     pub(super) fn update_trigger(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.composer.read(cx);
         let text = state.value().to_string();
+        let has_text = !text.trim().is_empty();
+        let readiness_changed = self.composer_has_text != has_text;
+        self.composer_has_text = has_text;
         let caret = state.cursor().min(text.len());
         let trigger = text.is_char_boundary(caret).then(|| crate::ui::composer::find_trigger(&text[..caret])).flatten();
         if trigger == self.trigger {
+            if readiness_changed {
+                cx.notify();
+            }
             return;
         }
         if self.trigger.is_none() && trigger.is_some() {
@@ -220,11 +226,13 @@ impl ChatPane {
                 state.set_value(text, window, cx);
                 state.set_cursor_position(gpui_kit::component::input::Position { line: 0, character }, window, cx);
             });
+            self.composer_has_text = true;
             self.cancel_suggestions();
             cx.notify();
             return;
         }
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+        self.composer_has_text = false;
         self.cancel_suggestions();
         match name {
             "compact" => {

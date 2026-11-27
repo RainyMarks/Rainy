@@ -39,6 +39,50 @@ impl PendingChatEvent {
     }
 }
 
+/// Replay real-time events buffered while `sessions.get` was in flight without reviving pre-snapshot streams/tools
+/// or regressing a settled (`idle`/`error`) snapshot back to stale live state.
+fn replay_pending_events(view: &mut ChatView, pending: Vec<PendingChatEvent>) {
+    if pending.is_empty() {
+        return;
+    }
+    // Any event up to and including the last Entry whose id is already in the loaded snapshot occurred before/at the
+    // snapshot watermark; drop all of them so pre-snapshot Stream/Tool/State events cannot replay onto newer state.
+    let start = pending
+        .iter()
+        .rposition(|event| matches!(event, PendingChatEvent::Entry(ev) if view.has_entry(ev.entry.id())))
+        .map_or(0, |idx| idx + 1);
+    let snapshot_terminal = !view.busy() && view.snapshot.streaming.is_none();
+    let mut resumed = !snapshot_terminal;
+    for event in pending.into_iter().skip(start) {
+        match event {
+            PendingChatEvent::Entry(ev) => {
+                resumed = true;
+                view.apply_entry(ev);
+            }
+            PendingChatEvent::Stream(update) => {
+                if resumed {
+                    view.apply_stream(update);
+                }
+            }
+            PendingChatEvent::Tool(ev) => {
+                if resumed {
+                    view.apply_tool(ev);
+                }
+            }
+            PendingChatEvent::State(ev) => {
+                if resumed {
+                    view.apply_state(ev);
+                }
+            }
+            PendingChatEvent::Summary(summary) => {
+                if summary.updated_at >= view.snapshot.summary.updated_at {
+                    view.snapshot.summary = summary;
+                }
+            }
+        }
+    }
+}
+
 /// Insert or replace `summary` in-place while maintaining descending `updated_at` order without cloning the list.
 fn upsert_summary_in_place(summaries: &mut Vec<SessionSummary>, summary: SessionSummary) {
     if let Some(pos) = summaries.iter().position(|s| s.id == summary.id) {
@@ -222,9 +266,8 @@ impl Store {
                 match result {
                     Ok(snapshot) => {
                         let mut view = ChatView::new(snapshot, whole);
-                        for event in std::mem::take(&mut chat.pending_events) {
-                            event.apply(&mut view);
-                        }
+                        let pending = std::mem::take(&mut chat.pending_events);
+                        replay_pending_events(&mut view, pending);
                         chat.view = Some(view);
                         chat.loaded += 1;
                         chat.error = None;
@@ -366,9 +409,92 @@ mod tests {
         .unwrap();
         let mut view = ChatView::new(snapshot, false);
         let pending = vec![PendingChatEvent::Entry(entry.clone()), PendingChatEvent::Entry(entry)];
-        for event in pending {
-            event.apply(&mut view);
-        }
+        replay_pending_events(&mut view, pending);
         assert_eq!(view.snapshot.entries.len(), 2);
+    }
+
+    #[test]
+    fn replay_drops_pre_snapshot_stream_and_prevents_ghost_streaming_copy() {
+        let assistant_entry: serde_json::Value = json!({
+            "id": "a1", "kind": "assistant", "ts": 2, "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "done step 1"}], "api": "x", "provider": "p", "model": "m",
+                "stopReason": "toolUse", "timestamp": 2,
+                "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                          "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+            }
+        });
+        // Snapshot already contains `a1` with `streaming: None`, while the run stays `running` for the next tool step.
+        let snapshot: SessionSnapshot = serde_json::from_value(json!({
+            "summary": {"id": "s", "workspaceId": null, "cwd": "/p", "title": "t", "createdAt": 1, "updatedAt": 3,
+                        "archived": false, "pinned": false, "status": "running"},
+            "entries": [{"id": "u1", "kind": "user", "ts": 1, "text": "hi"}, assistant_entry.clone()],
+            "model": null, "queue": [], "context": null, "streaming": null,
+            "runningTools": [], "permission": "ask", "approvals": [], "background": []
+        }))
+        .unwrap();
+        let old_stream: rainy_protocol::AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant", "content": [{"type": "text", "text": "done step 1"}], "api": "x", "provider": "p", "model": "m",
+            "stopReason": "stop", "timestamp": 2,
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+        }))
+        .unwrap();
+        let dup_entry: SessionEntryEvent = serde_json::from_value(json!({ "sessionId": "s", "entry": assistant_entry })).unwrap();
+        let mut view = ChatView::new(snapshot, false);
+        replay_pending_events(&mut view, vec![
+            PendingChatEvent::Stream(StreamUpdate::Whole(Some(Box::new(old_stream)))),
+            PendingChatEvent::Entry(dup_entry),
+        ]);
+        assert_eq!(view.snapshot.entries.len(), 2);
+        assert!(view.snapshot.streaming.is_none(), "pre-snapshot stream must not resurrect after duplicate entry");
+    }
+
+    #[test]
+    fn replay_ignores_stale_stream_and_running_state_on_idle_snapshot_until_new_entry() {
+        let snapshot: SessionSnapshot = serde_json::from_value(json!({
+            "summary": {"id": "s", "workspaceId": null, "cwd": "/p", "title": "t", "createdAt": 1, "updatedAt": 5,
+                        "archived": false, "pinned": false, "status": "idle"},
+            "entries": [{"id": "u1", "kind": "user", "ts": 1, "text": "hi"}],
+            "model": null, "queue": [], "context": null, "streaming": null,
+            "runningTools": [], "permission": "ask", "approvals": [], "background": []
+        }))
+        .unwrap();
+        let stale_stream: rainy_protocol::AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant", "content": [{"type": "text", "text": "stale"}], "api": "x", "provider": "p", "model": "m",
+            "stopReason": "stop", "timestamp": 4,
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+        }))
+        .unwrap();
+        let stale_state: SessionStateEvent = serde_json::from_value(json!({
+            "sessionId": "s", "status": "running", "permission": "ask", "queue": [], "approvals": [], "background": []
+        }))
+        .unwrap();
+        let stale_tool: SessionToolEvent = serde_json::from_value(json!({
+            "sessionId": "s", "toolCallId": "tc1", "toolName": "bash", "phase": "start"
+        }))
+        .unwrap();
+        let mut view = ChatView::new(snapshot, false);
+        replay_pending_events(&mut view, vec![
+            PendingChatEvent::Stream(StreamUpdate::Whole(Some(Box::new(stale_stream)))),
+            PendingChatEvent::Tool(stale_tool),
+            PendingChatEvent::State(stale_state),
+        ]);
+        assert_eq!(view.snapshot.summary.status, "idle");
+        assert!(view.snapshot.streaming.is_none());
+        assert!(view.tools.is_empty());
+
+        // Once a genuinely newer entry arrives after the idle snapshot, subsequent running state and stream apply normally.
+        let next_user: SessionEntryEvent = serde_json::from_value(json!({
+            "sessionId": "s", "entry": {"id": "u2", "kind": "user", "ts": 6, "text": "next"}
+        }))
+        .unwrap();
+        let next_state: SessionStateEvent = serde_json::from_value(json!({
+            "sessionId": "s", "status": "running", "permission": "ask", "queue": [], "approvals": [], "background": []
+        }))
+        .unwrap();
+        replay_pending_events(&mut view, vec![PendingChatEvent::Entry(next_user), PendingChatEvent::State(next_state)]);
+        assert_eq!(view.snapshot.entries.len(), 2);
+        assert_eq!(view.snapshot.summary.status, "running");
     }
 }

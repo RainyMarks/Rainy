@@ -698,6 +698,10 @@ impl Store {
                             store.reconnecting = false;
                             store.swapping_target = None;
                             store.connection = ConnectionState::Closed;
+                            store.target = Some(new_target.clone());
+                            if matches!(new_target, ExecutionTarget::Ssh { .. }) {
+                                store.ssh_reconnect = SshAutoReconnect::Exhausted { last_error: detail.clone() };
+                            }
                             cx.notify();
                             true
                         })

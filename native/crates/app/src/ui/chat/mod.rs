@@ -33,7 +33,7 @@ pub(crate) use model_card::{short_model_name, thinking_label};
 use suggestions::Suggestion;
 
 use crate::i18n::{self, Locale};
-use crate::store::ide::{Ide, IdeEvent};
+use crate::store::ide::Ide;
 use crate::store::{ChatModel, Store, StoreEvent};
 use crate::ui::tr;
 use crate::ui::transcript::{Expanded, Fork, Toggle, TurnRender, TurnRow, TurnStyle, rebuild_rows, render_turn};
@@ -76,6 +76,8 @@ pub struct ChatPane {
     /// Tracks composer action button busy state to replay the send/stop transition on every toggle.
     action_busy: bool,
     action_gen: u64,
+    /// Cached non-empty flag for the composer text so empty <-> non-empty transitions notify once for the send button fade.
+    composer_has_text: bool,
     completion_seq: u64,
     /// The `completion_seq` whose files the list shows; an older one while a newer query is under way.
     shown_seq: u64,
@@ -126,6 +128,8 @@ pub struct ChatPane {
     /// Whether the last render drew the optical page: the field wakes when the page comes back, not when the page
     /// that was showing is repainted for an unrelated update.
     optics_shown: bool,
+    /// Cached active workspace `(id, title)` so greeting & worktree picker update on rename/switch without noisy editor redraws.
+    workspace_sig: Option<(String, String)>,
     _subscriptions: Vec<Subscription>,
     chat_subscription: Option<Subscription>,
 }
@@ -152,6 +156,7 @@ impl ChatPane {
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 12).submit_on_enter(true).placeholder(placeholder));
         let pane = cx.weak_entity();
         let ide = Ide::global(cx);
+        let initial_workspace_sig = ide.read(cx).workspace.as_ref().map(|w| (w.workspace_id.clone(), w.title.clone()));
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| match event {
                 // Shift+Enter: the text area has put in a line break, and still reports the key; it sends nothing.
@@ -208,8 +213,10 @@ impl ChatPane {
                 | StoreEvent::TeamChanged(_)
                 | StoreEvent::CredentialAlert(_) => {}
             }),
-            cx.subscribe(&ide, |_, _, event: &IdeEvent, cx| {
-                if matches!(event, IdeEvent::WorkspaceChanged | IdeEvent::Restored) {
+            cx.observe(&ide, |this, ide, cx| {
+                let next = ide.read(cx).workspace.as_ref().map(|w| (w.workspace_id.clone(), w.title.clone()));
+                if this.workspace_sig != next {
+                    this.workspace_sig = next;
                     cx.notify();
                 }
             }),
@@ -229,6 +236,7 @@ impl ChatPane {
             suggestions_gen: 0,
             action_busy: false,
             action_gen: 0,
+            composer_has_text: false,
             completion_seq: 0,
             shown_seq: 0,
             completion_task: None,
@@ -261,6 +269,7 @@ impl ChatPane {
             backdrop: None,
             usage: None,
             optics_shown: false,
+            workspace_sig: initial_workspace_sig,
             _subscriptions: subscriptions,
             chat_subscription: None,
         };
@@ -299,6 +308,7 @@ impl ChatPane {
             state.set_value(next, window, cx);
             state.focus(window, cx);
         });
+        self.composer_has_text = true;
         cx.notify();
     }
 

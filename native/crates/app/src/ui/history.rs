@@ -20,7 +20,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{IdeWorkspace, SessionSummary};
 
-use crate::store::ide::{Ide, IdeEvent};
+use crate::store::ide::Ide;
 use gpui_kit::component::notification::Notification;
 
 use crate::store::{Store, StoreEvent};
@@ -78,6 +78,23 @@ fn now_millis() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Lightweight signature of the project list and active selection shown in HistoryPanel.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct WorkspaceSignature {
+    selected: Option<String>,
+    items: Vec<(String, String, bool)>,
+}
+
+fn workspace_signature(selected: Option<&IdeWorkspace>, workspaces: &[IdeWorkspace]) -> WorkspaceSignature {
+    WorkspaceSignature {
+        selected: selected.map(|workspace| workspace.workspace_id.clone()),
+        items: workspaces
+            .iter()
+            .map(|workspace| (workspace.workspace_id.clone(), workspace.title.clone(), workspace.pinned))
+            .collect(),
+    }
+}
+
 pub struct HistoryPanel {
     store: Entity<Store>,
     search: Entity<InputState>,
@@ -91,6 +108,8 @@ pub struct HistoryPanel {
     /// The sidebar row under the pointer and the one whose menu is open; both show their menu button.
     hovered: Option<String>,
     menu_open: Option<String>,
+    /// Cached project metadata signature to avoid rebuilding on unrelated `Ide` notifications (dirty/tabs/diagnostics).
+    workspace_sig: WorkspaceSignature,
     /// The query the Host last searched the messages for, and the chats it found with a line of each.
     content_query: String,
     content_hits: Vec<(String, String)>,
@@ -101,6 +120,11 @@ pub struct HistoryPanel {
 impl HistoryPanel {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "chat.searchHistory")).clean_on_escape());
+        let ide = Ide::global(cx);
+        let initial_sig = {
+            let ide = ide.read(cx);
+            workspace_signature(ide.workspace.as_ref(), &ide.workspaces)
+        };
         let subscriptions = vec![
             cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
                 // The interface language may have changed.
@@ -125,9 +149,13 @@ impl HistoryPanel {
                 }
                 _ => {}
             }),
-            // Projects added, renamed, pinned, selected, restored or removed; do not `observe(&Ide)` on every editor keystroke.
-            cx.subscribe(&Ide::global(cx), |_, _, event: &IdeEvent, cx| {
-                if matches!(event, IdeEvent::WorkspaceChanged | IdeEvent::Restored) {
+            // Observe `Ide` for project list mutations (rename, pin, non-active remove, reconnect) while filtering out
+            // unrelated editor notifications via a lightweight workspace metadata signature.
+            cx.observe(&ide, |this, ide, cx| {
+                let ide = ide.read(cx);
+                let next = workspace_signature(ide.workspace.as_ref(), &ide.workspaces);
+                if this.workspace_sig != next {
+                    this.workspace_sig = next;
                     cx.notify();
                 }
             }),
@@ -141,6 +169,7 @@ impl HistoryPanel {
             unlimited: HashSet::new(),
             hovered: None,
             menu_open: None,
+            workspace_sig: initial_sig,
             content_query: String::new(),
             content_hits: Vec::new(),
             _content_search: None,
@@ -1385,5 +1414,26 @@ mod tests {
         let nested = nest_workers(&chats);
         let shape: Vec<(&str, Vec<&str>)> = nested.iter().map(|(chat, workers)| (chat.id.as_str(), workers.iter().map(|worker| worker.id.as_str()).collect())).collect();
         assert_eq!(shape, [("x", vec![]), ("lead", vec!["w1", "w2"]), ("o", vec![])]);
+    }
+
+    #[test]
+    fn workspace_signature_tracks_rename_pin_remove_and_selection() {
+        let mut a = project("a", false);
+        let b = project("b", false);
+        let base = workspace_signature(Some(&a), &[a.clone(), b.clone()]);
+        assert_eq!(base, workspace_signature(Some(&a), &[a.clone(), b.clone()]));
+        // Renaming a project changes the signature.
+        a.title = "Alpha Renamed".into();
+        let renamed = workspace_signature(Some(&a), &[a.clone(), b.clone()]);
+        assert_ne!(base, renamed);
+        // Pinning a project changes the signature.
+        let mut b_pinned = b.clone();
+        b_pinned.pinned = true;
+        assert_ne!(renamed, workspace_signature(Some(&a), &[a.clone(), b_pinned]));
+        // Removing a non-active project changes the signature.
+        assert_ne!(renamed, workspace_signature(Some(&a), std::slice::from_ref(&a)));
+        // Changing the active project changes the signature.
+        let both = [a, b];
+        assert_ne!(renamed, workspace_signature(Some(&both[1]), &both));
     }
 }

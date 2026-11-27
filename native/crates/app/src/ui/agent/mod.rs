@@ -152,8 +152,8 @@ impl RenderOnce for ModeSwitch {
             div()
                 .on_prepaint(move |bounds, window, cx| {
                     let kick = state.update(cx, |s, _| {
-                        let was_none = s.buttons[ix].replace(bounds).is_none();
-                        was_none && s.container.is_some()
+                        let changed = s.buttons[ix].replace(bounds) != Some(bounds);
+                        changed && s.container.is_some()
                     });
                     if kick {
                         window.request_animation_frame();
@@ -181,8 +181,8 @@ impl RenderOnce for ModeSwitch {
             .bg(muted)
             .on_prepaint(move |bounds, window, cx| {
                 let kick = container_state.update(cx, |s, _| {
-                    let was_none = s.container.replace(bounds).is_none();
-                    was_none && s.buttons.iter().any(Option::is_some)
+                    let changed = s.container.replace(bounds) != Some(bounds);
+                    changed && s.buttons.iter().any(Option::is_some)
                 });
                 if kick {
                     window.request_animation_frame();

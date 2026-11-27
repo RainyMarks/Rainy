@@ -67,6 +67,10 @@ impl ChatView {
         Self { snapshot, tools, truncated, revision: 0, thinking_since: None, changed_at: std::time::Instant::now(), entry_ids, reverted_ids, turn_ranges }
     }
 
+    pub fn has_entry(&self, id: &str) -> bool {
+        self.entry_ids.contains(id)
+    }
+
     pub fn reverted_ids(&self) -> &HashSet<String> {
         &self.reverted_ids
     }
@@ -105,6 +109,11 @@ impl ChatView {
     pub fn apply_entry(&mut self, event: SessionEntryEvent) -> bool {
         let id = event.entry.id().to_owned();
         if !self.entry_ids.insert(id) {
+            // Even if this assistant entry was already in the snapshot, receiving it again still settles any stale stream.
+            if matches!(event.entry, TranscriptEntry::Assistant { .. }) && self.snapshot.streaming.is_some() {
+                self.snapshot.streaming = None;
+                return self.touched();
+            }
             return false;
         }
         // A finished reply leaves the stream when its entry arrives, so the transcript never drops it in between.

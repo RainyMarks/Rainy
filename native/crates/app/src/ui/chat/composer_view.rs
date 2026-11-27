@@ -186,7 +186,7 @@ impl ChatPane {
     /// Send or Stop action button with smooth 140 ms state transition and 110 ms ready-opacity feedback (0 fps at rest).
     fn render_action_button(&self, busy: bool, creating: bool, session: Option<String>, locale: Locale, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let wide = self.wide;
-        let ready = !creating && (!self.composer.read(cx).value().trim().is_empty() || !self.attachments.is_empty());
+        let ready = !creating && (self.composer_has_text || !self.attachments.is_empty());
         let target_opacity = if busy || ready || creating { 1.0 } else { 0.62 };
         let readiness_opacity = transition("chat-action-ready", target_opacity, Transition::new(Duration::from_millis(110)), window, cx);
         let button: AnyElement = if busy {

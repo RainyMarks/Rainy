@@ -332,8 +332,11 @@ impl Store {
         let target = rainy_carrier::targets::read_preferences(&paths.desktop_settings())
             .ok()
             .map(|preferences| rainy_carrier::targets::saved_target(&preferences).unwrap_or_else(|_| ExecutionTarget::windows()));
-        // Start askpass immediately only when the initial target is SSH; otherwise start lazily via `ensure_askpass`.
-        let askpass = if matches!(target, Some(ExecutionTarget::Ssh { .. })) {
+        // Start askpass synchronously when the initial target is SSH so `boot::start` can use it immediately;
+        // for local Windows/WSL targets, start it off the main thread so cold start is never blocked while
+        // keeping `store.askpass` populated for Settings (`ui/settings/runtime.rs`).
+        let initial_is_ssh = matches!(target, Some(ExecutionTarget::Ssh { .. }));
+        let askpass = if initial_is_ssh {
             start_askpass(questions_tx.clone())
         } else {
             None
@@ -415,6 +418,21 @@ impl Store {
             })
             .detach();
             store.start(cx);
+            if !initial_is_ssh {
+                let tx = store.askpass_tx.clone();
+                let bg = cx.background_spawn(async move { start_askpass(tx) });
+                cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+                    if let Some(started) = bg.await {
+                        let _ = this.update(cx, |store, _| {
+                            if !store.stopping && !store.quitting && store.askpass.is_none() {
+                                store.askpass = Some(started.clone());
+                                store.tunnels = Arc::new(TunnelManager::new(Some(started)));
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
             store
         });
         cx.set_global(GlobalStore(store.clone()));
