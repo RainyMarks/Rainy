@@ -197,8 +197,17 @@ impl Session {
             if let Some(ctx) = &hook_ctx
                 && hook_rules.iter().any(|r| r.enabled && r.event == "PostEdit")
             {
+                let before_versions: Vec<(PathBuf, Option<super::super::tools::FileVersion>)> =
+                    edited_files.iter().map(|path| (path.clone(), version_of(path).ok().flatten())).collect();
                 let report = hooks::run_post_edit_cancellable(&hook_rules, ctx, name, &edited_files, cancel.as_ref()).await;
-                self.refresh_formatted_snapshots(name, id, output.details.as_ref(), &cwd, &report.formatted_files);
+                let mut changed_files = report.formatted_files.clone();
+                for (path, before) in before_versions {
+                    let after = version_of(&path).ok().flatten();
+                    if after != before && !changed_files.iter().any(|existing| existing == &path) {
+                        changed_files.push(path);
+                    }
+                }
+                self.refresh_formatted_snapshots(name, id, output.details.as_ref(), &cwd, &changed_files);
                 if !report.formatted_files.is_empty() {
                     let names: Vec<String> = report.formatted_files.iter().map(|p| path_for_model(&self.chat().cwd, &p.to_string_lossy())).collect();
                     append_text(output, &format!("\n[PostEdit formatted: {}]", names.join(", ")));

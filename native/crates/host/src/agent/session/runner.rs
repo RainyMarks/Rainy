@@ -149,61 +149,127 @@ impl Session {
         Ok((state, prompts, resolved, mcp_tools, cancel))
     }
 
+    /// Abort startup/continuation cleanly when preparation fails: clears any stranded queue items so the session
+    /// never returns to `idle`/`error` with zombie queued messages.
+    pub(super) fn abort_pending_after_prepare_error(&self, error_message: String) {
+        let changed = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.run = None;
+            inner.starting = false;
+            inner.queue.clear();
+            inner.pending.clear();
+            inner.steering.clear();
+            let target = if inner.closing {
+                "idle"
+            } else {
+                inner.error = Some(error_message);
+                "error"
+            };
+            let changed = inner.status != target;
+            inner.status = target;
+            changed
+        };
+        self.publish_state();
+        if changed {
+            self.services.rpc.emit("sessions.changed", self.summary());
+        }
+    }
+
     /// Launch a run after the caller has atomically set `Inner::starting = true`.
     pub(super) async fn start_run_claimed(self: &Arc<Self>, prompts: Vec<(Message, Meta)>, guard: StartGuard<'_>) -> HostResult<()> {
         match self.prepare_run(prompts).await {
             Ok((state, prompts, resolved, mcp_tools, cancel)) => {
-                let this = self.clone();
-                let task = tokio::spawn(async move { this.drive(state, prompts, resolved, mcp_tools, cancel).await });
-                *self.task.lock().unwrap() = Some(task);
-                self.inner.lock().unwrap().starting = false;
-                guard.disarm();
-                Ok(())
-            }
-            Err(error) => {
-                // If concurrent sends queued while we prepared, hand off to a background relay before reporting our error.
-                let next = {
+                // Keep lock order `inner -> task` so `drive` cannot finish or race ahead before `task` is recorded
+                // and `starting` is cleared, and re-check `closing` atomically before spawning.
+                let closed = {
                     let mut inner = self.inner.lock().unwrap();
                     if inner.closing {
+                        inner.run = None;
                         inner.starting = false;
-                        None
+                        inner.queue.clear();
+                        inner.pending.clear();
+                        inner.steering.clear();
+                        inner.status = "idle";
+                        true
                     } else {
-                        let next_id = inner.queue.iter().find(|item| inner.pending.contains_key(&item.id)).map(|item| item.id.clone());
-                        let next = next_id.and_then(|id| {
-                            inner.queue.retain(|item| item.id != id);
-                            inner.pending.remove(&id)
-                        });
-                        if next.is_none() {
-                            inner.starting = false;
-                        }
-                        next
+                        let this = self.clone();
+                        let task = tokio::spawn(async move { this.drive(state, prompts, resolved, mcp_tools, cancel).await });
+                        *self.task.lock().unwrap() = Some(task);
+                        inner.starting = false;
+                        false
                     }
                 };
                 guard.disarm();
-                if let Some(next_messages) = next {
-                    let this = self.clone();
-                    let relay = tokio::spawn(async move {
-                        let relay_guard = StartGuard::new(&this);
-                        match this.prepare_run(next_messages).await {
-                            Ok((state, prompts, resolved, mcp_tools, cancel)) => {
-                                this.inner.lock().unwrap().starting = false;
-                                relay_guard.disarm();
-                                this.drive(state, prompts, resolved, mcp_tools, cancel).await;
-                            }
-                            Err(relay_err) => {
-                                let closing = this.inner.lock().unwrap().closing;
-                                drop(relay_guard);
-                                if !closing {
-                                    this.inner.lock().unwrap().error = Some(relay_err.message);
-                                    this.set_status("error");
-                                } else {
-                                    this.set_status("idle");
+                if closed {
+                    self.publish_state();
+                    self.services.rpc.emit("sessions.changed", self.summary());
+                    return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+                }
+                Ok(())
+            }
+            Err(error) => {
+                // Atomically spawn a relay for any concurrent queued message under `inner -> task`, or clear `starting`.
+                let mut inner = self.inner.lock().unwrap();
+                if inner.closing {
+                    inner.run = None;
+                    inner.starting = false;
+                    inner.queue.clear();
+                    inner.pending.clear();
+                    inner.steering.clear();
+                    inner.status = "idle";
+                } else {
+                    let next_id = inner.queue.iter().find(|item| inner.pending.contains_key(&item.id)).map(|item| item.id.clone());
+                    let next = next_id.and_then(|id| {
+                        inner.queue.retain(|item| item.id != id);
+                        inner.pending.remove(&id)
+                    });
+                    if let Some(next_messages) = next {
+                        let this = self.clone();
+                        // Keep `inner.starting = true` until `relay` either finishes `prepare_run` or cleans up.
+                        let relay = tokio::spawn(async move {
+                            let relay_guard = StartGuard::new(&this);
+                            match this.prepare_run(next_messages).await {
+                                Ok((state, prompts, resolved, mcp_tools, cancel)) => {
+                                    let closed = {
+                                        let mut inner = this.inner.lock().unwrap();
+                                        inner.starting = false;
+                                        if inner.closing {
+                                            inner.run = None;
+                                            inner.queue.clear();
+                                            inner.pending.clear();
+                                            inner.steering.clear();
+                                            inner.status = "idle";
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    };
+                                    relay_guard.disarm();
+                                    if closed {
+                                        this.publish_state();
+                                        this.services.rpc.emit("sessions.changed", this.summary());
+                                    } else {
+                                        this.drive(state, prompts, resolved, mcp_tools, cancel).await;
+                                    }
+                                }
+                                Err(relay_err) => {
+                                    relay_guard.disarm();
+                                    this.abort_pending_after_prepare_error(relay_err.message);
                                 }
                             }
+                        });
+                        *self.task.lock().unwrap() = Some(relay);
+                    } else {
+                        inner.run = None;
+                        inner.starting = false;
+                        if inner.status == "running" {
+                            inner.status = if inner.error.is_some() { "error" } else { "idle" };
                         }
-                    });
-                    *self.task.lock().unwrap() = Some(relay);
+                    }
                 }
+                drop(inner);
+                guard.disarm();
+                self.publish_state();
                 Err(error)
             }
         }
@@ -223,8 +289,26 @@ impl Session {
                     let guard = StartGuard::new(&self);
                     match self.prepare_run(next_messages).await {
                         Ok((next_state, next_prompts, next_resolved, next_mcp, next_cancel)) => {
-                            self.inner.lock().unwrap().starting = false;
+                            let closed = {
+                                let mut inner = self.inner.lock().unwrap();
+                                inner.starting = false;
+                                if inner.closing {
+                                    inner.run = None;
+                                    inner.queue.clear();
+                                    inner.pending.clear();
+                                    inner.steering.clear();
+                                    inner.status = "idle";
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
                             guard.disarm();
+                            if closed {
+                                self.publish_state();
+                                self.services.rpc.emit("sessions.changed", self.summary());
+                                break;
+                            }
                             state = next_state;
                             prompts = next_prompts;
                             resolved = next_resolved;
@@ -232,14 +316,8 @@ impl Session {
                             cancel = next_cancel;
                         }
                         Err(error) => {
-                            let closing = self.inner.lock().unwrap().closing;
-                            drop(guard);
-                            if !closing {
-                                self.inner.lock().unwrap().error = Some(error.message);
-                                self.set_status("error");
-                            } else {
-                                self.set_status("idle");
-                            }
+                            guard.disarm();
+                            self.abort_pending_after_prepare_error(error.message);
                             break;
                         }
                     }
@@ -255,7 +333,7 @@ impl Session {
         let last = |inner: &Inner| {
             inner.entries.iter().enumerate().rev().find_map(|(index, entry)| if let TranscriptEntry::Assistant { message, .. } = entry { Some((index, message.clone())) } else { None })
         };
-        let (overflow, last) = {
+        let (overflow, run_cancel, last) = {
             let mut inner = self.inner.lock().unwrap();
             let last = last(&inner);
             let Some(run) = &mut inner.run else { return false };
@@ -266,13 +344,13 @@ impl Session {
             if overflow {
                 run.overflow_retried = true;
             }
-            (overflow, last)
+            (overflow, run.cancel.clone(), last)
         };
         // The provider refused the request as too long, so it counts as filling the whole window.
         let budget = resolve_budget(resolved.model.context_window, Some(resolved.model.max_tokens));
         if overflow
             && let Ok(budget) = budget
-            && matches!(self.free_context(resolved, &budget, budget.context_window, "overflow", None, None).await, Ok(true))
+            && matches!(self.free_context(resolved, &budget, budget.context_window, "overflow", Some(run_cancel), None).await, Ok(true))
         {
             self.notice("overflow-retry", l("上下文超出模型窗口，已自动压缩并重试。", "The context exceeded the model window, so the chat was compacted and the request retried.")).await;
             if self.resume(state) {

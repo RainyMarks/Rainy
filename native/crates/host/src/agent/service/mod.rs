@@ -215,38 +215,35 @@ impl Agent {
         if let Some(session) = self.live(id) {
             return Ok(session);
         }
-        let (session, evicted) = {
-            let _opening = self.opening.lock().await;
-            if let Some(session) = self.live(id) {
-                return Ok(session);
-            }
-            if self.services.store.get(id).is_none() {
-                return Err(not_found_chat());
-            }
-            let session = Session::open(self.services.clone(), id).await?;
-            let now = crate::text::now_ms();
-            let mut evicted = Vec::new();
-            {
-                let mut sessions = self.sessions.lock().unwrap();
-                sessions.insert(id.to_owned(), LiveSession { session: session.clone(), last_used: now });
-                while sessions.len() > MAX_LIVE_SESSIONS {
-                    let candidate = sessions
-                        .iter()
-                        .filter(|(key, entry)| key.as_str() != id && entry.session.is_evictable())
-                        .min_by_key(|(_, entry)| entry.last_used)
-                        .map(|(key, _)| key.clone());
-                    let Some(key) = candidate else { break };
-                    if let Some(removed) = sessions.remove(&key) {
-                        evicted.push(removed.session);
-                    }
+        let _opening = self.opening.lock().await;
+        if let Some(session) = self.live(id) {
+            return Ok(session);
+        }
+        if self.services.store.get(id).is_none() {
+            return Err(not_found_chat());
+        }
+        let session = Session::open(self.services.clone(), id).await?;
+        let now = crate::text::now_ms();
+        let mut evicted = Vec::new();
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions.insert(id.to_owned(), LiveSession { session: session.clone(), last_used: now });
+            while sessions.len() > MAX_LIVE_SESSIONS {
+                let candidate = sessions
+                    .iter()
+                    .filter(|(key, entry)| key.as_str() != id && Arc::strong_count(&entry.session) == 1 && entry.session.is_evictable())
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| key.clone());
+                let Some(key) = candidate else { break };
+                if let Some(removed) = sessions.remove(&key) {
+                    evicted.push(removed.session);
                 }
             }
-            (session, evicted)
-        };
+        }
+        // Close evicted sessions while still holding `self.opening` so a concurrent reopen of the same id cannot
+        // race with `external.close_session(&self.id)` and terminate a newly launched external CLI process.
         for stale in evicted {
-            tokio::spawn(async move {
-                stale.close().await;
-            });
+            stale.close().await;
         }
         Ok(session)
     }

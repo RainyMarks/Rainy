@@ -125,6 +125,27 @@ impl Session {
         }
     }
 
+    fn clear_external_start_failure(&self) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.run = None;
+            inner.starting = false;
+            inner.queue.clear();
+            inner.external_pending.clear();
+            if inner.status == "running" {
+                inner.status = if inner.closing {
+                    "idle"
+                } else if inner.error.is_some() {
+                    "error"
+                } else {
+                    "idle"
+                };
+            }
+        }
+        self.publish_state();
+        self.services.rpc.emit("sessions.changed", self.summary());
+    }
+
     pub(super) async fn start_external_run_claimed(
         self: &Arc<Self>,
         backend: ExternalBackendRef,
@@ -133,46 +154,71 @@ impl Session {
         append_user: bool,
         guard: StartGuard<'_>,
     ) -> HostResult<()> {
-        if self.inner.lock().unwrap().closing {
-            return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
-        }
-        self.services.activity.assert_can_start()?;
-        if self.chat().title.is_empty() {
-            let chat = self.services.store.set_default_title(&self.id, &fallback_title(&text)).await?;
-            self.inner.lock().unwrap().chat = chat;
-        }
-        if append_user && self.services.settings.prefs().get("autoKeepChanges").and_then(Value::as_bool) == Some(true) {
-            let ids: Vec<String> = self.pending_changes().await.into_iter().flat_map(|group| group.calls.into_iter().map(|call| call.id)).collect();
-            if let Err(error) = self.keep(&ids).await {
-                log::warn!("[review] {error}");
-            }
-        }
-        let cancel = CancellationToken::new();
-        {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.closing {
+        let prep: HostResult<()> = async {
+            if self.inner.lock().unwrap().closing {
                 return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
             }
-            inner.run = Some(RunInfo {
-                started: now_ms(),
-                from: inner.entries.len(),
-                requests: 0,
-                usage: UsageSummary::default(),
-                aborted: false,
-                overflow_retried: false,
-                retries: 0,
-                cancel: cancel.clone(),
-            });
-            inner.error = None;
-            inner.external_diff = None;
+            self.services.activity.assert_can_start()?;
+            if self.chat().title.is_empty() {
+                let chat = self.services.store.set_default_title(&self.id, &fallback_title(&text)).await?;
+                self.inner.lock().unwrap().chat = chat;
+            }
+            if append_user && self.services.settings.prefs().get("autoKeepChanges").and_then(Value::as_bool) == Some(true) {
+                let ids: Vec<String> = self.pending_changes().await.into_iter().flat_map(|group| group.calls.into_iter().map(|call| call.id)).collect();
+                if let Err(error) = self.keep(&ids).await {
+                    log::warn!("[review] {error}");
+                }
+            }
+            Ok(())
         }
-        self.set_status("running");
-        self.services.memory.interrupt();
-        let this = self.clone();
-        let task = tokio::spawn(async move { this.drive_external(backend, text, images, append_user, cancel).await });
-        *self.task.lock().unwrap() = Some(task);
-        self.inner.lock().unwrap().starting = false;
+        .await;
+        if let Err(error) = prep {
+            guard.disarm();
+            self.clear_external_start_failure();
+            return Err(error);
+        }
+        let cancel = CancellationToken::new();
+        let closed = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.closing {
+                inner.run = None;
+                inner.starting = false;
+                inner.queue.clear();
+                inner.external_pending.clear();
+                inner.status = "idle";
+                true
+            } else {
+                inner.run = Some(RunInfo {
+                    started: now_ms(),
+                    from: inner.entries.len(),
+                    requests: 0,
+                    usage: UsageSummary::default(),
+                    aborted: false,
+                    overflow_retried: false,
+                    retries: 0,
+                    cancel: cancel.clone(),
+                });
+                inner.error = None;
+                inner.external_diff = None;
+                inner.status = "running";
+                // Spawn and record `self.task` while holding `inner` (`inner -> task`) so the task cannot complete
+                // before `task` is installed and `starting` is cleared.
+                let this = self.clone();
+                let task = tokio::spawn(async move { this.drive_external(backend, text, images, append_user, cancel).await });
+                *self.task.lock().unwrap() = Some(task);
+                inner.starting = false;
+                false
+            }
+        };
         guard.disarm();
+        if closed {
+            self.publish_state();
+            self.services.rpc.emit("sessions.changed", self.summary());
+            return Err(HostError::new("closed", l("对话正在关闭。", "This chat is closing.")));
+        }
+        self.publish_state();
+        self.services.rpc.emit("sessions.changed", self.summary());
+        self.services.memory.interrupt();
         Ok(())
     }
 
@@ -205,8 +251,7 @@ impl Session {
             let model_name = req.model.clone().unwrap_or_else(|| "default".into());
 
             let started = self.services.external.start_turn(&self.id, req, cancel.clone()).await;
-            let (handle, mut rx) = match started {
-                Ok(pair) => pair,
+            let reply_model = match started {
                 Err(err) => {
                     for path in &temp_images {
                         let _ = std::fs::remove_file(path);
@@ -218,284 +263,289 @@ impl Session {
                         self.inner.lock().unwrap().error = Some(err.message);
                     }
                     self.on_reply(&reply).await;
-                    let _ = self.finish_external_run(&provider, &model_name).await;
-                    return;
+                    reply.model
                 }
-            };
-            self.inner.lock().unwrap().external_turn = Some(handle);
-            {
-                let mut inner = self.inner.lock().unwrap();
-                inner.stream_sent = None;
-                inner.message_started = now_ms();
-                inner.thinking_started.clear();
-                inner.thinking_ms.clear();
-            }
-            self.services.model_activity.store(now_ms(), Ordering::SeqCst);
+                Ok((handle, mut rx)) => {
+                    self.inner.lock().unwrap().external_turn = Some(handle);
+                    {
+                        let mut inner = self.inner.lock().unwrap();
+                        inner.stream_sent = None;
+                        inner.message_started = now_ms();
+                        inner.thinking_started.clear();
+                        inner.thinking_ms.clear();
+                    }
+                    self.services.model_activity.store(now_ms(), Ordering::SeqCst);
 
-            let mut reply = external_reply(&provider, &model_name);
-            let mut active_tool_ids: HashSet<String> = HashSet::new();
-            let mut saw_turn_finished = false;
+                    let mut reply = external_reply(&provider, &model_name);
+                    let mut active_tool_ids: HashSet<String> = HashSet::new();
+                    let mut saw_turn_finished = false;
 
-            while let Some(event) = rx.recv().await {
-                match event {
-                    ExternalEvent::ThreadReady { thread_id } => {
-                        if self.chat().external_thread_id.as_deref() != Some(thread_id.as_str())
-                            && let Ok(updated) = self.services.store.set_meta(&self.id, MetaPatch { external_thread_id: Some(Some(thread_id)), ..MetaPatch::default() }).await
-                        {
-                            self.inner.lock().unwrap().chat = updated;
-                            self.services.rpc.emit("sessions.changed", self.summary());
-                        }
-                        // An Antigravity swarm or teamwork the conversation starts is followed from here on.
-                        let _ = self.watch_antigravity_team();
-                    }
-                    ExternalEvent::ModelsListed(models) => {
-                        if self.services.external.remember_models(&backend.kind, models) {
-                            self.services.rpc.emit("external.changed", &self.services.external.status());
-                        }
-                    }
-                    ExternalEvent::QuotaUpdated(quota) => {
-                        if self.services.external.note_quota(&backend.kind, quota) {
-                            self.services.rpc.emit("external.changed", &self.services.external.status());
-                        }
-                    }
-                    ExternalEvent::CommandsUpdated(commands) => {
-                        self.services.external.remember_commands(&backend.kind, commands.clone());
-                        self.services.rpc.emit("external.commands", json!({ "kind": backend.kind, "commands": commands }));
-                    }
-                    ExternalEvent::TeamUpdated(team) => {
-                        let (revision, last_post) = (team.revision, team.last_post);
-                        self.inner.lock().unwrap().external_team = Some(team);
-                        self.services.rpc.emit("external.teamChanged", json!({ "sessionId": self.id, "revision": revision, "lastPost": last_post }));
-                    }
-                    ExternalEvent::ThinkingDelta(delta) => {
-                        if delta.is_empty() {
-                            continue;
-                        }
-                        if let Some(AssistantBlock::Thinking { thinking, .. }) = reply.content.last_mut() {
-                            thinking.push_str(&delta);
-                            self.on_stream(llm::Event::Updated, &reply);
-                        } else {
-                            let idx = reply.content.len();
-                            reply.content.push(AssistantBlock::Thinking { thinking: delta, thinking_signature: None, redacted: None, rest: serde_json::Map::new() });
-                            self.on_stream(llm::Event::BlockStarted(idx), &reply);
-                        }
-                    }
-                    ExternalEvent::TextDelta(delta) => {
-                        if delta.is_empty() {
-                            continue;
-                        }
-                        if let Some(AssistantBlock::Text { text, .. }) = reply.content.last_mut() {
-                            text.push_str(&delta);
-                            self.on_stream(llm::Event::Updated, &reply);
-                        } else {
-                            if let Some(last_idx) = reply.content.len().checked_sub(1)
-                                && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
-                            {
-                                self.on_stream(llm::Event::BlockEnded(last_idx), &reply);
-                            }
-                            let idx = reply.content.len();
-                            reply.content.push(AssistantBlock::Text { text: delta, text_signature: None, rest: serde_json::Map::new() });
-                            self.on_stream(llm::Event::BlockStarted(idx), &reply);
-                        }
-                    }
-                    ExternalEvent::ToolStarted { id, name, mut args } => {
-                        // A call of an Antigravity team member, not of the chat's own agent, says whose it is.
-                        if backend.kind == "antigravity"
-                            && let Some(member) = self.antigravity_member(&id)
-                            && let Some(map) = args.as_object_mut()
-                        {
-                            map.insert("teamMember".into(), json!(member));
-                        }
-                        if let Some(last_idx) = reply.content.len().checked_sub(1)
-                            && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
-                        {
-                            self.on_stream(llm::Event::BlockEnded(last_idx), &reply);
-                        }
-                        let arguments = match args.clone() {
-                            Value::Object(map) => map,
-                            other => {
-                                let mut map = serde_json::Map::new();
-                                if !other.is_null() {
-                                    map.insert("input".into(), other);
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            ExternalEvent::ThreadReady { thread_id } => {
+                                if self.chat().external_thread_id.as_deref() != Some(thread_id.as_str())
+                                    && let Ok(updated) = self.services.store.set_meta(&self.id, MetaPatch { external_thread_id: Some(Some(thread_id)), ..MetaPatch::default() }).await
+                                {
+                                    self.inner.lock().unwrap().chat = updated;
+                                    self.services.rpc.emit("sessions.changed", self.summary());
                                 }
-                                map
+                                // An Antigravity swarm or teamwork the conversation starts is followed from here on.
+                                let _ = self.watch_antigravity_team();
                             }
-                        };
-                        let idx = reply.content.len();
-                        reply.content.push(AssistantBlock::ToolCall { id: id.clone(), name: name.clone(), arguments, rest: serde_json::Map::new() });
-                        active_tool_ids.insert(id.clone());
-                        self.on_stream(llm::Event::BlockStarted(idx), &reply);
-                        self.inner.lock().unwrap().running_tools.insert(id.clone(), now_ms());
-                        self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "start", "args": args }));
-                    }
-                    ExternalEvent::ToolProgress { id, name, partial } => {
-                        let now = now_ms();
-                        let should_emit = {
-                            let mut inner = self.inner.lock().unwrap();
-                            if now.saturating_sub(inner.tool_updates.get(&id).copied().unwrap_or(0)) >= TOOL_UPDATE_THROTTLE_MS {
-                                inner.tool_updates.insert(id.clone(), now);
-                                true
-                            } else {
-                                false
+                            ExternalEvent::ModelsListed(models) => {
+                                if self.services.external.remember_models(&backend.kind, models) {
+                                    self.services.rpc.emit("external.changed", &self.services.external.status());
+                                }
                             }
-                        };
-                        if should_emit {
-                            self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "update", "partial": partial }));
+                            ExternalEvent::QuotaUpdated(quota) => {
+                                if self.services.external.note_quota(&backend.kind, quota) {
+                                    self.services.rpc.emit("external.changed", &self.services.external.status());
+                                }
+                            }
+                            ExternalEvent::CommandsUpdated(commands) => {
+                                self.services.external.remember_commands(&backend.kind, commands.clone());
+                                self.services.rpc.emit("external.commands", json!({ "kind": backend.kind, "commands": commands }));
+                            }
+                            ExternalEvent::TeamUpdated(team) => {
+                                let (revision, last_post) = (team.revision, team.last_post);
+                                self.inner.lock().unwrap().external_team = Some(team);
+                                self.services.rpc.emit("external.teamChanged", json!({ "sessionId": self.id, "revision": revision, "lastPost": last_post }));
+                            }
+                            ExternalEvent::ThinkingDelta(delta) => {
+                                if delta.is_empty() {
+                                    continue;
+                                }
+                                if let Some(AssistantBlock::Thinking { thinking, .. }) = reply.content.last_mut() {
+                                    thinking.push_str(&delta);
+                                    self.on_stream(llm::Event::Updated, &reply);
+                                } else {
+                                    let idx = reply.content.len();
+                                    reply.content.push(AssistantBlock::Thinking { thinking: delta, thinking_signature: None, redacted: None, rest: serde_json::Map::new() });
+                                    self.on_stream(llm::Event::BlockStarted(idx), &reply);
+                                }
+                            }
+                            ExternalEvent::TextDelta(delta) => {
+                                if delta.is_empty() {
+                                    continue;
+                                }
+                                if let Some(AssistantBlock::Text { text, .. }) = reply.content.last_mut() {
+                                    text.push_str(&delta);
+                                    self.on_stream(llm::Event::Updated, &reply);
+                                } else {
+                                    if let Some(last_idx) = reply.content.len().checked_sub(1)
+                                        && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
+                                    {
+                                        self.on_stream(llm::Event::BlockEnded(last_idx), &reply);
+                                    }
+                                    let idx = reply.content.len();
+                                    reply.content.push(AssistantBlock::Text { text: delta, text_signature: None, rest: serde_json::Map::new() });
+                                    self.on_stream(llm::Event::BlockStarted(idx), &reply);
+                                }
+                            }
+                            ExternalEvent::ToolStarted { id, name, mut args } => {
+                                // A call of an Antigravity team member, not of the chat's own agent, says whose it is.
+                                if backend.kind == "antigravity"
+                                    && let Some(member) = self.antigravity_member(&id)
+                                    && let Some(map) = args.as_object_mut()
+                                {
+                                    map.insert("teamMember".into(), json!(member));
+                                }
+                                if let Some(last_idx) = reply.content.len().checked_sub(1)
+                                    && matches!(reply.content.get(last_idx), Some(AssistantBlock::Thinking { .. }))
+                                {
+                                    self.on_stream(llm::Event::BlockEnded(last_idx), &reply);
+                                }
+                                let arguments = match args.clone() {
+                                    Value::Object(map) => map,
+                                    other => {
+                                        let mut map = serde_json::Map::new();
+                                        if !other.is_null() {
+                                            map.insert("input".into(), other);
+                                        }
+                                        map
+                                    }
+                                };
+                                let idx = reply.content.len();
+                                reply.content.push(AssistantBlock::ToolCall { id: id.clone(), name: name.clone(), arguments, rest: serde_json::Map::new() });
+                                active_tool_ids.insert(id.clone());
+                                self.on_stream(llm::Event::BlockStarted(idx), &reply);
+                                self.inner.lock().unwrap().running_tools.insert(id.clone(), now_ms());
+                                self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "start", "args": args }));
+                            }
+                            ExternalEvent::ToolProgress { id, name, partial } => {
+                                let now = now_ms();
+                                let should_emit = {
+                                    let mut inner = self.inner.lock().unwrap();
+                                    if now.saturating_sub(inner.tool_updates.get(&id).copied().unwrap_or(0)) >= TOOL_UPDATE_THROTTLE_MS {
+                                        inner.tool_updates.insert(id.clone(), now);
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if should_emit {
+                                    self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "update", "partial": partial }));
+                                }
+                            }
+                            ExternalEvent::ToolCompleted { id, name, output, is_error, details } => {
+                                // A call that ended while its approval waited (Antigravity gives a member's 60 s, then fails
+                                // the call without withdrawing the request): the approval bar goes.
+                                if self.inner.lock().unwrap().approvals.iter().any(|item| item.approval.tool_call_id == id) {
+                                    self.settle(&id, refusal(l("外部 Agent 已不再等待这次批准。", "The external agent stopped waiting for this approval."), false, None));
+                                }
+                                if active_tool_ids.contains(&id) && !reply.content.is_empty() {
+                                    reply.stop_reason = "toolUse".into();
+                                    self.on_reply(&reply).await;
+                                    active_tool_ids.clear();
+                                    let current_model = reply.model.clone();
+                                    reply = external_reply(&provider, &current_model);
+                                    let mut inner = self.inner.lock().unwrap();
+                                    inner.stream_sent = None;
+                                    inner.message_started = now_ms();
+                                    inner.thinking_started.clear();
+                                    inner.thinking_ms.clear();
+                                }
+                                let started = {
+                                    let mut inner = self.inner.lock().unwrap();
+                                    inner.tool_updates.remove(&id);
+                                    inner.running_tools.remove(&id)
+                                };
+                                self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "end" }));
+                                let has_files = details.as_ref().and_then(|d| d.get("files")).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+                                self.append(TranscriptEntry::ToolResult {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    ts: now_ms() as f64,
+                                    tool_call_id: id,
+                                    tool_name: name.clone(),
+                                    content: vec![ResultContent::Text { text: output }],
+                                    is_error,
+                                    details,
+                                    duration_ms: started.map(|s| now_ms().saturating_sub(s) as f64),
+                                })
+                                .await;
+                                if (has_files || changes::CHANGE_TOOLS.contains(&name.as_str())) && !is_error {
+                                    self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                                }
+                            }
+                            ExternalEvent::ApprovalRequested { mut approval, respond } => {
+                                if approval.agent.is_none() && backend.kind == "antigravity" {
+                                    approval.agent = self.antigravity_member(&approval.tool_call_id);
+                                }
+                                let session = self.clone();
+                                let cancel_child = cancel.clone();
+                                tokio::spawn(async move {
+                                    let ans = session.wait_for_approval(approval, &cancel_child).await;
+                                    let decision = match ans {
+                                        Answer::Allow => ApprovalDecision::Allow,
+                                        Answer::AllowSession => ApprovalDecision::AllowSession,
+                                        Answer::Refuse { .. } => ApprovalDecision::Deny,
+                                    };
+                                    if let Ok(mut slot) = respond.lock()
+                                        && let Some(tx) = slot.take()
+                                    {
+                                        let _ = tx.send(decision);
+                                    }
+                                });
+                            }
+                            ExternalEvent::DiffUpdated { diff } => {
+                                self.inner.lock().unwrap().external_diff = Some(diff);
+                                self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                            }
+                            ExternalEvent::UsageUpdated(usage) => {
+                                reply.usage.input = usage.input;
+                                reply.usage.output = usage.output;
+                                reply.usage.cache_read = usage.cache_read;
+                                reply.usage.cache_write = usage.cache_write;
+                                reply.usage.reasoning = usage.reasoning;
+                            }
+                            ExternalEvent::Notice { code, text } => {
+                                self.notice(&code, text).await;
+                            }
+                            ExternalEvent::TurnFinished { stop_reason, error, usage, model } => {
+                                saw_turn_finished = true;
+                                if let Some(m) = model.filter(|m| !m.is_empty()) {
+                                    reply.model = m;
+                                }
+                                if let Some(u) = usage {
+                                    reply.usage.input = u.input;
+                                    reply.usage.output = u.output;
+                                    reply.usage.cache_read = u.cache_read;
+                                    reply.usage.cache_write = u.cache_write;
+                                    reply.usage.reasoning = u.reasoning;
+                                }
+                                if !reply.content.is_empty() || stop_reason == "error" {
+                                    reply.stop_reason = stop_reason.clone();
+                                    reply.error_message = error.clone();
+                                    if stop_reason == "error"
+                                        && let Some(err) = error
+                                    {
+                                        self.inner.lock().unwrap().error = Some(err);
+                                    }
+                                    self.on_reply(&reply).await;
+                                } else if stop_reason == "aborted" {
+                                    if let Some(run) = &mut self.inner.lock().unwrap().run {
+                                        run.aborted = true;
+                                    }
+                                }
+                                break;
+                            }
                         }
                     }
-                    ExternalEvent::ToolCompleted { id, name, output, is_error, details } => {
-                        // A call that ended while its approval waited (Antigravity gives a member's 60 s, then fails
-                        // the call without withdrawing the request): the approval bar goes.
-                        if self.inner.lock().unwrap().approvals.iter().any(|item| item.approval.tool_call_id == id) {
-                            self.settle(&id, refusal(l("外部 Agent 已不再等待这次批准。", "The external agent stopped waiting for this approval."), false, None));
+
+                    // Always cancel & clear any pending approval waits left behind by the turn (especially on abrupt disconnect).
+                    cancel.cancel();
+                    let dangling_approvals: Vec<Approval> = std::mem::take(&mut self.inner.lock().unwrap().approvals);
+                    if !dangling_approvals.is_empty() {
+                        for approval in dangling_approvals {
+                            let _ = approval.settle.send(refusal("Operation aborted", true, None));
                         }
-                        if active_tool_ids.contains(&id) && !reply.content.is_empty() {
-                            reply.stop_reason = "toolUse".into();
+                        self.publish_state();
+                        self.services.rpc.emit("sessions.changed", self.summary());
+                    }
+
+                    if !saw_turn_finished {
+                        let aborted = self.inner.lock().unwrap().run.as_ref().is_some_and(|run| run.aborted);
+                        if !aborted {
+                            let message = l("外部 Agent 连接意外断开。", "The external agent disconnected unexpectedly.");
+                            reply.stop_reason = "error".into();
+                            reply.error_message = Some(message.clone());
+                            self.inner.lock().unwrap().error = Some(message);
                             self.on_reply(&reply).await;
-                            active_tool_ids.clear();
-                            let current_model = reply.model.clone();
-                            reply = external_reply(&provider, &current_model);
-                            let mut inner = self.inner.lock().unwrap();
-                            inner.stream_sent = None;
-                            inner.message_started = now_ms();
-                            inner.thinking_started.clear();
-                            inner.thinking_ms.clear();
-                        }
-                        let started = {
-                            let mut inner = self.inner.lock().unwrap();
-                            inner.tool_updates.remove(&id);
-                            inner.running_tools.remove(&id)
-                        };
-                        self.services.rpc.emit("session.tool", json!({ "sessionId": self.id, "toolCallId": id, "toolName": name, "phase": "end" }));
-                        let has_files = details.as_ref().and_then(|d| d.get("files")).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
-                        self.append(TranscriptEntry::ToolResult {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            ts: now_ms() as f64,
-                            tool_call_id: id,
-                            tool_name: name.clone(),
-                            content: vec![ResultContent::Text { text: output }],
-                            is_error,
-                            details,
-                            duration_ms: started.map(|s| now_ms().saturating_sub(s) as f64),
-                        })
-                        .await;
-                        if (has_files || changes::CHANGE_TOOLS.contains(&name.as_str())) && !is_error {
-                            self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                        } else if !reply.content.is_empty() {
+                            reply.stop_reason = "aborted".into();
+                            self.on_reply(&reply).await;
                         }
                     }
-                    ExternalEvent::ApprovalRequested { mut approval, respond } => {
-                        if approval.agent.is_none() && backend.kind == "antigravity" {
-                            approval.agent = self.antigravity_member(&approval.tool_call_id);
-                        }
-                        let session = self.clone();
-                        let cancel_child = cancel.clone();
+
+                    for path in &temp_images {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    self.inner.lock().unwrap().external_turn = None;
+                    self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
+                    // The turn used some of the account's limits: read them again in the background (Codex usually sent them
+                    // during the turn already, and a reading less than a minute old is kept).
+                    {
+                        let (external, rpc, kind, cwd) = (self.services.external.clone(), self.services.rpc.clone(), backend.kind.clone(), PathBuf::from(&self.chat().cwd));
                         tokio::spawn(async move {
-                            let ans = session.wait_for_approval(approval, &cancel_child).await;
-                            let decision = match ans {
-                                Answer::Allow => ApprovalDecision::Allow,
-                                Answer::AllowSession => ApprovalDecision::AllowSession,
-                                Answer::Refuse { .. } => ApprovalDecision::Deny,
-                            };
-                            if let Ok(mut slot) = respond.lock()
-                                && let Some(tx) = slot.take()
-                            {
-                                let _ = tx.send(decision);
+                            if external.refresh_quota(&kind, false, &cwd).await {
+                                rpc.emit("external.changed", &external.status());
                             }
                         });
                     }
-                    ExternalEvent::DiffUpdated { diff } => {
-                        self.inner.lock().unwrap().external_diff = Some(diff);
-                        self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
-                    }
-                    ExternalEvent::UsageUpdated(usage) => {
-                        reply.usage.input = usage.input;
-                        reply.usage.output = usage.output;
-                        reply.usage.cache_read = usage.cache_read;
-                        reply.usage.cache_write = usage.cache_write;
-                        reply.usage.reasoning = usage.reasoning;
-                    }
-                    ExternalEvent::Notice { code, text } => {
-                        self.notice(&code, text).await;
-                    }
-                    ExternalEvent::TurnFinished { stop_reason, error, usage, model } => {
-                        saw_turn_finished = true;
-                        if let Some(m) = model.filter(|m| !m.is_empty()) {
-                            reply.model = m;
-                        }
-                        if let Some(u) = usage {
-                            reply.usage.input = u.input;
-                            reply.usage.output = u.output;
-                            reply.usage.cache_read = u.cache_read;
-                            reply.usage.cache_write = u.cache_write;
-                            reply.usage.reasoning = u.reasoning;
-                        }
-                        if !reply.content.is_empty() || stop_reason == "error" {
-                            reply.stop_reason = stop_reason.clone();
-                            reply.error_message = error.clone();
-                            if stop_reason == "error"
-                                && let Some(err) = error
-                            {
-                                self.inner.lock().unwrap().error = Some(err);
-                            }
-                            self.on_reply(&reply).await;
-                        } else if stop_reason == "aborted" {
-                            if let Some(run) = &mut self.inner.lock().unwrap().run {
-                                run.aborted = true;
-                            }
-                        }
-                        break;
-                    }
+                    reply.model
                 }
-            }
+            };
 
-            // Always cancel & clear any pending approval waits left behind by the turn (especially on abrupt disconnect).
-            cancel.cancel();
-            let dangling_approvals: Vec<Approval> = std::mem::take(&mut self.inner.lock().unwrap().approvals);
-            if !dangling_approvals.is_empty() {
-                for approval in dangling_approvals {
-                    let _ = approval.settle.send(refusal("Operation aborted", true, None));
-                }
-                self.publish_state();
-                self.services.rpc.emit("sessions.changed", self.summary());
-            }
-
-            if !saw_turn_finished {
-                let aborted = self.inner.lock().unwrap().run.as_ref().is_some_and(|run| run.aborted);
-                if !aborted {
-                    let message = l("外部 Agent 连接意外断开。", "The external agent disconnected unexpectedly.");
-                    reply.stop_reason = "error".into();
-                    reply.error_message = Some(message.clone());
-                    self.inner.lock().unwrap().error = Some(message);
-                    self.on_reply(&reply).await;
-                } else if !reply.content.is_empty() {
-                    reply.stop_reason = "aborted".into();
-                    self.on_reply(&reply).await;
-                }
-            }
-
-            for path in &temp_images {
-                let _ = std::fs::remove_file(path);
-            }
-            self.inner.lock().unwrap().external_turn = None;
-            self.services.rpc.emit("session.changes", json!({ "sessionId": self.id }));
-            // The turn used some of the account's limits: read them again in the background (Codex usually sent them
-            // during the turn already, and a reading less than a minute old is kept).
-            {
-                let (external, rpc, kind, cwd) = (self.services.external.clone(), self.services.rpc.clone(), backend.kind.clone(), PathBuf::from(&self.chat().cwd));
-                tokio::spawn(async move {
-                    if external.refresh_quota(&kind, false, &cwd).await {
-                        rpc.emit("external.changed", &external.status());
-                    }
-                });
-            }
-
-            match self.finish_external_run(&provider, &reply.model).await {
+            match self.finish_external_run(&provider, &reply_model).await {
                 Some((next_text, next_images)) => {
                     let next_cancel = CancellationToken::new();
                     let closing = {
                         let mut inner = self.inner.lock().unwrap();
                         if inner.closing {
                             inner.starting = false;
+                            inner.queue.clear();
+                            inner.external_pending.clear();
+                            inner.status = "idle";
                             true
                         } else {
                             inner.run = Some(RunInfo {
@@ -514,7 +564,8 @@ impl Session {
                         }
                     };
                     if closing {
-                        self.set_status("idle");
+                        self.publish_state();
+                        self.services.rpc.emit("sessions.changed", self.summary());
                         break;
                     }
                     text = next_text;

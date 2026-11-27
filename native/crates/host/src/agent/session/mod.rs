@@ -1278,4 +1278,130 @@ mod tests {
         assert_eq!(session.chat().title, "Renamed externally");
         assert_eq!(session.inner.lock().unwrap().phase, Phase::Plan);
     }
+
+    #[tokio::test]
+    async fn external_start_turn_failure_with_queued_message_does_not_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = test_services(dir.path());
+        let backend = rainy_protocol::chat::ExternalBackendRef {
+            kind: "acp".into(),
+            binary: Some("__rainy_nonexistent_acp_binary__".into()),
+            args: Vec::new(),
+            label: None,
+        };
+        let chat = services
+            .store
+            .create(super::super::store::NewChat {
+                cwd: dir.path().to_string_lossy().into_owned(),
+                external_backend: Some(backend.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let session = Session::open(services, &chat.id).await.unwrap();
+        {
+            let mut inner = session.inner.lock().unwrap();
+            inner.starting = true;
+            inner.queue.push(QueuedMessage { id: "q-next".into(), text: "queued follow-up".into(), mode: "queue".into(), image_count: 0 });
+            inner.external_pending.insert("q-next".into(), ("queued follow-up".into(), Vec::new()));
+        }
+        session.start_external_run_claimed(backend, "first prompt".into(), Vec::new(), true, StartGuard::new(&session)).await.unwrap();
+        if let Some(task) = session.task.lock().unwrap().take() {
+            task.await.unwrap();
+        }
+        {
+            let inner = session.inner.lock().unwrap();
+            assert!(!inner.starting, "session must not stay wedged in starting=true after start_turn failure");
+            assert!(inner.run.is_none());
+            assert_eq!(inner.status, "error");
+            assert!(inner.queue.is_empty());
+            assert!(inner.external_pending.is_empty());
+        }
+        assert!(session.is_evictable());
+    }
+
+    #[tokio::test]
+    async fn prepare_error_clears_stranded_queue_without_zombie_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = test_services(dir.path());
+        let chat = services
+            .store
+            .create(super::super::store::NewChat { cwd: dir.path().to_string_lossy().into_owned(), ..Default::default() })
+            .unwrap();
+        let session = Session::open(services, &chat.id).await.unwrap();
+        {
+            let mut inner = session.inner.lock().unwrap();
+            inner.status = "running";
+            inner.starting = true;
+            inner.queue.push(QueuedMessage { id: "q1".into(), text: "pending".into(), mode: "queue".into(), image_count: 0 });
+            inner.pending.insert(
+                "q1".into(),
+                vec![(Message::user("pending"), Meta::User { entry_id: "e1".into(), text: "pending".into(), images: Vec::new(), queue_id: Some("q1".into()) })],
+            );
+        }
+        session.abort_pending_after_prepare_error("model missing".into());
+        {
+            let inner = session.inner.lock().unwrap();
+            assert!(!inner.starting);
+            assert_eq!(inner.status, "error");
+            assert_eq!(inner.error.as_deref(), Some("model missing"));
+            assert!(inner.queue.is_empty());
+            assert!(inner.pending.is_empty());
+        }
+        assert!(session.is_evictable());
+    }
+
+    #[tokio::test]
+    async fn post_edit_command_hook_rewriting_file_refreshes_observations_and_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("repo");
+        std::fs::create_dir_all(workdir.join(".rainy")).unwrap();
+        let cmd = if cfg!(windows) {
+            "Set-Content -NoNewline -Path $env:RAINY_FILE_PATH -Value 'formatted-by-command-hook'"
+        } else {
+            "printf '%s' 'formatted-by-command-hook' > \"$RAINY_FILE_PATH\""
+        };
+        std::fs::write(workdir.join(".rainy/hooks.json"), serde_json::to_string(&json!([{ "event": "PostEdit", "command": cmd }])).unwrap()).unwrap();
+
+        let file = workdir.join("demo.txt");
+        std::fs::write(&file, "after-edit").unwrap();
+
+        let services = test_services(dir.path());
+        services.settings.set_workspace_trusted(&workdir.to_string_lossy(), true).unwrap();
+        let chat = services
+            .store
+            .create(super::super::store::NewChat { cwd: workdir.to_string_lossy().into_owned(), ..Default::default() })
+            .unwrap();
+        let session = Session::open(services.clone(), &chat.id).await.unwrap();
+
+        let details = json!({ "path": "demo.txt", "operation": "edit", "undoable": true });
+        services.snapshots.record(&chat.id, "call-cmd-fmt", &file, Some(b"before-edit"), Some(b"after-edit")).unwrap();
+        let initial_ver = super::super::tools::version_of(&file).unwrap();
+        session.observations.record(&file, initial_ver);
+        session
+            .append(TranscriptEntry::ToolResult {
+                id: "tr-cmd-1".into(),
+                ts: now_ms() as f64,
+                tool_call_id: "call-cmd-fmt".into(),
+                tool_name: "edit".into(),
+                content: vec![rainy_protocol::chat::ResultContent::Text { text: "edited".into() }],
+                is_error: false,
+                details: Some(details.clone()),
+                duration_ms: None,
+            })
+            .await;
+
+        let mut output = super::super::tools::ToolOutput::text("edited", details);
+        session.after_tool("call-cmd-fmt", "edit", &json!({ "file_path": "demo.txt" }), &mut output).await;
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "formatted-by-command-hook");
+
+        // Observation must match the rewritten file so subsequent edits do not fail as stale.
+        let current_ver = super::super::tools::version_of(&file).unwrap();
+        assert!(session.observations.assert_current(&file, current_ver, "demo.txt", "edit").is_ok());
+
+        // Undo snapshot digest must also have been refreshed so revert restores the original content.
+        let reverted = session.revert(&["call-cmd-fmt".to_owned()]).await.unwrap();
+        assert_eq!(reverted.reverted.len(), 1);
+        assert!(reverted.failed.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "before-edit");
+    }
 }
