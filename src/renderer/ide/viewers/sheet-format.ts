@@ -89,10 +89,15 @@ export async function parseWorkbookRaw(
       .slice(0, MAX_SHEET_ROWS).map(row => row.slice(0, MAX_SHEET_COLUMNS).map(String))
     const spans: [string, { rows: number; columns: number }][] = []
     const hidden: string[] = []
+    const rowLimit = Math.min(MAX_SHEET_ROWS, rows.length)
     for (const merge of sheet['!merges'] ?? []) {
-      spans.push([`${merge.s.r}:${merge.s.c}`, { rows: merge.e.r - merge.s.r + 1, columns: merge.e.c - merge.s.c + 1 }])
-      for (let row = merge.s.r; row <= merge.e.r; row++) {
-        for (let column = merge.s.c; column <= merge.e.c; column++) {
+      if (merge.s.r >= rowLimit || merge.s.c >= MAX_SHEET_COLUMNS) continue
+      const endRow = Math.min(merge.e.r, rowLimit - 1)
+      const endColumn = Math.min(merge.e.c, MAX_SHEET_COLUMNS - 1)
+      if (endRow < merge.s.r || endColumn < merge.s.c) continue
+      spans.push([`${merge.s.r}:${merge.s.c}`, { rows: endRow - merge.s.r + 1, columns: endColumn - merge.s.c + 1 }])
+      for (let row = merge.s.r; row <= endRow; row++) {
+        for (let column = merge.s.c; column <= endColumn; column++) {
           if (row !== merge.s.r || column !== merge.s.c) hidden.push(`${row}:${column}`)
         }
       }

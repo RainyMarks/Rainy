@@ -58,8 +58,15 @@ export function remarkReferences() {
         if (child.type === 'linkReference' || child.type === 'imageReference') {
           const found = definitions.get(child.identifier ?? '')
           if (found !== undefined) Object.assign(child, found)
-          // The parser only makes references it has a definition for; keep the text of any other.
-          else { children.splice(index, 1, ...child.children ?? []); index--; continue }
+          else if (child.type === 'imageReference') {
+            // Keep undefined image references as literal text rather than dropping the node silently.
+            const ref = child.label ?? child.identifier ?? ''
+            const literal = child.referenceType === 'shortcut' ? `![${child.alt ?? ref}]`
+              : child.referenceType === 'collapsed' ? `![${child.alt ?? ''}][]`
+                : `![${child.alt ?? ''}][${ref}]`
+            children.splice(index, 1, { type: 'text', value: literal })
+            continue
+          } else { children.splice(index, 1, ...child.children ?? []); index--; continue }
         }
         resolve(child)
       }
@@ -523,4 +530,3 @@ export const dollarEscapesPlugin = $remark('rainyBareDollars', ctx => function (
     return bareDollars(written, parse, text => readMarkdown(ctx, text))
   }
 } as never)
-

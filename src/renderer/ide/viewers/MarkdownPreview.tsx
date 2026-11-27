@@ -102,8 +102,12 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
 }): JSX.Element {
   const t = useViewerT()
   const stage = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
+  /** Cached block vertical offsets for scroll sync; invalidated when content or layout size changes. */
+  const cachedBlocks = useRef<Block[] | undefined>(undefined)
   // The offset the last editor line scrolled to: the scroll event that follows is not the user's.
   const synced = useRef<number | undefined>(undefined)
+  const syncClearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const userScrolled = useRef(0)
   const frame = useRef(0)
   const posted = useRef<number | undefined>(undefined)
@@ -111,6 +115,11 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
   latest.current = { openLocal, onScrollLine }
   const [shown, setShown] = useState(text)
   const [reloads, setReloads] = useState(0)
+
+  const readBlocks = (element: HTMLElement): Block[] => {
+    cachedBlocks.current ??= blocks(element)
+    return cachedBlocks.current
+  }
 
   useEffect(() => {
     if (text === shown) return
@@ -124,6 +133,15 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
     const split = splitFrontMatter(shown.replace(/\r\n?/gu, '\n'))
     return { front: split.front, rendered: split.front === '' ? shown : '\n'.repeat((split.front.match(/\n/gu) ?? []).length) + split.body }
   }, [shown])
+
+  useEffect(() => { cachedBlocks.current = undefined }, [rendered, reloads])
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => { cachedBlocks.current = undefined })
+    if (stage.current !== null) observer.observe(stage.current)
+    if (content.current !== null) observer.observe(content.current)
+    return () => { observer.disconnect() }
+  }, [])
 
   const options = useMemo<MarkdownOptions>(() => ({
     base,
@@ -141,27 +159,39 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
   useEffect(() => sync?.subscribe((line) => {
     const element = stage.current
     if (element === null || Date.now() - userScrolled.current < USER_SCROLL_HOLD) return
-    const top = topForLine(blocks(element), line)
+    const top = topForLine(readBlocks(element), line)
     if (top === undefined) return
+    const before = element.scrollTop
     element.scrollTop = Math.max(0, top - 8)
-    synced.current = element.scrollTop
+    // Only ignore the matching scroll event if scrollTop actually changed; otherwise clamped/no-op sets would swallow the user's next micro-scroll.
+    if (Math.abs(element.scrollTop - before) >= 0.5) {
+      synced.current = element.scrollTop
+      clearTimeout(syncClearTimer.current)
+      syncClearTimer.current = setTimeout(() => { synced.current = undefined }, 150)
+    } else {
+      synced.current = undefined
+    }
     posted.current = undefined
   }), [sync])
 
-  useEffect(() => () => { cancelAnimationFrame(frame.current) }, [])
+  useEffect(() => () => {
+    cancelAnimationFrame(frame.current)
+    clearTimeout(syncClearTimer.current)
+  }, [])
 
   const onScroll = (): void => {
     const element = stage.current
     if (element === null) return
     const own = synced.current !== undefined && Math.abs(element.scrollTop - synced.current) < 2
     synced.current = undefined
+    clearTimeout(syncClearTimer.current)
     if (own) return
     userScrolled.current = Date.now()
     if (latest.current.onScrollLine === undefined || frame.current !== 0) return
     frame.current = requestAnimationFrame(() => {
       frame.current = 0
       const current = stage.current
-      const line = current === null ? undefined : lineForTop(blocks(current), current.scrollTop + 8)
+      const line = current === null ? undefined : lineForTop(readBlocks(current), current.scrollTop + 8)
       if (line === undefined || (posted.current !== undefined && Math.abs(line - posted.current) < 0.01)) return
       posted.current = line
       latest.current.onScrollLine?.(line)
@@ -176,7 +206,7 @@ export function MarkdownPreview({ text, base, version, openLocal, sync, onScroll
         <button type="button" className={css.toolButton} title={t('previewRefreshTitle')} onClick={() => { setReloads(value => value + 1) }}>{t('previewRefresh')}</button>
       </div>
       <div ref={stage} className={css.stage} onScroll={onScroll}>
-        <div className={css.markdownStage}>
+        <div ref={content} className={css.markdownStage}>
           {front !== '' && <pre className={css.frontMatter} data-line={1} title={t('richFrontMatterTitle')}>{frontMatterContent(front)}</pre>}
           <MarkdownDocument text={rendered} options={options} />
         </div>

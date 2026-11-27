@@ -1,7 +1,5 @@
 /** What small Windows bookkeeping files say: the owner in an Office `~$` lock file and the target of a `.lnk` shortcut. */
-
-const u16 = (bytes: Uint8Array, offset: number): number => (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8)
-const u32 = (bytes: Uint8Array, offset: number): number => u16(bytes, offset) + u16(bytes, offset + 2) * 0x10000
+import { readU16Le as u16, readU32Le as u32 } from './viewer-utils.ts'
 
 function utf16(bytes: Uint8Array, offset: number, units: number): string {
   return new TextDecoder('utf-16le').decode(bytes.subarray(offset, Math.min(bytes.length, offset + units * 2)))
@@ -57,21 +55,26 @@ export function shortcutFacts(bytes: Uint8Array): ShortcutFacts | undefined {
   const flags = u32(bytes, 0x14)
   const unicode = (flags & 0x80) !== 0
   let offset = 0x4c
-  if ((flags & 0x01) !== 0) offset += 2 + u16(bytes, offset)
+  if ((flags & 0x01) !== 0 && offset + 2 <= bytes.length) offset += 2 + u16(bytes, offset)
   let target: string | undefined
   if ((flags & 0x02) !== 0 && offset + 0x1c <= bytes.length) {
     const info = offset
     const size = u32(bytes, info)
     const header = u32(bytes, info + 4)
     const infoFlags = u32(bytes, info + 8)
-    if ((infoFlags & 0x01) !== 0) {
-      const wide = header >= 0x24 ? u32(bytes, info + 0x1c) : 0
-      const base = wide !== 0 ? terminated(bytes, info + wide, true) : terminated(bytes, info + u32(bytes, info + 0x10), false)
-      const suffixWide = header >= 0x24 ? u32(bytes, info + 0x20) : 0
-      const suffix = suffixWide !== 0 ? terminated(bytes, info + suffixWide, true) : terminated(bytes, info + u32(bytes, info + 0x18), false)
-      target = suffix === '' ? base : base.endsWith('\\') ? base + suffix : `${base}\\${suffix}`
+    if (size >= 0x1c && info + size <= bytes.length) {
+      if ((infoFlags & 0x01) !== 0) {
+        const hasWide = header >= 0x24 && info + 0x24 <= bytes.length
+        const wide = hasWide ? u32(bytes, info + 0x1c) : 0
+        const base = wide !== 0 ? terminated(bytes, info + wide, true) : terminated(bytes, info + u32(bytes, info + 0x10), false)
+        const suffixWide = hasWide ? u32(bytes, info + 0x20) : 0
+        const suffix = suffixWide !== 0 ? terminated(bytes, info + suffixWide, true) : terminated(bytes, info + u32(bytes, info + 0x18), false)
+        target = suffix === '' ? base : base.endsWith('\\') ? base + suffix : `${base}\\${suffix}`
+      }
+      offset = info + size
+    } else {
+      offset = bytes.length
     }
-    offset = info + size
   }
   const read = (present: boolean): string | undefined => {
     if (!present || offset + 2 > bytes.length) return undefined

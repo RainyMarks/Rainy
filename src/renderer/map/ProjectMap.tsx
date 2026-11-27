@@ -3,28 +3,26 @@
  * the code, where to make changes), the AI footprint (what the chat's agent read, changed and ran, turn by turn), and
  * the structure (the architecture as boxes and imports, or every file as blocks, marked as the agent works).
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent } from 'react'
 import clsx from 'clsx'
-import type { IdeWorkspace, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { mapView, nodeForPath, parentOf, type MapNode, type MapView } from '../../shared/map-graph.ts'
-import type { MapFileKind, ProjectMap } from '../../shared/map-protocol.ts'
+import type { ProjectMap } from '../../shared/map-protocol.ts'
 import type { ChatChange, SessionId } from '../../shared/rpc.ts'
-import { useLocale } from '../i18n.ts'
-import { keyFromAbsolute } from '../ide/ide-paths.ts'
-import { Button, IconAction, IconRefreshOutlineRegular, IconSparkleRegular, SegmentedControl, toast } from '../ui/index.ts'
+import { errorMessage } from '../ide/viewers/viewer-utils.ts'
+import { Button, IconAction, IconRefreshOutlineRegular, SegmentedControl, toast } from '../ui/index.ts'
 import { FootprintView } from './Footprint.tsx'
+import { ActivityFeed, compactCount, Details, fitLabel, moduleDescription, nodeLabel, ScopeBar, type MapTranslate } from './MapSidePanel.tsx'
 import { TourView } from './Tour.tsx'
 import type { AiActivity } from './activity.ts'
 import { fileColor } from './colors.ts'
 import { fitTransform, layoutForPane, MIN_SCALE, NODE_HEIGHT, NODE_WIDTH, type ViewTransform } from './layout.ts'
 import { explainMap, loadMap, useProjectMap } from './map-store.ts'
 import { aiMarks, type AiMark } from './marks.ts'
-import { useMapT, type MapMessageKey } from './messages.ts'
+import { useMapT } from './messages.ts'
 import { layoutTreemap } from './treemap.ts'
 import { useWorkspaceLookup } from './workspace-lookup.ts'
 import css from './ProjectMap.module.css'
-
-type Translate = ReturnType<typeof useMapT>
 
 /** What the map needs from the window. */
 export interface ProjectMapProps {
@@ -54,55 +52,15 @@ export function changeBadgeLayout(changed: number): { readonly label: string; re
   return { label, width, x: NODE_WIDTH - width - 8, textX: width / 2 }
 }
 
-const KIND_LABEL: Record<MapFileKind, MapMessageKey> = {
-  code: 'kindCode', test: 'kindTest', doc: 'kindDoc', config: 'kindConfig', asset: 'kindAsset', other: 'kindOther',
-}
-
-function compact(value: number): string {
-  if (value < 1000) return String(value)
-  if (value < 10_000) return `${(value / 1000).toFixed(1).replace(/\.0$/u, '')}k`
-  return `${Math.round(value / 1000)}k`
-}
-
-/** East Asian wide characters, which take about two columns. */
-const WIDE = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u
-
-/** Shorten text to about `limit` narrow characters; CJK characters count double. */
-function fit(text: string, limit: number): string {
-  let width = 0
-  let index = 0
-  for (const char of text) {
-    width += WIDE.test(char) ? 2 : 1
-    if (width > limit) return `${text.slice(0, index)}…`
-    index += char.length
-  }
-  return text
-}
-
-function nodeLabel(node: MapNode, scope: string, t: Translate): string {
-  if (node.type === 'loose') {
-    const directory = node.id.slice(0, -2)
-    return directory === '' ? t('mapRootLoose') : t('mapLoose', { name: directory.slice(directory.lastIndexOf('/') + 1) })
-  }
-  if (node.outside) return node.id
-  if (node.type === 'file') return node.id.slice(node.id.lastIndexOf('/') + 1)
-  return scope === '' ? node.id : node.id.slice(scope.length + 1)
-}
-
-function relativeTime(at: number, now: number, t: Translate): string {
-  const seconds = Math.max(0, Math.round((now - at) / 1000))
-  if (seconds < 10) return t('mapJustNow')
-  if (seconds < 60) return t('mapSecondsAgo', { count: seconds })
-  if (seconds < 3600) return t('mapMinutesAgo', { count: Math.round(seconds / 60) })
-  return t('mapHoursAgo', { count: Math.round(seconds / 3600) })
-}
-
 /** @returns The element's size, kept current. */
 function useSize(element: HTMLElement | null): { width: number; height: number } {
   const [size, setSize] = useState({ width: 0, height: 0 })
   useEffect(() => {
     if (element === null) return
-    const measure = (): void => { setSize({ width: element.clientWidth, height: element.clientHeight }) }
+    const measure = (): void => {
+      setSize(previous => previous.width === element.clientWidth && previous.height === element.clientHeight
+        ? previous : { width: element.clientWidth, height: element.clientHeight })
+    }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(element)
@@ -137,17 +95,6 @@ function shownNodes(view: MapView, all: boolean): MapNode[] {
   return [...inside, ...outside]
 }
 
-function verb(activity: AiActivity, t: Translate): string {
-  switch (activity.action) {
-    case 'read': return t('mapRead')
-    case 'write': return t('mapWrite')
-    case 'edit': return t('mapEdit')
-    case 'search': return t('mapSearch')
-    case 'command': return t('mapCommand')
-    default: return t('mapOther')
-  }
-}
-
 /** Architecture: boxes and imports in layers, with pan and zoom. */
 function Architecture({ map, view, nodes, scope, selected, activity, explanation, onSelect, onOpen, t }: {
   map: ProjectMap
@@ -159,21 +106,33 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
   explanation: Readonly<Record<string, string>> | undefined
   onSelect: (id: string | undefined) => void
   onOpen: (node: MapNode) => void
-  t: Translate
+  t: MapTranslate
 }): JSX.Element {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null)
   const size = useSize(frame)
   const ids = useMemo(() => nodes.map(node => node.id), [nodes])
-  const layout = useMemo(() => layoutForPane(ids, view.edges, { width: size.width, height: size.height }), [ids, view.edges, size.width, size.height])
+  // Quantize aspect ratio into 0.1 buckets so continuous pane resizing reuses the same expensive graph layout
+  // while `fitTransform` still smoothly adapts pan/zoom on every pixel.
+  const layoutPane = useMemo(() => {
+    if (size.width <= 0 || size.height <= 0) return { width: 0, height: 0 }
+    const bucket = Math.max(2, Math.min(40, Math.round((size.width / size.height) * 10)))
+    return { width: bucket * 100, height: 1000 }
+  }, [size.width, size.height])
+  const layout = useMemo(() => layoutForPane(ids, view.edges, layoutPane), [ids, view.edges, layoutPane])
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, k: 1 })
   const drag = useRef<{ x: number; y: number; originX: number; originY: number; moved: boolean } | undefined>(undefined)
-  const fitView = (): void => {
+  const fitView = useCallback((): void => {
     if (size.width === 0 || size.height === 0) return
     setTransform(fitTransform(size, layout))
-  }
+  }, [size, layout])
   // A new scope, other boxes or a resized pane show the whole drawing again; a rescan with the same boxes keeps the view.
   const shape = `${ids.join('\n')}:${layout.width}x${layout.height}`
-  useEffect(fitView, [shape, size.width, size.height])
+  const latestLayout = useRef(layout)
+  latestLayout.current = layout
+  useEffect(() => {
+    if (size.width === 0 || size.height === 0) return
+    setTransform(fitTransform(size, latestLayout.current))
+  }, [shape, size.width, size.height])
   const zoom = (factor: number, centreX = size.width / 2, centreY = size.height / 2): void => {
     setTransform((current) => {
       const k = Math.min(3, Math.max(MIN_SCALE, current.k * factor))
@@ -202,7 +161,7 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
     drag.current = undefined
     if (current !== undefined && !current.moved) onSelect(undefined)
   }
-  const byId = new Map(nodes.map(node => [node.id, node]))
+  const byId = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
   const highlighted = (from: string, to: string): 'uses' | 'used' | undefined =>
     selected === undefined ? undefined : from === selected ? 'uses' : to === selected ? 'used' : undefined
   return (
@@ -231,9 +190,10 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
             )
           })}
           {[...layout.nodes.values()].map((place) => {
-            const node = byId.get(place.id)!
+            const node = byId.get(place.id)
+            if (node === undefined) return null
             const touch = activity.get(node.id)
-            const description = explanation?.[node.id]
+            const description = moduleDescription(explanation, node.id)
             const color = fileColor(node.languages[0]?.language ?? '', node.kind)
             const total = node.languages.reduce((sum, item) => sum + item.lines, 0)
             let offset = 0
@@ -247,9 +207,9 @@ function Architecture({ map, view, nodes, scope, selected, activity, explanation
                 <title>{`${node.id}\n${t('mapNodeStats', { files: node.files.length, lines: node.lines })}${description === undefined ? '' : `\n${description}`}`}</title>
                 <rect className={css.nodeBox} width={NODE_WIDTH} height={NODE_HEIGHT} rx={6} />
                 <rect className={css.nodeAccent} width={4} height={NODE_HEIGHT - 12} x={0} y={6} rx={2} />
-                <text x={14} y={24} className={css.nodeName}>{fit(`${node.outside ? '↗ ' : ''}${nodeLabel(node, scope, t)}`, 24)}</text>
+                <text x={14} y={24} className={css.nodeName}>{fitLabel(`${node.outside ? '↗ ' : ''}${nodeLabel(node, scope, t)}`, 24)}</text>
                 <text x={14} y={43} className={css.nodeDetail}>
-                  {description !== undefined ? fit(description, 27) : t('mapNodeStats', { files: node.files.length, lines: compact(node.lines) })}
+                  {description !== undefined ? fitLabel(description, 27) : t('mapNodeStats', { files: node.files.length, lines: compactCount(node.lines) })}
                 </text>
                 {total > 0 && node.languages.slice(0, 4).map((item) => {
                   const width = ((NODE_WIDTH - 28) * item.lines) / total
@@ -291,7 +251,7 @@ function Files({ map, scope, marks, onScope, onOpenFile, t }: {
   marks: ReadonlyMap<string, AiMark>
   onScope: (scope: string) => void
   onOpenFile: (path: string) => void
-  t: Translate
+  t: MapTranslate
 }): JSX.Element {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null)
   const size = useSize(frame)
@@ -332,161 +292,6 @@ function Files({ map, scope, marks, onScope, onOpenFile, t }: {
   )
 }
 
-/** Details of the selected box. */
-function Details({ map, view, node, scope, explanation, recent, workspace, now, onSelect, onOpen, onOpenFile, ask, t }: {
-  map: ProjectMap
-  view: MapView
-  node: MapNode
-  scope: string
-  explanation: string | undefined
-  recent: readonly AiActivity[]
-  workspace: IdeWorkspace
-  now: number
-  onSelect: (id: string) => void
-  onOpen: (node: MapNode) => void
-  onOpenFile: (path: string) => void
-  ask: (text: string) => void
-  t: Translate
-}): JSX.Element {
-  const members = new Set(node.files)
-  const uses = view.edges.filter(edge => edge.from === node.id).sort((left, right) => right.weight - left.weight)
-  const usedBy = view.edges.filter(edge => edge.to === node.id).sort((left, right) => right.weight - left.weight)
-  const files = [...node.files].sort((left, right) => map.files[right]!.lines - map.files[left]!.lines).slice(0, 8)
-  const packages = map.packages.map(item => ({ name: item.name, count: item.files.filter(index => members.has(index)).length }))
-    .filter(item => item.count > 0).sort((left, right) => right.count - left.count).slice(0, 8)
-  const total = node.languages.reduce((sum, item) => sum + item.lines, 0)
-  const base = node.type === 'directory' ? `${node.id}/` : node.type === 'loose' ? node.id.slice(0, -1) : ''
-  const inside = recent.filter((item) => {
-    const key = item.path === undefined ? undefined : keyFromAbsolute(workspace, item.path)
-    return key !== undefined && nodeForPath(view, key) === node.id
-  }).slice(0, 6)
-  const list = (edges: typeof uses, pick: (edge: (typeof uses)[number]) => string): ReactNode => edges.length === 0
-    ? <p className={css.muted}>{t('mapNone')}</p>
-    : <ul className={css.links}>{edges.map(edge => (
-      <li key={pick(edge)}><button type="button" className={css.link} onClick={() => { onSelect(pick(edge)) }}>{pick(edge)}</button>
-        <span className={css.muted}>{edge.weight}</span></li>
-    ))}</ul>
-  return (
-    <div className={css.details} data-map-details>
-      <h3 className={css.detailsTitle} title={node.id}>{nodeLabel(node, scope, t)}</h3>
-      <p className={css.muted}>{t(KIND_LABEL[node.kind])} · {t('mapNodeStats', { files: node.files.length, lines: node.lines })}</p>
-      {explanation !== undefined && <p className={css.description}>{explanation}</p>}
-      <div className={css.detailActions}>
-        {node.type === 'file'
-          ? <Button size="sm" variant="primary" onClick={() => { onOpenFile(node.id) }}>{t('mapOpenFile')}</Button>
-          : (node.openable || node.outside) && <Button size="sm" variant="primary" title={t('mapOpenTitle')} onClick={() => { onOpen(node) }}>{t('mapOpen')}</Button>}
-        <Button size="sm" variant="outline" icon={<IconSparkleRegular size={14} />} onClick={() => { ask(t('mapAskAiText', { path: node.id })) }}>{t('mapAskAi')}</Button>
-      </div>
-      {total > 0 && <>
-        <h4 className={css.section}>{t('mapLanguages')}</h4>
-        <ul className={css.links}>{node.languages.slice(0, 5).map(item => (
-          <li key={item.language}><span className={css.dot} style={{ background: fileColor(item.language, 'code') }} />{item.language}
-            <span className={css.muted}>{Math.round((item.lines / total) * 100)}%</span></li>
-        ))}</ul>
-      </>}
-      <h4 className={css.section}>{t('mapUses')}</h4>
-      {list(uses, edge => edge.to)}
-      <h4 className={css.section}>{t('mapUsedBy')}</h4>
-      {list(usedBy, edge => edge.from)}
-      {node.type !== 'file' && <>
-        <h4 className={css.section}>{t('mapMainFiles')}</h4>
-        <ul className={css.links}>{files.map(index => (
-          <li key={index}><button type="button" className={css.link} title={map.files[index]!.path}
-            onClick={() => { onOpenFile(map.files[index]!.path) }}>{map.files[index]!.path.slice(base.length)}</button>
-          <span className={css.muted}>{compact(map.files[index]!.lines)}</span></li>
-        ))}</ul>
-      </>}
-      {packages.length > 0 && <>
-        <h4 className={css.section}>{t('mapPackages')}</h4>
-        <div className={css.chips}>{packages.map(item => <span key={item.name} className={css.chip}>{item.name}</span>)}</div>
-      </>}
-      {inside.length > 0 && <>
-        <h4 className={css.section}>{t('mapActivity')}</h4>
-        <ul className={css.links}>{inside.map(item => (
-          <li key={item.toolCallId}><span>{verb(item, t)}</span><span className={css.ellipsis} title={item.label}>{item.label}</span>
-            <span className={css.muted}>{relativeTime(item.endedAt ?? item.startedAt, now, t)}</span></li>
-        ))}</ul>
-      </>}
-    </div>
-  )
-}
-
-/** The agents' work on this project, newest first. */
-function ActivityFeed({ workspace, activity, changes, now, onOpenFile, t }: {
-  workspace: IdeWorkspace
-  activity: ProjectMapProps['activity']
-  changes: readonly ChatChange[]
-  now: number
-  onOpenFile: (path: string) => void
-  t: Translate
-}): JSX.Element {
-  const inProject = (item: AiActivity): boolean => item.path === undefined ? false : keyFromAbsolute(workspace, item.path) !== undefined
-  const running = activity.active.filter(item => item.endedAt === undefined && inProject(item))
-  const rows = [...running.map(item => ({ item, live: true })), ...activity.recent.filter(inProject).map(item => ({ item, live: false }))].slice(0, 40)
-  return (
-    <div className={css.details} data-map-activity>
-      <h3 className={css.detailsTitle}>{t('mapActivity')}</h3>
-      {changes.length > 0 && <p className={css.description}>{t('mapChangedFiles', { count: changes.length })}</p>}
-      {rows.length === 0 ? <p className={css.muted}>{t('mapActivityEmpty')}</p> : (
-        <ul className={css.feed}>
-          {rows.map(({ item, live }) => {
-            const key = item.path === undefined ? undefined : keyFromAbsolute(workspace, item.path)
-            return (
-              <li key={`${item.toolCallId}:${live ? 'now' : 'done'}`} data-live={live || undefined} data-action={item.action}>
-                <span className={css.feedVerb}>{verb(item, t)}</span>
-                {key !== undefined && item.action !== 'search'
-                  ? <button type="button" className={css.link} title={key} onClick={() => { onOpenFile(key) }}>{key}</button>
-                  : <span className={css.ellipsis} title={item.label}>{key ?? item.label}</span>}
-                <span className={css.muted}>{live ? t('mapActivityNow') : relativeTime(item.endedAt ?? item.startedAt, now, t)}</span>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-/**
- * Where in the project the map is, the way back, and the view's own controls. The path scrolls sideways when it is
- * longer than the row, ending at the current directory, so 返回 and the controls stay in reach in a narrow pane.
- */
-function ScopeBar({ scope, onJump, onBack, children, t }: {
-  scope: string
-  onJump: (scope: string) => void
-  onBack: () => void
-  children: ReactNode
-  t: Translate
-}): JSX.Element {
-  const trail = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const element = trail.current
-    if (element !== null) element.scrollLeft = element.scrollWidth
-  }, [scope])
-  const crumbs = scope === '' ? [] : scope.split('/')
-  return (
-    <nav className={css.crumbs} aria-label={t('mapRoot')}>
-      <div className={css.path}>
-        <button type="button" className={css.crumb} disabled={scope === ''} onClick={() => { onJump('') }}>{t('mapRoot')}</button>
-        {crumbs.length > 0 && (
-          <div ref={trail} className={css.trail} onWheel={(event) => {
-            const element = event.currentTarget
-            if (event.deltaX === 0 && element.scrollWidth > element.clientWidth) element.scrollLeft += event.deltaY
-          }}>
-            {crumbs.map((part, index) => {
-              const path = crumbs.slice(0, index + 1).join('/')
-              return <Fragment key={path}><span className={css.separator} aria-hidden="true">/</span>
-                <button type="button" className={css.crumb} title={path} disabled={path === scope} onClick={() => { onJump(path) }}>{part}</button></Fragment>
-            })}
-          </div>
-        )}
-        {scope !== '' && <Button size="sm" variant="ghost" className={css.up} onClick={onBack}>{t('mapUp')}</Button>}
-      </div>
-      {children}
-    </nav>
-  )
-}
-
 /**
  * The project map.
  * @param props Project, visibility, the agents' changes and activity, and window actions.
@@ -494,7 +299,6 @@ function ScopeBar({ scope, onJump, onBack, children, t }: {
  */
 export function ProjectMapView({ workspaceId, visible, sessionId, changes, activity, openFile, ask }: ProjectMapProps): JSX.Element {
   const t = useMapT()
-  const locale = useLocale()
   const lookup = useWorkspaceLookup(workspaceId)
   const workspace = lookup.status === 'ready' ? lookup.workspace : null
   const state = useProjectMap(workspace?.workspaceId ?? null, visible)
@@ -580,7 +384,7 @@ export function ProjectMapView({ workspaceId, visible, sessionId, changes, activ
   }
   const explain = (): void => {
     void explainMap(workspace.workspaceId).catch((error: unknown) => {
-      toast(t('tourFailed', { message: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
+      toast(t('tourFailed', { message: errorMessage(error) }), { tone: 'error' })
     })
   }
   const showDirectory = (path: string): void => {
@@ -592,7 +396,7 @@ export function ProjectMapView({ workspaceId, visible, sessionId, changes, activ
       <header className={css.header}>
         <div className={css.headline}>
           <h2 className={css.title} title={workspace.path}>{map.title || workspace.title}</h2>
-          <span className={css.stats}>{t('mapStats', { files: map.files.length, codeFiles: codeFiles.length, lines: compact(codeLines) })}</span>
+          <span className={css.stats}>{t('mapStats', { files: map.files.length, codeFiles: codeFiles.length, lines: compactCount(codeLines) })}</span>
           {map.truncated && <span className={css.warning}>{t('mapTruncated')}</span>}
           <span className={css.spacer} />
           <SegmentedControl id="project-map-tab" label={t('mapViews')} value={tab} className={css.tabs}
@@ -642,7 +446,7 @@ export function ProjectMapView({ workspaceId, visible, sessionId, changes, activ
         </section>
         <aside className={css.side}>
           {selectedNode !== undefined
-            ? <Details map={map} view={view} node={selectedNode} scope={scope} explanation={explanation?.modules[selectedNode.id]} recent={activity.recent}
+            ? <Details map={map} view={view} node={selectedNode} scope={scope} explanation={moduleDescription(explanation?.modules, selectedNode.id)} recent={activity.recent}
               workspace={workspace} now={now} onSelect={setSelected} onOpen={open} onOpenFile={openFile} ask={ask} t={t} />
             : <ActivityFeed workspace={workspace} activity={activity} changes={changes} now={now} onOpenFile={openFile} t={t} />}
         </aside>

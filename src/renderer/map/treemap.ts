@@ -83,46 +83,60 @@ function squarify<T extends { weight: number }>(items: readonly T[], x: number, 
   const total = items.reduce((sum, item) => sum + item.weight, 0)
   if (total <= 0 || width <= 0 || height <= 0) return placed
   const scale = (width * height) / total
-  let rest = items.map(item => ({ item, area: item.weight * scale }))
+  const entries = items.map(item => ({ item, area: item.weight * scale })).filter(entry => entry.area > 0)
   let left = x
   let top = y
   let w = width
   let h = height
-  const worst = (row: readonly { area: number }[], side: number): number => {
-    const sum = row.reduce((total, entry) => total + entry.area, 0)
-    let max = 0
-    let min = Infinity
-    for (const entry of row) { max = Math.max(max, entry.area); min = Math.min(min, entry.area) }
-    return Math.max((side * side * max) / (sum * sum), (sum * sum) / (side * side * min))
+  let start = 0
+  const worstRatio = (sum: number, max: number, min: number, side: number): number => {
+    if (sum <= 0 || min <= 0 || side <= 0) return Infinity
+    const sideSq = side * side
+    const sumSq = sum * sum
+    return Math.max((sideSq * max) / sumSq, sumSq / (sideSq * min))
   }
-  while (rest.length > 0) {
+  while (start < entries.length) {
     const side = Math.min(w, h)
-    const row = [rest[0]!]
-    let index = 1
-    while (index < rest.length && worst([...row, rest[index]!], side) <= worst(row, side)) { row.push(rest[index]!); index++ }
-    rest = rest.slice(index)
-    const sum = row.reduce((total, entry) => total + entry.area, 0)
+    const first = entries[start]!
+    let sum = first.area
+    let max = first.area
+    let min = first.area
+    let best = worstRatio(sum, max, min, side)
+    let end = start + 1
+    while (end < entries.length) {
+      const area = entries[end]!.area
+      const nextSum = sum + area
+      const nextMax = Math.max(max, area)
+      const nextMin = Math.min(min, area)
+      const nextWorst = worstRatio(nextSum, nextMax, nextMin, side)
+      if (nextWorst > best) break
+      sum = nextSum; max = nextMax; min = nextMin; best = nextWorst
+      end++
+    }
     if (w >= h) {
-      const columnWidth = sum / h
+      const columnWidth = h > 0 ? sum / h : 0
       let offset = top
-      for (const entry of row) {
-        const blockHeight = entry.area / columnWidth
+      for (let index = start; index < end; index++) {
+        const entry = entries[index]!
+        const blockHeight = columnWidth > 0 ? entry.area / columnWidth : 0
         placed.push({ item: entry.item, x: left, y: offset, width: columnWidth, height: blockHeight })
         offset += blockHeight
       }
       left += columnWidth
       w -= columnWidth
     } else {
-      const rowHeight = sum / w
+      const rowHeight = w > 0 ? sum / w : 0
       let offset = left
-      for (const entry of row) {
-        const blockWidth = entry.area / rowHeight
+      for (let index = start; index < end; index++) {
+        const entry = entries[index]!
+        const blockWidth = rowHeight > 0 ? entry.area / rowHeight : 0
         placed.push({ item: entry.item, x: offset, y: top, width: blockWidth, height: rowHeight })
         offset += blockWidth
       }
       top += rowHeight
       h -= rowHeight
     }
+    start = end
   }
   return placed
 }

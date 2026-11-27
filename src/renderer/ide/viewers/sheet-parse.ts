@@ -16,6 +16,15 @@ interface WorkerResponse {
 
 let workerRequestId = 1
 
+/** Replaced at production build time by `sharedSheetWorker` in `vite.config.ts` so worker and fallback share one `xlsx` chunk. */
+declare const __RAINY_SHEET_WORKER_URL__: string | undefined
+
+function sheetWorkerUrl(): string | URL {
+  if (typeof __RAINY_SHEET_WORKER_URL__ === 'string' && __RAINY_SHEET_WORKER_URL__ !== '') return __RAINY_SHEET_WORKER_URL__
+  const script = './sheet-worker.ts'
+  return new URL(script, import.meta.url)
+}
+
 /**
  * Try parsing in a one-shot Web Worker; returns `undefined` when Workers are unavailable or fail to spawn,
  * signaling the caller to fall back cleanly to chunked main-thread parsing.
@@ -24,7 +33,7 @@ function parseInWorker(bytes: Uint8Array, locale: 'zh' | 'en', signal?: AbortSig
   if (typeof Worker === 'undefined') return Promise.resolve(undefined)
   let worker: Worker
   try {
-    worker = new Worker(new URL('./sheet-worker.ts', import.meta.url))
+    worker = new Worker(sheetWorkerUrl(), { type: 'module' })
   } catch {
     return Promise.resolve(undefined)
   }

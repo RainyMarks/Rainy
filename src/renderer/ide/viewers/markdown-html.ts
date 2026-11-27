@@ -79,14 +79,20 @@ const ENTITIES: Readonly<Record<string, string>> = {
   le: '≤', ge: '≥', ne: '≠', infin: '∞', sect: '§', para: '¶', yen: '¥', euro: '€', pound: '£', cent: '¢', check: '✓',
 }
 
+const NAMED_ENTITY_CACHE = new Map<string, string | undefined>()
+
 function namedEntity(name: string): string | undefined {
   const known = ENTITIES[name]
   if (known !== undefined || typeof document === 'undefined') return known
+  if (NAMED_ENTITY_CACHE.has(name)) return NAMED_ENTITY_CACHE.get(name)
   // The name is letters and digits only, so the probe parses no markup.
   const probe = document.createElement('span')
   probe.innerHTML = `&${name};`
   const decoded = probe.textContent ?? ''
-  return decoded === `&${name};` ? undefined : decoded
+  const result = decoded === `&${name};` ? undefined : decoded
+  if (NAMED_ENTITY_CACHE.size >= 256) NAMED_ENTITY_CACHE.delete(NAMED_ENTITY_CACHE.keys().next().value!)
+  NAMED_ENTITY_CACHE.set(name, result)
+  return result
 }
 
 /** @param text Text or an attribute value from HTML. @returns It with character references decoded. */
@@ -124,10 +130,13 @@ function tokenize(html: string): Token[] {
       const open = OPEN_TAG.exec(html)
       if (open !== null) {
         const name = open[1]!.toLowerCase()
-        const selfClosing = open[3] === '/'
+        // HTML5 raw-text and non-void HTML elements cannot self-close: `<script/>`, `<style/>`, `<iframe/>`, `<svg/>`
+        // must still consume or drop their body until the matching close tag.
+        const rawText = RAW_TEXT.has(name)
+        const selfClosing = open[3] === '/' && !rawText
         found.push({ kind: 'open', name, attributes: attributesOf(open[2] ?? ''), selfClosing, at: lt })
         end = OPEN_TAG.lastIndex
-        if (RAW_TEXT.has(name) && !selfClosing) {
+        if (rawText) {
           const close = new RegExp(`</${name}(?=[\\s/>])[^>]*>`, 'giu')
           close.lastIndex = end
           const match = close.exec(html)
@@ -269,7 +278,8 @@ function rebuild(parent: Node): void {
   // A dropped element takes the text and inline Markdown up to its end tag with it, but ends at the next block: an
   // unclosed `<svg>` or `<iframe>` never hides the paragraphs after it.
   let dropping: { name: string; depth: number } | undefined
-  for (const child of children) {
+  for (let childIndex = 0; childIndex < children.length; childIndex++) {
+    const child = children[childIndex]!
     if (child.type !== 'raw') {
       if (dropping !== undefined && (child.type === 'text' || PHRASING.has(child.tagName ?? ''))) continue
       dropping = undefined
@@ -302,7 +312,14 @@ function rebuild(parent: Node): void {
         continue
       }
       if (DROPPED.has(token.name)) {
-        if (!token.selfClosing && !VOID.has(token.name)) dropping = { name: token.name, depth: 1 }
+        // Non-void HTML elements (e.g. `<iframe/>`, `<object/>`, `<template/>`) never self-close in HTML5; foreign
+        // elements (`svg`, `math`) also enter dropping when a matching close tag appears later in the current or sibling raw nodes.
+        const closePattern = new RegExp(`</${token.name}(?=[\\s/>])`, 'iu')
+        const hasLaterClose = closePattern.test(html.slice(token.at))
+          || children.slice(childIndex + 1).some(sibling => sibling.type === 'raw' && closePattern.test(sibling.value ?? ''))
+        if (!VOID.has(token.name) && (!token.selfClosing || (token.name !== 'svg' && token.name !== 'math') || hasLaterClose)) {
+          dropping = { name: token.name, depth: 1 }
+        }
         continue
       }
       if (ALLOWED[token.name] === undefined) continue

@@ -10,6 +10,7 @@ const REFRESH_DELAY_MS = 150
 const lists = new Map<string, readonly ChatChange[]>()
 const listeners = new Map<string, Set<() => void>>()
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
+const requestSeq = new Map<string, number>()
 
 function publish(sessionId: string, list: readonly ChatChange[]): void {
   lists.set(sessionId, list)
@@ -22,7 +23,10 @@ function publish(sessionId: string, list: readonly ChatChange[]): void {
  * @returns Completion; rejects when the Host cannot list them.
  */
 export async function refreshChanges(sessionId: string): Promise<void> {
+  const seq = (requestSeq.get(sessionId) ?? 0) + 1
+  requestSeq.set(sessionId, seq)
   const list = await host.call('chat.changes', { sessionId })
+  if (requestSeq.get(sessionId) !== seq) return
   // An unchanged list keeps its identity, so the bars that show it do not render again.
   const before = lists.get(sessionId)
   if (before !== undefined && JSON.stringify(before) === JSON.stringify(list)) return
@@ -58,7 +62,10 @@ export function useChanges(sessionId: string | null): readonly ChatChange[] {
       let set = listeners.get(sessionId)
       if (set === undefined) { set = new Set(); listeners.set(sessionId, set) }
       set.add(listener)
-      return () => { set.delete(listener) }
+      return () => {
+        set.delete(listener)
+        if (set.size === 0) listeners.delete(sessionId)
+      }
     },
     () => sessionId === null ? EMPTY : lists.get(sessionId) ?? EMPTY,
   )

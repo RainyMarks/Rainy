@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { IconAction, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconChevronUpOutlineRegular, IconCloseOutlineRegular,
-  toast } from '../../ui/index.ts'
+  isComposingKey, toast } from '../../ui/index.ts'
 import type * as RichPlugins from './rich-plugins.ts'
 import { useViewerT } from './messages.ts'
 
@@ -16,10 +16,12 @@ export interface FindRequest { readonly replace: boolean; readonly seed: string;
  * @param plugins The editor's plugin module.
  */
 export function revealMatch(view: EditorView, stage: HTMLElement | null, plugins: typeof RichPlugins): void {
+  if (view.isDestroyed) return
   const { matches, current } = plugins.currentSearch(view.state)
   const match = matches[current]
   if (match === undefined || stage === null) return
-  const coordinates = view.coordsAtPos(match.from)
+  let coordinates: { top: number; bottom: number }
+  try { coordinates = view.coordsAtPos(match.from) } catch { return }
   const frame = stage.getBoundingClientRect()
   if (coordinates.top < frame.top + 48 || coordinates.bottom > frame.bottom - 24) stage.scrollTop += coordinates.top - (frame.top + frame.height / 3)
 }
@@ -73,7 +75,7 @@ export function RichFindBar({ view, stage, plugins, request, revision, onClose }
   owner.current = { view, plugins }
   useEffect(() => () => {
     const editor = owner.current.view()
-    if (editor !== undefined) owner.current.plugins.setSearch(editor, '', false)
+    if (editor !== undefined && !editor.isDestroyed) owner.current.plugins.setSearch(editor, '', false)
   }, [])
 
   const editor = view()
@@ -127,7 +129,7 @@ export function RichFindBar({ view, stage, plugins, request, revision, onClose }
         <input ref={input} className="rainy-find-input" value={query} placeholder={t('findPlaceholder')} aria-label={t('findPlaceholder')} spellCheck={false}
           onChange={(event) => { setQuery(event.target.value); search(event.target.value, caseSensitive) }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); step(event.shiftKey ? -1 : 1) }
+            if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) { event.preventDefault(); step(event.shiftKey ? -1 : 1) }
           }} />
         <span className="rainy-find-count" aria-live="polite">
           {query === '' ? '' : total === 0 ? t('findNone') : t('findCount', { current: (state?.current ?? 0) + 1, total })}
@@ -142,7 +144,7 @@ export function RichFindBar({ view, stage, plugins, request, revision, onClose }
         <input ref={replaceInput} className="rainy-find-input" value={replacement} placeholder={t('replacePlaceholder')} aria-label={t('replacePlaceholder')} spellCheck={false}
           onChange={(event) => { setReplacement(event.target.value) }}
           onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+            if (event.key !== 'Enter' || isComposingKey(event.nativeEvent)) return
             event.preventDefault()
             if (event.ctrlKey && event.altKey) replaceEvery(); else replaceOne()
           }} />

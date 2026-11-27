@@ -2,23 +2,28 @@
  *  Images are embedded, code is highlighted, math becomes MathML (no fonts to ship) and Mermaid diagrams become SVG. */
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import { grammarFor, highlightLines, loadGrammar } from '../../ui/highlight.ts'
 import { ideRawUrl } from '../../../shared/ide-preview.ts'
-import { documentUrl, rehypeAnchors, resolveDocumentPath } from '../../chat/Markdown.tsx'
+import { rehypeAnchors, resolveDocumentPath } from '../../chat/Markdown.tsx'
 import { getPrefs } from '../../prefs.ts'
 import { splitFrontMatter } from './front-matter.ts'
-import { DOCUMENT_REMARK_PLUGINS, rehypeSafeHtml, rehypeToc } from './markdown-html.ts'
+import { DOCUMENT_REMARK_PLUGINS, isDataImage, rehypeSafeHtml, rehypeToc } from './markdown-html.ts'
 import { markdownOutline } from './markdown-outline.ts'
 import { isMermaid, renderMermaid } from './mermaid.ts'
 import { viewerMessages } from './messages.ts'
+import { detectSignature } from './signature.ts'
+import { errorMessage, escapeHtml } from './viewer-utils.ts'
 
 /** Strict CSP for exported standalone HTML: allows inline styles and embedded data/blob images, blocks all scripts and network loads. */
 export const EXPORT_HTML_CSP = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:;"
 
 /** Largest image embedded into an export; a larger one keeps its link. */
 const MAX_EMBEDDED_BYTES = 20 * 1024 * 1024
+
+/** Allowed image MIME types for embedded data URLs; rejects HTML, scripts, plain text and arbitrary workspace files. */
+const EMBEDDABLE_IMAGE_MIME = /^image\/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon|svg\+xml)$/iu
 
 const STYLE = `
 :root { color-scheme: light; }
@@ -71,9 +76,22 @@ details { margin: 0 0 1em; padding: 6px 12px; border: 1px solid #d0d7de; border-
 }
 `
 
-/** @param text Text for an HTML document. @returns It with the five special characters escaped. */
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/gu, character => `&#${character.charCodeAt(0)};`)
+/**
+ * URL filter for exported standalone HTML:
+ * - Images keep data:image/*, relative paths, http(s) URLs, and Windows drive paths so in-project images can be embedded
+ *   (unembedded local drive/file paths are stripped afterward).
+ * - Links keep only safe external protocols (`http:`, `https:`, `mailto:`), fragments, and relative paths — stripping
+ *   `file://`, Windows drive paths (`C:\...`), UNC paths (`\\...`), and script URLs.
+ */
+function exportUrl(url: string, key: string, node: { tagName: string }): string {
+  const trimmed = url.trim()
+  if (key === 'src' && node.tagName === 'img') {
+    if (isDataImage(trimmed)) return trimmed
+    if (/^[A-Za-z]:[\\/]/u.test(trimmed)) return trimmed
+    return defaultUrlTransform(trimmed)
+  }
+  if (/^(?:file:|\\\\|[A-Za-z]:[\\/])/iu.test(trimmed)) return ''
+  return defaultUrlTransform(trimmed)
 }
 
 /**
@@ -110,6 +128,23 @@ function codeComponent(diagrams: string[]): Components['code'] {
 }
 
 /**
+ * Resolve an image target in an exported document against its directory (and optional Windows project root).
+ * @returns Project-relative path when the target lies inside the project, or `undefined` for web/external/outside paths.
+ */
+export function resolveExportImagePath(directory: string, target: string, hostRoot?: string | undefined): string | undefined {
+  let candidate = target.trim()
+  if (/^[A-Za-z]:[\\/]/u.test(candidate)) {
+    const root = hostRoot?.replaceAll('\\', '/').replace(/\/+$/u, '')
+    const normalized = candidate.replaceAll('\\', '/')
+    if (root === undefined || !normalized.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return undefined
+    candidate = `/${normalized.slice(root.length + 1)}`
+  } else if (/^(?:[a-z][a-z\d+.-]*:|\/\/|\\\\)/iu.test(candidate)) {
+    return undefined
+  }
+  return resolveDocumentPath(directory, candidate)
+}
+
+/**
  * Build the page.
  * @param options.text Document text.
  * @param options.name File name without its extension, the title when the document has none.
@@ -120,7 +155,7 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
   text: string
   name: string
   image: (target: string) => Promise<string | undefined>
-  /** Language of the page, the interface language by default; the footnote labels are the interface language's. */
+  /** Language of the page, the interface language by default; the TOC and footnote labels match this locale. */
   locale?: 'zh' | 'en' | undefined
 }): Promise<string> {
   text = text.replace(/\r\n?/gu, '\n')
@@ -130,14 +165,17 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
   const fences = [...body.matchAll(/^ {0,3}(?:`{3,}|~{3,})[ \t]*([\w#+.-]+)/gmu)].map(match => grammarFor(match[1]))
   await Promise.all([...new Set(fences)].filter((value): value is string => value !== undefined).map(loadGrammar))
   const diagrams: string[] = []
+  const tocLabel = viewerMessages.tFor(locale, 'toc')
+  const footnoteLabel = viewerMessages.tFor(locale, 'footnotes')
+  const footnoteBackLabel = viewerMessages.tFor(locale, 'footnoteBack')
   const markup = renderToStaticMarkup(createElement(ReactMarkdown, {
     // The preview's reading of the file (markdown-html.ts): its allowlisted HTML, highlights, no dollar amounts as math.
     remarkPlugins: DOCUMENT_REMARK_PLUGINS,
     // Headings get the preview's ids, which the links of a `[TOC]` point to in the page and the PDF.
-    rehypePlugins: [rehypeSafeHtml, [rehypeKatex, { output: 'mathml', throwOnError: false }], rehypeAnchors(false), rehypeToc(viewerMessages.t('toc'))],
-    remarkRehypeOptions: { footnoteLabel: viewerMessages.t('footnotes'), footnoteBackLabel: viewerMessages.t('footnoteBack'), footnoteLabelProperties: {} },
+    rehypePlugins: [rehypeSafeHtml, [rehypeKatex, { output: 'mathml', throwOnError: false }], rehypeAnchors(false), rehypeToc(tocLabel)],
+    remarkRehypeOptions: { footnoteLabel, footnoteBackLabel, footnoteLabelProperties: {} },
     components: { code: codeComponent(diagrams) },
-    urlTransform: documentUrl,
+    urlTransform: exportUrl,
   }, body))
   const page = new DOMParser().parseFromString(`<main>${markup}</main>`, 'text/html')
   for (const [index, source] of diagrams.entries()) {
@@ -147,15 +185,32 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
     const figure = page.createElement('div')
     figure.className = 'mermaid-diagram'
     try { figure.innerHTML = await renderMermaid(source, false) } catch (error) {
-      figure.textContent = error instanceof Error ? error.message : String(error)
+      figure.textContent = errorMessage(error)
     }
     block.replaceWith(figure)
   }
-  for (const element of page.querySelectorAll('img')) {
+  // Deduplicate image fetches so repeated logos/icons are fetched and encoded only once.
+  const cache = new Map<string, Promise<string | undefined>>()
+  const resolveImage = (target: string): Promise<string | undefined> => {
+    let task = cache.get(target)
+    if (task === undefined) {
+      task = image(target).catch(() => undefined)
+      cache.set(target, task)
+    }
+    return task
+  }
+  const images = [...page.querySelectorAll('img')]
+  await Promise.all(images.map(async (element) => {
     const target = element.getAttribute('src')
-    if (target === null || /^data:/iu.test(target)) continue
-    const embedded = await image(target).catch(() => undefined)
+    if (target === null || /^data:/iu.test(target)) return
+    const embedded = await resolveImage(target)
     if (embedded !== undefined) element.setAttribute('src', embedded)
+    else if (/^(?:file:|\\\\|[A-Za-z]:[\\/])/iu.test(target.trim())) element.removeAttribute('src')
+  }))
+  // Strip any local file:// or Windows drive hrefs that slipped into raw HTML anchors.
+  for (const link of page.querySelectorAll('a[href]')) {
+    const href = (link.getAttribute('href') ?? '').trim()
+    if (href === '' || /^(?:file:|\\\\|[A-Za-z]:[\\/])/iu.test(href)) link.removeAttribute('href')
   }
   const main = page.querySelector('main')!
   return `<!DOCTYPE html>\n<html lang="${locale === 'zh' ? 'zh-CN' : 'en'}">\n<head>\n<meta charset="utf-8">\n`
@@ -166,20 +221,40 @@ export async function exportHtml({ text, name, image, locale = getPrefs().locale
 }
 
 /**
- * Read an image through the Host and embed it.
+ * Read an image through the Host and embed it. Rejects non-image payloads (such as text or HTML files) so
+ * arbitrary project files referenced via `![](secret.txt)` can never be exfiltrated into exported HTML.
  * @param url Address the page can fetch.
- * @returns A data URL, or `undefined` when the image is missing or too large.
+ * @returns A data URL, or `undefined` when the image is missing, not an image, or too large.
  */
 export async function embedImage(url: string): Promise<string | undefined> {
   const response = await fetch(url, { credentials: 'include' })
   if (!response.ok) return undefined
+  const headerType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase()
   const blob = await response.blob()
-  if (blob.size > MAX_EMBEDDED_BYTES) return undefined
+  if (blob.size === 0 || blob.size > MAX_EMBEDDED_BYTES) return undefined
+  const mime = (blob.type || headerType).split(';')[0]!.trim().toLowerCase()
+  let verifiedMime = EMBEDDABLE_IMAGE_MIME.test(mime) ? mime : ''
+  if (verifiedMime === '' && (mime === '' || mime === 'application/octet-stream')) {
+    const head = new Uint8Array(await blob.slice(0, 64).arrayBuffer())
+    const sig = detectSignature(head)
+    if (sig?.family === 'image') {
+      const label = sig.label.toLowerCase()
+      verifiedMime = label.includes('jpeg') ? 'image/jpeg'
+        : label.includes('gif') ? 'image/gif'
+          : label.includes('webp') ? 'image/webp'
+            : label.includes('bmp') ? 'image/bmp'
+              : label.includes('avif') ? 'image/avif'
+                : label.includes('ico') ? 'image/x-icon'
+                  : 'image/png'
+    }
+  }
+  if (verifiedMime === '') return undefined
+  const typedBlob = blob.type === verifiedMime ? blob : new Blob([blob], { type: verifiedMime })
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => { resolve(String(reader.result)) }
     reader.onerror = () => { reject(reader.error ?? new Error(viewerMessages.t('imageReadFailed'))) }
-    reader.readAsDataURL(blob)
+    reader.readAsDataURL(typedBlob)
   })
 }
 
@@ -191,26 +266,27 @@ export async function embedImage(url: string): Promise<string | undefined> {
  * @param options.path Project-relative path of the document.
  * @param options.workspaceId Its project.
  * @param options.rootId Its mounted folder; omitted for the primary one.
+ * @param options.hostRoot Project folder on this computer, when it is a Windows folder.
  * @returns The saved file, or `null` when the user cancelled.
  */
-export async function exportDocument({ format, text, path, workspaceId, rootId }: {
+export async function exportDocument({ format, text, path, workspaceId, rootId, hostRoot, locale = getPrefs().locale }: {
   format: 'pdf' | 'html'
   text: string
   path: string
   workspaceId: string
   rootId?: string | undefined
+  hostRoot?: string | undefined
+  locale?: 'zh' | 'en' | undefined
 }): Promise<string | null> {
   const name = (path.split('/').at(-1) ?? path).replace(/\.[^.]+$/u, '')
   const directory = path.split('/').slice(0, -1).join('/')
-  const html = await exportHtml({ text, name, locale: getPrefs().locale, image: async (target) => {
-    // Web images stay links; project images are embedded so the file works on its own.
-    if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/iu.test(target) && !/^file:/iu.test(target)) return undefined
-    const resolved = resolveDocumentPath(directory, target)
+  const html = await exportHtml({ text, name, locale, image: async (target) => {
+    const resolved = resolveExportImagePath(directory, target, hostRoot)
     return resolved === undefined ? undefined : embedImage(ideRawUrl({ workspaceId, rootId, path: resolved }))
   } })
   const bridge = window.__RAINY_EXPORT__
   if (bridge !== undefined) return (await bridge.save({ format, html, name }))?.path ?? null
-  if (format === 'pdf') throw new Error(viewerMessages.t('exportPdfDesktop'))
+  if (format === 'pdf') throw new Error(viewerMessages.tFor(locale, 'exportPdfDesktop'))
   const link = document.createElement('a')
   link.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
   link.download = `${name}.html`

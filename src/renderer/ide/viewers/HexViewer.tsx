@@ -1,6 +1,6 @@
 /** Hex view of a file of any size: virtual rows over range reads, selection, offsets, inspector and copy formats; and
  *  the file read as text in an encoding the editor does not open, as 3.x's 以文本打开 did. */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { fileSizeText, isComposingKey, toast, writeClipboard } from '../../ui/index.ts'
 import { ByteSource, FileChangedError } from './byte-source.ts'
 import { asciiByte, decodeText, formatBytes, formatOffset, guessEncoding, hexByte, HEX_ROW_BYTES, inspectBytes, parseOffset, TEXT_ENCODINGS,
@@ -41,7 +41,12 @@ export function HexViewer({ url, size, onChanged, onBack }: {
   const t = useViewerT()
   const narrow = useNarrow()
   const source = useMemo(() => new ByteSource(url, size), [url, size])
-  const scroller = useRef<HTMLDivElement>(null)
+  const scroller = useRef<HTMLDivElement | null>(null)
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  const bindScroller = useCallback((element: HTMLDivElement | null) => {
+    scroller.current = element
+    setScrollerEl(element)
+  }, [])
   const gotoInput = useRef<HTMLInputElement>(null)
   const dragging = useRef(false)
   const [, setLoaded] = useState(0)
@@ -57,38 +62,51 @@ export function HexViewer({ url, size, onChanged, onBack }: {
   /** The file shown as text in an encoding instead of as bytes, once decoded. */
   const [text, setText] = useState<{ encoding: TextEncoding; value?: string | undefined } | undefined>()
 
+  const isAbort = (failure: unknown): boolean => failure instanceof Error && failure.name === 'AbortError'
   const fail = (failure: unknown): void => {
+    if (isAbort(failure)) return
     if (failure instanceof FileChangedError) { onChanged(); return }
     setError(loadFailure(failure, t))
   }
 
   useEffect(() => {
-    setSelection(undefined); setSignature(undefined); setError(undefined)
-    let cancelled = false
-    void source.read(0, 4096).then((head) => {
-      if (cancelled) return
+    setSelection(undefined); setSignature(undefined); setError(undefined); setText(undefined); setScrollTop(0)
+    if (scroller.current !== null) scroller.current.scrollTop = 0
+    const controller = new AbortController()
+    void source.read(0, 4096, controller.signal).then((head) => {
+      if (controller.signal.aborted) return
       setSignature(detectSignature(head) ?? null)
       setGuess(guessEncoding(head))
-    }).catch((failure: unknown) => { if (!cancelled) fail(failure) })
-    return () => { cancelled = true }
+    }).catch((failure: unknown) => { if (!controller.signal.aborted) fail(failure) })
+    return () => { controller.abort() }
+  // `fail` is a new function on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source])
 
   useEffect(() => {
-    const element = scroller.current
-    if (element === null) return
-    const observer = new ResizeObserver(() => { setHeight(element.clientHeight) })
-    observer.observe(element)
+    if (scrollerEl === null) return
+    const measure = (): void => { setHeight(scrollerEl.clientHeight || 400) }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(scrollerEl)
     return () => { observer.disconnect() }
-  }, [])
+  }, [scrollerEl])
+
+  // Restore scroll position when returning from the decoded text view to the hex grid.
+  useLayoutEffect(() => {
+    if (scrollerEl !== null) scrollerEl.scrollTop = scrollTop
+  // Only re-sync DOM scrollTop when the scroller node remounts.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollerEl])
 
   useEffect(() => {
     if (text === undefined || text.value !== undefined) return
-    let cancelled = false
+    const controller = new AbortController()
     const encoding = text.encoding
-    void source.read(0, Math.min(size, TEXT_LIMIT)).then((bytes) => {
-      if (!cancelled) setText({ encoding, value: decodeText(bytes, encoding, size <= TEXT_LIMIT) })
-    }, (failure: unknown) => { if (!cancelled) fail(failure) })
-    return () => { cancelled = true }
+    void source.read(0, Math.min(size, TEXT_LIMIT), controller.signal).then((bytes) => {
+      if (!controller.signal.aborted) setText({ encoding, value: decodeText(bytes, encoding, size <= TEXT_LIMIT) })
+    }, (failure: unknown) => { if (!controller.signal.aborted) fail(failure) })
+    return () => { controller.abort() }
   // `fail` is a new function on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, size, text])
@@ -96,24 +114,32 @@ export function HexViewer({ url, size, onChanged, onBack }: {
 
   const rows = Math.max(1, Math.ceil(size / HEX_ROW_BYTES))
   const total = rows * ROW_HEIGHT
-  const scale = total > MAX_SPACER ? total / MAX_SPACER : 1
-  const firstRow = Math.min(rows - 1, Math.max(0, Math.floor(scrollTop * scale / ROW_HEIGHT)))
+  const scaled = total > MAX_SPACER
+  const spacerHeight = scaled ? MAX_SPACER : total
+  const maxDomScroll = Math.max(1, spacerHeight - height)
+  const maxRealScroll = Math.max(0, total - height)
+  const realScrollTop = scaled ? Math.min(maxRealScroll, (scrollTop / maxDomScroll) * maxRealScroll) : scrollTop
+  const firstRow = Math.min(rows - 1, Math.max(0, Math.floor(realScrollTop / ROW_HEIGHT)))
   const lastRow = Math.min(rows, firstRow + Math.ceil(height / ROW_HEIGHT) + 2)
 
   useEffect(() => {
-    let cancelled = false
-    void source.load(firstRow * HEX_ROW_BYTES, (lastRow - firstRow) * HEX_ROW_BYTES)
-      .then(() => { if (!cancelled) setLoaded(value => value + 1) }, (failure: unknown) => { if (!cancelled) fail(failure) })
-    return () => { cancelled = true }
+    const controller = new AbortController()
+    void source.load(firstRow * HEX_ROW_BYTES, (lastRow - firstRow) * HEX_ROW_BYTES, controller.signal)
+      .then(() => { if (!controller.signal.aborted) setLoaded(value => value + 1) }, (failure: unknown) => { if (!controller.signal.aborted) fail(failure) })
+    return () => { controller.abort() }
+  // `fail` is a new function on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, firstRow, lastRow])
 
   const start = selection === undefined ? undefined : Math.min(selection.anchor, selection.focus)
   const end = selection === undefined ? undefined : Math.max(selection.anchor, selection.focus)
   useEffect(() => {
     if (start === undefined) { setInspected(undefined); return }
-    let cancelled = false
-    void source.read(start, 8).then((bytes) => { if (!cancelled) setInspected(bytes) }, (failure: unknown) => { if (!cancelled) fail(failure) })
-    return () => { cancelled = true }
+    const controller = new AbortController()
+    void source.read(start, 8, controller.signal).then((bytes) => { if (!controller.signal.aborted) setInspected(bytes) }, (failure: unknown) => { if (!controller.signal.aborted) fail(failure) })
+    return () => { controller.abort() }
+  // `fail` is a new function on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, start])
 
   const reveal = (offset: number): void => {
@@ -122,7 +148,8 @@ export function HexViewer({ url, size, onChanged, onBack }: {
     const row = Math.floor(offset / HEX_ROW_BYTES)
     const visibleRows = Math.max(1, Math.floor(height / ROW_HEIGHT) - 1)
     if (row >= firstRow && row < firstRow + visibleRows) return
-    element.scrollTop = Math.max(0, (row - Math.floor(visibleRows / 3)) * ROW_HEIGHT / scale)
+    const targetReal = Math.min(maxRealScroll, Math.max(0, (row - Math.floor(visibleRows / 3)) * ROW_HEIGHT))
+    element.scrollTop = scaled ? (maxRealScroll === 0 ? 0 : (targetReal / maxRealScroll) * maxDomScroll) : targetReal
   }
   const select = (anchor: number, focus = anchor): void => {
     const clamp = (value: number): number => Math.min(Math.max(0, size - 1), Math.max(0, value))
@@ -270,13 +297,13 @@ export function HexViewer({ url, size, onChanged, onBack }: {
       </div>
       {error !== undefined && <div className={`${css.notice} ${css.error}`} role="alert" title={error.detail}>{t('loadFailed', { error: error.reason })}</div>}
       <div className={css.hex}>
-        <div ref={scroller} className={css.hexScroll} tabIndex={0} role="grid" aria-readonly="true"
+        <div ref={bindScroller} className={css.hexScroll} tabIndex={0} role="grid" aria-readonly="true"
           style={{ ['--hex-offset-width' as string]: `${offsetDigits + 2}ch` }}
           onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop) }} onKeyDown={onKeyDown}
           onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={() => { dragging.current = false }}>
           {size === 0 ? <div className={css.message}>{fileSizeText(0)}</div> : (
-            <div className={css.hexSpacer} style={{ height: total / scale }}>
-              <div className={css.hexRows} style={{ transform: `translateY(${scale === 1 ? firstRow * ROW_HEIGHT : scrollTop}px)` }}>{rowsView}</div>
+            <div className={css.hexSpacer} style={{ height: spacerHeight }}>
+              <div className={css.hexRows} style={{ transform: `translateY(${scaled ? Math.min(spacerHeight - (lastRow - firstRow) * ROW_HEIGHT, scrollTop) : firstRow * ROW_HEIGHT}px)` }}>{rowsView}</div>
             </div>
           )}
         </div>

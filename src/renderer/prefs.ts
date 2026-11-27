@@ -1,6 +1,6 @@
 /** Interface preferences stored by the Host, with theme, color scheme, accent, fonts and font sizes applied to the page. */
 import { useSyncExternalStore } from 'react'
-import { effectiveAccent, fontListPrefix } from '../shared/appearance.ts'
+import { effectiveAccent, fontListPrefix, normalizeAccent, normalizeColorScheme } from '../shared/appearance.ts'
 import type { UiPreferences } from '../shared/rpc.ts'
 import { host } from './rpc.ts'
 
@@ -23,8 +23,10 @@ function apply(prefs: UiPreferences): void {
   const dark = prefs.theme === 'dark' || (prefs.theme === 'system' && darkQuery?.matches === true)
   document.body.toggleAttribute('data-rainy-dark', dark)
   document.documentElement.lang = prefs.locale === 'zh' ? 'zh-CN' : 'en'
-  document.body.setAttribute('data-color-scheme', prefs.colorScheme)
-  document.body.setAttribute('data-accent', effectiveAccent(prefs.colorScheme, prefs.accent))
+  const scheme = normalizeColorScheme(prefs.colorScheme)
+  const accent = normalizeAccent(prefs.accent)
+  document.body.setAttribute('data-color-scheme', scheme)
+  document.body.setAttribute('data-accent', effectiveAccent(scheme, accent))
   const style = document.documentElement.style
   style.setProperty('--rainy-content-font-size', `${prefs.uiFontSize}px`)
   style.setProperty('--rainy-code-font-size', `${prefs.codeFontSize}px`)
@@ -40,8 +42,13 @@ function apply(prefs: UiPreferences): void {
 }
 
 function publish(prefs: UiPreferences): void {
-  // Defaults fill fields a Host of another version leaves out.
-  current = { ...DEFAULT_PREFS, ...prefs }
+  // Defaults fill fields a Host of another version leaves out; normalize legacy scheme/accent values (e.g. "neutral").
+  current = {
+    ...DEFAULT_PREFS,
+    ...prefs,
+    colorScheme: normalizeColorScheme(prefs.colorScheme),
+    accent: normalizeAccent(prefs.accent),
+  }
   known = true
   apply(current)
   for (const listener of listeners) listener()
@@ -49,10 +56,18 @@ function publish(prefs: UiPreferences): void {
 
 if (typeof window !== 'undefined') {
   apply(current)
-  darkQuery?.addEventListener('change', () => { apply(current) })
+  darkQuery?.addEventListener('change', () => {
+    apply(current)
+    if (current.theme === 'system') {
+      // Refresh snapshot identity so useSyncExternalStore consumers re-render on system theme flips.
+      current = { ...current }
+      for (const listener of listeners) listener()
+    }
+  })
+  const fetchPrefs = (): void => { void host.call('prefs.get').then(publish, () => undefined) }
   host.on('prefs.changed', publish)
-  host.onState(() => { if (host.state === 'open') void host.call('prefs.get').then(publish, () => undefined) })
-  void host.call('prefs.get').then(publish, () => undefined)
+  host.onState(() => { if (host.state === 'open') fetchPrefs() })
+  if (host.state === 'open') fetchPrefs()
 }
 
 /** @returns The current preferences; re-renders when they change. */

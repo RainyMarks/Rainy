@@ -5,70 +5,17 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { Button, fileSizeText, IconAction, IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, IconCloseOutlineRegular, isComposingKey, toast,
   writeClipboard } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
-import { describePdfError, PdfJsUnavailableError } from './pdf-errors.ts'
+import { describePdfError } from './pdf-errors.ts'
 import { findMatchesInPage, findPattern, MAX_MATCHES, PdfTextCache, type MatchPiece, type PdfMatch } from './pdf-find.ts'
 import { anchoredScroll, canvasPixelRatio, captureAnchor, pageIndexAt, type Anchor, type Box } from './pdf-layout.ts'
-import { fixRadicals, joinTextItems, layOutText, selectedText, type PdfTextItem, type TextLayerRecord } from './pdf-text.ts'
+import { endOfContent, linkService, loadPdfJs, PDFJS_ROOT, type PdfContext, type PdfDocument, type PdfJs, type PdfLoadingTask, type PdfTask } from './pdf-runtime.ts'
+import { fixRadicals, joinTextItems, layOutText, selectedText } from './pdf-text.ts'
 import { ToolActions, useNarrow, type ToolAction } from './ToolActions.tsx'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
 
-/** The parts of the pdf.js 2.16 API this viewer uses. */
-interface PdfViewport {
-  readonly width: number
-  readonly height: number
-  clone(options: { dontFlip: boolean }): PdfViewport
-  /** PDF user space to CSS pixels of the viewport, y going down. */
-  convertToViewportPoint(x: number, y: number): number[]
-}
-interface PdfTask { readonly promise: Promise<unknown>; cancel(): void }
-interface PdfTextContent { readonly items: readonly PdfTextItem[]; readonly styles: Readonly<Record<string, unknown>> }
-/** An annotation as `getAnnotations()` gives it; the annotation layer reads the other fields. */
-interface PdfAnnotation { readonly annotationType: number }
-interface PdfPage {
-  getViewport(options: { scale: number }): PdfViewport
-  render(options: { canvasContext: CanvasRenderingContext2D; viewport: PdfViewport }): PdfTask
-  getTextContent(): Promise<PdfTextContent>
-  getAnnotations(): Promise<PdfAnnotation[]>
-  /** Frees what the page parsed for rendering once no render of it runs; the next render parses it again. */
-  cleanup(): boolean
-}
-interface PdfDocument {
-  readonly numPages: number
-  getPage(page: number): Promise<PdfPage>
-  getDestination(name: string): Promise<unknown[] | null>
-  getPageIndex(ref: unknown): Promise<number>
-}
-interface PdfLoadingTask {
-  readonly promise: Promise<PdfDocument>
-  /** Stops loading, or closes the document once it is open. */
-  destroy(): Promise<void>
-  /** Called instead of failing when the file needs a password, and again with `INCORRECT_PASSWORD` after a wrong one. */
-  onPassword: ((update: (password: string) => void, reason: number) => void) | null
-}
-/** What the annotation layer calls back for links: the part of pdf.js's `PDFLinkService` it uses. */
-interface PdfLinkService {
-  addLinkAttributes(link: HTMLAnchorElement, url: string, newWindow?: boolean): void
-  getDestinationHash(destination: unknown): string
-  getAnchorUrl(hash: string): string
-  goToDestination(destination: unknown): Promise<void>
-  executeNamedAction(action: string): void
-}
-interface PdfJs {
-  GlobalWorkerOptions: { workerSrc: string }
-  getDocument(options: Record<string, unknown>): PdfLoadingTask
-  readonly PasswordResponses: { readonly NEED_PASSWORD: number; readonly INCORRECT_PASSWORD: number }
-  renderTextLayer(options: { textContent: PdfTextContent; container: HTMLElement; viewport: PdfViewport; textDivs: HTMLElement[] }): PdfTask
-  readonly AnnotationLayer: {
-    render(options: {
-      viewport: PdfViewport; div: HTMLElement; annotations: readonly PdfAnnotation[]; page: PdfPage; linkService: PdfLinkService; renderForms: boolean
-    }): void
-  }
-}
-
 interface Size { readonly width: number; readonly height: number }
 
-const PDFJS_ROOT = '/rainy/pdfjs/'
 /** pdf.js measures pages in points; 100% shows a page at its printed size on a 96 dpi screen. */
 const PDF_TO_CSS = 96 / 72
 /** Automatic zoom fits the page width but stops here, as in pdf.js. */
@@ -83,103 +30,6 @@ const WHEEL_INTERVAL = 40
 const LINK_ANNOTATION = 2
 /** Zoom buttons, keys and resizing hold the top centre of the view in place. */
 const HOLD_TOP = { x: 0.5, y: 0 }
-let loading: Promise<PdfJs> | undefined
-
-/** @returns pdf.js, loaded once from the resources the Host serves. */
-function loadPdfJs(): Promise<PdfJs> {
-  loading ??= new Promise<PdfJs>((resolve, reject) => {
-    const global = globalThis as { pdfjsLib?: PdfJs }
-    if (global.pdfjsLib !== undefined) { resolve(global.pdfjsLib); return }
-    const script = document.createElement('script')
-    script.src = `${PDFJS_ROOT}pdf.min.js`
-    script.onload = () => {
-      if (global.pdfjsLib === undefined) { reject(new PdfJsUnavailableError('pdf.js did not load')); return }
-      global.pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_ROOT}pdf.worker.min.js`
-      resolve(global.pdfjsLib)
-    }
-    script.onerror = () => { reject(new PdfJsUnavailableError('pdf.js is unavailable')) }
-    document.head.append(script)
-  }).catch((error: unknown) => { loading = undefined; throw error })
-  return loading
-}
-
-/** What the pages of one open document share. */
-interface PdfContext {
-  readonly library: PdfJs
-  readonly document: PdfDocument
-  readonly links: PdfLinkService
-  /** Text layers of the rendered pages by page number, for copying a selection. */
-  readonly layers: Map<number, TextLayerRecord>
-}
-
-/**
- * Links of the annotation layer. Web addresses open through `window.open`, which the desktop hands to the system browser
- * (`ui::open_link`, which opens only http and https); links inside the document scroll to their place. Nothing navigates
- * the viewer page itself.
- * @param document The open document.
- * @param go Scrolls to page `index`, to a point of it in PDF user space when given.
- * @param current The page number the indicator shows.
- */
-function linkService(document: PdfDocument, go: (index: number, left?: number, top?: number) => void, current: () => number): PdfLinkService {
-  const coordinate = (value: unknown): number | undefined => typeof value === 'number' ? value : undefined
-  return {
-    addLinkAttributes(link, url) {
-      link.title = url
-      if (!/^https?:\/\//i.test(url)) return
-      link.href = url
-      link.rel = 'noopener noreferrer nofollow'
-      link.onclick = (event) => {
-        event.preventDefault()
-        window.open(url, '_blank')
-        return false
-      }
-    },
-    getDestinationHash: () => '',
-    getAnchorUrl: () => '',
-    async goToDestination(destination) {
-      try {
-        const explicit = typeof destination === 'string' ? await document.getDestination(destination) : destination
-        if (!Array.isArray(explicit)) return
-        const [ref, kind, ...args] = explicit as unknown[]
-        const index = typeof ref === 'number' ? ref : typeof ref === 'object' && ref !== null ? await document.getPageIndex(ref) : -1
-        if (!Number.isInteger(index) || index < 0 || index >= document.numPages) return
-        const name = typeof kind === 'object' && kind !== null && 'name' in kind ? String(kind.name) : ''
-        // [page /XYZ left top zoom], [page /FitH top], [page /FitBH top], [page /FitR left bottom right top]; the rest show the page.
-        if (name === 'XYZ') go(index, coordinate(args[0]), coordinate(args[1]))
-        else if (name === 'FitH' || name === 'FitBH') go(index, undefined, coordinate(args[0]))
-        else if (name === 'FitR') go(index, coordinate(args[0]), coordinate(args[3]))
-        else go(index)
-      } catch {
-        // A destination the document does not resolve goes nowhere.
-      }
-    },
-    executeNamedAction(action) {
-      const index = current() - 1
-      const target = action === 'NextPage' ? index + 1 : action === 'PrevPage' ? index - 1 : action === 'FirstPage' ? 0
-        : action === 'LastPage' ? document.numPages - 1 : -1
-      if (target >= 0 && target < document.numPages) go(target)
-    },
-  }
-}
-
-/** As in pdf.js's viewer: a block behind the text, from the pointer to the end of the page while the button is down, so a
- *  drag past the last line keeps selecting to the end of the page instead of jumping back to the start of the layer. */
-function endOfContent(layer: HTMLElement): HTMLElement {
-  const end = document.createElement('div')
-  end.className = css.endOfContent
-  layer.addEventListener('mousedown', (event) => {
-    if (event.target !== layer) {
-      const bounds = layer.getBoundingClientRect()
-      end.style.top = `${(Math.max(0, (event.clientY - bounds.top) / bounds.height) * 100).toFixed(2)}%`
-    }
-    end.dataset.active = ''
-  })
-  layer.addEventListener('mouseup', () => {
-    end.style.top = ''
-    delete end.dataset.active
-  })
-  return end
-}
 
 /** The matches of the find bar on one page: the item pieces of each, which of them is the current one (-1 for none), and
  *  a number that changes when the current one should be scrolled into view. */
@@ -196,19 +46,24 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
 }): JSX.Element {
   const frame = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
+  const visibleRef = useRef(false)
+  visibleRef.current = visible
   /** This page's own size once it has loaded; pages may differ from the first. */
   const [own, setOwn] = useState<Size | undefined>()
   /** What the frame shows, and the scale it was made for. The canvas stays while another zoom renders, stretched by CSS,
    *  so the page does not flash blank. */
-  const shown = useRef<{ canvas?: HTMLCanvasElement | undefined; text?: HTMLElement | undefined; links?: HTMLElement | undefined; scale?: number | undefined }>({})
+  const shown = useRef<{ canvas?: HTMLCanvasElement | undefined; text?: HTMLElement | undefined; endCleanup?: (() => void) | undefined; links?: HTMLElement | undefined; scale?: number | undefined }>({})
   /** Whether pdf.js holds resources it parsed to render this page, which `cleanup()` gives back. */
   const parsed = useRef(false)
+  /** Tracks the in-flight render promise so `page.cleanup()` never races an active pdf.js render task. */
+  const activeRender = useRef<Promise<unknown>>(Promise.resolve())
   /** Bumped when a new text layer is shown, so the find marks are placed over it. */
   const [layerVersion, setLayerVersion] = useState(0)
   const marks = useRef<HTMLElement | undefined>(undefined)
   const revealed = useRef(0)
 
   const dropLayers = (): void => {
+    shown.current.endCleanup?.()
     shown.current.text?.remove()
     shown.current.links?.remove()
     marks.current?.remove()
@@ -257,6 +112,7 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
       current.scrollIntoView({ block: 'center', inline: 'nearest' })
     }
   }, [finds, layerVersion, context, number])
+
   /** A page far from the view keeps only its empty frame: canvas pixels, layers and pdf.js's parsed resources go. */
   const release = (): void => {
     dropLayers()
@@ -269,12 +125,16 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
     shown.current = {}
     if (parsed.current) {
       parsed.current = false
-      void context.document.getPage(number).then((page) => { page.cleanup() }).catch(() => undefined)
+      const settle = activeRender.current.catch(() => undefined)
+      void settle.then(() => {
+        if (visibleRef.current) return
+        return context.document.getPage(number).then((page) => { page.cleanup() })
+      }).catch(() => undefined)
     }
   }
   const latestRelease = useRef(release)
   latestRelease.current = release
-  useEffect(() => () => { latestRelease.current() }, [])
+  useEffect(() => () => { visibleRef.current = false; latestRelease.current() }, [])
 
   useEffect(() => {
     const element = frame.current
@@ -295,7 +155,7 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
     // Text and links are placed for one zoom; at another they would sit beside the words until the new ones are ready.
     if (shown.current.scale !== scale) dropLayers()
     parsed.current = true
-    void context.document.getPage(number).then(async (page) => {
+    const run = context.document.getPage(number).then(async (page) => {
       if (cancelled) return
       const base = page.getViewport({ scale: 1 })
       setOwn(previous => previous?.width === base.width && previous.height === base.height ? previous : { width: base.width, height: base.height })
@@ -335,10 +195,12 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
       tasks.push(textTask)
       await textTask.promise
       if (cancelled) return
-      layer.append(endOfContent(layer))
+      const eoc = endOfContent(layer)
+      layer.append(eoc.element)
+      shown.current.endCleanup?.()
       shown.current.text?.remove()
       element.append(layer)
-      shown.current = { ...shown.current, text: layer }
+      shown.current = { ...shown.current, text: layer, endCleanup: eoc.dispose }
       // pdf.js makes one text div for every item that has a string, in order.
       context.layers.set(number, { divs, items: items.filter(item => item.str !== undefined) })
       setLayerVersion(value => value + 1)
@@ -362,6 +224,7 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
       element.append(div)
       shown.current = { ...shown.current, links: div }
     }).catch(() => undefined)
+    activeRender.current = run
     return () => {
       cancelled = true
       for (const task of tasks) task.cancel()
@@ -370,6 +233,8 @@ function PdfPageView({ context, number, size, scale, root, finds }: {
         fresh.height = 0
       }
     }
+  // `release` reads only refs and stable props.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, context, number, scale])
 
   return (
@@ -409,9 +274,9 @@ function PdfPassword({ incorrect, onSubmit }: { incorrect: boolean; onSubmit: (p
   )
 }
 
-/** What the find bar found: every match in reading order, the current one, and a number that changes when it should be
- *  scrolled into view. */
-interface Found { readonly matches: readonly PdfMatch[]; readonly current: number; readonly reveal: number }
+/** What the find bar found: every match in reading order, the current one, whether results reached MAX_MATCHES, and a
+ *  number that changes when it should be scrolled into view. */
+interface Found { readonly matches: readonly PdfMatch[]; readonly current: number; readonly reveal: number; readonly capped: boolean }
 
 /** The find bar (Ctrl+F): the query, how many matches, the previous and next match, and whether case counts. */
 function PdfFindBar({ request, query, caseSensitive, found, searching, onQuery, onCase, onStep, onClose }: {
@@ -430,7 +295,8 @@ function PdfFindBar({ request, query, caseSensitive, found, searching, onQuery, 
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => { input.current?.focus(); input.current?.select() }, [request])
   const total = found?.matches.length ?? 0
-  const count = query.trim() === '' ? '' : searching ? t('pdfFindSearching') : total === 0 ? t('findNone') : t('findCount', { current: (found?.current ?? 0) + 1, total })
+  const totalLabel = found?.capped === true ? `${total}+` : total
+  const count = query.trim() === '' ? '' : searching ? t('pdfFindSearching') : total === 0 ? t('findNone') : t('findCount', { current: (found?.current ?? 0) + 1, total: totalLabel })
   return <div className="rainy-find" role="search" data-pdf-find onKeyDown={(event) => {
     if (event.key !== 'Escape') return
     event.preventDefault()
@@ -458,14 +324,6 @@ function PdfFindBar({ request, query, caseSensitive, found, searching, onQuery, 
  * Ctrl+wheel zooms around the pointer; Ctrl+= and Ctrl+- step the zoom like the buttons, and Ctrl+0 goes back to
  * automatic zoom, the zoom a PDF opens at. Ctrl+F finds text: Enter and F3 go to the next match, Shift with them to the
  * previous one, Esc closes the bar.
- * @param props.url Byte route URL of the PDF.
- * @param props.data The PDF itself, for a copy made from another format; it takes the place of `url`.
- * @param props.bytes File size shown in the status bar.
- * @param props.modes Toolbar items before the zoom controls, such as a choice between previews.
- * @param props.actions Secondary actions after 提取文本, folded with it into 更多 on a narrow page.
- * @param props.tools Extra toolbar items at the end.
- * @param props.note Status bar text before the size.
- * @returns The viewer.
  */
 export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
   url?: string | undefined
@@ -480,6 +338,11 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
   const narrow = useNarrow()
   const stage = useRef<HTMLDivElement>(null)
   const frames = useRef<HTMLDivElement>(null)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [opened, setOpened] = useState<{ library: PdfJs; document: PdfDocument } | undefined>()
   const [size, setSize] = useState<Size>({ width: 612, height: 792 })
   const [zoom, setZoom] = useState<number | 'auto'>('auto')
@@ -519,9 +382,13 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
       }
       const document = await opening.promise
       if (cancelled) return
-      const first = (await document.getPage(1)).getViewport({ scale: 1 })
-      if (cancelled) return
-      setSize({ width: first.width, height: first.height })
+      if (document.numPages > 0) {
+        const first = (await document.getPage(1)).getViewport({ scale: 1 })
+        if (cancelled) return
+        setSize({ width: first.width, height: first.height })
+      } else {
+        setPage(0)
+      }
       setOpened({ library, document })
     }).catch((error: unknown) => {
       if (cancelled) return
@@ -603,7 +470,10 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
     lastWheel.current = now
     const bounds = element.getBoundingClientRect()
     const next = toward(direction, Math.round(factor * (direction > 0 ? WHEEL_STEP : 1 / WHEEL_STEP) * 100) / 100)
-    zoomTo(next, { x: (clientX - bounds.left - element.clientLeft) / element.clientWidth, y: (clientY - bounds.top - element.clientTop) / element.clientHeight })
+    const anchor = element.clientWidth > 0 && element.clientHeight > 0
+      ? { x: (clientX - bounds.left - element.clientLeft) / element.clientWidth, y: (clientY - bounds.top - element.clientTop) / element.clientHeight }
+      : { x: 0.5, y: 0.5 }
+    zoomTo(next, anchor)
   }
   useZoomKeys(stage.current, {
     zoomIn: (x, y) => { if (x === undefined || y === undefined) step(1); else wheel(1, x, y) },
@@ -668,6 +538,7 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
     const timer = window.setTimeout(() => {
       void (async () => {
         const matches: PdfMatch[] = []
+        let capped = false
         for (let number = 1; number <= opened.document.numPages; number++) {
           let text = cache.get(number)
           if (text === undefined) {
@@ -680,15 +551,15 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
             if (context?.layers.has(number) !== true) pdfPage.cleanup()
           }
           if (cancelled) return
-          if (findMatchesInPage(number, text, pattern, matches, MAX_MATCHES)) break
+          if (findMatchesInPage(number, text, pattern, matches, MAX_MATCHES)) { capped = true; break }
         }
         // The first match is the first one on or after the page being read.
         const first = Math.max(0, matches.findIndex(match => match.page >= currentPage.current))
-        setFound(previous => ({ matches, current: first, reveal: (previous?.reveal ?? 0) + 1 }))
+        setFound(previous => ({ matches, current: first, reveal: (previous?.reveal ?? 0) + 1, capped }))
         setSearching(false)
       })().catch(() => {
         if (cancelled) return
-        setFound(previous => ({ matches: [], current: 0, reveal: previous?.reveal ?? 0 }))
+        setFound(previous => ({ matches: [], current: 0, reveal: previous?.reveal ?? 0, capped: false }))
         setSearching(false)
       })
     }, 150)
@@ -708,7 +579,7 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
         event.preventDefault()
         const selected = window.getSelection()?.toString().trim() ?? ''
         if (selected !== '' && !selected.includes('\n') && selected.length <= 200) setQuery(selected)
-        setFindRequest(Date.now())
+        setFindRequest(previous => (previous ?? 0) + 1)
       } else if (event.key === 'F3' && !event.ctrlKey && !event.altKey && latestFind.current.finding) {
         event.preventDefault()
         latestFind.current.stepFind(event.shiftKey ? -1 : 1)
@@ -741,20 +612,29 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
 
   const extract = async (): Promise<void> => {
     if (opened === undefined) return
+    const activeDoc = opened.document
     setExtracting(true)
     try {
       const texts: string[] = []
       for (const number of pages) {
-        const content = await (await opened.document.getPage(number)).getTextContent()
+        if (!mounted.current) return
+        const pdfPage = await activeDoc.getPage(number)
+        const content = await pdfPage.getTextContent()
+        if (context?.layers.has(number) !== true) pdfPage.cleanup()
+        if (!mounted.current) return
         texts.push(`--- ${number} ---\n${joinTextItems(content.items)}`)
       }
       const text = texts.join('\n\n')
+      if (!mounted.current) return
       if (await writeClipboard(text, { quiet: true })) toast(t('pdfTextCopied', { count: text.length }), { tone: 'success' })
       else toast(t('copyFailed'), { tone: 'error' })
     } catch (error) {
+      if (!mounted.current) return
       const problem = describePdfError(error)
       toast(t('pdfTextFailed', { error: t(problem.key, problem.vars) }), { tone: 'error' })
-    } finally { setExtracting(false) }
+    } finally {
+      if (mounted.current) setExtracting(false)
+    }
   }
 
   const problem = failure === undefined ? undefined : describePdfError(failure.error)
@@ -774,7 +654,7 @@ export function PdfViewer({ url, data, bytes, modes, actions, tools, note }: {
         <span className={css.grow} />
         <ToolActions actions={[
           narrow && { id: 'pdf-zoom-auto', label: t('zoomAuto'), disabled: zoom === 'auto', onSelect: () => { zoomTo('auto') } },
-          { id: 'pdf-text', label: t('pdfText'), title: t('pdfTextTitle'), disabled: opened === undefined || extracting, onSelect: () => { void extract() } },
+          { id: 'pdf-text', label: t('pdfText'), title: t('pdfTextTitle'), disabled: opened === undefined || extracting || count === 0, onSelect: () => { void extract() } },
           ...actions ?? [],
         ]} />
         {tools}

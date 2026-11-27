@@ -4,30 +4,28 @@
  * text here and receives edits, saves, opened links, attachments and view changes through `window.ipc`.
  */
 import { lazy, Suspense, useEffect, useState } from 'react'
-import type { IdeDirectory, IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
+import type { IdeRootId, WorkspaceId } from '../../shared/ide-files-protocol.ts'
 import { ideOfficePdfUrl, ideRawUrl, isSameOriginOfficePdfUrl } from '../../shared/ide-preview.ts'
 import type { OfficePdfResult, OfficePdfSource } from '../../shared/office-protocol.ts'
-import { callIde, IdeRequestError } from '../ide/ide-api.ts'
-import { lockedDocumentName } from '../ide/viewers/file-facts.ts'
-import { HexViewer } from '../ide/viewers/HexViewer.tsx'
-import { ImageViewer, type ImageAttachment } from '../ide/viewers/ImageViewer.tsx'
-import { MarkdownPreview } from '../ide/viewers/MarkdownPreview.tsx'
-import { MediaViewer } from '../ide/viewers/MediaViewer.tsx'
-import { OfficeLockViewer, OfficeViewer, SheetViewer, ShortcutViewer, WordViewer, type DocumentLocation } from '../ide/viewers/OfficeViewers.tsx'
-import { PdfViewer } from '../ide/viewers/PdfViewer.tsx'
-import { RichMarkdown } from '../ide/viewers/RichMarkdown.tsx'
-import { saveMarkdownImage } from '../ide/viewers/markdown-assets.ts'
+import type { ImageAttachment } from '../ide/viewers/ImageViewer.tsx'
+import type { DocumentLocation } from '../ide/viewers/office-shared.tsx'
 import { ScrollSync } from '../ide/viewers/scroll-sync.ts'
-import { viewerMessages } from '../ide/viewers/messages.ts'
+import { encodeBase64, errorMessage } from '../ide/viewers/viewer-utils.ts'
 import { outlinePosition, outlineTarget } from '../ide/outline-store.ts'
-import { localTarget, resolveDocumentPath } from '../chat/Markdown.tsx'
 import { getPrefs } from '../prefs.ts'
-import type { SessionId } from '../../shared/rpc.ts'
-import { useAiActivity } from '../map/activity.ts'
-import { useChanges } from '../review/changes-store.ts'
-import { ToastHost } from '../ui/index.ts'
+import { ToastHost } from '../ui/toasts.tsx'
 
-const ProjectMapView = lazy(async () => ({ default: (await import('../map/ProjectMap.tsx')).ProjectMapView }))
+const ImageViewer = lazy(async () => ({ default: (await import('../ide/viewers/ImageViewer.tsx')).ImageViewer }))
+const HexViewer = lazy(async () => ({ default: (await import('../ide/viewers/HexViewer.tsx')).HexViewer }))
+const MediaViewer = lazy(async () => ({ default: (await import('../ide/viewers/MediaViewer.tsx')).MediaViewer }))
+const PdfViewer = lazy(async () => ({ default: (await import('../ide/viewers/PdfViewer.tsx')).PdfViewer }))
+const WordViewer = lazy(async () => ({ default: (await import('../ide/viewers/WordViewer.tsx')).WordViewer }))
+const SheetViewer = lazy(async () => ({ default: (await import('../ide/viewers/SheetViewer.tsx')).SheetViewer }))
+const OfficeViewer = lazy(async () => ({ default: (await import('../ide/viewers/OfficeViewers.tsx')).OfficeViewer }))
+const ShortcutViewer = lazy(async () => ({ default: (await import('../ide/viewers/OfficeViewers.tsx')).ShortcutViewer }))
+const OfficeLockPane = lazy(async () => ({ default: (await import('./OfficeLockPane.tsx')).OfficeLockPane }))
+const MarkdownPane = lazy(async () => ({ default: (await import('./MarkdownPane.tsx')).MarkdownPane }))
+const MapPane = lazy(async () => ({ default: (await import('./MapPane.tsx')).MapPane }))
 
 /** What the page tells the workbench. */
 type Message =
@@ -76,14 +74,31 @@ function post(message: Message): void {
   window.ipc?.postMessage(JSON.stringify(message))
 }
 
-const pending = new Map<number, (result: unknown) => void>()
+interface PendingIpc {
+  readonly resolve: (result: unknown) => void
+  readonly reject: (error: Error) => void
+  readonly timer: ReturnType<typeof setTimeout>
+}
+
+const pending = new Map<number, PendingIpc>()
 let nextRequest = 1
+
+function requestTimeoutMs(name: string): number {
+  if (name === 'office-pdf') return 150_000
+  if (name === 'export-save') return 600_000
+  return 60_000
+}
 
 /** Ask the workbench to do what only the desktop can, such as converting a presentation with PowerPoint. */
 function request(name: string, params: unknown): Promise<unknown> {
+  if (window.ipc === undefined) return Promise.reject(new Error('Desktop IPC is unavailable'))
   const id = nextRequest++
-  return new Promise((resolve) => {
-    pending.set(id, resolve)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (!pending.delete(id)) return
+      reject(new Error(`Desktop request "${name}" timed out`))
+    }, requestTimeoutMs(name))
+    pending.set(id, { resolve, reject, timer })
     post({ type: 'request', id, name, params })
   })
 }
@@ -92,10 +107,19 @@ let receiveText: ((text: string, version: string | null) => void) | undefined
 let latestText: { text: string; version: string | null } | undefined
 let receiveSession: ((sessionId: string | null) => void) | undefined
 let latestSession: string | null = null
+/** Prevents React StrictMode double-mount from posting duplicate `ready` signals for the same view. */
+let readyPostedKey: string | undefined
 /** The Markdown document this page shows, for exporting it. */
-let shownDocument: { workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string } | undefined
+let shownDocument: { workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string; hostRoot: string | undefined } | undefined
 /** The source editor's scroll position, which the preview follows in split view. */
 const editorScroll = new ScrollSync()
+
+function postReadyOnce(key: string): void {
+  if (readyPostedKey === key) return
+  readyPostedKey = key
+  post({ type: 'ready' })
+}
+
 window.__rainyViewer = {
   setSession(sessionId) {
     latestSession = sessionId
@@ -106,8 +130,11 @@ window.__rainyViewer = {
     receiveText?.(text, version)
   },
   resolve(id, result) {
-    pending.get(id)?.(result)
+    const entry = pending.get(id)
+    if (entry === undefined) return
     pending.delete(id)
+    clearTimeout(entry.timer)
+    entry.resolve(result)
   },
   revealHeading(index) {
     if (shownDocument !== undefined) outlineTarget(shownDocument.path)?.reveal(index)
@@ -116,10 +143,13 @@ window.__rainyViewer = {
     const shown = shownDocument
     if (shown === undefined || latestText === undefined) return
     const text = latestText.text
-    void import('../ide/viewers/markdown-export.ts')
-      .then(({ exportDocument }) => exportDocument({ format, text, path: shown.path, workspaceId: shown.workspaceId, rootId: shown.rootId }))
-      .then((saved) => { if (saved !== null) post({ type: 'notice', tone: 'success', text: viewerMessages.t('exportDone', { path: saved }) }) },
-        (error: unknown) => { post({ type: 'notice', tone: 'error', text: viewerMessages.t('exportFailed', { error: error instanceof Error ? error.message : String(error) }) }) })
+    const locale = getPrefs().locale
+    void Promise.all([import('../ide/viewers/markdown-export.ts'), import('../ide/viewers/messages.ts')])
+      .then(([{ exportDocument }, { viewerMessages }]) =>
+        exportDocument({ format, text, path: shown.path, workspaceId: shown.workspaceId, rootId: shown.rootId, hostRoot: shown.hostRoot, locale })
+          .then((saved) => { if (saved !== null) post({ type: 'notice', tone: 'success', text: viewerMessages.tFor(locale, 'exportDone', { path: saved }) }) },
+            (error: unknown) => { post({ type: 'notice', tone: 'error', text: viewerMessages.tFor(locale, 'exportFailed', { error: errorMessage(error) }) }) }),
+      )
   },
   scrollToLine(line) {
     if (Number.isFinite(line)) editorScroll.editorScrolled(line)
@@ -168,18 +198,13 @@ export async function resolveOfficePdfResponse(
     return { pdf, application: typeof result.application === 'string' ? result.application : 'Office' }
   }
   if (typeof result.pdf === 'string') {
-    const raw = atob(result.pdf)
+    let raw: string
+    try { raw = atob(result.pdf) } catch { return { code: 'failed', error: 'Invalid base64 PDF payload', missing: false } }
     const pdf = new Uint8Array(raw.length)
     for (let index = 0; index < raw.length; index++) pdf[index] = raw.charCodeAt(index)
     return { pdf, application: typeof result.application === 'string' ? result.application : 'Office' }
   }
   return result as OfficePdfResult
-}
-
-function encodeBase64(bytes: Uint8Array): string {
-  let binary = ''
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-  return btoa(binary)
 }
 
 if (window.ipc !== undefined) {
@@ -206,32 +231,6 @@ if (window.ipc !== undefined) {
       return typeof result.path === 'string' ? { path: result.path } : null
     },
   }
-}
-
-/** Save an image pasted into the rich editor next to the document, as the editor tab does. */
-async function createBinary(workspaceId: WorkspaceId, rootId: IdeRootId | undefined, folder: string, name: string, bytes: Uint8Array): Promise<string> {
-  if (folder !== '') {
-    try { await callIde({ op: 'files.mkdir', workspaceId, rootId, path: folder }) } catch (error) {
-      if (!(error instanceof IdeRequestError && error.code === 'already-exists')) throw error
-    }
-  }
-  let binary = ''
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-  const base64 = btoa(binary)
-  const dot = name.lastIndexOf('.')
-  const [stem, extension] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const candidate = attempt === 0 ? name : `${stem}-${attempt}${extension}`
-    const path = folder === '' ? candidate : `${folder}/${candidate}`
-    try {
-      await callIde({ op: 'files.createBinary', workspaceId, rootId, path, base64 })
-      return path
-    } catch (error) {
-      if (error instanceof IdeRequestError && error.code === 'already-exists') continue
-      throw error
-    }
-  }
-  throw new Error(viewerMessages.t('imageNoFreeName'))
 }
 
 /** How long after Ctrl+K the V of Ctrl+K V may follow, as GPUI waits for the rest of a key sequence. */
@@ -274,36 +273,34 @@ function MarkdownView({ rich, workspaceId, rootId, path, hostPath }: {
   hostPath: string | undefined
 }): JSX.Element | null {
   const [text, setText] = useState(latestText)
-  shownDocument = { workspaceId, rootId, path }
-  usePreviewChord(!rich)
-  useEffect(() => {
-    receiveText = (value, version) => { setText({ text: value, version }) }
-    post({ type: 'ready' })
-    return () => { receiveText = undefined }
-  }, [])
-  if (text === undefined) return null
   const directory = path.split('/').slice(0, -1).join('/')
   // The project folder on this computer: the document's own path without its project-relative part.
   const suffix = `\\${path.replaceAll('/', '\\')}`
   const hostRoot = hostPath?.toLowerCase().endsWith(suffix.toLowerCase()) === true ? hostPath.slice(0, -suffix.length) : undefined
-  const base = { workspaceId, rootId, directory, hostRoot }
-  // The preview resolved the path against the document's directory already.
-  if (!rich) {
-    return <MarkdownPreview text={text.text} version={text.version} base={base} sync={editorScroll}
-      openLocal={(target) => { post({ type: 'open-file', path: target.path, rootId, line: target.line }) }}
-      onScrollLine={(line) => { post({ type: 'scroll', line }) }} />
-  }
-  return <RichMarkdown path={path} text={text.text} version={text.version} base={base}
-    onChange={(value) => { latestText = { text: value, version: text.version }; post({ type: 'change', text: value }) }}
-    onSave={() => { post({ type: 'save' }) }}
-    onSource={() => { post({ type: 'view', view: 'source' }) }}
-    onImage={file => saveMarkdownImage((folder, name, bytes) => createBinary(workspaceId, rootId, folder, name, bytes), path, file, getPrefs().markdownImages)}
-    onOpenLink={(href) => {
-      if (/^(?:https?|mailto):/iu.test(href)) { post({ type: 'open-url', url: href }); return }
-      const target = localTarget(href)
-      const resolved = target === undefined ? undefined : resolveDocumentPath(directory, target.path)
-      if (target !== undefined && resolved !== undefined) post({ type: 'open-file', path: resolved, rootId, line: target.line })
-    }} />
+  usePreviewChord(!rich)
+  useEffect(() => {
+    shownDocument = { workspaceId, rootId, path, hostRoot }
+    return () => { shownDocument = undefined }
+  }, [workspaceId, rootId, path, hostRoot])
+  useEffect(() => {
+    receiveText = (value, version) => { setText({ text: value, version }) }
+    if (latestText !== undefined) setText(latestText)
+    postReadyOnce(`markdown:${rich ? 'rich' : 'preview'}:${path}`)
+    return () => { receiveText = undefined }
+  }, [rich, path])
+  if (text === undefined) return null
+  return (
+    <Suspense fallback={null}>
+      <MarkdownPane rich={rich} workspaceId={workspaceId} rootId={rootId} path={path} directory={directory} hostRoot={hostRoot}
+        text={text.text} version={text.version} editorScroll={editorScroll}
+        onChange={(value) => { latestText = { text: value, version: text.version }; post({ type: 'change', text: value }) }}
+        onSave={() => { post({ type: 'save' }) }}
+        onSource={() => { post({ type: 'view', view: 'source' }) }}
+        onOpenUrl={(url) => { post({ type: 'open-url', url }) }}
+        onOpenFile={(targetPath, line) => { post({ type: 'open-file', path: targetPath, rootId, line }) }}
+        onScrollLine={(line) => { post({ type: 'scroll', line }) }} />
+    </Suspense>
+  )
 }
 
 /** "Add to chat" of the image viewer, where the workbench is there to take the image. */
@@ -316,33 +313,19 @@ function SvgView({ url, name, bytes }: { url: string; name: string; bytes: numbe
   const [live, setLive] = useState<string | undefined>()
   useEffect(() => {
     receiveText = (value, version) => { setText({ text: value, version }) }
-    post({ type: 'ready' })
+    if (latestText !== undefined) setText(latestText)
+    postReadyOnce(`svg:${url}`)
     return () => { receiveText = undefined }
-  }, [])
+  }, [url])
   useEffect(() => {
     if (text === undefined) return
     const timer = window.setTimeout(() => { setLive(URL.createObjectURL(new Blob([text.text], { type: 'image/svg+xml' }))) }, 150)
     return () => { window.clearTimeout(timer) }
   }, [text])
   useEffect(() => () => { if (live !== undefined) URL.revokeObjectURL(live) }, [live])
-  return <ImageViewer url={live ?? url} name={name} bytes={text === undefined ? bytes : new Blob([text.text]).size} onAttach={attachImage} />
-}
-
-/** An Office `~$` owner file, with a button for the document it belongs to when that is in the same folder. */
-function OfficeLockView({ url, bytes, workspaceId, rootId, path }: { url: string; bytes: number; workspaceId: WorkspaceId; rootId: IdeRootId | undefined; path: string }): JSX.Element {
-  const slash = path.lastIndexOf('/')
-  const folder = slash < 0 ? '' : path.slice(0, slash)
-  const lock = path.slice(slash + 1)
-  const [locked, setLocked] = useState<string | undefined>()
-  useEffect(() => {
-    let cancelled = false
-    void callIde({ op: 'files.list', workspaceId, rootId, path: folder }).then((listing) => {
-      if (!cancelled) setLocked(lockedDocumentName(lock, (listing as IdeDirectory).entries))
-    }, () => undefined)
-    return () => { cancelled = true }
-  }, [workspaceId, rootId, folder, lock])
-  return <OfficeLockViewer url={url} size={bytes} document={locked ?? lock.slice(2)}
-    onOpenDocument={locked === undefined ? undefined : () => { post({ type: 'open-file', path: folder === '' ? locked : `${folder}/${locked}`, rootId }) }} />
+  return <Suspense fallback={null}>
+    <ImageViewer url={live ?? url} name={name} bytes={text === undefined ? bytes : new Blob([text.text]).size} onAttach={attachImage} />
+  </Suspense>
 }
 
 /** The project map of a workspace, as the 3.x workbench shows it in its center. */
@@ -350,13 +333,13 @@ function MapView({ workspaceId }: { workspaceId: WorkspaceId }): JSX.Element {
   const [sessionId, setSessionId] = useState(latestSession)
   useEffect(() => {
     receiveSession = setSessionId
+    if (latestSession !== null) setSessionId(latestSession)
     return () => { receiveSession = undefined }
   }, [])
-  const changes = useChanges(sessionId)
-  const activity = useAiActivity()
   return <Suspense fallback={null}>
-    <ProjectMapView workspaceId={workspaceId} visible sessionId={sessionId as SessionId | null} changes={changes} activity={activity}
-      openFile={(key, line) => { post({ type: 'open-key', key, line }) }} ask={(text) => { post({ type: 'ask', text }) }} />
+    <MapPane workspaceId={workspaceId} sessionId={sessionId}
+      openFile={(key, line) => { post({ type: 'open-key', key, line }) }}
+      ask={(text) => { post({ type: 'ask', text }) }} />
   </Suspense>
 }
 
@@ -368,13 +351,15 @@ export function ViewerApp(): JSX.Element {
   const rootId = (params.get('root') ?? undefined) as IdeRootId | undefined
   const path = params.get('path') ?? ''
   const version = params.get('version') ?? undefined
-  const bytes = Number(params.get('bytes') ?? '0')
+  const rawBytes = Number(params.get('bytes') ?? '0')
+  const bytes = Number.isFinite(rawBytes) && rawBytes >= 0 ? rawBytes : 0
   const name = path.split('/').at(-1) ?? path
+  const dot = name.lastIndexOf('.')
   const hostPath = params.get('hostPath') ?? undefined
   const url = ideRawUrl({ workspaceId, rootId, path, version })
   const documentLocation: DocumentLocation = {
     name,
-    extension: name.slice(name.lastIndexOf('.') + 1).toLowerCase(),
+    extension: dot > 0 ? name.slice(dot + 1).toLowerCase() : '',
     hostPath,
     workspaceId,
     rootId,
@@ -383,8 +368,8 @@ export function ViewerApp(): JSX.Element {
   }
   // Pages of the editor's text say they are ready once they can take it.
   useEffect(() => {
-    if (view !== 'markdown' && view !== 'markdown-rich' && view !== 'svg') post({ type: 'ready' })
-  }, [view])
+    if (view !== 'markdown' && view !== 'markdown-rich' && view !== 'svg') postReadyOnce(`view:${view}:${path}`)
+  }, [view, path])
   let content: JSX.Element | null
   switch (view) {
     case 'image': content = <ImageViewer url={url} name={name} bytes={bytes} onAttach={attachImage} />; break
@@ -399,7 +384,10 @@ export function ViewerApp(): JSX.Element {
     case 'sheet': content = <SheetViewer url={url} size={bytes} location={documentLocation} />; break
     case 'office': content = <OfficeViewer url={url} size={bytes} location={documentLocation} />; break
     case 'shortcut': content = <ShortcutViewer url={url} size={bytes} />; break
-    case 'office-lock': content = <OfficeLockView url={url} bytes={bytes} workspaceId={workspaceId} rootId={rootId} path={path} />; break
+    case 'office-lock':
+      content = <OfficeLockPane url={url} bytes={bytes} workspaceId={workspaceId} rootId={rootId} path={path}
+        onOpenFile={(target) => { post({ type: 'open-file', path: target, rootId }) }} />
+      break
     case 'markdown': case 'markdown-rich':
       content = <MarkdownView rich={view === 'markdown-rich'} workspaceId={workspaceId} rootId={rootId} path={path} hostPath={hostPath} />
       break
@@ -407,7 +395,7 @@ export function ViewerApp(): JSX.Element {
     default: content = null
   }
   return <div data-rainy-viewer={view} style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--rainy-alias-bg-base)' }}>
-    {content}
+    <Suspense fallback={null}>{content}</Suspense>
     <ToastHost />
   </div>
 }

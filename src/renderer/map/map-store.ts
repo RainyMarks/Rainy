@@ -18,6 +18,7 @@ const RESCAN_DELAY_MS = 2500
 
 const states = new Map<WorkspaceId, MapState>()
 const listeners = new Map<WorkspaceId, Set<() => void>>()
+const pendingRefresh = new Set<WorkspaceId>()
 let rescan: ReturnType<typeof setTimeout> | undefined
 
 function set(workspaceId: WorkspaceId, change: Partial<MapState>): void {
@@ -35,11 +36,18 @@ function message(error: unknown): string {
  * @param refresh Scan the project again instead of reusing the Host's recent map.
  */
 export function loadMap(workspaceId: WorkspaceId, refresh = false): void {
-  if (states.get(workspaceId)?.loading === true) return
+  if (states.get(workspaceId)?.loading === true) {
+    if (refresh) pendingRefresh.add(workspaceId)
+    return
+  }
+  pendingRefresh.delete(workspaceId)
   set(workspaceId, { loading: true, error: undefined })
   host.call('map.get', { workspaceId, ...(refresh ? { refresh } : {}) })
     .then((map) => { set(workspaceId, { map, loading: false }) })
     .catch((error: unknown) => { set(workspaceId, { loading: false, error: message(error) }) })
+    .finally(() => {
+      if (pendingRefresh.delete(workspaceId)) loadMap(workspaceId, true)
+    })
 }
 
 /**
@@ -83,7 +91,10 @@ export function useProjectMap(workspaceId: WorkspaceId | null, visible: boolean)
       let group = listeners.get(workspaceId)
       if (group === undefined) { group = new Set(); listeners.set(workspaceId, group) }
       group.add(listener)
-      return () => { group.delete(listener) }
+      return () => {
+        group.delete(listener)
+        if (group.size === 0) listeners.delete(workspaceId)
+      }
     },
     () => workspaceId === null ? IDLE : states.get(workspaceId) ?? IDLE,
   )

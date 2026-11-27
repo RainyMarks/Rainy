@@ -1,4 +1,5 @@
 /** File types from their leading bytes, in the spirit of `file(1)`. */
+import { readU16Be as u16be, readU16Le as u16le, readU32Be as u32be, readU32Le as u32le } from './viewer-utils.ts'
 
 /** A recognized format. */
 export interface FileSignature {
@@ -6,11 +7,6 @@ export interface FileSignature {
   readonly label: string
   readonly family: 'image' | 'archive' | 'executable' | 'document' | 'audio' | 'video' | 'capture' | 'database' | 'text' | 'other'
 }
-
-const u16le = (bytes: Uint8Array, offset: number): number => (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8)
-const u16be = (bytes: Uint8Array, offset: number): number => ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0)
-const u32le = (bytes: Uint8Array, offset: number): number => (u16le(bytes, offset) + u16le(bytes, offset + 2) * 0x10000)
-const u32be = (bytes: Uint8Array, offset: number): number => (u16be(bytes, offset) * 0x10000 + u16be(bytes, offset + 2))
 
 function starts(bytes: Uint8Array, offset: number, ...values: readonly number[]): boolean {
   return values.every((value, index) => bytes[offset + index] === value)

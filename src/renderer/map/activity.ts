@@ -32,6 +32,8 @@ export interface AiActivityState {
 
 /** Finished calls remembered. */
 const RECENT_LIMIT = 80
+/** Cap cached session working directories so long-lived sessions never leak memory unboundedly. */
+const MAX_DIRECTORIES = 500
 
 const running = new Map<string, AiActivity>()
 const lingering = new Map<string, AiActivity>()
@@ -40,6 +42,12 @@ let snapshot: AiActivityState = { active: [], recent: [] }
 const listeners = new Set<() => void>()
 const workingDirectories = new Map<string, string>()
 let listing: Promise<void> | undefined
+
+function rememberDirectory(sessionId: string, cwd: string): void {
+  workingDirectories.delete(sessionId)
+  workingDirectories.set(sessionId, cwd)
+  while (workingDirectories.size > MAX_DIRECTORIES) workingDirectories.delete(workingDirectories.keys().next().value!)
+}
 
 function publish(): void {
   snapshot = { active: [...running.values(), ...[...lingering.values()].filter(item => !running.has(item.toolCallId))], recent }
@@ -93,12 +101,12 @@ function describe(sessionId: string, toolCallId: string, toolName: string, args:
 /** Learn the working directories of chats that started before this page did. */
 function learnDirectories(): Promise<void> {
   listing ??= host.call('sessions.list', {}).then((summaries) => {
-    for (const summary of summaries) if (!workingDirectories.has(summary.id)) workingDirectories.set(summary.id, summary.cwd)
+    for (const summary of summaries) if (!workingDirectories.has(summary.id)) rememberDirectory(summary.id, summary.cwd)
   }).catch(() => { listing = undefined })
   return listing
 }
 
-host.on('sessions.changed', (summary) => { workingDirectories.set(summary.id, summary.cwd) })
+host.on('sessions.changed', (summary) => { rememberDirectory(summary.id, summary.cwd) })
 // The model names the file at the start of a call it is still writing.
 host.on('session.stream', (event) => {
   const { sessionId } = event

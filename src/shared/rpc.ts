@@ -41,7 +41,7 @@ export interface AssistantMessage {
   provider: string
   model: string
   usage: Usage
-  stopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
+  stopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted' | 'pending' | ''
   errorMessage?: string | undefined
   timestamp: number
 }
@@ -99,6 +99,11 @@ export interface ModelSelection {
   provider: string
   model: string
   thinking?: string | null | undefined
+}
+
+/** Legacy/persisted model selection shape that may also carry `thinkingLevel` (`settings.json`). */
+export interface StoredModelSelection extends ModelSelection {
+  thinkingLevel?: string | null | undefined
 }
 
 /** External CLI agent backend attached to a chat (`codex`, `antigravity` or generic `acp`). */
@@ -294,7 +299,7 @@ export interface RunSpec {
   terminal: boolean
   name?: string | null | undefined
   language?: string | null | undefined
-  argv: string[]
+  argv?: string[] | undefined
   cwd?: string | null | undefined
 }
 
@@ -335,7 +340,7 @@ export interface DebugInfo {
   threadId?: number | null | undefined
   reason?: string | null | undefined
   capabilities?: DebugCapabilities | null | undefined
-  breakpoints: DebugBreakpoint[]
+  breakpoints?: DebugBreakpoint[] | undefined
   exit?: ProcessExit | null | undefined
   error?: string | null | undefined
 }

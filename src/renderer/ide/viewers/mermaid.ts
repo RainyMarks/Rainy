@@ -7,6 +7,7 @@ type Mermaid = typeof import('mermaid').default
 let library: Promise<Mermaid> | undefined
 let queue: Promise<unknown> = Promise.resolve()
 let counter = 0
+let lastConfigKey: string | undefined
 
 /** @param language Fence language. @returns Whether the fence holds a Mermaid diagram. */
 export function isMermaid(language: string | undefined): boolean {
@@ -30,17 +31,30 @@ export function renderMermaid(source: string, dark = isDark()): Promise<string> 
     // blue-gray pages. A diagram for the other mode (an export) keeps Mermaid's matching theme.
     const block = dark ? token('--rainy-alias-bg-layer-3') : token('--rainy-static-gray-50')
     const themed = dark === isDark() && block !== ''
-    mermaid.initialize(themed ? {
-      startOnLoad: false, securityLevel: 'strict', theme: 'base', fontFamily, darkMode: dark,
+    const config = themed ? {
+      startOnLoad: false, securityLevel: 'strict' as const, theme: 'base' as const, fontFamily, darkMode: dark,
       themeVariables: {
         background: token('--rainy-alias-bg-base'), primaryColor: block, secondaryColor: block, tertiaryColor: block,
         primaryTextColor: token('--rainy-alias-label-primary'), textColor: token('--rainy-alias-label-primary'),
         primaryBorderColor: token('--rainy-alias-state-business-primary'), lineColor: token('--rainy-alias-label-secondary'),
         fontSize: '14px',
       },
-    } : { startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default', fontFamily })
-    const { svg } = await mermaid.render(`rainy-mermaid-${++counter}`, source)
-    return svg
+    } : { startOnLoad: false, securityLevel: 'strict' as const, theme: (dark ? 'dark' : 'default') as 'dark' | 'default', fontFamily }
+    const configKey = JSON.stringify(config)
+    if (configKey !== lastConfigKey) {
+      mermaid.initialize(config)
+      lastConfigKey = configKey
+    }
+    const id = `rainy-mermaid-${++counter}`
+    try {
+      const { svg } = await mermaid.render(id, source)
+      return svg
+    } catch (error) {
+      // Mermaid leaves temporary `#d<id>` / `#<id>` error nodes attached to document.body when parsing fails.
+      document.getElementById(`d${id}`)?.remove()
+      document.getElementById(id)?.remove()
+      throw error
+    }
   })
   queue = task.catch(() => undefined)
   return task

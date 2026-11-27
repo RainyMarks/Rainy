@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import { fileSizeText, toast } from '../../ui/index.ts'
 import { useViewerT } from './messages.ts'
 import { ToolActions } from './ToolActions.tsx'
+import { encodeBase64, errorMessage } from './viewer-utils.ts'
 import { useZoomKeys } from './zoom-keys.ts'
 import css from './Viewers.module.css'
 
@@ -22,6 +23,18 @@ export interface ImageAttachment {
 
 function hex2(value: number): string {
   return value.toString(16).padStart(2, '0').toUpperCase()
+}
+
+/** Stable identity for an image file across version reloads and live SVG blob updates, distinct for same-named files in different folders. */
+function imageIdentity(url: string, name: string): string {
+  if (url.startsWith('blob:')) return `blob:${name}`
+  try {
+    const parsed = new URL(url, 'http://localhost')
+    parsed.searchParams.delete('version')
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return `${url}:${name}`
+  }
 }
 
 /**
@@ -45,14 +58,16 @@ export function ImageViewer({ url, name, bytes, onAttach }: { url: string; name:
   const [panning, setPanning] = useState(false)
   const [pixel, setPixel] = useState<{ x: number; y: number; rgba: readonly [number, number, number, number] | undefined } | undefined>()
 
-  // A new address of the same file (an edited SVG) keeps the zoom; the size is measured again once it loads.
+  const identity = imageIdentity(url, name)
+  // A new address of the same file (an edited SVG or version bump) keeps the zoom; switching to another path resets it.
   useEffect(() => {
     setFailed(false)
     pixels.current = undefined
   }, [url])
   useEffect(() => {
     setNatural(undefined); setZoom('fit'); setPixel(undefined)
-  }, [name])
+  }, [identity])
+  useEffect(() => () => { pixels.current = undefined }, [])
 
   useLayoutEffect(() => {
     const element = stage.current
@@ -72,14 +87,18 @@ export function ImageViewer({ url, name, bytes, onAttach }: { url: string; name:
     if (pixels.current !== undefined) return pixels.current
     const element = image.current
     if (element === null || natural === undefined || natural.width * natural.height > MAX_READ_PIXELS) return undefined
-    const canvas = document.createElement('canvas')
-    canvas.width = natural.width
-    canvas.height = natural.height
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (context === null) return undefined
-    context.drawImage(element, 0, 0)
-    pixels.current = context.getImageData(0, 0, canvas.width, canvas.height)
-    return pixels.current
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = natural.width
+      canvas.height = natural.height
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (context === null) return undefined
+      context.drawImage(element, 0, 0)
+      pixels.current = context.getImageData(0, 0, canvas.width, canvas.height)
+      return pixels.current
+    } catch {
+      return undefined
+    }
   }
 
   const zoomTo = (next: number, clientX?: number, clientY?: number): void => {
@@ -128,6 +147,7 @@ export function ImageViewer({ url, name, bytes, onAttach }: { url: string; name:
     const target = image.current
     if (target === null || natural === undefined) return
     const rect = target.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) { setPixel(undefined); return }
     const x = Math.floor((event.clientX - rect.left) / rect.width * natural.width)
     const y = Math.floor((event.clientY - rect.top) / rect.height * natural.height)
     if (x < 0 || y < 0 || x >= natural.width || y >= natural.height) { setPixel(undefined); return }
@@ -138,7 +158,7 @@ export function ImageViewer({ url, name, bytes, onAttach }: { url: string; name:
   const onPointerUp = (event: PointerEvent<HTMLDivElement>): void => {
     if (pan.current === undefined) return
     pan.current = undefined
-    stage.current?.releasePointerCapture(event.pointerId)
+    if (stage.current?.hasPointerCapture(event.pointerId) === true) stage.current.releasePointerCapture(event.pointerId)
     setPanning(false)
   }
 
@@ -158,12 +178,10 @@ export function ImageViewer({ url, name, bytes, onAttach }: { url: string; name:
       const blob = await new Promise<Blob | null>((resolve) => { canvas.toBlob(resolve, 'image/png') })
       if (blob === null) throw new Error(t('imageBroken'))
       const raw = new Uint8Array(await blob.arrayBuffer())
-      let binary = ''
-      for (let offset = 0; offset < raw.length; offset += 0x8000) binary += String.fromCharCode(...raw.subarray(offset, offset + 0x8000))
       const stem = name.replace(/\.[^.]*$/u, '') || 'image'
-      onAttach({ name: `${stem}.png`, mime: 'image/png', base64: btoa(binary) })
+      onAttach({ name: `${stem}.png`, mime: 'image/png', base64: encodeBase64(raw) })
     } catch (error) {
-      toast(t('imageAttachFailed', { error: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
+      toast(t('imageAttachFailed', { error: errorMessage(error) }), { tone: 'error' })
     }
   }
 

@@ -123,6 +123,9 @@ export function preserveSource(source: string, loaded: string, edited: string): 
     }
   }
   insertAt(before.length)
+  // Preserve the original file's trailing newline when deleting the final line collapsed its trailing empty entry.
+  const hadTrailingNewline = original.text.length > 1 && original.text.at(-1) === ''
+  if (hadTrailingNewline && edited !== '' && out.length > 0 && out.at(-1)!.text !== '') out.push({ text: '', end: '' })
   return out.map((line, index) => index === out.length - 1 ? line.text : line.text + (line.end === undefined || line.end === '' ? ending : line.end)).join('')
 }
 
@@ -205,9 +208,17 @@ function hunks(base: readonly string[], other: readonly string[]): Hunk[] {
 export function rebaseEdit(base: string, mine: string, theirs: string): string | undefined {
   if (mine === base || mine === theirs) return theirs
   if (theirs === base) return mine
-  const lines = base.split('\n')
-  const ours = hunks(lines, mine.split('\n'))
-  const others = hunks(lines, theirs.split('\n'))
+  const normalize = (value: string): string => value.replace(/\r\n?/gu, '\n')
+  const baseNorm = normalize(base)
+  const mineNorm = normalize(mine)
+  const theirsNorm = normalize(theirs)
+  if (mineNorm === baseNorm || mineNorm === theirsNorm) return theirs
+  if (theirsNorm === baseNorm) return mine
+  const ending = theirs.includes('\r\n') || theirs.includes('\r') ? lineEnding(theirs)
+    : theirs.includes('\n') ? '\n' : lineEnding(base)
+  const lines = baseNorm.split('\n')
+  const ours = hunks(lines, mineNorm.split('\n'))
+  const others = hunks(lines, theirsNorm.split('\n'))
   if (ours.some(a => others.some(b => a.start <= b.end && b.start <= a.end))) return undefined
   const out: string[] = []
   let at = 0
@@ -216,7 +227,7 @@ export function rebaseEdit(base: string, mine: string, theirs: string): string |
     at = hunk.end
   }
   out.push(...lines.slice(at))
-  return out.join('\n')
+  return withLineEnding(out.join('\n'), ending)
 }
 
 /** What the merge needs from the editor's own Markdown parser and serializer. */

@@ -51,7 +51,7 @@ export function imageFileName(file: { readonly name: string; readonly type: stri
  */
 export function markdownImageTarget(relative: string, name: string): string {
   const path = relative === '' ? name : `${relative}/${name}`
-  return path.replace(/[ ()<>]/gu, character => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`)
+  return path.replace(/[ ()<>#?%[\]\\]/gu, character => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`)
 }
 
 /**

@@ -4,7 +4,7 @@
 const SAFE_CSS_DATA_URL = /^data:(?:image\/(?:png|jpe?g|gif|webp|bmp|avif|x-icon)|font\/[\w.+-]+|application\/(?:font-[\w.+-]+|x-font-[\w.+-]+|vnd\.ms-fontobject))[;,]/iu
 /** Safe data URLs allowed on image elements rendered from a Word document. */
 const SAFE_IMG_DATA_URL = /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|x-icon)[;,]/iu
-const DANGEROUS_TAGS = 'script, iframe, frame, frameset, object, embed, applet, base, meta, link, foreignObject, foreignobject'
+const DANGEROUS_TAGS = 'script, iframe, frame, frameset, object, embed, applet, base, meta, link, template, foreignObject, foreignobject, animate, set, animateTransform, animatetransform, animateMotion, animatemotion, feImage, feimage'
 
 /**
  * Decode ASCII CSS hex/character escapes (`\69`, `\72 `, `\:`) so obfuscated keywords such as `\69mport` or
@@ -25,6 +25,49 @@ function decodeAsciiCssEscapes(css: string): string {
 /** Strip CSS comments (including an unclosed trailing comment) so tokens cannot be split across `/**\/`. */
 function stripCssComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?(?:\*\/|$)/gu, '')
+}
+
+/**
+ * Strip `@import` rules while respecting quoted strings and nested parentheses, so a `;` or `}` inside
+ * `@import url("https://evil/a;b}c");` cannot terminate stripping early and leak a trailing payload.
+ */
+function stripAtImportRules(css: string): string {
+  const matcher = /@import\b/giu
+  let result = ''
+  let cursor = 0
+  for (;;) {
+    matcher.lastIndex = cursor
+    const match = matcher.exec(css)
+    if (match === null) {
+      result += css.slice(cursor)
+      break
+    }
+    result += css.slice(cursor, match.index)
+    let pos = matcher.lastIndex
+    let parenDepth = 0
+    while (pos < css.length) {
+      const ch = css[pos]!
+      if (ch === '"' || ch === "'") {
+        const quote = ch
+        pos++
+        while (pos < css.length && css[pos] !== quote) {
+          if (css[pos] === '\\') pos++
+          pos++
+        }
+        if (pos < css.length) pos++
+        continue
+      }
+      if (ch === '(') { parenDepth++; pos++; continue }
+      if (ch === ')' && parenDepth > 0) { parenDepth--; pos++; continue }
+      if (parenDepth === 0) {
+        if (ch === ';') { pos++; break }
+        if (ch === '{' || ch === '}') break
+      }
+      pos++
+    }
+    cursor = pos
+  }
+  return result
 }
 
 /** Remove all calls to a CSS function (such as `expression(...)` or `-webkit-image-set(...)`), balancing nested parentheses. */
@@ -91,9 +134,7 @@ function isSafeCssUrl(raw: string): boolean {
  */
 export function sanitizeDocxStyles(cssText: string): string {
   let clean = decodeAsciiCssEscapes(stripCssComments(cssText))
-  // Drop `@import` rules (whether terminated by `;`, newline, or EOF).
-  clean = clean.replace(/@import\b[^;{}]*(?:;|$)/giu, '')
-  // Drop legacy script-executing and bare-string external-fetching CSS functions.
+  clean = stripAtImportRules(clean)
   clean = stripCssFunction(clean, 'expression')
   clean = stripCssFunction(clean, 'image-set')
   clean = stripCssFunction(clean, '-webkit-image-set')
@@ -108,6 +149,7 @@ export function sanitizeDocxStyles(cssText: string): string {
 
 /**
  * Sanitize styles, links, images, SVG references, forms and active elements produced by `docx-preview`.
+ * Must run on detached containers before mounting into a live ShadowRoot to prevent render-before-sanitize TOCTOU.
  * @param stylesContainer Container where `docx-preview` placed `<style>` elements.
  * @param bodyContainer Container where `docx-preview` placed document markup.
  */
@@ -132,7 +174,7 @@ export function sanitizeDocxDom(stylesContainer: Element, bodyContainer: Element
             if (lower === 'xlink:href') el.removeAttribute(attr.name)
           } else if (tag === 'use') {
             if (!attr.value.trim().startsWith('#')) el.removeAttribute(attr.name)
-          } else if (tag === 'image' || tag === 'feimage') {
+          } else if (tag === 'image') {
             if (!isSafeImageAssetUrl(attr.value)) el.removeAttribute(attr.name)
           } else {
             el.removeAttribute(attr.name)
@@ -140,28 +182,27 @@ export function sanitizeDocxDom(stylesContainer: Element, bodyContainer: Element
         }
       }
     }
-  }
-  // Links leave the page only for http(s); internal fragments stay, other targets (files, scripts) are dropped.
-  for (const link of bodyContainer.querySelectorAll('a[href]')) {
-    const href = (link.getAttribute('href') ?? '').trim()
-    if (/^https?:\/\//iu.test(href)) {
-      link.setAttribute('target', '_blank')
-      link.setAttribute('rel', 'noopener noreferrer')
-    } else if (!href.startsWith('#')) {
-      link.removeAttribute('href')
+    // Links leave the page only for http(s); internal fragments stay, other targets (files, scripts) are dropped.
+    for (const link of container.querySelectorAll('a[href]')) {
+      const href = (link.getAttribute('href') ?? '').trim()
+      if (/^https?:\/\//iu.test(href)) {
+        link.setAttribute('target', '_blank')
+        link.setAttribute('rel', 'noopener noreferrer')
+      } else if (!href.startsWith('#')) {
+        link.removeAttribute('href')
+      }
     }
   }
 }
 
-/** Extract every unique `blob:` URL present in a ShadowRoot or element subtree. */
+/** Extract every unique `blob:` URL present in a ShadowRoot or element subtree without serializing `innerHTML`. */
 export function collectBlobUrls(root: ShadowRoot | Element): string[] {
   const urls = new Set<string>()
   const scan = (text: string): void => {
     for (const match of text.match(/blob:[^"')\s<>]+/gu) ?? []) urls.add(match)
   }
-  scan(root.innerHTML)
   for (const styleEl of root.querySelectorAll('style')) scan(styleEl.textContent ?? '')
-  for (const el of root.querySelectorAll('[src], [style], [href]')) {
+  for (const el of root.querySelectorAll('[src], [style], [href], [xlink\\:href]')) {
     for (const name of ['src', 'style', 'href', 'xlink:href']) {
       const value = el.getAttribute(name)
       if (value !== null) scan(value)

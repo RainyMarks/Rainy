@@ -1,4 +1,5 @@
 /** Text forms of bytes for the hex view: rows, copy formats, offsets and the data inspector. */
+import { encodeBase64 } from './viewer-utils.ts'
 
 /** Bytes shown on one row. */
 export const HEX_ROW_BYTES = 16
@@ -51,11 +52,7 @@ export function formatBytes(bytes: Uint8Array, format: CopyFormat): string {
     case 'text': return Array.from(bytes, asciiByte).join('')
     case 'python': return `b'${Array.from(bytes, byte => byte >= 0x20 && byte <= 0x7e && byte !== 0x27 && byte !== 0x5c ? String.fromCharCode(byte) : `\\x${hexByte(byte)}`).join('')}'`
     case 'c': return `{ ${Array.from(bytes, byte => `0x${hexByte(byte)}`).join(', ')} }`
-    case 'base64': {
-      let binary = ''
-      for (const byte of bytes) binary += String.fromCharCode(byte)
-      return btoa(binary)
-    }
+    case 'base64': return encodeBase64(bytes)
   }
 }
 

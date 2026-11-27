@@ -23,15 +23,18 @@ function format(template: string, vars: MessageVars | undefined): string {
 export function defineMessages<K extends string>(zh: Readonly<Record<K, string>>, en: Readonly<Record<K, string>>): {
   useT(): Translate<K>
   t: Translate<K>
+  tFor(locale: Locale, key: K, vars?: MessageVars): string
 } {
   const tables: Readonly<Record<Locale, Readonly<Record<K, string>>>> = { zh, en }
-  const t: Translate<K> = (key, vars) => format(tables[getPrefs().locale][key], vars)
+  const tFor = (locale: Locale, key: K, vars?: MessageVars): string => format(tables[locale][key], vars)
+  const t: Translate<K> = (key, vars) => tFor(getPrefs().locale, key, vars)
   return {
     useT() {
       const { locale } = usePrefs()
-      return useCallback<Translate<K>>((key, vars) => format(tables[locale][key], vars), [locale])
+      return useCallback<Translate<K>>((key, vars) => tFor(locale, key, vars), [locale])
     },
     t,
+    tFor,
   }
 }
 

@@ -72,6 +72,13 @@ export function FootprintView({ workspace, sessionId, onOpenFile, t }: {
   const key = (step: FootprintStep): string | undefined => step.path === undefined ? undefined : keyFromAbsolute(workspace, step.path)
   const files = (actions: ReadonlySet<FootprintStep['action']>): string[] =>
     [...new Set(turn.steps.filter(step => actions.has(step.action) && step.ok !== false).map(step => key(step) ?? step.label))]
+  // Clickable changed-file chips only list existing project files; deleted files and outside-project paths cannot open.
+  const openableChanged = [...new Set(
+    turn.steps
+      .filter(step => (step.action === 'create' || step.action === 'edit') && step.ok !== false)
+      .map(key)
+      .filter((file): file is string => file !== undefined),
+  )]
   const changed = files(CHANGES)
   const read = files(new Set(['read']))
   const count = (action: FootprintStep['action']): number => turn.steps.filter(step => step.action === action).length
@@ -90,9 +97,9 @@ export function FootprintView({ workspace, sessionId, onOpenFile, t }: {
         <p className={css.request}>{turn.text}</p>
         {turn.steps.length === 0 ? <p className={css.muted}>{t('footprintNoSteps')}</p> : <>
           <div className={css.counts}>{counts.filter(([, value]) => value > 0).map(([name, value]) => <span key={name}>{t(name, { count: value })}</span>)}</div>
-          {changed.length > 0 && <section>
+          {openableChanged.length > 0 && <section>
             <h3 className={css.heading}>{t('footprintChangedFiles')}</h3>
-            <div className={css.changed}>{changed.map(path => (
+            <div className={css.changed}>{openableChanged.map(path => (
               <button key={path} type="button" className={css.place} title={path} onClick={() => { onOpenFile(path) }}>{path}</button>
             ))}</div>
           </section>}

@@ -53,6 +53,8 @@ export function markdownOutline(text: string): OutlineHeading[] {
       continue
     }
     if (math) { if (/^ {0,3}\$\$[ \t]*$/u.test(line)) math = false; continue }
+    // CommonMark indented code blocks (4 spaces or a tab) outside paragraph continuations cannot hold headings.
+    if (paragraph === undefined && /^(?: {4}|\t)/u.test(line)) continue
     const opening = /^ {0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
     if (opening !== undefined) { fence = opening; paragraph = undefined; continue }
     if (/^ {0,3}\$\$/u.test(line)) {

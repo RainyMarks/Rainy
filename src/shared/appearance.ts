@@ -17,12 +17,33 @@ export const SCHEME_ACCENTS: Readonly<Record<ColorScheme, Exclude<Accent, 'auto'
 }
 
 /**
+ * Normalize a persisted or Host-supplied color scheme (including legacy `"neutral"` from older settings) to a valid scheme.
+ * @param scheme Raw color scheme string.
+ * @returns A supported {@link ColorScheme}; unknown values fall back to `'graphite'`.
+ */
+export function normalizeColorScheme(scheme: string | undefined): ColorScheme {
+  if (scheme !== undefined && (COLOR_SCHEMES as readonly string[]).includes(scheme)) return scheme as ColorScheme
+  return 'graphite'
+}
+
+/**
+ * Normalize a persisted or Host-supplied accent value.
+ * @param accent Raw accent string.
+ * @returns A supported {@link Accent}; unknown values fall back to `'auto'`.
+ */
+export function normalizeAccent(accent: string | undefined): Accent {
+  if (accent !== undefined && (ACCENTS as readonly string[]).includes(accent)) return accent as Accent
+  return 'auto'
+}
+
+/**
  * @param scheme Color scheme.
  * @param accent Accent choice.
  * @returns The accent drawn.
  */
-export function effectiveAccent(scheme: ColorScheme, accent: Accent): Exclude<Accent, 'auto'> {
-  return accent === 'auto' ? SCHEME_ACCENTS[scheme] : accent
+export function effectiveAccent(scheme: ColorScheme | string, accent: Accent | string): Exclude<Accent, 'auto'> {
+  const safeAccent = normalizeAccent(accent)
+  return safeAccent === 'auto' ? SCHEME_ACCENTS[normalizeColorScheme(scheme)] ?? 'blue' : safeAccent
 }
 
 /** Longest stored font setting, in characters. */

@@ -19,6 +19,7 @@ import { isMermaid, onThemeChange, renderMermaid } from './mermaid.ts'
 import { useViewerT } from './messages.ts'
 import { RichFindBar, type FindRequest } from './RichFindBar.tsx'
 import type * as RichPlugins from './rich-plugins.ts'
+import { CJK_WIDE, errorMessage, escapeHtml } from './viewer-utils.ts'
 import css from './Viewers.module.css'
 import './RichMarkdown.css'
 
@@ -77,10 +78,6 @@ export interface RichImageBase {
   readonly hostRoot?: string | undefined
 }
 
-function escapeSvgText(text: string): string {
-  return text.replace(/[&<>"']/gu, ch => `&#${ch.charCodeAt(0)};`)
-}
-
 /**
  * Build a self-contained inline SVG data URL badge shown when a remote or outside-project image is blocked,
  * so the editor never attempts a network/SMB fetch or triggers CSP console errors while keeping Markdown source intact.
@@ -88,11 +85,11 @@ function escapeSvgText(text: string): string {
 function blockedImagePlaceholder(label: string): string {
   const shown = label.length > 64 ? `${label.slice(0, 63)}…` : label
   let units = 0
-  for (const ch of shown) units += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u.test(ch) ? 2 : 1
+  for (const ch of shown) units += CJK_WIDE.test(ch) ? 2 : 1
   const width = Math.max(140, Math.min(480, Math.round(units * 7.2 + 24)))
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" viewBox="0 0 ${width} 28">`
     + `<rect x="0.5" y="0.5" width="${width - 1}" height="27" rx="4" fill="#f3f4f6" stroke="#d1d5db"/>`
-    + `<text x="12" y="18" fill="#4b5563" font-family="Segoe UI, Microsoft YaHei UI, system-ui, sans-serif" font-size="12">${escapeSvgText(shown)}</text>`
+    + `<text x="12" y="18" fill="#4b5563" font-family="Segoe UI, Microsoft YaHei UI, system-ui, sans-serif" font-size="12">${escapeHtml(shown)}</text>`
     + `</svg>`
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
 }
@@ -138,7 +135,8 @@ export function resolveRichImageUrl(url: string, folder: RichImageBase, version:
  * @param label What to show instead.
  */
 function labelPlainCode(root: Element, label: string): void {
-  for (const button of root.querySelectorAll('.milkdown-code-block .language-button')) {
+  const buttons = root.matches('.language-button') ? [root] : [...root.querySelectorAll('.milkdown-code-block .language-button')]
+  for (const button of buttons) {
     const text = button.firstChild
     if (text?.nodeType === Node.TEXT_NODE && text.nodeValue === 'Text') text.nodeValue = label
   }
@@ -168,9 +166,14 @@ type RichProps = Parameters<typeof RichEditor>[0]
  */
 export function RichMarkdown({ onSource, ...props }: RichProps & { onSource: () => void }): JSX.Element {
   const t = useViewerT()
-  // Decided when the view opens: a document that grows past the limit while open keeps its editor.
-  const [large] = useState(() => props.text.length > RICH_LIMIT)
-  if (!large) return <RichEditor {...props} />
+  // Decided when each document opens: a document that grows past the limit while open keeps its editor,
+  // while switching to a different file re-evaluates the threshold for that file.
+  const [opened, setOpened] = useState(() => ({ path: props.path, large: props.text.length > RICH_LIMIT }))
+  const large = opened.path === props.path ? opened.large : props.text.length > RICH_LIMIT
+  useEffect(() => {
+    setOpened(previous => previous.path === props.path ? previous : { path: props.path, large: props.text.length > RICH_LIMIT })
+  }, [props.path, props.text.length])
+  if (!large) return <RichEditor key={props.path} {...props} />
   return <div className={css.viewer} data-viewer="markdown-rich">
     <div className={css.message}>
       <p>{t('richTooLarge', { size: `${(props.text.length / 1024 / 1024).toFixed(1)} MB` })}</p>
@@ -251,6 +254,10 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
     if (element === null) return
     let cancelled = false
     let created: Rich | undefined
+    let unwatch: (() => void) | undefined
+    let observer: MutationObserver | undefined
+    /** The diagrams drawn last, by the callback that shows each; drawn again in the new colors when the theme changes. */
+    const diagrams = new Map<(value: string | HTMLElement) => void, string>()
     void (async () => {
       const [{ Crepe }, { commandsCtx, editorViewCtx }, { clearTextInCurrentBlockCommand, isMarkSelectedCommand }, { imageInlineComponent, inlineImageConfig }, { uploadConfig },
         { codeBlockConfig }, { keymapRef }, rich, { codeTheme }] = await Promise.all([
@@ -266,7 +273,7 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
       }
       const save = async (file: File): Promise<string> => {
         try { return await latest.current.onImage(file) } catch (error) {
-          toast(latest.current.t('richImageFailed', { error: error instanceof Error ? error.message : String(error) }), { tone: 'error' })
+          toast(latest.current.t('richImageFailed', { error: errorMessage(error) }), { tone: 'error' })
           throw error
         }
       }
@@ -277,13 +284,14 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
         return box
       }
       const draw = (content: string, apply: (value: string | HTMLElement) => void): void => {
-        renderMermaid(content).then(apply, (error: unknown) => {
-          apply(failed(latest.current.t('mermaidFailed', { error: error instanceof Error ? error.message : String(error) })))
+        renderMermaid(content).then((svg) => { if (!cancelled) apply(svg) }, (error: unknown) => {
+          if (!cancelled) apply(failed(latest.current.t('mermaidFailed', { error: errorMessage(error) })))
         })
       }
-      /** The diagrams drawn last, by the callback that shows each; drawn again in the new colors when the theme changes. */
-      const diagrams = new Map<(value: string | HTMLElement) => void, string>()
-      const unwatch = onThemeChange(() => { for (const [apply, content] of diagrams) draw(content, apply) })
+      unwatch = onThemeChange(() => {
+        if (cancelled) return
+        for (const [apply, content] of [...diagrams]) draw(content, apply)
+      })
       const crepe = new Crepe({
         root: element,
         defaultValue: lf(body.current),
@@ -312,7 +320,7 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
               if (!isMermaid(language) || content.trim() === '') return null
               diagrams.delete(apply)
               diagrams.set(apply, content)
-              if (diagrams.size > 200) diagrams.delete(diagrams.keys().next().value!)
+              if (diagrams.size > 80) diagrams.delete(diagrams.keys().next().value!)
               draw(content, apply)
               return undefined
             } },
@@ -393,7 +401,7 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
         listen.blur(() => { push(crepe.getMarkdown()) })
       })
       await crepe.create()
-      if (cancelled) { unwatch(); await crepe.destroy(); return }
+      if (cancelled) { unwatch?.(); unwatch = undefined; diagrams.clear(); await crepe.destroy(); return }
       loaded = conventionalTables(crepe.getMarkdown())
       started = true
       created = {
@@ -407,6 +415,7 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
         },
         replace: (next) => {
           quiet = true
+          diagrams.clear()
           const scroll = stage.current?.scrollTop
           try { rich.replaceDocument(crepe.editor.ctx, lf(next)) } finally { quiet = false }
           if (stage.current !== null && scroll !== undefined) stage.current.scrollTop = scroll
@@ -419,15 +428,36 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
       }
       editor.current = created
       labelPlainCode(element, latest.current.t('richPlainText'))
-      const observer = new MutationObserver(() => { labelPlainCode(element, latest.current.t('richPlainText')) })
-      observer.observe(element, { subtree: true, childList: true, characterData: true })
+      // Only watch added subtrees for newly mounted code blocks instead of scanning the whole DOM on every keystroke.
+      observer = new MutationObserver((records) => {
+        const label = latest.current.t('richPlainText')
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node instanceof Element) labelPlainCode(node, label)
+          }
+        }
+      })
+      observer.observe(element, { subtree: true, childList: true })
       const destroy = created.destroy
-      created.destroy = () => { observer.disconnect(); unwatch(); return destroy() }
+      created.destroy = () => {
+        observer?.disconnect(); observer = undefined
+        unwatch?.(); unwatch = undefined
+        diagrams.clear()
+        return destroy()
+      }
       setReady(true)
-    })().catch((error: unknown) => { if (!cancelled) setFailure(error instanceof Error ? error.message : String(error)) })
+    })().catch((error: unknown) => {
+      observer?.disconnect(); observer = undefined
+      unwatch?.(); unwatch = undefined
+      diagrams.clear()
+      if (!cancelled) setFailure(errorMessage(error))
+    })
     return () => {
       cancelled = true
       editor.current = undefined
+      observer?.disconnect(); observer = undefined
+      unwatch?.(); unwatch = undefined
+      diagrams.clear()
       // Switching views or closing the tab within the editor's 200 ms wait would otherwise lose the last keystrokes.
       created?.flush()
       void created?.destroy()

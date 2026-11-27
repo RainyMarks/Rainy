@@ -1,6 +1,6 @@
 /** Markdown of project files, as the preview shows them: GFM, math, highlighted code blocks, local links, guarded images
  *  and the allowlisted HTML of {@link rehypeSafeHtml}. 3.x drew chat replies with it too, hence its folder. */
-import { Children, isValidElement, memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
+import { Children, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import clsx from 'clsx'
 import { ideRawUrl } from '../../shared/ide-preview.ts'
@@ -28,13 +28,16 @@ export function CodeBlock({ code, language, line }: {
   const t = useChatT()
   const [copied, setCopied] = useState(false)
   const [wrapped, setWrapped] = useState(false)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const grammars = useHighlightRevision()
   const lines = useMemo(() => highlightLines(code, language), [code, language, grammars])
+  useEffect(() => () => { clearTimeout(copyTimer.current) }, [])
   const onCopy = useCallback(() => {
     void writeClipboard(code).then((ok) => {
       if (!ok) return
       setCopied(true)
-      window.setTimeout(() => { setCopied(false) }, 1000)
+      clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => { setCopied(false) }, 1000)
     })
   }, [code])
   return (

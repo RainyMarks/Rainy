@@ -1,9 +1,8 @@
 /** Anchor-preserving tooltips; an optional body portal escapes clipping containers and stacking contexts that cap the bubble's z-index. */
 
-import { cloneElement, createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { cloneElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { FocusEventHandler, MouseEventHandler, MutableRefObject, ReactElement, Ref } from 'react'
 import { createPortal } from 'react-dom'
-import { ShortcutKeys } from './ShortcutKeys.tsx'
 import css from './Tooltip.module.css'
 // Tooltips take the wide answer — any key returns to the keyboard. Focus rings read the
 // narrower `data-input-modality` attribute the same module publishes.
@@ -11,12 +10,6 @@ import { pointerModality } from './input-modality.ts'
 
 /** Bubble placement relative to the anchor. */
 export type TooltipSide = 'right' | 'bottom' | 'top'
-
-/**
- * Suppression channel for enclosing tooltip and hover-card anchors: a visible
- * tooltip within an anchor withdraws the enclosing preview while its bubble is shown.
- */
-export const TooltipSuppression = createContext<((suppressed: boolean) => void) | null>(null)
 
 /** Props Tooltip injects into its anchor child; the child's own handlers are chained ahead of the tooltip's. */
 interface AnchorProps {
@@ -53,7 +46,7 @@ type TooltipLabel = string | (() => string)
  * anchor dismisses the bubble until the next trigger, and focus arriving after a pointer
  * interaction (a closing menu refocusing its trigger) never raises it.
  */
-export function Tooltip({ label, shortcutKeys, side = 'right', align = 'center', delayMs = 0, gap = 8, disabled = false, portal = false, maxWidth, children }: { label: TooltipLabel; shortcutKeys?: readonly string[] | undefined; side?: TooltipSide; align?: 'center' | 'end'; delayMs?: number; gap?: number; disabled?: boolean; portal?: boolean; maxWidth?: number; children: ReactElement<AnchorProps> }) {
+export function Tooltip({ label, side = 'right', align = 'center', delayMs = 0, gap = 8, disabled = false, portal = false, maxWidth, children }: { label: TooltipLabel; side?: TooltipSide; align?: 'center' | 'end'; delayMs?: number; gap?: number; disabled?: boolean; portal?: boolean; maxWidth?: number; children: ReactElement<AnchorProps> }) {
   const anchor = useRef<HTMLElement | null>(null)
   // React 18 keeps the element's ref outside props; forward it so wrapping an
   // anchor in Tooltip never silently severs the owner's ref.
@@ -80,20 +73,12 @@ export function Tooltip({ label, shortcutKeys, side = 'right', align = 'center',
   // BOTH clear (hovering away from a focused anchor must not drop it).
   const triggers = useRef({ hover: false, focus: false })
 
-  // A nested tooltip's bubble owns the pointer position, so this tooltip
-  // withdraws its own while a descendant shows one; the state below is set by
-  // the descendants this tooltip wraps. Announcing on every visibility change
-  // covers hide, disable, and unmount; show() also announces synchronously so
-  // a nested pair shown in one commit never paints both bubbles.
-  const suppressAncestors = useContext(TooltipSuppression)
-  const [suppressed, setSuppressed] = useState(false)
-  const announce = useCallback((active: boolean) => { suppressAncestors?.(active) }, [suppressAncestors])
   const visible = pos !== null && !disabled
   // ResizeObserver supplies the laid-out border box; fitting never reads
   // geometry after a position write or needs a React commit to flip sides.
   useEffect(() => {
     const el = bubble.current
-    if (pos === null || !visible || suppressed || el === null) return
+    if (pos === null || !visible || el === null) return
     const edgeMargin = 12
     let size: ResizeObserverSize | undefined
     let placement = side
@@ -122,11 +107,7 @@ export function Tooltip({ label, shortcutKeys, side = 'right', align = 'center',
       observer.disconnect()
       window.removeEventListener('resize', fit)
     }
-  }, [align, gap, pos, side, suppressed, visible])
-  useEffect(() => {
-    announce(visible)
-    return () => { announce(false) }
-  }, [announce, visible])
+  }, [align, gap, pos, side, visible])
 
   // Disabling mid-hover (e.g. clicking a rail control expands the sidebar)
   // must drop an already-visible bubble: no mouseleave fires.
@@ -155,7 +136,6 @@ export function Tooltip({ label, shortcutKeys, side = 'right', align = 'center',
       top: r.top,
       bottom: r.bottom,
     })
-    announce(true)
   }
   const showAfterHoverDelay = () => {
     cancelShow()
@@ -168,46 +148,37 @@ export function Tooltip({ label, shortcutKeys, side = 'right', align = 'center',
       show()
     }, delayMs)
   }
-  const withdraw = () => {
-    setPos(null)
-    announce(false)
-  }
+  const withdraw = () => { setPos(null) }
   const hide = () => {
     cancelShow()
     if (!triggers.current.hover && !triggers.current.focus) withdraw()
   }
 
-  const content = visible && !suppressed && (
+  const content = visible && (
     <span
       ref={bubble}
       className={css.bubble}
       data-side={side}
       data-portal={portal || undefined}
       data-align={align}
-      data-has-shortcut={shortcutKeys?.length ? true : undefined}
       style={{ left: pos.x, top: y, visibility: 'hidden', ...maxWidth === undefined ? {} : { maxWidth } }}
       role="tooltip"
-      aria-label={shortcutKeys?.length ? [resolvedLabel, shortcutKeys.join(' ')].filter(Boolean).join(' ') : undefined}
     >
       {resolvedLabel && <span className={css.label}>{resolvedLabel}</span>}
-      {shortcutKeys !== undefined && shortcutKeys.length > 0 && <ShortcutKeys keys={shortcutKeys} variant="tooltip" />}
     </span>
   )
 
   return (
-    <TooltipSuppression.Provider value={setSuppressed}>
+    <>
       {cloneElement(children, {
         ref: mergedRef,
         onMouseEnter: (e) => { children.props.onMouseEnter?.(e); triggers.current.hover = true; showAfterHoverDelay() },
         onMouseLeave: (e) => { children.props.onMouseLeave?.(e); triggers.current.hover = false; cancelShow(); withdraw() },
-        // Activating the anchor dismisses the bubble: the action often changes
-        // what the anchor now does (pin → unpin), and the click leaves the
-        // anchor focused, which would otherwise pin the relabelled bubble up.
         onClick: (e) => { children.props.onClick?.(e); triggers.current.focus = false; cancelShow(); withdraw() },
         onFocus: (e) => { children.props.onFocus?.(e); if (pointerModality()) return; triggers.current.focus = true; cancelShow(); show() },
         onBlur: (e) => { children.props.onBlur?.(e); triggers.current.focus = false; hide() },
       })}
       {portal ? (content !== false && createPortal(content, document.body)) : content}
-    </TooltipSuppression.Provider>
+    </>
   )
 }

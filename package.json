@@ -19,8 +19,6 @@
     "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
   },
   "devDependencies": {
-    "@fontsource-variable/geist-mono": "5.3.0",
-    "@fontsource-variable/hanken-grotesk": "5.3.0",
     "@milkdown/crepe": "7.22.3",
     "@milkdown/kit": "7.22.3",
     "@types/node": "22.20.5",
