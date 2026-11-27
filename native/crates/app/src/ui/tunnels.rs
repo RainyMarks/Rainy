@@ -27,8 +27,33 @@ const QUICK_PRESETS: [(u16, &str); 3] = [(6006, "TensorBoard"), (8888, "Jupyter"
 /// Minimum cooldown between automatic remote port scans when opening the popover.
 const SCAN_COOLDOWN: Duration = Duration::from_secs(5);
 
+#[derive(PartialEq, Eq)]
+struct StoreSig {
+    is_ssh: bool,
+    locale: Locale,
+    state: String,
+    rules: Vec<(String, u16, u16, Option<String>)>,
+}
+
+impl StoreSig {
+    fn capture(store: &Store) -> Self {
+        if !store.is_ssh() {
+            return Self { is_ssh: false, locale: store.locale(), state: String::new(), rules: Vec::new() };
+        }
+        let state = format!("{:?}", store.tunnel_status.state);
+        let rules = store
+            .tunnel_status
+            .rules
+            .iter()
+            .map(|r| (r.id.clone(), r.local_port, r.remote_port, r.label.clone()))
+            .collect();
+        Self { is_ssh: true, locale: store.locale(), state, rules }
+    }
+}
+
 pub struct TunnelsView {
     store: Entity<Store>,
+    store_sig: StoreSig,
     discovered: Vec<ListeningPort>,
     scanning: bool,
     last_scan: Option<Instant>,
@@ -44,13 +69,26 @@ impl TunnelsView {
         let local_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "ssh.portsLocalPlaceholder")));
         let remote_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "ssh.portsRemotePlaceholder")));
         let label_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "ssh.portsLabelPlaceholder")));
+        let store_sig = StoreSig::capture(store.read(cx));
         let subscriptions = vec![
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&store, |this, store, cx| {
+                let store = store.read(cx);
+                // Fast path on local Windows / WSL targets: never allocate or notify during chat streaming.
+                if !store.is_ssh() && !this.store_sig.is_ssh {
+                    return;
+                }
+                let next = StoreSig::capture(store);
+                if next != this.store_sig {
+                    this.store_sig = next;
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&store, window, |this, _, event: &StoreEvent, window, cx| match event {
                 StoreEvent::HostReconnected(_) => {
                     this.discovered.clear();
                     this.scanning = false;
                     this.last_scan = None;
+                    this.store_sig = StoreSig::capture(this.store.read(cx));
                     cx.notify();
                 }
                 StoreEvent::PrefsChanged => {
@@ -66,6 +104,7 @@ impl TunnelsView {
         ];
         Self {
             store,
+            store_sig,
             discovered: Vec::new(),
             scanning: false,
             last_scan: None,
@@ -122,7 +161,7 @@ impl TunnelsView {
                             window.push_notification(Notification::success(note), cx);
                         }
                         if let Some(url) = open_url {
-                            open_in_browser(&url);
+                            open_in_browser(&url, cx);
                         }
                     }
                     Err(error) => {
@@ -233,7 +272,7 @@ impl Render for TunnelsView {
             .p_3()
             .rounded(theme.radius_lg)
             .trigger(trigger)
-            .content(move |_, _, cx| {
+            .content(move |_, window, cx| {
                 crate::web::mark_popover_open(cx);
                 let entity_scan = entity.clone();
                 let should_scan = {
@@ -245,13 +284,14 @@ impl Render for TunnelsView {
                         entity_scan.update(cx, |view, cx| view.scan_ports(cx));
                     });
                 }
-                render_popover_body(entity.clone(), locale, cx)
+                let max_h = (f32::from(window.viewport_size().height) - 220.).clamp(160., 360.);
+                render_popover_body(entity.clone(), locale, max_h, cx)
             })
             .into_any_element()
     }
 }
 
-fn render_popover_body(entity: Entity<TunnelsView>, locale: Locale, cx: &App) -> AnyElement {
+fn render_popover_body(entity: Entity<TunnelsView>, locale: Locale, max_height: f32, cx: &App) -> AnyElement {
     let view = entity.read(cx);
     let store = view.store.read(cx);
     let status = store.tunnel_status.clone();
@@ -334,7 +374,7 @@ fn render_popover_body(entity: Entity<TunnelsView>, locale: Locale, cx: &App) ->
                         .ghost()
                         .xsmall()
                         .label(i18n::text(locale, "ssh.portsOpenBrowser"))
-                        .on_click(move |_, _, _| open_in_browser(&url_open)),
+                        .on_click(move |_, _, cx| open_in_browser(&url_open, cx)),
                 )
                 .child(
                     Button::new(("tunnel-copy", idx))
@@ -470,7 +510,7 @@ fn render_popover_body(entity: Entity<TunnelsView>, locale: Locale, cx: &App) ->
         .child(
             v_flex()
                 .id("tunnels-scroll")
-                .max_h(px(360.))
+                .max_h(px(max_height))
                 .overflow_y_scroll()
                 .gap_2()
                 // Active section
@@ -538,27 +578,12 @@ fn merge_rule(mut rules: Vec<PortForwardRule>, rule: PortForwardRule) -> Vec<Por
     rules
 }
 
-/// Open a `http://127.0.0.1:<port>` URL in the default Windows browser without popping a console window.
-fn open_in_browser(url: &str) {
+/// Open a local forwarded `http://127.0.0.1:<port>` or `http://localhost:<port>` URL via GPUI's shell handler.
+fn open_in_browser(url: &str, cx: &App) {
     if !url.starts_with("http://127.0.0.1:") && !url.starts_with("http://localhost:") {
         return;
     }
-    let url = url.to_owned();
-    std::thread::spawn(move || {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", "", &url])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-        }
-    });
+    cx.open_url(url);
 }
 
 #[cfg(test)]

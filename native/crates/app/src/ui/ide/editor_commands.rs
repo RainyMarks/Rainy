@@ -174,8 +174,9 @@ fn show_references(locations: Vec<Location>, window: &mut Window, cx: &mut App) 
     }
     let references = std::rc::Rc::new(references);
     let title = format!("{} ({})", tr(cx, "ide.ideFindReferences"), references.len());
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let theme = cx.theme().clone();
+        let max_height = (f32::from(window.viewport_size().height) - 180.).clamp(220., 420.);
         let rows = references.iter().enumerate().map(|(index, reference)| {
             let (key, line, column) = (reference.key.clone(), reference.line, reference.column);
             h_flex()
@@ -195,7 +196,7 @@ fn show_references(locations: Vec<Location>, window: &mut Window, cx: &mut App) 
                     Ide::global(cx).update(cx, |ide, cx| ide.reveal(key, line, column, window, cx));
                 })
         });
-        dialog.title(title.clone()).w(px(640.)).child(v_flex().id("references").max_h(px(420.)).overflow_y_scrollbar().children(rows))
+        dialog.title(title.clone()).w(px(640.)).child(v_flex().id("references").max_h(px(max_height)).overflow_y_scrollbar().children(rows))
     });
 }
 
@@ -258,24 +259,42 @@ fn apply_workspace_edit(edit: WorkspaceEdit, window: &mut Window, cx: &mut App) 
     for (uri, edits) in edit.changes.unwrap_or_default() {
         by_uri.entry(uri.to_string()).or_default().extend(edits);
     }
-    if let Some(lsp_types::DocumentChanges::Edits(documents)) = edit.document_changes {
-        for document in documents {
-            let edits = document.edits.into_iter().map(|edit| match edit {
-                OneOf::Left(edit) => edit,
-                OneOf::Right(annotated) => annotated.text_edit,
-            });
-            by_uri.entry(document.text_document.uri.to_string()).or_default().extend(edits);
+    let push_doc = |by_uri: &mut BTreeMap<String, Vec<TextEdit>>, document: lsp_types::TextDocumentEdit| {
+        let edits = document.edits.into_iter().map(|edit| match edit {
+            OneOf::Left(edit) => edit,
+            OneOf::Right(annotated) => annotated.text_edit,
+        });
+        by_uri.entry(document.text_document.uri.to_string()).or_default().extend(edits);
+    };
+    match edit.document_changes {
+        Some(lsp_types::DocumentChanges::Edits(documents)) => {
+            for document in documents {
+                push_doc(&mut by_uri, document);
+            }
         }
+        Some(lsp_types::DocumentChanges::Operations(ops)) => {
+            for op in ops {
+                if let lsp_types::DocumentChangeOperation::Edit(document) = op {
+                    push_doc(&mut by_uri, document);
+                }
+            }
+        }
+        None => {}
     }
     let ide = Ide::global(cx);
+    let workspace_id = ide.read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
     for (uri, edits) in by_uri {
         let Some(key) = uri_path(&uri).and_then(|path| ide.read(cx).key_from_absolute(&path)) else { continue };
         let opened = ide.update(cx, |ide, cx| ide.open_task(key.clone(), false, window, cx));
-        let ide = ide.clone();
+        let (ide, workspace_id) = (ide.clone(), workspace_id.clone());
         window
             .spawn(cx, async move |cx| {
                 opened.await;
                 let _ = cx.update(|window, cx| {
+                    let same_workspace = ide.read(cx).workspace.as_ref().map(|w| w.workspace_id.as_str()) == workspace_id.as_deref();
+                    if !same_workspace {
+                        return;
+                    }
                     let editor = ide.read(cx).files.get(&key).and_then(|file| file.editor.clone());
                     if let Some(editor) = editor {
                         editor.update(cx, |state, cx| state.apply_lsp_edits(&edits, window, cx));

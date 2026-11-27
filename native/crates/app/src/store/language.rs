@@ -242,25 +242,34 @@ impl LanguageServers {
         cx.notify();
     }
 
-    /// Close old LSP sockets pointing at the previous Host port and reopen live documents on the new Host.
+    /// Close old LSP sockets pointing at the previous Host port and reopen any documents that survive reconnect.
+    /// Deferred by one tick so a simultaneous `IdeEvent::WorkspaceChanged` (which resets all documents) does not cause
+    /// servers to be opened and immediately torn down again.
     pub fn reconnect_all(&mut self, cx: &mut Context<Self>) {
         for (_, connection) in self.connections.drain() {
             connection.client.close();
         }
         self.retry_at.clear();
         self.phases.clear();
-        let mut live_keys = Vec::new();
-        for (key, document) in &mut self.documents {
+        for document in self.documents.values_mut() {
             document.synced = None;
             document.sync = None;
-            if document.editor.upgrade().is_some() {
-                live_keys.push(key.clone());
-            }
-        }
-        for key in live_keys {
-            self.open_document(&key, cx);
         }
         cx.notify();
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = this.update(cx, |this, cx| {
+                let live_keys: Vec<String> = this
+                    .documents
+                    .iter()
+                    .filter(|(_, document)| document.synced.is_none() && document.editor.upgrade().is_some())
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in live_keys {
+                    this.open_document(&key, cx);
+                }
+            });
+        });
     }
 
     /// Tools were downloaded: servers that failed for want of them start again for their open files.
@@ -286,6 +295,14 @@ impl LanguageServers {
         {
             connection.client.notify("textDocument/didSave", json!({ "textDocument": { "uri": document.uri } }));
         }
+    }
+
+    /// Count of non-hint problems across open files without cloning or sorting diagnostics.
+    pub fn problem_count(&self) -> usize {
+        self.documents
+            .values()
+            .map(|document| document.diagnostics.iter().filter(|diagnostic| diagnostic.severity != Some(lsp_types::DiagnosticSeverity::HINT)).count())
+            .sum()
     }
 
     /// Every problem the servers reported in the open files, by file then line (3.x `problems`).
@@ -585,6 +602,7 @@ impl LanguageServers {
                 document.underlines = Some(underlines);
             }
         }
+        cx.notify();
     }
 
     fn failed(&mut self, server: &str, message: String, cx: &mut Context<Self>) {
@@ -780,13 +798,7 @@ impl CompletionProvider for Provider {
         if !rest.chars().all(|ch| ch.is_whitespace() || ")]}>'\"`;,:".contains(ch)) {
             return none();
         }
-        let before = text.slice(0..offset).to_string();
-        let after = text.slice(offset..text.len()).to_string();
-        let prefix: String = {
-            let count = before.chars().count();
-            before.chars().skip(count.saturating_sub(SUGGEST_BEFORE)).collect()
-        };
-        let suffix: String = after.chars().take(SUGGEST_AFTER).collect();
+        let (prefix, suffix) = window_around_cursor(text, offset, SUGGEST_BEFORE, SUGGEST_AFTER);
         let request_id = servers.update(cx, |servers, _| {
             servers.next_request += 1;
             format!("suggest-native-{}", servers.next_request)
@@ -921,6 +933,18 @@ impl DefinitionProvider for Provider {
     }
 }
 
+/// Slice at most `before_chars` before `offset` and `after_chars` after `offset` without copying the whole document.
+pub(crate) fn window_around_cursor(text: &Rope, offset: usize, before_chars: usize, after_chars: usize) -> (String, String) {
+    let clamped = offset.min(text.len());
+    let cursor_char = text.byte_to_char_idx(clamped);
+    let start_char = cursor_char.saturating_sub(before_chars);
+    let end_char = cursor_char.saturating_add(after_chars).min(text.len_chars());
+    let start_byte = text.char_to_byte_idx(start_char);
+    let cursor_byte = text.char_to_byte_idx(cursor_char);
+    let end_byte = text.char_to_byte_idx(end_char);
+    (text.slice(start_byte..cursor_byte).to_string(), text.slice(cursor_byte..end_byte).to_string())
+}
+
 fn link(location: lsp_types::Location) -> LocationLink {
     LocationLink { origin_selection_range: None, target_uri: location.uri, target_range: location.range, target_selection_range: location.range }
 }
@@ -954,5 +978,17 @@ mod tests {
         assert_eq!(server_language("src/a.tsx"), Some(("typescript", "typescriptreact")));
         assert_eq!(server_language("a.h"), Some(("c", "c")));
         assert_eq!(server_language("README.md"), None);
+    }
+
+    #[test]
+    fn slices_cursor_window_on_utf8_boundaries() {
+        let rope = Rope::from("前奏中文😀abcdef后缀🎉结束");
+        let offset = "前奏中文😀abc".len();
+        let (prefix, suffix) = window_around_cursor(&rope, offset, 5, 4);
+        assert_eq!(prefix, "文😀abc");
+        assert_eq!(suffix, "def后");
+        let (empty_before, all_after) = window_around_cursor(&rope, 0, 10, 3);
+        assert_eq!(empty_before, "");
+        assert_eq!(all_after, "前奏中");
     }
 }

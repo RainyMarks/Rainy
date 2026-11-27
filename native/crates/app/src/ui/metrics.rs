@@ -38,7 +38,10 @@ enum Severity {
 pub struct MetricsView {
     store: Entity<Store>,
     ide: Entity<Ide>,
+    visible: bool,
     window_active: bool,
+    /// Last observed `(is_remote, connection, has_rpc, locale)` so streaming tokens do not wake this view.
+    store_sig: (bool, ConnectionState, bool, Locale),
     loading_detail: bool,
     last_detail_attempt: Option<Instant>,
     detailed: Option<(Instant, HostMetrics)>,
@@ -50,24 +53,33 @@ pub struct MetricsView {
 impl MetricsView {
     pub fn new(store: Entity<Store>, ide: Entity<Ide>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let window_active = window.is_window_active();
+        let store_sig = Self::store_signature(store.read(cx));
         let subscriptions = vec![
             cx.subscribe(&store, |this, _, event: &StoreEvent, cx| match event {
                 StoreEvent::HostReconnected(_) => {
                     this.detailed = None;
                     this.last_detail_attempt = None;
                     this.error = None;
+                    this.store_sig = Self::store_signature(this.store.read(cx));
                     this.sync_polling(cx);
+                    cx.notify();
                 }
                 StoreEvent::HostExited(_) => {
                     this.poll = None;
                     this.detailed = None;
                     this.last_detail_attempt = None;
+                    this.store_sig = Self::store_signature(this.store.read(cx));
                     cx.notify();
                 }
                 _ => {}
             }),
-            cx.observe(&store, |this, _, cx| {
-                this.sync_polling(cx);
+            cx.observe(&store, |this, store, cx| {
+                let sig = Self::store_signature(store.read(cx));
+                if sig != this.store_sig {
+                    this.store_sig = sig;
+                    this.sync_polling(cx);
+                    cx.notify();
+                }
             }),
             cx.subscribe(&ide, |this, _, event: &IdeEvent, cx| {
                 if *event == IdeEvent::WorkspaceChanged {
@@ -82,7 +94,9 @@ impl MetricsView {
         let mut view = Self {
             store,
             ide,
+            visible: true,
             window_active,
+            store_sig,
             loading_detail: false,
             last_detail_attempt: None,
             detailed: None,
@@ -92,6 +106,19 @@ impl MetricsView {
         };
         view.sync_polling(cx);
         view
+    }
+
+    fn store_signature(store: &Store) -> (bool, ConnectionState, bool, Locale) {
+        (store.is_remote(), store.connection, store.rpc.is_some(), store.locale())
+    }
+
+    /// Pause polling while the status bar is hidden (for example in Agent layout); resume when visible again.
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        self.sync_polling(cx);
     }
 
     /// Pause polling while the window is in the background; resume immediately on foreground focus.
@@ -105,7 +132,7 @@ impl MetricsView {
 
     fn should_poll(&self, cx: &App) -> bool {
         let store = self.store.read(cx);
-        self.window_active && store.is_remote() && store.connection == ConnectionState::Open && store.rpc.is_some()
+        self.visible && self.window_active && store.is_remote() && store.connection == ConnectionState::Open && store.rpc.is_some()
     }
 
     fn sync_polling(&mut self, cx: &mut Context<Self>) {
@@ -169,6 +196,7 @@ impl MetricsView {
         if !store.is_remote() || store.connection != ConnectionState::Open {
             return;
         }
+        let target_tag = store.target.as_ref().map(|t| format!("{t:?}"));
         let locale = store.locale();
         let watch_paths = self.watch_paths(cx);
         let call = self.store.read(cx).call(
@@ -186,6 +214,15 @@ impl MetricsView {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = call.await;
             let _ = this.update(cx, |this, cx| {
+                // Drop stale metrics if the user hot-swapped targets while this RPC was in flight.
+                let current_tag = this.store.read(cx).target.as_ref().map(|t| format!("{t:?}"));
+                if current_tag != target_tag || !this.store.read(cx).is_remote() {
+                    if include_processes {
+                        this.loading_detail = false;
+                        cx.notify();
+                    }
+                    return;
+                }
                 if include_processes {
                     this.loading_detail = false;
                 }
@@ -274,7 +311,7 @@ impl Render for MetricsView {
             .p_3()
             .rounded(theme.radius_lg)
             .trigger(trigger)
-            .content(move |_, _, cx| {
+            .content(move |_, window, cx| {
                 crate::web::mark_popover_open(cx);
                 let entity_refresh = entity.clone();
                 cx.defer(move |cx| {
@@ -286,6 +323,7 @@ impl Render for MetricsView {
                     .as_ref()
                     .map(|(_, m)| m.clone())
                     .or_else(|| view.store.read(cx).host_metrics.clone());
+                let max_h = (f32::from(window.viewport_size().height) - 160.).clamp(200., 460.);
                 render_popover_body(
                     entity.clone(),
                     snapshot.as_ref(),
@@ -293,6 +331,7 @@ impl Render for MetricsView {
                     view.error.clone(),
                     notes.clone(),
                     locale,
+                    max_h,
                     cx,
                 )
             })
@@ -300,6 +339,7 @@ impl Render for MetricsView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_popover_body(
     entity: Entity<MetricsView>,
     metrics: Option<&HostMetrics>,
@@ -307,6 +347,7 @@ fn render_popover_body(
     error: Option<SharedString>,
     notes: Option<String>,
     locale: Locale,
+    max_height: f32,
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme().clone();
@@ -374,7 +415,7 @@ fn render_popover_body(
 
     let mut content = v_flex()
         .id("metrics-popover-scroll")
-        .max_h(px(460.))
+        .max_h(px(max_height))
         .overflow_y_scroll()
         .gap_2p5()
         // CPU row
@@ -656,7 +697,7 @@ fn format_compact_summary(m: &HostMetrics, locale: Locale) -> String {
     }
     let effective = m.effective_cpu_cores.max(1.0);
     if let Some(pct) = m.cpu_percent {
-        let busy_cores = (effective * (pct as f64 / 100.0)).round() as u64;
+        let busy_cores = (effective * (pct / 100.0)).round() as u64;
         parts.push(format!("{busy_cores}/{}C", format_cores(effective)));
     } else {
         parts.push(format!("{}C", format_cores(effective)));

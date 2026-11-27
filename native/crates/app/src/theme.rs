@@ -4,13 +4,34 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use gpui_kit::component::button::ButtonCustomVariant;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
-use gpui_kit::{App, Hsla, SharedString, Window, px};
+use gpui_kit::{App, Global, Hsla, SharedString, Window, px};
 use rainy_protocol::UiPreferences;
 use serde_json::Value;
+
+#[derive(Clone, PartialEq)]
+struct AppliedTheme {
+    mode: ThemeMode,
+    color_scheme: String,
+    accent: String,
+    ui_font: String,
+    code_font: String,
+    ui_font_size: f32,
+    code_font_size: f32,
+}
+
+impl Global for AppliedTheme {}
+
+type ThemePairCache = Mutex<HashMap<(String, String), (ThemeConfig, ThemeConfig)>>;
+
+/// Cache of resolved `(light, dark)` themes keyed by `(scheme, accent)` so repeated lookups do not re-parse JSON.
+fn theme_cache() -> &'static ThemePairCache {
+    static CACHE: OnceLock<ThemePairCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 const THEMES: &str = include_str!("../assets/rainy-theme.json");
 const SCHEMES: &str = include_str!("../assets/schemes.json");
@@ -107,17 +128,24 @@ fn colors(dark: bool, gray: &Ramp, accent: &Ramp) -> Vec<(&'static str, String)>
 /// The light and dark theme for a scheme and accent preference.
 pub fn themes_for(scheme: &str, accent: &str) -> (Rc<ThemeConfig>, Rc<ThemeConfig>) {
     let palettes = palettes();
-    let gray = palettes.schemes.get(scheme).or_else(|| palettes.schemes.get("graphite")).expect("graphite");
-    let accent = if accent == "auto" { scheme_accent(scheme) } else { accent };
-    let accent = palettes.accents.get(accent).or_else(|| palettes.accents.get("blue")).expect("blue");
-    let build = |base: &Value, dark: bool| {
-        let mut theme = base.clone();
-        for (key, value) in colors(dark, gray, accent) {
-            theme["colors"][key] = Value::String(value);
-        }
-        Rc::new(serde_json::from_value::<ThemeConfig>(theme).expect("valid theme"))
-    };
-    (build(&palettes.light, false), build(&palettes.dark, true))
+    let scheme_key = if palettes.schemes.contains_key(scheme) { scheme } else { "graphite" };
+    let resolved_accent = if accent == "auto" { scheme_accent(scheme) } else { accent };
+    let accent_key = if palettes.accents.contains_key(resolved_accent) { resolved_accent } else { "blue" };
+    let key = (scheme_key.to_owned(), accent_key.to_owned());
+    let mut cache = theme_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (light, dark) = cache.entry(key).or_insert_with(|| {
+        let gray = &palettes.schemes[scheme_key];
+        let accent = &palettes.accents[accent_key];
+        let build = |base: &Value, dark: bool| {
+            let mut theme = base.clone();
+            for (key, value) in colors(dark, gray, accent) {
+                theme["colors"][key] = Value::String(value);
+            }
+            serde_json::from_value::<ThemeConfig>(theme).expect("valid theme")
+        };
+        (build(&palettes.light, false), build(&palettes.dark, true))
+    });
+    (Rc::new(light.clone()), Rc::new(dark.clone()))
 }
 
 /// Text in the warning color. The theme's amber is a fill color: as text on a light surface it is 2:1, so light mode
@@ -149,26 +177,48 @@ fn family(preference: &str, default: &str) -> SharedString {
 }
 
 /// Apply the theme, color scheme, accent, font and font size preferences.
+/// Skips rebuilding themes when none of the theme-affecting preferences changed (for example, toggling notifications).
 pub fn apply(prefs: &UiPreferences, window: Option<&mut Window>, cx: &mut App) {
     let mode = match prefs.theme.as_str() {
         "light" => ThemeMode::Light,
         "dark" => ThemeMode::Dark,
         _ => window.as_ref().map(|window| window.appearance()).unwrap_or_else(|| cx.window_appearance()).into(),
     };
-    let (light, dark) = themes_for(&prefs.color_scheme, &prefs.accent);
-    Theme::update(cx, |theme| {
-        theme.light_theme = light;
-        theme.dark_theme = dark;
-    });
-    Theme::change(mode, window, cx);
+    let next = AppliedTheme {
+        mode,
+        color_scheme: prefs.color_scheme.clone(),
+        accent: prefs.accent.clone(),
+        ui_font: prefs.ui_font.clone(),
+        code_font: prefs.code_font.clone(),
+        ui_font_size: prefs.ui_font_size.clamp(11.0, 20.0),
+        code_font_size: prefs.code_font_size.clamp(10.0, 24.0),
+    };
+    if cx.try_global::<AppliedTheme>().is_some_and(|applied| *applied == next) {
+        return;
+    }
+    let palette_changed = cx
+        .try_global::<AppliedTheme>()
+        .is_none_or(|applied| applied.color_scheme != next.color_scheme || applied.accent != next.accent);
+    if palette_changed {
+        let (light, dark) = themes_for(&next.color_scheme, &next.accent);
+        Theme::update(cx, |theme| {
+            theme.light_theme = light;
+            theme.dark_theme = dark;
+        });
+    }
+    let mode_changed = cx.try_global::<AppliedTheme>().is_none_or(|applied| applied.mode != next.mode);
+    if palette_changed || mode_changed {
+        Theme::change(mode, window, cx);
+    }
     // A downloaded font is loaded before the theme names it.
     crate::fonts::load_chosen(prefs, cx);
     Theme::update(cx, |theme| {
-        theme.font_family = family(&prefs.ui_font, UI_FONT);
-        theme.mono_font_family = family(&prefs.code_font, CODE_FONT);
-        theme.font_size = px(prefs.ui_font_size.clamp(11.0, 20.0));
-        theme.mono_font_size = px(prefs.code_font_size.clamp(10.0, 24.0));
+        theme.font_family = family(&next.ui_font, UI_FONT);
+        theme.mono_font_family = family(&next.code_font, CODE_FONT);
+        theme.font_size = px(next.ui_font_size);
+        theme.mono_font_size = px(next.code_font_size);
     });
+    cx.set_global(next);
 }
 
 #[cfg(test)]

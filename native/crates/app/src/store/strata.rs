@@ -17,27 +17,46 @@ pub struct Strata {
     pub status: Option<Status>,
     /// Connecting the loaded server as the default model.
     pub connecting: bool,
+    initializing: bool,
 }
 
 impl Store {
-    /// The installed resources were accepted: create the manager and look at the port and the disk.
+    /// The installed resources were accepted: create the manager and inspect the port/disk off the UI thread so cold
+    /// startup never scans drives on the main thread.
     pub(super) fn strata_ready(&mut self, cx: &mut Context<Self>) {
-        if self.strata.manager.is_some() {
+        if self.strata.manager.is_some() || self.strata.initializing {
             return;
         }
+        self.strata.initializing = true;
         // One pending notice is enough: the status is read when it is handled, so a burst of progress is one repaint.
         let (changed_tx, changed) = async_channel::bounded::<()>(1);
-        let manager = Manager::new(&self.paths.user_data, move || {
-            let _ = changed_tx.try_send(());
-        });
-        manager.watch();
-        self.strata.status = Some(manager.status());
-        self.strata.manager = Some(manager.clone());
-        let reader = manager.clone();
+        let user_data = self.paths.user_data.clone();
         cx.spawn(async move |this: WeakEntity<Store>, cx: &mut AsyncApp| {
+            let (manager, initial) = cx
+                .background_spawn(async move {
+                    let manager = Manager::new(&user_data, move || {
+                        let _ = changed_tx.try_send(());
+                    });
+                    manager.watch();
+                    manager.refresh();
+                    let status = manager.status();
+                    (manager, status)
+                })
+                .await;
+            let installed = this.update(cx, |store, cx| {
+                store.strata.initializing = false;
+                store.strata.status = Some(initial);
+                store.strata.manager = Some(manager.clone());
+                cx.notify();
+            });
+            if installed.is_err() {
+                return;
+            }
+            let reader = manager;
             while changed.recv().await.is_ok() {
                 cx.background_executor().timer(Duration::from_millis(100)).await;
-                let status = reader.status();
+                let reader_bg = reader.clone();
+                let status = cx.background_spawn(async move { reader_bg.status() }).await;
                 if this
                     .update(cx, |store, cx| {
                         store.strata.status = Some(status);
@@ -50,7 +69,6 @@ impl Store {
             }
         })
         .detach();
-        cx.background_spawn(async move { manager.refresh() }).detach();
     }
 
     /// Look at the port and the disk again, and read the catalog when it is not known yet.

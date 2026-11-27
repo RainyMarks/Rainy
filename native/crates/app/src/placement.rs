@@ -335,8 +335,12 @@ fn parse_layout(text: &str) -> Layout {
     }
 }
 
-/// Write the layout through a temporary file in the same folder, so a crash leaves the old record or the new one.
+/// Write the layout through a temporary file in the same folder, retrying brief Windows rename locks so a crash or
+/// concurrent antivirus scan leaves either the old record or the new one intact.
 pub fn write_layout(user_data: &Path, layout: &Layout) -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+
     let text = serde_json::json!({
         "version": 1,
         "mode": layout.mode.id(),
@@ -348,10 +352,23 @@ pub fn write_layout(user_data: &Path, layout: &Layout) -> anyhow::Result<()> {
     .to_string()
         + "\n";
     let path = user_data.join(LAYOUT_FILE);
-    let temporary = user_data.join(format!(".layout-{}.tmp", std::process::id()));
-    let written = std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, &path));
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let temporary = user_data.join(format!(".layout-{}-{seq}.tmp", std::process::id()));
+    std::fs::write(&temporary, text)?;
+    let mut last_error = None;
+    for attempt in 0..5 {
+        match std::fs::rename(&temporary, &path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 4 {
+                    std::thread::sleep(Duration::from_millis(20 * (attempt + 1)));
+                }
+            }
+        }
+    }
     let _ = std::fs::remove_file(&temporary);
-    Ok(written?)
+    Err(last_error.expect("at least one attempt").into())
 }
 
 /// A move of the window's client area to logical bounds at the window's scale, decided inside `window.update`.

@@ -10,6 +10,8 @@ use gpui_kit::*;
 use crate::store::execution::{Execution, ExecutionEvent};
 use crate::store::ide::{Ide, IdeEvent};
 
+type EditorMarkTarget = (String, Entity<EditorState>, Vec<u32>, Option<u32>);
+
 pub struct DebugMarks {
     /// The marks of each open file, with the editor they are drawn in.
     marks: HashMap<String, (WeakEntity<EditorState>, RangeDecorationCollection)>,
@@ -40,7 +42,7 @@ impl DebugMarks {
             let frame = pause.frames.iter().find(|frame| Some(frame.id) == pause.frame_id).or(pause.frames.first())?;
             Some((ide.key_from_absolute(frame.path.as_deref()?)?, frame.line.max(1) as u32))
         });
-        let wanted: Vec<(String, Entity<EditorState>, Vec<u32>, Option<u32>)> = ide
+        let wanted: Vec<EditorMarkTarget> = ide
             .files
             .iter()
             .filter_map(|(key, file)| {

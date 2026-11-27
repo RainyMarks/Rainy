@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::Value;
@@ -13,7 +14,26 @@ use windows::Win32::Foundation::HWND;
 
 use super::webview::{Options, WebView};
 
+type PdfDone = Box<dyn FnOnce(Result<Vec<u8>, PdfFailure>) + Send>;
+
 static EXPORT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Maximum time allowed for hidden WebView2 PDF export before aborting and cleaning up.
+pub const EXPORT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Handle returned by [`print_to_pdf`] so the caller can abort a stalled export on the UI thread.
+pub struct ExportHandle {
+    cancel: Option<Rc<dyn Fn()>>,
+}
+
+impl ExportHandle {
+    /// Abort an in-flight export if it has not yet completed; must be called on the UI thread.
+    pub fn abort(&self) {
+        if let Some(cancel) = &self.cancel {
+            cancel();
+        }
+    }
+}
 
 /// Build a canonical percent-encoded `file:///` URL for a local Windows file path.
 fn file_url(path: &Path) -> String {
@@ -78,32 +98,46 @@ fn pdf_bytes(answer: &str) -> Result<Vec<u8>, PdfFailure> {
     base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| PdfFailure::Empty)
 }
 
-/// Print `html` to a PDF; `done` runs on the UI thread with the file's bytes.
-pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnOnce(Result<Vec<u8>, PdfFailure>) + 'static) {
+/// Print `html` to a PDF; `done` runs once the PDF is built (with ToUnicode radical post-processing off the UI thread).
+pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnOnce(Result<Vec<u8>, PdfFailure>) + Send + 'static) -> ExportHandle {
     let seq = EXPORT_SEQ.fetch_add(1, Ordering::Relaxed);
     let folder = std::env::temp_dir().join(format!("rainy-export-{}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_millis(), seq));
     let page = folder.join("document.html");
     if let Err(error) = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&page, html)) {
         done(Err(PdfFailure::Page(error.to_string())));
-        return;
+        return ExportHandle { cancel: None };
     }
     let url = file_url(&page);
     let allowed = url.clone();
     let expected_source = url.clone();
-    let done: Rc<RefCell<Option<Box<dyn FnOnce(Result<Vec<u8>, PdfFailure>)>>>> = Rc::new(RefCell::new(Some(Box::new(done))));
+    let done: Rc<RefCell<Option<PdfDone>>> = Rc::new(RefCell::new(Some(Box::new(done))));
     // The control lives until the PDF is made; then it and the page go.
     let holder: Rc<RefCell<Option<WebView>>> = Rc::default();
     let finish = {
         let (done, holder, folder) = (done.clone(), holder.clone(), folder.clone());
         Rc::new(move |result: Result<Vec<u8>, PdfFailure>| {
-            log::info!("Markdown export printed: {}", result.as_ref().map_or_else(|failure| format!("{failure:?}"), |pdf| format!("{} bytes", pdf.len())));
             let _ = std::fs::remove_dir_all(&folder);
-            if let Some(done) = done.borrow_mut().take() {
-                done(result);
-            }
             // Closed once WebView2 is out of the callback that got here.
             if let Some(view) = holder.borrow_mut().take() {
                 CLOSING.with(|closing| closing.borrow_mut().push(view));
+            }
+            let Some(done) = done.borrow_mut().take() else { return };
+            match result {
+                Ok(raw_pdf) => {
+                    // Run zlib decompression + ToUnicode CMap rewrite off the UI thread so large PDFs never freeze GPUI.
+                    let spawned = std::thread::Builder::new().name("pdf-text".into()).spawn(move || {
+                        let searchable = super::pdf_text::searchable_pdf(raw_pdf);
+                        log::info!("Markdown export printed: {} bytes", searchable.len());
+                        done(Ok(searchable));
+                    });
+                    if let Err(error) = spawned {
+                        log::warn!("Failed to spawn pdf-text worker: {error}");
+                    }
+                }
+                Err(failure) => {
+                    log::info!("Markdown export printed: {failure:?}");
+                    done(Err(failure));
+                }
             }
         })
     };
@@ -116,10 +150,14 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
         script: None,
         on_message: None,
         allow: Some(Box::new(move |address| is_allowed_export_url(address, &allowed))),
+        allow_resource: None,
         on_new_window: Some(Box::new(|_| {})),
         on_shortcut: None,
     };
     let failed = finish.clone();
+    let abort_finish = finish.clone();
+    let cancelled = Rc::new(RefCell::new(false));
+    let cancelled_create = cancelled.clone();
     WebView::create(parent, options, move |created| {
         let view = match created {
             Ok(view) => view,
@@ -128,6 +166,10 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
                 return;
             }
         };
+        if *cancelled_create.borrow() {
+            CLOSING.with(|closing| closing.borrow_mut().push(view));
+            return;
+        }
         view.set_visible(false);
         view.set_bounds(0, 0, 1000, 1400);
         *holder.borrow_mut() = Some(view.clone());
@@ -151,11 +193,17 @@ pub fn print_to_pdf(parent: HWND, profile: PathBuf, html: String, done: impl FnO
             let params = r#"{"printBackground":true,"preferCSSPageSize":true,"paperWidth":8.27,"paperHeight":11.69,"generateDocumentOutline":true,"generateTaggedPDF":true}"#;
             printer.devtools("Page.printToPDF", params, move |result| {
                 let pdf = result.map_err(PdfFailure::Print).and_then(|answer| pdf_bytes(&answer));
-                finish(pdf.map(super::pdf_text::searchable_pdf));
+                finish(pdf);
             });
         });
         view.navigate(&url);
     });
+    ExportHandle {
+        cancel: Some(Rc::new(move || {
+            *cancelled.borrow_mut() = true;
+            abort_finish(Err(PdfFailure::Print("export timed out".to_owned())));
+        })),
+    }
 }
 
 #[cfg(test)]

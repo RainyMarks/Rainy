@@ -34,10 +34,12 @@ const MAX_BYTES: usize = 200 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Which Office application opens a file, by lower-case extension.
+/// Macro-enabled formats (`docm`, `dotm`, `pptm`, `ppsm`) are refused so previewing an untrusted repository never
+/// invokes Office COM on a macro container.
 pub fn kind(extension: &str) -> Option<&'static str> {
     Some(match extension {
-        "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "ppt" | "pps" | "pot" | "odp" | "dps" => "slides",
-        "doc" | "dot" | "wps" | "odt" | "docx" | "docm" | "dotx" | "dotm" | "rtf" => "word",
+        "pptx" | "ppsx" | "potx" | "ppt" | "pps" | "pot" | "odp" | "dps" => "slides",
+        "doc" | "dot" | "wps" | "odt" | "docx" | "dotx" | "rtf" => "word",
         _ => return None,
     })
 }
@@ -103,7 +105,15 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $in = $env:RAINY_OFFICE_IN
 $out = $env:RAINY_OFFICE_OUT
+$statusFile = $env:RAINY_OFFICE_STATUS
 $slides = $env:RAINY_OFFICE_KIND -eq 'slides'
+function Write-Result([string]$line) {
+  if ($statusFile) {
+    [IO.File]::WriteAllText($statusFile, $line, [Text.UTF8Encoding]::new($false))
+  } else {
+    Write-Output $line
+  }
+}
 $candidates = if ($slides) { @(@('PowerPoint.Application', 'POWERPNT', 'Microsoft PowerPoint'), @('KWPP.Application', 'wpp', 'WPS Office')) }
   else { @(@('Word.Application', 'WINWORD', 'Microsoft Word'), @('KWps.Application', 'wps', 'WPS Office')) }
 $failures = @()
@@ -119,16 +129,19 @@ foreach ($candidate in $candidates) {
   $file = $null
   try {
     $app = New-Object -ComObject $progId
+    # msoAutomationSecurityForceDisable = 3: block VBA macros before opening any document.
+    try { $app.AutomationSecurity = 3 } catch {}
     if ($slides) {
       $file = $app.Presentations.Open($in, -1, 0, 0)
       $file.SaveAs($out, 32)
     } else {
       try { $app.Visible = $false } catch {}
       try { $app.DisplayAlerts = 0 } catch {}
-      $file = $app.Documents.Open($in, $false, $true, $false, 'rainy-no-password')
+      try { $app.Options.UpdateLinksAtOpen = $false } catch {}
+      $file = $app.Documents.Open($in, $false, $true, $false, 'rainy-no-password', '', $false, '', '', 0, 0, $false, $false, 0, $true)
       try { $file.ExportAsFixedFormat($out, 17) } catch { $file.SaveAs([ref]$out, [ref]17) }
     }
-    if (Test-Path -LiteralPath $out) { Write-Output ('OK ' + $candidate[2]); exit 0 }
+    if (Test-Path -LiteralPath $out) { Write-Result ('OK ' + $candidate[2]); exit 0 }
     $unwritten += $candidate[2]
   } catch {
     if ($_.Exception.HResult -eq -2146822880) { $encrypted = $true }
@@ -140,10 +153,10 @@ foreach ($candidate in $candidates) {
   }
   if ($encrypted) { break }
 }
-if (-not $found) { Write-Output 'MISSING'; exit 3 }
-if ($encrypted) { Write-Output 'PASSWORD'; exit 5 }
-if ($failures.Count -eq 0) { Write-Output ('NOPDF ' + ($unwritten -join ', ')); exit 4 }
-Write-Output ('FAILED ' + ($failures -join ' | '))
+if (-not $found) { Write-Result 'MISSING'; exit 3 }
+if ($encrypted) { Write-Result 'PASSWORD'; exit 5 }
+if ($failures.Count -eq 0) { Write-Result ('NOPDF ' + ($unwritten -join ', ')); exit 4 }
+Write-Result ('FAILED ' + ($failures -join ' | '))
 exit 4
 "#;
 
@@ -152,9 +165,11 @@ fn powershell() -> PathBuf {
     root.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe")
 }
 
-/// Run the script; its last output line, `TIMEOUT` when Office did not finish in time, `FAILED` and the reason when
-/// PowerShell could not start or wrote nothing.
+/// Run the script; its status line is written to a file inside the staging directory (no inherited stdout pipe that
+/// a COM-spawned Office process could hold open across a timeout kill).
 fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String {
+    let status_file = output.with_file_name("status.txt");
+    let _ = std::fs::remove_file(&status_file);
     let script: Vec<u8> = SCRIPT.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(script);
     let mut command = Command::new(powershell());
@@ -162,9 +177,10 @@ fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String 
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
         .env("RAINY_OFFICE_IN", input)
         .env("RAINY_OFFICE_OUT", output)
+        .env("RAINY_OFFICE_STATUS", &status_file)
         .env("RAINY_OFFICE_KIND", kind)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
@@ -175,12 +191,6 @@ fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String 
         Ok(child) => child,
         Err(error) => return format!("FAILED {error}"),
     };
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
     let deadline = Instant::now() + TIMEOUT;
     let finished = loop {
         match child.try_wait() {
@@ -193,9 +203,11 @@ fn run(input: &std::path::Path, output: &std::path::Path, kind: &str) -> String 
     if !finished {
         let _ = child.kill();
         let _ = child.wait();
+        let _ = std::fs::remove_file(&status_file);
         return "TIMEOUT".to_owned();
     }
-    let text = reader.join().unwrap_or_default();
+    let text = std::fs::read_to_string(&status_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&status_file);
     text.lines().rev().map(str::trim).find(|line| !line.is_empty()).map_or_else(|| "FAILED".to_owned(), str::to_owned)
 }
 
@@ -319,6 +331,13 @@ mod tests {
         assert_eq!(kind("pptx"), Some("slides"));
         assert_eq!(kind("doc"), Some("word"));
         assert_eq!(kind("xlsx"), None);
+        // Macro-enabled formats must be rejected from automatic COM preview.
+        for macro_ext in ["docm", "dotm", "pptm", "ppsm"] {
+            assert_eq!(kind(macro_ext), None, "{macro_ext} must be refused");
+            assert_eq!(convert(b"PK\x03\x04", macro_ext).unwrap_err().code, "unsupported");
+        }
+        assert!(SCRIPT.contains("$app.AutomationSecurity = 3"));
+        assert!(SCRIPT.contains("UpdateLinksAtOpen = $false"));
         let compound = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0];
         assert!(encrypted_open_xml(&compound, "pptx"));
         assert!(!encrypted_open_xml(&compound, "ppt"));

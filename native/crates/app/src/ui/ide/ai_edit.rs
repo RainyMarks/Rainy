@@ -49,6 +49,9 @@ pub struct AiEdit {
     input: Entity<InputState>,
     /// The selection the edit replaces, as byte offsets when the edit started.
     range: Range<usize>,
+    /// Incremented whenever the editor changes outside `AiEdit`'s own apply/restore so stale async results cannot corrupt edits.
+    doc_version: u64,
+    applying: bool,
     phase: Phase,
     /// The tint over the new text while it is reviewed.
     tint: Option<RangeDecorationCollection>,
@@ -74,6 +77,11 @@ impl AiEdit {
                     }
                 }
             }),
+            cx.subscribe(&editor, |this, _, event: &InputEvent, _| {
+                if matches!(event, InputEvent::Change) && !this.applying {
+                    this.doc_version = this.doc_version.wrapping_add(1);
+                }
+            }),
             cx.subscribe(&store, |this, _, event: &StoreEvent, cx| {
                 if let StoreEvent::Host { name, data } = event
                     && name == "inline.progress"
@@ -93,6 +101,8 @@ impl AiEdit {
             editor,
             input,
             range,
+            doc_version: 0,
+            applying: false,
             phase: Phase::Prompt,
             tint: None,
             next_request: 0,
@@ -110,10 +120,10 @@ impl AiEdit {
         self.restore(window, cx);
         let text = self.editor.read(cx).text().clone();
         let range = self.range.start.min(text.len())..self.range.end.min(text.len());
-        let before = text.slice(0..range.start).to_string();
-        let before: String = before.chars().skip(before.chars().count().saturating_sub(REWRITE_BEFORE)).collect();
+        let (before, _) = crate::store::language::window_around_cursor(&text, range.start, REWRITE_BEFORE, 0);
+        let (_, after) = crate::store::language::window_around_cursor(&text, range.end, 0, REWRITE_AFTER);
         let selection = text.slice(range.clone()).to_string();
-        let after: String = text.slice(range.end..text.len()).to_string().chars().take(REWRITE_AFTER).collect();
+        let expected_version = self.doc_version;
         self.next_request += 1;
         let request = format!("edit-native-{}", self.next_request);
         let call = self.store.read(cx).call(
@@ -130,6 +140,8 @@ impl AiEdit {
                         let replacement = value.get("text").and_then(Value::as_str).unwrap_or_default().to_owned();
                         if replacement == selection {
                             this.phase = Phase::Failed(tr(cx, "ide.ideAiEditUnchanged"));
+                        } else if this.doc_version != expected_version {
+                            this.phase = Phase::Failed(tr(cx, "ide.ideConflict"));
                         } else {
                             this.apply(selection, replacement, window, cx);
                         }
@@ -147,7 +159,16 @@ impl AiEdit {
     /// Put the new text in place of the selection and tint it.
     fn apply(&mut self, original: String, replacement: String, window: &mut Window, cx: &mut Context<Self>) {
         let range = self.range.clone();
+        let current_matches = {
+            let text = self.editor.read(cx).text();
+            range.end <= text.len() && text.slice(range.clone()) == original
+        };
+        if !current_matches {
+            self.phase = Phase::Failed(tr(cx, "ide.ideConflict"));
+            return;
+        }
         let tint = cx.theme().success.opacity(0.18);
+        self.applying = true;
         let collection = self.editor.update(cx, |state, cx| {
             let text = state.text().clone();
             let edit = TextEdit::new(lsp_types::Range::new(text.offset_to_position(range.start), text.offset_to_position(range.end)), replacement.clone());
@@ -155,6 +176,7 @@ impl AiEdit {
             let inserted = range.start..range.start + replacement.len();
             state.create_range_decorations_collection(vec![RangeDecoration::new(inserted).with_style(RangeDecorationStyle::Fill).with_color(tint)], cx)
         });
+        self.applying = false;
         self.tint = Some(collection);
         self.phase = Phase::Review { original };
     }
@@ -172,11 +194,13 @@ impl AiEdit {
             tint.dispose(cx);
         }
         let Some(inserted) = inserted else { return };
+        self.applying = true;
         self.editor.update(cx, |state, cx| {
             let text = state.text().clone();
             let edit = TextEdit::new(lsp_types::Range::new(text.offset_to_position(inserted.start), text.offset_to_position(inserted.end)), original.clone());
             state.apply_lsp_edits(&vec![edit], window, cx);
         });
+        self.applying = false;
         self.range = inserted.start..inserted.start + original.len();
     }
 
@@ -201,7 +225,11 @@ impl AiEdit {
 
     fn stop(&mut self, cx: &mut Context<Self>) {
         if let Phase::Generating { request, .. } = &self.phase {
-            let _ = self.store.read(cx).call("inline.cancel", json!({ "requestId": request }));
+            let cancel = self.store.read(cx).call("inline.cancel", json!({ "requestId": request }));
+            cx.background_spawn(async move {
+                let _ = cancel.await;
+            })
+            .detach();
             self.phase = Phase::Prompt;
         }
         self.task = None;

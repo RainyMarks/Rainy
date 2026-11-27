@@ -76,6 +76,9 @@ pub struct TerminalPanel {
     selected: Option<String>,
     starting: bool,
     pub tab: BottomTab,
+    /// Whether the panel is currently shown in the workbench; used to pause background Experiments polling while hidden.
+    panel_visible: bool,
+    last_problem_count: usize,
     watch: Entity<InputState>,
     console: Entity<InputState>,
     /// The console's last answer, or why it failed.
@@ -105,8 +108,10 @@ impl TerminalPanel {
                 ExecutionEvent::DebugChanged => cx.notify(),
                 ExecutionEvent::Output { .. } => {}
             }),
-            cx.observe(&LanguageServers::global(cx), |this, _, cx| {
-                if this.tab == BottomTab::Problems {
+            cx.observe(&LanguageServers::global(cx), |this, servers, cx| {
+                let count = servers.read(cx).problem_count();
+                if this.tab == BottomTab::Problems || count != this.last_problem_count {
+                    this.last_problem_count = count;
                     cx.notify();
                 }
             }),
@@ -142,6 +147,8 @@ impl TerminalPanel {
             selected: None,
             starting: false,
             tab: BottomTab::Terminal,
+            panel_visible: false,
+            last_problem_count: LanguageServers::global(cx).read(cx).problem_count(),
             watch,
             console,
             evaluated: None,
@@ -225,14 +232,17 @@ impl TerminalPanel {
         .detach();
     }
 
-    /// Stop an operation and drop its tab.
+    /// Stop an operation and drop its tab; preserves the active selection when closing a different tab.
     fn close(&mut self, id: String, cx: &mut Context<Self>) {
         let execution = self.execution.read(cx);
         if execution.running(&id) {
             execution.stop(&id, cx);
         }
+        let closing_selected = self.selected.as_deref() == Some(id.as_str());
         self.closed.insert(id);
-        self.selected = None;
+        if closing_selected {
+            self.selected = None;
+        }
         self.sync(cx);
     }
 
@@ -251,8 +261,19 @@ impl TerminalPanel {
 
     pub fn show(&mut self, tab: BottomTab, cx: &mut Context<Self>) {
         self.tab = tab;
-        self.experiments.update(cx, |exp, cx| exp.set_active(tab == BottomTab::Experiments, cx));
+        let active = self.panel_visible && tab == BottomTab::Experiments;
+        self.experiments.update(cx, |exp, cx| exp.set_active(active, cx));
         cx.notify();
+    }
+
+    /// Track whether the containing bottom/tool panel is currently visible so Experiments polling pauses when hidden.
+    pub fn set_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.panel_visible == visible {
+            return;
+        }
+        self.panel_visible = visible;
+        let active = visible && self.tab == BottomTab::Experiments;
+        self.experiments.update(cx, |exp, cx| exp.set_active(active, cx));
     }
 
     fn label(&self, id: &str, index: usize, cx: &App) -> String {
@@ -341,7 +362,7 @@ impl TerminalPanel {
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme().clone();
-        let problems = LanguageServers::global(cx).read(cx).problems().len();
+        let problems = LanguageServers::global(cx).read(cx).problem_count();
         let tab = |id: &'static str, label: SharedString, which: BottomTab, cx: &mut Context<Self>| {
             let active = self.tab == which;
             div()
@@ -422,7 +443,10 @@ impl TerminalPanel {
                             .child(status_dot(running, &theme))
                             .child(label)
                             .child(Button::new(("terminal-close", index)).ghost().xsmall().icon(IconName::Close).on_click(cx.listener(
-                                move |this, _, _, cx| this.close(close.clone(), cx),
+                                move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close(close.clone(), cx);
+                                },
                             )))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.selected = Some(select.clone());

@@ -205,9 +205,15 @@ impl RunDialog {
 }
 
 impl Render for RunDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let profiles: Vec<Value> = Ide::global(cx).read(cx).execution()["profiles"].as_array().cloned().unwrap_or_default();
+        let max_height = (f32::from(window.viewport_size().height) - 180.).clamp(240., 520.);
+        let profiles: Vec<Value> = Ide::global(cx)
+            .read(cx)
+            .execution_ref()
+            .and_then(|exec| exec["profiles"].as_array())
+            .cloned()
+            .unwrap_or_default();
         let current = self.saved_name.clone();
         let this = cx.entity();
         let languages = h_flex().gap_1().flex_wrap().children(RUN_LANGUAGES.iter().map(|(id, name)| {
@@ -225,7 +231,7 @@ impl Render for RunDialog {
         v_flex()
             .id("run-dialog")
             .gap_3()
-            .max_h(px(520.))
+            .max_h(px(max_height))
             .overflow_y_scroll()
             .when(!profiles.is_empty(), |this_el| {
                 let this = this.clone();

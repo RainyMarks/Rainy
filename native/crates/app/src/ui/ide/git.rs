@@ -2,6 +2,7 @@
 //! and a commit message the chat model can write.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -30,9 +31,17 @@ enum Section {
     Unstaged,
 }
 
+struct CachedRepository {
+    repository: GitRepository,
+    staged: Rc<Vec<GitFileChange>>,
+    unstaged: Rc<Vec<GitFileChange>>,
+}
+
 pub struct GitView {
     ide: Entity<Ide>,
     status: Option<GitStatus>,
+    /// Pre-sorted per-repository lists rebuilt only when `status` changes, avoiding per-frame full clones and re-sorts.
+    cached_repos: Rc<Vec<CachedRepository>>,
     error: Option<SharedString>,
     loading: bool,
     busy: bool,
@@ -76,7 +85,7 @@ impl GitView {
         let subscriptions = vec![
             cx.subscribe_in(&ide, window, |this, _, event: &IdeEvent, window, cx| match event {
                 IdeEvent::WorkspaceChanged => {
-                    this.status = None;
+                    this.set_status(None);
                     this.error = None;
                     this.messages.clear();
                     if this.polling || this.visible {
@@ -94,7 +103,7 @@ impl GitView {
                     }
                 }
                 StoreEvent::HostReconnected(_) => {
-                    this.status = None;
+                    this.set_status(None);
                     this.error = None;
                     this.messages.clear();
                     if this.polling || this.visible {
@@ -111,9 +120,10 @@ impl GitView {
                 _ => {}
             }),
         ];
-        let view = Self {
+        Self {
             ide,
             status: None,
+            cached_repos: Rc::new(Vec::new()),
             error: None,
             loading: false,
             busy: false,
@@ -123,8 +133,28 @@ impl GitView {
             polling: false,
             poll: None,
             _subscriptions: subscriptions,
-        };
-        view
+        }
+    }
+
+    fn set_status(&mut self, status: Option<GitStatus>) {
+        let cached = status
+            .as_ref()
+            .map(|status| {
+                status
+                    .repositories
+                    .iter()
+                    .map(|repository| {
+                        let mut staged: Vec<GitFileChange> = repository.files.iter().filter(|file| file.staged.is_some()).cloned().collect();
+                        let mut unstaged: Vec<GitFileChange> = repository.files.iter().filter(|file| file.unstaged.is_some()).cloned().collect();
+                        staged.sort_by(|a, b| a.path.cmp(&b.path));
+                        unstaged.sort_by(|a, b| a.path.cmp(&b.path));
+                        CachedRepository { repository: repository.clone(), staged: Rc::new(staged), unstaged: Rc::new(unstaged) }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.status = status;
+        self.cached_repos = Rc::new(cached);
     }
 
     /// Changed files across the project's repositories, for the badge on the pane's tab.
@@ -192,7 +222,7 @@ impl GitView {
                         match result.map(serde_json::from_value::<GitStatus>) {
                             Ok(Ok(status)) => {
                                 if this.status.as_ref() != Some(&status) || this.error.is_some() {
-                                    this.status = Some(status);
+                                    this.set_status(Some(status));
                                     this.error = None;
                                     cx.notify();
                                 }
@@ -369,8 +399,11 @@ impl GitView {
             "deleted" | "conflicted" => theme.danger,
             _ => crate::theme::warning_text(cx),
         };
-        let key = crate::store::ide::root_key(Some(root_id), &change.path);
+        let key = self.ide.read(cx).key_of_stored(&change.path, Some(root_id));
         let id = SharedString::from(format!("git-{}-{}-{index}", if section == Section::Staged { "s" } else { "u" }, root_id));
+        let open_id = SharedString::from(format!("{id}-open"));
+        let discard_id = SharedString::from(format!("{id}-discard"));
+        let stage_id = SharedString::from(format!("{id}-stage"));
         let (open_key, show_key) = (key.clone(), key);
         let (ide_open, ide_show) = (self.ide.clone(), self.ide.clone());
         let deleted = kind == "deleted";
@@ -408,25 +441,30 @@ impl GitView {
                     .invisible()
                     .group_hover(id, |style| style.visible())
                     .when(!deleted, |this| {
-                        this.child(Button::new("open").ghost().xsmall().icon(IconName::ExternalLink).tooltip(tr(cx, "git.gitOpenFile")).on_click(move |_, window, cx| {
+                        this.child(Button::new(open_id).ghost().xsmall().icon(IconName::ExternalLink).tooltip(tr(cx, "git.gitOpenFile")).on_click(move |_, window, cx| {
+                            cx.stop_propagation();
                             let key = open_key.clone();
                             ide_open.update(cx, |ide, cx| ide.show_file(key, window, cx));
                         }))
                     })
                     .when(section == Section::Unstaged, |this| {
-                        this.child(Button::new("discard").ghost().xsmall().icon(IconName::Undo2).tooltip(tr(cx, "git.gitDiscard")).disabled(self.busy).on_click(
-                            cx.listener(move |this, _, window, cx| this.confirm_discard(discard_root.clone(), vec![discard_change.clone()], window, cx)),
+                        this.child(Button::new(discard_id).ghost().xsmall().icon(IconName::Undo2).tooltip(tr(cx, "git.gitDiscard")).disabled(self.busy).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.confirm_discard(discard_root.clone(), vec![discard_change.clone()], window, cx);
+                            }),
                         ))
                     })
                     .child(
-                        Button::new("stage")
+                        Button::new(stage_id)
                             .ghost()
                             .xsmall()
                             .icon(if section == Section::Unstaged { IconName::Plus } else { IconName::Minus })
                             .tooltip(tr(cx, if section == Section::Unstaged { "git.gitStage" } else { "git.gitUnstage" }))
                             .disabled(self.busy)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.stage(stage_root.clone(), vec![stage_change.clone()], section == Section::Unstaged, window, cx)
+                                cx.stop_propagation();
+                                this.stage(stage_root.clone(), vec![stage_change.clone()], section == Section::Unstaged, window, cx);
                             })),
                     ),
             )
@@ -442,13 +480,12 @@ impl GitView {
             .into_any_element()
     }
 
-    fn render_repository(&mut self, repository: &GitRepository, titled: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_repository(&mut self, cached: &CachedRepository, titled: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
+        let repository = &cached.repository;
         let root_id = repository.root_id.clone();
-        let mut staged: Vec<GitFileChange> = repository.files.iter().filter(|file| file.staged.is_some()).cloned().collect();
-        let mut unstaged: Vec<GitFileChange> = repository.files.iter().filter(|file| file.unstaged.is_some()).cloned().collect();
-        staged.sort_by(|a, b| a.path.cmp(&b.path));
-        unstaged.sort_by(|a, b| a.path.cmp(&b.path));
+        let staged = &cached.staged;
+        let unstaged = &cached.unstaged;
         let stage_all = staged.is_empty() && !unstaged.is_empty();
         let branch: SharedString = match (&repository.branch, &repository.head) {
             (Some(branch), _) => branch.clone().into(),
@@ -461,6 +498,9 @@ impl GitView {
         let commit_repository = repository.clone();
         let (generate_root, unstage_root, discard_root, stage_root) = (root_id.clone(), root_id.clone(), root_id.clone(), root_id.clone());
         let (unstage_all, discard_all, stage_all_changes) = (staged.clone(), unstaged.clone(), unstaged.clone());
+        let unstage_all_id = SharedString::from(format!("git-unstage-all-{root_id}"));
+        let discard_all_id = SharedString::from(format!("git-discard-all-{root_id}"));
+        let stage_all_id = SharedString::from(format!("git-stage-all-{root_id}"));
         let staged_rows: Vec<AnyElement> = staged.iter().enumerate().map(|(index, change)| self.render_row(&root_id, change, Section::Staged, index, cx)).collect();
         let unstaged_rows: Vec<AnyElement> =
             unstaged.iter().enumerate().map(|(index, change)| self.render_row(&root_id, change, Section::Unstaged, index, cx)).collect();
@@ -525,13 +565,13 @@ impl GitView {
                     tr(cx, "git.gitStaged"),
                     staged.len(),
                     vec![
-                        Button::new("unstage-all")
+                        Button::new(unstage_all_id)
                             .ghost()
                             .xsmall()
                             .icon(IconName::Minus)
                             .tooltip(tr(cx, "git.gitUnstageAll"))
                             .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, window, cx| this.stage(unstage_root.clone(), unstage_all.clone(), false, window, cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.stage(unstage_root.clone(), (*unstage_all).clone(), false, window, cx)))
                             .into_any_element(),
                     ],
                 ))
@@ -542,21 +582,21 @@ impl GitView {
                     tr(cx, "git.gitChanges"),
                     unstaged.len(),
                     vec![
-                        Button::new("discard-all")
+                        Button::new(discard_all_id)
                             .ghost()
                             .xsmall()
                             .icon(IconName::Undo2)
                             .tooltip(tr(cx, "git.gitDiscardAll"))
                             .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, window, cx| this.confirm_discard(discard_root.clone(), discard_all.clone(), window, cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.confirm_discard(discard_root.clone(), (*discard_all).clone(), window, cx)))
                             .into_any_element(),
-                        Button::new("stage-all")
+                        Button::new(stage_all_id)
                             .ghost()
                             .xsmall()
                             .icon(IconName::Plus)
                             .tooltip(tr(cx, "git.gitStageAll"))
                             .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, window, cx| this.stage(stage_root.clone(), stage_all_changes.clone(), true, window, cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.stage(stage_root.clone(), (*stage_all_changes).clone(), true, window, cx)))
                             .into_any_element(),
                     ],
                 ))
@@ -571,19 +611,17 @@ impl Render for GitView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let has_workspace = self.ide.read(cx).workspace.is_some();
-        let status = self.status.clone();
-        let titled = status.as_ref().is_some_and(|status| status.repositories.len() + status.plain.len() > 1);
-        let repositories: Vec<AnyElement> = status
-            .iter()
-            .flat_map(|status| status.repositories.iter())
-            .map(|repository| self.render_repository(repository, titled, window, cx))
-            .collect();
-        let plain: Vec<AnyElement> = status
-            .iter()
-            .flat_map(|status| status.plain.iter())
+        let cached_repos = self.cached_repos.clone();
+        let (titled, unavailable, plain_roots) = match &self.status {
+            Some(status) => (status.repositories.len() + status.plain.len() > 1, !status.available, status.plain.clone()),
+            None => (false, false, Vec::new()),
+        };
+        let repositories: Vec<AnyElement> = cached_repos.iter().map(|cached| self.render_repository(cached, titled, window, cx)).collect();
+        let plain: Vec<AnyElement> = plain_roots
+            .into_iter()
             .enumerate()
             .map(|(index, root)| {
-                let root_id = root.root_id.clone();
+                let root_id = root.root_id;
                 v_flex()
                     .p_2()
                     .gap_2()
@@ -600,7 +638,6 @@ impl Render for GitView {
                     .into_any_element()
             })
             .collect();
-        let unavailable = status.as_ref().is_some_and(|status| !status.available);
         v_flex()
             .id("git")
             .size_full()

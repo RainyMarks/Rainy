@@ -13,10 +13,12 @@ pub fn preview_kind(path: &str) -> Option<&'static str> {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let extension = name.rfind('.').filter(|dot| *dot > 0).map(|dot| name[dot + 1..].to_ascii_lowercase()).unwrap_or_default();
     let ext = extension.as_str();
-    const WORD: [&str; 4] = ["docx", "docm", "dotx", "dotm"];
+    const WORD: [&str; 2] = ["docx", "dotx"];
     const SHEET: [&str; 8] = ["xlsx", "xlsm", "xltx", "xltm", "xlsb", "xls", "xlt", "ods"];
-    const OFFICE: [&str; 14] = ["pptx", "pptm", "ppsx", "ppsm", "potx", "ppt", "pps", "pot", "odp", "dps", "doc", "dot", "wps", "odt"];
-    if name.starts_with("~$") && (WORD.contains(&ext) || SHEET.contains(&ext) || OFFICE.contains(&ext) || ext == "rtf") {
+    // Macro-enabled Word/PowerPoint containers (`docm`, `dotm`, `pptm`, `ppsm`) are excluded from auto-preview.
+    const OFFICE: [&str; 12] = ["pptx", "ppsx", "potx", "ppt", "pps", "pot", "odp", "dps", "doc", "dot", "wps", "odt"];
+    const MACRO_OFFICE: [&str; 4] = ["docm", "dotm", "pptm", "ppsm"];
+    if name.starts_with("~$") && (WORD.contains(&ext) || SHEET.contains(&ext) || OFFICE.contains(&ext) || MACRO_OFFICE.contains(&ext) || ext == "rtf") {
         return Some("office-lock");
     }
     Some(match ext {
@@ -297,6 +299,7 @@ pub fn create_pane(url: String, kind: &'static str, window: &mut Window, cx: &mu
             on_message: None,
             // Restrict navigation strictly to the active Host's exact origin and `about:blank` (no `data:`, `blob:`, or other localhost ports).
             allow: Some(Box::new(move |address| is_allowed_viewer_url(address, allowed_origin.as_deref()))),
+            allow_resource: None,
             on_new_window: None,
             on_shortcut: Some(Box::new(move |shortcut| shortcut_action(shortcut, kind).is_some())),
         };

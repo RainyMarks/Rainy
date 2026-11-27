@@ -24,6 +24,8 @@ pub struct FolderBrowser {
     error: Option<SharedString>,
     show_hidden: bool,
     path: Entity<InputState>,
+    /// Bumped on every directory request so out-of-order SSH responses are ignored.
+    generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -51,6 +53,7 @@ impl FolderBrowser {
             error: None,
             show_hidden: false,
             path,
+            generation: 0,
             _subscriptions: subscriptions,
         };
         browser.load(initial_path, window, cx);
@@ -59,6 +62,8 @@ impl FolderBrowser {
 
     /// Show one directory; none starts at the home directory.
     fn load(&mut self, path: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
         let mut params = json!({ "op": "directories.list", "showHidden": self.show_hidden });
         if let Some(path) = path {
             params["path"] = json!(path);
@@ -71,6 +76,9 @@ impl FolderBrowser {
                 serde_json::from_value::<DirectoryListing>(value).map_err(|error| RpcError { code: "invalid".into(), message: error.to_string(), data: None })
             });
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
                 this.loading = false;
                 match result {
                     Ok(listing) => {
@@ -93,8 +101,9 @@ impl FolderBrowser {
 }
 
 impl Render for FolderBrowser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let body_height = (f32::from(window.viewport_size().height) - 210.).clamp(240., 440.);
         let parent = self.listing.as_ref().and_then(|listing| listing.parent.clone());
         let roots = self.listing.as_ref().map(|listing| listing.roots.clone()).unwrap_or_default();
         let entries = self.listing.as_ref().map(|listing| listing.entries.clone()).unwrap_or_default();
@@ -191,7 +200,7 @@ impl Render for FolderBrowser {
             }));
         v_flex()
             .gap_3()
-            .h(px(440.))
+            .h(px(body_height))
             .children(bookmarks_bar)
             .child(
                 h_flex()
@@ -223,11 +232,12 @@ impl Render for FolderBrowser {
 /// Browse the Host's folders and open the chosen one as a project, or add it to the shown one.
 pub fn open(attach: bool, window: &mut Window, cx: &mut App) {
     let browser = cx.new(|cx| FolderBrowser::new(window, cx));
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let chosen = browser.clone();
+        let width = (f32::from(window.viewport_size().width) - 80.).clamp(520., 760.);
         dialog
             .title(tr(cx, "app.browserTitle"))
-            .w(px(760.))
+            .w(px(width))
             .child(browser.clone())
             .on_ok(|_, _, _| false)
             .footer(

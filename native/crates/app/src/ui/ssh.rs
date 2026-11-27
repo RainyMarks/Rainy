@@ -1,8 +1,9 @@
 //! The questions `ssh` asks, in Rainy's window (`src/main/ssh-prompt.ts`): trusting a new host key, and typing a
 //! password, passphrase or code; and what the window says when the Host ends.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -16,25 +17,38 @@ use rainy_carrier::askpass::QuestionKind;
 use crate::store::{AskpassRequest, Store};
 use crate::ui::{tr, trf};
 
+/// Monotonic tag for the most recently opened SSH askpass dialog so an older request's 300ms poll
+/// never closes a newer dialog.
+static ACTIVE_ASK_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Show one question; the answer goes back to `ssh`, and closing the dialog any other way cancels it. The dialog closes
 /// by itself when the `ssh` run that asked has ended.
 pub fn ask(request: AskpassRequest, window: &mut Window, cx: &mut App) {
+    let seq = ACTIVE_ASK_SEQ.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     // The dialog owns the reply: dropping the dialog without an answer drops the sender, which `ssh` reads as a cancel.
     let reply = Rc::new(RefCell::new(Some(request.reply)));
-    let (pending, open) = (reply.clone(), request.question.open.clone());
+    let dialog_alive = Rc::new(Cell::new(true));
+    let (pending, open, poll_alive) = (reply.clone(), request.question.open.clone(), dialog_alive.clone());
     window
         .spawn(cx, async move |cx| {
-            while pending.borrow().is_some() {
+            while pending.borrow().is_some() && poll_alive.get() {
                 cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
-                if !open.load(std::sync::atomic::Ordering::SeqCst) && pending.borrow_mut().take().is_some() {
-                    let _ = cx.update(|window, cx| window.close_dialog(cx));
+                if !open.load(Ordering::SeqCst) && pending.borrow_mut().take().is_some() {
+                    if poll_alive.replace(false) && ACTIVE_ASK_SEQ.load(Ordering::SeqCst) == seq {
+                        let _ = cx.update(|window, cx| window.close_dialog(cx));
+                    }
+                    break;
                 }
             }
         })
         .detach();
-    let send = move |answer: Option<String>| {
-        if let Some(reply) = reply.borrow_mut().take() {
-            let _ = reply.send(answer);
+    let send = {
+        let dialog_alive = dialog_alive.clone();
+        move |answer: Option<String>| {
+            dialog_alive.set(false);
+            if let Some(reply) = reply.borrow_mut().take() {
+                let _ = reply.send(answer);
+            }
         }
     };
     let prompt = request.question.prompt.trim().to_owned();
@@ -73,7 +87,15 @@ pub fn ask(request: AskpassRequest, window: &mut Window, cx: &mut App) {
                     .child(
                         v_flex()
                             .gap_3()
-                            .child(div().text_sm().text_color(cx.theme().muted_foreground).max_h(px(96.)).overflow_hidden().child(prompt.clone()))
+                            .child(
+                                div()
+                                    .id("ssh-ask-prompt")
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .max_h(px(120.))
+                                    .overflow_y_scroll()
+                                    .child(prompt.clone()),
+                            )
                             .child(Input::new(&field)),
                     )
                     .on_ok(move |_, _, cx| {
@@ -156,10 +178,11 @@ pub fn host_exited_exhausted(window: &mut Window, cx: &mut App, detail: String) 
                     .child(div().text_sm().text_color(cx.theme().foreground).child(tr(cx, "ssh.reconnectExhausted")))
                     .child(
                         div()
+                            .id("ssh-exhausted-detail")
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .max_h(px(120.))
-                            .overflow_hidden()
+                            .max_h(px(180.))
+                            .overflow_y_scroll()
                             .child(body.clone()),
                     ),
             )

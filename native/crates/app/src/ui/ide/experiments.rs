@@ -20,17 +20,14 @@ use serde_json::json;
 
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
+use crate::ui::ide::log_tail::LogTailBuffer;
+pub(crate) use crate::ui::ide::log_tail::format_size;
 use crate::ui::{tr, trf};
 
 /// Poll interval for live log tailing and running status updates while this tab is visible.
 const TAIL_INTERVAL: Duration = Duration::from_secs(1);
 /// Maximum tail bytes requested per incremental chunk.
 const TAIL_MAX_BYTES: u64 = 65_536;
-/// Bounded log buffer limits so long-running training logs never grow unbounded in RAM.
-const MAX_TAIL_LINES: usize = 1500;
-const MAX_TAIL_BYTES: usize = 256 * 1024;
-/// Lines included when quoting experiment logs into the chat composer.
-const QUOTE_LINES: usize = 60;
 
 pub struct ExperimentsView {
     store: Entity<Store>,
@@ -49,11 +46,7 @@ pub struct ExperimentsView {
     log_input: Entity<InputState>,
     tail_id: Option<String>,
     tail_offset: Option<u64>,
-    tail_text: String,
-    tail_total_bytes: u64,
-    tail_reset: bool,
-    tail_paused: bool,
-    tail_scroll: ScrollHandle,
+    tail: LogTailBuffer,
     tail_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -135,11 +128,7 @@ impl ExperimentsView {
             log_input,
             tail_id: None,
             tail_offset: None,
-            tail_text: String::new(),
-            tail_total_bytes: 0,
-            tail_reset: false,
-            tail_paused: false,
-            tail_scroll: ScrollHandle::new(),
+            tail: LogTailBuffer::new(),
             tail_task: None,
             _subscriptions: subscriptions,
         }
@@ -206,10 +195,7 @@ impl ExperimentsView {
         self.selected = Some(id.clone());
         self.tail_id = Some(id.clone());
         self.tail_offset = None;
-        self.tail_text.clear();
-        self.tail_total_bytes = 0;
-        self.tail_reset = false;
-        self.tail_paused = false;
+        self.tail.reset_stream();
         if self.active {
             self.start_tail(id, cx);
         }
@@ -220,9 +206,7 @@ impl ExperimentsView {
         self.tail_task = None;
         self.tail_id = None;
         self.tail_offset = None;
-        self.tail_text.clear();
-        self.tail_total_bytes = 0;
-        self.tail_reset = false;
+        self.tail.reset_stream();
     }
 
     fn start_tail(&mut self, id: String, cx: &mut Context<Self>) {
@@ -235,7 +219,7 @@ impl ExperimentsView {
                         if !this.active || this.tail_id.as_deref() != Some(id.as_str()) {
                             return None;
                         }
-                        if this.tail_paused {
+                        if this.tail.paused {
                             return Some(None);
                         }
                         let mut params = json!({
@@ -260,26 +244,17 @@ impl ExperimentsView {
                                 if this.tail_id.as_deref() != Some(id.as_str()) {
                                     return;
                                 }
-                                if tail.reset {
-                                    this.tail_text.clear();
-                                    this.tail_reset = true;
-                                }
-                                if !tail.text.is_empty() {
-                                    append_bounded_text(&mut this.tail_text, &tail.text);
-                                    if !this.tail_paused {
-                                        this.tail_scroll.scroll_to_bottom();
-                                    }
-                                }
                                 this.tail_offset = Some(tail.next_offset);
-                                this.tail_total_bytes = tail.total_bytes;
-                                cx.notify();
+                                if this.tail.apply_chunk(&tail.text, tail.reset, tail.total_bytes) {
+                                    cx.notify();
+                                }
                             });
                         }
                     }
                 }
                 // Refresh experiment statuses every 5 seconds while tailing so exited processes update promptly.
                 tick = tick.wrapping_add(1);
-                if tick % 5 == 0 {
+                if tick.is_multiple_of(5) {
                     let _ = this.update(cx, |this, cx| {
                         if this.active && !this.loading {
                             this.refresh(cx);
@@ -372,10 +347,10 @@ impl ExperimentsView {
                 Ok(value) => {
                     let record = serde_json::from_value::<ExperimentRecord>(value).ok();
                     let still_running = record.as_ref().is_some_and(|r| r.status == ExperimentStatus::Running);
-                    if let Some(updated) = record {
-                        if let Some(slot) = this.experiments.iter_mut().find(|e| e.id == updated.id) {
-                            *slot = updated;
-                        }
+                    if let Some(updated) = record
+                        && let Some(slot) = this.experiments.iter_mut().find(|e| e.id == updated.id)
+                    {
+                        *slot = updated;
                     }
                     if still_running {
                         let note = trf(cx, "experiments.stillRunning", &[("name", &name)]);
@@ -414,20 +389,7 @@ impl ExperimentsView {
     }
 
     fn quote_tail_to_chat(&self, window: &mut Window, cx: &mut App) {
-        let trimmed = self.tail_text.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        let lines: Vec<&str> = trimmed.lines().collect();
-        let slice = if lines.len() > QUOTE_LINES { &lines[lines.len() - QUOTE_LINES..] } else { &lines[..] };
-        let mut quoted = String::from("> ```text\n");
-        for line in slice {
-            quoted.push_str("> ");
-            quoted.push_str(line);
-            quoted.push('\n');
-        }
-        quoted.push_str("> ```");
-        crate::ui::insert_into_composer(quoted, window, cx);
+        self.tail.quote_to_chat(window, cx);
     }
 
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -681,14 +643,9 @@ impl Render for ExperimentsView {
             .children(rows);
 
         let tail_pane = if let Some(exp) = selected_record {
-            let paused = self.tail_paused;
-            let size_label = format_size(self.tail_total_bytes);
-            let lines: Vec<AnyElement> = self
-                .tail_text
-                .lines()
-                .map(|line| div().whitespace_nowrap().child(line.to_owned()).into_any_element())
-                .collect();
-            let empty = lines.is_empty();
+            let paused = self.tail.paused;
+            let size_label = format_size(self.tail.total_bytes);
+            let empty = self.tail.is_empty();
             v_flex()
                 .flex_1()
                 .min_w_0()
@@ -720,10 +677,7 @@ impl Render for ExperimentsView {
                                 .icon(if paused { IconName::Play } else { IconName::Pause })
                                 .tooltip(tr(cx, if paused { "experiments.tailResume" } else { "experiments.tailPause" }))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tail_paused = !this.tail_paused;
-                                    if !this.tail_paused {
-                                        this.tail_scroll.scroll_to_bottom();
-                                    }
+                                    this.tail.toggle_pause();
                                     cx.notify();
                                 })),
                         )
@@ -733,8 +687,7 @@ impl Render for ExperimentsView {
                                 .xsmall()
                                 .label(tr(cx, "experiments.tailClear"))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tail_text.clear();
-                                    this.tail_reset = false;
+                                    this.tail.clear_lines();
                                     cx.notify();
                                 })),
                         )
@@ -747,7 +700,7 @@ impl Render for ExperimentsView {
                                 .on_click(cx.listener(|this, _, window, cx| this.quote_tail_to_chat(window, cx))),
                         ),
                 )
-                .when(self.tail_reset, |this| {
+                .when(self.tail.reset, |this| {
                     this.child(
                         div()
                             .px_2()
@@ -758,25 +711,7 @@ impl Render for ExperimentsView {
                             .child(tr(cx, "experiments.tailResetNotice")),
                     )
                 })
-                .child(
-                    div()
-                        .relative()
-                        .flex_1()
-                        .min_h_0()
-                        .child(
-                            v_flex()
-                                .id("exp-tail-body")
-                                .size_full()
-                                .overflow_scroll()
-                                .track_scroll(&self.tail_scroll)
-                                .p_2()
-                                .font_family(theme.mono_font_family.clone())
-                                .text_xs()
-                                .when(empty, |this| this.child(div().text_color(theme.muted_foreground).child(tr(cx, "experiments.tailEmpty"))))
-                                .children(lines),
-                        )
-                        .vertical_scrollbar(&self.tail_scroll),
-                )
+                .child(self.tail.render_body("exp-tail-body", None, px(8.), cx))
                 .into_any_element()
         } else {
             // Nothing selected: the list takes the whole width and says itself when it is empty.
@@ -799,55 +734,6 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Append incoming log text while capping memory to `MAX_TAIL_LINES` lines and `MAX_TAIL_BYTES` bytes.
-pub(crate) fn append_bounded_text(buf: &mut String, chunk: &str) {
-    buf.push_str(chunk);
-    if buf.len() > MAX_TAIL_BYTES {
-        let mut cut = buf.len().saturating_sub(MAX_TAIL_BYTES);
-        while cut < buf.len() && !buf.is_char_boundary(cut) {
-            cut += 1;
-        }
-        if let Some(nl) = buf[cut..].find('\n') {
-            cut += nl + 1;
-        }
-        buf.drain(..cut);
-    }
-    let line_count = buf.bytes().filter(|b| *b == b'\n').count();
-    if line_count > MAX_TAIL_LINES {
-        let drop_lines = line_count - MAX_TAIL_LINES;
-        let mut seen = 0usize;
-        let mut cut = 0usize;
-        for (idx, b) in buf.bytes().enumerate() {
-            if b == b'\n' {
-                seen += 1;
-                if seen == drop_lines {
-                    cut = idx + 1;
-                    break;
-                }
-            }
-        }
-        if cut > 0 && cut <= buf.len() {
-            buf.drain(..cut);
-        }
-    }
-}
-
-pub(crate) fn format_size(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= GIB {
-        format!("{:.2} GiB", b / GIB)
-    } else if b >= MIB {
-        format!("{:.1} MiB", b / MIB)
-    } else if b >= KIB {
-        format!("{:.1} KiB", b / KIB)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 fn format_elapsed(ms: u64) -> String {
     let secs = ms / 1000;
     if secs < 60 {
@@ -864,6 +750,7 @@ mod tests {
     use ::core::prelude::v1::test;
 
     use super::*;
+    use crate::ui::ide::log_tail::{MAX_TAIL_LINES, append_bounded_text};
 
     #[test]
     fn bounded_log_buffer_caps_lines_and_keeps_tail() {

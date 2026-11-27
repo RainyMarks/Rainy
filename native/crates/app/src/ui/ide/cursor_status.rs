@@ -4,12 +4,12 @@
 
 use std::time::Duration;
 
-use gpui_kit::component::input::EditorState;
+use gpui_kit::component::input::{EditorState, InputEvent};
 use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::store::ide::{Ide, IdeEvent};
+use crate::store::ide::Ide;
 use crate::boot::grouped;
 use crate::ui::ide::viewers;
 use crate::ui::ide::word_count::{WordCount, count_words};
@@ -18,6 +18,8 @@ use crate::ui::{tr, trf};
 pub struct CursorStatus {
     ide: Entity<Ide>,
     editor: Option<Entity<EditorState>>,
+    /// Last rendered cursor (line, character) so non-cursor editor notifications do not repaint.
+    last_cursor: Option<(u32, u32)>,
     /// Whether the active file's source editor is on screen.
     source_shown: bool,
     /// Whether the active file is Markdown, whose words are counted.
@@ -25,22 +27,27 @@ pub struct CursorStatus {
     words: Option<WordCount>,
     /// The count a moment after the text last changed.
     counting: Option<Task<()>>,
-    watch: Option<Subscription>,
+    watch: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl CursorStatus {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.subscribe(&ide, |this, _, event: &IdeEvent, cx| {
-                if *event == IdeEvent::ActiveChanged {
-                    this.follow(cx);
-                }
-            }),
-            // An editor appears when its file has loaded.
+            // Tracks active tab, editor load completion, and Markdown view mode switches.
             cx.observe(&ide, |this, _, cx| this.follow(cx)),
         ];
-        let mut status = Self { ide, editor: None, source_shown: true, markdown: false, words: None, counting: None, watch: None, _subscriptions: subscriptions };
+        let mut status = Self {
+            ide,
+            editor: None,
+            last_cursor: None,
+            source_shown: true,
+            markdown: false,
+            words: None,
+            counting: None,
+            watch: Vec::new(),
+            _subscriptions: subscriptions,
+        };
         status.follow(cx);
         status
     }
@@ -50,15 +57,36 @@ impl CursorStatus {
         let ide = self.ide.read(cx);
         let editor = ide.active.as_ref().filter(|key| !ide.diff_tabs.contains(*key)).and_then(|key| ide.files.get(key)).and_then(|file| file.editor.clone());
         let changed = editor.as_ref().map(Entity::entity_id) != self.editor.as_ref().map(Entity::entity_id);
+        let mut dirty = false;
         if changed {
-            self.watch = editor.as_ref().map(|editor| {
-                cx.observe(editor, |this, _, cx| {
-                    this.count_soon(cx);
-                    cx.notify();
-                })
+            self.last_cursor = editor.as_ref().map(|ed| {
+                let pos = ed.read(cx).cursor_position();
+                (pos.line, pos.character)
             });
+            self.watch = editor
+                .as_ref()
+                .map(|editor| {
+                    vec![
+                        // Only text edits trigger the debounced Markdown word count.
+                        cx.subscribe(editor, |this, _, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                this.count_soon(cx);
+                            }
+                        }),
+                        // Repaint only when the cursor coordinates actually move.
+                        cx.observe(editor, |this, editor, cx| {
+                            let pos = editor.read(cx).cursor_position();
+                            let pair = (pos.line, pos.character);
+                            if this.last_cursor != Some(pair) {
+                                this.last_cursor = Some(pair);
+                                cx.notify();
+                            }
+                        }),
+                    ]
+                })
+                .unwrap_or_default();
             self.editor = editor;
-            cx.notify();
+            dirty = true;
         }
         let ide = self.ide.read(cx);
         let active = ide.active.as_ref().and_then(|key| ide.files.get(key).map(|file| (key, file)));
@@ -69,12 +97,15 @@ impl CursorStatus {
         });
         if source_shown != self.source_shown {
             self.source_shown = source_shown;
-            cx.notify();
+            dirty = true;
         }
         if changed || markdown != self.markdown {
             self.markdown = markdown;
             self.words = None;
             self.count_soon(cx);
+            dirty = true;
+        }
+        if dirty {
             cx.notify();
         }
     }
@@ -114,12 +145,11 @@ impl Render for CursorStatus {
             _ => "LF".into(),
         };
         let words = self.words.filter(|_| self.markdown).map(|words| {
-            let tooltip: SharedString = trf(
+            let tooltip = trf(
                 cx,
                 "viewers.wordCountTitle",
                 &[("words", &grouped(words.words)), ("characters", &grouped(words.characters)), ("minutes", &words.minutes)],
-            )
-            .into();
+            );
             div()
                 .id("word-count")
                 .child(trf(cx, "viewers.wordCount", &[("count", &grouped(words.words))]))

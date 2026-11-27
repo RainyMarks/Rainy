@@ -1,15 +1,17 @@
 //! The headings of the open Markdown document in the side pane (`Outline.tsx`), as in Typora: click one to go there; the
 //! one being read is marked, following the rich editor's scrolling or the source editor's cursor.
 
+use std::rc::Rc;
 use std::sync::OnceLock;
 
+use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use regex::Regex;
 
-use crate::store::ide::{Ide, IdeEvent};
+use crate::store::ide::Ide;
 use crate::ui::ide::editor_area::EditorArea;
 use crate::ui::ide::viewers;
 use crate::ui::tr;
@@ -157,37 +159,125 @@ pub fn markdown_outline(markdown: &str) -> Vec<Heading> {
 pub struct OutlineView {
     ide: Entity<Ide>,
     editor: Entity<EditorArea>,
-    /// The active document's text the headings were read from, and the headings.
-    cache: Option<(String, String, Vec<Heading>)>,
-    _active: Option<Subscription>,
+    /// Whether the outline tab is currently visible in the sidebar.
+    visible: bool,
+    /// Cached headings for the last parsed key, invalidated only on `InputEvent::Change` or file switch.
+    cache: Option<(String, Rc<Vec<Heading>>)>,
+    headings_dirty: bool,
+    /// Active `(key, editor_id, view)` fingerprint so unrelated `Ide` updates are skipped.
+    watched: Option<(Option<String>, Option<EntityId>, Option<String>)>,
+    last_line: Option<u32>,
+    last_page_index: Option<Option<i64>>,
+    _active: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl OutlineView {
     pub fn new(ide: Entity<Ide>, editor: Entity<EditorArea>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.subscribe(&ide, |this, _, event: &IdeEvent, cx| {
-                if matches!(event, IdeEvent::ActiveChanged | IdeEvent::FilesChanged | IdeEvent::WorkspaceChanged) {
-                    this.watch_active(cx);
+            cx.observe(&ide, |this, _, cx| {
+                this.sync_active(cx);
+            }),
+            cx.observe(&editor, |this, editor, cx| {
+                if !this.visible {
+                    return;
+                }
+                let index = this
+                    .ide
+                    .read(cx)
+                    .active
+                    .as_deref()
+                    .and_then(|key| editor.read(cx).outline_index(key));
+                if this.last_page_index != Some(index) {
+                    this.last_page_index = Some(index);
                     cx.notify();
                 }
             }),
-            cx.observe(&editor, |_, _, cx| cx.notify()),
         ];
-        let mut view = Self { ide, editor, cache: None, _active: None, _subscriptions: subscriptions };
-        view.watch_active(cx);
+        let mut view = Self {
+            ide,
+            editor,
+            visible: true,
+            cache: None,
+            headings_dirty: true,
+            watched: None,
+            last_line: None,
+            last_page_index: None,
+            _active: Vec::new(),
+            _subscriptions: subscriptions,
+        };
+        view.sync_active(cx);
         view
     }
 
-    /// Follow the active editor's text and cursor.
-    fn watch_active(&mut self, cx: &mut Context<Self>) {
-        let ide = self.ide.read(cx);
-        let editor = ide.active.as_ref().and_then(|key| ide.files.get(key)).and_then(|file| file.editor.clone());
-        self._active = editor.map(|editor| cx.observe(&editor, |_, _, cx| cx.notify()));
+    /// Pause outline tracking while the Outline sidebar tab is hidden; resume and refresh when shown.
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if visible {
+            self.headings_dirty = true;
+            self.sync_active(cx);
+            cx.notify();
+        } else {
+            self._active.clear();
+            self.watched = None;
+        }
     }
 
-    /// The active Markdown file, its headings and the cursor's line in its source.
-    fn headings(&mut self, cx: &App) -> Option<(String, Vec<Heading>, usize)> {
+    /// Follow the active editor's text changes and cursor line only when visible.
+    fn sync_active(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            self.headings_dirty = true;
+            return;
+        }
+        let (key, editor, view) = {
+            let ide = self.ide.read(cx);
+            let key = ide.active.clone();
+            let editor = key.as_ref().and_then(|k| ide.files.get(k)).and_then(|file| file.editor.clone());
+            let view = key.as_ref().and_then(|k| ide.views.get(k).cloned());
+            (key, editor, view)
+        };
+        let fingerprint = (key.clone(), editor.as_ref().map(Entity::entity_id), view);
+        if self.watched.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        self.watched = Some(fingerprint);
+        self.headings_dirty = true;
+        self.last_line = editor.as_ref().map(|ed| ed.read(cx).cursor_position().line);
+        self.last_page_index = None;
+        self._active = editor
+            .map(|editor| {
+                vec![
+                    // Re-parse Markdown headings only when the document text actually changes.
+                    cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            this.headings_dirty = true;
+                            if this.visible {
+                                cx.notify();
+                            }
+                        }
+                    }),
+                    // Highlight follows cursor line without cloning or re-parsing document text.
+                    cx.observe(&editor, |this, editor, cx| {
+                        if !this.visible {
+                            return;
+                        }
+                        let line = editor.read(cx).cursor_position().line;
+                        if this.last_line != Some(line) {
+                            this.last_line = Some(line);
+                            cx.notify();
+                        }
+                    }),
+                ]
+            })
+            .unwrap_or_default();
+        cx.notify();
+    }
+
+    /// The active Markdown file, its cached headings and the cursor's line in its source.
+    fn headings(&mut self, cx: &App) -> Option<(String, Rc<Vec<Heading>>, usize)> {
         let ide = self.ide.read(cx);
         let key = ide.active.clone()?;
         let file = ide.files.get(&key)?;
@@ -195,14 +285,15 @@ impl OutlineView {
             return None;
         }
         let editor = file.editor.as_ref()?.read(cx);
-        let text = editor.value().to_string();
         let line = editor.cursor_position().line as usize + 1;
-        let fresh = !matches!(&self.cache, Some((cached_key, cached_text, _)) if *cached_key == key && *cached_text == text);
-        if fresh {
-            let headings = markdown_outline(&text.replace("\r\n", "\n"));
-            self.cache = Some((key.clone(), text, headings));
+        let stale = self.headings_dirty || !matches!(&self.cache, Some((cached_key, _)) if *cached_key == key);
+        if stale {
+            let text = editor.value().to_string();
+            let headings = Rc::new(markdown_outline(&text.replace("\r\n", "\n")));
+            self.cache = Some((key.clone(), headings));
+            self.headings_dirty = false;
         }
-        let headings = self.cache.as_ref().map(|(_, _, headings)| headings.clone()).unwrap_or_default();
+        let headings = self.cache.as_ref().map(|(_, headings)| Rc::clone(headings))?;
         Some((key, headings, line))
     }
 }
@@ -226,7 +317,7 @@ impl Render for OutlineView {
             .size_full()
             .py_1()
             .overflow_y_scrollbar()
-            .children(headings.into_iter().enumerate().map(|(index, heading)| {
+            .children(headings.iter().enumerate().map(|(index, heading)| {
                 let current = index as i64 == active;
                 let (editor, key, line) = (self.editor.clone(), key.clone(), heading.line);
                 div()
@@ -240,7 +331,7 @@ impl Render for OutlineView {
                     .when(heading.level == top, |this| this.font_weight(FontWeight::MEDIUM))
                     .when(current, |this| this.bg(theme.list_active).text_color(theme.foreground))
                     .when(!current, |this| this.text_color(theme.muted_foreground).hover(|style| style.bg(theme.list_hover)))
-                    .child(if heading.text.is_empty() { " ".to_owned() } else { heading.text })
+                    .child(if heading.text.is_empty() { " ".to_owned() } else { heading.text.clone() })
                     .on_click(move |_, window, cx| {
                         let key = key.clone();
                         editor.update(cx, |editor, cx| editor.reveal_heading(&key, index, line, window, cx));

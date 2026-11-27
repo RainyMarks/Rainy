@@ -40,6 +40,9 @@ enum State {
     Failed(SharedString),
 }
 
+type PlacedRect = (i32, i32, i32, i32);
+type PlacedState = (bool, Option<PlacedRect>);
+
 /// One page shown in an area of the window.
 pub struct WebPane {
     entity_id: EntityId,
@@ -50,6 +53,8 @@ pub struct WebPane {
     /// Where it was painted last, in logical pixels of the window.
     bounds: Option<Bounds<Pixels>>,
     shown: bool,
+    /// Last physical `(visible, rect)` sent to WebView2, avoiding per-frame cross-process COM IPC when unchanged.
+    last_placed: Option<PlacedState>,
     _forward: Task<()>,
 }
 
@@ -88,13 +93,10 @@ impl WebPane {
     /// A pane that opens `url`; `options` decide the profile, scripts and which addresses it may visit.
     pub fn new(url: String, mut options: Options, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (events, received) = async_channel::unbounded::<PaneEvent>();
-        if let Some(mut on_message) = options.on_message.take() {
-            let events = events.clone();
-            options.on_message = Some(Box::new(move |text| {
-                on_message(text.clone());
-                let _ = events.try_send(PaneEvent::Message(text));
-            }));
-        } else {
+        // Never invoke caller message hooks synchronously inside WebView2's COM callback; deliver them on the
+        // GPUI async task outside the COM call stack so no handler can accidentally close a controller re-entrantly.
+        let mut caller_on_message = options.on_message.take();
+        {
             let events = events.clone();
             options.on_message = Some(Box::new(move |text| drop(events.try_send(PaneEvent::Message(text)))));
         }
@@ -141,11 +143,17 @@ impl WebPane {
         // Events come from WebView2 callbacks, outside any GPUI update; they are applied here, in order.
         let forward = cx.spawn(async move |this: WeakEntity<WebPane>, cx: &mut AsyncApp| {
             while let Ok(event) = received.recv().await {
+                if let PaneEvent::Message(ref text) = event
+                    && let Some(on_message) = caller_on_message.as_mut()
+                {
+                    on_message(text.clone());
+                }
                 let applied = this.update(cx, |pane, cx| {
                     match &event {
                         PaneEvent::Ready => {
                             if let Some(view) = take_created(cx.entity_id()) {
                                 pane.state = State::Ready(view);
+                                pane.last_placed = None;
                                 pane.place(false);
                             }
                         }
@@ -169,7 +177,7 @@ impl WebPane {
             cx.set_global(Panes::default());
         }
         cx.update_global::<Panes, _>(|panes, _| panes.all.push(weak));
-        Self { entity_id, alive, state: State::Creating, bounds: None, shown: false, _forward: forward }
+        Self { entity_id, alive, state: State::Creating, bounds: None, shown: false, last_placed: None, _forward: forward }
     }
 
     pub fn view(&self) -> Option<&WebView> {
@@ -190,16 +198,34 @@ impl WebPane {
         matches!(self.state, State::Creating)
     }
 
-    /// Show or hide the control where it was last painted.
+    /// Show or hide the control where it was last painted; skips cross-process COM calls when unchanged.
     fn place(&mut self, shown: bool) {
         self.shown = shown;
-        let Some(view) = self.view() else { return };
-        if let (true, Some(bounds)) = (shown, self.bounds) {
-            let scale = SCALE.with(|scale| *scale.borrow());
-            let px = |value: Pixels| (f32::from(value) * scale).round() as i32;
-            view.set_bounds(px(bounds.origin.x), px(bounds.origin.y), px(bounds.size.width), px(bounds.size.height));
+        let visible = shown && self.bounds.is_some();
+        let rect = if visible {
+            self.bounds.map(|bounds| {
+                let scale = SCALE.with(|scale| *scale.borrow());
+                let px = |value: Pixels| (f32::from(value) * scale).round() as i32;
+                (px(bounds.origin.x), px(bounds.origin.y), px(bounds.size.width), px(bounds.size.height))
+            })
+        } else {
+            None
+        };
+        let target = (visible, rect);
+        if self.last_placed == Some(target) {
+            return;
         }
-        view.set_visible(shown && self.bounds.is_some());
+        let Some(view) = self.view() else { return };
+        let prev = self.last_placed;
+        if let Some((left, top, width, height)) = rect
+            && prev.and_then(|(_, last_rect)| last_rect) != Some((left, top, width, height))
+        {
+            view.set_bounds(left, top, width, height);
+        }
+        if prev.map(|(last_vis, _)| last_vis) != Some(visible) {
+            view.set_visible(visible);
+        }
+        self.last_placed = Some(target);
     }
 
     /// The area the page covers; place it where this element is laid out.
@@ -340,6 +366,7 @@ pub fn begin_frame(cx: &mut App) {
 /// the caller's own overlay (`covered`) is over the window or a toast over the pane, and hide the others.
 pub fn end_frame(covered: bool, window: &mut Window, cx: &mut App) {
     close_orphaned();
+    export::close_finished();
     // A click anywhere GPUI draws takes the keyboard back from a page; clicks inside a page never reach GPUI.
     window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
         if phase == DispatchPhase::Capture {
@@ -380,9 +407,7 @@ pub fn end_frame(covered: bool, window: &mut Window, cx: &mut App) {
         }
         let shown = !covered && !under_toast && !under_tooltip && !under_overlay && painted.contains(&pane.entity_id());
         pane.update(cx, |pane, _| {
-            if pane.shown != shown || shown {
-                pane.place(shown);
-            }
+            pane.place(shown);
         });
     }
     cx.update_global::<Panes, _>(|panes, _| panes.had_transient_overlay = any_transient_hidden);

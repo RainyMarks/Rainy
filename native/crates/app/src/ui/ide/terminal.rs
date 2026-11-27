@@ -36,7 +36,7 @@ struct Replies(Arc<Mutex<Vec<String>>>);
 impl EventListener for Replies {
     fn send_event(&self, event: TermEvent) {
         if let TermEvent::PtyWrite(text) = event {
-            self.0.lock().unwrap().push(text);
+            self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(text);
         }
     }
 }
@@ -152,7 +152,10 @@ struct Run {
     italic: bool,
     underline: bool,
     strike: bool,
+    has_wide: bool,
 }
+
+type RenderRuns = (Vec<Vec<Run>>, Option<(usize, usize, bool)>);
 
 /// Minimum interval between terminal repaints under heavy output bursts (~60 FPS cap).
 const RENDER_THROTTLE: Duration = Duration::from_millis(16);
@@ -165,8 +168,9 @@ pub struct TerminalView {
     processor: Processor,
     replies: Replies,
     size: GridSize,
-    /// Cell width and line height, measured at render.
+    /// Cell width and line height, measured when font family or size changes.
     cell: Size<Pixels>,
+    measured_font: Option<(SharedString, Pixels)>,
     bounds: Bounds<Pixels>,
     /// Text being composed by an input method, shown at the cursor.
     marked: Option<String>,
@@ -207,6 +211,7 @@ impl TerminalView {
             replies,
             size,
             cell: gpui_kit::size(px(8.), px(18.)),
+            measured_font: None,
             bounds: Bounds::default(),
             marked: None,
             selecting: false,
@@ -221,7 +226,7 @@ impl TerminalView {
 
     fn feed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.processor.advance(&mut self.term, text.as_bytes());
-        let replies: Vec<String> = std::mem::take(&mut *self.replies.0.lock().unwrap());
+        let replies: Vec<String> = std::mem::take(&mut *self.replies.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
         for reply in replies {
             self.write(&reply, cx);
         }
@@ -446,7 +451,7 @@ impl TerminalView {
         }
     }
 
-    fn runs(&self, palette: &Palette) -> (Vec<Vec<Run>>, Option<(usize, usize, bool)>) {
+    fn runs(&self, palette: &Palette) -> RenderRuns {
         let content = self.term.renderable_content();
         let offset = content.display_offset as i32;
         let mut rows: Vec<Vec<Run>> = (0..self.size.rows).map(|_| Vec::new()).collect();
@@ -477,12 +482,13 @@ impl TerminalView {
             }
             let wide = cell.flags.contains(Flags::WIDE_CHAR);
             let character = if cell.flags.contains(Flags::HIDDEN) { ' ' } else { cell.c };
+            let isolate = wide || unicode_wide(character);
             let (bold, italic) = (cell.flags.contains(Flags::BOLD), cell.flags.contains(Flags::ITALIC));
             let (underline, strike) = (cell.flags.intersects(Flags::ALL_UNDERLINES), cell.flags.contains(Flags::STRIKEOUT));
             let column = indexed.point.column.0;
             let line = &mut rows[row as usize];
-            // A wide character gets its own run, placed on its two cells; runs of narrow cells merge.
-            let merge = !wide
+            // A wide character gets its own run, placed on its two cells; runs of narrow cells merge in O(1).
+            let merge = !isolate
                 && line.last().is_some_and(|run: &Run| {
                     run.column + run.cells == column
                         && run.foreground == foreground
@@ -491,12 +497,13 @@ impl TerminalView {
                         && run.italic == italic
                         && run.underline == underline
                         && run.strike == strike
-                        && !run.text.chars().any(unicode_wide)
+                        && !run.has_wide
                 });
             if merge {
-                let run = line.last_mut().unwrap();
-                run.text.push(character);
-                run.cells += 1;
+                if let Some(run) = line.last_mut() {
+                    run.text.push(character);
+                    run.cells += 1;
+                }
             } else {
                 line.push(Run {
                     column,
@@ -508,6 +515,7 @@ impl TerminalView {
                     italic,
                     underline,
                     strike,
+                    has_wide: isolate,
                 });
             }
         }
@@ -525,9 +533,81 @@ impl TerminalView {
     }
 }
 
-/// Characters that take two cells and so are drawn alone.
-fn unicode_wide(c: char) -> bool {
-    (c as u32) >= 0x1100
+/// Characters with Unicode East Asian Wide/Fullwidth or standard wide Emoji presentation
+/// that occupy two terminal cells. Box-drawing, arrows and geometric symbols (`U+2190..=U+25FF`)
+/// are narrow and stay merged into single runs.
+pub(crate) fn unicode_wide(c: char) -> bool {
+    let cp = c as u32;
+    if cp < 0x1100 {
+        return false;
+    }
+    matches!(
+        cp,
+        0x1100..=0x115F
+            | 0x231A..=0x231B
+            | 0x2329..=0x232A
+            | 0x23E9..=0x23EC
+            | 0x23F0
+            | 0x23F3
+            | 0x25FD..=0x25FE
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267F
+            | 0x2693
+            | 0x26A1
+            | 0x26AA..=0x26AB
+            | 0x26BD..=0x26BE
+            | 0x26C4..=0x26C5
+            | 0x26CE
+            | 0x26D4
+            | 0x26EA
+            | 0x26F2..=0x26F3
+            | 0x26F5
+            | 0x26FA
+            | 0x26FD
+            | 0x2705
+            | 0x270A..=0x270B
+            | 0x2728
+            | 0x274C
+            | 0x274E
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27B0
+            | 0x27BF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x2E80..=0x303E
+            | 0x3040..=0xA4CF
+            | 0xA960..=0xA97C
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE10..=0xFE19
+            | 0xFE30..=0xFE6F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x16FE0..=0x16FE4
+            | 0x16FF0..=0x16FF1
+            | 0x17000..=0x187F7
+            | 0x18800..=0x18CD5
+            | 0x18D00..=0x18D08
+            | 0x1AFF0..=0x1B2FB
+            | 0x1F004
+            | 0x1F0CF
+            | 0x1F18E
+            | 0x1F191..=0x1F19A
+            | 0x1F200..=0x1F202
+            | 0x1F210..=0x1F23B
+            | 0x1F240..=0x1F248
+            | 0x1F250..=0x1F251
+            | 0x1F260..=0x1F265
+            | 0x1F300..=0x1F64F
+            | 0x1F680..=0x1F6FF
+            | 0x1F900..=0x1F9FF
+            | 0x1FA70..=0x1FAFF
+            | 0x20000..=0x3FFFD
+    )
 }
 
 /// The bytes a key sends, for keys that are not plain text; typed text arrives through the input handler.
@@ -656,9 +736,12 @@ impl Render for TerminalView {
         let palette = Palette::new(cx);
         let family = theme.mono_font_family.clone();
         let font_size = theme.mono_font_size;
-        let font_id = window.text_system().resolve_font(&font(family.clone()));
-        let width = window.text_system().advance(font_id, font_size, 'm').map(|size| size.width).unwrap_or(font_size * 0.6);
-        self.cell = gpui_kit::size(width, (font_size * 1.35).round());
+        if self.measured_font.as_ref().is_none_or(|(f, s)| f != &family || *s != font_size) {
+            let font_id = window.text_system().resolve_font(&font(family.clone()));
+            let width = window.text_system().advance(font_id, font_size, 'm').map(|size| size.width).unwrap_or(font_size * 0.6);
+            self.cell = gpui_kit::size(width, (font_size * 1.35).round());
+            self.measured_font = Some((family.clone(), font_size));
+        }
         let cell = self.cell;
         let (rows, cursor) = self.runs(&palette);
         let focused = self.focus.is_focused(window);
@@ -755,5 +838,22 @@ impl Render for TerminalView {
                         ),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::unicode_wide;
+
+    #[test]
+    fn classifies_wide_cjk_and_narrow_box_drawing_characters() {
+        for wide in ['中', '文', 'あ', '한', 'Ａ', '（', '🚀'] {
+            assert!(unicode_wide(wide), "expected wide: {wide}");
+        }
+        for narrow in ['a', '0', 'é', '─', '│', '┌', '┐', '└', '┘', '←', '↑', '→', '↓', '█', '░', '●', '✓'] {
+            assert!(!unicode_wide(narrow), "expected narrow: {narrow}");
+        }
     }
 }

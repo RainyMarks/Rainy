@@ -4,10 +4,51 @@
 //! to the ideographs, which Unicode's compatibility mapping (NFKC) gives, as an incremental update appended to the file:
 //! nothing already in the file moves. A file this code does not understand is returned unchanged.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read as _, Write as _};
+use std::sync::OnceLock;
 
 use regex::bytes::Regex;
+
+/// Compiled patterns cached once across exports so `searchable_pdf` never compiles regexes in loops.
+struct Patterns {
+    bfchar: regex::Regex,
+    bfpair: regex::Regex,
+    bfrange: regex::Regex,
+    bftoken: regex::Regex,
+    startxref: Regex,
+    size: Regex,
+    root: Regex,
+    encrypt: Regex,
+    info: Regex,
+    id: Regex,
+    to_unicode: Regex,
+    flate: Regex,
+    parms: Regex,
+    obj_stream: Regex,
+    length: Regex,
+}
+
+fn patterns() -> &'static Patterns {
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    PATTERNS.get_or_init(|| Patterns {
+        bfchar: regex::Regex::new(r"beginbfchar([\s\S]*?)endbfchar").expect("static regex"),
+        bfpair: regex::Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>").expect("static regex"),
+        bfrange: regex::Regex::new(r"beginbfrange([\s\S]*?)endbfrange").expect("static regex"),
+        bftoken: regex::Regex::new(r"<([0-9A-Fa-f]*)>|\[|\]").expect("static regex"),
+        startxref: Regex::new(r"startxref\s+(\d+)\s+%%EOF\s*$").expect("static regex"),
+        size: Regex::new(r"/Size\s+(\d+)").expect("static regex"),
+        root: Regex::new(r"/Root\s+(\d+\s+\d+\s+R)").expect("static regex"),
+        encrypt: Regex::new(r"/Encrypt\b").expect("static regex"),
+        info: Regex::new(r"/Info\s+(\d+\s+\d+\s+R)").expect("static regex"),
+        id: Regex::new(r"/ID\s*(\[[^\]]*\])").expect("static regex"),
+        to_unicode: Regex::new(r"/ToUnicode\s+(\d+)\s+0\s+R").expect("static regex"),
+        flate: Regex::new(r"/Filter\s*/FlateDecode").expect("static regex"),
+        parms: Regex::new(r"/DecodeParms").expect("static regex"),
+        obj_stream: Regex::new(r"(?:^|[\r\n])(\d+)\s+0\s+obj\s*<<([^>]*)>>\s*stream(?:\r\n|\n)").expect("static regex"),
+        length: Regex::new(r"/Length\s+(\d+)\s*(?:/|$)").expect("static regex"),
+    })
+}
 
 /// The NFKC mapping of the radicals that have one, `(radical, ideograph)` sorted; generated with Python's `unicodedata`.
 const RADICALS: &[(u16, u16)] = &include!("radicals.in");
@@ -35,10 +76,9 @@ fn fix_destination(destination: &str) -> String {
 /// A ToUnicode CMap with every destination that names a radical changed to its ideograph, or `None` when none does.
 pub fn fix_to_unicode(cmap: &str) -> Option<String> {
     let mut changed = false;
-    let chars = regex::Regex::new(r"beginbfchar([\s\S]*?)endbfchar").ok()?;
-    let pair = regex::Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>").ok()?;
-    let fixed = chars.replace_all(cmap, |section: &regex::Captures| {
-        let body = pair.replace_all(&section[1], |found: &regex::Captures| {
+    let re = patterns();
+    let fixed = re.bfchar.replace_all(cmap, |section: &regex::Captures| {
+        let body = re.bfpair.replace_all(&section[1], |found: &regex::Captures| {
             let destination = found[2].to_uppercase();
             let next = fix_destination(&destination);
             if next == destination {
@@ -49,8 +89,7 @@ pub fn fix_to_unicode(cmap: &str) -> Option<String> {
         });
         format!("beginbfchar{body}endbfchar")
     });
-    let ranges = regex::Regex::new(r"beginbfrange([\s\S]*?)endbfrange").ok()?;
-    let fixed = ranges.replace_all(&fixed, |section: &regex::Captures| match fix_ranges(&section[1]) {
+    let fixed = re.bfrange.replace_all(&fixed, |section: &regex::Captures| match fix_ranges(&section[1]) {
         Some(body) => {
             changed = true;
             format!("beginbfrange{body}endbfrange")
@@ -63,7 +102,7 @@ pub fn fix_to_unicode(cmap: &str) -> Option<String> {
 /// The entries of a bfrange section (`<low> <high> <start>` or `<low> <high> [<d1> <d2> …]`) with radicals replaced, a
 /// range that reaches one written out as a list; `None` when none does or the section is not understood.
 fn fix_ranges(body: &str) -> Option<String> {
-    let token = regex::Regex::new(r"<([0-9A-Fa-f]*)>|\[|\]").ok()?;
+    let token = &patterns().bftoken;
     let tokens: Vec<String> =
         token.captures_iter(body).map(|found| found.get(1).map_or_else(|| found[0].to_owned(), |hex| hex.as_str().to_owned())).collect();
     let bracket = |value: &str| value == "[" || value == "]";
@@ -110,10 +149,9 @@ fn fix_ranges(body: &str) -> Option<String> {
     changed.then(|| format!("\n{}\n", entries.join("\n")))
 }
 
-/// The groups of a pattern's first match.
-fn find(pattern: &str, haystack: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let found = Regex::new(pattern).ok()?.captures(haystack)?;
-    Some(found.iter().map(|group| group.map(|group| group.as_bytes().to_vec()).unwrap_or_default()).collect())
+/// The first capture group of a precompiled pattern.
+fn capture_one<'a>(pattern: &Regex, haystack: &'a [u8]) -> Option<&'a [u8]> {
+    pattern.captures(haystack)?.get(1).map(|m| m.as_bytes())
 }
 
 fn number(bytes: &[u8]) -> Option<usize> {
@@ -144,32 +182,40 @@ pub fn searchable_pdf(pdf: Vec<u8>) -> Vec<u8> {
 
 /// What `searchable_pdf` appends.
 fn update(pdf: &[u8]) -> Option<Vec<u8>> {
+    let re = patterns();
     let end = &pdf[pdf.len().saturating_sub(64)..];
-    let previous = number(&find(r"startxref\s+(\d+)\s+%%EOF\s*$", end)?[1])?;
+    let previous = number(capture_one(&re.startxref, end)?)?;
     let trailer_at = rfind(pdf, b"trailer")?;
     let startxref_at = rfind(pdf, b"startxref")?;
     let trailer = pdf.get(trailer_at..startxref_at)?;
-    let size = number(&find(r"/Size\s+(\d+)", trailer)?[1])?;
-    let root = find(r"/Root\s+(\d+\s+\d+\s+R)", trailer)?.remove(1);
-    if Regex::new(r"/Encrypt\b").ok()?.is_match(trailer) {
+    let size = number(capture_one(&re.size, trailer)?)?;
+    let root = capture_one(&re.root, trailer)?.to_vec();
+    if re.encrypt.is_match(trailer) {
         return None;
     }
-    let info = find(r"/Info\s+(\d+\s+\d+\s+R)", trailer).map(|mut found| found.remove(1));
-    let id = find(r"/ID\s*(\[[^\]]*\])", trailer).map(|mut found| found.remove(1));
-    let objects: BTreeSet<usize> = Regex::new(r"/ToUnicode\s+(\d+)\s+0\s+R").ok()?.captures_iter(pdf).filter_map(|found| number(&found[1])).collect();
-    let flate = Regex::new(r"/Filter\s*/FlateDecode").ok()?;
-    let parms = Regex::new(r"/DecodeParms").ok()?;
+    let info = capture_one(&re.info, trailer).map(<[u8]>::to_vec);
+    let id = capture_one(&re.id, trailer).map(<[u8]>::to_vec);
+    let objects: BTreeSet<usize> = re.to_unicode.captures_iter(pdf).filter_map(|found| number(&found[1])).collect();
+    if objects.is_empty() {
+        return None;
+    }
+    let mut streams: HashMap<usize, (&[u8], usize)> = HashMap::new();
+    for found in re.obj_stream.captures_iter(pdf) {
+        let Some(obj) = number(&found[1]) else { continue };
+        if objects.contains(&obj) {
+            let Some(dict) = found.get(2).map(|m| m.as_bytes()) else { continue };
+            let Some(end_offset) = found.get(0).map(|m| m.end()) else { continue };
+            streams.entry(obj).or_insert((dict, end_offset));
+        }
+    }
     let mut updates: Vec<(usize, Vec<u8>)> = Vec::new();
     for object in objects {
-        let header = Regex::new(&format!(r"(?:^|[\r\n]){object}\s+0\s+obj\s*<<([^>]*)>>\s*stream(\r\n|\n)")).ok()?;
-        let Some(found) = header.captures(pdf) else { continue };
-        let dictionary = &found[1];
+        let Some(&(dictionary, start)) = streams.get(&object) else { continue };
         // A direct length only: `/Length 12 0 R` points elsewhere.
-        let Some(length) = find(r"/Length\s+(\d+)\s*(?:/|$)", dictionary).and_then(|found| number(&found[1])) else { continue };
-        if !flate.is_match(dictionary) || parms.is_match(dictionary) {
+        let Some(length) = capture_one(&re.length, dictionary).and_then(number) else { continue };
+        if !re.flate.is_match(dictionary) || re.parms.is_match(dictionary) {
             continue;
         }
-        let start = found.get(0)?.end();
         let Some(compressed) = pdf.get(start..start + length) else { continue };
         let mut cmap = Vec::new();
         if flate2::read::ZlibDecoder::new(compressed).read_to_end(&mut cmap).is_err() {

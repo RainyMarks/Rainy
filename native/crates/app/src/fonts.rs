@@ -5,8 +5,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gpui_kit::*;
@@ -107,8 +107,9 @@ impl Download {
 /// Downloaded fonts and the one downloading.
 pub struct FontLibrary {
     dir: PathBuf,
-    /// Families Windows has, read once.
-    system: HashSet<String>,
+    text_system: Arc<TextSystem>,
+    /// Families Windows has, enumerated lazily on first lookup instead of during cold start.
+    system: OnceLock<HashSet<String>>,
     loaded: HashSet<&'static str>,
     pub downloading: Option<Download>,
     /// The last download that failed: what it was for and why.
@@ -117,10 +118,18 @@ pub struct FontLibrary {
 
 impl Global for FontLibrary {}
 
-/// Read which fonts Windows has; downloaded ones are kept under `user_data`.
+/// Prepare the font library; downloaded fonts live under `user_data`. System font enumeration is deferred until
+/// Settings → Appearance actually checks system availability.
 pub fn init(user_data: &Path, cx: &mut App) {
-    let system = cx.text_system().all_font_names().into_iter().collect();
-    cx.set_global(FontLibrary { dir: user_data.join("fonts"), system, loaded: HashSet::new(), downloading: None, failed: None });
+    let text_system = cx.text_system().clone();
+    cx.set_global(FontLibrary {
+        dir: user_data.join("fonts"),
+        text_system,
+        system: OnceLock::new(),
+        loaded: HashSet::new(),
+        downloading: None,
+        failed: None,
+    });
 }
 
 impl FontLibrary {
@@ -128,10 +137,14 @@ impl FontLibrary {
         self.dir.join(file.name)
     }
 
+    fn system_fonts(&self) -> &HashSet<String> {
+        self.system.get_or_init(|| self.text_system.all_font_names().into_iter().collect())
+    }
+
     /// Whether a font can be used now: it is the default, Windows has it, or its file was downloaded.
     pub fn available(&self, choice: &Choice) -> bool {
         match &choice.file {
-            None => choice.family.is_empty() || self.system.contains(choice.family),
+            None => choice.family.is_empty() || self.system_fonts().contains(choice.family),
             Some(file) => std::fs::metadata(self.path(file)).is_ok_and(|metadata| metadata.len() == file.bytes),
         }
     }

@@ -244,8 +244,8 @@ pub struct Execution {
     pub pause: Option<Pause>,
     /// Bumped on every pause and every step, so answers about an earlier pause are dropped.
     epoch: u64,
-    polling: bool,
-    again: bool,
+    /// Generation-tagged poll lock preventing stale responses from wedging new workspaces.
+    poll_guard: PollGuard,
 }
 
 impl EventEmitter<ExecutionEvent> for Execution {}
@@ -269,6 +269,7 @@ impl Execution {
                     this.workspace_id = ide.read(cx).workspace.as_ref().map(|workspace| workspace.workspace_id.clone());
                     this.cursor = 0;
                     this.truncated = false;
+                    this.poll_guard.reset_workspace();
                     this.terminals.clear();
                     this.runs.clear();
                     this.debugs.clear();
@@ -292,8 +293,7 @@ impl Execution {
                 StoreEvent::HostReconnected(_) => {
                     this.cursor = 0;
                     this.truncated = false;
-                    this.polling = false;
-                    this.again = false;
+                    this.poll_guard.reset_workspace();
                     this.debug_id = None;
                     this.pause = None;
                     this.epoch += 1;
@@ -330,8 +330,7 @@ impl Execution {
                 debug_id: None,
                 pause: None,
                 epoch: 0,
-                polling: false,
-                again: false,
+                poll_guard: PollGuard::default(),
             }
         });
         cx.set_global(GlobalExecution(execution.clone()));
@@ -394,21 +393,24 @@ impl Execution {
 
     /// Read the events after the cursor; a hint arriving meanwhile reads again afterwards.
     pub fn poll(&mut self, cx: &mut Context<Self>) {
-        if self.polling {
-            self.again = true;
+        if self.poll_guard.polling {
+            self.poll_guard.again = true;
             return;
         }
         let Some(call) = self.request(json!({ "op": "execution.poll", "cursor": self.cursor }), cx) else { return };
+        let Some(generation) = self.poll_guard.begin() else { return };
         let workspace = self.workspace_id.clone();
-        self.polling = true;
         cx.spawn(async move |this: WeakEntity<Execution>, cx: &mut AsyncApp| {
             let result = call.await;
             let _ = this.update(cx, |this, cx| {
-                this.polling = false;
-                if this.workspace_id != workspace {
+                // Drop stale responses from a previous workspace/reconnect without disturbing the new generation's poll.
+                let (accepted, should_again) = this.poll_guard.finish(generation);
+                if !accepted {
                     return;
                 }
-                if let Ok(Ok(poll)) = result.map(serde_json::from_value::<Poll>) {
+                if this.workspace_id == workspace
+                    && let Ok(Ok(poll)) = result.map(serde_json::from_value::<Poll>)
+                {
                     this.cursor = poll.cursor;
                     if poll.truncated {
                         this.truncated = true;
@@ -433,7 +435,7 @@ impl Execution {
                     this.update_pause(cx);
                     cx.notify();
                 }
-                if std::mem::take(&mut this.again) {
+                if should_again {
                     this.poll(cx);
                 }
             });
@@ -753,5 +755,65 @@ impl Execution {
             }
             result
         })
+    }
+}
+
+/// Generation-tagged poll state machine ensuring workspace switches never drop queued polls.
+#[derive(Default)]
+struct PollGuard {
+    generation: u64,
+    polling: bool,
+    again: bool,
+}
+
+impl PollGuard {
+    fn reset_workspace(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.polling = false;
+        self.again = false;
+    }
+
+    fn begin(&mut self) -> Option<u64> {
+        if self.polling {
+            self.again = true;
+            return None;
+        }
+        self.polling = true;
+        Some(self.generation)
+    }
+
+    /// Returns `(accepted, should_poll_again)`.
+    fn finish(&mut self, generation: u64) -> (bool, bool) {
+        if self.generation != generation {
+            return (false, false);
+        }
+        self.polling = false;
+        (true, std::mem::take(&mut self.again))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::PollGuard;
+
+    #[test]
+    fn workspace_switch_drops_stale_poll_without_wedging_new_workspace() {
+        let mut guard = PollGuard::default();
+        let gen1 = guard.begin().expect("first poll starts");
+        // Switching workspace while gen1 is in flight resets polling/again and starts gen2 cleanly.
+        guard.reset_workspace();
+        let gen2 = guard.begin().expect("new workspace poll starts immediately");
+        assert_ne!(gen1, gen2);
+        // Hint arrives while gen2 is in flight.
+        assert_eq!(guard.begin(), None);
+        // Stale gen1 response returns late: must not clear gen2's polling or swallow gen2's `again`.
+        assert_eq!(guard.finish(gen1), (false, false));
+        assert!(guard.polling);
+        assert!(guard.again);
+        // When gen2 finishes, it triggers the queued follow-up poll.
+        assert_eq!(guard.finish(gen2), (true, true));
+        assert!(!guard.polling);
     }
 }

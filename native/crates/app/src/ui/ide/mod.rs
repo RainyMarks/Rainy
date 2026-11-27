@@ -7,6 +7,7 @@ pub mod editor_commands;
 pub mod editor_area;
 pub mod experiments;
 pub mod hunk_diff;
+pub(crate) mod log_tail;
 pub mod viewers;
 pub mod word_count;
 pub mod file_tree;
@@ -142,7 +143,7 @@ fn pick_folder(attach: bool, window: &mut Window, cx: &mut App) {
             let path = match distro {
                 Some(distro) => {
                     let mapped = cx.background_spawn(async move { rainy_carrier::wsl::linux_paths(&distro, &[path.as_path()]) }).await;
-                    match mapped.map(|mut paths| paths.remove(0)) {
+                    match mapped.and_then(|paths| paths.into_iter().next().ok_or_else(|| anyhow::anyhow!("WSL returned no path"))) {
                         Ok(path) => path,
                         Err(error) => {
                             let _ = cx.update(|window, cx| {

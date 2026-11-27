@@ -1,6 +1,7 @@
 //! The project's file tree (`FileTree.tsx`): every mounted folder, its expanded directories, click to open.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
@@ -30,20 +31,19 @@ enum Row {
 
 pub struct FileTree {
     ide: Entity<Ide>,
-    rows: Vec<Row>,
+    rows: Rc<Vec<Row>>,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl FileTree {
     pub fn new(ide: Entity<Ide>, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![
-            cx.observe(&ide, |this, _, cx| {
-                this.rebuild(cx);
-            }),
-            cx.subscribe(&ide, |this, _, _: &IdeEvent, cx| this.rebuild(cx)),
-        ];
-        let mut tree = Self { ide, rows: Vec::new(), scroll: UniformListScrollHandle::new(), _subscriptions: subscriptions };
+        let subscriptions = vec![cx.subscribe(&ide, |this, _, event: &IdeEvent, cx| match event {
+            IdeEvent::WorkspaceChanged | IdeEvent::FilesChanged => this.rebuild(cx),
+            IdeEvent::ActiveChanged => cx.notify(),
+            _ => {}
+        })];
+        let mut tree = Self { ide, rows: Rc::new(Vec::new()), scroll: UniformListScrollHandle::new(), _subscriptions: subscriptions };
         tree.rebuild(cx);
         tree
     }
@@ -62,7 +62,7 @@ impl FileTree {
                 Self::push_children(ide, &key, usize::from(several), &mut rows);
             }
         }
-        self.rows = rows;
+        self.rows = Rc::new(rows);
         cx.notify();
     }
 
@@ -366,77 +366,82 @@ impl Render for FileTree {
         let ide = self.ide.read(cx);
         let active = ide.active.clone();
         let title = ide.workspace.as_ref().map(|workspace| SharedString::from(workspace.title.clone()));
-        let rows = self.rows.clone();
+        let rows = Rc::clone(&self.rows);
         let theme = cx.theme();
         let ide_handle = self.ide.clone();
         let list = uniform_list("file-tree", rows.len(), move |range, _window, cx| {
             let theme = cx.theme().clone();
             range
                 .map(|index| {
-                    let row = rows[index].clone();
                     let ide = ide_handle.clone();
-                    match row {
+                    match &rows[index] {
                         Row::Root { key, title, path } => {
-                            let root_id = split_key(&key).0.map(str::to_owned);
+                            let root_id = split_key(key).0.map(str::to_owned);
+                            let key = key.clone();
+                            let title = title.clone();
+                            let path = path.clone();
                             let menu_ide = ide.clone();
                             h_flex()
-                            .id(index)
-                            .w_full()
-                            .h(px(26.))
-                            .px_2()
-                            .gap_1()
-                            .items_center()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(theme.muted_foreground)
-                            .child(Icon::new(IconName::FolderOpen).xsmall().flex_shrink_0())
-                            .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
-                            .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-                            .on_click(move |_, window, cx| {
-                                let key = key.clone();
-                                ide.update(cx, |ide, cx| ide.list(key, window, cx));
-                            })
-                            // Folders added to the project can be taken out of it; the main folder stays.
-                            .map(|this| match root_id {
-                                None => this.into_any_element(),
-                                Some(root_id) => this.context_menu(move |menu, _, cx| {
-                                    let (ide, root_id) = (menu_ide.clone(), root_id.clone());
-                                    menu.item(PopupMenuItem::new(tr(cx, "ide.ideRemoveRoot")).on_click(move |_, window, cx| {
-                                        let removed = ide.update(cx, |ide, cx| ide.remove_root(root_id.clone(), window, cx));
-                                        if !removed {
-                                            use gpui_kit::component::WindowExt as _;
-                                            window.push_notification(
-                                                gpui_kit::component::notification::Notification::warning(tr(cx, "native.unsavedRoot")),
-                                                cx,
-                                            );
-                                        }
-                                    }))
+                                .id(index)
+                                .w_full()
+                                .h(px(26.))
+                                .px_2()
+                                .gap_1()
+                                .items_center()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme.muted_foreground)
+                                .child(Icon::new(IconName::FolderOpen).xsmall().flex_shrink_0())
+                                .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                                .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                                .on_click(move |_, window, cx| {
+                                    let key = key.clone();
+                                    ide.update(cx, |ide, cx| ide.list(key, window, cx));
                                 })
-                                .into_any_element(),
-                            })
+                                // Folders added to the project can be taken out of it; the main folder stays.
+                                .map(|this| match root_id {
+                                    None => this.into_any_element(),
+                                    Some(root_id) => this
+                                        .context_menu(move |menu, _, cx| {
+                                            let (ide, root_id) = (menu_ide.clone(), root_id.clone());
+                                            menu.item(PopupMenuItem::new(tr(cx, "ide.ideRemoveRoot")).on_click(move |_, window, cx| {
+                                                let removed = ide.update(cx, |ide, cx| ide.remove_root(root_id.clone(), window, cx));
+                                                if !removed {
+                                                    use gpui_kit::component::WindowExt as _;
+                                                    window.push_notification(
+                                                        gpui_kit::component::notification::Notification::warning(tr(cx, "native.unsavedRoot")),
+                                                        cx,
+                                                    );
+                                                }
+                                            }))
+                                        })
+                                        .into_any_element(),
+                                })
                         }
                         Row::Message { text, depth } => div()
                             .id(index)
                             .w_full()
                             .h(px(26.))
-                            .pl(px(12. + 14. * depth as f32))
+                            .pl(px(12. + 14. * *depth as f32))
                             .pr_2()
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
-                            .child(text)
+                            .child(text.clone())
                             .into_any_element(),
                         Row::Entry { key, entry, depth, open } => {
                             let directory = entry.is_directory();
+                            let open = *open;
+                            let depth = *depth;
                             let selected = active.as_deref() == Some(key.as_str());
                             let icon = if directory {
                                 if open { IconName::FolderOpen } else { IconName::Folder }
                             } else {
                                 file_icon(&entry.name)
                             };
-                            let (menu_ide, menu_key) = (ide.clone(), key.clone());
+                            let (click_key, menu_ide, menu_key) = (key.clone(), ide.clone(), key.clone());
                             let (tip_ide, tip_key) = (ide.clone(), key.clone());
                             h_flex()
                                 .id(index)
@@ -460,7 +465,7 @@ impl Render for FileTree {
                                 // Built only when the pointer rests on the row.
                                 .tooltip(move |window, cx| Tooltip::new(file_label(&tip_ide, &tip_key, cx)).build(window, cx))
                                 .on_click(move |_, window, cx| {
-                                    let key = key.clone();
+                                    let key = click_key.clone();
                                     ide.update(cx, |ide, cx| {
                                         if directory {
                                             ide.toggle_directory(key, window, cx);

@@ -22,25 +22,87 @@ const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 /// Longest a navigation may take before the command answers with what it has.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
+/// Upper bound on `settleMs` requested by the model, preventing unbounded stalls.
+const MAX_SETTLE_MS: u64 = 10_000;
 /// Console messages and failed requests kept per page.
 const EVENTS_KEPT: usize = 40;
 /// Characters of page text one read returns.
 const TEXT_LIMIT: usize = 8000;
 
-/// Whether `url` is an http(s) address on this machine.
+fn valid_port(port: &str) -> bool {
+    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
+fn valid_localhost_subdomain(host: &str) -> bool {
+    let Some(prefix) = host.strip_suffix(".localhost") else { return false };
+    !prefix.is_empty()
+        && prefix.split('.').all(|label| {
+            !label.is_empty()
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
+
+/// Whether `url` is an http(s) address strictly on this machine's loopback interface.
+/// Rejects backslashes, whitespace/control chars, userinfo (`@`), malformed ports, and non-canonical IPs so
+/// Chromium's WHATWG URL parser cannot disagree with this check (preventing backslash SSRF).
 pub fn is_loopback_url(url: &str) -> bool {
+    if url.is_empty() || url.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b'\\') {
+        return false;
+    }
     let Some((scheme, rest)) = url.split_once("://") else { return false };
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return false;
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-    let host = match host.strip_prefix('[') {
-        Some(inner) => inner.split(']').next().unwrap_or_default(),
-        None => host.split(':').next().unwrap_or_default(),
+    if authority.is_empty() || authority.contains('@') {
+        return false;
     }
-    .to_ascii_lowercase();
-    host == "localhost" || host == "127.0.0.1" || host == "::1" || host.ends_with(".localhost")
+    if let Some(after_bracket) = authority.strip_prefix('[') {
+        let Some((inner, trailing)) = after_bracket.split_once(']') else { return false };
+        if inner.contains('%') {
+            return false;
+        }
+        if !trailing.is_empty() {
+            let Some(port) = trailing.strip_prefix(':') else { return false };
+            if !valid_port(port) {
+                return false;
+            }
+        }
+        return inner.parse::<std::net::Ipv6Addr>().ok() == Some(std::net::Ipv6Addr::LOCALHOST);
+    }
+    if authority.contains('[') || authority.contains(']') {
+        return false;
+    }
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => {
+            if port.contains(':') || !valid_port(port) {
+                return false;
+            }
+            (host, Some(port))
+        }
+        None => (authority, None),
+    };
+    let _ = port;
+    if host.is_empty() {
+        return false;
+    }
+    let lower = host.to_ascii_lowercase();
+    lower == "localhost" || lower == "127.0.0.1" || valid_localhost_subdomain(&lower)
+}
+
+/// Whether a subresource/XHR/fetch request inside the preview is allowed to leave WebView2.
+pub fn is_allowed_preview_resource(url: &str) -> bool {
+    if is_loopback_url(url) || url == "about:blank" {
+        return true;
+    }
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("data:") || lower.starts_with("blob:")
+}
+
+fn clamp_settle_ms(settle: Option<u64>, default: u64) -> u64 {
+    settle.unwrap_or(default).min(MAX_SETTLE_MS)
 }
 
 /// Reads the page the way a text-only model can act on: its text and the elements it can click or type into.
@@ -118,6 +180,8 @@ fn act_script(action: &str, target: &str, value: &str) -> String {
 /// The control and what its page reported.
 #[derive(Default)]
 struct Preview {
+    /// Incremented on every `open` and `close` so in-flight async setups superseded by a newer command discard themselves.
+    generation: u64,
     view: Option<WebView>,
     folder: Option<PathBuf>,
     console: Rc<RefCell<VecDeque<String>>>,
@@ -150,9 +214,9 @@ fn remove_profile_dir(folder: PathBuf) {
     });
 }
 
-/// Remove any leftover `rainy-preview-<pid>*` folders belonging to this process.
-fn cleanup_stale_pid_dirs(keep: Option<&std::path::Path>) {
-    let prefix = format!("rainy-preview-{}", std::process::id());
+/// Remove leftover `rainy-preview-*` folders from this process or previously crashed processes.
+/// Directories still locked by another running instance fail `remove_dir_all` harmlessly and are skipped.
+fn cleanup_stale_preview_dirs(keep: Option<&std::path::Path>) {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -160,7 +224,7 @@ fn cleanup_stale_pid_dirs(keep: Option<&std::path::Path>) {
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        if name == prefix || name.starts_with(&format!("{prefix}-")) {
+        if name.starts_with("rainy-preview-") {
             let _ = std::fs::remove_dir_all(&path);
         }
     }
@@ -187,17 +251,20 @@ fn error(text: String) -> Value {
 pub fn close() {
     let folder = PREVIEW.with(|preview| {
         let mut preview = preview.borrow_mut();
+        preview.generation = preview.generation.wrapping_add(1);
         if let Some(view) = preview.view.take() {
             view.close();
         }
         preview.console.borrow_mut().clear();
         preview.failed.borrow_mut().clear();
+        preview.loaded.borrow_mut().take();
         preview.folder.take()
     });
     if let Some(folder) = folder {
+        super::webview::release_environment(&folder);
         remove_profile_dir(folder);
     }
-    cleanup_stale_pid_dirs(None);
+    cleanup_stale_preview_dirs(None);
 }
 
 /// Await one callback-style call.
@@ -209,6 +276,10 @@ async fn call<T: 'static>(start: impl FnOnce(Box<dyn FnOnce(T)>)) -> Option<T> {
 
 fn current() -> Option<WebView> {
     PREVIEW.with(|preview| preview.borrow().view.clone())
+}
+
+fn current_generation() -> u64 {
+    PREVIEW.with(|preview| preview.borrow().generation)
 }
 
 /// Carry out one command from the Host; the answer is what the page reports, or an error for the model.
@@ -229,12 +300,12 @@ pub async fn handle(command: Value, window: AnyWindowHandle, cx: &mut AsyncApp) 
             if let Err(message) = open(&url, window, cx).await {
                 return error(message);
             }
-            report(settle.unwrap_or(400), cx).await
+            report(clamp_settle_ms(settle, 400), cx).await
         }
         _ if current().is_none() => error(i18n::text(Locale::current(), "native.previewNoPage").to_owned()),
         "read" => report(0, cx).await,
         "screenshot" => {
-            let view = current().expect("checked above");
+            let Some(view) = current() else { return error(i18n::text(Locale::current(), "native.previewNoPage").to_owned()) };
             let shot = call(|done| view.devtools("Page.captureScreenshot", r#"{"format":"png"}"#, done)).await;
             let mut answer = report(0, cx).await;
             match shot {
@@ -248,7 +319,7 @@ pub async fn handle(command: Value, window: AnyWindowHandle, cx: &mut AsyncApp) 
             answer
         }
         "click" | "type" | "press" => {
-            let view = current().expect("checked above");
+            let Some(view) = current() else { return error(i18n::text(Locale::current(), "native.previewNoPage").to_owned()) };
             let value = if action == "press" { command.get("key").and_then(Value::as_str).unwrap_or("Enter").to_owned() } else { text("text") };
             let script = act_script(&action, &text("target"), &value);
             let result = call(|done| view.execute(&script, done)).await;
@@ -263,7 +334,7 @@ pub async fn handle(command: Value, window: AnyWindowHandle, cx: &mut AsyncApp) 
                     answer["error"] = json!(message);
                     answer
                 }
-                None => report(settle.unwrap_or(500), cx).await,
+                None => report(clamp_settle_ms(settle, 500), cx).await,
             }
         }
         other => error(format!("Unknown preview action: {other}")),
@@ -272,15 +343,21 @@ pub async fn handle(command: Value, window: AnyWindowHandle, cx: &mut AsyncApp) 
 
 /// Create the control on first use and load `url`, waiting for the page or the deadline.
 async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(), String> {
+    let generation = PREVIEW.with(|preview| {
+        let mut preview = preview.borrow_mut();
+        preview.generation = preview.generation.wrapping_add(1);
+        preview.generation
+    });
     if current().is_none() {
         let (console, failed, loaded) = PREVIEW.with(|preview| {
             let preview = preview.borrow();
             (preview.console.clone(), preview.failed.clone(), preview.loaded.clone())
         });
-        let blocked = failed.clone();
+        let blocked_nav = failed.clone();
+        let blocked_res = failed.clone();
         let seq = PREVIEW_SEQ.fetch_add(1, Ordering::Relaxed);
         let folder = std::env::temp_dir().join(format!("rainy-preview-{}-{seq}", std::process::id()));
-        cleanup_stale_pid_dirs(Some(&folder));
+        cleanup_stale_preview_dirs(Some(&folder));
         let options = Options {
             folder: folder.clone(),
             private: true,
@@ -294,7 +371,15 @@ async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
             allow: Some(Box::new(move |url| {
                 let allowed = is_loopback_url(url) || url == "about:blank";
                 if !allowed {
-                    push(&blocked, format!("{url}: {}", i18n::text(Locale::current(), "native.previewBlockedOffMachine")));
+                    push(&blocked_nav, format!("{url}: {}", i18n::text(Locale::current(), "native.previewBlockedOffMachine")));
+                }
+                allowed
+            })),
+            // Subresources (fetch/XHR/img/script/iframe) are also restricted to loopback, data:, blob:, and about:blank.
+            allow_resource: Some(Box::new(move |url| {
+                let allowed = is_allowed_preview_resource(url);
+                if !allowed {
+                    push(&blocked_res, format!("{url}: {}", i18n::text(Locale::current(), "native.previewBlockedOffMachine")));
                 }
                 allowed
             })),
@@ -305,30 +390,61 @@ async fn open(url: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
         let created = match call(|done| WebView::create(parent, options, done)).await {
             Some(Ok(view)) => view,
             Some(Err(err)) => {
+                super::webview::release_environment(&folder);
                 remove_profile_dir(folder);
                 return Err(err);
             }
             None => {
+                super::webview::release_environment(&folder);
                 remove_profile_dir(folder);
                 return Err("The preview could not start.".to_owned());
             }
         };
+        if current_generation() != generation {
+            created.close();
+            super::webview::release_environment(&folder);
+            remove_profile_dir(folder);
+            return Err("The preview closed.".to_owned());
+        }
         // Laid out at desktop size outside the window's visible area: the page renders, nobody sees it.
         created.set_bounds(-WIDTH - 200, -HEIGHT - 200, WIDTH, HEIGHT);
         created.set_visible(true);
         listen(&created, console, failed, loaded);
         for domain in ["Page.enable", "Runtime.enable", "Log.enable", "Network.enable"] {
             let _ = call(|done| created.devtools(domain, "{}", done)).await;
+            if current_generation() != generation {
+                created.close();
+                super::webview::release_environment(&folder);
+                remove_profile_dir(folder);
+                return Err("The preview closed.".to_owned());
+            }
         }
         // The control's pixels are physical, so on a scaled display the page would lay out narrower than a desktop;
         // fixing the CSS size and the pixel ratio also makes every screenshot WIDTH by HEIGHT.
         let metrics = json!({ "width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false }).to_string();
         let _ = call(|done| created.devtools("Emulation.setDeviceMetricsOverride", &metrics, done)).await;
-        PREVIEW.with(|preview| {
+        if current_generation() != generation {
+            created.close();
+            super::webview::release_environment(&folder);
+            remove_profile_dir(folder);
+            return Err("The preview closed.".to_owned());
+        }
+        let replaced = PREVIEW.with(|preview| {
             let mut preview = preview.borrow_mut();
-            preview.view = Some(created);
-            preview.folder = Some(folder);
+            let old_view = preview.view.replace(created);
+            let old_folder = preview.folder.replace(folder);
+            (old_view, old_folder)
         });
+        if let Some(old_view) = replaced.0 {
+            old_view.close();
+        }
+        if let Some(old_folder) = replaced.1 {
+            super::webview::release_environment(&old_folder);
+            remove_profile_dir(old_folder);
+        }
+    }
+    if current_generation() != generation {
+        return Err("The preview closed.".to_owned());
     }
     let view = current().ok_or("The preview closed.")?;
     let (loaded_tx, loaded_rx) = async_channel::bounded::<()>(1);
@@ -479,8 +595,31 @@ mod tests {
         assert!(is_loopback_url("http://app.localhost"));
         assert!(!is_loopback_url("http://localhost.evil.com/"));
         assert!(!is_loopback_url("http://user@example.com"));
+        assert!(!is_loopback_url("http://user@127.0.0.1/"));
+        assert!(!is_loopback_url("http://user:pass@localhost:3000/"));
+        // Backslash SSRF payloads where WHATWG parsers turn `\` into `/`.
+        assert!(!is_loopback_url("http://attacker.example\\@127.0.0.1/secret"));
+        assert!(!is_loopback_url("http://169.254.169.254\\@127.0.0.1/latest/meta-data"));
+        assert!(!is_loopback_url("http://localhost\\evil"));
+        // Non-canonical IP, zone-id, bad port, whitespace/control chars.
+        assert!(!is_loopback_url("http://127.1/"));
+        assert!(!is_loopback_url("http://0177.0.0.1/"));
+        assert!(!is_loopback_url("http://2130706433/"));
+        assert!(!is_loopback_url("http://[::1%25eth0]:3000/"));
+        assert!(!is_loopback_url("http://localhost:0/"));
+        assert!(!is_loopback_url("http://localhost:99999/"));
+        assert!(!is_loopback_url("http://localhost:/"));
+        assert!(!is_loopback_url("http://-bad.localhost/"));
+        assert!(!is_loopback_url("http://localhost/ a"));
         assert!(!is_loopback_url("file:///C:/x"));
         assert!(!is_loopback_url("javascript:alert(1)"));
+        assert!(is_allowed_preview_resource("http://127.0.0.1:5173/main.js"));
+        assert!(is_allowed_preview_resource("data:image/png;base64,AA=="));
+        assert!(is_allowed_preview_resource("blob:http://127.0.0.1:5173/id"));
+        assert!(!is_allowed_preview_resource("https://attacker.example/exfil"));
+        assert!(!is_allowed_preview_resource("http://attacker.example\\@127.0.0.1/exfil"));
+        assert_eq!(clamp_settle_ms(Some(999_999), 400), MAX_SETTLE_MS);
+        assert_eq!(clamp_settle_ms(None, 400), 400);
         assert!(site_icon("http://127.0.0.1:47400/favicon.ico"));
         assert!(site_icon("http://localhost:5173/favicon.ico?v=2"));
         assert!(!site_icon("http://localhost:5173/missing.json"));

@@ -56,18 +56,22 @@ pub struct SearchView {
 }
 
 /// The byte range of a UTF-16 span of `text`.
+/// If `start` or `start + length` lands inside a surrogate pair, snaps to the next UTF-8 boundary.
 fn utf16_range(text: &str, start: u32, length: u32) -> std::ops::Range<usize> {
-    let (mut units, mut from, mut to) = (0u32, text.len(), text.len());
+    let end = start.saturating_add(length);
+    let (mut units, mut from, mut to) = (0u32, None, None);
     for (index, c) in text.char_indices() {
-        if units == start {
-            from = index;
+        if from.is_none() && units >= start {
+            from = Some(index);
         }
-        if units == start + length {
-            to = index;
+        if to.is_none() && units >= end {
+            to = Some(index);
             break;
         }
         units += c.len_utf16() as u32;
     }
+    let from = from.unwrap_or(text.len());
+    let to = to.unwrap_or(text.len());
     from.min(to)..to
 }
 
@@ -88,6 +92,10 @@ impl SearchView {
         subscriptions.push(cx.subscribe_in(&ide, window, |this, _, event: &IdeEvent, window, cx| {
             match event {
                 IdeEvent::WorkspaceChanged => {
+                    this.generation = this.generation.wrapping_add(1);
+                    this.debounce = None;
+                    this.searching = false;
+                    this.collapsed.clear();
                     this.set_result(None);
                     this.error = None;
                     cx.notify();
@@ -233,7 +241,7 @@ impl SearchView {
     fn confirm_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(result) = self.result.clone() else { return };
         let ide = self.ide.read(cx);
-        let clean: Vec<&TextSearchFile> = result.files.iter().filter(|file| !ide.is_dirty(&key_of(file))).collect();
+        let clean: Vec<&TextSearchFile> = result.files.iter().filter(|file| !ide.is_dirty(&key_of(ide, file))).collect();
         if clean.is_empty() {
             return;
         }
@@ -264,10 +272,14 @@ impl SearchView {
     }
 
     fn replace(&mut self, params: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let generation = self.generation;
         let call = Store::global(cx).read(cx).call("search.replace", params);
         cx.spawn_in(window, async move |this, cx| {
             let result = call.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
                 match result.map(serde_json::from_value::<TextReplaceResult>) {
                     Ok(Ok(result)) => {
                         let count: u32 = result.files.iter().map(|file| file.replaced).sum();
@@ -298,7 +310,7 @@ impl SearchView {
                 Row::File(index) => Some(self.render_file(row, result.files.get(index)?, &theme, cx)),
                 Row::Match(index, found) => {
                     let file = result.files.get(index)?;
-                    Some(self.render_match(row, file, file.matches.get(found)?, highlight, &theme))
+                    Some(self.render_match(row, file, file.matches.get(found)?, highlight, &theme, cx))
                 }
             })
             .collect()
@@ -337,11 +349,11 @@ impl SearchView {
             .into_any_element()
     }
 
-    fn render_match(&self, row: usize, file: &TextSearchFile, found: &TextSearchMatch, highlight: HighlightStyle, theme: &Theme) -> AnyElement {
+    fn render_match(&self, row: usize, file: &TextSearchFile, found: &TextSearchMatch, highlight: HighlightStyle, theme: &Theme, cx: &App) -> AnyElement {
         let preview = found.preview.trim_end();
         let range = utf16_range(&found.preview, found.preview_column, found.length);
         let text = StyledText::new(preview.to_owned()).with_highlights(Some((range, highlight)).into_iter().filter(|(range, _)| range.end <= preview.len()));
-        let (key, line, column) = (key_of(file), found.line.saturating_sub(1), found.column);
+        let (key, line, column) = (key_of(self.ide.read(cx), file), found.line.saturating_sub(1), found.column);
         let ide = self.ide.clone();
         h_flex()
             .id(("search-match", row))
@@ -364,9 +376,9 @@ impl SearchView {
     }
 }
 
-/// The editor key of a result file.
-fn key_of(file: &TextSearchFile) -> String {
-    crate::store::ide::root_key(Some(&file.root_id), &file.path)
+/// The editor key of a result file, normalized against the workspace's primary root.
+fn key_of(ide: &Ide, file: &TextSearchFile) -> String {
+    ide.key_of_stored(&file.path, (!file.root_id.is_empty()).then_some(file.root_id.as_str()))
 }
 
 impl Render for SearchView {
@@ -487,5 +499,24 @@ impl Render for SearchView {
                     })
                     .child(v_flex().relative().flex_1().min_h_0().child(list).vertical_scrollbar(&self.scroll)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::utf16_range;
+
+    #[test]
+    fn utf16_range_handles_surrogate_pairs_safely() {
+        let text = "a😀bc";
+        // 'a' is 1 UTF-16 unit, '😀' is 2 UTF-16 units (bytes 1..5), 'b' starts at UTF-16 unit 3 (byte 5).
+        assert_eq!(&text[utf16_range(text, 1, 2)], "😀");
+        assert_eq!(&text[utf16_range(text, 3, 1)], "b");
+        // Mid-surrogate start or end snaps safely onto UTF-8 boundaries.
+        let r = utf16_range(text, 2, 2);
+        assert!(text.is_char_boundary(r.start) && text.is_char_boundary(r.end));
+        assert_eq!(&text[r], "b");
     }
 }
