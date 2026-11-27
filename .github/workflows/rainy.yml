@@ -103,7 +103,8 @@ jobs:
           $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
           windres --version
           gcc --version
-          $rustcInfo = rustc -vV
+          # One string: -notmatch on the array of lines returns the lines that do not match, which is never empty.
+          $rustcInfo = (rustc -vV) -join "`n"
           $rustcInfo
           if ($rustcInfo -notmatch '(?m)^host:\s+x86_64-pc-windows-gnu$') {
             throw "Expected Rust host x86_64-pc-windows-gnu, got:`n$rustcInfo"
