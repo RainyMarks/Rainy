@@ -15,7 +15,8 @@ The following names, marks, and visual assets belong exclusively to RainyMarks:
   when used as product, publisher, or distribution branding.
 - **Icons and logos**: the Rainy application icon and brand logo (including
   `resources/icon.png`, `resources/icon.svg`, `native/crates/app/assets/brand/rainy.ico`,
-  `native/installer/finish.bmp`, and derived logo marks).
+  `native/crates/app/assets/brand/rainy-mark.svg`, `native/installer/finish.bmp`,
+  and derived logo marks).
 - **Original character and promotional artwork**: the original Rainy pixel
   cat-ear pet sprites and animations, official showcase artwork, and promotional
   graphics.
