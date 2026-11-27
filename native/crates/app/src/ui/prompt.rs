@@ -10,6 +10,8 @@ use gpui_kit::*;
 
 use crate::ui::tr;
 
+type Submit = Rc<dyn Fn(&mut Window, &mut App) -> bool>;
+
 /// Ask for text; `submit` gets it trimmed and non-empty, and the dialog closes.
 pub fn prompt_text(
     title: SharedString,
@@ -21,7 +23,7 @@ pub fn prompt_text(
 ) {
     let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
     // Submitting returns whether the dialog may close: an empty field keeps it open.
-    let submit: Rc<dyn Fn(&mut Window, &mut App) -> bool> = {
+    let submit: Submit = {
         let input = input.clone();
         Rc::new(move |window: &mut Window, cx: &mut App| {
             let text = input.read(cx).value().trim().to_owned();

@@ -1,190 +1,24 @@
-//! The transcript of one chat: turns built from the chat state, and how each turn is drawn
-//! (`Transcript.tsx` and `ToolCard.tsx`).
+//! Incremental turn-row builder: reuses unchanged turns, finished tool cards, decoded results, and pre-normalized text.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 
 use base64::Engine as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, spinner::Spinner, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use gpui_kit::component::StyledExt as _;
-use rainy_protocol::{AssistantBlock, AssistantMessage, ResultContent, RevertResult, RpcError, TranscriptEntry, UsageSummary};
-use serde_json::{Map, Value, json};
+use rainy_protocol::{AssistantBlock, AssistantMessage, ResultContent, TranscriptEntry};
+use serde_json::{Map, Value};
 
 use crate::i18n::{self, Locale};
-use crate::store::Store;
 use crate::store::chat::{ChatView, RunningTool, TurnRange, assistant_text};
-use crate::store::ide::Ide;
-use crate::ui::tool_title::{is_command, patch_files, tool_title};
-use crate::ui::{format_duration, format_tokens, tr, trf};
+use crate::ui::format_tokens;
+use crate::ui::markdown::{prepare_markdown, prepare_typed_html};
+use crate::ui::tool_title::{is_command, patch_files, relative_to, tool_title_in};
 
-/// What a tool call is doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolState {
-    Running,
-    Waiting,
-    Done,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ToolRow {
-    pub call_id: SharedString,
-    pub name: SharedString,
-    pub title: SharedString,
-    pub command: Option<SharedString>,
-    pub state: ToolState,
-    pub output: Option<SharedString>,
-    /// The file the call names, as the model wrote it and as a Host path, to open it in the editor.
-    pub file: Option<(SharedString, SharedString)>,
-    pub result: Option<Arc<ResultView>>,
-    /// The user undid the change.
-    pub reverted: bool,
-    /// A `task` call: what its sub-agent did.
-    pub subagent: Option<Arc<SubagentView>>,
-}
-
-/// What a `task` call's sub-agent did, from its progress while it runs and from its result once it reported.
-#[derive(Debug, Default, PartialEq)]
-pub struct SubagentView {
-    /// Its latest tool calls: what each did and how it went.
-    pub steps: Vec<(SharedString, ToolState)>,
-    /// Calls made before those listed.
-    pub earlier: usize,
-    /// Calls made in all.
-    pub calls: usize,
-    /// The configured model the call chose for it.
-    pub model: Option<SharedString>,
-    /// The limit that ended it: `steps`, `time` or `budget`.
-    pub stopped: Option<SharedString>,
-}
-
-/// Why the call did not run (`details.refused`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    User,
-    Mode,
-}
-
-/// How a command ended.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Exit {
-    Code(i64),
-    Signal(SharedString),
-    Background,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineKind {
-    Context,
-    Added,
-    Removed,
-    /// Unchanged lines left out between two changes.
-    Gap,
-    /// The file the following lines belong to, in a change of several files.
-    File,
-}
-
-/// A change's lines around what changed, at most `OUTPUT_LINES` of them, each with its `+`/`-` mark.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Diff {
-    pub added: usize,
-    pub removed: usize,
-    pub lines: Vec<(LineKind, SharedString)>,
-    pub hidden: usize,
-}
-
-/// A tool result as its card shows it. Made once per result entry, which never changes once written; later builds
-/// of the transcript take it over.
-#[derive(Debug, PartialEq)]
-pub struct ResultView {
-    /// The `toolResult` entry.
-    pub entry: SharedString,
-    pub text: SharedString,
-    pub diff: Option<Diff>,
-    /// Decoded once here, not on every frame.
-    pub images: Vec<Arc<Image>>,
-    pub exit: Option<Exit>,
-    pub refused: Option<Refusal>,
-    /// The Host kept what the change replaced (`details.undoable`).
-    pub undoable: bool,
-    /// Every file change the call made, by the id its undo goes by: the call's own id for `write` and `edit`, one
-    /// per file for `apply_patch`; `undo` those that can be undone.
-    pub changes: Vec<SharedString>,
-    pub undo: Vec<SharedString>,
-    /// A plan tool's checklist: each item and its status.
-    pub plan: Option<Vec<(SharedString, SharedString)>>,
-    pub failed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Block {
-    Thinking { key: SharedString, text: SharedString, redacted: bool, live: bool, duration_ms: Option<f64> },
-    Text { key: SharedString, text: SharedString },
-    Tool(ToolRow),
-    Notice { level: SharedString, text: SharedString },
-    Muted { text: SharedString },
-    Error { text: SharedString },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Footer {
-    /// The `turn` entry, where a fork starts.
-    pub id: SharedString,
-    pub duration_ms: f64,
-    pub usage: UsageSummary,
-    pub requests: f64,
-}
-
-/// What a row was built from, so a later build can tell whether it would come out the same.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RowSource {
-    chat: SharedString,
-    locale: Locale,
-    /// Ids of the turn's entries in order. An entry never changes once written (the Host appends to the chat file,
-    /// `ChatView` only appends, a reload brings the same records), so the same ids are the same entries.
-    entries: Arc<[SharedString]>,
-    /// Built with the live reply or the stream in it, so the next build makes it again.
-    live: bool,
-}
-
-/// One user message and everything the agent did for it. Cloning one is cheap: its parts are shared.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TurnRow {
-    pub key: SharedString,
-    pub user: Option<(SharedString, usize)>,
-    pub blocks: Arc<[Block]>,
-    pub live: bool,
-    pub footer: Option<Footer>,
-    pub copy: Option<SharedString>,
-    /// Blocks before this index are the steps the reply took; the rest is its answer.
-    pub answer_from: usize,
-    /// Model requests and tool results among the steps.
-    pub work_steps: usize,
-    /// What the steps did: files read, searches, changes, commands.
-    pub summary: SharedString,
-    /// The live turn waits for the agent with nothing to show (it starts, or thinks between steps): for how many
-    /// milliseconds.
-    pub waiting: Option<f64>,
-    /// The chat compacts its earlier conversation while this turn is the last.
-    pub compacting: bool,
-    pub source: RowSource,
-}
-
-/// At most this many lines of a tool's output or a change are shown.
-const OUTPUT_LINES: usize = 60;
-/// A longer line of a change is cut.
-const LINE_CHARS: usize = 400;
-/// Unchanged lines shown around a change.
-const DIFF_CONTEXT: usize = 2;
-/// A diff taking longer is approximated; it runs while the transcript is built, once per result.
-const DIFF_TIMEOUT: Duration = Duration::from_millis(30);
+use super::model::{
+    Block, DIFF_CONTEXT, DIFF_TIMEOUT, Diff, Exit, Footer, LINE_CHARS, LineKind, OUTPUT_LINES, Refusal, ResultView, RowSource, SubagentView, ToolRow,
+    ToolState, TurnRow,
+};
 
 fn result_text(content: &[ResultContent]) -> String {
     content
@@ -218,6 +52,16 @@ fn clip_line(text: &str) -> String {
         Some((at, _)) => format!("{}…", &text[..at]),
         None => text.to_owned(),
     }
+}
+
+pub(super) fn clip_output(text: &str) -> (String, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= OUTPUT_LINES {
+        return (text.to_owned(), 0);
+    }
+    let head = lines[..OUTPUT_LINES / 2].join("\n");
+    let tail = lines[lines.len() - OUTPUT_LINES / 2..].join("\n");
+    (format!("{head}\n…\n{tail}"), lines.len() - OUTPUT_LINES)
 }
 
 fn diff_of(before: &str, after: &str) -> Diff {
@@ -374,26 +218,7 @@ fn result_view(result: &ResultEntry<'_>, locale: Locale) -> ResultView {
 
 /// A path inside the chat's folder as the line shows it, relative to the folder; others as they are.
 fn shown_path(cwd: &str, path: &str) -> Option<String> {
-    let folder = cwd.trim_end_matches(['/', '\\']);
-    if folder.is_empty() || path.len() <= folder.len() + 1 {
-        return None;
-    }
-    // The folder's length is in its own bytes: in a path elsewhere (`C:\迅雷下载\…` beside `C:\Users\ROG\Desktop`) it can
-    // fall inside a character, and slicing there panics.
-    let (head, rest) = path.split_at_checked(folder.len())?;
-    let same = head.eq_ignore_ascii_case(folder) || head == folder;
-    (same && rest.starts_with(['/', '\\'])).then(|| rest[1..].to_owned())
-}
-
-/// The arguments a tool line is titled from, with its paths shown relative to the chat's folder.
-fn titled_arguments(cwd: &str, arguments: &Map<String, Value>) -> Map<String, Value> {
-    let mut shown = arguments.clone();
-    for key in ["file_path", "path"] {
-        if let Some(relative) = arguments.get(key).and_then(Value::as_str).and_then(|path| shown_path(cwd, path)) {
-            shown.insert(key.to_owned(), Value::String(relative));
-        }
-    }
-    shown
+    relative_to(path, cwd)
 }
 
 /// A sub-agent's steps from a `task` call's `details`.
@@ -414,7 +239,7 @@ fn subagent_view(locale: Locale, cwd: &str, details: &Value) -> SubagentView {
                     Some("failed") => ToolState::Failed,
                     _ => ToolState::Done,
                 };
-                (tool_title(locale, name, &titled_arguments(cwd, arguments)).into(), state)
+                (tool_title_in(locale, name, arguments, Some(cwd)).into(), state)
             }
         })
         .collect();
@@ -434,38 +259,53 @@ fn host_path(cwd: &str, path: &str) -> String {
     if absolute || cwd.is_empty() { path.to_owned() } else { format!("{}/{}", cwd.trim_end_matches(['/', '\\']), path.trim_start_matches("./")) }
 }
 
-struct Context<'a> {
+struct BuildContext<'a> {
     locale: Locale,
     cwd: &'a str,
     running: &'a BTreeMap<String, RunningTool>,
     waiting: HashSet<&'a str>,
     /// Calls the user undid, from the `context` entries that record it.
     reverted: &'a HashSet<String>,
-    thinking_since: Option<&'a (String, std::time::Instant)>,
-    /// The chat runs a turn (not a compaction), and how long ago it last changed.
+    thinking_since: Option<&'a (String, Instant)>,
+    /// The chat runs a turn (not a compaction), and when it last changed.
     turn_running: bool,
-    quiet_ms: f64,
+    changed_at: Instant,
     compacting: bool,
 }
 
-/// Parts of an earlier build of a turn that come out the same: the text and thinking of its entries, and the views
-/// of its results.
+/// Parts of an earlier build of a turn that come out the same: finished text/thinking blocks,
+/// finished `ToolRow`s, decoded `ResultView`s, and already-settled preceding blocks inside a live stream.
 #[derive(Default)]
 struct Reuse<'a> {
     blocks: HashMap<&'a str, &'a Block>,
+    stream_blocks: HashMap<&'a str, &'a Block>,
+    tools: HashMap<&'a str, &'a ToolRow>,
     results: HashMap<&'a str, &'a Arc<ResultView>>,
+    user: Option<(&'a SharedString, &'a SharedString)>,
 }
 
 impl<'a> Reuse<'a> {
     fn of(row: &'a TurnRow) -> Self {
         let mut reuse = Self::default();
+        if let (Some((text, _)), Some(html)) = (&row.user, &row.user_html) {
+            reuse.user = Some((text, html));
+        }
         for block in row.blocks.iter() {
             match block {
-                Block::Thinking { key, live: false, .. } | Block::Text { key, .. } if !key.starts_with("stream:") => {
-                    reuse.blocks.insert(key.as_ref(), block);
+                Block::Thinking { key, live: false, .. } | Block::Text { key, .. } => {
+                    if key.starts_with("stream:") {
+                        reuse.stream_blocks.insert(key.as_ref(), block);
+                    } else {
+                        reuse.blocks.insert(key.as_ref(), block);
+                    }
                 }
-                Block::Tool(ToolRow { result: Some(result), .. }) => {
-                    reuse.results.insert(result.entry.as_ref(), result);
+                Block::Tool(tool) => {
+                    if let Some(result) = &tool.result {
+                        reuse.results.insert(result.entry.as_ref(), result);
+                    }
+                    if matches!(tool.state, ToolState::Done | ToolState::Failed) {
+                        reuse.tools.insert(tool.call_id.as_ref(), tool);
+                    }
                 }
                 _ => {}
             }
@@ -474,10 +314,28 @@ impl<'a> Reuse<'a> {
     }
 }
 
+fn prepare_block_markdown(raw: &SharedString) -> SharedString {
+    if !raw.contains("\\(") && !raw.contains("\\[") {
+        raw.clone()
+    } else {
+        prepare_markdown(raw)
+    }
+}
+
+/// Whether the user undid a call: its own id for `write` and `edit`, every file's change for `apply_patch`.
+fn reverted(ctx: &BuildContext<'_>, id: &str, result: Option<&ResultView>) -> bool {
+    ctx.reverted.contains(id) || result.is_some_and(|result| !result.changes.is_empty() && result.changes.iter().all(|change| ctx.reverted.contains(change.as_ref())))
+}
+
 /// `unfinished`: a call without a result is still to run.
 fn tool_row(
-    ctx: &Context<'_>, results: &HashMap<&str, ResultEntry<'_>>, reuse: Option<&Reuse<'_>>, id: &str, name: &str,
-    arguments: &Map<String, Value>, unfinished: bool,
+    ctx: &BuildContext<'_>,
+    results: &HashMap<&str, ResultEntry<'_>>,
+    reuse: Option<&Reuse<'_>>,
+    id: &str,
+    name: &str,
+    arguments: &Map<String, Value>,
+    unfinished: bool,
 ) -> ToolRow {
     let result = results.get(id);
     let running = ctx.running.get(id);
@@ -490,6 +348,18 @@ fn tool_row(
     } else {
         ToolState::Failed
     };
+
+    // Fast path: reuse an already-finished ToolRow whole (zero title/subagent/clip_output work during streaming).
+    if matches!(state, ToolState::Done | ToolState::Failed)
+        && let Some(prev) = reuse.and_then(|r| r.tools.get(id))
+        && prev.state == state
+        && prev.name.as_ref() == name
+        && prev.result.as_ref().map(|r| r.entry.as_ref()) == result.map(|r| r.id)
+        && prev.reverted == reverted(ctx, id, prev.result.as_deref())
+    {
+        return (*prev).clone();
+    }
+
     let subagent = (name == "task").then(|| {
         let details = result.and_then(|result| result.details).or_else(|| running.and_then(|tool| tool.details.as_ref()));
         Arc::new(details.map_or_else(SubagentView::default, |details| subagent_view(ctx.locale, ctx.cwd, details)))
@@ -498,10 +368,14 @@ fn tool_row(
         Some(view) => Arc::clone(view),
         None => Arc::new(result_view(result, ctx.locale)),
     });
-    let output = match &result {
+    let output: Option<SharedString> = match &result {
         Some(result) => Some(result.text.clone()),
         None => running.and_then(|tool| tool.partial.clone()).map(Into::into),
     };
+    let clipped_output = output.as_deref().map(|text| {
+        let (clipped, hidden) = clip_output(text);
+        (SharedString::from(clipped), hidden)
+    });
     let command = is_command(name).then(|| arguments.get("command").and_then(Value::as_str).unwrap_or_default().to_owned().into());
     let patched = (name == "apply_patch").then(|| patch_files(arguments.get("input").and_then(Value::as_str).unwrap_or_default())).filter(|files| files.len() == 1);
     let file = arguments
@@ -510,42 +384,71 @@ fn tool_row(
         .or_else(|| patched.as_ref().map(|files| files[0]))
         .filter(|path| !path.trim().is_empty())
         .map(|path| (SharedString::from(shown_path(ctx.cwd, path).unwrap_or_else(|| path.to_owned())), SharedString::from(host_path(ctx.cwd, path))));
-    let reverted = reverted(ctx, id, result.as_deref());
+    let is_reverted = reverted(ctx, id, result.as_deref());
+    let title = match arguments.get("teamMember").and_then(Value::as_str).filter(|member| !member.is_empty()) {
+        // A call of an external agent's team member (Antigravity), not of the chat's own agent.
+        Some(member) => format!("{member} · {}", tool_title_in(ctx.locale, name, arguments, Some(ctx.cwd))),
+        None => tool_title_in(ctx.locale, name, arguments, Some(ctx.cwd)),
+    };
     ToolRow {
         call_id: id.to_owned().into(),
         name: name.to_owned().into(),
-        title: match arguments.get("teamMember").and_then(Value::as_str).filter(|member| !member.is_empty()) {
-            // A call of an external agent's team member (Antigravity), not of the chat's own agent.
-            Some(member) => format!("{member} · {}", tool_title(ctx.locale, name, &titled_arguments(ctx.cwd, arguments))),
-            None => tool_title(ctx.locale, name, &titled_arguments(ctx.cwd, arguments)),
-        }
-        .into(),
+        title: title.into(),
         command,
         state,
         output,
+        clipped_output,
         file,
         result,
-        reverted,
+        reverted: is_reverted,
         subagent,
     }
 }
 
-/// Whether the user undid a call: its own id for `write` and `edit`, every file's change for `apply_patch`.
-fn reverted(ctx: &Context<'_>, id: &str, result: Option<&ResultView>) -> bool {
-    ctx.reverted.contains(id) || result.is_some_and(|result| !result.changes.is_empty() && result.changes.iter().all(|change| ctx.reverted.contains(change.as_ref())))
+struct AssistantBlocksInput<'a> {
+    ctx: &'a BuildContext<'a>,
+    results: &'a HashMap<&'a str, ResultEntry<'a>>,
+    reuse: Option<&'a Reuse<'a>>,
+    key: &'a str,
+    message: &'a AssistantMessage,
+    /// `live`: the message is the stream; `pending`: its turn is still running.
+    live: bool,
+    pending: bool,
+    thinking_ms: Option<&'a Map<String, Value>>,
 }
 
-/// `live`: the message is the stream; `pending`: its turn is still running.
-fn assistant_blocks(
-    ctx: &Context<'_>, results: &HashMap<&str, ResultEntry<'_>>, reuse: Option<&Reuse<'_>>, key: &str, message: &AssistantMessage,
-    live: bool, pending: bool, thinking_ms: Option<&Map<String, Value>>, out: &mut Vec<Block>,
-) {
+fn assistant_blocks(input: AssistantBlocksInput<'_>, out: &mut Vec<Block>) {
+    let AssistantBlocksInput { ctx, results, reuse, key, message, live, pending, thinking_ms } = input;
     let last = message.content.len().saturating_sub(1);
     for (index, block) in message.content.iter().enumerate() {
         let block_key = format!("{key}:{index}");
-        if let Some(earlier) = reuse.and_then(|reuse| reuse.blocks.get(block_key.as_str())) {
+        if !live
+            && let Some(earlier) = reuse.and_then(|reuse| reuse.blocks.get(block_key.as_str()))
+        {
             out.push((*earlier).clone());
             continue;
+        }
+        // Inside an active stream, preceding blocks (< last) are already settled and can be reused if unchanged.
+        if live && index < last {
+            let lookup_key = if matches!(block, AssistantBlock::Thinking { .. }) && message.timestamp > 0.0 {
+                format!("think:{}:{index}", message.timestamp)
+            } else {
+                block_key.clone()
+            };
+            let candidate = reuse.and_then(|r| r.stream_blocks.get(lookup_key.as_str()).or_else(|| r.blocks.get(lookup_key.as_str())));
+            if let Some(earlier) = candidate {
+                let matches_content = match (block, *earlier) {
+                    (AssistantBlock::Text { text, .. }, Block::Text { text: prev, .. }) => prev.as_ref() == text.as_str(),
+                    (AssistantBlock::Thinking { thinking, redacted, .. }, Block::Thinking { text: prev, redacted: prev_red, live: false, .. }) => {
+                        prev.as_ref() == thinking.as_str() && *prev_red == redacted.unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                if matches_content {
+                    out.push((*earlier).clone());
+                    continue;
+                }
+            }
         }
         match block {
             AssistantBlock::Thinking { thinking, redacted, .. } => {
@@ -553,19 +456,35 @@ fn assistant_blocks(
                 if thinking.trim().is_empty() && !redacted {
                     continue;
                 }
-                let duration_ms = thinking_ms.and_then(|map| map.get(&index.to_string())).and_then(Value::as_f64).or_else(|| {
-                    // A block still thinking counts from when it began.
+                let is_live_block = live && index == last;
+                let live_started = is_live_block.then(|| {
                     let live_key = format!("{}:{index}", message.timestamp);
-                    ctx.thinking_since.filter(|(key, _)| live && *key == live_key).map(|(_, since)| since.elapsed().as_millis() as f64)
-                });
+                    ctx.thinking_since.filter(|(k, _)| *k == live_key).map(|(_, since)| *since)
+                }).flatten();
+                let duration_ms = thinking_ms
+                    .and_then(|map| map.get(&index.to_string()))
+                    .and_then(Value::as_f64)
+                    .or_else(|| live_started.map(|since| since.elapsed().as_millis() as f64));
                 // The same key while the reply streams and once it is saved, so a block the user opened stays open when
                 // the reply ends (the streaming message and the saved one share their start time).
                 let key = if message.timestamp > 0.0 { format!("think:{}:{index}", message.timestamp) } else { block_key };
-                out.push(Block::Thinking { key: key.into(), text: thinking.clone().into(), redacted, live: live && index == last, duration_ms });
+                let text: SharedString = thinking.clone().into();
+                let prepared = prepare_block_markdown(&text);
+                out.push(Block::Thinking {
+                    key: key.into(),
+                    text,
+                    prepared,
+                    redacted,
+                    live: is_live_block,
+                    duration_ms,
+                    started_at: live_started,
+                });
             }
             AssistantBlock::Text { text, .. } => {
                 if !text.trim().is_empty() {
-                    out.push(Block::Text { key: block_key.into(), text: text.clone().into() });
+                    let raw: SharedString = text.clone().into();
+                    let prepared = prepare_block_markdown(&raw);
+                    out.push(Block::Text { key: block_key.into(), text: raw, prepared });
                 }
             }
             AssistantBlock::ToolCall { id, name, arguments, .. } => {
@@ -589,7 +508,7 @@ fn turn_key<'a>(entries: &'a [TranscriptEntry], range: &TurnRange) -> &'a str {
 
 /// Whether an earlier row of the turn comes out the same: the same entries, and none of its calls is running,
 /// waiting, or undone since.
-fn unchanged(row: &TurnRow, entries: &[TranscriptEntry], range: &TurnRange, ctx: &Context<'_>) -> bool {
+fn unchanged(row: &TurnRow, entries: &[TranscriptEntry], range: &TurnRange, ctx: &BuildContext<'_>) -> bool {
     let ids = &row.source.entries;
     let user = range.user.and_then(|idx| entries.get(idx));
     let items = &entries[range.items.clone()];
@@ -608,17 +527,20 @@ fn unchanged(row: &TurnRow, entries: &[TranscriptEntry], range: &TurnRange, ctx:
         })
 }
 
-/// One turn; `live` while the chat works on it, `stream` the reply streaming into it.
-fn build_turn(
-    ctx: &Context<'_>,
-    chat: &SharedString,
-    user_entry: Option<&TranscriptEntry>,
-    items: &[TranscriptEntry],
-    key: &str,
+struct TurnBuildInput<'a> {
+    ctx: &'a BuildContext<'a>,
+    chat: &'a SharedString,
+    user_entry: Option<&'a TranscriptEntry>,
+    items: &'a [TranscriptEntry],
+    key: &'a str,
     live: bool,
-    stream: Option<&AssistantMessage>,
-    reuse: Option<&Reuse<'_>>,
-) -> TurnRow {
+    stream: Option<&'a AssistantMessage>,
+    reuse: Option<&'a Reuse<'a>>,
+}
+
+/// One turn; `live` while the chat works on it, `stream` the reply streaming into it.
+fn build_turn(input: TurnBuildInput<'_>) -> TurnRow {
+    let TurnBuildInput { ctx, chat, user_entry, items, key, live, stream, reuse } = input;
     let locale = ctx.locale;
     let mut results: HashMap<&str, ResultEntry<'_>> = HashMap::new();
     for item in items {
@@ -681,7 +603,10 @@ fn build_turn(
                 if Some(id.as_str()) == answer {
                     answer_from = Some(blocks.len());
                 }
-                assistant_blocks(ctx, &results, reuse, id, message, false, live, thinking_ms.as_ref(), &mut blocks);
+                assistant_blocks(
+                    AssistantBlocksInput { ctx, results: &results, reuse, key: id, message, live: false, pending: live, thinking_ms: thinking_ms.as_ref() },
+                    &mut blocks,
+                );
                 if !live {
                     let text = assistant_text(message);
                     if !text.is_empty() {
@@ -732,24 +657,36 @@ fn build_turn(
             TranscriptEntry::User { .. } | TranscriptEntry::ToolResult { .. } => {}
         }
     }
-    let user = match user_entry {
-        Some(TranscriptEntry::User { text, images, .. }) => Some((text.clone().into(), images.as_ref().map_or(0, Vec::len))),
-        _ => None,
+    let (user, user_html) = match user_entry {
+        Some(TranscriptEntry::User { text, images, .. }) => {
+            let (raw, html) = match reuse.and_then(|r| r.user) {
+                Some((prev_text, prev_html)) if prev_text.as_ref() == text.as_str() => (prev_text.clone(), prev_html.clone()),
+                _ => (SharedString::from(text.clone()), prepare_typed_html(text)),
+            };
+            (Some((raw, images.as_ref().map_or(0, Vec::len))), Some(html))
+        }
+        _ => (None, None),
     };
     let mut answer_from = answer_from.unwrap_or(blocks.len());
     if let Some(stream) = stream {
-        assistant_blocks(ctx, &results, None, "stream", stream, true, true, None, &mut blocks);
+        assistant_blocks(
+            AssistantBlocksInput { ctx, results: &results, reuse, key: "stream", message: stream, live: true, pending: true, thinking_ms: None },
+            &mut blocks,
+        );
         answer_from = blocks.len();
     }
     let entries = user_entry.into_iter().chain(items.iter()).map(|entry| SharedString::from(entry.id().to_owned())).collect();
     // Nothing streams and no tool runs or waits for approval: the agent is starting, or working out its next step.
     let busy_block = blocks.last().is_some_and(|block| matches!(block, Block::Tool(tool) if matches!(tool.state, ToolState::Running | ToolState::Waiting)));
     let streaming = stream.is_some_and(|stream| !stream.content.is_empty());
-    let waiting = (live && ctx.turn_running && !streaming && !busy_block).then_some(ctx.quiet_ms);
+    let is_waiting = live && ctx.turn_running && !streaming && !busy_block;
+    let waiting = is_waiting.then(|| ctx.changed_at.elapsed().as_secs_f64() * 1000.);
+    let waiting_since = is_waiting.then_some(ctx.changed_at);
     let compacting = live && ctx.compacting;
     TurnRow {
         key: key.to_owned().into(),
         user,
+        user_html,
         blocks: blocks.into(),
         live,
         footer: footer.filter(|_| !live),
@@ -758,6 +695,7 @@ fn build_turn(
         work_steps,
         summary: summary.into(),
         waiting,
+        waiting_since,
         compacting,
         source: RowSource { chat: chat.clone(), locale, entries, live: live || stream.is_some() },
     }
@@ -767,7 +705,7 @@ fn build_turn(
 fn rows_from(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Vec<TurnRow> {
     let snapshot = &view.snapshot;
     let chat: SharedString = snapshot.summary.id.clone().into();
-    let ctx = Context {
+    let ctx = BuildContext {
         locale,
         cwd: &snapshot.summary.cwd,
         running: &view.tools,
@@ -775,7 +713,7 @@ fn rows_from(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Vec<TurnR
         reverted: view.reverted_ids(),
         thinking_since: view.thinking_since.as_ref(),
         turn_running: snapshot.summary.status == "running",
-        quiet_ms: view.changed_at.elapsed().as_secs_f64() * 1000.,
+        changed_at: view.changed_at,
         compacting: snapshot.summary.status == "compacting",
     };
     let busy = view.busy();
@@ -801,12 +739,21 @@ fn rows_from(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Vec<TurnR
         let reuse = prior.map(Reuse::of);
         let user_entry = range.user.and_then(|idx| snapshot.entries.get(idx));
         let items = &snapshot.entries[range.items.clone()];
-        rows.push(build_turn(&ctx, &chat, user_entry, items, key, live, stream, reuse.as_ref()));
+        rows.push(build_turn(TurnBuildInput { ctx: &ctx, chat: &chat, user_entry, items, key, live, stream, reuse: reuse.as_ref() }));
     }
     if rows.is_empty()
         && let Some(stream) = &snapshot.streaming
     {
-        rows.push(build_turn(&ctx, &chat, None, &[], "lead", true, Some(stream), None));
+        rows.push(build_turn(TurnBuildInput {
+            ctx: &ctx,
+            chat: &chat,
+            user_entry: None,
+            items: &[],
+            key: "lead",
+            live: true,
+            stream: Some(stream),
+            reuse: None,
+        }));
     }
     rows
 }
@@ -822,642 +769,10 @@ pub fn rebuild_rows(view: &ChatView, locale: Locale, previous: &[TurnRow]) -> Ve
     if previous.is_empty() { build_rows(view, locale) } else { rows_from(view, locale, previous) }
 }
 
-/// Expanded tool cards and thinking blocks, by key.
-pub type Expanded = Rc<HashSet<SharedString>>;
-
-/// Called with a key when a fold is clicked, and the row index to measure again.
-pub type Toggle = Rc<dyn Fn(SharedString, usize, &mut Window, &mut App)>;
-
-fn chevron(open: bool) -> Icon {
-    Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall()
-}
-
-/// A status color as text: the theme's green and red are fill colors, too light on a light surface.
-fn readable(color: Hsla, cx: &App) -> Hsla {
-    if cx.theme().mode.is_dark() { color } else { Hsla { l: color.l.min(0.32), ..color } }
-}
-
-/// Rainy's mark beside a thinking block; it breathes while the model is still thinking. Reduced motion holds it still.
-fn thinking_mark(key: &SharedString, live: bool) -> AnyElement {
-    let mark = img("brand/rainy-mark.svg").size(px(14.)).flex_shrink_0();
-    if !live {
-        return mark.into_any_element();
-    }
-    mark.with_animation(
-        ElementId::Name(format!("think-mark-{key}").into()),
-        Animation::new(Duration::from_millis(1400)).repeat().with_easing(pulsating_between(0.35, 1.)),
-        |mark, delta| mark.opacity(delta),
-    )
-    .into_any_element()
-}
-
-fn render_thinking(
-    key: &SharedString, text: &SharedString, redacted: bool, live: bool, duration_ms: Option<f64>,
-    open: bool, row: usize, toggle: &Toggle, locale: Locale, cx: &App,
-) -> AnyElement {
-    let label = if live {
-        match duration_ms {
-            Some(ms) => i18n::format(locale, "chat.thinkingRunningFor", &[("duration", &format_duration(ms))]),
-            None => i18n::text(locale, "chat.thinkingRunning").to_owned(),
-        }
-    } else if let Some(ms) = duration_ms {
-        i18n::format(locale, "chat.thinkingDoneFor", &[("duration", &format_duration(ms))])
-    } else {
-        i18n::text(locale, "chat.thinkingDone").to_owned()
-    };
-    let toggle = toggle.clone();
-    let key_for_click = key.clone();
-    v_flex()
-        .gap_1()
-        .child(
-            h_flex()
-                .id(ElementId::Name(format!("think-{key}").into()))
-                .gap_1p5()
-                .items_center()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .cursor_pointer()
-                .hover(|style| style.text_color(cx.theme().foreground))
-                .on_click(move |_, window, cx| toggle(key_for_click.clone(), row, window, cx))
-                .child(thinking_mark(key, live))
-                .child(label)
-                .child(chevron(open)),
-        )
-        .when(open, |this| {
-            this.child(
-                div()
-                    .pl_5()
-                    .border_l_1()
-                    .border_color(cx.theme().border)
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if redacted {
-                        div().child(i18n::text(locale, "chat.thinkingRedacted")).into_any_element()
-                    } else {
-                        crate::ui::markdown::markdown(ElementId::Name(format!("think-md-{key}").into()), text).into_any_element()
-                    }),
-            )
-        })
-        .into_any_element()
-}
-
-/// What a tool line shows before its title: a spinner while it runs, a dot when it waits or failed, nothing once done.
-fn state_mark(state: ToolState, cx: &App) -> Option<AnyElement> {
-    let dot = |color: Hsla| div().size(px(6.)).flex_shrink_0().rounded_full().bg(color).into_any_element();
-    match state {
-        ToolState::Running => Some(Spinner::new().xsmall().into_any_element()),
-        ToolState::Waiting => Some(dot(cx.theme().warning)),
-        ToolState::Failed => Some(dot(cx.theme().danger)),
-        ToolState::Done => None,
-    }
-}
-
-fn clip_output(text: &str) -> (String, usize) {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= OUTPUT_LINES {
-        return (text.to_owned(), 0);
-    }
-    let head = lines[..OUTPUT_LINES / 2].join("\n");
-    let tail = lines[lines.len() - OUTPUT_LINES / 2..].join("\n");
-    (format!("{head}\n…\n{tail}"), lines.len() - OUTPUT_LINES)
-}
-
-/// How a command ended, and whether that is worth showing on the closed card.
-fn exit_label(exit: &Exit, locale: Locale) -> (String, bool) {
-    match exit {
-        Exit::Code(code) => (i18n::format(locale, "chat.exitCode", &[("code", code)]), *code != 0),
-        Exit::Signal(signal) => (i18n::format(locale, "chat.signal", &[("signal", signal)]), true),
-        Exit::Background => (i18n::text(locale, "chat.runningInBackground").to_owned(), false),
-        Exit::Unknown => (i18n::text(locale, "chat.noExitCode").to_owned(), false),
-    }
-}
-
-fn open_file(target: &str, window: &mut Window, cx: &mut App) {
-    let ide = Ide::global(cx);
-    let key = ide.read(cx).key_from_absolute(target);
-    match key {
-        Some(key) => {
-            ide.update(cx, |ide, cx| ide.open(key, true, window, cx));
-            crate::ui::agent::reveal_editor(cx);
-        }
-        None => window.push_notification(tr(cx, "chat.fileOutsideProject").to_string(), cx),
-    }
-}
-
-/// Undo one change (`chat.revert`) and tell the user what happened, as the changes bar does.
-fn undo_change(session: SharedString, changes: Vec<SharedString>, window: &mut Window, cx: &mut App) {
-    let ids: Vec<&str> = changes.iter().map(SharedString::as_ref).collect();
-    let request = Store::global(cx).read(cx).call("chat.revert", json!({ "sessionId": session.as_ref(), "toolCallIds": ids }));
-    window
-        .spawn(cx, async move |cx| {
-            let result = request.await;
-            let _ = cx.update(|window, cx| report_revert(result, window, cx));
-        })
-        .detach();
-}
-
-fn report_revert(result: Result<Value, RpcError>, window: &mut Window, cx: &mut App) {
-    let value = match result {
-        Ok(value) => value,
-        Err(error) => {
-            window.push_notification(crate::ui::error_notification(cx, &error), cx);
-            return;
-        }
-    };
-    let Ok(result) = serde_json::from_value::<RevertResult>(value) else { return };
-    if !result.reverted.is_empty() {
-        window.push_notification(trf(cx, "chat.undoDone", &[("count", &result.reverted.len())]).to_string(), cx);
-    }
-    for failure in &result.failed {
-        let reason = tr(cx, match failure.reason.as_str() {
-            "changed" => "chat.undoChanged",
-            "unavailable" => "chat.undoUnavailable",
-            _ => "chat.undoError",
-        });
-        let path = if failure.path.is_empty() { "…" } else { failure.path.as_str() };
-        window.push_notification(Notification::error(trf(cx, "chat.undoFailed", &[("path", &path), ("reason", &reason)])), cx);
-    }
-    // Comparisons of undone files show text that is gone; open editors follow the files put back.
-    let ide = Ide::global(cx);
-    let keys: Vec<String> = result.reverted.iter().filter_map(|item| item["path"].as_str()).filter_map(|path| ide.read(cx).key_from_absolute(path)).collect();
-    ide.update(cx, |ide, cx| {
-        for key in &keys {
-            ide.close_review(key, cx);
-        }
-        ide.check_files(cx);
-    });
-}
-
-/// Lines of a working sub-agent's text its card shows.
-const SUBAGENT_LIVE_LINES: usize = 6;
-
-/// The key a tool card's open state goes by. A working sub-agent's card has its own: it starts open, and folding it
-/// while it works does not leave the finished card open.
-fn tool_key(tool: &ToolRow) -> SharedString {
-    if tool.subagent.is_some() && tool.state == ToolState::Running { format!("tool-live:{}", tool.call_id) } else { format!("tool:{}", tool.call_id) }.into()
-}
-
-/// A sub-agent's report as its card shows it: without the note to the model that it stopped at a limit (the card says
-/// so in the interface language) or the placeholder of an empty report.
-fn report_text(text: &str, stopped: bool) -> &str {
-    let text = if stopped { text.rfind("\n\n[the sub-agent reached").map_or(text, |at| &text[..at]) } else { text };
-    if text.trim() == "(the sub-agent reported nothing)" { "" } else { text }
-}
-
-/// The end of a working sub-agent's text: its last lines, with the fence of a code block the cut falls inside put back
-/// in front, so the Markdown comes out as it will in the report.
-fn live_tail(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let (mut start, mut shown) = (lines.len(), 0);
-    while start > 0 && shown < SUBAGENT_LIVE_LINES {
-        start -= 1;
-        if !lines[start].trim().is_empty() {
-            shown += 1;
-        }
-    }
-    let open = lines[..start].iter().map(|line| line.trim()).filter(|line| line.starts_with("```")).fold(None, |open: Option<&str>, fence| match open {
-        Some(_) => None,
-        None => Some(fence),
-    });
-    let tail = lines[start..].join("\n");
-    match open {
-        Some(fence) => format!("{fence}\n{tail}"),
-        None => tail,
-    }
-}
-
-/// A `task` card's body: the sub-agent's steps, then what it is writing, or the report it handed back.
-fn subagent_body(tool: &ToolRow, agent: &SubagentView, cx: &App) -> AnyElement {
-    let theme = cx.theme();
-    let text = tool.output.as_deref().unwrap_or_default();
-    let mut body = v_flex().w_full().gap_1();
-    if let Some(model) = &agent.model {
-        body = body.child(div().child(trf(cx, "chat.subagentModel", &[("model", model)])));
-    }
-    if agent.earlier > 0 {
-        body = body.child(div().child(trf(cx, "chat.subagentEarlier", &[("count", &agent.earlier)])));
-    }
-    body = body.children(agent.steps.iter().map(|(title, state)| {
-        let mark = match state {
-            ToolState::Running | ToolState::Waiting => Spinner::new().xsmall().into_any_element(),
-            ToolState::Failed => div().size(px(6.)).rounded_full().bg(theme.danger).into_any_element(),
-            ToolState::Done => div().child("✓").into_any_element(),
-        };
-        h_flex()
-            .w_full()
-            .gap_1p5()
-            .items_center()
-            .child(h_flex().w_3().flex_shrink_0().justify_center().child(mark))
-            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title.clone()))
-    }));
-    match tool.state {
-        ToolState::Running | ToolState::Waiting => {
-            let tail = live_tail(text);
-            if !tail.trim().is_empty() {
-                let id = ElementId::Name(format!("task-live-{}", tool.call_id).into());
-                body = body.child(div().w_full().pt_1().text_sm().child(crate::ui::markdown::markdown(id, &SharedString::from(tail))));
-            } else if agent.steps.is_empty() {
-                body = body.child(div().child(tr(cx, "chat.subagentStarting")));
-            }
-        }
-        ToolState::Failed => {
-            body = body.child(div().whitespace_normal().text_color(readable(theme.danger, cx)).child(text.to_owned()));
-        }
-        ToolState::Done => {
-            let report = report_text(text, agent.stopped.is_some());
-            if !agent.steps.is_empty() {
-                body = body.child(div().pt_1().font_medium().text_color(theme.foreground).child(tr(cx, "chat.subagentReport")));
-            }
-            body = if report.trim().is_empty() {
-                body.child(div().child(tr(cx, "chat.subagentNoReport")))
-            } else {
-                let id = ElementId::Name(format!("task-md-{}", tool.call_id).into());
-                body.child(div().w_full().text_sm().child(crate::ui::markdown::markdown(id, &SharedString::from(report.to_owned()))))
-            };
-            if let Some(stopped) = &agent.stopped {
-                let key = match stopped.as_ref() {
-                    "steps" => "chat.subagentStoppedSteps",
-                    "budget" => "chat.subagentStoppedBudget",
-                    _ => "chat.subagentStoppedTime",
-                };
-                body = body.child(div().text_color(crate::theme::warning_text(cx)).child(tr(cx, key)));
-            }
-        }
-    }
-    body.into_any_element()
-}
-
-fn render_tool(tool: &ToolRow, open: bool, row: usize, toggle: &Toggle, style: &TurnStyle, cx: &App) -> AnyElement {
-    let locale = style.locale;
-    let theme = cx.theme();
-    let key = tool_key(tool);
-    let toggle = toggle.clone();
-    let mono = theme.mono_font_family.clone();
-    let muted = theme.muted_foreground;
-    let (good, bad) = (readable(theme.success, cx), readable(theme.danger, cx));
-    let title = tool.command.clone().filter(|command| !command.is_empty() && tool.title == *command).unwrap_or(tool.title.clone());
-    let result = tool.result.as_deref();
-    let refused = result.and_then(|result| result.refused);
-    let diff = result.and_then(|result| result.diff.as_ref());
-    let exit = result.and_then(|result| result.exit.as_ref()).map(|exit| exit_label(exit, locale));
-    let badge = |text: SharedString, color: Hsla| div().flex_shrink_0().text_xs().text_color(color).child(text);
-    // One quiet line, as thinking is: muted text on the chat's own background, details behind the chevron.
-    v_flex()
-        .w_full()
-        .gap_1()
-        .child(
-            h_flex()
-                .id(ElementId::Name(format!("tool-head-{}", tool.call_id).into()))
-                .max_w_full()
-                .gap_1p5()
-                .items_center()
-                .text_sm()
-                .text_color(muted)
-                .cursor_pointer()
-                .hover(|style| style.text_color(theme.foreground))
-                .on_click(move |_, window, cx| toggle(key.clone(), row, window, cx))
-                .children(state_mark(tool.state, cx))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .when(tool.command.is_some(), |this| this.font_family(mono.clone()))
-                        .child(title),
-                )
-                .when_some(tool.subagent.as_deref().filter(|agent| agent.calls > 0), |this, agent| {
-                    this.child(badge(trf(cx, "chat.subagentCalls", &[("count", &agent.calls)]), muted))
-                })
-                .when(tool.subagent.as_deref().is_some_and(|agent| agent.stopped.is_some()), |this| {
-                    this.child(badge(tr(cx, "chat.subagentLimited"), crate::theme::warning_text(cx)))
-                })
-                .when(tool.state == ToolState::Waiting, |this| this.child(badge(tr(cx, "chat.approvalWaiting"), crate::theme::warning_text(cx))))
-                .when(refused.is_some(), |this| this.child(badge(tr(cx, "chat.toolDenied"), muted)))
-                .when(tool.reverted, |this| this.child(badge(tr(cx, "chat.undone"), muted)))
-                .when_some(diff, |this, diff| {
-                    this.child(
-                        h_flex()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .text_xs()
-                            .child(div().text_color(good).child(format!("+{}", diff.added)))
-                            .child(div().text_color(bad).child(format!("−{}", diff.removed))),
-                    )
-                })
-                .when_some(exit.clone().filter(|(_, notable)| *notable), |this, (label, _)| this.child(badge(label.into(), bad)))
-                .when(matches!(result.and_then(|result| result.exit.as_ref()), Some(Exit::Background)), |this| {
-                    this.child(badge(tr(cx, "chat.runningInBackground"), muted))
-                })
-                .child(chevron(open)),
-        )
-        .when(open, |this| {
-            let mut body = v_flex().pl_5().border_l_1().border_color(theme.border).gap_1().text_xs().text_color(muted);
-            let undoable = result.is_some_and(|result| result.undoable && !result.failed) && !tool.reverted;
-            if tool.file.is_some() || undoable {
-                let mut line = h_flex().w_full().gap_2().items_center();
-                if let Some((shown, target)) = tool.file.clone() {
-                    let hint = tr(cx, "chat.openInEditor");
-                    line = line.child(
-                        div()
-                            .id(ElementId::Name(format!("tool-path-{}", tool.call_id).into()))
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_color(theme.link)
-                            .cursor_pointer()
-                            .hover(|style| style.underline())
-                            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
-                            .on_click(move |_, window, cx| open_file(&target, window, cx))
-                            .child(shown),
-                    );
-                } else {
-                    line = line.child(div().flex_1());
-                }
-                if undoable {
-                    let session = style.session.clone();
-                    let busy = session.as_ref().is_none_or(|id| {
-                        Store::global(cx).read(cx).summaries.iter().any(|summary| summary.id == id.as_ref() && matches!(summary.status.as_str(), "running" | "compacting"))
-                    });
-                    let changes = result.map(|result| result.undo.clone()).unwrap_or_default();
-                    line = line.child(
-                        Button::new(ElementId::Name(format!("tool-undo-{}", tool.call_id).into()))
-                            .ghost()
-                            .xsmall()
-                            .label(tr(cx, "chat.undoChange"))
-                            .disabled(busy)
-                            .when(busy, |this| this.tooltip(tr(cx, "review.changesBusy")))
-                            .on_click(move |_, window, cx| {
-                                if let Some(session) = session.clone() {
-                                    undo_change(session, changes.clone(), window, cx);
-                                }
-                            }),
-                    );
-                }
-                body = body.child(line);
-            }
-            if let Some(command) = &tool.command {
-                body = body.child(div().font_family(mono.clone()).text_color(muted).child(format!("$ {command}")));
-            }
-            let plan = result.and_then(|result| result.plan.as_ref());
-            if let Some(refused) = refused {
-                body = body.child(div().text_color(muted).child(tr(cx, if refused == Refusal::User { "chat.toolRefusedUser" } else { "chat.toolRefusedMode" })));
-            } else if let Some(plan) = plan {
-                body = body.child(v_flex().w_full().gap_0p5().text_sm().children(plan.iter().map(|(text, status)| {
-                    let (mark, color) = match status.as_ref() {
-                        "completed" => ("✓", good),
-                        "in_progress" => ("▸", theme.foreground),
-                        "cancelled" => ("✕", muted),
-                        _ => ("○", muted),
-                    };
-                    let finished = matches!(status.as_ref(), "completed" | "cancelled");
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .items_start()
-                        .child(div().flex_shrink_0().w_4().text_color(color).child(mark))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .when(finished, |this| this.text_color(muted).line_through())
-                                .when(status.as_ref() == "in_progress", |this| this.font_semibold())
-                                .child(text.clone()),
-                        )
-                })));
-            } else if let Some(agent) = tool.subagent.as_deref() {
-                body = body.child(subagent_body(tool, agent, cx));
-            } else if let Some(diff) = diff {
-                body = body.child(v_flex().w_full().font_family(mono.clone()).children(diff.lines.iter().map(|(kind, text)| {
-                    let tint = match kind {
-                        LineKind::Added => Some(theme.success.opacity(0.16)),
-                        LineKind::Removed => Some(theme.danger.opacity(0.16)),
-                        LineKind::Context | LineKind::Gap | LineKind::File => None,
-                    };
-                    div()
-                        .px_1()
-                        .when_some(tint, |this, tint| this.bg(tint))
-                        .when(*kind == LineKind::Gap, |this| this.text_color(muted))
-                        .when(*kind == LineKind::File, |this| this.mt_1().font_semibold().text_color(theme.foreground))
-                        .child(text.clone())
-                })));
-                if diff.hidden > 0 {
-                    body = body.child(div().text_color(muted).child(trf(cx, "chat.linesHidden", &[("count", &diff.hidden)])));
-                }
-            } else {
-                let (output, hidden) = clip_output(tool.output.as_deref().unwrap_or_default());
-                let output = if output.trim().is_empty() && tool.state != ToolState::Running {
-                    i18n::text(locale, "chat.noOutput").to_owned()
-                } else {
-                    output
-                };
-                let failed = tool.state == ToolState::Failed && tool.command.is_none();
-                body = body.child(div().font_family(mono.clone()).whitespace_normal().when(failed, |this| this.text_color(bad)).child(output));
-                if hidden > 0 {
-                    body = body.child(div().text_color(muted).child(trf(cx, "chat.linesHidden", &[("count", &hidden)])));
-                }
-            }
-            if let Some(result) = result {
-                body = body.children(result.images.iter().map(|image| img(image.clone()).max_w_full().max_h(px(240.)).object_fit(ObjectFit::ScaleDown)));
-            }
-            if let Some((label, notable)) = exit {
-                body = body.child(div().text_color(if notable { bad } else { muted }).child(label));
-            }
-            this.child(body)
-        })
-        .into_any_element()
-}
-
-/// Start a new chat from a turn's `turn` entry.
-pub type Fork = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
-
-/// How a turn is drawn: the interface language and the chat preferences that shape it.
-pub struct TurnStyle {
-    pub locale: Locale,
-    pub show_usage: bool,
-    /// `compact` folds a finished turn's steps; `detailed` opens tool cards.
-    pub step_detail: SharedString,
-    /// The chat shown, for actions on one tool call.
-    pub session: Option<SharedString>,
-    /// Who a live turn waits for: the external agent or the model.
-    pub waiting_for: SharedString,
-}
-
-/// Draw one turn.
-pub fn render_turn(row: &TurnRow, index: usize, expanded: &Expanded, toggle: &Toggle, fork: &Fork, style: &TurnStyle, cx: &App) -> AnyElement {
-    let (locale, show_usage) = (style.locale, style.show_usage);
-    let theme = cx.theme();
-    let mut column = v_flex().w_full().gap_3().px_4().py_2();
-    if let Some((text, images)) = &row.user {
-        column = column.child(
-            h_flex().w_full().justify_end().child(
-                v_flex()
-                    .max_w(relative(0.85))
-                    .px_3()
-                    .py_2()
-                    .rounded(theme.radius_lg)
-                    .bg(theme.muted)
-                    .child(crate::ui::markdown::typed_text(ElementId::Name(format!("user-{}", row.key).into()), text))
-                    .when(*images > 0, |this| {
-                        this.child(div().text_xs().text_color(theme.muted_foreground).child(format!("🖼 × {images}")))
-                    }),
-            ),
-        );
-    }
-    // A finished turn's steps fold behind one line in the compact style.
-    let foldable = style.step_detail == "compact" && !row.live && row.work_steps > 0;
-    let fold_key: SharedString = format!("steps:{}", row.key).into();
-    let steps_open = !foldable || expanded.contains(&fold_key);
-    if foldable {
-        let label = match &row.footer {
-            Some(footer) => i18n::format(locale, "chat.workedFor", &[("duration", &format_duration(footer.duration_ms))]),
-            None => i18n::format(locale, "chat.stepsSummary", &[("steps", &row.work_steps)]),
-        };
-        let toggle = toggle.clone();
-        let key = fold_key.clone();
-        column = column.child(
-            h_flex()
-                .id(ElementId::Name(format!("fold-{}", row.key).into()))
-                .gap_2()
-                .items_center()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .cursor_pointer()
-                .hover(|style| style.text_color(theme.foreground))
-                .on_click(move |_, window, cx| toggle(key.clone(), index, window, cx))
-                .child(label)
-                .when(!row.summary.is_empty(), |this| this.child(div().text_xs().child(row.summary.clone())))
-                .child(chevron(steps_open)),
-        );
-    }
-    let detailed = style.step_detail == "detailed";
-    for (position, block) in row.blocks.iter().enumerate() {
-        if position < row.answer_from && !steps_open {
-            continue;
-        }
-        let element = match block {
-            Block::Thinking { key, text, redacted, live, duration_ms } => {
-                let open = *live || expanded.contains(key);
-                render_thinking(key, text, *redacted, *live, *duration_ms, open, index, toggle, locale, cx)
-            }
-            Block::Text { key, text } => {
-                crate::ui::markdown::markdown(ElementId::Name(format!("md-{key}").into()), text).into_any_element()
-            }
-            Block::Tool(tool) => {
-                let key = tool_key(tool);
-                // The detailed style opens cards; a click toggles away from the default either way.
-                // Plan cards open in either style: the checklist is what the user follows. So does a sub-agent's card
-                // while it works; it folds once it reported.
-                let plan = tool.result.as_ref().is_some_and(|result| result.plan.is_some());
-                let working_agent = tool.subagent.is_some() && tool.state == ToolState::Running;
-                let streams = tool.subagent.is_none() && tool.state == ToolState::Running && tool.output.is_some();
-                let open = expanded.contains(&key) != (detailed || plan || working_agent) || streams;
-                render_tool(tool, open, index, toggle, style, cx)
-            }
-            Block::Notice { level, text } => {
-                let color = match level.as_ref() {
-                    "error" => theme.danger,
-                    "warning" => crate::theme::warning_text(cx),
-                    _ => theme.muted_foreground,
-                };
-                div().text_sm().text_color(color).child(text.clone()).into_any_element()
-            }
-            Block::Muted { text } => div().text_xs().text_color(theme.muted_foreground).child(text.clone()).into_any_element(),
-            Block::Error { text } => v_flex()
-                .gap_1()
-                .p_3()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.danger)
-                .text_sm()
-                .child(div().font_semibold().text_color(theme.danger).child(i18n::text(locale, "chat.errorTitle")))
-                .child(div().child(text.clone()))
-                .into_any_element(),
-        };
-        column = column.child(element);
-    }
-    if let Some(ms) = row.waiting {
-        // Shown from the start, with the time once it is worth counting.
-        let name = if style.waiting_for.is_empty() { i18n::text(locale, "chat.waitingAgent").to_owned() } else { style.waiting_for.to_string() };
-        let label = if ms >= 2000. {
-            i18n::format(locale, "chat.waitingReplyFor", &[("name", &name), ("duration", &format_duration(ms))])
-        } else {
-            i18n::format(locale, "chat.waitingReply", &[("name", &name)])
-        };
-        column = column.child(
-            h_flex()
-                .gap_1p5()
-                .items_center()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(thinking_mark(&format!("wait-{}", row.key).into(), true))
-                .child(label),
-        );
-    }
-    if row.compacting {
-        column = column.child(
-            h_flex()
-                .gap_1p5()
-                .items_center()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(thinking_mark(&format!("compact-{}", row.key).into(), true))
-                .child(i18n::text(locale, "chat.compactingNow")),
-        );
-    }
-    if row.footer.is_some() || row.copy.is_some() {
-        let mut parts = Vec::new();
-        if let Some(footer) = &row.footer {
-            parts.push(i18n::format(locale, "chat.workedFor", &[("duration", &format_duration(footer.duration_ms))]));
-            if show_usage {
-                parts.push(i18n::format(locale, "chat.turnUsage", &[
-                    ("input", &format_tokens(footer.usage.input)),
-                    ("cache", &format_tokens(footer.usage.cache_read)),
-                    ("output", &format_tokens(footer.usage.output)),
-                ]));
-            }
-        }
-        let copy = row.copy.clone();
-        let fork_from = row.footer.as_ref().map(|footer| footer.id.clone());
-        let fork = fork.clone();
-        column = column.child(
-            h_flex()
-                .gap_3()
-                .items_center()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .when_some(copy, |this, copy| {
-                    let key = crate::ui::copy::key_of(&format!("reply:{}:{}", row.source.chat, row.key));
-                    this.child(
-                        div()
-                            .id(ElementId::Name(format!("copy-{}", row.key).into()))
-                            .cursor_pointer()
-                            .hover(|style| style.text_color(theme.foreground))
-                            .child(Icon::new(crate::ui::copy::icon(key)).xsmall())
-                            .on_click(move |_, _, cx| crate::ui::copy::copy(key, &copy, cx)),
-                    )
-                })
-                .when_some(fork_from, |this, entry| {
-                    this.child(
-                        div()
-                            .id(ElementId::Name(format!("fork-{}", row.key).into()))
-                            .cursor_pointer()
-                            .hover(|style| style.text_color(theme.foreground))
-                            .child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall())
-                            .on_click(move |_, window, cx| fork(entry.clone(), window, cx)),
-                    )
-                })
-                .child(parts.join(" · ")),
-        );
-    }
-    column.into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::tool_card::{live_tail, report_text};
     // `gpui_kit::*` brings GPUI's own `test` macro; use Rust's.
     use ::core::prelude::v1::test;
     use serde_json::json;
@@ -1584,6 +899,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.user.as_ref().unwrap().0, "读 a.txt");
+        assert!(row.user_html.as_deref().is_some_and(|h| h.contains("读 a.txt")));
         assert!(matches!(&row.blocks[0], Block::Thinking { .. }));
         let Block::Tool(tool) = &row.blocks[1] else { panic!("tool") };
         assert_eq!((tool.title.as_ref(), tool.state, tool.output.as_deref()), ("读取 a.txt", ToolState::Done, Some("hello")));
@@ -1711,22 +1027,35 @@ mod tests {
             assistant("a1", json!([{"type": "thinking", "thinking": "想"}, call("c1", "write", json!({"file_path": "a"}))]), "toolUse"),
             result("r1", "c1", "write", json!([{"type": "text", "text": "ok"}]), false, json!({"path": "a", "after": "x\n", "undoable": true})),
             assistant("a2", json!([{"type": "text", "text": "答一"}]), "stop"),
-            json!({"id": "u2", "kind": "user", "ts": 5, "text": "二"}),
+            json!({"id": "u2", "kind": "user", "ts": 5, "text": "这是一个用于测试指针复用的较长用户输入"}),
             assistant("a3", json!([{"type": "text", "text": "先看看这个文件里现在写了什么"}, call("c2", "edit", json!({"file_path": "b"}))]), "toolUse"),
-            result("r2", "c2", "edit", json!([{"type": "text", "text": "ok"}]), false, json!({"path": "b", "before": "1\n", "after": "2\n"})),
+            result("r2", "c2", "edit", json!([{"type": "text", "text": "ok output line for pointer reuse"}]), false, json!({"path": "b", "before": "1\n", "after": "2\n"})),
         ];
-        let stream = |text: &str| assistant("x", json!([{"type": "text", "text": text}]), "pending")["message"].clone();
-        let previous = build_rows(&view(Value::from(first.clone()), stream("正"), "running"), Locale::Zh);
-        // A streamed token: the finished turn is taken over whole, the live one is built again around its finished parts.
-        let token = view(Value::from(first.clone()), stream("正在"), "running");
+        let stream = |thinking: &str, text: &str| {
+            assistant("x", json!([{"type": "thinking", "thinking": thinking}, {"type": "text", "text": text}]), "pending")["message"].clone()
+        };
+        let previous = build_rows(&view(Value::from(first.clone()), stream("已完成思考内容并且足够长以分配在堆上", "正"), "running"), Locale::Zh);
+        // A streamed token: finished turns, finished ToolRows, user HTML, and settled preceding stream blocks are reused.
+        let token = view(Value::from(first.clone()), stream("已完成思考内容并且足够长以分配在堆上", "正在"), "running");
         let rows = rebuild_rows(&token, Locale::Zh, &previous);
         assert_eq!(rows, build_rows(&token, Locale::Zh));
         assert!(Arc::ptr_eq(&rows[0].blocks, &previous[0].blocks));
         assert!(!Arc::ptr_eq(&rows[1].blocks, &previous[1].blocks));
+        assert_eq!(rows[1].user_html.as_ref().unwrap().as_ptr(), previous[1].user_html.as_ref().unwrap().as_ptr());
         let (Block::Text { text: now, .. }, Block::Text { text: before, .. }) = (&rows[1].blocks[0], &previous[1].blocks[0]) else { panic!("text") };
-        // Texts this long are shared, not copied (SharedString keeps up to 23 bytes inline).
         assert_eq!(now.as_ptr(), before.as_ptr());
+        // Finished ToolRow and its pre-clipped output are reused wholesale across stream tokens.
         assert!(Arc::ptr_eq(tools(&rows[1])[0].result.as_ref().unwrap(), tools(&previous[1])[0].result.as_ref().unwrap()));
+        assert_eq!(
+            tools(&rows[1])[0].clipped_output.as_ref().unwrap().0.as_ptr(),
+            tools(&previous[1])[0].clipped_output.as_ref().unwrap().0.as_ptr()
+        );
+        // Preceding settled thinking block inside the live stream is reused without re-cloning.
+        let (Block::Thinking { text: now_th, .. }, Block::Thinking { text: prev_th, .. }) = (&rows[1].blocks[2], &previous[1].blocks[2]) else {
+            panic!("stream thinking");
+        };
+        assert_eq!(now_th.as_ptr(), prev_th.as_ptr());
+
         // The reply settles and a new turn starts; undoing a change of the first turn builds that turn again.
         let mut next = first.clone();
         next.push(assistant("a4", json!([{"type": "text", "text": "答二"}]), "stop"));
@@ -1764,7 +1093,7 @@ mod tests {
         assert_eq!(shown_path(r"C:\Users\ROG\Desktop", r"C:\迅雷下载\撕裂者核弹-数据版\说明.txt"), None);
         assert_eq!(shown_path(r"C:\Users\ROG\Desktop", r"C:\Users\ROG\Desktop\撕裂者\a.txt").as_deref(), Some(r"撕裂者\a.txt"));
         let args = json!({ "file_path": r"C:\Work\app\report.py", "offset": 3 }).as_object().unwrap().clone();
-        assert_eq!(titled_arguments(r"C:\Work\app", &args)["file_path"], "report.py");
+        assert_eq!(tool_title_in(Locale::Zh, "read", &args, Some(r"C:\Work\app")), "读取 report.py（从第 3 行起）");
     }
 
     #[test]

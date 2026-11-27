@@ -3,7 +3,11 @@
 //! IDE mode is the workbench of 4.2. The window switches between the two at any time; both show the same entities, so
 //! the chat, its draft, running work, open files and terminals carry over.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use std::time::Duration;
+
+use gpui_kit::base::ElementExt as _;
+use gpui_kit::base::motion::{Spring, Transition, spring, transition};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -93,28 +97,106 @@ pub fn fit(width: f32, sidebar: Option<f32>, panel: Option<f32>) -> Fit {
     Fit { sidebar, panel: Some(preferred.min(room).max(PANEL_MIN).round()) }
 }
 
+#[derive(Default, Clone, Copy)]
+struct ModeSwitchBounds {
+    container: Option<Bounds<Pixels>>,
+    buttons: [Option<Bounds<Pixels>>; 2],
+}
+
+#[derive(IntoElement)]
+struct ModeSwitch {
+    mode: Mode,
+}
+
+impl RenderOnce for ModeSwitch {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (radius, muted, pill_bg, pill_fg) = {
+            let theme = cx.theme();
+            let dark = theme.mode.is_dark();
+            let fg = if dark { theme.link } else { theme.primary_active };
+            let bg = theme.primary.opacity(if dark { 0.12 * 1.8 } else { 0.12 });
+            (theme.radius, theme.muted, bg, fg)
+        };
+        let bounds_state = window.use_keyed_state("agent-mode-switch-bounds", cx, |_, _| ModeSwitchBounds::default());
+        let snapshot = *bounds_state.read(cx);
+        let active_ix = usize::from(self.mode == Mode::Ide);
+        let pill = snapshot.container.zip(snapshot.buttons[active_ix]).map(|(container, active)| {
+            let target_x = f32::from(active.origin.x - container.origin.x);
+            let target_w = f32::from(active.size.width);
+            let target_y = f32::from(active.origin.y - container.origin.y);
+            let target_h = f32::from(active.size.height);
+            let policy = Spring::new(Duration::from_millis(180)).with_damping(0.92).with_epsilon(0.25);
+            let left = spring(("agent-mode-pill", "x"), target_x, policy, window, cx);
+            let width = spring(("agent-mode-pill", "w"), target_w, policy, window, cx);
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(target_y))
+                .w(px(width))
+                .h(px(target_h))
+                .rounded(radius)
+                .bg(pill_bg)
+        });
+        let has_pill = pill.is_some();
+        let active_variant = if has_pill {
+            ButtonCustomVariant::new(cx)
+                .color(Hsla::transparent_black())
+                .hover(Hsla::transparent_black())
+                .active(Hsla::transparent_black())
+                .foreground(pill_fg)
+        } else {
+            crate::theme::selected_button(cx)
+        };
+        let toggle = |ix: usize, id: &'static str, icon: Icon, label: &str, on: bool, action: Box<dyn Action>| {
+            let state = bounds_state.clone();
+            div()
+                .on_prepaint(move |bounds, window, cx| {
+                    let kick = state.update(cx, |s, _| {
+                        let was_none = s.buttons[ix].replace(bounds).is_none();
+                        was_none && s.container.is_some()
+                    });
+                    if kick {
+                        window.request_animation_frame();
+                    }
+                })
+                .child(
+                    Button::new(id)
+                        .ghost()
+                        .small()
+                        .icon(icon)
+                        .toggled(on)
+                        .selected(on)
+                        .when(on, |this| this.custom(active_variant))
+                        .tooltip_with_action(tr(cx, label), &ToggleMode, None)
+                        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)),
+                )
+        };
+        let container_state = bounds_state.clone();
+        h_flex()
+            .relative()
+            .flex_shrink_0()
+            .gap_0p5()
+            .p_0p5()
+            .rounded(radius)
+            .bg(muted)
+            .on_prepaint(move |bounds, window, cx| {
+                let kick = container_state.update(cx, |s, _| {
+                    let was_none = s.container.replace(bounds).is_none();
+                    was_none && s.buttons.iter().any(Option::is_some)
+                });
+                if kick {
+                    window.request_animation_frame();
+                }
+            })
+            .children(pill)
+            .child(toggle(0, "mode-agent", Icon::new(gpui_kit::assets::IconName::Sparkles), "agent.modeAgent", self.mode == Mode::Agent, Box::new(AgentMode)))
+            .child(toggle(1, "mode-ide", Icon::new(gpui_kit::assets::IconName::CodeXml), "agent.modeIde", self.mode == Mode::Ide, Box::new(IdeMode)))
+    }
+}
+
 /// The two toggles that switch the layout, at the left of the title bar.
-pub fn mode_switch(mode: Mode, cx: &App) -> impl IntoElement + use<> {
-    let theme = cx.theme();
-    let toggle = |id: &'static str, icon: Icon, label: &str, on: bool, action: Box<dyn Action>| {
-        Button::new(id)
-            .ghost()
-            .small()
-            .icon(icon)
-            .toggled(on)
-            .selected(on)
-            .when(on, |this| this.custom(crate::theme::selected_button(cx)))
-            .tooltip_with_action(tr(cx, label), &ToggleMode, None)
-            .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-    };
-    h_flex()
-        .flex_shrink_0()
-        .gap_0p5()
-        .p_0p5()
-        .rounded(theme.radius)
-        .bg(theme.muted)
-        .child(toggle("mode-agent", Icon::new(gpui_kit::assets::IconName::Sparkles), "agent.modeAgent", mode == Mode::Agent, Box::new(AgentMode)))
-        .child(toggle("mode-ide", Icon::new(gpui_kit::assets::IconName::CodeXml), "agent.modeIde", mode == Mode::Ide, Box::new(IdeMode)))
+pub fn mode_switch(mode: Mode, _cx: &App) -> impl IntoElement + use<> {
+    ModeSwitch { mode }
 }
 
 /// `button`, naming the shown project, with the project menu: the projects to switch to, open a folder (on Windows or
@@ -179,10 +261,15 @@ pub fn reveal_editor(cx: &mut App) {
 
 /// How much of the model's context a chat uses, as a ring that fills clockwise from the top (`fraction` 0 to 1).
 pub fn usage_ring(fraction: f32, color: Hsla, track: Hsla) -> impl IntoElement {
-    let fraction = fraction.clamp(0., 1.);
+    let target = fraction.clamp(0., 1.);
     canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
+        move |_, window, cx| {
+            let policy = Spring::new(Duration::from_millis(220)).with_damping(1.0).with_epsilon(0.002);
+            let shown = spring("agent-usage-ring-fraction", target, policy, window, cx).clamp(0., 1.);
+            let tinted = transition("agent-usage-ring-color", color, Transition::new(Duration::from_millis(220)), window, cx);
+            (shown, tinted)
+        },
+        move |bounds, (shown, tinted), window, _| {
             let stroke = px(2.);
             let radius = (bounds.size.width.min(bounds.size.height) - stroke) / 2.;
             let center = bounds.center();
@@ -206,8 +293,8 @@ pub fn usage_ring(fraction: f32, color: Hsla, track: Hsla) -> impl IntoElement {
                 }
             };
             arc(1., track, window);
-            if fraction > 0.005 {
-                arc(fraction, color, window);
+            if shown > 0.005 {
+                arc(shown, tinted, window);
             }
         },
     )

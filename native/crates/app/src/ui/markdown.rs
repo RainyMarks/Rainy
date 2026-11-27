@@ -1,36 +1,78 @@
 //! Markdown of replies, thinking and messages: links open in Rainy or the browser, and LaTeX math is drawn as formulas
 //! (KaTeX with `remark-math` in 3.x).
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
-use gpui_kit::component::text::{
-    InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView, markdown_ast::Node,
-};
+use gpui_kit::base::motion::Easing;
 use gpui_kit::base::text::CodeBlock;
+use gpui_kit::component::text::{
+    InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView, TextViewMotion, markdown_ast::Node,
+};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
 use latex_rust::{Color, Dim, MathFont, MathStyle, SvgOptions};
 
+/// Streamed text fade policy for the active live block (stops automatically 220 ms after streaming pauses).
+fn live_stream_motion() -> TextViewMotion {
+    TextViewMotion::default()
+        .with_stream_fade(Duration::from_millis(220))
+        .with_stream_fade_stagger(Duration::from_millis(8))
+        .with_stream_fade_easing(Easing::EaseOut)
+}
+
+/// Pre-normalize Markdown delimiters once when building rows so per-frame renders keep pointer identity.
+pub fn prepare_markdown(text: &str) -> SharedString {
+    match normalize_math(text) {
+        Cow::Borrowed(same) => SharedString::from(same.to_owned()),
+        Cow::Owned(converted) => SharedString::from(converted),
+    }
+}
+
+/// Pre-escape a typed user message to `<pre>` HTML once when building rows so per-frame renders keep pointer identity.
+pub fn prepare_typed_html(text: &str) -> SharedString {
+    SharedString::from(verbatim_html(text))
+}
+
 /// Markdown text as the chat shows it: selectable, with links and math.
 pub fn markdown(id: impl Into<ElementId>, text: &SharedString) -> TextView {
+    markdown_live(id, text, false)
+}
+
+/// Markdown text with optional streamed fade-in for the live reply block.
+pub fn markdown_live(id: impl Into<ElementId>, text: &SharedString, live: bool) -> TextView {
     let text = match normalize_math(text) {
         Cow::Borrowed(_) => text.clone(),
         Cow::Owned(converted) => converted.into(),
     };
-    TextView::markdown(id, text)
+    markdown_prepared(id, &text, live)
+}
+
+/// Markdown text already normalized by [`prepare_markdown`]: passes the cached `SharedString` directly so
+/// `TextViewState::set_element_text` hits its O(1) pointer fast path.
+pub fn markdown_prepared(id: impl Into<ElementId>, text: &SharedString, live: bool) -> TextView {
+    let view = TextView::markdown(id, text.clone())
         .markdown_extensions(extensions().clone())
         .selectable(true)
         .on_link_click(|url, _, window, cx| crate::ui::open_link(url, window, cx))
-        .code_block_actions(code_block_corner)
+        .code_block_actions(code_block_corner);
+    if live { view.motion(live_stream_motion()) } else { view }
 }
 
 /// A message as the person typed it, shown verbatim and selectable: its line breaks and indents, and text such as
 /// `Vec<String>` or `2*3*4`. Read as Markdown, the lines of a message ran together, `<String>` vanished as an unknown
 /// HTML tag and `*` turned text italic. Web addresses stay links.
 pub fn typed_text(id: impl Into<ElementId>, text: &str) -> TextView {
-    TextView::html(id, verbatim_html(text))
+    let html: SharedString = verbatim_html(text).into();
+    typed_html(id, &html)
+}
+
+/// Already-escaped `<pre>` HTML from [`prepare_typed_html`], keeping `SharedString` pointer identity across frames.
+pub fn typed_html(id: impl Into<ElementId>, html: &SharedString) -> TextView {
+    TextView::html(id, html.clone())
         .selectable(true)
         .on_link_click(|url, _, window, cx| crate::ui::open_link(url, window, cx))
 }
@@ -237,24 +279,76 @@ struct Formula {
     height: f32,
     /// Distance from the top to the baseline.
     baseline: f32,
+    /// Approximate heap bytes (SVG payload) accounted against the cache budget.
+    bytes: usize,
 }
 
-type Key = (String, bool, u32, u32, u32);
+#[derive(Clone, Eq, PartialEq, Hash)]
+struct FormulaKey {
+    latex: Arc<str>,
+    display: bool,
+    font_size: u32,
+    color: u32,
+    scale: u32,
+}
+
+/// Borrowed lookup view so cache hits do not allocate `String` or `Arc<str>`.
+trait FormulaKeyRef {
+    fn fields(&self) -> (&str, bool, u32, u32, u32);
+}
+
+impl FormulaKeyRef for FormulaKey {
+    fn fields(&self) -> (&str, bool, u32, u32, u32) {
+        (&self.latex, self.display, self.font_size, self.color, self.scale)
+    }
+}
+
+struct FormulaLookup<'a>(&'a str, bool, u32, u32, u32);
+
+impl FormulaKeyRef for FormulaLookup<'_> {
+    fn fields(&self) -> (&str, bool, u32, u32, u32) {
+        (self.0, self.1, self.2, self.3, self.4)
+    }
+}
+
+impl PartialEq for dyn FormulaKeyRef + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields() == other.fields()
+    }
+}
+
+impl Eq for dyn FormulaKeyRef + '_ {}
+
+impl Hash for dyn FormulaKeyRef + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.fields().hash(state);
+    }
+}
+
+impl<'a> Borrow<dyn FormulaKeyRef + 'a> for FormulaKey {
+    fn borrow(&self) -> &(dyn FormulaKeyRef + 'a) {
+        self
+    }
+}
 
 /// Maximum number of rasterized formulas retained in the LRU cache.
 const MAX_FORMULA_CACHE: usize = 2048;
+/// Total SVG byte budget for cached formulas (prevents huge equations from inflating memory).
+const MAX_FORMULA_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Bounded LRU cache backed by `HashMap` + `BTreeMap` of access ticks (no extra crate needed, no clear-all spike).
+/// Bounded LRU cache backed by `HashMap` + `BTreeMap` of access ticks with both entry count and byte budget.
 struct LruCache<K, V> {
     capacity: usize,
+    max_bytes: usize,
+    used_bytes: usize,
     tick: u64,
-    entries: HashMap<K, (V, u64)>,
+    entries: HashMap<K, (V, u64, usize)>,
     order: BTreeMap<u64, K>,
 }
 
-impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
-    fn new(capacity: usize) -> Self {
-        Self { capacity: capacity.max(1), tick: 0, entries: HashMap::new(), order: BTreeMap::new() }
+impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
+    fn new(capacity: usize, max_bytes: usize) -> Self {
+        Self { capacity: capacity.max(1), max_bytes: max_bytes.max(1), used_bytes: 0, tick: 0, entries: HashMap::new(), order: BTreeMap::new() }
     }
 
     fn next_tick(&mut self) -> u64 {
@@ -262,43 +356,61 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
         self.tick
     }
 
-    fn get(&mut self, key: &K) -> Option<V> {
-        let old_tick = self.entries.get(key)?.1;
+    fn get<Q: ?Sized + Hash + Eq>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        let (owned_key, old_tick, value) = {
+            let (k, (v, tick, _)) = self.entries.get_key_value(key)?;
+            (k.clone(), *tick, v.clone())
+        };
         let new_tick = self.next_tick();
         self.order.remove(&old_tick);
-        self.order.insert(new_tick, key.clone());
-        let entry = self.entries.get_mut(key)?;
-        entry.1 = new_tick;
-        Some(entry.0.clone())
+        self.order.insert(new_tick, owned_key);
+        if let Some((_, tick, _)) = self.entries.get_mut(key) {
+            *tick = new_tick;
+        }
+        Some(value)
     }
 
-    fn insert(&mut self, key: K, value: V) {
-        if let Some((_, old_tick)) = self.entries.get(&key) {
+    fn insert(&mut self, key: K, value: V, bytes: usize) {
+        if let Some((_, old_tick, old_bytes)) = self.entries.get(&key) {
             self.order.remove(old_tick);
-        } else {
-            while self.entries.len() >= self.capacity {
-                let Some((_, oldest_key)) = self.order.pop_first() else { break };
-                self.entries.remove(&oldest_key);
+            self.used_bytes = self.used_bytes.saturating_sub(*old_bytes);
+        }
+        while !self.entries.is_empty() && (self.entries.len() >= self.capacity || self.used_bytes.saturating_add(bytes) > self.max_bytes) {
+            let Some((_, oldest_key)) = self.order.pop_first() else { break };
+            if let Some((_, _, evicted_bytes)) = self.entries.remove(&oldest_key) {
+                self.used_bytes = self.used_bytes.saturating_sub(evicted_bytes);
             }
         }
         let tick = self.next_tick();
+        self.used_bytes = self.used_bytes.saturating_add(bytes);
         self.order.insert(tick, key.clone());
-        self.entries.insert(key, (value, tick));
+        self.entries.insert(key, (value, tick, bytes));
     }
 }
 
 /// Formulas drawn so far, by source, style, size, color and screen scale; `None` when the source is not supported.
 fn formula(latex: &str, display: bool, font_size: f32, color: Hsla, scale: f32) -> Option<Arc<Formula>> {
-    static CACHE: OnceLock<Mutex<LruCache<Key, Option<Arc<Formula>>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<LruCache<FormulaKey, Option<Arc<Formula>>>>> = OnceLock::new();
     let rgba = Rgba::from(color);
     let packed = u32::from_be_bytes([rgba.r, rgba.g, rgba.b, rgba.a].map(|channel| (channel * 255.0).round() as u8));
-    let key = (latex.to_owned(), display, font_size.to_bits(), packed, scale.to_bits());
-    let mut cache = CACHE.get_or_init(|| Mutex::new(LruCache::new(MAX_FORMULA_CACHE))).lock().ok()?;
-    if let Some(found) = cache.get(&key) {
-        return found;
+    let (size_bits, scale_bits) = (font_size.to_bits(), scale.to_bits());
+    let lock = CACHE.get_or_init(|| Mutex::new(LruCache::new(MAX_FORMULA_CACHE, MAX_FORMULA_CACHE_BYTES)));
+    {
+        let mut cache = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lookup = FormulaLookup(latex, display, size_bits, packed, scale_bits);
+        if let Some(found) = cache.get(&lookup as &dyn FormulaKeyRef) {
+            return found;
+        }
     }
+    // Render outside the cache lock so concurrent readers (e.g. tests or background tasks) never block on LaTeX layout.
     let drawn = draw(latex, display, font_size, rgba, scale).map(Arc::new);
-    cache.insert(key, drawn.clone());
+    let cost = drawn.as_ref().map_or(0, |formula| formula.bytes) + latex.len() + 64;
+    let key = FormulaKey { latex: Arc::from(latex), display, font_size: size_bits, color: packed, scale: scale_bits };
+    let mut cache = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.insert(key, drawn.clone(), cost);
     drawn
 }
 
@@ -331,11 +443,15 @@ fn draw(latex: &str, display: bool, font_size: f32, color: Rgba, scale: f32) -> 
         -pad * device,
         body.replacen("<g fill=", &format!("<g fill-opacity=\"{:.3}\" fill=", color.a), 1)
     );
-    (width * font_size > 0.5 && (height + depth) * font_size > 0.5).then(|| Formula {
-        image: Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes())),
-        width: width * font_size,
-        height: (pad + height + depth) * font_size,
-        baseline: (pad + height) * font_size,
+    (width * font_size > 0.5 && (height + depth) * font_size > 0.5).then(|| {
+        let bytes = svg.len();
+        Formula {
+            image: Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes())),
+            width: width * font_size,
+            height: (pad + height + depth) * font_size,
+            baseline: (pad + height) * font_size,
+            bytes,
+        }
     })
 }
 
@@ -601,8 +717,8 @@ fn convert(chunk: &str) -> Cow<'_, str> {
                 index = end + 2;
                 copied = index;
             }
-            // An escaped character, such as the `\\` before `[2pt]` in a matrix.
-            b'\\' => index += 2,
+            // An escaped character, such as the `\\` before `[2pt]` in a matrix; step by UTF-8 char length so index stays on a char boundary.
+            b'\\' => index += 1 + chunk[index + 1..].chars().next().map_or(0, char::len_utf8),
             _ => index += 1,
         }
     }
@@ -646,6 +762,7 @@ mod tests {
         assert_eq!(normalize_math("`\\(x\\)` 和\n```\n\\[y\\]\n```\n"), "`\\(x\\)` 和\n```\n\\[y\\]\n```\n");
         assert_eq!(normalize_math(r"$$a \\[2pt] b$$"), r"$$a \\[2pt] b$$");
         assert_eq!(normalize_math(r"未闭合 \(x"), r"未闭合 \(x");
+        assert_eq!(normalize_math(r"转义 \中 \(a+b\)"), r"转义 \中 $a+b$");
     }
 
     #[test]
@@ -706,16 +823,25 @@ mod tests {
 
     #[test]
     fn formula_lru_evicts_least_recently_used_entry() {
-        let mut cache = LruCache::new(3);
-        cache.insert("a", 1);
-        cache.insert("b", 2);
-        cache.insert("c", 3);
+        let mut cache = LruCache::new(3, 1024);
+        cache.insert("a", 1, 10);
+        cache.insert("b", 2, 10);
+        cache.insert("c", 3, 10);
         // Touch "a" so "b" becomes the least recently used entry.
         assert_eq!(cache.get(&"a"), Some(1));
-        cache.insert("d", 4);
+        cache.insert("d", 4, 10);
         assert_eq!(cache.get(&"b"), None);
         assert_eq!(cache.get(&"a"), Some(1));
         assert_eq!(cache.get(&"c"), Some(3));
         assert_eq!(cache.get(&"d"), Some(4));
+
+        // Byte budget evicts oldest entries even below item capacity.
+        let mut sized = LruCache::new(10, 25);
+        sized.insert("x", 1, 12);
+        sized.insert("y", 2, 12);
+        sized.insert("z", 3, 12);
+        assert_eq!(sized.get(&"x"), None);
+        assert_eq!(sized.get(&"y"), Some(2));
+        assert_eq!(sized.get(&"z"), Some(3));
     }
 }

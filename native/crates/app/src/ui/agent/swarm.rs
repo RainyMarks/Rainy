@@ -53,6 +53,10 @@ pub struct SwarmView {
     /// The team member whose latest steps are open, and those steps once read.
     open_member: Option<String>,
     steps: Option<Vec<TeamActivity>>,
+    /// Monotonic guard so out-of-order `external.teamMember` responses cannot bleed across chats/members.
+    steps_seq: u64,
+    /// Last signature of the open member's activity so 1.5s team polls do not refetch unchanged steps.
+    steps_signature: Option<(String, Option<String>, Option<String>, usize)>,
     /// Long posts the user opened.
     open_posts: HashSet<u64>,
     /// Frames left that scroll the board to its newest post: a pane that just opened lays out more than once.
@@ -71,6 +75,7 @@ impl SwarmView {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![cx.subscribe(&store, |this, _, event: &StoreEvent, cx| match event {
             StoreEvent::SelectionChanged | StoreEvent::SummariesChanged => this.follow(cx),
+            StoreEvent::HostReconnected(_) => this.reload(cx),
             StoreEvent::TeamChanged(id) => {
                 if this.team.as_deref() == Some(id.as_str()) {
                     this.team_changed(cx);
@@ -88,6 +93,8 @@ impl SwarmView {
             team: None,
             open_member: None,
             steps: None,
+            steps_seq: 0,
+            steps_signature: None,
             open_posts: HashSet::new(),
             settle: 0,
             tab: Tab::Board,
@@ -118,6 +125,8 @@ impl SwarmView {
             self.team = team.clone();
             self.open_member = None;
             self.steps = None;
+            self.steps_seq = self.steps_seq.wrapping_add(1);
+            self.steps_signature = None;
             self.open_posts.clear();
             // Another team opens on its board.
             self.tab = Tab::Board;
@@ -138,15 +147,44 @@ impl SwarmView {
         self.coordinator = coordinator.clone();
         self.posts.clear();
         cx.notify();
-        let Some(coordinator) = coordinator else { return };
+        if let Some(coordinator) = coordinator {
+            self.load_board(coordinator, cx);
+        }
+    }
+
+    /// Re-sync after a Host reconnect so posts sent while disconnected are backfilled even if the selected coordinator did not change.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        if let Some(member) = self.open_member.clone()
+            && self.team.is_some()
+        {
+            self.steps_signature = None;
+            self.read_steps(member, cx);
+            cx.notify();
+            return;
+        }
+        let coordinator = self.selected_coordinator(cx);
+        self.coordinator = coordinator.clone();
+        if let Some(coordinator) = coordinator {
+            self.load_board(coordinator, cx);
+        } else {
+            self.posts.clear();
+            cx.notify();
+        }
+    }
+
+    fn load_board(&mut self, coordinator: String, cx: &mut Context<Self>) {
         let call = self.store.read(cx).call("swarm.get", json!({ "sessionId": coordinator }));
         cx.spawn(async move |this, cx| {
             let Ok(value) = call.await else { return };
             let posts: Vec<Post> = serde_json::from_value(value["posts"].clone()).unwrap_or_default();
             let _ = this.update(cx, |this, cx| {
                 if this.coordinator.as_deref() == Some(coordinator.as_str()) {
+                    let was_empty = this.posts.is_empty();
+                    let follow = was_empty || this.board_at_bottom();
                     this.posts = posts;
-                    this.scroll.scroll_to_bottom();
+                    if follow {
+                        this.scroll.scroll_to_bottom();
+                    }
                     cx.notify();
                 }
             });
@@ -162,20 +200,36 @@ impl SwarmView {
         if self.posts.iter().any(|known| known.id == post.id) {
             return;
         }
+        let follow = self.tab == Tab::Board && self.board_at_bottom();
         self.posts.push(post);
-        self.scroll.scroll_to_bottom();
+        if follow {
+            self.scroll.scroll_to_bottom();
+        }
         cx.notify();
     }
 
     /// The shown team changed: new posts scroll into view unless the user scrolled up to read, an open member's
-    /// steps are read again.
+    /// steps are read again when its activity signature changed.
     fn team_changed(&mut self, cx: &mut Context<Self>) {
         if self.tab == Tab::Board && self.board_at_bottom() {
             self.scroll.scroll_to_bottom();
             self.settle = 2;
         }
-        if let Some(member) = self.open_member.clone() {
-            self.read_steps(member, cx);
+        if self.tab == Tab::Members
+            && let Some(member) = self.open_member.clone()
+            && let Some(session) = self.team.as_deref()
+        {
+            let sig = self
+                .store
+                .read(cx)
+                .teams
+                .get(session)
+                .and_then(|team| team.members.iter().find(|m| m.id == member))
+                .map(|m| (m.status.clone(), m.focus.clone(), m.activity.clone(), m.steps.len()));
+            if sig != self.steps_signature {
+                self.steps_signature = sig;
+                self.read_steps(member, cx);
+            }
         }
         cx.notify();
     }
@@ -188,11 +242,16 @@ impl SwarmView {
 
     fn read_steps(&mut self, member: String, cx: &mut Context<Self>) {
         let Some(session) = self.team.clone() else { return };
+        self.steps_seq = self.steps_seq.wrapping_add(1);
+        let seq = self.steps_seq;
         let call = self.store.read(cx).call("external.teamMember", json!({ "sessionId": session, "memberId": member }));
         cx.spawn(async move |this, cx| {
             let steps: Vec<TeamActivity> = call.await.ok().and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default();
             let _ = this.update(cx, |this, cx| {
-                if this.open_member.as_deref() == Some(member.as_str()) {
+                if this.steps_seq == seq
+                    && this.team.as_deref() == Some(session.as_str())
+                    && this.open_member.as_deref() == Some(member.as_str())
+                {
                     this.steps = Some(steps);
                     cx.notify();
                 }
@@ -205,9 +264,19 @@ impl SwarmView {
         if self.open_member.as_deref() == Some(member.as_str()) {
             self.open_member = None;
             self.steps = None;
+            self.steps_seq = self.steps_seq.wrapping_add(1);
+            self.steps_signature = None;
         } else {
             self.open_member = Some(member.clone());
             self.steps = None;
+            self.steps_signature = self.team.as_deref().and_then(|session| {
+                self.store
+                    .read(cx)
+                    .teams
+                    .get(session)
+                    .and_then(|team| team.members.iter().find(|m| m.id == member))
+                    .map(|m| (m.status.clone(), m.focus.clone(), m.activity.clone(), m.steps.len()))
+            });
             self.read_steps(member, cx);
         }
         cx.notify();
@@ -474,25 +543,28 @@ impl SwarmView {
         v_flex().child(row).when(open, |this| this.child(self.render_steps(cx))).into_any_element()
     }
 
-    fn render_team(&mut self, session: &str, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
+    fn render_team(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let (muted_foreground, border, radius, muted) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.border, theme.radius, theme.muted)
+        };
         // Only what is drawn is copied out of the store: the members, the plan and the newest posts.
         let Some((title, goal, source, mut members, threads, posts, post_total)) = self.store.read(cx).teams.get(session).map(|team: &ExternalTeam| {
             let skip = team.posts.len().saturating_sub(TEAM_POSTS_SHOWN);
             (team.title.clone(), team.goal.clone(), team.source.clone(), team.members.clone(), team.threads.clone(), team.posts[skip..].to_vec(), team.posts.len())
         }) else {
-            return v_flex().size_full().p_4().text_sm().text_color(theme.muted_foreground).child(tr(cx, "agent.swarmNone")).into_any_element();
+            return v_flex().size_full().p_4().text_sm().text_color(muted_foreground).child(tr(cx, "agent.swarmNone")).into_any_element();
         };
         // The chat's own agent works while the chat runs, whatever the team last said.
         let running = self.store.read(cx).summaries.iter().any(|summary| summary.id == session && (summary.status == "running" || summary.status == "compacting"));
-        if let Some(lead) = members.first_mut().filter(|member| member.kind == "lead") {
+        if let Some(lead) = members.iter_mut().find(|member| member.kind == "lead") {
             if running {
                 lead.status = "running".into();
             } else if lead.status == "running" {
                 lead.status = "idle".into();
             }
         }
-        let workers = members.iter().skip(1).filter(|member| member.status != "killed").count();
+        let workers = members.iter().filter(|member| member.kind != "lead" && member.status != "killed").count();
         let tab = |id: &'static str, value: Tab, label: SharedString| {
             Button::new(id).ghost().xsmall().label(label).selected(self.tab == value).on_click(cx.listener(move |this, _, _, cx| {
                 this.tab = value;
@@ -512,20 +584,26 @@ impl SwarmView {
             .gap_1()
             .items_center()
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(border)
             .child(tab("team-board", Tab::Board, tr(cx, "agent.swarmBoard")))
             .child(tab("team-members", Tab::Members, trf(cx, "agent.swarmMembers", &[("count", &workers)])))
             .when(!threads.is_empty() || goal.is_some(), |this| this.child(tab("team-plan", Tab::Plan, tr(cx, "agent.teamPlan"))))
             .child(div().flex_1())
-            .child(div().flex_none().max_w(px(220.)).truncate().text_xs().text_color(theme.muted_foreground).child(title.clone().unwrap_or_else(|| source_label.to_string())));
+            .child(div().flex_none().max_w(px(220.)).truncate().text_xs().text_color(muted_foreground).child(title.clone().unwrap_or_else(|| source_label.to_string())));
         let tab_now = if self.tab == Tab::Plan && threads.is_empty() && goal.is_none() { Tab::Board } else { self.tab };
         let body: AnyElement = match tab_now {
-            Tab::Board if posts.is_empty() => div().p_4().text_sm().text_color(theme.muted_foreground).child(tr(cx, "agent.swarmEmpty")).into_any_element(),
+            Tab::Board if posts.is_empty() => div().p_4().text_sm().text_color(muted_foreground).child(tr(cx, "agent.swarmEmpty")).into_any_element(),
             Tab::Board => {
                 if self.settle > 0 {
                     self.settle -= 1;
                     self.scroll.scroll_to_bottom();
-                    cx.notify();
+                    let entity = cx.entity().downgrade();
+                    window.defer(cx, move |_, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.scroll.scroll_to_bottom();
+                            cx.notify();
+                        });
+                    });
                 }
                 let older = post_total.saturating_sub(posts.len());
                 let rows: Vec<AnyElement> = posts.iter().map(|post| self.render_team_post(post, cx)).collect();
@@ -534,7 +612,7 @@ impl SwarmView {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .when(older > 0, |this| this.child(div().px_3().py_1().text_xs().text_color(theme.muted_foreground).child(format!("… +{older}"))))
+                    .when(older > 0, |this| this.child(div().px_3().py_1().text_xs().text_color(muted_foreground).child(format!("… +{older}"))))
                     .children(rows)
                     .into_any_element()
             }
@@ -546,7 +624,7 @@ impl SwarmView {
                     .overflow_y_scroll()
                     .py_1()
                     .children(rows)
-                    .child(div().px_3().pt_2().pb_3().text_xs().whitespace_normal().text_color(theme.muted_foreground.opacity(0.8)).child(tr(cx, "agent.teamReadOnly")))
+                    .child(div().px_3().pt_2().pb_3().text_xs().whitespace_normal().text_color(muted_foreground.opacity(0.8)).child(tr(cx, "agent.teamReadOnly")))
                     .into_any_element()
             }
             Tab::Plan => {
@@ -563,8 +641,8 @@ impl SwarmView {
                                     .gap_1()
                                     .items_center()
                                     .px_1p5()
-                                    .rounded(theme.radius)
-                                    .bg(theme.muted)
+                                    .rounded(radius)
+                                    .bg(muted)
                                     .text_xs()
                                     .child(div().size(px(6.)).rounded_full().bg(color))
                                     .child(format!("@{name}"))
@@ -576,9 +654,9 @@ impl SwarmView {
                             .py_2()
                             .gap_1()
                             .border_b_1()
-                            .border_color(theme.border.opacity(0.5))
+                            .border_color(border.opacity(0.5))
                             .child(div().text_sm().font_semibold().child(thread.title.clone()))
-                            .children(thread.goal.clone().map(|goal| div().text_xs().whitespace_normal().text_color(theme.muted_foreground).child(goal)))
+                            .children(thread.goal.clone().map(|goal| div().text_xs().whitespace_normal().text_color(muted_foreground).child(goal)))
                             .child(h_flex().flex_wrap().gap_1().children(chips))
                             .into_any_element()
                     })
@@ -593,9 +671,9 @@ impl SwarmView {
                             .py_2()
                             .gap_0p5()
                             .border_b_1()
-                            .border_color(theme.border)
+                            .border_color(border)
                             .children(title.map(|title| div().text_sm().font_semibold().child(title)))
-                            .children(goal.map(|goal| div().text_xs().whitespace_normal().text_color(theme.muted_foreground).child(goal))),
+                            .children(goal.map(|goal| div().text_xs().whitespace_normal().text_color(muted_foreground).child(goal))),
                     )
                     .children(groups)
                     .into_any_element()
@@ -606,13 +684,16 @@ impl SwarmView {
 }
 
 impl Render for SwarmView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(session) = self.team.clone() {
-            return self.render_team(&session, cx);
+            return self.render_team(&session, window, cx);
         }
-        let theme = cx.theme().clone();
+        let (muted_foreground, border) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.border)
+        };
         let Some(coordinator) = self.coordinator.clone() else {
-            return v_flex().size_full().p_4().gap_2().text_sm().text_color(theme.muted_foreground).child(tr(cx, "agent.swarmNone")).into_any_element();
+            return v_flex().size_full().p_4().gap_2().text_sm().text_color(muted_foreground).child(tr(cx, "agent.swarmNone")).into_any_element();
         };
         let members = self.members(cx);
         let workers = members.iter().filter(|member| member.id != coordinator && !member.archived).count();
@@ -642,13 +723,13 @@ impl Render for SwarmView {
             .gap_1()
             .items_center()
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(border)
             .child(tab("swarm-board", Tab::Board, tr(cx, "agent.swarmBoard")))
             .child(tab("swarm-members", Tab::Members, trf(cx, "agent.swarmMembers", &[("count", &workers)])))
             .child(div().flex_1())
             .child(stop);
         let body: AnyElement = match self.tab {
-            Tab::Board if self.posts.is_empty() => div().p_4().text_sm().text_color(theme.muted_foreground).child(tr(cx, "agent.swarmEmpty")).into_any_element(),
+            Tab::Board if self.posts.is_empty() => div().p_4().text_sm().text_color(muted_foreground).child(tr(cx, "agent.swarmEmpty")).into_any_element(),
             Tab::Board | Tab::Plan => {
                 let rows: Vec<AnyElement> = self.posts.iter().enumerate().map(|(index, post)| self.render_post(index, post, cx)).collect();
                 v_flex().id("swarm-board").size_full().overflow_y_scroll().track_scroll(&self.scroll).children(rows).into_any_element()

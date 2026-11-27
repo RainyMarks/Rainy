@@ -7,11 +7,13 @@
 //! looks through titles, folders and, through the Host, the messages themselves.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
+use gpui_kit::base::GlobalState;
+use gpui_kit::base::motion::{MotionReveal, Presence, Transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use serde_json::json;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -29,6 +31,52 @@ use crate::ui::{tr, trf};
 
 /// Chats a sidebar group shows until it is asked for all of them.
 const GROUP_LIMIT: usize = 8;
+
+/// Frame-capped synced spinner (30 fps) to avoid 144-240 fps full-window repaints on high-refresh displays.
+fn limited_spinner(id: impl Into<ElementId>, color: Hsla, reduced: bool) -> AnyElement {
+    let icon = Icon::new(IconName::Loader).xsmall().text_color(color);
+    if reduced {
+        return icon.into_any_element();
+    }
+    icon.with_animation(
+        id.into(),
+        Animation::new(Duration::from_millis(900)).repeat_synced().with_max_fps(30.0),
+        |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
+    )
+    .into_any_element()
+}
+
+/// Synced subtle pulse (24 fps) for chats awaiting user approval.
+fn waiting_dot(id: impl Into<ElementId>, color: Hsla, reduced: bool) -> AnyElement {
+    let dot = div().size(px(7.)).flex_shrink_0().rounded_full().bg(color);
+    if reduced {
+        return dot.into_any_element();
+    }
+    dot.with_animation(
+        id.into(),
+        Animation::new(Duration::from_millis(1600))
+            .repeat_synced()
+            .with_max_fps(24.0)
+            .with_easing(pulsating_between(0.45, 1.0)),
+        |dot, delta| dot.opacity(delta),
+    )
+    .into_any_element()
+}
+
+struct SidebarRowSpec {
+    folder: Option<SharedString>,
+    snippet: Option<String>,
+    depth: usize,
+    workers_progress: Option<f32>,
+    now_ms: f64,
+}
+
+fn now_millis() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as f64)
+        .unwrap_or(0.0)
+}
 
 pub struct HistoryPanel {
     store: Entity<Store>,
@@ -77,14 +125,12 @@ impl HistoryPanel {
                 }
                 _ => {}
             }),
-            // The chats of the project shown come first.
+            // Projects added, renamed, pinned, selected, restored or removed; do not `observe(&Ide)` on every editor keystroke.
             cx.subscribe(&Ide::global(cx), |_, _, event: &IdeEvent, cx| {
-                if matches!(event, IdeEvent::WorkspaceChanged) {
+                if matches!(event, IdeEvent::WorkspaceChanged | IdeEvent::Restored) {
                     cx.notify();
                 }
             }),
-            // Projects renamed, pinned, opened or removed.
-            cx.observe(&Ide::global(cx), |_, _, cx| cx.notify()),
         ];
         Self {
             store,
@@ -119,13 +165,18 @@ impl HistoryPanel {
     }
 
     fn render_row(&self, summary: &SessionSummary, folder: Option<SharedString>, searching: bool, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
+        let (radius, list_active, list_hover, muted_foreground, warning) = {
+            let theme = cx.theme();
+            (theme.radius, theme.list_active, theme.list_hover, theme.muted_foreground, theme.warning)
+        };
         let id = summary.id.clone();
         let active = self.store.read(cx).selected.as_deref() == Some(summary.id.as_str());
         let busy = matches!(summary.status.as_str(), "running" | "compacting");
         let waiting = summary.awaiting_approval == Some(true);
         let title = title_of(summary, cx);
         let actions = ChatActions::of(summary, title.clone());
+        let spin_id = ElementId::Name(format!("chat-spin-{id}").into());
+        let wait_id = ElementId::Name(format!("chat-wait-{id}").into());
         h_flex()
             .id(ElementId::Name(format!("chat-{id}").into()))
             .w_full()
@@ -133,31 +184,31 @@ impl HistoryPanel {
             .px_2()
             .gap_2()
             .items_center()
-            .rounded(theme.radius)
+            .rounded(radius)
             .text_sm()
             .cursor_pointer()
-            .when(active, |this| this.bg(theme.list_active))
-            .when(!active, |this| this.hover(|style| style.bg(theme.list_hover)))
+            .when(active, |this| this.bg(list_active))
+            .when(!active, |this| this.hover(move |style| style.bg(list_hover)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 let id = id.clone();
                 this.store.update(cx, |store, cx| store.select(Some(id), cx));
             }))
             .when(summary.pinned, |this| {
-                this.child(Icon::new(gpui_kit::assets::IconName::Pin).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
+                this.child(Icon::new(gpui_kit::assets::IconName::Pin).xsmall().flex_shrink_0().text_color(muted_foreground))
             })
             // Found by a search among the archived ones.
             .when(searching && summary.archived, |this| {
-                this.child(Icon::new(gpui_kit::assets::IconName::Archive).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
+                this.child(Icon::new(gpui_kit::assets::IconName::Archive).xsmall().flex_shrink_0().text_color(muted_foreground))
             })
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
             .when_some(external_badge(summary, cx), |this, badge| this.child(badge))
             .when_some(folder, |this, folder| {
                 this.child(
-                    div().max_w(px(96.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(folder),
+                    div().max_w(px(96.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(muted_foreground).child(folder),
                 )
             })
-            .when(busy, |this| this.child(Spinner::new().xsmall()))
-            .when(waiting, |this| this.child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(theme.warning)))
+            .when(busy, |this| this.child(limited_spinner(spin_id, muted_foreground, cx.reduce_motion())))
+            .when(waiting, |this| this.child(waiting_dot(wait_id, warning, cx.reduce_motion())))
             .context_menu(move |menu, _, cx| actions.menu(menu, cx))
             .into_any_element()
     }
@@ -167,9 +218,13 @@ impl HistoryPanel {
     /// its menu button under the pointer; a search adds the line of a message that matched. Choosing a chat of another
     /// known project shows that project, so its files, the new chats and file links all belong to the chat. `depth`
     /// indents it (1 in a project, one more for a swarm worker under its coordinator); `workers` is whether the
-    /// coordinator's workers listed under it are folded, and adds the arrow that folds them.
-    fn render_sidebar_row(&self, summary: &SessionSummary, folder: Option<SharedString>, snippet: Option<String>, depth: usize, workers: Option<bool>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
+    /// coordinator's workers listed under it are folded (with chevron rotation progress 0..1), and adds the arrow that folds them.
+    fn render_sidebar_row(&self, summary: &SessionSummary, spec: SidebarRowSpec, cx: &mut Context<Self>) -> AnyElement {
+        let SidebarRowSpec { folder, snippet, depth, workers_progress, now_ms } = spec;
+        let (radius, list_active, list_hover, muted_foreground, foreground, warning, primary) = {
+            let theme = cx.theme();
+            (theme.radius, theme.list_active, theme.list_hover, theme.muted_foreground, theme.foreground, theme.warning, theme.primary)
+        };
         let id = summary.id.clone();
         let active = self.store.read(cx).selected.as_deref() == Some(summary.id.as_str());
         let busy = matches!(summary.status.as_str(), "running" | "compacting");
@@ -180,7 +235,7 @@ impl HistoryPanel {
         let menu_shown = self.hovered.as_deref() == Some(id.as_str()) || self.menu_open.as_deref() == Some(id.as_str());
         let workspace = summary.workspace_id.clone();
         let (hover_id, open_id, menu_actions) = (id.clone(), id.clone(), actions.clone());
-        let when = ago(summary.updated_at, crate::ui::locale(cx) == crate::i18n::Locale::Zh);
+        let when = ago_from(now_ms, summary.updated_at, crate::ui::locale(cx) == crate::i18n::Locale::Zh);
         let right: AnyElement = if menu_shown {
             Button::new(ElementId::Name(format!("chat-menu-{open_id}").into()))
                 .ghost()
@@ -194,11 +249,11 @@ impl HistoryPanel {
                 }))
                 .into_any_element()
         } else if busy {
-            Spinner::new().xsmall().into_any_element()
+            limited_spinner(ElementId::Name(format!("sidebar-spin-{id}").into()), muted_foreground, cx.reduce_motion())
         } else if waiting {
-            div().size(px(7.)).flex_shrink_0().rounded_full().bg(theme.warning).into_any_element()
+            waiting_dot(ElementId::Name(format!("sidebar-wait-{id}").into()), warning, cx.reduce_motion())
         } else {
-            div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(when).into_any_element()
+            div().flex_shrink_0().text_xs().text_color(muted_foreground).child(when).into_any_element()
         };
         let line = h_flex()
             .w_full()
@@ -206,22 +261,30 @@ impl HistoryPanel {
             .gap_1p5()
             .items_center()
             // The unread dot keeps its place, so titles line up whether or not it shows.
-            .child(div().w(px(6.)).h(px(6.)).flex_shrink_0().rounded_full().when(unread, |dot| dot.bg(theme.primary)))
+            .child(div().w(px(6.)).h(px(6.)).flex_shrink_0().rounded_full().when(unread, |dot| dot.bg(primary)))
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().when(unread, |title| title.font_weight(FontWeight::MEDIUM)).child(title))
             .when_some(external_badge(summary, cx), |this, badge| this.child(badge))
-            .when_some(workers, |this, folded| {
+            .when_some(workers_progress, |this, progress| {
                 let key = swarm_key(&summary.id);
                 this.child(
                     div()
                         .id(ElementId::Name(format!("swarm-fold-{}", summary.id).into()))
                         .flex_shrink_0()
-                        .rounded(theme.radius)
-                        .text_color(theme.muted_foreground)
-                        .hover(|style| style.text_color(theme.foreground))
-                        .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            // Folding the workers does not open the coordinator.
+                        .rounded(radius)
+                        .text_color(muted_foreground)
+                        .hover(move |style| style.text_color(foreground))
+                        .child(
+                            Icon::new(IconName::ChevronRight)
+                                .xsmall()
+                                .rotate(radians(progress * std::f32::consts::FRAC_PI_2)),
+                        )
+                        // Stop Left MouseDown here so the parent chat row does not register a click, and suppress
+                        // window text selection; never stop MouseUp/on_click so TextSelectionLayer resets cleanly.
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            GlobalState::suppress_text_selection(cx);
                             cx.stop_propagation();
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.folded.remove(&key) {
                                 this.folded.insert(key.clone());
                             }
@@ -230,15 +293,15 @@ impl HistoryPanel {
                 )
             })
             .when(summary.worktree.is_some(), |this| {
-                this.child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
+                this.child(Icon::new(gpui_kit::assets::IconName::GitBranch).xsmall().flex_shrink_0().text_color(muted_foreground))
             })
             .when_some(folder, |this, folder| {
                 this.child(
-                    div().max_w(px(88.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(folder),
+                    div().max_w(px(88.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(muted_foreground).child(folder),
                 )
             })
             .when(summary.archived, |this| {
-                this.child(Icon::new(gpui_kit::assets::IconName::Archive).xsmall().flex_shrink_0().text_color(theme.muted_foreground))
+                this.child(Icon::new(gpui_kit::assets::IconName::Archive).xsmall().flex_shrink_0().text_color(muted_foreground))
             })
             .child(right);
         v_flex()
@@ -247,11 +310,11 @@ impl HistoryPanel {
             .flex_shrink_0()
             .pl(px(4. + 12. * depth as f32))
             .pr_1()
-            .rounded(theme.radius)
+            .rounded(radius)
             .text_sm()
             .cursor_pointer()
-            .when(active, |this| this.bg(theme.list_active))
-            .when(!active, |this| this.hover(|style| style.bg(theme.list_hover)))
+            .when(active, |this| this.bg(list_active))
+            .when(!active, |this| this.hover(move |style| style.bg(list_hover)))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 let now = hovered.then(|| hover_id.clone());
                 if *hovered || this.hovered.as_deref() == Some(hover_id.as_str()) {
@@ -274,16 +337,18 @@ impl HistoryPanel {
             }))
             .child(line)
             .when_some(snippet.filter(|snippet| !snippet.is_empty()), |this, snippet| {
-                this.child(div().pl(px(12.)).pb_1().text_xs().text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().whitespace_nowrap().child(snippet))
+                this.child(div().pl(px(12.)).pb_1().text_xs().text_color(muted_foreground).overflow_hidden().text_ellipsis().whitespace_nowrap().child(snippet))
             })
             .context_menu(move |menu, _, cx| actions.menu(menu, cx))
             .into_any_element()
     }
 
     /// The header of a sidebar group; a click folds or unfolds it.
-    fn render_group_header(&self, key: &str, title: SharedString, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let folded = self.folded.contains(key);
+    fn render_group_header(&self, key: &str, title: SharedString, chevron_progress: f32, cx: &mut Context<Self>) -> AnyElement {
+        let (muted_foreground, foreground) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.foreground)
+        };
         let key = key.to_owned();
         h_flex()
             .id(ElementId::Name(format!("group-{key}").into()))
@@ -295,11 +360,16 @@ impl HistoryPanel {
             .gap_1()
             .items_center()
             .text_xs()
-            .text_color(theme.muted_foreground)
+            .text_color(muted_foreground)
             .cursor_pointer()
-            .hover(|style| style.text_color(theme.foreground))
+            .hover(move |style| style.text_color(foreground))
             .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
-            .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().flex_shrink_0())
+            .child(
+                Icon::new(IconName::ChevronRight)
+                    .xsmall()
+                    .flex_shrink_0()
+                    .rotate(radians(chevron_progress * std::f32::consts::FRAC_PI_2)),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.folded.remove(&key) {
                     this.folded.insert(key.clone());
@@ -311,7 +381,10 @@ impl HistoryPanel {
 
     /// An entry at the top of the sidebar: an icon, its name and its key.
     fn nav_row(&self, id: &'static str, icon: impl Into<Icon>, label: SharedString, keys: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
-        let theme = cx.theme();
+        let (radius, list_hover, muted_foreground) = {
+            let theme = cx.theme();
+            (theme.radius, theme.list_hover, theme.muted_foreground)
+        };
         h_flex()
             .id(id)
             .w_full()
@@ -320,25 +393,25 @@ impl HistoryPanel {
             .px_2()
             .gap_2()
             .items_center()
-            .rounded(theme.radius)
+            .rounded(radius)
             .text_sm()
             .cursor_pointer()
-            .hover(|style| style.bg(theme.list_hover))
-            .child(icon.into().small().text_color(theme.muted_foreground))
+            .hover(move |style| style.bg(list_hover))
+            .child(icon.into().small().text_color(muted_foreground))
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
-            .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(keys))
+            .child(div().flex_shrink_0().text_xs().text_color(muted_foreground).child(keys))
     }
 
     /// The Agent sidebar above the list: new chat and search (or its field).
     fn render_sidebar_top(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme().clone();
+        let muted_foreground = cx.theme().muted_foreground;
         let new_chat = self.nav_row("sidebar-new", Icon::new(gpui_kit::assets::IconName::SquarePen), tr(cx, "agent.newChat"), "Ctrl+N", cx)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(NewChat), cx));
         let search: AnyElement = if self.searching {
             div()
                 .w_full()
                 .py_0p5()
-                .child(Input::new(&self.search).small().cleanable(true).prefix(Icon::new(IconName::Search).small().text_color(theme.muted_foreground)))
+                .child(Input::new(&self.search).small().cleanable(true).prefix(Icon::new(IconName::Search).small().text_color(muted_foreground)))
                 .into_any_element()
         } else {
             self.nav_row("sidebar-search", Icon::new(IconName::Search), tr(cx, "agent.search"), "Ctrl+Alt+K", cx)
@@ -403,7 +476,10 @@ impl HistoryPanel {
     /// A project: its folder and name, a pin when pinned, and under the pointer a new chat in it and its menu. A click
     /// folds or unfolds its chats.
     fn render_project_row(&self, group: &ProjectGroup<'_>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
+        let (radius, list_hover, muted_foreground) = {
+            let theme = cx.theme();
+            (theme.radius, theme.list_hover, theme.muted_foreground)
+        };
         let key = format!("project:{}", group.id);
         let folded = self.folded.contains(&group.id);
         let current = Ide::global(cx).read(cx).workspace.as_ref().is_some_and(|shown| shown.workspace_id == group.id);
@@ -420,10 +496,10 @@ impl HistoryPanel {
             .pr_1()
             .gap_1p5()
             .items_center()
-            .rounded(theme.radius)
+            .rounded(radius)
             .text_sm()
             .cursor_pointer()
-            .hover(|style| style.bg(theme.list_hover))
+            .hover(move |style| style.bg(list_hover))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered || this.hovered.as_deref() == Some(hover_key.as_str()) {
                     this.hovered = hovered.then(|| hover_key.clone());
@@ -436,35 +512,50 @@ impl HistoryPanel {
                 }
                 cx.notify();
             }))
-            .child(Icon::new(if folded { IconName::Folder } else { IconName::FolderOpen }).small().flex_shrink_0().text_color(theme.muted_foreground))
+            .child(Icon::new(if folded { IconName::Folder } else { IconName::FolderOpen }).small().flex_shrink_0().text_color(muted_foreground))
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().when(current, |title| title.font_weight(FontWeight::MEDIUM)).child(group.title.clone()))
-            .when(group.pinned && !menu_shown, |this| this.child(Icon::new(gpui_kit::assets::IconName::Pin).xsmall().flex_shrink_0().text_color(theme.muted_foreground)))
+            .when(group.pinned && !menu_shown, |this| this.child(Icon::new(gpui_kit::assets::IconName::Pin).xsmall().flex_shrink_0().text_color(muted_foreground)))
             .when(menu_shown, |this| {
                 let new_in = workspace.clone();
                 this.when_some(new_in, |this, new_in| {
                     this.child(
-                        Button::new(ElementId::Name(format!("project-new-{key}").into()))
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(gpui_kit::assets::IconName::SquarePen))
-                            .tooltip(tr(cx, "agent.newChatInProject"))
-                            .on_click(move |_, window, cx| {
+                        // Block Left MouseDown from reaching the project row (so clicking New Chat does not fold it)
+                        // without stopping MouseUp/on_click so TextSelectionLayer always resets.
+                        div()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                GlobalState::suppress_text_selection(cx);
                                 cx.stop_propagation();
-                                new_chat_in(new_in.clone(), window, cx);
-                            }),
+                            })
+                            .child(
+                                Button::new(ElementId::Name(format!("project-new-{key}").into()))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(gpui_kit::assets::IconName::SquarePen))
+                                    .tooltip(tr(cx, "agent.newChatInProject"))
+                                    .on_click(move |_, window, cx| {
+                                        new_chat_in(new_in.clone(), window, cx);
+                                    }),
+                            ),
                     )
                 })
                 .child(
-                    Button::new(ElementId::Name(format!("project-menu-{key}").into()))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Ellipsis)
-                        .tooltip(tr(cx, "agent.projectActions"))
-                        .dropdown_menu(move |menu, _, cx| project_menu(menu, workspace.clone(), chats.clone(), cx))
-                        .on_open_change(cx.listener(move |this, open: &bool, _, cx| {
-                            this.menu_open = open.then(|| open_key.clone());
-                            cx.notify();
-                        })),
+                    div()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            GlobalState::suppress_text_selection(cx);
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            Button::new(ElementId::Name(format!("project-menu-{key}").into()))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Ellipsis)
+                                .tooltip(tr(cx, "agent.projectActions"))
+                                .dropdown_menu(move |menu, _, cx| project_menu(menu, workspace.clone(), chats.clone(), cx))
+                                .on_open_change(cx.listener(move |this, open: &bool, _, cx| {
+                                    this.menu_open = open.then(|| open_key.clone());
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
             .into_any_element()
@@ -472,55 +563,83 @@ impl HistoryPanel {
 
     /// The Agent sidebar's list: search results (titles and folders, then messages the Host found), or the pinned
     /// chats, each project with its chats, and the chats outside any project.
-    fn render_sidebar_list(&self, summaries: &[SessionSummary], words: &[String], cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let ide = Ide::global(cx).read(cx);
-        let workspaces = ide.workspaces.clone();
-        let titles: HashMap<String, String> = workspaces.iter().map(|workspace| (workspace.workspace_id.clone(), workspace.title.clone())).collect();
+    fn render_sidebar_list(&self, summaries: &[SessionSummary], words: &[String], now_ms: f64, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let workspaces = Ide::global(cx).read(cx).workspaces.clone();
+        let titles: HashMap<&str, &str> = workspaces.iter().map(|workspace| (workspace.workspace_id.as_str(), workspace.title.as_str())).collect();
         let untitled = tr(cx, "chat.newChat");
         let mut rows = Vec::new();
         if !words.is_empty() {
-            let mut shown: HashSet<String> = HashSet::new();
+            let mut shown: HashSet<&str> = HashSet::new();
+            let by_id: HashMap<&str, &SessionSummary> = summaries.iter().map(|summary| (summary.id.as_str(), summary)).collect();
             for summary in sorted(summaries.iter().filter(|summary| found(summary, &untitled, words))) {
-                shown.insert(summary.id.clone());
-                rows.push(self.render_sidebar_row(summary, Some(folder_name(summary, &titles)), None, 0, None, cx));
+                shown.insert(summary.id.as_str());
+                rows.push(self.render_sidebar_row(
+                    summary,
+                    SidebarRowSpec { folder: Some(folder_name(summary, &titles)), snippet: None, depth: 0, workers_progress: None, now_ms },
+                    cx,
+                ));
             }
-            let hits: Vec<(&SessionSummary, String)> = self
+            let hits: Vec<(&SessionSummary, &str)> = self
                 .content_hits
                 .iter()
-                .filter(|(id, _)| !shown.contains(id))
-                .filter_map(|(id, snippet)| summaries.iter().find(|summary| &summary.id == id).map(|summary| (summary, snippet.clone())))
+                .filter(|(id, _)| !shown.contains(id.as_str()))
+                .filter_map(|(id, snippet)| by_id.get(id.as_str()).map(|summary| (*summary, snippet.as_str())))
                 .collect();
             if !hits.is_empty() {
                 rows.push(self.render_label(tr(cx, "agent.foundInMessages"), cx));
                 for (summary, snippet) in hits {
-                    rows.push(self.render_sidebar_row(summary, Some(folder_name(summary, &titles)), Some(snippet), 0, None, cx));
+                    rows.push(self.render_sidebar_row(
+                        summary,
+                        SidebarRowSpec { folder: Some(folder_name(summary, &titles)), snippet: Some(snippet.to_owned()), depth: 0, workers_progress: None, now_ms },
+                        cx,
+                    ));
                 }
             }
             return rows;
         }
         let visible = newest_first(summaries.iter().filter(|summary| !summary.archived));
         let tree = sidebar_tree(&visible, &workspaces);
+        let reveal_policy = Transition::new(Duration::from_millis(160));
         if !tree.pinned.is_empty() {
-            rows.push(self.render_group_header("pinned", tr(cx, "agent.pinned"), cx));
-            if !self.folded.contains("pinned") {
-                for summary in &tree.pinned {
-                    let folder = summary.workspace_id.is_some().then(|| folder_name(summary, &titles));
-                    rows.push(self.render_sidebar_row(summary, folder, None, 0, None, cx));
-                }
+            let open = !self.folded.contains("pinned");
+            let presence = Presence::new("history-group-pinned", open).transition(reveal_policy.clone()).sample(window, cx);
+            rows.push(self.render_group_header("pinned", tr(cx, "agent.pinned"), presence.progress, cx));
+            if presence.should_render() {
+                let items: Vec<AnyElement> = tree
+                    .pinned
+                    .iter()
+                    .map(|summary| {
+                        let folder = summary.workspace_id.is_some().then(|| folder_name(summary, &titles));
+                        self.render_sidebar_row(summary, SidebarRowSpec { folder, snippet: None, depth: 0, workers_progress: None, now_ms }, cx)
+                    })
+                    .collect();
+                let group_body = v_flex().w_full().gap_px().opacity(presence.progress).children(items).into_any_element();
+                rows.push(MotionReveal::new("history-reveal-pinned", presence.progress, group_body).into_any_element());
             }
         }
         rows.push(self.render_projects_header(cx));
         for group in &tree.projects {
             rows.push(self.render_project_row(group, cx));
-            if self.folded.contains(&group.id) {
-                continue;
+            let open = !self.folded.contains(&group.id);
+            let presence = Presence::new(SharedString::from(format!("history-group-proj-{}", group.id)), open)
+                .transition(reveal_policy.clone())
+                .sample(window, cx);
+            if presence.should_render() && !group.chats.is_empty() {
+                let items = self.render_limited(&group.id, &group.chats, true, now_ms, window, cx);
+                let group_body = v_flex().w_full().gap_px().opacity(presence.progress).children(items).into_any_element();
+                rows.push(
+                    MotionReveal::new(ElementId::Name(format!("history-reveal-proj-{}", group.id).into()), presence.progress, group_body).into_any_element(),
+                );
             }
-            rows.extend(self.render_limited(&group.id, &group.chats, true, cx));
         }
         if !tree.loose.is_empty() {
-            rows.push(self.render_group_header("none", tr(cx, "agent.chats"), cx));
-            if !self.folded.contains("none") {
-                rows.extend(self.render_limited("none", &tree.loose, false, cx));
+            let open = !self.folded.contains("none");
+            let presence = Presence::new("history-group-none", open).transition(reveal_policy).sample(window, cx);
+            rows.push(self.render_group_header("none", tr(cx, "agent.chats"), presence.progress, cx));
+            if presence.should_render() {
+                let items = self.render_limited("none", &tree.loose, false, now_ms, window, cx);
+                let group_body = v_flex().w_full().gap_px().opacity(presence.progress).children(items).into_any_element();
+                rows.push(MotionReveal::new("history-reveal-none", presence.progress, group_body).into_any_element());
             }
         }
         rows
@@ -533,7 +652,7 @@ impl HistoryPanel {
 
     /// A group's chats up to [`GROUP_LIMIT`], each swarm coordinator with its workers under it (they do not count
     /// towards the limit), then the entry that shows all of them or fewer again.
-    fn render_limited(&self, key: &str, chats: &[&SessionSummary], nested: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_limited(&self, key: &str, chats: &[&SessionSummary], nested: bool, now_ms: f64, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let total = chats.len();
         let entries = nest_workers(chats);
         let chats = &entries;
@@ -542,16 +661,35 @@ impl HistoryPanel {
         let shown = if all { chats.len() } else { chats.len().min(GROUP_LIMIT) };
         let mut rows: Vec<AnyElement> = Vec::new();
         for (summary, workers) in &chats[..shown] {
-            let folded = self.folded.contains(&swarm_key(&summary.id));
-            rows.push(self.render_sidebar_row(summary, None, None, depth, (!workers.is_empty()).then_some(folded), cx));
-            if !folded {
-                rows.extend(workers.iter().map(|worker| self.render_sidebar_row(worker, None, None, depth + 1, None, cx)));
+            if workers.is_empty() {
+                rows.push(self.render_sidebar_row(summary, SidebarRowSpec { folder: None, snippet: None, depth, workers_progress: None, now_ms }, cx));
+            } else {
+                let open = !self.folded.contains(&swarm_key(&summary.id));
+                let presence = Presence::new(SharedString::from(format!("history-swarm-{}", summary.id)), open)
+                    .transition(Transition::new(Duration::from_millis(160)))
+                    .sample(window, cx);
+                rows.push(self.render_sidebar_row(summary, SidebarRowSpec { folder: None, snippet: None, depth, workers_progress: Some(presence.progress), now_ms }, cx));
+                if presence.should_render() {
+                    let worker_rows: Vec<AnyElement> = workers
+                        .iter()
+                        .map(|worker| {
+                            self.render_sidebar_row(worker, SidebarRowSpec { folder: None, snippet: None, depth: depth + 1, workers_progress: None, now_ms }, cx)
+                        })
+                        .collect();
+                    let body = v_flex().w_full().gap_px().opacity(presence.progress).children(worker_rows).into_any_element();
+                    rows.push(
+                        MotionReveal::new(ElementId::Name(format!("history-swarm-reveal-{}", summary.id).into()), presence.progress, body).into_any_element(),
+                    );
+                }
             }
         }
         if chats.len() > GROUP_LIMIT {
             let key = key.to_owned();
             let label = if all { tr(cx, "agent.showFewer") } else { trf(cx, "agent.showAll", &[("count", &total)]) };
-            let theme = cx.theme();
+            let (muted_foreground, foreground) = {
+                let theme = cx.theme();
+                (theme.muted_foreground, theme.foreground)
+            };
             rows.push(
                 div()
                     .id(ElementId::Name(format!("group-more-{key}").into()))
@@ -560,9 +698,9 @@ impl HistoryPanel {
                     .when(!nested, |this| this.pl(px(16.)))
                     .py_1()
                     .text_xs()
-                    .text_color(theme.muted_foreground)
+                    .text_color(muted_foreground)
                     .cursor_pointer()
-                    .hover(|style| style.text_color(theme.foreground))
+                    .hover(move |style| style.text_color(foreground))
                     .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.unlimited.remove(&key) {
@@ -674,11 +812,6 @@ fn project_menu(menu: PopupMenu, workspace: Option<IdeWorkspace>, chats: Vec<Str
 }
 
 /// How long ago, as briefly as the sidebar has room for: `刚刚`, `5分钟`, `3小时`, `2天`; `now`, `5m`, `3h`, `2d`.
-fn ago(updated_ms: f64, zh: bool) -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as f64).unwrap_or(updated_ms);
-    ago_from(now, updated_ms, zh)
-}
-
 fn ago_from(now_ms: f64, updated_ms: f64, zh: bool) -> String {
     let locale = if zh { crate::i18n::Locale::Zh } else { crate::i18n::Locale::En };
     let minutes = ((now_ms - updated_ms) / 60_000.0).max(0.0) as u64;
@@ -705,13 +838,20 @@ fn swarm_key(coordinator: &str) -> String {
 /// place.
 fn nest_workers<'a>(chats: &[&'a SessionSummary]) -> Vec<(&'a SessionSummary, Vec<&'a SessionSummary>)> {
     let leads: HashSet<&str> = chats.iter().filter(|chat| chat.swarm.as_ref().is_none_or(|link| link.coordinator == chat.id)).map(|chat| chat.id.as_str()).collect();
-    let lead_of = |chat: &SessionSummary| chat.swarm.as_ref().map(|link| link.coordinator.clone()).filter(|lead| *lead != chat.id && leads.contains(lead.as_str()));
-    let mut entries: Vec<(&'a SessionSummary, Vec<&'a SessionSummary>)> = chats.iter().filter(|chat| lead_of(chat).is_none()).map(|chat| (*chat, Vec::new())).collect();
+    let lead_of = |chat: &'a SessionSummary| chat.swarm.as_ref().map(|link| link.coordinator.as_str()).filter(|lead| *lead != chat.id && leads.contains(*lead));
+    let mut entries: Vec<(&'a SessionSummary, Vec<&'a SessionSummary>)> = Vec::with_capacity(chats.len());
+    let mut index_by_id: HashMap<&'a str, usize> = HashMap::with_capacity(chats.len());
+    for &chat in chats {
+        if lead_of(chat).is_none() {
+            index_by_id.insert(chat.id.as_str(), entries.len());
+            entries.push((chat, Vec::new()));
+        }
+    }
     for &chat in chats {
         if let Some(lead) = lead_of(chat)
-            && let Some((_, workers)) = entries.iter_mut().find(|(entry, _)| entry.id == lead)
+            && let Some(&slot) = index_by_id.get(lead)
         {
-            workers.push(chat);
+            entries[slot].1.push(chat);
         }
     }
     for (_, workers) in &mut entries {
@@ -740,15 +880,23 @@ struct SidebarTree<'a> {
 /// first and then by their latest chat (so choosing a chat never moves them), projects without chats in the list's
 /// order (most recently opened first); and the chats outside any project.
 fn sidebar_tree<'a>(chats: &[&'a SessionSummary], workspaces: &[IdeWorkspace]) -> SidebarTree<'a> {
-    let mut projects: Vec<ProjectGroup<'a>> = workspaces
-        .iter()
-        .map(|workspace| ProjectGroup { id: workspace.workspace_id.clone(), title: workspace.title.clone(), pinned: workspace.pinned, workspace: Some(workspace.clone()), chats: Vec::new() })
-        .collect();
+    let mut projects: Vec<ProjectGroup<'a>> = Vec::with_capacity(workspaces.len());
+    let mut project_index: HashMap<String, usize> = HashMap::with_capacity(workspaces.len());
+    for workspace in workspaces {
+        project_index.insert(workspace.workspace_id.clone(), projects.len());
+        projects.push(ProjectGroup {
+            id: workspace.workspace_id.clone(),
+            title: workspace.title.clone(),
+            pinned: workspace.pinned,
+            workspace: Some(workspace.clone()),
+            chats: Vec::new(),
+        });
+    }
     let (mut pinned, mut loose) = (Vec::new(), Vec::new());
-    let mut latest: HashMap<String, f64> = HashMap::new();
+    let mut latest: HashMap<&str, f64> = HashMap::new();
     for &chat in chats {
-        if let Some(id) = &chat.workspace_id {
-            let newest = latest.entry(id.clone()).or_insert(chat.updated_at);
+        if let Some(id) = chat.workspace_id.as_deref() {
+            let newest = latest.entry(id).or_insert(chat.updated_at);
             *newest = newest.max(chat.updated_at);
         }
         if chat.pinned {
@@ -757,20 +905,23 @@ fn sidebar_tree<'a>(chats: &[&'a SessionSummary], workspaces: &[IdeWorkspace]) -
         }
         match chat.workspace_id.as_deref() {
             None => loose.push(chat),
-            Some(id) => match projects.iter_mut().find(|group| group.id == id) {
-                Some(group) => group.chats.push(chat),
-                None => projects.push(ProjectGroup {
-                    id: id.to_owned(),
-                    title: chat.cwd.split(['/', '\\']).rfind(|part| !part.is_empty()).unwrap_or(&chat.cwd).to_owned(),
-                    pinned: false,
-                    workspace: None,
-                    chats: vec![chat],
-                }),
+            Some(id) => match project_index.get(id).copied() {
+                Some(slot) => projects[slot].chats.push(chat),
+                None => {
+                    project_index.insert(id.to_owned(), projects.len());
+                    projects.push(ProjectGroup {
+                        id: id.to_owned(),
+                        title: chat.cwd.split(['/', '\\']).rfind(|part| !part.is_empty()).unwrap_or(&chat.cwd).to_owned(),
+                        pinned: false,
+                        workspace: None,
+                        chats: vec![chat],
+                    });
+                }
             },
         }
     }
     projects.sort_by(|a, b| {
-        let newest = |group: &ProjectGroup<'_>| latest.get(&group.id).copied().unwrap_or(0.0);
+        let newest = |group: &ProjectGroup<'_>| latest.get(group.id.as_str()).copied().unwrap_or(0.0);
         b.pinned.cmp(&a.pinned).then(newest(b).total_cmp(&newest(a)))
     });
     SidebarTree { pinned, projects, loose }
@@ -789,16 +940,25 @@ struct ArchivedList {
 
 impl ArchivedList {
     fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let subscriptions = vec![cx.subscribe(&store, |_, _, event: &StoreEvent, cx| {
+            if matches!(event, StoreEvent::SummariesChanged | StoreEvent::PrefsChanged) {
+                cx.notify();
+            }
+        })];
         Self { store, _subscriptions: subscriptions }
     }
 }
 
 impl Render for ArchivedList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
+        let (border, muted_foreground) = {
+            let theme = cx.theme();
+            (theme.border, theme.muted_foreground)
+        };
         let zh = crate::ui::locale(cx) == crate::i18n::Locale::Zh;
-        let titles: HashMap<String, String> = Ide::global(cx).read(cx).workspaces.iter().map(|workspace| (workspace.workspace_id.clone(), workspace.title.clone())).collect();
+        let now_ms = now_millis();
+        let workspaces = Ide::global(cx).read(cx).workspaces.clone();
+        let titles: HashMap<&str, &str> = workspaces.iter().map(|workspace| (workspace.workspace_id.as_str(), workspace.title.as_str())).collect();
         let summaries = self.store.read(cx).summaries.clone();
         let archived = newest_first(summaries.iter().filter(|summary| summary.archived));
         let rows: Vec<AnyElement> = archived
@@ -813,13 +973,13 @@ impl Render for ArchivedList {
                     .gap_2()
                     .items_center()
                     .border_b_1()
-                    .border_color(theme.border)
+                    .border_color(border)
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
                             .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} · {}", folder_name(summary, &titles), ago(summary.updated_at, zh)))),
+                            .child(div().text_xs().text_color(muted_foreground).child(format!("{} · {}", folder_name(summary, &titles), ago_from(now_ms, summary.updated_at, zh)))),
                     )
                     .child(Button::new(ElementId::Name(format!("archived-open-{open}").into())).ghost().xsmall().label(tr(cx, "agent.open")).on_click(move |_, window, cx| {
                         store.update(cx, |store, cx| store.select(Some(open.clone()), cx));
@@ -841,7 +1001,7 @@ impl Render for ArchivedList {
             .max_h(px(440.))
             .overflow_y_scroll()
             .children(rows)
-            .when(empty, |this| this.child(div().py_4().text_sm().text_color(theme.muted_foreground).child(tr(cx, "agent.noArchived"))))
+            .when(empty, |this| this.child(div().py_4().text_sm().text_color(muted_foreground).child(tr(cx, "agent.noArchived"))))
     }
 }
 
@@ -931,9 +1091,9 @@ fn group_of(chat: &SessionSummary, workspace_id: Option<&str>) -> Group {
 }
 
 /// The name of a chat's project, else of the folder it ran in.
-fn folder_name(chat: &SessionSummary, titles: &HashMap<String, String>) -> SharedString {
-    if let Some(title) = chat.workspace_id.as_ref().and_then(|id| titles.get(id)) {
-        return title.clone().into();
+fn folder_name(chat: &SessionSummary, titles: &HashMap<&str, &str>) -> SharedString {
+    if let Some(title) = chat.workspace_id.as_deref().and_then(|id| titles.get(id)) {
+        return (*title).to_owned().into();
     }
     chat.cwd.split(['/', '\\']).rfind(|part| !part.is_empty()).unwrap_or(&chat.cwd).to_owned().into()
 }
@@ -952,7 +1112,7 @@ fn found(chat: &SessionSummary, untitled: &str, words: &[String]) -> bool {
 }
 
 impl Render for HistoryPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search.read(cx).value().trim().to_lowercase();
         let words: Vec<String> = query.split_whitespace().map(str::to_owned).collect();
         let summaries = self.store.read(cx).summaries.clone();
@@ -961,7 +1121,12 @@ impl Render for HistoryPanel {
         if searching {
             self.searching = true;
         }
-        let rows = if self.sidebar { self.render_sidebar_list(&summaries, &words, cx) } else { self.render_side_list(&summaries, &words, cx) };
+        let now_ms = now_millis();
+        let rows = if self.sidebar {
+            self.render_sidebar_list(&summaries, &words, now_ms, window, cx)
+        } else {
+            self.render_side_list(&summaries, &words, cx)
+        };
         let empty = rows.is_empty();
         let footer = (!searching && archived_count > 0).then(|| {
             Button::new("history-archived")
@@ -973,11 +1138,14 @@ impl Render for HistoryPanel {
                 .label(trf(cx, "agent.archivedCount", &[("count", &archived_count)]))
                 .on_click(cx.listener(|this, _, window, cx| open_archived(this.store.clone(), window, cx)))
         });
-        let theme = cx.theme().clone();
+        let (sidebar_bg, muted_foreground, sidebar_border) = {
+            let theme = cx.theme();
+            (theme.sidebar, theme.muted_foreground, theme.sidebar_border)
+        };
         let top = if self.sidebar { self.render_sidebar_top(cx).into_any_element() } else { self.render_side_header(cx).into_any_element() };
         v_flex()
             .size_full()
-            .bg(theme.sidebar)
+            .bg(sidebar_bg)
             .child(top)
             .child(
                 v_flex()
@@ -990,11 +1158,11 @@ impl Render for HistoryPanel {
                     .overflow_y_scroll()
                     .children(rows)
                     .when(empty, |this| {
-                        this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, if searching { "chat.noResults" } else { "chat.noChats" })))
+                        this.child(div().p_3().text_sm().text_color(muted_foreground).child(tr(cx, if searching { "chat.noResults" } else { "chat.noChats" })))
                     }),
             )
             .when_some(footer, |this, footer| {
-                this.child(div().flex_shrink_0().p_1().when(self.sidebar, |this| this.px_2()).border_t_1().border_color(theme.sidebar_border).child(footer))
+                this.child(div().flex_shrink_0().p_1().when(self.sidebar, |this| this.px_2()).border_t_1().border_color(sidebar_border).child(footer))
             })
     }
 }

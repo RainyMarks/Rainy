@@ -1,5 +1,7 @@
 //! One-line summaries of tool calls (`toolTitle` in `src/renderer/chat/ToolCard.tsx`).
 
+use std::borrow::Cow;
+
 use serde_json::{Map, Value};
 
 use crate::i18n::{Locale, format, text};
@@ -12,8 +14,37 @@ fn number(args: &Map<String, Value>, key: &str) -> Option<i64> {
     args.get(key).and_then(Value::as_i64)
 }
 
+/// `path` relative to `cwd` when inside it; Windows paths match case-insensitively and across slashes.
+pub fn relative_to(path: &str, cwd: &str) -> Option<String> {
+    let cwd = cwd.trim_end_matches(['/', '\\']);
+    if cwd.is_empty() || path.len() <= cwd.len() || !path.is_char_boundary(cwd.len()) {
+        return None;
+    }
+    let (prefix, rest) = path.split_at(cwd.len());
+    let windows = cwd.contains('\\') || cwd.as_bytes().get(1) == Some(&b':');
+    let same = if windows {
+        prefix.chars().map(|c| if c == '/' { '\\' } else { c.to_ascii_lowercase() }).eq(cwd.chars().map(|c| if c == '/' { '\\' } else { c.to_ascii_lowercase() }))
+    } else {
+        prefix == cwd
+    };
+    (same && rest.starts_with(['/', '\\'])).then(|| rest[1..].to_owned())
+}
+
+fn path_arg<'a>(args: &'a Map<String, Value>, key: &str, cwd: Option<&str>) -> Option<Cow<'a, str>> {
+    let raw = string(args, key)?;
+    match cwd.and_then(|dir| relative_to(raw, dir)) {
+        Some(rel) => Some(Cow::Owned(rel)),
+        None => Some(Cow::Borrowed(raw)),
+    }
+}
+
 /// The summary of a call to `name` with `args`.
 pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> String {
+    tool_title_in(locale, name, args, None)
+}
+
+/// The summary of a call to `name` with `args`, relativizing `file_path` / `path` against `cwd` without cloning `args`.
+pub fn tool_title_in(locale: Locale, name: &str, args: &Map<String, Value>, cwd: Option<&str>) -> String {
     let t = |key: &str, vars: &[(&str, &dyn std::fmt::Display)]| format(locale, &format!("chat.{key}"), vars);
     // The Host runs a built-in tool called with the wrong letter case (`Read`), so it is titled as one.
     let lower = name.to_ascii_lowercase();
@@ -21,7 +52,7 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
     match name {
         "bash" | "pwsh" => string(args, "description").or_else(|| string(args, "command")).unwrap_or(name).to_owned(),
         "read" => {
-            let path = string(args, "file_path").unwrap_or_default();
+            let path = path_arg(args, "file_path", cwd).unwrap_or_default();
             match (number(args, "offset"), number(args, "limit")) {
                 (offset, Some(limit)) => {
                     let from = offset.unwrap_or(1);
@@ -31,12 +62,18 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
                 (None, None) => t("toolRead", &[("path", &path)]),
             }
         }
-        "write" => t("toolWrite", &[("path", &string(args, "file_path").unwrap_or_default())]),
+        "write" => {
+            let path = path_arg(args, "file_path", cwd).unwrap_or_default();
+            t("toolWrite", &[("path", &path)])
+        }
         "apply_patch" => {
             let files = patch_files(string(args, "input").unwrap_or_default());
             match files.as_slice() {
                 // An external agent's edit names its file instead of carrying a patch.
-                [] => t("toolPatch", &[("path", &string(args, "file_path").unwrap_or("…"))]),
+                [] => {
+                    let path = path_arg(args, "file_path", cwd).unwrap_or(Cow::Borrowed("…"));
+                    t("toolPatch", &[("path", &path)])
+                }
                 [path] => t("toolPatch", &[("path", path)]),
                 _ => t("toolPatchFiles", &[("count", &files.len())]),
             }
@@ -50,10 +87,13 @@ pub fn tool_title(locale: Locale, name: &str, args: &Map<String, Value>) -> Stri
                 t("toolPlan", &[("done", &done), ("total", &items.len())])
             }
         }
-        "edit" => t("toolEdit", &[("path", &string(args, "file_path").unwrap_or_default())]),
+        "edit" => {
+            let path = path_arg(args, "file_path", cwd).unwrap_or_default();
+            t("toolEdit", &[("path", &path)])
+        }
         "grep" | "glob" => {
             let pattern = string(args, "pattern").unwrap_or_default();
-            let path = string(args, "path");
+            let path = path_arg(args, "path", cwd);
             let (plain, within) = if name == "grep" { ("toolGrep", "toolGrepIn") } else { ("toolGlob", "toolGlobIn") };
             match path {
                 Some(path) => t(within, &[("pattern", &pattern), ("path", &path)]),
@@ -159,5 +199,13 @@ mod tests {
         assert_eq!(tool_title(Locale::En, "todo_write", &args(json!({"todos": []}))), "Clear plan");
         assert_eq!(tool_title(zh, "recall", &args(json!({"query": "E0425"}))), "查阅历史：E0425");
         assert_eq!(tool_title(Locale::En, "recall", &args(json!({"entries": "40-45"}))), "Read back entries 40-45");
+        assert_eq!(
+            tool_title_in(zh, "read", &args(json!({"file_path": r"C:\Work\App\src\main.rs"})), Some(r"c:\work\app")),
+            "读取 src\\main.rs"
+        );
+        assert_eq!(
+            tool_title_in(Locale::En, "grep", &args(json!({"pattern": "fn", "path": "/repo/src"})), Some("/repo")),
+            "Grep fn in src"
+        );
     }
 }

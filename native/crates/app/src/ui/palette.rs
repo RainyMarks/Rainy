@@ -1,6 +1,9 @@
 //! The command palette (`palette` in `src/renderer/app/Workbench.tsx`, Ctrl+Shift+P or F1): every command by name.
 
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -52,7 +55,83 @@ fn prefs(patch: serde_json::Value) -> Run {
     Rc::new(move |window, cx| crate::ui::settings::set_prefs(patch.clone(), window, cx))
 }
 
-fn commands(cx: &App) -> Vec<Command> {
+#[derive(Clone, PartialEq, Eq)]
+struct TargetSnapshot {
+    local: Vec<ExecutionTarget>,
+    ssh: Vec<(ExecutionTarget, String)>,
+}
+
+const TARGET_CACHE_TTL: Duration = Duration::from_secs(15);
+
+static TARGET_CACHE: OnceLock<Mutex<Option<(Instant, TargetSnapshot)>>> = OnceLock::new();
+
+fn cached_targets() -> (Option<TargetSnapshot>, bool) {
+    let lock = TARGET_CACHE.get_or_init(|| Mutex::new(None));
+    let guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_ref() {
+        Some((at, snap)) => (Some(snap.clone()), at.elapsed() < TARGET_CACHE_TTL),
+        None => (None, false),
+    }
+}
+
+fn load_target_snapshot(desktop_settings: PathBuf) -> TargetSnapshot {
+    let desktop_prefs = targets::read_preferences(&desktop_settings).unwrap_or_default();
+    let mut local = vec![ExecutionTarget::windows()];
+    local.extend(targets::wsl_distributions());
+    let summaries = ssh::config_host_summaries();
+    let ssh = ssh::hosts(&desktop_prefs)
+        .into_iter()
+        .map(|host| {
+            let target = host.target;
+            let alias = match &target {
+                ExecutionTarget::Ssh { destination, .. } => destination.as_str(),
+                _ => target.label(),
+            };
+            let detail = summaries
+                .iter()
+                .find(|s| s.alias == alias)
+                .and_then(|s| s.host_name.as_deref())
+                .map(|hn| format!("{} ({hn})", target.label()))
+                .unwrap_or_else(|| target.label().to_owned());
+            (target, detail)
+        })
+        .collect();
+    TargetSnapshot { local, ssh }
+}
+
+fn append_target_commands(list: &mut Vec<Command>, snapshot: &TargetSnapshot, cx: &App) {
+    let store = Store::global(cx);
+    let current_id = store.read(cx).target.as_ref().map(|t| t.id().to_owned());
+    let category = tr(cx, "app.catSettings");
+    for target in &snapshot.local {
+        let is_current = current_id.as_deref() == Some(target.id());
+        let label = trf(cx, "ssh.paletteSwitchTarget", &[("target", &target.label())]);
+        let store_c = store.clone();
+        let target_c = target.clone();
+        list.push(Command {
+            category: category.clone(),
+            label,
+            keys: "",
+            enabled: !is_current,
+            run: Rc::new(move |window, cx| crate::ui::workbench::confirm_switch(store_c.clone(), target_c.clone(), window, cx)),
+        });
+    }
+    for (target, detail) in &snapshot.ssh {
+        let is_current = current_id.as_deref() == Some(target.id());
+        let label = trf(cx, "ssh.paletteConnectSsh", &[("target", detail)]);
+        let store_c = store.clone();
+        let target_c = target.clone();
+        list.push(Command {
+            category: category.clone(),
+            label,
+            keys: "",
+            enabled: !is_current,
+            run: Rc::new(move |window, cx| crate::ui::workbench::confirm_switch(store_c.clone(), target_c.clone(), window, cx)),
+        });
+    }
+}
+
+fn commands(cx: &App, targets: Option<&TargetSnapshot>) -> Vec<Command> {
     let ide = Ide::global(cx);
     let ide = ide.read(cx);
     let workspace = ide.workspace.is_some();
@@ -136,49 +215,12 @@ fn commands(cx: &App) -> Vec<Command> {
         entry("catSettings", tr(cx, "app.cmdLanguage"), "", true, prefs(json!({ "locale": locale }))),
         entry("catHelp", tr(cx, "native.checkUpdates"), "", true, action(CheckUpdates)),
     ];
-    // Dynamic execution target hot-swap commands (Windows, WSL, and configured/saved SSH hosts).
-    let store = Store::global(cx);
-    let current_id = store.read(cx).target.as_ref().map(|t| t.id().to_owned());
-    let desktop_prefs = targets::read_preferences(&store.read(cx).paths.desktop_settings()).unwrap_or_default();
-    let mut local_targets = vec![ExecutionTarget::windows()];
-    local_targets.extend(targets::wsl_distributions());
-    for target in local_targets {
-        let is_current = current_id.as_deref() == Some(target.id());
-        let label = trf(cx, "ssh.paletteSwitchTarget", &[("target", &target.label())]);
-        let store_c = store.clone();
-        let target_c = target.clone();
-        list.push(entry(
-            "catSettings",
-            label,
-            "",
-            !is_current,
-            Rc::new(move |window, cx| crate::ui::workbench::confirm_switch(store_c.clone(), target_c.clone(), window, cx)),
-        ));
-    }
-    let summaries = ssh::config_host_summaries();
-    for host in ssh::hosts(&desktop_prefs) {
-        let target = host.target;
-        let is_current = current_id.as_deref() == Some(target.id());
-        let alias = match &target {
-            ExecutionTarget::Ssh { destination, .. } => destination.as_str(),
-            _ => target.label(),
-        };
-        let detail = summaries
-            .iter()
-            .find(|s| s.alias == alias)
-            .and_then(|s| s.host_name.as_deref())
-            .map(|hn| format!("{} ({hn})", target.label()))
-            .unwrap_or_else(|| target.label().to_owned());
-        let label = trf(cx, "ssh.paletteConnectSsh", &[("target", &detail)]);
-        let store_c = store.clone();
-        let target_c = target.clone();
-        list.push(entry(
-            "catSettings",
-            label,
-            "",
-            !is_current,
-            Rc::new(move |window, cx| crate::ui::workbench::confirm_switch(store_c.clone(), target_c.clone(), window, cx)),
-        ));
+    if let Some(snapshot) = targets {
+        append_target_commands(&mut list, snapshot, cx);
+    } else {
+        // Always include local Windows immediately without blocking the UI thread on disk/registry IO.
+        let snapshot = TargetSnapshot { local: vec![ExecutionTarget::windows()], ssh: Vec::new() };
+        append_target_commands(&mut list, &snapshot, cx);
     }
     list
 }
@@ -186,6 +228,8 @@ fn commands(cx: &App) -> Vec<Command> {
 pub struct Palette {
     query: Entity<InputState>,
     commands: Vec<Command>,
+    base_count: usize,
+    snapshot: Option<TargetSnapshot>,
     /// Indexes of the commands that match the query, in order.
     shown: Vec<usize>,
     selected: usize,
@@ -205,8 +249,49 @@ impl Palette {
             }
         })];
         let back = window.focused(cx);
-        let mut palette = Self { query, commands: commands(cx), shown: Vec::new(), selected: 0, scroll: ScrollHandle::new(), back, _subscriptions: subscriptions };
+        let (cached, fresh) = cached_targets();
+        let mut initial = commands(cx, cached.as_ref());
+        let base_count = if let Some(ref snap) = cached {
+            initial.len().saturating_sub(snap.local.len() + snap.ssh.len())
+        } else {
+            initial.len().saturating_sub(1)
+        };
+        if cached.is_none() {
+            // Keep base_count exact for replacement when background fetch arrives.
+            debug_assert!(initial.len() >= base_count);
+        }
+        let mut palette = Self {
+            query,
+            commands: std::mem::take(&mut initial),
+            base_count,
+            snapshot: cached,
+            shown: Vec::new(),
+            selected: 0,
+            scroll: ScrollHandle::new(),
+            back,
+            _subscriptions: subscriptions,
+        };
         palette.filter(cx);
+        if !fresh {
+            let desktop_settings = Store::global(cx).read(cx).paths.desktop_settings();
+            let fetch = cx.background_executor().spawn(async move { load_target_snapshot(desktop_settings) });
+            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let fresh_snapshot = fetch.await;
+                if let Some(lock) = TARGET_CACHE.get() {
+                    let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *guard = Some((Instant::now(), fresh_snapshot.clone()));
+                }
+                let _ = this.update(cx, |this, cx| {
+                    if this.snapshot.as_ref() != Some(&fresh_snapshot) {
+                        this.commands.truncate(this.base_count);
+                        append_target_commands(&mut this.commands, &fresh_snapshot, cx);
+                        this.snapshot = Some(fresh_snapshot);
+                        this.filter(cx);
+                    }
+                });
+            })
+            .detach();
+        }
         palette
     }
 
@@ -266,7 +351,10 @@ fn run_later(run: Run, back: Option<FocusHandle>, window: &mut Window, cx: &mut 
 
 impl Render for Palette {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
+        let (radius, list_hover, list_active, muted_foreground) = {
+            let theme = cx.theme();
+            (theme.radius, theme.list_hover, theme.list_active, theme.muted_foreground)
+        };
         let selected = self.selected;
         let rows: Vec<AnyElement> = self
             .shown
@@ -284,14 +372,14 @@ impl Render for Palette {
                     .gap_2()
                     .items_center()
                     .flex_shrink_0()
-                    .rounded(theme.radius)
+                    .rounded(radius)
                     .text_sm()
-                    .when(enabled, |this| this.cursor_pointer().hover(|style| style.bg(theme.list_hover)))
+                    .when(enabled, |this| this.cursor_pointer().hover(move |style| style.bg(list_hover)))
                     .when(!enabled, |this| this.opacity(0.45))
-                    .when(row == selected, |this| this.bg(theme.list_active))
-                    .child(div().flex_shrink_0().text_color(theme.muted_foreground).child(format!("{}:", command.category)))
+                    .when(row == selected, |this| this.bg(list_active))
+                    .child(div().flex_shrink_0().text_color(muted_foreground).child(format!("{}:", command.category)))
                     .child(div().flex_1().min_w_0().truncate().child(command.label.clone()))
-                    .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(command.keys))
+                    .child(div().flex_shrink_0().text_xs().text_color(muted_foreground).child(command.keys))
                     .when(enabled, |this| {
                         this.on_click(move |_, window, cx| {
                             window.close_dialog(cx);
@@ -316,7 +404,7 @@ impl Render for Palette {
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
                             .children(rows)
-                            .when(empty, |this| this.child(div().p_2().text_sm().text_color(theme.muted_foreground).child(tr(cx, "app.paletteEmpty")))),
+                            .when(empty, |this| this.child(div().p_2().text_sm().text_color(muted_foreground).child(tr(cx, "app.paletteEmpty")))),
                     )
                     .vertical_scrollbar(&self.scroll),
             )
@@ -327,14 +415,16 @@ impl Render for Palette {
 pub fn open(window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| Palette::new(window, cx));
     let query = view.read(cx).query.clone();
-    // Enter is the dialog's Confirm: it runs the highlighted command.
+    // Enter is the dialog's Confirm: it runs the highlighted command (disabled items keep the palette open).
     window.open_dialog(cx, move |dialog, _, cx| {
         let chosen = view.clone();
         dialog.title(tr(cx, "app.paletteTitle")).w(px(620.)).child(view.clone()).on_ok(move |_, window, cx| {
             if let Some((run, back)) = chosen.read(cx).chosen() {
                 run_later(run, back, window, cx);
+                true
+            } else {
+                false
             }
-            true
         })
     });
     window.defer(cx, move |window, cx| {

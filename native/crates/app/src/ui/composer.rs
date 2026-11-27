@@ -146,8 +146,11 @@ pub fn host_path(path: &Path, target: Option<&ExecutionTarget>) -> Option<String
         None | Some(ExecutionTarget::Windows { .. }) => Some(text.to_owned()),
         Some(ExecutionTarget::Wsl { .. }) => {
             let mut chars = text.chars();
-            let drive = chars.next()?.to_ascii_lowercase();
-            (chars.next() == Some(':')).then(|| format!("/mnt/{drive}{}", text[2..].replace('\\', "/")))
+            let drive = chars.next()?;
+            if !drive.is_ascii_alphabetic() {
+                return None;
+            }
+            (chars.next() == Some(':')).then(|| format!("/mnt/{}{}", drive.to_ascii_lowercase(), chars.as_str().replace('\\', "/")))
         }
         Some(ExecutionTarget::Ssh { .. }) => None,
     }
@@ -173,6 +176,9 @@ mod tests {
     fn wsl_paths() {
         let target = ExecutionTarget::wsl("id".into(), "Ubuntu");
         assert_eq!(host_path(Path::new(r"C:\Users\a b\x.txt"), Some(&target)).as_deref(), Some("/mnt/c/Users/a b/x.txt"));
+        assert_eq!(host_path(Path::new("中:a.txt"), Some(&target)), None);
+        assert_eq!(host_path(Path::new("1:a.txt"), Some(&target)), None);
+        assert_eq!(host_path(Path::new("é:foo"), Some(&target)), None);
         assert_eq!(quote_path("/mnt/c/a b"), "\"/mnt/c/a b\"");
     }
 

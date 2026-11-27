@@ -101,7 +101,7 @@ fn window_row(window: &QuotaWindow, locale: Locale, cx: &App) -> AnyElement {
         .gap_2()
         .items_center()
         .text_xs()
-        .child(div().w(px(40.)).flex_shrink_0().text_color(theme.muted_foreground).whitespace_nowrap().child(window_name(locale, window)))
+        .child(div().w(px(48.)).flex_shrink_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).whitespace_nowrap().child(window_name(locale, window)))
         .child(
             div()
                 .flex_1()

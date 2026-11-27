@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HICON, HWND_MESSAGE, MSG,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HICON, HWND_MESSAGE, MSG,
     PostMessageW, RegisterClassW, WM_APP, WM_LBUTTONUP, WNDCLASSW,
 };
 
@@ -53,12 +53,38 @@ struct State {
 // message to the window, which Windows allows from any thread.
 unsafe impl Send for State {}
 
+impl Drop for State {
+    fn drop(&mut self) {
+        if !self.icon.is_null() {
+            // SAFETY: icon was returned by ExtractIconExW and belongs solely to State.
+            unsafe { DestroyIcon(self.icon) };
+            self.icon = std::ptr::null_mut();
+        }
+    }
+}
+
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 
+fn lock_state(mutex: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn wide(text: &str, into: &mut [u16]) {
-    let mut units: Vec<u16> = text.encode_utf16().take(into.len() - 1).collect();
-    units.push(0);
-    into[..units.len()].copy_from_slice(&units);
+    if into.is_empty() {
+        return;
+    }
+    let limit = into.len() - 1;
+    let mut len = 0;
+    let mut buf = [0u16; 2];
+    for c in text.chars() {
+        let encoded = c.encode_utf16(&mut buf);
+        if len + encoded.len() > limit {
+            break;
+        }
+        into[len..len + encoded.len()].copy_from_slice(encoded);
+        len += encoded.len();
+    }
+    into[len] = 0;
 }
 
 fn data(state: &State) -> NOTIFYICONDATAW {
@@ -129,12 +155,12 @@ unsafe extern "system" fn procedure(
     if let Some(state) = STATE.get() {
         match message {
             SHOW => {
-                show_next(&mut state.lock().unwrap());
+                show_next(&mut lock_state(state));
                 return 0;
             }
             CALLBACK => {
                 let event = (lparam as u32) & 0xffff;
-                let mut state = state.lock().unwrap();
+                let mut state = lock_state(state);
                 match event {
                     // The balloon's timing out is not the end: with Focus Assist or a full-screen game it times out at
                     // once and waits in the notification center, which loses it when the icon goes. The icon stays
@@ -202,17 +228,33 @@ pub fn start(clicks: async_channel::Sender<String>) {
                         .collect();
                     ExtractIconExW(path.as_ptr(), 0, &mut icon, std::ptr::null_mut(), 1);
                 }
-                let _ = STATE.set(Mutex::new(State {
-                    window,
-                    queue: VecDeque::new(),
-                    shown: None,
-                    icon,
-                    shown_icon: false,
-                    clicks,
-                }));
+                if STATE
+                    .set(Mutex::new(State {
+                        window,
+                        queue: VecDeque::new(),
+                        shown: None,
+                        icon,
+                        shown_icon: false,
+                        clicks,
+                    }))
+                    .is_err()
+                {
+                    if !icon.is_null() {
+                        DestroyIcon(icon);
+                    }
+                    return;
+                }
                 let mut message: MSG = std::mem::zeroed();
                 while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
                     DispatchMessageW(&message);
+                }
+                if let Some(state) = STATE.get() {
+                    let mut state = lock_state(state);
+                    remove_icon(&mut state);
+                    if !state.icon.is_null() {
+                        DestroyIcon(state.icon);
+                        state.icon = std::ptr::null_mut();
+                    }
                 }
             }
         });
@@ -233,7 +275,7 @@ pub fn in_front() -> bool {
 pub fn show(note: Note) {
     let Some(state) = STATE.get() else { return };
     let window = {
-        let mut state = state.lock().unwrap();
+        let mut state = lock_state(state);
         state.queue.push_back(note);
         state.window
     };
@@ -244,7 +286,7 @@ pub fn show(note: Note) {
 /// Take back the notification once Rainy is in front again: the sidebar's unread marks say the rest.
 pub fn dismiss() {
     let Some(state) = STATE.get() else { return };
-    remove_icon(&mut state.lock().unwrap());
+    remove_icon(&mut lock_state(state));
 }
 
 /// What to say about a chat that changed while Rainy was in the background: it finished, or it waits for an
@@ -349,5 +391,10 @@ mod tests {
         wide("一二三四五六七八九十", &mut buffer);
         assert_eq!(buffer[7], 0);
         assert_eq!(String::from_utf16_lossy(&buffer[..7]), "一二三四五六七");
+        // A surrogate pair at the boundary is dropped whole rather than split into an unpaired lead surrogate.
+        let mut emoji_buf = [0u16; 4];
+        wide("ab😀cd", &mut emoji_buf);
+        let nul = emoji_buf.iter().position(|&unit| unit == 0).unwrap();
+        assert_eq!(String::from_utf16(&emoji_buf[..nul]).unwrap(), "ab");
     }
 }

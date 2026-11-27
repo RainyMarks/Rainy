@@ -1,8 +1,10 @@
 //! The files the agent changed in the current chat (`ChangesBar.tsx`): review each in the editor, keep it, or undo
 //! it. A bar above the composer, or the changes panel of Agent mode (`docked`), which lists them all.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
+use gpui_kit::base::motion::{MotionReveal, Presence, Transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -39,8 +41,12 @@ impl ChangesBar {
             StoreEvent::SelectionChanged | StoreEvent::HostReconnected(_) => {
                 this.session = store.read(cx).selected.clone();
                 this.changes.clear();
+                this.open = false;
+                this.pending = false;
+                this.refresh = None;
                 this.load(cx);
             }
+            StoreEvent::SummariesChanged | StoreEvent::PrefsChanged => cx.notify(),
             StoreEvent::Host { name, data }
                 if name == "session.changes" && data.get("sessionId").and_then(Value::as_str) == this.session.as_deref() =>
             {
@@ -118,29 +124,22 @@ impl ChangesBar {
         let Some(session) = self.session.clone() else { return };
         let ids: Vec<String> = list.iter().flat_map(|change| change.tool_call_ids.clone()).collect();
         let call = self.store.read(cx).call("chat.keep", json!({ "sessionId": session, "toolCallIds": ids }));
-        self.run(call, false, window, cx);
+        self.run(call, None, window, cx);
     }
 
     fn undo(&mut self, list: Vec<ChatChange>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else { return };
         let ids: Vec<String> = list.iter().filter(|change| change.undoable).flat_map(|change| change.tool_call_ids.clone()).collect();
+        let paths: Vec<String> = list.iter().filter(|change| change.undoable).map(|change| change.path.clone()).collect();
         let call = self.store.read(cx).call("chat.revert", json!({ "sessionId": session, "toolCallIds": ids }));
-        // Comparisons of undone files show text that is gone.
-        let ide = Ide::global(cx);
-        let keys: Vec<String> = list.iter().filter_map(|change| ide.read(cx).key_from_absolute(&change.path)).collect();
-        ide.update(cx, |ide, cx| {
-            for key in &keys {
-                ide.close_review(key, cx);
-            }
-        });
-        self.run(call, true, window, cx);
+        self.run(call, Some(paths), window, cx);
     }
 
     /// Run a keep or undo, report an undo's outcome, and read the list again.
     fn run(
         &mut self,
         call: impl Future<Output = Result<Value, rainy_protocol::RpcError>> + 'static,
-        revert: bool,
+        revert_paths: Option<Vec<String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -151,25 +150,48 @@ impl ChangesBar {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.pending = false;
                 match result {
-                    Ok(value) if revert => {
-                        if let Ok(result) = serde_json::from_value::<RevertResult>(value) {
-                            if !result.reverted.is_empty() {
-                                window.push_notification(trf(cx, "chat.undoDone", &[("count", &result.reverted.len())]).to_string(), cx);
+                    Ok(value) => {
+                        if let Some(paths) = revert_paths {
+                            let mut failed_paths: HashSet<String> = HashSet::new();
+                            let mut any_reverted = false;
+                            if let Ok(result) = serde_json::from_value::<RevertResult>(value) {
+                                any_reverted = !result.reverted.is_empty();
+                                if any_reverted {
+                                    window.push_notification(trf(cx, "chat.undoDone", &[("count", &result.reverted.len())]).to_string(), cx);
+                                }
+                                for failure in result.failed {
+                                    if !failure.path.is_empty() {
+                                        failed_paths.insert(failure.path.clone());
+                                    }
+                                    let reason = tr(cx, match failure.reason.as_str() {
+                                        "changed" => "chat.undoChanged",
+                                        "unavailable" => "chat.undoUnavailable",
+                                        _ => "chat.undoError",
+                                    });
+                                    let path = if failure.path.is_empty() { "…".to_owned() } else { failure.path };
+                                    window.push_notification(Notification::error(trf(cx, "chat.undoFailed", &[("path", &path), ("reason", &reason)])), cx);
+                                }
                             }
-                            for failure in result.failed {
-                                let reason = tr(cx, match failure.reason.as_str() {
-                                    "changed" => "chat.undoChanged",
-                                    "unavailable" => "chat.undoUnavailable",
-                                    _ => "chat.undoError",
+                            let ide = Ide::global(cx);
+                            if any_reverted {
+                                // Only close diff reviews for files whose revert succeeded.
+                                let keys: Vec<String> = paths
+                                    .iter()
+                                    .filter(|path| !failed_paths.contains(*path))
+                                    .filter_map(|path| ide.read(cx).key_from_absolute(path))
+                                    .collect();
+                                ide.update(cx, |ide, cx| {
+                                    for key in &keys {
+                                        ide.close_review(key, cx);
+                                    }
+                                    // Open editors follow the files put back.
+                                    ide.check_files(cx);
                                 });
-                                let path = if failure.path.is_empty() { "…".to_owned() } else { failure.path };
-                                window.push_notification(Notification::error(trf(cx, "chat.undoFailed", &[("path", &path), ("reason", &reason)])), cx);
+                            } else {
+                                ide.update(cx, |ide, cx| ide.check_files(cx));
                             }
                         }
-                        // Open editors follow the files put back.
-                        Ide::global(cx).update(cx, |ide, cx| ide.check_files(cx));
                     }
-                    Ok(_) => {}
                     Err(error) => window.push_notification(crate::ui::error_notification(cx, &error), cx),
                 }
                 this.load(cx);
@@ -225,8 +247,11 @@ impl ChangesBar {
 
 impl ChangesBar {
     /// The count and lines changed (a click opens or closes the bar's list), Keep all and Undo all.
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme().clone();
+    fn render_header(&self, chevron_progress: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (muted_foreground, success, danger) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.success, theme.danger)
+        };
         let busy = self.busy(cx);
         let added: u64 = self.changes.iter().map(|change| change.added).sum();
         let removed: u64 = self.changes.iter().map(|change| change.removed).sum();
@@ -247,7 +272,12 @@ impl ChangesBar {
                     .items_center()
                     .when(!docked, |this| {
                         this.cursor_pointer()
-                            .child(Icon::new(if self.open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(theme.muted_foreground))
+                            .child(
+                                Icon::new(IconName::ChevronRight)
+                                    .xsmall()
+                                    .text_color(muted_foreground)
+                                    .rotate(radians(chevron_progress * std::f32::consts::FRAC_PI_2)),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open = !this.open;
                                 if this.open {
@@ -258,8 +288,8 @@ impl ChangesBar {
                     })
                     .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_sm().font_semibold().child(if self.changes.len() == 1 { tr(cx, "review.changesTitleOne") } else { trf(cx, "review.changesTitle", &[("count", &self.changes.len())]) }))
                     .when(counted, |this| {
-                        this.child(div().flex_shrink_0().text_xs().text_color(theme.success).child(format!("+{added}")))
-                            .child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(format!("−{removed}")))
+                        this.child(div().flex_shrink_0().text_xs().text_color(success).child(format!("+{added}")))
+                            .child(div().flex_shrink_0().text_xs().text_color(danger).child(format!("−{removed}")))
                     }),
             )
             .child(Button::new("changes-keep-all").outline().xsmall().label(tr(cx, "review.changesKeepAll")).disabled(self.pending).on_click(cx.listener(
@@ -278,7 +308,10 @@ impl ChangesBar {
 
     /// One row per file: its name and folder, what happened to it, and review, keep and undo.
     fn render_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = cx.theme().clone();
+        let (muted_foreground, success, danger) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.success, theme.danger)
+        };
         let busy = self.busy(cx);
         self.changes
             .iter()
@@ -298,19 +331,19 @@ impl ChangesBar {
                     .child(Icon::new(file_icon(&name)).small())
                     // The name gives way before the buttons do, so a long one never pushes them out of a narrow pane.
                     .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
-                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(directory))
-                    .when(change.created, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.success).child(tr(cx, "review.changesCreated"))))
-                    .when(change.deleted, |this| this.child(div().flex_shrink_0().text_xs().text_color(theme.danger).child(tr(cx, "review.changesDeleted"))))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(muted_foreground).child(directory))
+                    .when(change.created, |this| this.child(div().flex_shrink_0().text_xs().text_color(success).child(tr(cx, "review.changesCreated"))))
+                    .when(change.deleted, |this| this.child(div().flex_shrink_0().text_xs().text_color(danger).child(tr(cx, "review.changesDeleted"))))
                     .child(if change.comparable {
                         h_flex()
                             .flex_shrink_0()
                             .gap_1()
                             .text_xs()
-                            .child(div().text_color(theme.success).child(format!("+{}", change.added)))
-                            .child(div().text_color(theme.danger).child(format!("−{}", change.removed)))
+                            .child(div().text_color(success).child(format!("+{}", change.added)))
+                            .child(div().text_color(danger).child(format!("−{}", change.removed)))
                             .into_any_element()
                     } else {
-                        div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child("…").into_any_element()
+                        div().flex_shrink_0().text_xs().text_color(muted_foreground).child("…").into_any_element()
                     })
                     .child(Button::new(("change-review", index)).ghost().xsmall().label(tr(cx, "review.changesReview")).disabled(!reviewable).on_click(cx.listener(
                         move |this, _, window, cx| this.review(reviewed.clone(), window, cx),
@@ -333,7 +366,10 @@ impl ChangesBar {
 
     /// The changes panel of Agent mode: the whole list, scrolling in the panel's height.
     fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
+        let (muted_foreground, border) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.border)
+        };
         if self.changes.is_empty() {
             let key = if self.session.is_some() { "agent.changesNone" } else { "agent.changesNoChat" };
             return v_flex()
@@ -343,17 +379,17 @@ impl ChangesBar {
                 .p_6()
                 .gap_2()
                 .text_sm()
-                .text_color(theme.muted_foreground)
+                .text_color(muted_foreground)
                 .child(Icon::new(gpui_kit::assets::IconName::GitCompare).large())
                 .child(div().text_center().child(tr(cx, key)))
                 .into_any_element();
         }
         let auto_keep = self.store.read(cx).prefs.auto_keep_changes;
-        let header = self.render_header(cx);
+        let header = self.render_header(1.0, cx);
         let rows = self.render_rows(cx);
         v_flex()
             .size_full()
-            .child(div().flex_shrink_0().px_3().py_2().border_b_1().border_color(theme.border).child(header))
+            .child(div().flex_shrink_0().px_3().py_2().border_b_1().border_color(border).child(header))
             .child(
                 div()
                     .relative()
@@ -363,24 +399,40 @@ impl ChangesBar {
                     .vertical_scrollbar(&self.scroll),
             )
             .when(auto_keep, |this| {
-                this.child(div().flex_shrink_0().px_3().py_2().border_t_1().border_color(theme.border).text_xs().text_color(theme.muted_foreground).child(tr(cx, "review.changesAutoKeep")))
+                this.child(div().flex_shrink_0().px_3().py_2().border_t_1().border_color(border).text_xs().text_color(muted_foreground).child(tr(cx, "review.changesAutoKeep")))
             })
             .into_any_element()
     }
 }
 
 impl Render for ChangesBar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.docked {
             return self.render_panel(cx);
         }
         if self.changes.is_empty() {
             return div().into_any_element();
         }
-        let theme = cx.theme().clone();
+        let (radius_lg, border, secondary, muted_foreground) = {
+            let theme = cx.theme();
+            (theme.radius_lg, theme.border, theme.secondary, theme.muted_foreground)
+        };
         let auto_keep = self.store.read(cx).prefs.auto_keep_changes;
-        let header = self.render_header(cx);
-        let rows = if self.open { self.render_rows(cx) } else { Vec::new() };
+        let presence = Presence::new("changes-bar-list", self.open).transition(Transition::new(Duration::from_millis(160))).sample(window, cx);
+        let header = self.render_header(presence.progress, cx);
+        let body = presence.should_render().then(|| {
+            let rows = self.render_rows(cx);
+            let content = v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .relative()
+                        .child(v_flex().id("changes-list").max_h(px(MAX_LIST_HEIGHT)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))
+                        .vertical_scrollbar(&self.scroll),
+                )
+                .when(auto_keep, |this| this.child(div().text_xs().text_color(muted_foreground).child(tr(cx, "review.changesAutoKeep"))));
+            MotionReveal::new("changes-bar-reveal", presence.progress, content.opacity(presence.progress).into_any_element())
+        });
         v_flex()
             .flex_shrink_0()
             .mx_3()
@@ -388,21 +440,13 @@ impl Render for ChangesBar {
             .px_3()
             .py_2()
             .gap_1()
-            .rounded(theme.radius_lg)
+            .rounded(radius_lg)
             .border_1()
-            .border_color(theme.border)
-            .bg(theme.secondary)
+            .border_color(border)
+            .bg(secondary)
             .child(header)
             // A long list scrolls inside the bar, which never pushes the composer out of the pane.
-            .when(!rows.is_empty(), |this| {
-                this.child(
-                    div()
-                        .relative()
-                        .child(v_flex().id("changes-list").max_h(px(MAX_LIST_HEIGHT)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))
-                        .vertical_scrollbar(&self.scroll),
-                )
-            })
-            .when(self.open && auto_keep, |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "review.changesAutoKeep"))))
+            .children(body)
             .into_any_element()
     }
 }
