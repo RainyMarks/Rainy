@@ -5,7 +5,6 @@
 
 use std::time::Duration;
 
-use gpui_kit::base::ElementExt as _;
 use gpui_kit::base::motion::{Spring, Transition, spring, transition};
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -14,6 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::store::ide::Ide;
+use crate::ui::motion::OnBounds as _;
 use crate::ui::workbench::WorkbenchHandle;
 use crate::ui::{tr, trf};
 
@@ -150,7 +150,7 @@ impl RenderOnce for ModeSwitch {
         let toggle = |ix: usize, id: &'static str, icon: Icon, label: &str, on: bool, action: Box<dyn Action>| {
             let state = bounds_state.clone();
             div()
-                .on_prepaint(move |bounds, window, cx| {
+                .on_bounds(move |bounds, window, cx| {
                     let kick = state.update(cx, |s, _| {
                         let changed = s.buttons[ix].replace(bounds) != Some(bounds);
                         changed && s.container.is_some()
@@ -179,7 +179,7 @@ impl RenderOnce for ModeSwitch {
             .p_0p5()
             .rounded(radius)
             .bg(muted)
-            .on_prepaint(move |bounds, window, cx| {
+            .on_bounds(move |bounds, window, cx| {
                 let kick = container_state.update(cx, |s, _| {
                     let changed = s.container.replace(bounds) != Some(bounds);
                     changed && s.buttons.iter().any(Option::is_some)

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::{
-    Easing, ElementExt as _, Interpolate, MotionReveal, Presence, PresencePhase, Spring, Transition,
+    Easing, Interpolate, MotionReveal, Presence, PresencePhase, Spring, Transition,
     TransitionId, apply_system_reduce_motion, spring as base_spring, transition as base_transition,
 };
 use gpui_kit::component::{Icon, IconName, Sizable as _, Size};
@@ -307,6 +307,17 @@ pub struct BarStyle {
     pub gap: Pixels,
 }
 
+/// Prepaint observation of an element's padding box: its bounds less any border, measured from its top-left corner.
+/// `ElementExt::on_prepaint` adds its probe without insets, so the probe takes its static position at the start of
+/// the content and reports bounds moved by the element's padding; a sliding pill then sat beside its item.
+pub trait OnBounds: ParentElement + Sized {
+    fn on_bounds(self, callback: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static) -> Self {
+        self.child(canvas(move |bounds, window, cx| callback(bounds, window, cx), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+    }
+}
+
+impl<T: ParentElement> OnBounds for T {}
+
 /// Prepaint-measured layout bounds for a group of selectable items.
 #[derive(Default)]
 struct IndicatorTrack {
@@ -368,7 +379,7 @@ pub fn sliding_pill(
         .flex_row()
         .items_center()
         .gap(style.gap)
-        .on_prepaint(move |bounds, _, _| {
+        .on_bounds(move |bounds, _, _| {
             container_track.borrow_mut().container = Some(bounds);
         })
         .children(indicator)
@@ -419,7 +430,7 @@ pub fn sliding_bar(
         Axis::Vertical => div().relative().flex().flex_col().gap(style.gap),
     };
     container
-        .on_prepaint(move |bounds, _, _| {
+        .on_bounds(move |bounds, _, _| {
             container_track.borrow_mut().container = Some(bounds);
         })
         .children(wrap_measured_items(items, selected, style.axis, track, view))
@@ -445,7 +456,7 @@ fn wrap_measured_items(
         let is_selected = index == selected;
         div()
             .relative()
-            .on_prepaint(move |bounds, window, _| {
+            .on_bounds(move |bounds, window, _| {
                 let mut guard = track.borrow_mut();
                 if let Some(slot) = guard.items.get_mut(index) {
                     *slot = Some(bounds);

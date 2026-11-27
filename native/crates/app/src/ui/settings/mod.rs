@@ -18,7 +18,7 @@ mod widgets;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use gpui_kit::base::{ElementExt as _, GlobalState, TextSelection, box_shadow};
+use gpui_kit::base::{GlobalState, TextSelection, box_shadow};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -29,6 +29,7 @@ use serde_json::Value;
 use crate::store::update::UpdatePhase;
 use crate::store::{Store, StoreEvent};
 use crate::ui::actions::run;
+use crate::ui::motion::OnBounds as _;
 use crate::ui::{tr, trf};
 use widgets::{SlidingBounds, enter_progress, spring_slide};
 
@@ -197,7 +198,7 @@ impl SettingsView {
         let list = v_flex()
             .relative()
             .gap_1()
-            .on_prepaint(move |rect, window, _| {
+            .on_bounds(move |rect, window, _| {
                 if container_bounds.borrow_mut().record_container(rect) {
                     window.request_animation_frame();
                 }
@@ -229,7 +230,7 @@ impl SettingsView {
                     .rounded(theme.radius)
                     .text_sm()
                     .cursor_pointer()
-                    .on_prepaint(move |rect, window, _| {
+                    .on_bounds(move |rect, window, _| {
                         if item_bounds.borrow_mut().record_item(index, rect) {
                             window.request_animation_frame();
                         }
@@ -560,7 +561,7 @@ pub(super) fn segmented(
         .border_1()
         .border_color(theme.border)
         .bg(theme.muted)
-        .on_prepaint(move |rect, window, _| {
+        .on_bounds(move |rect, window, _| {
             if container_bounds.borrow_mut().record_container(rect) {
                 window.request_animation_frame();
             }
@@ -591,7 +592,7 @@ pub(super) fn segmented(
                 .font_medium()
                 .whitespace_nowrap()
                 .cursor_pointer()
-                .on_prepaint(move |rect, window, _| {
+                .on_bounds(move |rect, window, _| {
                     if item_bounds.borrow_mut().record_item(index, rect) {
                         window.request_animation_frame();
                     }
