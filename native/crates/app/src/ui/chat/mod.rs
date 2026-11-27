@@ -857,6 +857,8 @@ impl Render for ChatPane {
             let header = self.header;
             let older = self.older.clone().filter(|_| header > 0).map(|older| (older, tr(cx, "chat.loadOlder")));
             let pane = cx.weak_entity();
+            // Reserve bottom scroll clearance when MiniPet stands on the composer edge so the last turn stays clear.
+            let bottom_pad = if show_mini_pet { pet::mini_size().1.ceil() + 4. } else { 8. };
             let transcript = list(self.list.clone(), move |index, window, cx| {
                 let row = if index < header
                     && let Some((older, label)) = &older
@@ -869,7 +871,8 @@ impl Render for ChatPane {
                 if wide { centered(row) } else { row }
             })
             .size_full()
-            .py_2();
+            .pt_2()
+            .pb(px(bottom_pad));
             let to_latest = self.render_to_latest(scrolled_up, locale, window, cx);
             div()
                 .id("transcript")

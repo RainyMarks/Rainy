@@ -276,7 +276,7 @@ impl Workbench {
                     .border_color(theme.border)
                     .text_xs()
                     .text_color(theme.foreground)
-                    .child(motion::spinner(Size::XSmall, cx))
+                    .child(motion::spinner_with_id("ssh-swap-spin", Size::XSmall, None, cx))
                     .child(div().flex_1().min_w_0().truncate().child(trf(cx, "ssh.swapping", &[("target", &swapping)])))
                     .into_any_element(),
             );
@@ -328,7 +328,7 @@ impl Workbench {
             .border_color(accent.opacity(0.35))
             .text_xs()
             .child(if spinning {
-                motion::spinner(Size::XSmall, cx).into_any_element()
+                motion::spinner_with_id("ssh-reconnect-spin", Size::XSmall, None, cx)
             } else {
                 div().size(px(7.)).flex_shrink_0().rounded_full().bg(accent).into_any_element()
             })

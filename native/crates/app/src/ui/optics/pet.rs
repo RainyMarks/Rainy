@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use gpui_kit::base::GlobalState;
 use gpui_kit::*;
 
 use super::backdrop::{Backdrop, CELEBRATE_HOLD, EXCITED_HOLD, PAT_HOLD, PetActivity, TYPING_HOLD, motion_allowed};
@@ -665,6 +666,7 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
                 let weak_click = weak.clone();
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) && body.contains(&event.position) {
+                        GlobalState::suppress_text_selection(cx);
                         cx.stop_propagation();
                         let _ = weak_click.update(cx, |page, cx| page.pet_clicked(window, cx));
                     }
@@ -760,13 +762,19 @@ impl MiniPet {
         }
     }
 
-    /// Quiets the companion when unmounted (e.g. optics disabled, narrow window, IDE mode or blank greeting) without
-    /// waking its ticker.
+    /// Quiets the companion immediately when unmounted (e.g. optics disabled, narrow window, IDE mode or blank
+    /// greeting): clears all transient bursts and drops the ticker at once so hidden state burns 0 frames / 0 CPU.
     pub fn reset_silent(&mut self) {
         self.activity = PetActivity::Idle;
         self.last_typed = f64::NEG_INFINITY;
+        self.patted = f64::NEG_INFINITY;
+        self.pat_streak = 0;
+        self.excited_at = f64::NEG_INFINITY;
+        self.excited_cooldown_until = f64::NEG_INFINITY;
         self.celebrated_at = f64::NEG_INFINITY;
         self.woken_at = None;
+        self.last_tick = None;
+        self.ticker = None;
     }
 
     pub fn notify_typed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -901,6 +909,7 @@ impl Render for MiniPet {
                     let weak = weak.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) && body.contains(&event.position) {
+                            GlobalState::suppress_text_selection(cx);
                             cx.stop_propagation();
                             let _ = weak.update(cx, |pet, cx| pet.clicked(window, cx));
                         }

@@ -127,13 +127,14 @@ pub fn copy(key: u64, text: &str, cx: &mut App) {
     .detach();
 }
 
-/// Put `text` on the clipboard and notify only the current view on the given window (avoids full-window refresh).
+/// Put `text` on the clipboard and notify only `view` on the given window (avoids full-window refresh).
 ///
+/// `view` must be captured during render (for example `let view = window.current_view();`) and moved into the click
+/// handler, because GPUI's `window.current_view()` is only valid while rendering and panics during event dispatch.
 /// If another view still shows an active check mark from a prior `copy_in`, that previous view is notified immediately
 /// so its check resets cleanly instead of getting stranded when the superseded timer exits.
-pub fn copy_in(key: u64, text: &str, window: &mut Window, cx: &mut App) {
+pub fn copy_in(key: u64, text: &str, view: EntityId, window: &mut Window, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-    let view = window.current_view();
     let (generation, stale_view) = record_for(key, Some(view));
     if let Some(prev) = stale_view {
         cx.notify(prev);

@@ -163,9 +163,10 @@ fn is_cjk_punctuation(c: char) -> bool {
 }
 
 /// The corner of a code block: its language, and a button that copies the code.
-fn code_block_corner(block: &CodeBlock, _: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
+fn code_block_corner(block: &CodeBlock, window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
     let code = block.code();
     let key = crate::ui::copy::key_of(&code);
+    let view = window.current_view();
     let theme = cx.theme();
     let foreground = theme.foreground;
     let hint = crate::ui::tr(cx, "chat.copyCode");
@@ -185,7 +186,7 @@ fn code_block_corner(block: &CodeBlock, _: &mut Window, cx: &mut App) -> impl In
                 .hover(move |style| style.text_color(foreground))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
                 .child(crate::ui::copy::indicator(key, cx))
-                .on_click(move |_, window, cx| crate::ui::copy::copy_in(key, &code, window, cx)),
+                .on_click(move |_, window, cx| crate::ui::copy::copy_in(key, &code, view, window, cx)),
         )
 }
 

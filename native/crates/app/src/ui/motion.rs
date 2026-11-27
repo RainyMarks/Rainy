@@ -120,9 +120,18 @@ pub fn sync_system(cx: &mut App) -> bool {
     before != after
 }
 
+/// Reads the cached env override once [`init`] has run to avoid per-frame `std::env::var` heap allocations.
+fn is_env_reduced() -> bool {
+    if INITIALIZED.load(Ordering::Relaxed) {
+        ENV_REDUCED.load(Ordering::Relaxed)
+    } else {
+        ENV_REDUCED.load(Ordering::Relaxed) || env_reduced()
+    }
+}
+
 /// Whether animations may play in this `App` (honors both OS reduced-motion and `RAINY_REDUCED_MOTION=1`).
 pub fn allowed(cx: &App) -> bool {
-    !cx.reduce_motion() && !ENV_REDUCED.load(Ordering::Relaxed) && !env_reduced()
+    !cx.reduce_motion() && !is_env_reduced()
 }
 
 /// Shared check for call sites without `&App` (such as [`crate::ui::optics::backdrop::motion_allowed`]).
@@ -130,7 +139,7 @@ pub fn allowed(cx: &App) -> bool {
 /// Once [`init`] has run, this reads the synchronized atomic without issuing OS FFI calls; before [`init`] (e.g. unit
 /// tests or callers before wiring), it falls back to a 1-second thread-local cache of the OS switch.
 pub fn allowed_without_app() -> bool {
-    if ENV_REDUCED.load(Ordering::Relaxed) || env_reduced() {
+    if is_env_reduced() {
         return false;
     }
     if INITIALIZED.load(Ordering::Relaxed) {

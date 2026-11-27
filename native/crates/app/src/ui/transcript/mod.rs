@@ -319,6 +319,7 @@ pub fn render_turn(
             }
         }
         let copy = row.copy.clone();
+        let copy_view = copy.is_some().then(|| window.current_view());
         let fork_from = row.footer.as_ref().map(|footer| footer.id.clone());
         let fork = fork.clone();
         column = column.child(
@@ -327,7 +328,7 @@ pub fn render_turn(
                 .items_center()
                 .text_xs()
                 .text_color(muted_foreground)
-                .when_some(copy, |this, copy| {
+                .when_some(copy.zip(copy_view), |this, (copy, view)| {
                     let key = crate::ui::copy::key_of(&format!("reply:{}:{}", row.source.chat, row.key));
                     this.child(
                         div()
@@ -335,7 +336,7 @@ pub fn render_turn(
                             .cursor_pointer()
                             .hover(move |style| style.text_color(foreground))
                             .child(crate::ui::copy::indicator(key, cx))
-                            .on_click(move |_, window, cx| crate::ui::copy::copy_in(key, &copy, window, cx)),
+                            .on_click(move |_, window, cx| crate::ui::copy::copy_in(key, &copy, view, window, cx)),
                     )
                 })
                 .when_some(fork_from, |this, entry| {

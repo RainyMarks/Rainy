@@ -109,7 +109,7 @@ impl Workbench {
                     .justify_center()
                     .gap_3()
                     .child(img("brand/rainy-mark.svg").size(px(56.)))
-                    .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(motion::spinner(Size::Small, cx)).child(tr(cx, "native.starting")))
+                    .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(motion::spinner_with_id("startup-phase-spin", Size::Small, None, cx)).child(tr(cx, "native.starting")))
                     .when(step != tr(cx, "native.starting"), |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(step)))
                     .when_some(fraction, |this, fraction| this.child(Progress::new("startup-progress").xsmall().w(px(240.)).value(fraction * 100.)))
                     .into_any_element(),
