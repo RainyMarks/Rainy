@@ -6,6 +6,8 @@
 //!
 //! GPUI blends sRGB values as they are (its render targets are UNORM), so the blends below match the pixels drawn.
 
+use std::cell::RefCell;
+
 use gpui_kit::component::Theme;
 use gpui_kit::{Hsla, Rgba, hsla};
 use rainy_protocol::reasoning::Level;
@@ -98,6 +100,76 @@ const GLYPHS_DARK: (f32, f32) = (0.17, 0.09);
 /// How much brighter than its place's alpha a character may get: sparks, the pointer and ripples together.
 pub const GLYPH_GAIN: f32 = 2.0;
 
+/// The theme inputs that uniquely determine [`Look`] and its precomputed level colors.
+#[derive(Clone, Copy, PartialEq)]
+struct LookKey {
+    dark: bool,
+    background: Hsla,
+    foreground: Hsla,
+    secondary_foreground: Hsla,
+    muted_foreground: Hsla,
+    primary: Hsla,
+    popover: Hsla,
+}
+
+impl LookKey {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            dark: theme.mode.is_dark(),
+            background: theme.background,
+            foreground: theme.foreground,
+            secondary_foreground: theme.secondary_foreground,
+            muted_foreground: theme.muted_foreground,
+            primary: theme.primary,
+            popover: theme.popover,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CachedLook {
+    key: LookKey,
+    look: Look,
+    worst_glass: Hsla,
+    levels_popover: [Hsla; 7],
+    levels_glass: [Hsla; 7],
+}
+
+thread_local! {
+    /// Single-slot cache keyed by the active theme's optical inputs: avoids ~100 `powf(2.4)` WCAG solver steps per
+    /// render frame while keeping theme switches instant.
+    static CACHE: RefCell<Option<CachedLook>> = const { RefCell::new(None) };
+}
+
+fn level_index(level: Level) -> usize {
+    match level {
+        Level::Off => 0,
+        Level::Minimal => 1,
+        Level::Low => 2,
+        Level::Medium => 3,
+        Level::High => 4,
+        Level::XHigh => 5,
+        Level::Max => 6,
+    }
+}
+
+fn with_cached<R>(theme: &Theme, f: impl FnOnce(&CachedLook) -> R) -> R {
+    let key = LookKey::of(theme);
+    CACHE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|cached| cached.key != key) {
+            let look = Look::compute(theme);
+            let worst_glass = look.worst_glass(theme.background);
+            let popover_surfaces = [theme.popover];
+            let glass_surfaces = [theme.popover, worst_glass];
+            let levels_popover = Level::ALL.map(|level| compute_level_color(level, theme, &popover_surfaces));
+            let levels_glass = Level::ALL.map(|level| compute_level_color(level, theme, &glass_surfaces));
+            *slot = Some(CachedLook { key, look, worst_glass, levels_popover, levels_glass });
+        }
+        f(slot.as_ref().expect("just populated"))
+    })
+}
+
 /// The colors of one theme.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Look {
@@ -126,7 +198,13 @@ pub struct Look {
 }
 
 impl Look {
+    /// Cached optical palette for `theme` (O(1) on cache hit; recomputes only when theme colors change).
     pub fn of(theme: &Theme) -> Self {
+        with_cached(theme, |cached| cached.look.clone())
+    }
+
+    /// Uncached contrast-capped computation, exposed for tests verifying cache parity.
+    pub(crate) fn compute(theme: &Theme) -> Self {
         let dark = theme.mode.is_dark();
         let (background, foreground, muted) = (theme.background, theme.foreground, theme.muted_foreground);
         let accent = theme.primary;
@@ -212,12 +290,36 @@ fn level_hue(level: Level) -> Option<f32> {
     }
 }
 
-/// The color of a level's name, readable at [`MUTED`] on every surface given (the menus and glass).
-pub fn level_color(level: Level, theme: &Theme, surfaces: &[Hsla]) -> Hsla {
+fn compute_level_color(level: Level, theme: &Theme, surfaces: &[Hsla]) -> Hsla {
     let Some(hue) = level_hue(level) else { return theme.muted_foreground };
     let dark = theme.mode.is_dark();
     let start = hsla(hue / 360.0, 0.78, if dark { 0.68 } else { 0.50 }, 1.0);
     surfaces.iter().fold(start, |color, surface| readable(color, *surface, MUTED))
+}
+
+/// The color of a level's name, readable at [`MUTED`] on every surface given (the menus and glass).
+///
+/// Fast-paths the two standard optical surface sets (`[popover]` and `[popover, worst_glass]`) via the active theme
+/// cache so callers pay zero WCAG solver work per frame.
+pub fn level_color(level: Level, theme: &Theme, surfaces: &[Hsla]) -> Hsla {
+    let idx = level_index(level);
+    let hit = with_cached(theme, |cached| {
+        if surfaces.len() == 1 && surfaces[0] == cached.key.popover {
+            Some(cached.levels_popover[idx])
+        } else if surfaces.len() == 2 && surfaces[0] == cached.key.popover && surfaces[1] == cached.worst_glass {
+            Some(cached.levels_glass[idx])
+        } else {
+            None
+        }
+    });
+    hit.unwrap_or_else(|| compute_level_color(level, theme, surfaces))
+}
+
+/// O(1) lookup for a reasoning level's color on popover menus (`on_glass = false`) or glass + menus (`on_glass = true`).
+#[allow(dead_code)]
+pub fn cached_level_color(level: Level, theme: &Theme, on_glass: bool) -> Hsla {
+    let idx = level_index(level);
+    with_cached(theme, |cached| if on_glass { cached.levels_glass[idx] } else { cached.levels_popover[idx] })
 }
 
 /// A level's color for the slider's track and stars, where it is a fill, not text.

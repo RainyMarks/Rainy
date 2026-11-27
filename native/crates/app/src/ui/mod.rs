@@ -10,6 +10,7 @@ pub mod chat;
 pub mod history;
 pub mod markdown;
 pub mod metrics;
+pub mod motion;
 pub mod notify;
 pub mod optics;
 pub mod palette;
@@ -162,6 +163,45 @@ pub fn format_tokens(tokens: f64) -> String {
     }
 }
 
+/// Binary byte size for logs and file panels: `512 B`, `1.5 KiB`, `2.0 MiB`, `1.25 GiB`, `1.50 TiB`.
+#[allow(dead_code)]
+pub fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    const TIB: f64 = GIB * 1024.0;
+    let b = bytes as f64;
+    if b >= TIB {
+        format!("{:.2} TiB", b / TIB)
+    } else if b >= GIB {
+        format!("{:.2} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Compact status-bar byte size: `512M`, `2.5G`, `48G`, `1.2T`.
+#[allow(dead_code)]
+pub fn format_bytes_compact(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    const TIB: f64 = GIB * 1024.0;
+    let b = bytes as f64;
+    if b >= TIB {
+        format!("{:.1}T", b / TIB)
+    } else if b >= 10.0 * GIB {
+        format!("{:.0}G", b / GIB)
+    } else if b >= GIB {
+        format!("{:.1}G", b / GIB)
+    } else {
+        format!("{:.0}M", b / MIB)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +216,13 @@ mod tests {
         assert_eq!(format_tokens(1_234.0), "1.2k");
         assert_eq!(format_tokens(12_345.0), "12k");
         assert_eq!(format_tokens(1_260_000.0), "1.3M");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MiB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GiB");
+        assert_eq!(format_bytes_compact(512 * 1024 * 1024), "512M");
+        assert_eq!(format_bytes_compact(2 * 1024 * 1024 * 1024 + 512 * 1024 * 1024), "2.5G");
+        assert_eq!(format_bytes_compact(48 * 1024 * 1024 * 1024), "48G");
+        assert_eq!(format_bytes_compact(2 * 1024 * 1024 * 1024 * 1024), "2.0T");
     }
 }

@@ -1,24 +1,36 @@
-//! The pixel pet on the edge of a new chat's composer: a small white-haired cat girl with dot eyes and round blush,
-//! an ahoge, a leaf clip, a white dress with a pale blue sailor collar, and a white tail, as 44 x 54 pixel art. She
-//! blinks, twitches an ear and looks towards the pointer; now and then she strolls a few steps along the composer and
-//! back; pointed at, she hops and a heart rises; while the page's clock is paused she sleeps. Everything follows the
-//! page's clock ([`Backdrop`]), so she costs nothing while it stands still.
+//! The pixel pet on the edge of a new chat's composer (and an optional low-distraction compact companion in active
+//! chats): a small white-haired cat girl with dot eyes and round blush, an ahoge, a leaf clip, a white dress with a
+//! pale blue sailor collar, and a white tail, as 44 x 54 pixel art.
+//!
+//! She blinks, twitches an ear, wags her tail and looks towards the pointer from her live position; she strolls along
+//! the composer and stops attentively while the user types; hovered or patted she hops with a heart (three quick pats
+//! trigger a double-hop easter egg); during AI thinking/responding she looks up expectantly and celebrates briefly on
+//! completion; while the page's clock is paused she sleeps with 0 frames / 0 CPU at rest.
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::backdrop::{Backdrop, motion_allowed};
+use super::backdrop::{Backdrop, CELEBRATE_HOLD, EXCITED_HOLD, PAT_HOLD, PetActivity, TYPING_HOLD, motion_allowed};
 
 const WIDTH: usize = 44;
 const HEIGHT: usize = 54;
 /// A pixel of the art in window pixels at most: it is drawn as a whole number of the screen's pixels, so its edges
 /// stay sharp at any scaling (two of them at 150 % and at 200 %).
 pub const PIXEL: f32 = 1.34;
+/// Compact companion scale for active chats (`0.72×`, stationary on the composer's right corner).
+#[allow(dead_code)]
+pub const MINI_PIXEL: f32 = PIXEL * 0.72;
 /// How far she strolls to the left of her place, and how high she hops, in pixels of the art.
 const STROLL: f32 = 48.0;
 const HOP: f32 = 7.0;
 
 /// `o` outline, `w`/`s` hair, `p`/`P` inner ear and its fur, `g`/`G` leaf and stem, `f`/`F` skin and the shadow under
-/// the bangs, `e` eyes, `b` blush, `c`/`C` collar and skirt hem, `n` the collar's star, `u`/`U` dress, `K` shoes.
+/// the bangs, `e` eyes, `b` blush, `c`/`C` collar and skirt hem, `n` the collar's star, `u`/`U` dress, `K` shoes,
+/// `r`/`h` heart, `z` sleep Z, `y` sparkle gold, `a` approval amber.
 const ART: [&str; HEIGHT] = [
     "......................oooooo................",
     ".....................owwwwwwo...............",
@@ -76,7 +88,7 @@ const ART: [&str; HEIGHT] = [
     "...............oKKKKKooKKKKKo...............",
 ];
 /// The eyes: 4 x 5 blocks on rows 27 to 31 holding a dot eye with room to look aside, the left one from column 14,
-/// the right one from column 26 and drawn mirrored; open, closed and smiling.
+/// the right one from column 26 and drawn mirrored.
 const EYE_ROW: usize = 27;
 const EYES_AT: [(usize, bool); 2] = [(14, false), (26, true)];
 const EYE_WIDTH: usize = 4;
@@ -100,6 +112,22 @@ const EYES_HAPPY: [&str; EYE_HEIGHT] = [
     "ffff",
     "feef",
     "effe",
+    "ffff",
+];
+/// Focused / expectant eyes with a tiny white highlight dot.
+const EYES_FOCUSED: [&str; EYE_HEIGHT] = [
+    "feef",
+    "fhef",
+    "feef",
+    "feef",
+    "ffff",
+];
+/// Cheerful raised arc eyes for celebration and excited easter-egg bounce.
+const EYES_CHEER: [&str; EYE_HEIGHT] = [
+    "ffff",
+    "feef",
+    "effe",
+    "ffff",
     "ffff",
 ];
 /// The legs (the rows from `LEG_ROW` down) standing and in the two steps of a walk.
@@ -133,6 +161,17 @@ const FLICK: [&str; 4] = [
     "oowwwo",
     "owwwwo",
 ];
+/// Gentle tail wag patch (rows 34..41, columns 37..44, swaying the tail tip slightly rightward).
+const TAIL_AT: (usize, usize) = (37, 34);
+const TAIL_WAG: [&str; 7] = [
+    "...o...",
+    "..oso..",
+    ".osso..",
+    "oossso.",
+    ".ossso.",
+    ".ossso.",
+    "osso...",
+];
 const HEART: [&str; 8] = [
     ".rr...rr.",
     "rhrr.rrrr",
@@ -150,32 +189,77 @@ const ZED: [&str; 5] = [
     ".z..",
     "zzzz",
 ];
+/// Small floating sparkle for thinking / excited states.
+const SPARKLE: [&str; 7] = [
+    "...y...",
+    "...y...",
+    "..yhy..",
+    "yyhhhyy",
+    "..yhy..",
+    "...y...",
+    "...y...",
+];
+/// Small musical note for completion celebration.
+const NOTE: [&str; 8] = [
+    "...KKKK",
+    "...K..K",
+    "...K..K",
+    "...K...",
+    ".KKK...",
+    "KKKK...",
+    "KKKK...",
+    ".KK....",
+];
+/// Small calm amber mark for waiting-approval alertness.
+const EXCLAIM: [&str; 8] = [
+    ".a.",
+    "aaa",
+    "aaa",
+    ".a.",
+    ".a.",
+    "...",
+    "aaa",
+    ".a.",
+];
 
+/// Precomputed ASCII lookup table (`[Option<Hsla>; 128]`), eliminating per-pixel color conversion in hot paint loops.
+fn palette() -> &'static [Option<Hsla>; 128] {
+    static PALETTE: OnceLock<[Option<Hsla>; 128]> = OnceLock::new();
+    PALETTE.get_or_init(|| {
+        let mut table = [None; 128];
+        let mut put = |mark: u8, r: u8, g: u8, b: u8| {
+            table[mark as usize] = Some(Hsla::from(Rgba { r: f32::from(r) / 255.0, g: f32::from(g) / 255.0, b: f32::from(b) / 255.0, a: 1.0 }));
+        };
+        put(b'o', 86, 92, 140);
+        put(b'w', 240, 243, 253);
+        put(b's', 212, 219, 245);
+        put(b'p', 241, 176, 182);
+        put(b'P', 255, 255, 255);
+        put(b'g', 116, 176, 122);
+        put(b'G', 74, 132, 86);
+        put(b'f', 253, 238, 232);
+        put(b'F', 240, 214, 208);
+        put(b'e', 38, 38, 48);
+        put(b'b', 244, 170, 166);
+        put(b'c', 168, 198, 242);
+        put(b'C', 126, 160, 222);
+        put(b'n', 255, 255, 255);
+        put(b'u', 255, 255, 255);
+        put(b'U', 226, 232, 248);
+        put(b'K', 108, 142, 214);
+        put(b'r', 236, 84, 116);
+        put(b'h', 255, 255, 255);
+        put(b'z', 132, 136, 186);
+        put(b'y', 238, 192, 92);
+        put(b'a', 228, 142, 58);
+        table
+    })
+}
+
+#[inline]
 fn color(mark: char) -> Option<Hsla> {
-    let rgb = |r: u8, g: u8, b: u8| Some(Hsla::from(Rgba { r: f32::from(r) / 255.0, g: f32::from(g) / 255.0, b: f32::from(b) / 255.0, a: 1.0 }));
-    match mark {
-        'o' => rgb(86, 92, 140),
-        'w' => rgb(240, 243, 253),
-        's' => rgb(212, 219, 245),
-        'p' => rgb(241, 176, 182),
-        'P' => rgb(255, 255, 255),
-        'g' => rgb(116, 176, 122),
-        'G' => rgb(74, 132, 86),
-        'f' => rgb(253, 238, 232),
-        'F' => rgb(240, 214, 208),
-        'e' => rgb(38, 38, 48),
-        'b' => rgb(244, 170, 166),
-        'c' => rgb(168, 198, 242),
-        'C' => rgb(126, 160, 222),
-        'n' => rgb(255, 255, 255),
-        'u' => rgb(255, 255, 255),
-        'U' => rgb(226, 232, 248),
-        'K' => rgb(108, 142, 214),
-        'r' => rgb(236, 84, 116),
-        'h' => rgb(255, 255, 255),
-        'z' => rgb(132, 136, 186),
-        _ => None,
-    }
+    let code = mark as u32;
+    (code < 128).then(|| palette()[code as usize]).flatten()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +267,8 @@ pub enum Eyes {
     Open,
     Closed,
     Happy,
+    Focused,
+    Cheer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,15 +290,40 @@ pub struct Pose {
     pub glance: i32,
     pub legs: Legs,
     pub flick: bool,
-    /// The heart's rise, 0 to 1, after she was pointed at.
+    pub tail_wag: bool,
+    /// The heart's rise, 0 to 1, after she was pointed at or patted.
     pub heart: Option<f32>,
+    /// Floating sparkle progress, 0 to 1, while thinking or excited.
+    pub sparkle: Option<f32>,
+    /// Floating musical note progress, 0 to 1, during completion celebration.
+    pub note: Option<f32>,
+    /// Calm amber mark while a tool waits for approval.
+    pub exclaim: bool,
     pub asleep: bool,
 }
 
-/// Her pose at `clock` (the page's clock, seconds). `poked`: when she was last pointed at, on the same clock;
-/// `asleep`: the clock is paused; `pointer`: how far right of her middle the pointer is, in pixels of the art.
-pub fn pose(clock: f32, poked: f32, asleep: bool, pointer: Option<f32>) -> Pose {
-    // A stroll every 30 seconds: out to the left in 3 s, a look around, and back.
+/// All dynamic inputs that determine a [`Pose`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PetContext {
+    pub clock: f32,
+    pub poked: f32,
+    pub asleep: bool,
+    pub pointer: Option<f32>,
+    pub typing_age: Option<f32>,
+    pub pat_age: Option<f32>,
+    pub excited_age: Option<f32>,
+    pub celebrate_age: Option<f32>,
+    pub activity: PetActivity,
+    /// When `true` (active-chat mini companion), she stays planted without strolling.
+    pub compact: bool,
+}
+
+/// Computes horizontal stroll displacement & walking direction independently so pointer gaze can be calculated from
+/// her true rendered center rather than her resting home coordinate.
+fn stroll_at(clock: f32, compact: bool, hold_still: bool) -> (f32, Option<i32>) {
+    if compact {
+        return (0.0, None);
+    }
     let t = clock.rem_euclid(30.0);
     let (stroll, walking) = match t {
         t if t < 10.0 => (0.0, None),
@@ -221,35 +332,135 @@ pub fn pose(clock: f32, poked: f32, asleep: bool, pointer: Option<f32>) -> Pose 
         t if t < 23.0 => ((23.0 - t) / 3.0 * STROLL, Some(1)),
         _ => (0.0, None),
     };
-    if asleep {
-        return Pose { stroll, lift: 0.0, eyes: Eyes::Closed, glance: 0, legs: Legs::Stand, flick: false, heart: None, asleep: true };
+    if hold_still { (stroll, None) } else { (stroll, walking) }
+}
+
+/// Full pose computation supporting typing attentiveness, pat/click easter egg, and AI turn reactions.
+pub fn pose_with(ctx: PetContext) -> Pose {
+    let typing = ctx.typing_age.is_some_and(|age| (0.0..TYPING_HOLD).contains(&age));
+    let holding = typing
+        || ctx.pat_age.is_some()
+        || ctx.excited_age.is_some()
+        || ctx.celebrate_age.is_some()
+        || ctx.activity != PetActivity::Idle;
+    let (stroll, walking) = stroll_at(ctx.clock, ctx.compact, holding);
+    if ctx.asleep {
+        return Pose {
+            stroll,
+            lift: 0.0,
+            eyes: Eyes::Closed,
+            glance: 0,
+            legs: Legs::Stand,
+            flick: false,
+            tail_wag: false,
+            heart: None,
+            sparkle: None,
+            note: None,
+            exclaim: false,
+            asleep: true,
+        };
     }
+
+    let t = ctx.clock.rem_euclid(30.0);
     let step = (t * 4.0) as i32 % 2 == 0;
     let (legs, mut lift) = match walking {
         Some(_) if step => (Legs::Left, 1.0),
         Some(_) => (Legs::Right, 0.0),
         None => (Legs::Stand, 0.0),
     };
-    let looking_around = if (15.0..16.5).contains(&t) { 1 } else if (16.5..18.0).contains(&t) { -1 } else { 0 };
-    let towards_pointer = pointer.map_or(0, |dx| if dx < -10.0 { -1 } else if dx > 10.0 { 1 } else { 0 });
-    let glance = walking.unwrap_or(if towards_pointer != 0 { towards_pointer } else { looking_around });
-    let since = clock - poked;
-    let happy = (0.0..1.2).contains(&since);
-    if (0.0..0.45).contains(&since) {
-        lift += HOP * (std::f32::consts::PI * since / 0.45).sin();
+
+    let looking_around = if !ctx.compact && (15.0..16.5).contains(&t) {
+        1
+    } else if !ctx.compact && (16.5..18.0).contains(&t) {
+        -1
+    } else {
+        0
+    };
+    let towards_pointer = ctx.pointer.map_or(0, |dx| if dx < -10.0 { -1 } else if dx > 10.0 { 1 } else { 0 });
+    let mut glance = walking.unwrap_or(if towards_pointer != 0 { towards_pointer } else { looking_around });
+
+    let since_poke = ctx.clock - ctx.poked;
+    let poke_happy = (0.0..1.2).contains(&since_poke);
+    if (0.0..0.45).contains(&since_poke) {
+        lift += HOP * (std::f32::consts::PI * since_poke / 0.45).sin();
     }
-    let blinking = (clock + 0.7).rem_euclid(3.7) < 0.15;
-    let eyes = if happy { Eyes::Happy } else if blinking && walking.is_none() { Eyes::Closed } else { Eyes::Open };
+
+    let pat_rise = ctx.pat_age.filter(|age| (0.0..PAT_HOLD).contains(age)).map(|age| {
+        if age < 0.48 {
+            lift = lift.max(HOP * 1.25 * (std::f32::consts::PI * age / 0.48).sin());
+        }
+        age / PAT_HOLD
+    });
+
+    let excited_rise = ctx.excited_age.filter(|age| (0.0..EXCITED_HOLD).contains(age)).map(|age| {
+        let bounce = (std::f32::consts::TAU * age / EXCITED_HOLD).sin().abs();
+        lift = lift.max(HOP * 1.3 * bounce);
+        age / EXCITED_HOLD
+    });
+
+    let celebrate_rise = ctx.celebrate_age.filter(|age| (0.0..CELEBRATE_HOLD).contains(age)).map(|age| {
+        if age < 0.55 {
+            lift = lift.max(HOP * 1.1 * (std::f32::consts::PI * age / 0.55).sin());
+        }
+        age / CELEBRATE_HOLD
+    });
+
+    let thinking_or_responding = matches!(ctx.activity, PetActivity::Thinking | PetActivity::Responding);
+    let waiting_approval = ctx.activity == PetActivity::WaitingApproval;
+    let thinking_sparkle = thinking_or_responding.then(|| (ctx.clock * 0.55).rem_euclid(1.0));
+
+    let blinking = (ctx.clock + 0.7).rem_euclid(3.7) < 0.15;
+    let eyes = if excited_rise.is_some() || celebrate_rise.is_some() {
+        Eyes::Cheer
+    } else if poke_happy || pat_rise.is_some() {
+        Eyes::Happy
+    } else if typing || thinking_or_responding || waiting_approval {
+        Eyes::Focused
+    } else if blinking && walking.is_none() {
+        Eyes::Closed
+    } else {
+        Eyes::Open
+    };
+
+    if excited_rise.is_some() || celebrate_rise.is_some() || poke_happy || pat_rise.is_some() {
+        glance = 0;
+    } else if typing {
+        // Looking attentively towards the composer to her left.
+        glance = -1;
+    }
+
+    let idle_flick = (ctx.clock + 2.3).rem_euclid(6.1) < 0.2;
+    let typing_flick = ctx.typing_age.is_some_and(|age| (age * 2.5).rem_euclid(1.0) < 0.16);
+    let flick = idle_flick || typing_flick || waiting_approval;
+
+    let wag_active = typing || thinking_or_responding || excited_rise.is_some() || celebrate_rise.is_some() || pat_rise.is_some();
+    let tail_wag = wag_active && (ctx.clock * 3.2).rem_euclid(1.0) < 0.45;
+
+    let heart = pat_rise.or_else(|| poke_happy.then_some(since_poke / 1.2));
+    let sparkle = excited_rise.or(thinking_sparkle);
+    let note = celebrate_rise;
+
     Pose {
         stroll,
         lift,
         eyes,
-        glance: if happy { 0 } else { glance },
+        glance,
         legs,
-        flick: (clock + 2.3).rem_euclid(6.1) < 0.2,
-        heart: happy.then_some(since / 1.2),
+        flick,
+        tail_wag,
+        heart,
+        sparkle,
+        note,
+        exclaim: waiting_approval,
         asleep: false,
     }
+}
+
+/// Her pose at `clock` (the page's clock, seconds). `poked`: when she was last pointed at, on the same clock;
+/// `asleep`: the clock is paused; `pointer`: how far right of her middle the pointer is, in pixels of the art.
+#[allow(dead_code)]
+pub fn pose(clock: f32, poked: f32, asleep: bool, pointer: Option<f32>) -> Pose {
+    pose_with(PetContext { clock, poked, asleep, pointer, ..PetContext::default() })
 }
 
 /// The mark of the art at column `x`, row `y` in `pose`.
@@ -262,6 +473,8 @@ fn mark(pose: &Pose, x: usize, y: usize) -> char {
                     Eyes::Open => EYES_OPEN,
                     Eyes::Closed => EYES_CLOSED,
                     Eyes::Happy => EYES_HAPPY,
+                    Eyes::Focused => EYES_FOCUSED,
+                    Eyes::Cheer => EYES_CHEER,
                 };
                 let offset = x as i32 - column as i32 - pose.glance;
                 if !(0..EYE_WIDTH as i32).contains(&offset) {
@@ -284,12 +497,20 @@ fn mark(pose: &Pose, x: usize, y: usize) -> char {
     if pose.flick && (fy..fy + FLICK.len()).contains(&y) && (fx..fx + FLICK[0].len()).contains(&x) {
         return FLICK[y - fy].as_bytes()[x - fx] as char;
     }
+    let (tx, ty) = TAIL_AT;
+    if pose.tail_wag && (ty..ty + TAIL_WAG.len()).contains(&y) && (tx..tx + TAIL_WAG[0].len()).contains(&x) {
+        return TAIL_WAG[y - ty].as_bytes()[x - tx] as char;
+    }
     ART[y].as_bytes()[x] as char
 }
 
 /// The size of a pixel of the art on a screen with `scale` physical pixels per window pixel.
 pub fn unit(scale: f32) -> f32 {
-    (PIXEL * scale).floor().max(1.0) / scale
+    unit_for(PIXEL, scale)
+}
+
+fn unit_for(base_pixel: f32, scale: f32) -> f32 {
+    (base_pixel * scale).floor().max(1.0) / scale
 }
 
 /// The box she lives in: her place on the right, the stroll to the left, room to hop above.
@@ -302,6 +523,84 @@ pub fn row_height() -> f32 {
     (HEIGHT as f32 + HOP) * PIXEL
 }
 
+/// Size of the compact active-chat companion (`0.72×`, no horizontal stroll).
+#[allow(dead_code)]
+pub fn mini_size() -> (f32, f32) {
+    (WIDTH as f32 * MINI_PIXEL, (HEIGHT as f32 + HOP) * MINI_PIXEL)
+}
+
+/// Paints a small pixel overlay sprite using horizontal run-length merging to minimize quad count.
+fn paint_sprite_rle(window: &mut Window, rows: &[&str], origin: (f32, f32), offset: (f32, f32), unit: f32, alpha: f32) {
+    let (left, top) = origin;
+    let (ox, oy) = offset;
+    let base_y = oy.round();
+    for (dy, row) in rows.iter().enumerate() {
+        let bytes = row.as_bytes();
+        let mut x = 0;
+        while x < bytes.len() {
+            let here = bytes[x] as char;
+            let mut end = x + 1;
+            while end < bytes.len() && bytes[end] as char == here {
+                end += 1;
+            }
+            if let Some(shade) = color(here) {
+                let run = Bounds::new(
+                    point(px(left + (ox + x as f32) * unit), px(top + (base_y + dy as f32) * unit)),
+                    size(px((end - x) as f32 * unit), px(unit)),
+                );
+                window.paint_quad(fill(run, shade.opacity(alpha)));
+            }
+            x = end;
+        }
+    }
+}
+
+/// Paints the pet body and active head overlays inside a single `paint_layer`.
+fn paint_pose(window: &mut Window, pose: &Pose, left: f32, top: f32, unit: f32) {
+    let reach = Bounds::new(
+        point(px(left - unit), px(top - 22.0 * unit)),
+        size(px((WIDTH as f32 + 2.0) * unit), px((HEIGHT as f32 + 22.0) * unit)),
+    );
+    window.paint_layer(reach, |window| {
+        // Horizontal RLE reduces quad count by ~3x while drawing identical pixels.
+        for y in 0..HEIGHT {
+            let mut x = 0;
+            while x < WIDTH {
+                let here = mark(pose, x, y);
+                let mut end = x + 1;
+                while end < WIDTH && mark(pose, end, y) == here {
+                    end += 1;
+                }
+                if let Some(shade) = color(here) {
+                    let run = Bounds::new(
+                        point(px(left + x as f32 * unit), px(top + y as f32 * unit)),
+                        size(px((end - x) as f32 * unit), px(unit)),
+                    );
+                    window.paint_quad(fill(run, shade));
+                }
+                x = end;
+            }
+        }
+        let origin = (left, top);
+        if let Some(rise) = pose.heart {
+            paint_sprite_rle(window, &HEART, origin, (30.0, -9.0 - rise * 6.0), unit, 1.0 - rise * rise);
+        }
+        if let Some(rise) = pose.sparkle {
+            let alpha = (rise * std::f32::consts::PI).sin().clamp(0.0, 1.0);
+            paint_sprite_rle(window, &SPARKLE, origin, (6.0, -7.0 - rise * 7.0), unit, alpha);
+        }
+        if let Some(rise) = pose.note {
+            paint_sprite_rle(window, &NOTE, origin, (31.0, -9.0 - rise * 7.0), unit, 1.0 - rise * rise);
+        }
+        if pose.exclaim {
+            paint_sprite_rle(window, &EXCLAIM, origin, (37.0, -9.0), unit, 1.0);
+        }
+        if pose.asleep {
+            paint_sprite_rle(window, &ZED, origin, (36.0, -6.0), unit, 1.0);
+        }
+    });
+}
+
 /// The pet, standing with her feet on the bottom of her box.
 pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl IntoElement + use<> {
     let page = backdrop.read(cx);
@@ -309,6 +608,12 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
     let asleep = motion && page.dozing(window);
     let (clock, poked) = if motion { (page.clock(), page.poked()) } else { (0.0, f32::NEG_INFINITY) };
     let pointer = page.pointer();
+    let typing_age = if motion { page.typing_age() } else { None };
+    let pat_age = if motion { page.pat_age() } else { None };
+    let excited_age = if motion { page.excited_age() } else { None };
+    let celebrate_age = if motion { page.celebrate_age() } else { None };
+    let activity = page.ai_activity();
+    let last_inside = Rc::new(Cell::new(page.pet_inside()));
     let (width, height) = box_size();
     let weak = backdrop.downgrade();
     div().id("optics-pet").w(px(width)).h(px(height)).child(
@@ -318,63 +623,237 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
                 let scale = window.scale_factor();
                 let unit = unit(scale);
                 let snap = |value: f32| (value * scale).round() / scale;
-                // Where she would stand, to know where the pointer is from her middle.
                 let home = f32::from(bounds.right()) - WIDTH as f32 * unit;
-                let middle = home + WIDTH as f32 * unit / 2.0;
-                let near = pointer.map(|point| (f32::from(point.x) - middle) / unit).filter(|dx| dx.abs() < 300.0);
-                let pose = pose(clock, poked, asleep, near);
-                let left = snap(home - pose.stroll * unit);
-                let top = snap(f32::from(bounds.bottom()) - (HEIGHT as f32 + pose.lift) * unit);
-                let cell = |x: f32, y: f32| Bounds::new(point(px(left + x * unit), px(top + y * unit)), size(px(unit), px(unit)));
-                let picture = |window: &mut Window, rows: &[&str], x: f32, y: f32, alpha: f32| {
-                    for (dy, row) in rows.iter().enumerate() {
-                        for (dx, mark) in row.chars().enumerate() {
-                            if let Some(shade) = color(mark) {
-                                window.paint_quad(fill(cell(x + dx as f32, (y + dy as f32).round()), shade.opacity(alpha)));
-                            }
-                        }
-                    }
-                };
-                // One layer for her pixels and what floats over her head: one place in the frame's order.
-                let reach = Bounds::new(point(px(left - unit), px(top - 20.0 * unit)), size(px((WIDTH as f32 + 2.0) * unit), px((HEIGHT as f32 + 20.0) * unit)));
-                window.paint_layer(reach, |window| {
-                    // A run of one colour along a row is one quad: a third of the quads, the same pixels.
-                    for y in 0..HEIGHT {
-                        let mut x = 0;
-                        while x < WIDTH {
-                            let here = mark(&pose, x, y);
-                            let mut end = x + 1;
-                            while end < WIDTH && mark(&pose, end, y) == here {
-                                end += 1;
-                            }
-                            if let Some(shade) = color(here) {
-                                let run = Bounds::new(point(px(left + x as f32 * unit), px(top + y as f32 * unit)), size(px((end - x) as f32 * unit), px(unit)));
-                                window.paint_quad(fill(run, shade));
-                            }
-                            x = end;
-                        }
-                    }
-                    if let Some(rise) = pose.heart {
-                        picture(window, &HEART, 30.0, -9.0 - rise * 6.0, 1.0 - rise * rise);
-                    }
-                    if pose.asleep {
-                        picture(window, &ZED, 36.0, -6.0, 1.0);
-                    }
+                // Compute her live stroll position first so pointer gaze tracks from where she actually stands.
+                let holding = typing_age.is_some()
+                    || pat_age.is_some()
+                    || excited_age.is_some()
+                    || celebrate_age.is_some()
+                    || activity != PetActivity::Idle;
+                let (stroll, _) = stroll_at(clock, false, holding);
+                let left = snap(home - stroll * unit);
+                let actual_middle = left + WIDTH as f32 * unit * 0.5;
+                let near = pointer.map(|point| (f32::from(point.x) - actual_middle) / unit).filter(|dx| dx.abs() < 300.0);
+                let pose = pose_with(PetContext {
+                    clock,
+                    poked,
+                    asleep,
+                    pointer: near,
+                    typing_age,
+                    pat_age,
+                    excited_age,
+                    celebrate_age,
+                    activity,
+                    compact: false,
                 });
-                // Pointing at her (not at the empty path beside her) makes her hop.
+                let top = snap(f32::from(bounds.bottom()) - (HEIGHT as f32 + pose.lift) * unit);
+                paint_pose(window, &pose, left, top, unit);
+
+                // Pointing at her (not at the empty path beside her) makes her hop; only notify on edge transitions.
                 let body = Bounds::new(point(px(left), px(top)), size(px(WIDTH as f32 * unit), px(HEIGHT as f32 * unit)));
-                let weak = weak.clone();
+                let weak_move = weak.clone();
+                let inside_cell = last_inside.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if !phase.bubble() {
                         return;
                     }
                     let inside = body.contains(&event.position);
-                    let _ = weak.update(cx, |page, cx| page.pet_hovered(inside, window, cx));
+                    if inside != inside_cell.get() {
+                        inside_cell.set(inside);
+                        let _ = weak_move.update(cx, |page, cx| page.pet_hovered(inside, window, cx));
+                    }
+                });
+                let weak_click = weak.clone();
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if phase.bubble() && event.button == MouseButton::Left && body.contains(&event.position) {
+                        cx.stop_propagation();
+                        let _ = weak_click.update(cx, |page, cx| page.pet_clicked(window, cx));
+                    }
                 });
             },
         )
         .size_full(),
     )
+}
+
+/// Low-distraction stationary mini companion (`0.72×`) for active chats when optics are enabled.
+///
+/// Consumes **0 frames / 0 CPU at rest** (both `Idle` and `WaitingApproval` are completely static). Starts a capped
+/// 10 fps local ticker only while thinking/responding (window-active gated) or during finite reaction bursts (1.2s pat,
+/// 1.5s triple-click, 1.8s completion celebration, 2.0s typing) and stops automatically the instant they finish.
+#[allow(dead_code)]
+pub struct MiniPet {
+    clock: f32,
+    last_tick: Option<Instant>,
+    activity: PetActivity,
+    last_typed: f32,
+    patted: f32,
+    pat_streak: u8,
+    excited_at: f32,
+    excited_cooldown_until: f32,
+    celebrated_at: f32,
+    ticker: Option<Task<()>>,
+    _activation: Subscription,
+}
+
+#[allow(dead_code)]
+impl MiniPet {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() && this.needs_tick(window) {
+                this.ensure_ticking(window, cx);
+            }
+        });
+        Self {
+            clock: 0.0,
+            last_tick: None,
+            activity: PetActivity::Idle,
+            last_typed: f32::NEG_INFINITY,
+            patted: f32::NEG_INFINITY,
+            pat_streak: 0,
+            excited_at: f32::NEG_INFINITY,
+            excited_cooldown_until: f32::NEG_INFINITY,
+            celebrated_at: f32::NEG_INFINITY,
+            ticker: None,
+            _activation: activation,
+        }
+    }
+
+    /// Updates AI turn status; transitioning out of `Thinking`/`Responding` into `Idle` triggers a 1.8s celebration.
+    pub fn set_activity(&mut self, activity: PetActivity, window: &mut Window, cx: &mut Context<Self>) {
+        if self.activity == activity {
+            return;
+        }
+        let was_active = matches!(self.activity, PetActivity::Thinking | PetActivity::Responding);
+        self.activity = activity;
+        if was_active && activity == PetActivity::Idle && motion_allowed() {
+            self.celebrated_at = self.clock;
+        }
+        cx.notify();
+        if self.needs_tick(window) {
+            self.ensure_ticking(window, cx);
+        }
+    }
+
+    pub fn notify_typed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !motion_allowed() {
+            return;
+        }
+        self.last_typed = self.clock;
+        cx.notify();
+        self.ensure_ticking(window, cx);
+    }
+
+    pub fn clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !motion_allowed() {
+            return;
+        }
+        if self.clock - self.patted <= 3.0 {
+            self.pat_streak = self.pat_streak.saturating_add(1);
+        } else {
+            self.pat_streak = 1;
+        }
+        self.patted = self.clock;
+        if self.pat_streak >= 3 && self.clock >= self.excited_cooldown_until {
+            self.excited_at = self.clock;
+            self.excited_cooldown_until = self.clock + EXCITED_HOLD + 4.0;
+            self.pat_streak = 0;
+        }
+        cx.notify();
+        self.ensure_ticking(window, cx);
+    }
+
+    fn has_finite_burst(&self) -> bool {
+        (0.0..TYPING_HOLD).contains(&(self.clock - self.last_typed))
+            || (0.0..PAT_HOLD).contains(&(self.clock - self.patted))
+            || (0.0..EXCITED_HOLD).contains(&(self.clock - self.excited_at))
+            || (0.0..CELEBRATE_HOLD).contains(&(self.clock - self.celebrated_at))
+    }
+
+    fn needs_tick(&self, window: &Window) -> bool {
+        motion_allowed()
+            && window.is_window_active()
+            && (matches!(self.activity, PetActivity::Thinking | PetActivity::Responding) || self.has_finite_burst())
+    }
+
+    fn ensure_ticking(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ticker.is_some() || !self.needs_tick(window) {
+            return;
+        }
+        self.last_tick = Some(Instant::now());
+        let step = Duration::from_millis(100);
+        self.ticker = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(step).await;
+                let going = this
+                    .update_in(cx, |this, window, cx| {
+                        let now = Instant::now();
+                        let elapsed = this.last_tick.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+                        this.last_tick = Some(now);
+                        this.clock += elapsed.min(0.2);
+                        if !this.needs_tick(window) {
+                            this.ticker = None;
+                            this.last_tick = None;
+                            cx.notify();
+                            return false;
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !going {
+                    break;
+                }
+            }
+        }));
+    }
+}
+
+impl Render for MiniPet {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let motion = motion_allowed();
+        let clock = if motion { self.clock } else { 0.0 };
+        let typing_age = motion.then_some(self.clock - self.last_typed).filter(|age| (0.0..TYPING_HOLD).contains(age));
+        let pat_age = motion.then_some(self.clock - self.patted).filter(|age| (0.0..PAT_HOLD).contains(age));
+        let excited_age = motion.then_some(self.clock - self.excited_at).filter(|age| (0.0..EXCITED_HOLD).contains(age));
+        let celebrate_age = motion.then_some(self.clock - self.celebrated_at).filter(|age| (0.0..CELEBRATE_HOLD).contains(age));
+        let pose = pose_with(PetContext {
+            clock,
+            poked: f32::NEG_INFINITY,
+            asleep: false,
+            pointer: None,
+            typing_age,
+            pat_age,
+            excited_age,
+            celebrate_age,
+            activity: self.activity,
+            compact: true,
+        });
+        let (width, height) = mini_size();
+        let weak = cx.weak_entity();
+        div().id("optics-mini-pet").w(px(width)).h(px(height)).cursor_pointer().child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, (), window, _| {
+                    let scale = window.scale_factor();
+                    let unit = unit_for(MINI_PIXEL, scale);
+                    let snap = |value: f32| (value * scale).round() / scale;
+                    let left = snap(f32::from(bounds.right()) - WIDTH as f32 * unit);
+                    let top = snap(f32::from(bounds.bottom()) - (HEIGHT as f32 + pose.lift) * unit);
+                    paint_pose(window, &pose, left, top, unit);
+                    let body = Bounds::new(point(px(left), px(top)), size(px(WIDTH as f32 * unit), px(HEIGHT as f32 * unit)));
+                    let weak = weak.clone();
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if phase.bubble() && event.button == MouseButton::Left && body.contains(&event.position) {
+                            cx.stop_propagation();
+                            let _ = weak.update(cx, |pet, cx| pet.clicked(window, cx));
+                        }
+                    });
+                },
+            )
+            .size_full(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -384,7 +863,23 @@ mod tests {
 
     #[test]
     fn the_art_is_whole_and_every_mark_has_a_color() {
-        let all = ART.iter().chain(&EYES_OPEN).chain(&EYES_CLOSED).chain(&EYES_HAPPY).chain(&LEGS_STAND).chain(&LEGS_LEFT).chain(&LEGS_RIGHT).chain(&HEART).chain(&ZED).chain(&FLICK);
+        let all = ART
+            .iter()
+            .chain(&EYES_OPEN)
+            .chain(&EYES_CLOSED)
+            .chain(&EYES_HAPPY)
+            .chain(&EYES_FOCUSED)
+            .chain(&EYES_CHEER)
+            .chain(&LEGS_STAND)
+            .chain(&LEGS_LEFT)
+            .chain(&LEGS_RIGHT)
+            .chain(&HEART)
+            .chain(&ZED)
+            .chain(&FLICK)
+            .chain(&TAIL_WAG)
+            .chain(&SPARKLE)
+            .chain(&NOTE)
+            .chain(&EXCLAIM);
         for row in all {
             assert!(row.chars().all(|mark| mark == '.' || color(mark).is_some()), "{row}");
         }
@@ -400,10 +895,12 @@ mod tests {
                 assert_eq!(&ART[y][column..column + EYE_WIDTH], open, "row {y}");
             }
         }
-        assert!(EYES_OPEN.iter().chain(&EYES_CLOSED).chain(&EYES_HAPPY).all(|row| row.len() == EYE_WIDTH));
-        // The ear's twitch and what floats over her stay inside her width.
+        assert!(EYES_OPEN.iter().chain(&EYES_CLOSED).chain(&EYES_HAPPY).chain(&EYES_FOCUSED).chain(&EYES_CHEER).all(|row| row.len() == EYE_WIDTH));
+        // The ear's twitch, tail wag and floating sprites stay inside her width.
         assert!(FLICK.iter().all(|row| row.len() == FLICK[0].len()) && FLICK_AT.0 + FLICK[0].len() <= WIDTH);
+        assert!(TAIL_WAG.iter().all(|row| row.len() == TAIL_WAG[0].len()) && TAIL_AT.0 + TAIL_WAG[0].len() <= WIDTH && TAIL_AT.1 + TAIL_WAG.len() <= HEIGHT);
         assert!(30 + HEART[0].len() <= WIDTH && 36 + ZED[0].len() <= WIDTH);
+        assert!(6 + SPARKLE[0].len() <= WIDTH && 31 + NOTE[0].len() <= WIDTH && 37 + EXCLAIM[0].len() <= WIDTH);
     }
 
     #[test]
@@ -438,6 +935,26 @@ mod tests {
         let ahead = pose(5.0, f32::NEG_INFINITY, false, None);
         let (right, _) = EYES_AT[1];
         assert_eq!(mark(&ahead, right + EYE_WIDTH - 1, EYE_ROW + 2), mark(&ahead, left, EYE_ROW + 2));
+    }
+
+    #[test]
+    fn typing_pat_and_ai_states_drive_distinct_poses() {
+        let typing = pose_with(PetContext { clock: 11.2, typing_age: Some(0.3), ..PetContext::default() });
+        assert_eq!(typing.eyes, Eyes::Focused);
+        assert_eq!(typing.legs, Legs::Stand);
+        assert_eq!(typing.glance, -1);
+
+        let excited = pose_with(PetContext { clock: 4.0, excited_age: Some(0.35), ..PetContext::default() });
+        assert_eq!(excited.eyes, Eyes::Cheer);
+        assert!(excited.lift > HOP * 0.5 && excited.sparkle.is_some());
+
+        let celebrate = pose_with(PetContext { clock: 4.0, celebrate_age: Some(0.25), ..PetContext::default() });
+        assert_eq!(celebrate.eyes, Eyes::Cheer);
+        assert!(celebrate.note.is_some() && celebrate.lift > 0.0);
+
+        let waiting = pose_with(PetContext { clock: 4.0, activity: PetActivity::WaitingApproval, compact: true, ..PetContext::default() });
+        assert_eq!(waiting.stroll, 0.0);
+        assert!(waiting.exclaim && waiting.flick && waiting.eyes == Eyes::Focused);
     }
 
     #[test]

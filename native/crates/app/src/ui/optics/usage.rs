@@ -1,14 +1,17 @@
 //! The usage overview above a new chat: chats, messages, tokens, active days, the cache hit rate and the most used
 //! model for all projects or one, over all time or the last 30 or 7 days; a map of the days with messages; the
 //! models' shares; and the usage limits of external agents. Everything is counted by the Host from Rainy's own chat
-//! files (`usage.stats`), asked again when the choice changes or the overview was last read over half a minute ago.
+//! files (`usage.stats`), refreshed on mount, filter changes, and chat summary updates (throttled to 30 s) — never as
+//! an unbounded side effect inside `Render::render`.
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{Datelike as _, Local, NaiveDate};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::base::ElementExt as _;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -18,13 +21,18 @@ use serde_json::json;
 
 use super::look::Look;
 use crate::i18n::{self, Locale};
-use crate::store::Store;
+use crate::store::{Store, StoreEvent};
+use crate::ui::motion::{self, SETTLE};
 
 /// The overview is asked again when it is older than this.
 const STALE: Duration = Duration::from_secs(30);
 const CELL: f32 = 12.0;
 const GAP: f32 = 3.0;
+/// Subtle hover expansion per side on heatmap cells (`1.5px` total without layout shift).
+const HOVER_INFLATE: f32 = 0.75;
 pub const MAP_HEIGHT: f32 = 7.0 * CELL + 6.0 * GAP;
+/// Width bucket granularity (px) for reusing measured overview height across minor window resizes.
+const WIDTH_BUCKET: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -33,26 +41,77 @@ enum Tab {
     Limits,
 }
 
+impl Tab {
+    fn index(self) -> usize {
+        match self {
+            Tab::Overview => 0,
+            Tab::Models => 1,
+            Tab::Limits => 2,
+        }
+    }
+}
+
 /// What is counted: a project (`None` for all) and the last days (0 for all time).
 type Choice = (Option<String>, u32);
+
+/// Measured overview height cached alongside a coarse viewport width bucket.
+type HeightMemo = Rc<Cell<Option<(Pixels, i32)>>>;
+
+/// Cached stats snapshot with shared activity slice (no per-frame Vec copy) and local fetch date (prevents midnight
+/// date drift).
+struct StatsSnapshot {
+    stats: UsageStats,
+    activity: Arc<[u32]>,
+    fetched_date: NaiveDate,
+}
 
 pub struct UsageCard {
     store: Entity<Store>,
     tab: Tab,
     choice: Choice,
-    stats: Option<(Choice, Result<UsageStats, SharedString>)>,
+    stats: Option<(Choice, Result<StatsSnapshot, SharedString>)>,
     asked: Option<(Choice, Instant)>,
+    /// Whether initial mount subscription & fetch were scheduled.
+    initialized: bool,
     /// The day of the map under the pointer, by its index in `UsageStats::activity`.
     hover: Option<usize>,
-    /// How tall the overview was last drawn, in a window of what size: the other tabs are at least as tall in that
-    /// window, so switching tabs does not move the tabs (the page centres the card, which would shift with its height).
-    overview_height: Rc<Cell<Option<(Pixels, Size<Pixels>)>>>,
+    /// How tall the overview was last drawn, in a width bucket: the other tabs keep at least that height so switching
+    /// tabs never shifts the tab header vertically.
+    overview_height: HeightMemo,
+    _subscription: Option<Subscription>,
     _task: Option<Task<()>>,
 }
 
 impl UsageCard {
     pub fn new(store: Entity<Store>) -> Self {
-        Self { store, tab: Tab::Overview, choice: (None, 0), stats: None, asked: None, hover: None, overview_height: Rc::default(), _task: None }
+        Self {
+            store,
+            tab: Tab::Overview,
+            choice: (None, 0),
+            stats: None,
+            asked: None,
+            initialized: false,
+            hover: None,
+            overview_height: Rc::default(),
+            _subscription: None,
+            _task: None,
+        }
+    }
+
+    fn ensure_initialized(&mut self, cx: &mut Context<Self>) {
+        if self.initialized {
+            return;
+        }
+        self.initialized = true;
+        // Refresh only on meaningful store events (throttled by `STALE`), never on unrelated repaints.
+        self._subscription = Some(cx.subscribe(&self.store, |this, _, event: &StoreEvent, cx| match event {
+            StoreEvent::SummariesChanged | StoreEvent::HostReconnected(_) => this.refresh_if_needed(cx),
+            _ => {}
+        }));
+        let card = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = card.update(cx, |this, cx| this.refresh_if_needed(cx));
+        });
     }
 
     fn refresh_if_needed(&mut self, cx: &mut Context<Self>) {
@@ -62,13 +121,21 @@ impl UsageCard {
         }
         let choice = self.choice.clone();
         self.asked = Some((choice.clone(), Instant::now()));
-        let offset = Local::now().offset().local_minus_utc() / 60;
+        let now = Local::now();
+        let offset = now.offset().local_minus_utc() / 60;
+        let fetched_date = now.date_naive();
         let store = self.store.read(cx);
         let locale = store.locale();
         let call = store.call("usage.stats", json!({ "workspaceId": choice.0, "days": choice.1, "tzOffsetMinutes": offset }));
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = call.await.and_then(|value| serde_json::from_value::<UsageStats>(value).map_err(|error| RpcError { code: "invalid".into(), message: error.to_string(), data: None }));
-            let result = result.map_err(|error| SharedString::from(i18n::format(locale, "optics.failed", &[("error", &i18n::error_text(locale, &error))])));
+            let result = match result {
+                Ok(stats) => {
+                    let activity = Arc::from(stats.activity.as_slice());
+                    Ok(StatsSnapshot { stats, activity, fetched_date })
+                }
+                Err(error) => Err(SharedString::from(i18n::format(locale, "optics.failed", &[("error", &i18n::error_text(locale, &error))]))),
+            };
             let _ = this.update(cx, |this, cx| {
                 this.stats = Some((choice, result));
                 cx.notify();
@@ -80,31 +147,39 @@ impl UsageCard {
         if self.choice != choice {
             self.choice = choice;
             self.hover = None;
+            self.refresh_if_needed(cx);
             cx.notify();
         }
     }
 }
 
+fn width_bucket(width: Pixels) -> i32 {
+    (f32::from(width) / WIDTH_BUCKET).round() as i32
+}
+
 impl Render for UsageCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.refresh_if_needed(cx);
+        self.ensure_initialized(cx);
         let locale = self.store.read(cx).locale();
         let look = Look::of(cx.theme());
-        let with_map = window.viewport_size().height >= px(MIN_HEIGHT_FOR_MAP);
-        let header = self.header(locale, &look, cx);
         let viewport = window.viewport_size();
+        let with_map = viewport.height >= px(MIN_HEIGHT_FOR_MAP);
+        let header = self.header(locale, &look, window, cx);
+        let bucket = width_bucket(viewport.width);
         let body = match self.tab {
             Tab::Overview => {
                 let measured = self.overview_height.clone();
                 div()
                     .relative()
-                    .child(self.overview(locale, &look, with_map, cx))
-                    .child(canvas(move |bounds, _, _| measured.set(Some((bounds.size.height, viewport))), |_, _, _, _| {}).absolute().inset_0())
+                    .on_prepaint(move |bounds, _, _| {
+                        measured.set(Some((bounds.size.height, bucket)));
+                    })
+                    .child(self.overview(locale, &look, with_map, window, cx))
                     .into_any_element()
             }
             tab => {
-                let body = if tab == Tab::Models { self.models(locale, &look, cx) } else { self.limits(locale, &look, cx) };
-                let keep = self.overview_height.get().filter(|(_, size)| *size == viewport).map(|(height, _)| height);
+                let body = if tab == Tab::Models { self.models(locale, &look, window, cx) } else { self.limits(locale, &look, cx) };
+                let keep = self.overview_height.get().filter(|(_, saved)| *saved == bucket).map(|(height, _)| height);
                 div().when_some(keep, |this, height| this.min_h(height)).child(body).into_any_element()
             }
         };
@@ -116,22 +191,62 @@ impl Render for UsageCard {
 /// pixels tall, the window adds its title bar and the grid of numbers may wrap to three rows.
 pub const MIN_HEIGHT_FOR_MAP: f32 = 640.0;
 
+/// Transparent-fill selected button variant so [`motion::sliding_pill`] carries the tinted background smoothly.
+fn pill_selected_button(cx: &App) -> ButtonCustomVariant {
+    let theme = cx.theme();
+    let fg = if theme.mode.is_dark() { theme.link } else { theme.primary_active };
+    let subtle_hover = theme.primary.opacity(if theme.mode.is_dark() { 0.08 } else { 0.05 });
+    ButtonCustomVariant::new(cx).color(theme.transparent).foreground(fg).hover(subtle_hover).active(subtle_hover)
+}
+
 impl UsageCard {
-    fn header(&self, locale: Locale, look: &Look, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn header(&self, locale: Locale, look: &Look, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = |key: &str| SharedString::from(i18n::text(locale, &format!("optics.{key}")));
-        let tab = |id: &'static str, key: &str, value: Tab, cx: &mut Context<Self>| {
-            let on = self.tab == value;
-            Button::new(id).ghost().xsmall().label(t(key)).when(on, |this| this.custom(crate::theme::selected_button(cx))).on_click(cx.listener(move |this, _, _, cx| {
-                if this.tab != value {
-                    this.tab = value;
-                    if value == Tab::Limits {
-                        this.read_limits(cx);
-                    }
-                    cx.notify();
-                }
-            }))
+        let theme = cx.theme();
+        let pill_style = motion::PillStyle {
+            bg: theme.primary.opacity(if look.dark { 0.22 } else { 0.12 }),
+            radius: theme.radius,
+            gap: px(2.),
         };
-        let tabs = h_flex().gap_0p5().child(tab("usage-tab-overview", "tabOverview", Tab::Overview, cx)).child(tab("usage-tab-models", "tabModels", Tab::Models, cx)).child(tab("usage-tab-limits", "tabLimits", Tab::Limits, cx));
+        let selected_variant = pill_selected_button(cx);
+
+        let tab_btn = |id: &'static str, key: &str, value: Tab, cx: &mut Context<Self>| {
+            let on = self.tab == value;
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .label(t(key))
+                .when(on, |this| this.custom(selected_variant))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.tab != value {
+                        this.tab = value;
+                        if value == Tab::Limits {
+                            this.read_limits(cx);
+                        } else {
+                            this.refresh_if_needed(cx);
+                        }
+                        cx.notify();
+                    }
+                }))
+                .into_any_element()
+        };
+        let tabs = motion::sliding_pill(
+            "usage-tabs",
+            self.tab.index(),
+            vec![
+                tab_btn("usage-tab-overview", "tabOverview", Tab::Overview, cx),
+                tab_btn("usage-tab-models", "tabModels", Tab::Models, cx),
+                tab_btn("usage-tab-limits", "tabLimits", Tab::Limits, cx),
+            ],
+            pill_style,
+            window,
+            cx,
+        );
+
+        let row = h_flex().w_full().min_h(px(24.)).flex_wrap().gap_2().items_center().justify_between().child(tabs);
+        if self.tab == Tab::Limits {
+            return row;
+        }
 
         let workspaces = crate::store::ide::Ide::global(cx).read(cx).workspaces.clone();
         let (project, days) = self.choice.clone();
@@ -155,38 +270,47 @@ impl UsageCard {
             }
             menu
         });
-        let range = h_flex().gap_0p5().children([(0u32, "rangeAll"), (30, "range30"), (7, "range7")].map(|(value, key)| {
-            let on = self.choice.1 == value;
-            Button::new(ElementId::Name(format!("usage-range-{value}").into()))
-                .ghost()
-                .xsmall()
-                .label(t(key))
-                .when(on, |this| this.custom(crate::theme::selected_button(cx)))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let project = this.choice.0.clone();
-                    this.choose((project, value), cx);
-                }))
-        }));
+
+        let ranges = [(0u32, "rangeAll"), (30, "range30"), (7, "range7")];
+        let range_index = ranges.iter().position(|(value, _)| *value == self.choice.1).unwrap_or(0);
+        let range_items: Vec<AnyElement> = ranges
+            .into_iter()
+            .map(|(value, key)| {
+                let on = self.choice.1 == value;
+                Button::new(ElementId::Name(format!("usage-range-{value}").into()))
+                    .ghost()
+                    .xsmall()
+                    .label(t(key))
+                    .when(on, |this| this.custom(selected_variant))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let project = this.choice.0.clone();
+                        this.choose((project, value), cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let range = motion::sliding_pill("usage-ranges", range_index, range_items, pill_style, window, cx);
         let divider = div().w(px(1.)).h(px(14.)).bg(look.cell_border);
-        h_flex().w_full().flex_wrap().gap_2().items_center().justify_between().child(tabs).child(h_flex().gap_1().items_center().child(projects).child(divider).child(range))
+        row.child(h_flex().gap_1().items_center().child(projects).child(divider).child(range))
     }
 
     /// The stats shown: the current choice's, or while it is being counted the last ones, dimmed.
-    fn shown(&self) -> (Option<&Result<UsageStats, SharedString>>, bool) {
+    fn shown(&self) -> (Option<&Result<StatsSnapshot, SharedString>>, bool) {
         match &self.stats {
             Some((choice, result)) => (Some(result), *choice != self.choice),
             None => (None, true),
         }
     }
 
-    fn overview(&self, locale: Locale, look: &Look, with_map: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn overview(&self, locale: Locale, look: &Look, with_map: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = |key: &str| SharedString::from(i18n::text(locale, &format!("optics.{key}")));
         let (shown, stale) = self.shown();
-        let stats = match shown {
+        let snapshot = match shown {
             Some(Err(error)) => return div().text_sm().text_color(look.muted).child(error.clone()).into_any_element(),
-            Some(Ok(stats)) => Some(stats),
+            Some(Ok(snap)) => Some(snap),
             None => None,
         };
+        let stats = snapshot.map(|s| &s.stats);
         let value = |text: Option<String>| text.unwrap_or_else(|| "…".into());
         let top_model = stats.and_then(|stats| stats.models.iter().max_by_key(|model| model.replies)).map(|model| self.model_name(&model.provider, &model.model, cx));
         let tokens_tip: Option<SharedString> = stats.map(|stats| {
@@ -199,12 +323,38 @@ impl UsageCard {
             .into()
         });
         let none = t("none").to_string();
+
+        // Smooth 220ms ease-out count roll on filter/range switches (0 frames once settled, instant under reduced motion).
+        let sessions_text = stats.map(|s| {
+            let v = motion::transition_f32("usage-val-sessions", s.sessions as f32, SETTLE, window, cx);
+            (v.round().max(0.0) as u64).to_string()
+        });
+        let messages_text = stats.map(|s| {
+            let v = motion::transition_f32("usage-val-messages", s.messages as f32, SETTLE, window, cx);
+            (v.round().max(0.0) as u64).to_string()
+        });
+        let tokens_text = stats.map(|s| {
+            let v = motion::transition_f32("usage-val-tokens", s.tokens() as f32, SETTLE, window, cx);
+            crate::ui::format_tokens(f64::from(v.max(0.0)).round())
+        });
+        let active_days_text = stats.map(|s| {
+            let v = motion::transition_f32("usage-val-days", s.active_days as f32, SETTLE, window, cx);
+            (v.round().max(0.0) as u64).to_string()
+        });
+        let cache_hit_text = stats.map(|s| match s.cache_hit_rate() {
+            Some(rate) => {
+                let v = motion::transition_f32("usage-val-cache", rate as f32, SETTLE, window, cx);
+                percent(f64::from(v.clamp(0.0, 1.0)))
+            }
+            None => none.clone(),
+        });
+
         let cells: [(&str, String, Option<SharedString>); 6] = [
-            ("sessions", value(stats.map(|stats| stats.sessions.to_string())), None),
-            ("messages", value(stats.map(|stats| stats.messages.to_string())), None),
-            ("tokens", value(stats.map(|stats| crate::ui::format_tokens(stats.tokens()))), tokens_tip),
-            ("activeDays", value(stats.map(|stats| stats.active_days.to_string())), None),
-            ("cacheHit", value(stats.map(|stats| stats.cache_hit_rate().map_or_else(|| none.clone(), percent))), None),
+            ("sessions", value(sessions_text), None),
+            ("messages", value(messages_text), None),
+            ("tokens", value(tokens_text), tokens_tip),
+            ("activeDays", value(active_days_text), None),
+            ("cacheHit", value(cache_hit_text), None),
             ("topModel", value(stats.map(|_| top_model.clone().unwrap_or_else(|| none.clone()))), None),
         ];
         let theme = cx.theme();
@@ -225,96 +375,122 @@ impl UsageCard {
                 .child(div().text_lg().font_semibold().overflow_hidden().text_ellipsis().whitespace_nowrap().when(stale, |this| this.opacity(0.55)).child(text))
                 .when_some(tip, |this, tip| this.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)))
         }));
-        let footnote = self.footnote(locale, stats, look);
+        let footnote = self.footnote(locale, snapshot, look);
         v_flex()
             .gap_3()
             .child(grid)
-            .when_some(stats.filter(|_| with_map), |this, stats| this.child(self.map(&stats.activity, look, cx)))
+            .when_some(snapshot.filter(|_| with_map), |this, snap| this.child(self.map(snap, look, cx)))
             .child(footnote)
             .into_any_element()
     }
 
-    fn footnote(&self, locale: Locale, stats: Option<&UsageStats>, look: &Look) -> impl IntoElement + use<> {
-        let text: Option<String> = match (stats, self.hover) {
-            (Some(stats), Some(index)) => stats.activity.get(index).map(|count| {
-                let date = day_label(locale, Local::now().date_naive() - chrono::Days::new((stats.activity.len() - 1 - index) as u64));
+    fn footnote(&self, locale: Locale, snapshot: Option<&StatsSnapshot>, look: &Look) -> impl IntoElement + use<> {
+        let text: Option<String> = match (snapshot, self.hover) {
+            (Some(snap), Some(index)) => snap.activity.get(index).map(|count| {
+                let date = day_label(locale, snap.fetched_date - chrono::Days::new((snap.activity.len() - 1 - index) as u64));
                 if *count == 0 { i18n::format(locale, "optics.dayNone", &[("date", &date)]) } else { i18n::format(locale, "optics.day", &[("date", &date), ("count", count)]) }
             }),
-            (Some(stats), None) if stats.messages == 0 => Some(i18n::text(locale, "optics.empty").to_owned()),
-            (Some(stats), None) => fun_line(locale, stats.tokens()),
+            (Some(snap), None) if snap.stats.messages == 0 => Some(i18n::text(locale, "optics.empty").to_owned()),
+            (Some(snap), None) => fun_line(locale, snap.stats.tokens()),
             (None, _) => None,
         };
         div().h(px(18.)).text_xs().text_color(look.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().children(text)
     }
 
     /// The days with messages, a column per week ending this week, as many weeks as fit (up to a year).
-    fn map(&self, activity: &[u32], look: &Look, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let activity: Rc<Vec<u32>> = Rc::new(activity.to_vec());
+    fn map(&self, snapshot: &StatsSnapshot, look: &Look, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let activity = snapshot.activity.clone();
+        let today_row = snapshot.fetched_date.weekday().num_days_from_monday() as usize;
         let heat = look.heat;
-        let today_ring = cx.theme().foreground.opacity(0.55);
+        let theme = cx.theme();
+        let today_ring = theme.foreground.opacity(0.55);
+        let hover_ring = theme.foreground.opacity(0.85);
         let hovered = self.hover;
         let card = cx.entity().downgrade();
         let last_hover = Rc::new(Cell::new(hovered));
-        div().w_full().h(px(MAP_HEIGHT)).child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, (), window, _| {
-                    let layout = MapLayout::new(f32::from(bounds.size.width), activity.len(), Local::now().weekday().num_days_from_monday() as usize);
-                    let peak = activity.iter().copied().max().unwrap_or(0);
-                    for (index, count) in activity.iter().enumerate() {
-                        let Some((x, y)) = layout.place(index) else { continue };
-                        let origin = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
-                        let cell = Bounds::new(origin, size(px(CELL), px(CELL)));
-                        let color = heat[heat_level(*count, peak)];
-                        let today = index + 1 == activity.len();
-                        let ring = if today || hovered == Some(index) { Edges::all(px(1.)) } else { Edges::default() };
-                        window.paint_quad(quad(cell, Corners::all(px(2.)), color, ring, today_ring, BorderStyle::default()));
-                    }
-                    let (card, last_hover) = (card.clone(), last_hover.clone());
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() {
-                            return;
-                        }
-                        let inside = bounds.contains(&event.position);
-                        let at = inside.then(|| layout.index_at(f32::from(event.position.x - bounds.origin.x), f32::from(event.position.y - bounds.origin.y))).flatten();
-                        if at != last_hover.get() {
-                            last_hover.set(at);
-                            let _ = card.update(cx, |card, cx| {
-                                card.hover = at;
-                                cx.notify();
-                            });
-                        }
-                    });
-                },
+        div()
+            .id("usage-activity-map")
+            .w_full()
+            .h(px(MAP_HEIGHT))
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                if !*inside && this.hover.is_some() {
+                    this.hover = None;
+                    cx.notify();
+                }
+            }))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, _| {
+                        let layout = MapLayout::new(f32::from(bounds.size.width), activity.len(), today_row);
+                        let peak = activity.iter().copied().max().unwrap_or(0);
+                        // Batch all <= 371 cells into a single paint_layer so they share one scene sort order.
+                        window.paint_layer(bounds.dilate(px(2.0)), |window| {
+                            let mut hovered_cell: Option<(Bounds<Pixels>, Hsla)> = None;
+                            for (index, count) in activity.iter().enumerate() {
+                                let Some((x, y)) = layout.place(index) else { continue };
+                                let origin = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+                                let cell = Bounds::new(origin, size(px(CELL), px(CELL)));
+                                let color = heat[heat_level(*count, peak)];
+                                if hovered == Some(index) {
+                                    // Paint the hovered cell last so its 1.5px micro-expansion sits cleanly above neighbors.
+                                    hovered_cell = Some((cell.dilate(px(HOVER_INFLATE)), color));
+                                    continue;
+                                }
+                                let today = index + 1 == activity.len();
+                                let ring = if today { Edges::all(px(1.)) } else { Edges::default() };
+                                window.paint_quad(quad(cell, Corners::all(px(2.)), color, ring, today_ring, BorderStyle::default()));
+                            }
+                            if let Some((cell, color)) = hovered_cell {
+                                window.paint_quad(quad(cell, Corners::all(px(2.5)), color, Edges::all(px(1.25)), hover_ring, BorderStyle::default()));
+                            }
+                        });
+                        let (card, last_hover) = (card.clone(), last_hover.clone());
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if !phase.bubble() {
+                                return;
+                            }
+                            let inside = bounds.contains(&event.position);
+                            let at = inside.then(|| layout.index_at(f32::from(event.position.x - bounds.origin.x), f32::from(event.position.y - bounds.origin.y))).flatten();
+                            if at != last_hover.get() {
+                                last_hover.set(at);
+                                let _ = card.update(cx, |card, cx| {
+                                    card.hover = at;
+                                    cx.notify();
+                                });
+                            }
+                        });
+                    },
+                )
+                .size_full(),
             )
-            .size_full(),
-        )
     }
 
-    fn models(&self, locale: Locale, look: &Look, cx: &mut Context<Self>) -> AnyElement {
+    fn models(&self, locale: Locale, look: &Look, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (shown, stale) = self.shown();
         let stats = match shown {
             Some(Err(error)) => return div().text_sm().text_color(look.muted).child(error.clone()).into_any_element(),
-            Some(Ok(stats)) => stats,
+            Some(Ok(snap)) => &snap.stats,
             None => return div().h(px(MAP_HEIGHT)).into_any_element(),
         };
         if stats.models.is_empty() {
             return div().text_sm().text_color(look.muted).child(i18n::text(locale, "optics.noModels")).into_any_element();
         }
         let peak = stats.models.first().map_or(1.0, |model| model.tokens.max(1.0));
-        let theme = cx.theme();
-        let fill = theme.primary;
+        let fill = cx.theme().primary;
         let rows: Vec<AnyElement> = stats
             .models
             .iter()
             .take(6)
-            .map(|model| {
-                let share = (model.tokens / peak).clamp(0.0, 1.0) as f32;
+            .enumerate()
+            .map(|(row_ix, model)| {
+                let target_share = ((model.tokens / peak).clamp(0.0, 1.0) as f32).max(0.02);
+                let share = motion::transition_f32(("usage-model-bar", row_ix.to_string()), target_share, SETTLE, window, cx).clamp(0.02, 1.0);
                 h_flex()
                     .gap_3()
                     .items_center()
                     .child(div().w(px(150.)).flex_shrink_0().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(self.model_name(&model.provider, &model.model, cx)))
-                    .child(div().flex_1().h(px(8.)).rounded(px(4.)).bg(look.cell).child(div().h_full().w(relative(share.max(0.02))).rounded(px(4.)).bg(fill.opacity(0.85))))
+                    .child(div().flex_1().h(px(8.)).rounded(px(4.)).bg(look.cell).child(div().h_full().w(relative(share)).rounded(px(4.)).bg(fill.opacity(0.85))))
                     .child(div().w(px(64.)).flex_shrink_0().text_right().text_sm().font_medium().child(crate::ui::format_tokens(model.tokens)))
                     .child(div().w(px(88.)).flex_shrink_0().text_right().text_xs().text_color(look.muted).child(i18n::format(locale, "optics.replies", &[("count", &model.replies)])))
                     .into_any_element()
@@ -483,5 +659,11 @@ mod tests {
         assert_eq!(fun_line(Locale::Zh, 6_000.0).unwrap(), "这些 Token 约合 10 页 A4 文稿。");
         assert_eq!(fun_line(Locale::Zh, 29_000_000.0).unwrap(), "这些 Token 约等于 29 本《红楼梦》的篇幅。");
         assert_eq!(fun_line(Locale::En, 2_000_000.0).unwrap(), "That's about 67 copies of The Little Prince.");
+    }
+
+    #[test]
+    fn width_buckets_absorb_minor_window_resizes() {
+        assert_eq!(width_bucket(px(900.0)), width_bucket(px(905.0)));
+        assert_ne!(width_bucket(px(900.0)), width_bucket(px(940.0)));
     }
 }
