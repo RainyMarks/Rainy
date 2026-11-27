@@ -618,8 +618,8 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
     let weak = backdrop.downgrade();
     div().id("optics-pet").w(px(width)).h(px(height)).child(
         canvas(
-            |_, _, _| (),
-            move |bounds, (), window, _| {
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
                 let scale = window.scale_factor();
                 let unit = unit(scale);
                 let snap = |value: f32| (value * scale).round() / scale;
@@ -649,15 +649,16 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
                 let top = snap(f32::from(bounds.bottom()) - (HEIGHT as f32 + pose.lift) * unit);
                 paint_pose(window, &pose, left, top, unit);
 
-                // Pointing at her (not at the empty path beside her) makes her hop; only notify on edge transitions.
+                // Gate pointer hit-testing by `hitbox.is_hovered(window)` so modal overlays/menus occlude the pet.
                 let body = Bounds::new(point(px(left), px(top)), size(px(WIDTH as f32 * unit), px(HEIGHT as f32 * unit)));
                 let weak_move = weak.clone();
                 let inside_cell = last_inside.clone();
+                let hitbox_move = hitbox.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if !phase.bubble() {
                         return;
                     }
-                    let inside = body.contains(&event.position);
+                    let inside = hitbox_move.is_hovered(window) && body.contains(&event.position);
                     if inside != inside_cell.get() {
                         inside_cell.set(inside);
                         let _ = weak_move.update(cx, |page, cx| page.pet_hovered(inside, window, cx));
@@ -665,7 +666,7 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
                 });
                 let weak_click = weak.clone();
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase.bubble() && event.button == MouseButton::Left && body.contains(&event.position) {
+                    if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) && body.contains(&event.position) {
                         cx.stop_propagation();
                         let _ = weak_click.update(cx, |page, cx| page.pet_clicked(window, cx));
                     }
@@ -676,22 +677,34 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
     )
 }
 
+/// Stop the mini companion's ticker if it has not been painted for this long (e.g. hidden behind settings or optics off).
+#[allow(dead_code)]
+const MINI_UNSEEN: Duration = Duration::from_millis(600);
+
+/// Whether [`MiniPet`]'s 10 fps ticker should stay alive.
+#[allow(dead_code)]
+fn mini_tick_rule(motion: bool, window_active: bool, shown: bool, active_or_burst: bool) -> bool {
+    motion && window_active && shown && active_or_burst
+}
+
 /// Low-distraction stationary mini companion (`0.72×`) for active chats when optics are enabled.
 ///
-/// Consumes **0 frames / 0 CPU at rest** (both `Idle` and `WaitingApproval` are completely static). Starts a capped
-/// 10 fps local ticker only while thinking/responding (window-active gated) or during finite reaction bursts (1.2s pat,
-/// 1.5s triple-click, 1.8s completion celebration, 2.0s typing) and stops automatically the instant they finish.
+/// Consumes **0 frames / 0 CPU at rest** (both `Idle` and `WaitingApproval` are completely static) and stops its 10 fps
+/// ticker within [`MINI_UNSEEN`] whenever hidden or unrendered. Starts only while visible + thinking/responding
+/// (window-active gated) or during finite reaction bursts (1.2s pat, 1.5s triple-click, 1.8s celebration, 2.0s typing).
 #[allow(dead_code)]
 pub struct MiniPet {
-    clock: f32,
+    clock: f64,
     last_tick: Option<Instant>,
+    woken_at: Option<Instant>,
+    painted: Rc<Cell<Option<Instant>>>,
     activity: PetActivity,
-    last_typed: f32,
-    patted: f32,
+    last_typed: f64,
+    patted: f64,
     pat_streak: u8,
-    excited_at: f32,
-    excited_cooldown_until: f32,
-    celebrated_at: f32,
+    excited_at: f64,
+    excited_cooldown_until: f64,
+    celebrated_at: f64,
     ticker: Option<Task<()>>,
     _activation: Subscription,
 }
@@ -700,20 +713,22 @@ pub struct MiniPet {
 impl MiniPet {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
-            if window.is_window_active() && this.needs_tick(window) {
-                this.ensure_ticking(window, cx);
+            if window.is_window_active() && this.is_active_or_burst() {
+                this.wake_ticker(window, cx);
             }
         });
         Self {
             clock: 0.0,
             last_tick: None,
+            woken_at: None,
+            painted: Rc::default(),
             activity: PetActivity::Idle,
-            last_typed: f32::NEG_INFINITY,
-            patted: f32::NEG_INFINITY,
+            last_typed: f64::NEG_INFINITY,
+            patted: f64::NEG_INFINITY,
             pat_streak: 0,
-            excited_at: f32::NEG_INFINITY,
-            excited_cooldown_until: f32::NEG_INFINITY,
-            celebrated_at: f32::NEG_INFINITY,
+            excited_at: f64::NEG_INFINITY,
+            excited_cooldown_until: f64::NEG_INFINITY,
+            celebrated_at: f64::NEG_INFINITY,
             ticker: None,
             _activation: activation,
         }
@@ -729,9 +744,10 @@ impl MiniPet {
         if was_active && activity == PetActivity::Idle && motion_allowed() {
             self.celebrated_at = self.clock;
         }
-        cx.notify();
-        if self.needs_tick(window) {
-            self.ensure_ticking(window, cx);
+        if self.is_active_or_burst() {
+            self.wake_ticker(window, cx);
+        } else {
+            cx.notify();
         }
     }
 
@@ -740,8 +756,7 @@ impl MiniPet {
             return;
         }
         self.last_typed = self.clock;
-        cx.notify();
-        self.ensure_ticking(window, cx);
+        self.wake_ticker(window, cx);
     }
 
     pub fn clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -756,28 +771,40 @@ impl MiniPet {
         self.patted = self.clock;
         if self.pat_streak >= 3 && self.clock >= self.excited_cooldown_until {
             self.excited_at = self.clock;
-            self.excited_cooldown_until = self.clock + EXCITED_HOLD + 4.0;
+            self.excited_cooldown_until = self.clock + EXCITED_HOLD as f64 + 4.0;
             self.pat_streak = 0;
         }
+        self.wake_ticker(window, cx);
+    }
+
+    fn wake_ticker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.woken_at = Some(Instant::now());
         cx.notify();
         self.ensure_ticking(window, cx);
     }
 
-    fn has_finite_burst(&self) -> bool {
-        (0.0..TYPING_HOLD).contains(&(self.clock - self.last_typed))
-            || (0.0..PAT_HOLD).contains(&(self.clock - self.patted))
-            || (0.0..EXCITED_HOLD).contains(&(self.clock - self.excited_at))
-            || (0.0..CELEBRATE_HOLD).contains(&(self.clock - self.celebrated_at))
+    fn shown(&self, now: Instant) -> bool {
+        self.painted.get().is_some_and(|at| now.saturating_duration_since(at) < MINI_UNSEEN)
+            || self.woken_at.is_some_and(|at| now.saturating_duration_since(at) < MINI_UNSEEN)
     }
 
-    fn needs_tick(&self, window: &Window) -> bool {
-        motion_allowed()
-            && window.is_window_active()
-            && (matches!(self.activity, PetActivity::Thinking | PetActivity::Responding) || self.has_finite_burst())
+    fn has_finite_burst(&self) -> bool {
+        (0.0..TYPING_HOLD as f64).contains(&(self.clock - self.last_typed))
+            || (0.0..PAT_HOLD as f64).contains(&(self.clock - self.patted))
+            || (0.0..EXCITED_HOLD as f64).contains(&(self.clock - self.excited_at))
+            || (0.0..CELEBRATE_HOLD as f64).contains(&(self.clock - self.celebrated_at))
+    }
+
+    fn is_active_or_burst(&self) -> bool {
+        matches!(self.activity, PetActivity::Thinking | PetActivity::Responding) || self.has_finite_burst()
+    }
+
+    fn should_tick(&self, window: &Window, now: Instant) -> bool {
+        mini_tick_rule(motion_allowed(), window.is_window_active(), self.shown(now), self.is_active_or_burst())
     }
 
     fn ensure_ticking(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ticker.is_some() || !self.needs_tick(window) {
+        if self.ticker.is_some() || !mini_tick_rule(motion_allowed(), window.is_window_active(), true, self.is_active_or_burst()) {
             return;
         }
         self.last_tick = Some(Instant::now());
@@ -788,13 +815,17 @@ impl MiniPet {
                 let going = this
                     .update_in(cx, |this, window, cx| {
                         let now = Instant::now();
-                        let elapsed = this.last_tick.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+                        let elapsed = this.last_tick.map_or(0.0, |last| now.duration_since(last).as_secs_f64());
                         this.last_tick = Some(now);
                         this.clock += elapsed.min(0.2);
-                        if !this.needs_tick(window) {
+                        if !this.should_tick(window, now) {
+                            let still_visible = this.shown(now);
                             this.ticker = None;
                             this.last_tick = None;
-                            cx.notify();
+                            this.woken_at = None;
+                            if still_visible {
+                                cx.notify();
+                            }
                             return false;
                         }
                         cx.notify();
@@ -810,13 +841,18 @@ impl MiniPet {
 }
 
 impl Render for MiniPet {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let motion = motion_allowed();
-        let clock = if motion { self.clock } else { 0.0 };
-        let typing_age = motion.then_some(self.clock - self.last_typed).filter(|age| (0.0..TYPING_HOLD).contains(age));
-        let pat_age = motion.then_some(self.clock - self.patted).filter(|age| (0.0..PAT_HOLD).contains(age));
-        let excited_age = motion.then_some(self.clock - self.excited_at).filter(|age| (0.0..EXCITED_HOLD).contains(age));
-        let celebrate_age = motion.then_some(self.clock - self.celebrated_at).filter(|age| (0.0..CELEBRATE_HOLD).contains(age));
+        // Resume the 10 fps ticker automatically when the mini pet becomes visible again while active.
+        if motion && self.ticker.is_none() && self.is_active_or_burst() && window.is_window_active() {
+            self.woken_at = Some(Instant::now());
+            self.ensure_ticking(window, cx);
+        }
+        let clock = if motion { self.clock as f32 } else { 0.0 };
+        let typing_age = motion.then_some((self.clock - self.last_typed) as f32).filter(|age| (0.0..TYPING_HOLD).contains(age));
+        let pat_age = motion.then_some((self.clock - self.patted) as f32).filter(|age| (0.0..PAT_HOLD).contains(age));
+        let excited_age = motion.then_some((self.clock - self.excited_at) as f32).filter(|age| (0.0..EXCITED_HOLD).contains(age));
+        let celebrate_age = motion.then_some((self.clock - self.celebrated_at) as f32).filter(|age| (0.0..CELEBRATE_HOLD).contains(age));
         let pose = pose_with(PetContext {
             clock,
             poked: f32::NEG_INFINITY,
@@ -831,10 +867,12 @@ impl Render for MiniPet {
         });
         let (width, height) = mini_size();
         let weak = cx.weak_entity();
+        let painted = self.painted.clone();
         div().id("optics-mini-pet").w(px(width)).h(px(height)).cursor_pointer().child(
             canvas(
-                |_, _, _| (),
-                move |bounds, (), window, _| {
+                |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                move |bounds, hitbox, window, _| {
+                    painted.set(Some(Instant::now()));
                     let scale = window.scale_factor();
                     let unit = unit_for(MINI_PIXEL, scale);
                     let snap = |value: f32| (value * scale).round() / scale;
@@ -844,7 +882,7 @@ impl Render for MiniPet {
                     let body = Bounds::new(point(px(left), px(top)), size(px(WIDTH as f32 * unit), px(HEIGHT as f32 * unit)));
                     let weak = weak.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                        if phase.bubble() && event.button == MouseButton::Left && body.contains(&event.position) {
+                        if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) && body.contains(&event.position) {
                             cx.stop_propagation();
                             let _ = weak.update(cx, |pet, cx| pet.clicked(window, cx));
                         }
@@ -955,6 +993,15 @@ mod tests {
         let waiting = pose_with(PetContext { clock: 4.0, activity: PetActivity::WaitingApproval, compact: true, ..PetContext::default() });
         assert_eq!(waiting.stroll, 0.0);
         assert!(waiting.exclaim && waiting.flick && waiting.eyes == Eyes::Focused);
+    }
+
+    #[test]
+    fn mini_pet_stops_when_unseen_or_idle_or_reduced_motion() {
+        assert!(mini_tick_rule(true, true, true, true));
+        assert!(!mini_tick_rule(true, true, false, true));
+        assert!(!mini_tick_rule(true, false, true, true));
+        assert!(!mini_tick_rule(false, true, true, true));
+        assert!(!mini_tick_rule(true, true, true, false));
     }
 
     #[test]

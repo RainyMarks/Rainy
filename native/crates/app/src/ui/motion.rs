@@ -174,20 +174,20 @@ pub fn transition_f32(id: impl Into<TransitionId>, target: f32, duration: Durati
 ///
 /// Replaces unconstrained native-refresh `Spinner` instances that otherwise redraw the whole window at 144–240 fps.
 #[allow(dead_code)]
-pub fn spinner(size: Size) -> impl IntoElement {
-    spinner_styled(size, None)
+pub fn spinner(size: Size, cx: &App) -> impl IntoElement {
+    spinner_styled(size, None, cx)
 }
 
 /// Phase-locked, 30 fps capped loading spinner with an explicit color.
 #[allow(dead_code)]
-pub fn spinner_colored(size: Size, color: Hsla) -> impl IntoElement {
-    spinner_styled(size, Some(color))
+pub fn spinner_colored(size: Size, color: Hsla, cx: &App) -> impl IntoElement {
+    spinner_styled(size, Some(color), cx)
 }
 
 #[allow(dead_code)]
-fn spinner_styled(size: Size, color: Option<Hsla>) -> impl IntoElement {
+fn spinner_styled(size: Size, color: Option<Hsla>, cx: &App) -> impl IntoElement {
     let icon = Icon::new(IconName::Loader).with_size(size).when_some(color, |this, color| this.text_color(color));
-    if !allowed_without_app() {
+    if !allowed(cx) {
         return div().flex_shrink_0().child(icon).into_any_element();
     }
     div()
@@ -202,13 +202,16 @@ fn spinner_styled(size: Size, color: Option<Hsla>) -> impl IntoElement {
 
 /// One-shot entrance animation: gentle vertical settle (`dy_px -> 0`) + fade (`0 -> 1`).
 ///
-/// Runs once per element `id`, then stops permanently (0 frames at rest). Honors reduced motion.
+/// Wraps `element` in a relative container so any positioning on `element` itself is preserved. Runs once per `id`,
+/// then stops permanently (0 frames at rest). Honors `cx.reduce_motion()` and `RAINY_REDUCED_MOTION=1`.
 #[allow(dead_code)]
-pub fn enter<E: IntoElement + Styled + 'static>(id: impl Into<ElementId>, dy_px: f32, duration: Duration, element: E) -> AnyElement {
-    if !allowed_without_app() || duration.is_zero() {
+pub fn enter<E: IntoElement>(id: impl Into<ElementId>, dy_px: f32, duration: Duration, element: E, cx: &App) -> AnyElement {
+    if !allowed(cx) || duration.is_zero() {
         return element.into_any_element();
     }
-    element
+    div()
+        .relative()
+        .child(element)
         .with_animation(id, Animation::new(duration).with_easing(ease_out_cubic), move |el, delta| {
             el.top(px(dy_px * (1.0 - delta))).opacity(delta)
         })

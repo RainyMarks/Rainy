@@ -21,6 +21,8 @@ thread_local! {
     static GENERATION: Cell<u64> = const { Cell::new(0) };
     /// The button that copied last, when, and its generation.
     static LAST: Cell<Option<(u64, Instant, u64)>> = const { Cell::new(None) };
+    /// The view last notified via [`copy_in`], so cross-view copies immediately reset the previous view's check mark.
+    static LAST_VIEW: Cell<Option<EntityId>> = const { Cell::new(None) };
 }
 
 /// What a copy button goes by: what it copies, or the row it belongs to.
@@ -77,11 +79,22 @@ pub fn indicator(key: u64, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn record(key: u64) -> u64 {
+/// Returns the previous view that still displays a live check mark and must be notified when replaced by `next_view`.
+fn stale_view_on_replace<V: Copy + Eq>(prev_active: bool, prev_view: Option<V>, next_view: Option<V>) -> Option<V> {
+    if !prev_active {
+        return None;
+    }
+    prev_view.filter(|prev| Some(*prev) != next_view)
+}
+
+fn record_for(key: u64, view: Option<EntityId>) -> (u64, Option<EntityId>) {
+    let prev_active = LAST.get().is_some_and(|(_, at, _)| at.elapsed() < SHOWN);
+    let prev_view = LAST_VIEW.replace(view);
+    let stale = stale_view_on_replace(prev_active, prev_view, view);
     let next = GENERATION.get().wrapping_add(1);
     GENERATION.set(next);
     LAST.set(Some((key, Instant::now(), next)));
-    next
+    (next, stale)
 }
 
 fn still_current(expected: u64) -> bool {
@@ -90,11 +103,14 @@ fn still_current(expected: u64) -> bool {
 
 /// Put `text` on the clipboard from the button `key`, which then shows a check for a moment.
 ///
-/// Refreshes only the active window instead of broadcasting `cx.refresh_windows()`, and debounces rapid clicks so
-/// superseded timers trigger no redundant redraw.
+/// Refreshes only the active window instead of broadcasting `cx.refresh_windows()`, resets any prior [`copy_in`] view
+/// immediately, and debounces rapid clicks so superseded timers trigger no redundant redraw.
 pub fn copy(key: u64, text: &str, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-    let generation = record(key);
+    let (generation, stale_view) = record_for(key, None);
+    if let Some(prev) = stale_view {
+        cx.notify(prev);
+    }
     let target = cx.active_window().or_else(|| cx.windows().first().copied());
     if let Some(handle) = target {
         let _ = handle.update(cx, |_, window, _| window.refresh());
@@ -104,6 +120,7 @@ pub fn copy(key: u64, text: &str, cx: &mut App) {
         if !still_current(generation) {
             return;
         }
+        LAST_VIEW.set(None);
         if let Some(handle) = target {
             let _ = handle.update(cx, |_, window, _| window.refresh());
         }
@@ -112,11 +129,17 @@ pub fn copy(key: u64, text: &str, cx: &mut App) {
 }
 
 /// Put `text` on the clipboard and notify only the current view on the given window (avoids full-window refresh).
+///
+/// If another view still shows an active check mark from a prior `copy_in`, that previous view is notified immediately
+/// so its check resets cleanly instead of getting stranded when the superseded timer exits.
 #[allow(dead_code)]
 pub fn copy_in(key: u64, text: &str, window: &mut Window, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-    let generation = record(key);
     let view = window.current_view();
+    let (generation, stale_view) = record_for(key, Some(view));
+    if let Some(prev) = stale_view {
+        cx.notify(prev);
+    }
     cx.notify(view);
     window
         .spawn(cx, async move |cx| {
@@ -124,6 +147,7 @@ pub fn copy_in(key: u64, text: &str, window: &mut Window, cx: &mut App) {
             if !still_current(generation) {
                 return;
             }
+            LAST_VIEW.set(None);
             let _ = cx.update(|_, cx| cx.notify(view));
         })
         .detach();
@@ -140,18 +164,32 @@ mod tests {
         let (one, other) = (key_of("fn main() {}"), key_of("print(1)"));
         assert_ne!(one, other);
         LAST.set(None);
+        LAST_VIEW.set(None);
         assert!(matches!(icon(one), IconName::Copy));
-        let gen1 = record(one);
-        assert!(still_current(gen1));
+        let (gen1, stale1) = record_for(one, None);
+        assert!(stale1.is_none() && still_current(gen1));
         assert!(is_copied(one) && !is_copied(other));
         assert!(matches!(icon(one), IconName::Check) && matches!(icon(other), IconName::Copy));
-        let gen2 = record(other);
-        assert!(!still_current(gen1) && still_current(gen2));
+        let (gen2, stale2) = record_for(other, None);
+        assert!(stale2.is_none() && !still_current(gen1) && still_current(gen2));
         assert!(matches!(icon(other), IconName::Check) && matches!(icon(one), IconName::Copy));
         if let Some(earlier) = Instant::now().checked_sub(SHOWN) {
             LAST.set(Some((other, earlier, gen2)));
             assert!(matches!(icon(other), IconName::Copy));
             assert!(!is_copied(other));
         }
+    }
+
+    #[test]
+    fn cross_view_copy_returns_stale_view_to_reset() {
+        // Active check in view A followed by copy_in in view B resets view A immediately.
+        assert_eq!(stale_view_on_replace(true, Some(1u64), Some(2u64)), Some(1u64));
+        // Active check in view A followed by window-scoped copy() also resets view A.
+        assert_eq!(stale_view_on_replace(true, Some(1u64), None), Some(1u64));
+        // Repeated copy_in inside the same view needs no extra stale notification.
+        assert_eq!(stale_view_on_replace(true, Some(1u64), Some(1u64)), None);
+        // Once the prior check has expired, no redundant reset is emitted.
+        assert_eq!(stale_view_on_replace(false, Some(1u64), Some(2u64)), None);
+        assert_eq!(stale_view_on_replace(true, None, Some(2u64)), None);
     }
 }
