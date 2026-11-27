@@ -138,7 +138,7 @@ foreach ($candidate in $candidates) {
       try { $app.Visible = $false } catch {}
       try { $app.DisplayAlerts = 0 } catch {}
       try { $app.Options.UpdateLinksAtOpen = $false } catch {}
-      $file = $app.Documents.Open($in, $false, $true, $false, 'rainy-no-password', '', $false, '', '', 0, 0, $false, $false, 0, $true)
+      $file = $app.Documents.Open($in, $false, $true, $false, 'rainy-no-password')
       try { $file.ExportAsFixedFormat($out, 17) } catch { $file.SaveAs([ref]$out, [ref]17) }
     }
     if (Test-Path -LiteralPath $out) { Write-Result ('OK ' + $candidate[2]); exit 0 }
@@ -338,6 +338,7 @@ mod tests {
         }
         assert!(SCRIPT.contains("$app.AutomationSecurity = 3"));
         assert!(SCRIPT.contains("UpdateLinksAtOpen = $false"));
+        assert!(SCRIPT.contains("$app.Documents.Open($in, $false, $true, $false, 'rainy-no-password')\n"));
         let compound = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0];
         assert!(encrypted_open_xml(&compound, "pptx"));
         assert!(!encrypted_open_xml(&compound, "ppt"));

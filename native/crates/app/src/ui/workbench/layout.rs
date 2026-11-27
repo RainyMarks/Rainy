@@ -40,6 +40,17 @@ const SIDE_TAB_NAMES_WIDTH: f32 = 360.;
 pub(super) struct SideTabBounds {
     pub bar_left: f32,
     pub tabs: HashMap<Side, (f32, f32)>,
+    /// `(target_x, target_w)` fed into the spring indicator on the most recent render,
+    /// or `None` when the inline fallback bar was drawn before first measurement.
+    pub placed: Option<(f32, f32)>,
+    /// Guards against queueing duplicate next-frame sync redraws within a single paint.
+    pub sync_scheduled: bool,
+}
+
+/// Whether the measured `(x, width)` of the selected sidebar tab diverges from the target
+/// last fed to the spring indicator (or no measurement existed yet), requiring one follow-up frame.
+fn side_tab_needs_sync(placed: Option<(f32, f32)>, measured: (f32, f32)) -> bool {
+    measured.1 > 0. && placed.is_none_or(|(px, pw)| (px - measured.0).abs() > 0.5 || (pw - measured.1).abs() > 0.5)
 }
 
 /// Pane sizes in logical pixels: the file pane's width, the AI pane's (0 follows the window) and the bottom panel's height.
@@ -109,6 +120,7 @@ pub(super) fn pane_group(slot: &mut Option<PaneGroup>, key: String, targets: Vec
 
 impl Workbench {
     /// A tab of the left pane wrapped with a zero-overhead bounds tracker for the spring bottom indicator.
+    #[allow(clippy::too_many_arguments)]
     fn side_tab(
         &self,
         id: &'static str,
@@ -116,6 +128,7 @@ impl Workbench {
         name: SharedString,
         shown: Option<SharedString>,
         value: Side,
+        draw_inline_bar: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let selected = self.side == value;
@@ -130,14 +143,36 @@ impl Workbench {
             .selected(selected)
             .on_click(cx.listener(move |this, _, window, cx| this.show_side(value, window, cx)));
         let tracker = self.side_tab_bounds.clone();
+        let view = cx.entity().downgrade();
+        let accent = cx.theme().primary;
         div()
             .relative()
+            .h_full()
+            .flex()
+            .items_center()
             .flex_shrink_0()
             .child(button)
+            .when(selected && draw_inline_bar, |this| {
+                this.child(div().absolute().bottom_0().left_0().right_0().h(px(2.)).rounded_t(px(1.)).bg(accent))
+            })
             .child(
                 canvas(
-                    move |bounds, _, _| {
-                        tracker.borrow_mut().tabs.insert(value, (f32::from(bounds.origin.x), f32::from(bounds.size.width)));
+                    move |bounds, window, _| {
+                        let tab_x = f32::from(bounds.origin.x);
+                        let tab_w = f32::from(bounds.size.width);
+                        let mut state = tracker.borrow_mut();
+                        state.tabs.insert(value, (tab_x, tab_w));
+                        if selected && tab_w > 0. {
+                            let measured = ((tab_x - state.bar_left).max(0.), tab_w);
+                            if side_tab_needs_sync(state.placed, measured) && !state.sync_scheduled {
+                                state.sync_scheduled = true;
+                                let reset = tracker.clone();
+                                window.on_next_frame(move |_, cx| {
+                                    reset.borrow_mut().sync_scheduled = false;
+                                    let _ = view.update(cx, |_, cx| cx.notify());
+                                });
+                            }
+                        }
                     },
                     |_, _, _, _| {},
                 )
@@ -148,13 +183,32 @@ impl Workbench {
 
     /// `width`: the pane's, in logical pixels; compact layout keeps all 7 sidebar icons inside 180px without overflow.
     fn render_side(&self, width: f32, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let indicator = {
+            let mut bounds = self.side_tab_bounds.borrow_mut();
+            let target = bounds
+                .tabs
+                .get(&self.side)
+                .copied()
+                .filter(|(_, w)| *w > 0.)
+                .map(|(tab_x, tab_w)| ((tab_x - bounds.bar_left).max(0.), tab_w));
+            bounds.placed = target;
+            drop(bounds);
+            target.map(|(target_x, target_w)| {
+                let policy = Spring::new(Duration::from_millis(200)).with_epsilon(0.5);
+                let anim_x: f32 = spring(("ide-side-tab", "x"), target_x, policy, window, cx);
+                let anim_w: f32 = spring(("ide-side-tab", "w"), target_w, policy, window, cx);
+                (anim_x, anim_w.max(0.))
+            })
+        };
+        let draw_inline_bar = indicator.is_none();
+
         let compact = width < SIDE_TAB_NAMES_WIDTH;
         let very_narrow = width < 220.;
         let named = |name: SharedString| (!compact).then(|| name.clone());
         let explorer = tr(cx, "ide.ideExplorer");
-        let files = self.side_tab("side-files", Icon::new(IconName::Folder), explorer.clone(), named(explorer), Side::Files, cx);
+        let files = self.side_tab("side-files", Icon::new(IconName::Folder), explorer.clone(), named(explorer), Side::Files, draw_inline_bar, cx);
         let search_name = tr(cx, "search.searchTitle");
-        let search = self.side_tab("side-search", Icon::new(IconName::Search), search_name.clone(), named(search_name), Side::Search, cx);
+        let search = self.side_tab("side-search", Icon::new(IconName::Search), search_name.clone(), named(search_name), Side::Search, draw_inline_bar, cx);
         let changes = self.git.read(cx).change_count();
         let git_name: SharedString = if changes > 0 { format!("Git {}", changes.min(999)).into() } else { tr(cx, "git.gitTab") };
         let git_shown = if very_narrow {
@@ -164,27 +218,16 @@ impl Workbench {
         } else {
             Some(git_name.clone())
         };
-        let git = self.side_tab("side-git", Icon::new(gpui_kit::assets::IconName::GitBranch), git_name, git_shown, Side::Git, cx);
+        let git = self.side_tab("side-git", Icon::new(gpui_kit::assets::IconName::GitBranch), git_name, git_shown, Side::Git, draw_inline_bar, cx);
         let history_name = tr(cx, "ide.ideHistory");
-        let history = self.side_tab("side-history", Icon::new(gpui_kit::assets::IconName::Clock), history_name.clone(), named(history_name), Side::History, cx);
-        let outline = self.side_tab("side-outline", Icon::new(gpui_kit::assets::IconName::ListTree), tr(cx, "ide.ideOutline"), None, Side::Outline, cx);
-        let relations = self.side_tab("side-relations", Icon::new(gpui_kit::assets::IconName::Network), tr(cx, "ide.ideRelations"), None, Side::Relations, cx);
+        let history = self.side_tab("side-history", Icon::new(gpui_kit::assets::IconName::Clock), history_name.clone(), named(history_name), Side::History, draw_inline_bar, cx);
+        let outline = self.side_tab("side-outline", Icon::new(gpui_kit::assets::IconName::ListTree), tr(cx, "ide.ideOutline"), None, Side::Outline, draw_inline_bar, cx);
+        let relations = self.side_tab("side-relations", Icon::new(gpui_kit::assets::IconName::Network), tr(cx, "ide.ideRelations"), None, Side::Relations, draw_inline_bar, cx);
         let swarm = self
             .selected_swarm
             .as_ref()
             .is_some_and(|(_, coordinator)| coordinator.is_some())
-            .then(|| self.side_tab("side-swarm", Icon::new(gpui_kit::assets::IconName::Users), tr(cx, "agent.toolSwarm"), None, Side::Swarm, cx));
-
-        let indicator = {
-            let bounds = self.side_tab_bounds.borrow();
-            bounds.tabs.get(&self.side).copied().filter(|(_, w)| *w > 0.).map(|(tab_x, tab_w)| {
-                let target_x = (tab_x - bounds.bar_left).max(0.);
-                let policy = Spring::new(Duration::from_millis(200)).with_epsilon(0.5);
-                let anim_x: f32 = spring(("ide-side-tab", "x"), target_x, policy, window, cx);
-                let anim_w: f32 = spring(("ide-side-tab", "w"), tab_w, policy, window, cx);
-                (anim_x, anim_w.max(0.))
-            })
-        };
+            .then(|| self.side_tab("side-swarm", Icon::new(gpui_kit::assets::IconName::Users), tr(cx, "agent.toolSwarm"), None, Side::Swarm, draw_inline_bar, cx));
 
         let content: AnyView = match self.side {
             Side::Swarm => self.swarm.clone().into(),
@@ -560,5 +603,25 @@ impl Workbench {
             )
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::core::prelude::v1::test;
+
+    use super::side_tab_needs_sync;
+
+    #[test]
+    fn side_tab_sync_triggers_on_first_frame_and_geometry_shift() {
+        // First frame (no prior measurement) must schedule a follow-up sync frame.
+        assert!(side_tab_needs_sync(None, (6., 28.)));
+        // Zero-width hidden tab never schedules a frame.
+        assert!(!side_tab_needs_sync(None, (6., 0.)));
+        // Exact or sub-half-pixel match stays idle (zero redraws at rest).
+        assert!(!side_tab_needs_sync(Some((42., 28.)), (42.4, 28.2)));
+        // Sidebar resize or Swarm tab insertion shifting x or width triggers sync.
+        assert!(side_tab_needs_sync(Some((42., 28.)), (68., 28.)));
+        assert!(side_tab_needs_sync(Some((42., 28.)), (42., 64.)));
     }
 }
