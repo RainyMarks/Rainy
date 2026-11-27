@@ -2,8 +2,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createPublicKey, generateKeyPairSync } from 'node:crypto'
-import { carriedKeys, compareHistory, deletablePath, linkedCrates, parseHistory, payloadPaths, releaseMismatches, tarMember, uninstallList,
-  versionStrings, windowsToolchainTarget } from '../../scripts/package-native.mjs'
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
+import { SHIPPED_LICENSE_FILES, carriedKeys, compareHistory, deletablePath, linkedCrates, parseHistory, payloadPaths, releaseMismatches,
+  tarMember, uninstallList, versionStrings, windowsToolchainTarget } from '../../scripts/package-native.mjs'
 
 /** A VERSIONINFO node: wLength, wValueLength, wType, the key, and the value and children on 32-bit boundaries. */
 function versionNode(key, value, children = []) {
@@ -174,4 +177,38 @@ test('windowsToolchainTarget selects the Windows target regardless of array orde
   assert.equal(windowsToolchainTarget('[toolchain]\ntargets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]\n'), 'x86_64-pc-windows-gnu')
   assert.equal(windowsToolchainTarget('[toolchain]\ntargets = [\n  "x86_64-pc-windows-gnu",\n  "x86_64-unknown-linux-gnu",\n]\n'), 'x86_64-pc-windows-gnu')
   assert.throws(() => windowsToolchainTarget('[toolchain]\ntargets = ["x86_64-unknown-linux-gnu"]\n'), /no Windows target/u)
+})
+
+test('packaged license files ship GPL-3.0-only with NOTICE and TRADEMARKS.md and retire LICENSE.Rainy on upgrade', async () => {
+  const repoRoot = resolve(import.meta.dirname, '../..')
+  assert.deepEqual(SHIPPED_LICENSE_FILES, ['LICENSE', 'NOTICE', 'TRADEMARKS.md', 'LICENSE.upstream'])
+  assert.equal(existsSync(join(repoRoot, 'LICENSE.Rainy')), false)
+  for (const name of [...SHIPPED_LICENSE_FILES, 'THIRD_PARTY_NOTICES.md']) {
+    assert.equal(existsSync(join(repoRoot, name)), true, `${name} must exist at repository root`)
+  }
+  const licenseText = await readFile(join(repoRoot, 'LICENSE'), 'utf8')
+  assert.match(licenseText, /^\s*GNU GENERAL PUBLIC LICENSE\n\s*Version 3, 29 June 2007\n/u)
+  const noticeText = await readFile(join(repoRoot, 'NOTICE'), 'utf8')
+  assert.match(noticeText, /GPL-3\.0-only/u)
+  assert.match(noticeText, /Section 7\(b\)/u)
+  assert.match(noticeText, /Section 7\(c\)/u)
+  assert.match(noticeText, /Section 7\(e\)/u)
+  assert.match(noticeText, /Copyright \(c\) 2026 DeepSeek/u)
+  const pkg = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'))
+  assert.equal(pkg.license, 'GPL-3.0-only')
+
+  const stageLinux = await readFile(join(repoRoot, 'scripts/stage-linux.py'), 'utf8')
+  assert.doesNotMatch(stageLinux, /LICENSE\.Rainy/u)
+  for (const name of [...SHIPPED_LICENSE_FILES, 'THIRD_PARTY_NOTICES.md']) {
+    assert.ok(stageLinux.includes(`'${name}'`), `scripts/stage-linux.py must ship ${name}`)
+  }
+
+  const history = parseHistory(await readFile(join(repoRoot, 'native/installer/shipped-files.txt'), 'utf8'))
+  const currentEntries = [
+    ...SHIPPED_LICENSE_FILES, 'THIRD_PARTY_NOTICES.md', 'RainyAgent.exe', 'WebView2Loader.dll',
+  ].map(path => ({ path, directory: false }))
+  const { retired } = compareHistory(history, payloadPaths(currentEntries))
+  assert.ok(retired.includes('LICENSE.Rainy'), 'shipped-files.txt must keep LICENSE.Rainy so upgrades remove it')
+  const include = uninstallList(currentEntries, '5.0.0', retired)
+  assert.match(include.slice(include.indexOf('!macro rainyRemoveRetired')), /rainyDeleteFile "\$INSTDIR\\LICENSE\.Rainy"/u)
 })

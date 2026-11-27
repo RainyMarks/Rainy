@@ -1,0 +1,92 @@
+Rainy Licensing, Attribution, and Origin Notice
+
+Copyright (c) 2026 RainyMarks (https://github.com/RainyMarks)
+
+1. License Scope
+
+Rainy-specific code and documentation in this repository (including native/,
+src/, scripts/, tests/, docs/, toolpacks/, and the README and CHANGELOG files,
+except where a file explicitly states another license) are licensed under the
+GNU General Public License v3.0 only (SPDX-License-Identifier: GPL-3.0-only).
+The complete license text is provided in LICENSE.
+
+2. Additional Terms under GPLv3 Section 7
+
+Pursuant to Section 7 of the GNU General Public License, Version 3, the
+following additional permissions and requirements apply to Rainy and any
+modified or derivative work based on it:
+
+(b) Preservation of Legal Notices and Author Attributions (GPLv3 Section 7(b)):
+    Any redistribution of Rainy or of a modified or derivative work, in source
+    or object/binary form, must retain all reasonable legal notices and author
+    attributions in the material, including the copyright notice
+    "Copyright (c) 2026 RainyMarks", the upstream project attribution
+    ("Rainy" by RainyMarks, https://github.com/RainyMarks/Rainy), and the
+    corresponding license and attribution notices in documentation, this
+    NOTICE file, THIRD_PARTY_NOTICES.md, and user-facing About / legal views.
+
+(c) Prohibition of Misrepresentation of Origin (GPLv3 Section 7(c)):
+    Misrepresentation of the origin of this material is prohibited. Any
+    modified version must be marked in reasonable ways as different from the
+    original version—including in its README/documentation, repository
+    metadata, executable/installer metadata, and user-facing interface—so that
+    it is not presented as, or confused with, an official RainyMarks release.
+
+(e) Reservation of Trademarks and Brand Assets (GPLv3 Section 7(e)):
+    This license does not grant any rights under trademark law or brand/publicity
+    rights to use the trade names, trademarks, service marks, product names,
+    icons, logos, or original mascot/character visual assets of RainyMarks,
+    including "Rainy", "RainyMarks", "RainyAgent", the Rainy icon/logo, and the
+    original pixel cat-ear pet artwork. See TRADEMARKS.md for permitted
+    nominative references and brand boundaries.
+
+3. User Projects and Output
+
+Projects you open, edit, or build with Rainy, and output it produces for you,
+are not covered by these terms.
+
+4. Earlier Releases (3.8.0 and Earlier)
+
+Rainy 3.8.0 and earlier releases, and the source of those versions, remain
+available under the Rainy Source Available License 1.0 they were published with.
+That license requires keeping its copyright notices, identifying modifications,
+and not presenting a modified version as an official RainyMarks release, and
+states that changing the name, interface, or branding does not remove those
+conditions.
+
+5. Third-Party Components
+
+Third-party components keep their own licenses (see THIRD_PARTY_NOTICES.md);
+these terms grant no rights in them and do not replace their license terms.
+
+6. Upstream Material Derived from DeepSeek Harness (MIT License)
+
+Material derived from DeepSeek Harness (the files under src/renderer/ui/, the
+design tokens under src/renderer/theme/ that say so,
+native/crates/host/src/agent/llm/anthropic.rs, and other files marked as derived
+from it) keeps its MIT license, reproduced verbatim below and in
+LICENSE.upstream.
+
+The following upstream notice is retained without changing its terms.
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

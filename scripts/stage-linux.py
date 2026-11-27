@@ -42,7 +42,7 @@ try:
     (staging / 'rainy-host').chmod(0o755)
     target = staging / 'app'
     (target / 'dist').mkdir(parents=True)
-    for name in ('LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md'):
+    for name in ('LICENSE', 'NOTICE', 'TRADEMARKS.md', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(app / name, target / name)
     shutil.copytree(app / 'dist/renderer', target / 'dist/renderer', ignore=shutil.ignore_patterns('*.map'))
 

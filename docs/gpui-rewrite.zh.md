@@ -41,7 +41,7 @@ GPUI 界面：聊天、文件树、编辑器、终端、搜索、Git、设置…
 | 文档预览 | PDF、Word、Excel、PPT、所见即所得 Markdown、mermaid、给 AI 用的内置浏览器：嵌入系统自带的 WebView2（直接用 `webview2-com`，不用 wry：wry 创建时会嵌套消息循环），沿用 3.x 的网页代码；Windows 11 自带 WebView2，只多带一个 WebView2Loader.dll |
 | 自动更新 | 自己实现：读 GitHub 发布的 latest.yml，下载、校验 sha512 和签名，再运行 NSIS 安装包 |
 
-不能用 Zed 的 `editor`、`terminal_view` 等 crate：它们是 GPL，和 Rainy 的 PolyForm Strict 许可证冲突。
+4.0 重写选型时未引入 Zed 的 `editor`、`terminal_view` 等 GPL crate（当时 Rainy 尚未以 GPL-3.0-only 开源，仅选用了 Apache-2.0 的 `gpui-pre`、`gpui-component` 与 `alacritty_terminal`）。
 
 ## 阶段
 

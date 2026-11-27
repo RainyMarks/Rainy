@@ -17,7 +17,7 @@
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
-[![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-f59e0b?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0--only-2563eb?style=flat-square)](LICENSE)
 [![X](https://img.shields.io/badge/follow-%40RainyMarksqwq-000000?style=flat-square&logo=x)](https://x.com/RainyMarksqwq)
 
 [English](README.md) · **中文**
@@ -288,13 +288,13 @@ Agent 会按模型家族换上它“老家”的用法：Claude 用 Anthropic �
 <details>
 <summary><b>Rainy 收费吗？</b></summary>
 <br>
-非商业用途免费：个人学习、研究、业余项目，以及学校、科研机构、公益组织和政府机构，都可以免费使用 RainyMarks 发布的版本。商业用途（包括在公司里用于工作和为付费客户做项目）需要向 RainyMarks 取得商业授权，详见<a href="#license">许可</a>。
+免费。Rainy 自有的代码和文档以 <a href="LICENSE">GNU GPL-3.0-only</a> 协议开源（并附带 <a href="NOTICE">NOTICE</a> 与 <a href="TRADEMARKS.md">TRADEMARKS.md</a> 中的 GPLv3 第 7 条署名、来源与商标条款）。个人、科研和商业场景都可以免费下载和使用，只需为你自己连接的模型服务付费。详见<a href="#license">许可</a>。
 </details>
 
 <details>
 <summary><b>可以修改 Rainy，或者拿它的代码做自己的项目吗？</b></summary>
 <br>
-不可以。许可只允许使用，不允许修改、分发，也不允许基于它的代码做新作品。改名、换图标或界面、翻译，或者手工或用 AI 改写代码，都算修改；删除版权声明、把 Rainy 或其中任何部分说成是自己做的，同样不被允许。想提交改进，请先在 <a href="https://github.com/RainyMarks/Rainy/issues">GitHub Issues</a> 说明，得到 RainyMarks 的书面同意后再动手。
+可以，但须遵守 <a href="LICENSE">GPL-3.0-only</a>、<a href="NOTICE">NOTICE</a> 和 <a href="TRADEMARKS.md">TRADEMARKS.md</a>。你可以自由学习、修改和再分发，或基于它开发衍生作品；对外分发时必须按 GPL-3.0-only 开源并提供完整对应源码，保留原作版权和出处声明，明确标注所做修改，且未经 RainyMarks 书面授权不得沿用 Rainy 名称、图标/Logo 或原创像素猫耳宠物形象。欢迎在 <a href="https://github.com/RainyMarks/Rainy/issues">GitHub Issues</a> 反馈问题或提交 Pull Request。
 </details>
 
 <details>
@@ -344,7 +344,7 @@ node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.j
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-5.0.0/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`5.0.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`5.0.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。对外分发修改后的构建产物须遵守 `GPL-3.0-only`、[NOTICE](NOTICE) 中的第 7 条声明以及 [TRADEMARKS.md](TRADEMARKS.md) 的品牌与视觉资产边界。
 
 日常开发时，`pnpm run build` 将文档预览页构建到 `dist/renderer`；原生界面和 Host 在 `native/` 里，用 `cd native && cargo build -p rainy -p rainy-host` 一并构建（把 `rainy-host.exe` 拷入 `tmp/dev-resources/windows-host/`），再用 `bash native/scripts/run-ui.sh` 以临时数据目录 `tmp/ui-data` 启动窗口。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 
@@ -359,15 +359,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 <a id="license"></a>
 ## 许可
 
-Rainy 自有的代码和文档使用 [PolyForm Strict License 1.0.0](LICENSE.Rainy)（PolyForm 严格许可）。
+Rainy 自有的代码和文档以 [GNU General Public License v3.0 only（`GPL-3.0-only`）](LICENSE) 开源，并依据 GPLv3 第 7 条附带归属、来源保护与品牌保留条款（详见 [NOTICE](NOTICE) 与 [TRADEMARKS.md](TRADEMARKS.md)）。
 
-- **可以免费使用**：个人学习、研究、业余项目等没有商业目的的个人用途，以及公益组织、学校、公共科研机构、公共安全与卫生机构、环保组织和政府机构，可以免费下载、安装和使用 Rainy。
-- **不能修改和分发**：无论是否收费，都不能修改 Rainy、基于它的代码做新作品，或者把它（包括修改后的版本）发给别人。改名、换品牌、换图标或界面、翻译、移植，以及手工或用 AI 改写代码或文档，都算修改。也不能删除或改动版权声明、把 Rainy 或其中任何部分说成是自己的作品，或者使用 Rainy 的名称和图标。
-- **需要书面授权**：任何商业用途（包括在公司里用于工作和为付费客户开发），以及上面没有允许的其他事情（例如提交代码改进），都需要 RainyMarks 的书面同意。请通过 [GitHub Issues](https://github.com/RainyMarks/Rainy/issues) 或 X 上的 [@RainyMarksqwq](https://x.com/RainyMarksqwq) 联系。
+- **开源授权（`GPL-3.0-only`）**：无论个人、科研还是商业用途，都可以自由使用、学习、修改和再分发。对外分发二进制或修改后的版本时，须继续按 `GPL-3.0-only` 开源并提供完整对应源码。
+- **归属与来源保护（GPLv3 第 7(b)、7(c) 条）**：分发或衍生版本必须保留合理的原作版权声明（`Copyright (c) 2026 RainyMarks`）与项目出处说明；修改版必须明确标注已做改动，不得冒充 RainyMarks 官方发行版。
+- **品牌与原创视觉资产保留（GPLv3 第 7(e) 条）**：开源许可不授予 `Rainy`、`RainyMarks`、`RainyAgent`、Rainy 图标/Logo 或原创像素猫耳宠物形象的商标与品牌使用权。允许如实陈述来源（例如“Based on Rainy by RainyMarks”），但未经 RainyMarks 书面授权，修改版或换皮分发版须使用自有名称与视觉素材（详见 [TRADEMARKS.md](TRADEMARKS.md)）。
 
-GitHub 的服务条款允许用户在 GitHub 上查看和 fork 本仓库，但这不包含修改或分发的权利。你用 Rainy 打开、编辑和构建的项目，以及它为你生成的内容，不受这份许可约束。
+你用 Rainy 打开、编辑和构建的项目，以及它为你生成的内容，不受这份许可约束。
 
-来自 DeepSeek Harness 的界面代码仍按 [MIT 许可](LICENSE.upstream)授权，第三方组件适用各自的许可（见[第三方声明](THIRD_PARTY_NOTICES.md)）。3.8.0 及更早的版本仍按发布时的 Rainy Source Available License 1.0 授权；那份许可同样要求保留版权声明、注明修改，不得把修改版说成官方版本，并写明改名、换界面或换品牌不能免除这些义务。本项目属于源码可用项目，不是 OSI 认可的开源软件。适用范围见 [LICENSE](LICENSE)；以上中文说明只为方便理解，以英文条款为准。
+来自 DeepSeek Harness 的界面代码仍按 [MIT 许可](LICENSE.upstream)授权，第三方组件适用各自的许可（见[第三方声明](THIRD_PARTY_NOTICES.md)）。3.8.0 及更早的版本仍按发布时的 Rainy Source Available License 1.0 授权；那份许可要求保留版权声明、注明修改，不得把修改版说成官方版本，并写明改名、换界面或换品牌不能免除这些义务。完整条款见 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和 [TRADEMARKS.md](TRADEMARKS.md)；以上中文说明只为方便理解，以英文条款为准。
 
 <br>
 

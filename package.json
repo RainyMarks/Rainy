@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "description": "Rainy: the viewer page and release scripts beside the native app in native/",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "GPL-3.0-only",
   "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

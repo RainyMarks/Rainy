@@ -4,8 +4,10 @@
 LICENSE
 LICENSE.Rainy
 LICENSE.upstream
+NOTICE
 RainyAgent.exe
 THIRD_PARTY_NOTICES.md
+TRADEMARKS.md
 WebView2Loader.dll
 resources\
 resources\environment-component-catalog.json

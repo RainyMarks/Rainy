@@ -53,6 +53,7 @@ const PLUGINS = ['StdUtils.dll', 'UAC.dll', 'WinShell.dll']
 const WINDOWS_HOST = /^resources\\windows-host(?:\\|$)/iu
 const HISTORY = join(native, 'installer/shipped-files.txt')
 const LICENSE_FILE = /^(?:licen[cs]e|copying|copyright|notice|unlicense)/iu
+export const SHIPPED_LICENSE_FILES = ['LICENSE', 'NOTICE', 'TRADEMARKS.md', 'LICENSE.upstream']
 
 function options(argv) {
   const parsed = { qa: false, qaRoot: join(root, 'tmp/qa/installer'), skipSign: false }
@@ -507,7 +508,7 @@ async function stage(target, version, release) {
   await mkdir(join(target, 'resources'), { recursive: true })
   await copyFile(inputs.exe, join(target, 'RainyAgent.exe'))
   await copyFile(inputs.loader, join(target, 'WebView2Loader.dll'))
-  for (const name of ['LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream']) await copyFile(join(root, name), join(target, name))
+  for (const name of SHIPPED_LICENSE_FILES) await copyFile(join(root, name), join(target, name))
   await writeFile(join(target, 'THIRD_PARTY_NOTICES.md'), await notices())
   await cp(inputs.windowsHost, join(target, 'resources/windows-host'), { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true })
   for (const [name, source] of Object.entries(resources)) await copyFile(source, join(target, 'resources', name))

@@ -43,4 +43,4 @@ SHA256SUMS.txt 记录完整离线目录的交付文件摘要；核心同时校�
 Develop by RainyMarks
 
 使用许可
-Rainy 自有代码使用 PolyForm Strict License 1.0.0：非商业用途（个人学习研究、学校、科研和公益机构等）可免费使用；不得修改（包括改名、换品牌和用 AI 改写）或分发，不得删除版权声明或冒充作者；包括企业内部使用在内的商业用途须另行取得商业授权。完整条款见应用内 LICENSE 和 LICENSE.Rainy，第三方组件仍适用各自许可。
+Rainy 自有代码与文档使用 GNU General Public License v3.0 only（GPL-3.0-only）开源许可，并附加 GPLv3 第 7 条关于保留版权与出处声明、禁止歪曲来源及品牌/商标保留的条款。允许自由使用、学习、修改与再分发；分发衍生版本须以相同 GPL-3.0-only 开源、保留原作版权声明并明确标注修改，未经 RainyMarks 书面授权不得沿用 Rainy 名称、图标/Logo 或原创像素宠物形象，亦不得冒充官方发行版。完整条款与边界见应用内 LICENSE、NOTICE 和 TRADEMARKS.md，DeepSeek Harness 衍生部分保留 MIT 许可（LICENSE.upstream），第三方组件仍适用各自许可（THIRD_PARTY_NOTICES.md）。
