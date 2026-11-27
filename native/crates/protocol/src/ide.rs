@@ -10,6 +10,7 @@ pub struct WorkspaceRoot {
     pub root_id: String,
     pub path: String,
     pub title: String,
+    #[serde(default)]
     pub primary: bool,
 }
 
@@ -63,6 +64,7 @@ impl FileEntry {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct IdeDirectory {
     pub path: String,
+    #[serde(default)]
     pub entries: Vec<FileEntry>,
 }
 
@@ -73,7 +75,9 @@ pub struct FilePreview {
     /// `utf8` or `hex`.
     pub kind: String,
     pub text: String,
+    #[serde(default)]
     pub bytes_read: f64,
+    #[serde(default)]
     pub truncated: bool,
 }
 
@@ -83,13 +87,19 @@ pub struct FilePreview {
 pub struct IdeFileDocument {
     pub workspace_id: String,
     pub path: String,
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub bytes: f64,
+    #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
     pub bom: bool,
     /// `lf`, `crlf` or `mixed`.
+    #[serde(default)]
     pub eol: String,
     /// `binary`, `too-large`, `unsupported-encoding`, `media`, or none.
+    #[serde(default)]
     pub read_only_reason: Option<String>,
     #[serde(default)]
     pub preview: Option<FilePreview>,
@@ -99,6 +109,7 @@ pub struct IdeFileDocument {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct IdeFileChange {
     pub path: String,
+    #[serde(default)]
     pub version: Option<String>,
     /// An entry kind, or `missing`.
     pub kind: String,
@@ -108,8 +119,11 @@ pub struct IdeFileChange {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DirectoryListing {
     pub path: String,
+    #[serde(default)]
     pub parent: Option<String>,
+    #[serde(default)]
     pub roots: Vec<String>,
+    #[serde(default)]
     pub entries: Vec<DirectoryListingEntry>,
 }
 
@@ -117,6 +131,7 @@ pub struct DirectoryListing {
 pub struct DirectoryListingEntry {
     pub name: String,
     pub path: String,
+    #[serde(default)]
     pub hidden: bool,
 }
 
@@ -124,6 +139,7 @@ pub struct DirectoryListingEntry {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSelection {
+    #[serde(default)]
     pub workspace_id: Option<String>,
 }
 
@@ -139,7 +155,9 @@ pub struct IdeWorkspaceState {
 /// Matching project-relative files.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct IdeFileSearch {
+    #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
     pub truncated: bool,
 }
 
@@ -369,10 +387,13 @@ pub struct ExecutionEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionPoll {
+    #[serde(default)]
     pub events: Vec<ExecutionEvent>,
+    #[serde(default)]
     pub cursor: u64,
     #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
     pub status: ExecutionStatus,
 }
 
@@ -388,6 +409,7 @@ pub struct ToolStatusEntry {
     pub name: String,
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
     pub ready: bool,
 }
 
@@ -398,7 +420,9 @@ pub struct ToolsStatus {
     pub platform: String,
     #[serde(default)]
     pub ubuntu_version: Option<String>,
+    #[serde(default)]
     pub offline_install_supported: bool,
+    #[serde(default)]
     pub tools: Vec<ToolStatusEntry>,
 }
 

@@ -85,9 +85,11 @@ struct StoredSetup {
     #[serde(rename = "baseURL")]
     base_url: String,
     model: String,
+    #[serde(default)]
     context_window: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_tokens: Option<f64>,
+    #[serde(default)]
     local: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api: Option<String>,
@@ -153,8 +155,11 @@ pub struct ModelPreset {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelsStatus {
+    #[serde(default)]
     pub models: Vec<ModelSetup>,
+    #[serde(default)]
     pub credentials: Vec<String>,
+    #[serde(default)]
     pub selected: Option<ModelSelection>,
     #[serde(default)]
     pub presets: Vec<ModelPreset>,
@@ -179,7 +184,9 @@ impl ModelsStatus {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GlobalPrompt {
+    #[serde(default)]
     pub text: String,
+    #[serde(default)]
     pub max_chars: usize,
 }
 
@@ -190,9 +197,13 @@ pub struct AppInfo {
     pub name: String,
     pub version: String,
     /// `Windows`, `WSL` or `SSH`.
+    #[serde(default)]
     pub environment: String,
+    #[serde(default)]
     pub execution_target_id: String,
+    #[serde(default)]
     pub platform: String,
+    #[serde(default)]
     pub home: String,
     /// The Node.js version the Host runs on; Hosts before 4.0 do not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]

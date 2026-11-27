@@ -7,9 +7,13 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MapFile {
     pub path: String,
+    #[serde(default)]
     pub language: String,
+    #[serde(default)]
     pub kind: String,
+    #[serde(default)]
     pub lines: u64,
+    #[serde(default)]
     pub bytes: u64,
 }
 
@@ -17,6 +21,7 @@ pub struct MapFile {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MapPackage {
     pub name: String,
+    #[serde(default)]
     pub files: Vec<usize>,
 }
 
@@ -24,13 +29,16 @@ pub struct MapPackage {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StackItem {
     pub name: String,
+    #[serde(default)]
     pub kind: String,
 }
 
 /// Files added and removed since an explanation was written.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MapDrift {
+    #[serde(default)]
     pub added: usize,
+    #[serde(default)]
     pub removed: usize,
 }
 
@@ -50,6 +58,7 @@ pub struct MapPlace {
 #[serde(rename_all = "camelCase")]
 pub struct MapFlow {
     pub title: String,
+    #[serde(default)]
     pub steps: Vec<MapPlace>,
 }
 
@@ -58,6 +67,7 @@ pub struct MapFlow {
 #[serde(rename_all = "camelCase")]
 pub struct MapTask {
     pub task: String,
+    #[serde(default)]
     pub places: Vec<MapPlace>,
 }
 
@@ -79,10 +89,15 @@ pub struct MapTour {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MapExplanation {
+    #[serde(default)]
     pub generated_at: f64,
+    #[serde(default)]
     pub locale: String,
+    #[serde(default)]
     pub summary: String,
+    #[serde(default)]
     pub modules: Map<String, Value>,
+    #[serde(default)]
     pub model: String,
     #[serde(flatten)]
     pub tour: MapTour,
@@ -95,12 +110,19 @@ pub struct MapExplanation {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectMap {
     pub workspace_id: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub generated_at: u64,
+    #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
     pub files: Vec<MapFile>,
+    #[serde(default)]
     pub imports: Vec<usize>,
+    #[serde(default)]
     pub packages: Vec<MapPackage>,
+    #[serde(default)]
     pub stack: Vec<StackItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<MapExplanation>,

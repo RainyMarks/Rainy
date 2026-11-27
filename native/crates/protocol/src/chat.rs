@@ -11,6 +11,7 @@ use crate::models::ModelSelection;
 pub enum AssistantBlock {
     #[serde(rename = "text")]
     Text {
+        #[serde(default)]
         text: String,
         /// Replay data of the OpenAI Responses API (`{"v":1,"id":…}`).
         #[serde(default, rename = "textSignature", skip_serializing_if = "Option::is_none")]
@@ -20,6 +21,7 @@ pub enum AssistantBlock {
     },
     #[serde(rename = "thinking")]
     Thinking {
+        #[serde(default)]
         thinking: String,
         /// Anthropic's signature, the Responses API's reasoning item, or the Chat Completions field the text came in.
         #[serde(default, rename = "thinkingSignature", skip_serializing_if = "Option::is_none")]
@@ -31,7 +33,9 @@ pub enum AssistantBlock {
     },
     #[serde(rename = "toolCall")]
     ToolCall {
+        #[serde(default)]
         id: String,
+        #[serde(default)]
         name: String,
         #[serde(default)]
         arguments: Map<String, Value>,
@@ -50,7 +54,7 @@ impl AssistantBlock {
         }
     }
 
-    fn streamed_mut(&mut self) -> Option<&mut String> {
+    pub(crate) fn streamed_mut(&mut self) -> Option<&mut String> {
         match self {
             Self::Text { text, .. } => Some(text),
             Self::Thinking { thinking, .. } => Some(thinking),
@@ -61,7 +65,7 @@ impl AssistantBlock {
     /// Append streamed characters; `at` is the length in UTF-16 code units the sender saw, as JavaScript counts.
     pub(crate) fn append(&mut self, at: usize, text: &str) -> bool {
         let Some(current) = self.streamed_mut() else { return false };
-        if utf16_len(current) != at {
+        if !utf16_len_eq(current, at) {
             return false;
         }
         current.push_str(text);
@@ -71,7 +75,43 @@ impl AssistantBlock {
 
 /// Length of a string as JavaScript's `String.length` counts it.
 pub fn utf16_len(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
+    let mut units = 0usize;
+    let (chunks, remainder) = text.as_bytes().as_chunks::<8>();
+    for chunk in chunks {
+        let word = u64::from_ne_bytes(*chunk);
+        if (word & 0x8080_8080_8080_8080) == 0 {
+            units += 8;
+        } else {
+            // In valid UTF-8, every non-continuation byte (`(b & 0xC0) != 0x80`) starts a scalar value (1 UTF-16
+            // code unit), and every 4-byte lead (`(b & 0xF0) == 0xF0`) adds 1 extra unit for its surrogate pair.
+            let b7 = word & 0x8080_8080_8080_8080;
+            let b6 = (word & 0x4040_4040_4040_4040) << 1;
+            let cont = b7 & !b6;
+            let hi2 = word & (word << 1);
+            let lead4 = hi2 & (hi2 << 2) & 0x8080_8080_8080_8080;
+            units += 8 - cont.count_ones() as usize + lead4.count_ones() as usize;
+        }
+    }
+    for &byte in remainder {
+        if (byte & 0xC0) != 0x80 {
+            units += 1 + usize::from(byte >= 0xF0);
+        }
+    }
+    units
+}
+
+/// Check whether `utf16_len(text) == expected` using O(1) UTF-8 byte-length bounds before scanning.
+pub(crate) fn utf16_len_eq(text: &str, expected: usize) -> bool {
+    let bytes = text.len();
+    // Every valid UTF-8 character satisfies 1 <= utf8_bytes <= 3 * utf16_units and utf16_units <= utf8_bytes,
+    // with utf16_units == utf8_bytes if and only if the string is pure ASCII.
+    if expected > bytes || bytes > expected.saturating_mul(3) {
+        return false;
+    }
+    if expected == bytes {
+        return text.is_ascii();
+    }
+    utf16_len(text) == expected
 }
 
 /// Token counts of a request.
@@ -96,6 +136,7 @@ pub struct Usage {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
+    #[serde(default)]
     pub content: Vec<AssistantBlock>,
     /// The protocol the reply came through: `openai-completions`, `openai-responses` or `anthropic-messages`.
     #[serde(default)]
@@ -121,7 +162,10 @@ pub struct AssistantMessage {
 #[serde(tag = "type")]
 pub enum ResultContent {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        #[serde(default)]
+        text: String,
+    },
     #[serde(rename = "image")]
     Image {
         data: String,
@@ -144,9 +188,13 @@ pub struct ImageContent {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
+    #[serde(default)]
     pub input: f64,
+    #[serde(default)]
     pub output: f64,
+    #[serde(default)]
     pub cache_read: f64,
+    #[serde(default)]
     pub cache_write: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<f64>,
@@ -161,7 +209,9 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     User {
         id: String,
+        #[serde(default)]
         ts: f64,
+        #[serde(default)]
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         images: Option<Vec<ImageContent>>,
@@ -169,6 +219,7 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     Assistant {
         id: String,
+        #[serde(default)]
         ts: f64,
         message: AssistantMessage,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,10 +231,13 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     ToolResult {
         id: String,
+        #[serde(default)]
         ts: f64,
         tool_call_id: String,
         tool_name: String,
+        #[serde(default)]
         content: Vec<ResultContent>,
+        #[serde(default)]
         is_error: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         details: Option<Value>,
@@ -193,8 +247,11 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     Context {
         id: String,
+        #[serde(default)]
         ts: f64,
+        #[serde(default)]
         label: String,
+        #[serde(default)]
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reverted: Option<Vec<String>>,
@@ -202,11 +259,17 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     Compaction {
         id: String,
+        #[serde(default)]
         ts: f64,
+        #[serde(default)]
         first_id: String,
+        #[serde(default)]
         last_id: String,
+        #[serde(default)]
         summary: String,
+        #[serde(default)]
         tokens_before: f64,
+        #[serde(default)]
         trigger: String,
         /// How the checkpoint was made (`{ mode, usage }`): `mode` is `shared` or `separate` for a summary the model
         /// wrote, `recall` for an index the Host built, whose `summary` points the model to `recall`.
@@ -218,18 +281,26 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     Cleared {
         id: String,
+        #[serde(default)]
         ts: f64,
         /// The tool result entries the model no longer sees.
+        #[serde(default)]
         entry_ids: Vec<String>,
+        #[serde(default)]
         tokens_before: f64,
+        #[serde(default)]
         tokens_after: f64,
+        #[serde(default)]
         trigger: String,
     },
     #[serde(rename_all = "camelCase")]
     Notice {
         id: String,
+        #[serde(default)]
         ts: f64,
+        #[serde(default)]
         level: String,
+        #[serde(default)]
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<String>,
@@ -237,11 +308,17 @@ pub enum TranscriptEntry {
     #[serde(rename_all = "camelCase")]
     Turn {
         id: String,
+        #[serde(default)]
         ts: f64,
+        #[serde(default)]
         duration_ms: f64,
+        #[serde(default)]
         usage: UsageSummary,
+        #[serde(default)]
         provider: String,
+        #[serde(default)]
         model: String,
+        #[serde(default)]
         requests: f64,
     },
 }
@@ -269,13 +346,21 @@ pub type SessionRunStatus = String;
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,
+    #[serde(default)]
     pub workspace_id: Option<String>,
+    #[serde(default)]
     pub cwd: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub created_at: f64,
+    #[serde(default)]
     pub updated_at: f64,
+    #[serde(default)]
     pub archived: bool,
+    #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
     pub status: SessionRunStatus,
     #[serde(default)]
     pub awaiting_approval: Option<bool>,
@@ -719,13 +804,21 @@ pub struct RetryWait {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
     pub summary: SessionSummary,
+    #[serde(default)]
     pub entries: Vec<TranscriptEntry>,
+    #[serde(default)]
     pub model: Option<ModelSelection>,
+    #[serde(default)]
     pub queue: Vec<QueuedMessage>,
+    #[serde(default)]
     pub context: Option<ContextUsage>,
+    #[serde(default)]
     pub streaming: Option<AssistantMessage>,
+    #[serde(default)]
     pub running_tools: Vec<String>,
+    #[serde(default)]
     pub permission: String,
+    #[serde(default)]
     pub approvals: Vec<PendingApproval>,
     #[serde(default)]
     pub background: Vec<BackgroundCommand>,
@@ -740,11 +833,17 @@ pub struct SessionSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct SessionStateEvent {
     pub session_id: String,
+    #[serde(default)]
     pub status: SessionRunStatus,
+    #[serde(default)]
     pub queue: Vec<QueuedMessage>,
+    #[serde(default)]
     pub model: Option<ModelSelection>,
+    #[serde(default)]
     pub context: Option<ContextUsage>,
+    #[serde(default)]
     pub permission: String,
+    #[serde(default)]
     pub approvals: Vec<PendingApproval>,
     #[serde(default)]
     pub background: Vec<BackgroundCommand>,
@@ -872,5 +971,58 @@ mod tests {
         .unwrap();
         assert_eq!(status.agents.len(), 1);
         assert_eq!(status.agents[0].models[0].id, "gpt-5.3-codex");
+    }
+
+    #[test]
+    fn utf16_len_matches_reference_across_ascii_cjk_emoji_and_chunk_boundaries() {
+        let samples = [
+            "",
+            "a",
+            "1234567",
+            "12345678",
+            "1234567890abcdef",
+            "é",            // 2-byte UTF-8, 1 UTF-16 unit
+            "你好",          // 3-byte UTF-8, 1 UTF-16 unit each
+            "😀",            // 4-byte UTF-8, 2 UTF-16 units (surrogate pair)
+            "你好😀！",
+            "👨‍👩‍👧‍👦",      // ZWJ family emoji: 4 astral + 3 ZWJ = 11 UTF-16 units
+            "0123456😀",     // 4-byte emoji starting at byte 7 (straddles 8-byte chunk boundary)
+            "012345你好😀",  // 3-byte CJK straddling byte 8 boundary, followed by emoji
+            "01234567éééé😀😀你好世界",
+        ];
+        for sample in samples {
+            let expected: usize = sample.chars().map(char::len_utf16).sum();
+            assert_eq!(utf16_len(sample), expected, "utf16_len mismatch for {sample:?}");
+            assert!(utf16_len_eq(sample, expected), "utf16_len_eq false negative for {sample:?}");
+            assert!(!utf16_len_eq(sample, expected + 1), "utf16_len_eq false positive (+1) for {sample:?}");
+            if expected > 0 {
+                assert!(!utf16_len_eq(sample, expected - 1), "utf16_len_eq false positive (-1) for {sample:?}");
+            }
+        }
+        // Verify every alignment offset (0..8) for 2-byte, 3-byte and 4-byte characters crossing chunk borders.
+        for pad in 0..16 {
+            let prefix = "x".repeat(pad);
+            for suffix in ["é", "汉", "😀", "汉😀é", "😀😀😀😀"] {
+                let text = format!("{prefix}{suffix}{prefix}");
+                let expected: usize = text.chars().map(char::len_utf16).sum();
+                assert_eq!(utf16_len(&text), expected);
+                assert!(utf16_len_eq(&text, expected));
+            }
+        }
+    }
+
+    #[test]
+    fn deserializes_minimal_legacy_chat_types_with_defaults() {
+        let msg: AssistantMessage = serde_json::from_str("{}").unwrap();
+        assert!(msg.content.is_empty());
+        let usage: UsageSummary = serde_json::from_str("{}").unwrap();
+        assert_eq!(usage, UsageSummary::default());
+        let snap: SessionSnapshot = serde_json::from_value(json!({ "summary": { "id": "s0" } })).unwrap();
+        assert_eq!(snap.summary.id, "s0");
+        assert!(snap.entries.is_empty());
+        assert!(snap.queue.is_empty());
+        let state: SessionStateEvent = serde_json::from_value(json!({ "sessionId": "s0" })).unwrap();
+        assert_eq!(state.session_id, "s0");
+        assert!(state.approvals.is_empty());
     }
 }

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct GpuProcess {
     pub pid: u32,
+    #[serde(default)]
     pub process_name: String,
+    #[serde(default)]
     pub used_memory_mib: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
@@ -19,11 +21,15 @@ pub struct GpuProcess {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuInfo {
+    #[serde(default)]
     pub index: u32,
+    #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization_percent: Option<u32>,
+    #[serde(default)]
     pub memory_used_mib: u64,
+    #[serde(default)]
     pub memory_total_mib: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature_c: Option<u32>,
@@ -36,6 +42,7 @@ pub struct GpuInfo {
 #[serde(rename_all = "camelCase")]
 pub struct CgroupLimits {
     /// `1` for cgroup v1, `2` for cgroup v2.
+    #[serde(default)]
     pub version: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_quota_cores: Option<f64>,
@@ -52,7 +59,9 @@ pub struct DiskUsage {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount: Option<String>,
+    #[serde(default)]
     pub available_bytes: u64,
+    #[serde(default)]
     pub total_bytes: u64,
 }
 
@@ -60,18 +69,26 @@ pub struct DiskUsage {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HostMetrics {
+    #[serde(default)]
     pub collected_at: u64,
+    #[serde(default)]
     pub hostname: String,
+    #[serde(default)]
     pub platform: String,
+    #[serde(default)]
     pub cpu_count: u32,
     /// Effective CPU cores after applying cgroup CPU quota (falls back to `cpu_count`).
+    #[serde(default)]
     pub effective_cpu_cores: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_percent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load_avg_1m: Option<f64>,
+    #[serde(default)]
     pub memory_used_bytes: u64,
+    #[serde(default)]
     pub memory_total_bytes: u64,
+    #[serde(default)]
     pub host_memory_total_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cgroup: Option<CgroupLimits>,
@@ -86,6 +103,7 @@ pub struct HostMetrics {
 #[serde(rename_all = "camelCase")]
 pub struct ListeningPort {
     pub port: u16,
+    #[serde(default)]
     pub address: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,

@@ -12,6 +12,7 @@ pub enum ExperimentStatus {
     Exited,
     Stopped,
     #[default]
+    #[serde(other)]
     Unknown,
 }
 
@@ -20,10 +21,15 @@ pub enum ExperimentStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentRecord {
     pub id: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub command: String,
+    #[serde(default)]
     pub cwd: String,
+    #[serde(default)]
     pub log_path: String,
+    #[serde(default)]
     pub status: ExperimentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
@@ -37,6 +43,7 @@ pub struct ExperimentRecord {
     pub uid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cuda_visible_devices: Option<String>,
+    #[serde(default)]
     pub started_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
@@ -135,5 +142,20 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(tail.next_offset, 1042);
+    }
+
+    #[test]
+    fn unknown_future_experiment_status_falls_back_to_unknown() {
+        let record: ExperimentRecord = serde_json::from_value(json!({
+            "id": "exp-future",
+            "status": "pausedByScheduler"
+        }))
+        .unwrap();
+        assert_eq!(record.status, ExperimentStatus::Unknown);
+        assert_eq!(record.name, "");
+        assert_eq!(record.started_at, 0);
+        // Existing known variants serialize identically.
+        assert_eq!(serde_json::to_value(ExperimentStatus::Unknown).unwrap(), json!("unknown"));
+        assert_eq!(serde_json::to_value(ExperimentStatus::Running).unwrap(), json!("running"));
     }
 }

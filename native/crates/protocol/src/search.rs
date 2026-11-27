@@ -27,8 +27,11 @@ pub struct TextSearchFile {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TextSearchResult {
+    #[serde(default)]
     pub files: Vec<TextSearchFile>,
+    #[serde(default)]
     pub matches: u32,
+    #[serde(default)]
     pub truncated: bool,
 }
 
@@ -45,7 +48,9 @@ pub struct ReplacedFile {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TextReplaceResult {
+    #[serde(default)]
     pub files: Vec<ReplacedFile>,
+    #[serde(default)]
     pub failed: Vec<ReplacedFile>,
 }
 
@@ -66,13 +71,19 @@ pub struct GitFileChange {
 pub struct GitRepository {
     pub root_id: String,
     pub title: String,
+    #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default)]
     pub head: Option<String>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
     pub ahead: u32,
+    #[serde(default)]
     pub behind: u32,
+    #[serde(default)]
     pub files: Vec<GitFileChange>,
+    #[serde(default)]
     pub truncated: bool,
 }
 
@@ -86,7 +97,9 @@ pub struct PlainRoot {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct GitStatus {
     pub available: bool,
+    #[serde(default)]
     pub repositories: Vec<GitRepository>,
+    #[serde(default)]
     pub plain: Vec<PlainRoot>,
 }
 
