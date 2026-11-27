@@ -264,7 +264,10 @@ function RichEditor({ path, text, base, version, onChange, onSave, onImage, onOp
         import('@milkdown/crepe'), import('@milkdown/kit/core'), import('@milkdown/kit/preset/commonmark'), import('@milkdown/kit/component/image-inline'),
         import('@milkdown/kit/plugin/upload'), import('@milkdown/kit/component/code-block'), import('@milkdown/crepe/feature/toolbar'), import('./rich-plugins.ts'), import('./code-theme.ts'),
       ])
-      await import('@milkdown/crepe/theme/common/style.css')
+      await Promise.all([
+        import('@milkdown/crepe/theme/common/style.css'),
+        import('katex/dist/katex.min.css'),
+      ])
       if (cancelled) return
       plugins.current = rich
       const image = (url: string): string => {

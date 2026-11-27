@@ -25,19 +25,35 @@ function columnName(index: number): string {
 }
 
 /**
- * Compute the earliest anchor row that must be included so no `rowSpan` starting above `start` is severed.
- * @param sheet Current sheet grid.
- * @param start Desired first visible row.
- * @returns Adjusted start row <= `start`.
+ * Expand a virtualized `[rawStart, rawEnd)` row window to a fixed point so no `rowSpan` starting above `start`
+ * is severed and no `rowSpan` inside `[start, end)` overflows into the bottom spacer row.
  */
-function expandStartForRowSpans(sheet: SheetGrid, start: number): number {
-  let earliest = start
-  for (const [key, span] of sheet.spans) {
-    if (span.rows <= 1) continue
-    const row = Number(key.slice(0, key.indexOf(':')))
-    if (row < earliest && row + span.rows > start) earliest = row
+export function expandRowSpanWindow(
+  sheet: Pick<SheetGrid, 'spans'>,
+  rawStart: number,
+  rawEnd: number,
+  rowCount: number,
+): { readonly startRow: number; readonly endRow: number } {
+  let startRow = Math.max(0, Math.min(rawStart, rowCount))
+  let endRow = Math.max(startRow, Math.min(rawEnd, rowCount))
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [key, span] of sheet.spans) {
+      if (span.rows <= 1) continue
+      const row = Number(key.slice(0, key.indexOf(':')))
+      const spanEnd = Math.min(rowCount, row + span.rows)
+      if (row < startRow && spanEnd > startRow) {
+        startRow = row
+        changed = true
+      }
+      if (row >= startRow && row < endRow && spanEnd > endRow) {
+        endRow = spanEnd
+        changed = true
+      }
+    }
   }
-  return earliest
+  return { startRow, endRow }
 }
 
 /**
@@ -103,10 +119,12 @@ export function SheetViewer({ url, size, location }: { url: string; size: number
   const rowCount = sheet?.rows.length ?? 0
   const virtualized = rowCount > VIRTUAL_ROW_THRESHOLD
   const rawStart = virtualized ? Math.max(0, Math.floor(scrollTop / ESTIMATED_ROW_HEIGHT) - OVERSCAN_ROWS) : 0
-  const startRow = virtualized && sheet !== undefined ? expandStartForRowSpans(sheet, rawStart) : 0
-  const endRow = virtualized
+  const rawEnd = virtualized
     ? Math.min(rowCount, Math.ceil((scrollTop + viewportHeight) / ESTIMATED_ROW_HEIGHT) + OVERSCAN_ROWS)
     : rowCount
+  const { startRow, endRow } = virtualized && sheet !== undefined
+    ? expandRowSpanWindow(sheet, rawStart, rawEnd, rowCount)
+    : { startRow: 0, endRow: rowCount }
   const topSpacer = startRow * ESTIMATED_ROW_HEIGHT
   const bottomSpacer = Math.max(0, (rowCount - endRow) * ESTIMATED_ROW_HEIGHT)
 
@@ -130,8 +148,9 @@ export function SheetViewer({ url, size, location }: { url: string; size: number
                       const key = `${rowIndex}:${column}`
                       if (sheet.hidden.has(key)) return null
                       const span = sheet.spans.get(key)
+                      const clampedRowSpan = span === undefined ? undefined : Math.min(span.rows, endRow - rowIndex)
                       const value = row[column] ?? ''
-                      return <td key={column} rowSpan={span?.rows} colSpan={span?.columns} data-number={/^-?[\d,.]+%?$/u.test(value) ? '' : undefined}>{value}</td>
+                      return <td key={column} rowSpan={clampedRowSpan} colSpan={span?.columns} data-number={/^-?[\d,.]+%?$/u.test(value) ? '' : undefined}>{value}</td>
                     })}
                   </tr>
                 })}

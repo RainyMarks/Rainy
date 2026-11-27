@@ -263,6 +263,30 @@ const PHRASING = new Set(['a', 'abbr', 'b', 'bdi', 'br', 'cite', 'code', 'del', 
   'rp', 'rt', 'ruby', 's', 'samp', 'small', 'span', 'strike', 'strong', 'sub', 'sup', 'tt', 'u', 'var', 'wbr'])
 
 /**
+ * Check whether an unmatched `</name>` closes a self-closing foreign tag (`<svg/>` / `<math/>`) before any
+ * subsequent non-self-closing `<name>` opens in the remainder of the current or sibling raw HTML nodes.
+ */
+function hasUnmatchedClose(name: string, restHtml: string, laterChildren: readonly Node[]): boolean {
+  let balance = 0
+  const scan = (source: string): boolean => {
+    for (const token of tokenize(source)) {
+      if (token.kind === 'open' && token.name === name && !token.selfClosing && !VOID.has(name)) balance++
+      else if (token.kind === 'close' && token.name === name) {
+        if (balance === 0) return true
+        balance--
+      }
+    }
+    return false
+  }
+  if (scan(restHtml)) return true
+  for (const sibling of laterChildren) {
+    if (sibling.type !== 'raw') continue
+    if (scan(sibling.value ?? '')) return true
+  }
+  return false
+}
+
+/**
  * Rebuild the raw HTML among `parent`'s children. A start tag and its end tag may arrive in separate raw nodes with
  * Markdown between them (`H<sub>2</sub>O`, a `<details>` around paragraphs), so elements stay open across siblings and
  * close at their end tag or at the end of `parent`.
@@ -313,11 +337,13 @@ function rebuild(parent: Node): void {
       }
       if (DROPPED.has(token.name)) {
         // Non-void HTML elements (e.g. `<iframe/>`, `<object/>`, `<template/>`) never self-close in HTML5; foreign
-        // elements (`svg`, `math`) also enter dropping when a matching close tag appears later in the current or sibling raw nodes.
-        const closePattern = new RegExp(`</${token.name}(?=[\\s/>])`, 'iu')
-        const hasLaterClose = closePattern.test(html.slice(token.at))
-          || children.slice(childIndex + 1).some(sibling => sibling.type === 'raw' && closePattern.test(sibling.value ?? ''))
-        if (!VOID.has(token.name) && (!token.selfClosing || (token.name !== 'svg' && token.name !== 'math') || hasLaterClose)) {
+        // elements (`svg`, `math`) enter dropping only when an unmatched matching close tag follows (avoiding swallowing
+        // text between a real `<svg/>` and a later paired `<svg>...</svg>`).
+        const restOffset = html.indexOf('>', token.at)
+        const restHtml = restOffset >= 0 ? html.slice(restOffset + 1) : ''
+        const dropForeign = (token.name === 'svg' || token.name === 'math')
+          && hasUnmatchedClose(token.name, restHtml, children.slice(childIndex + 1))
+        if (!VOID.has(token.name) && (!token.selfClosing || (token.name !== 'svg' && token.name !== 'math') || dropForeign)) {
           dropping = { name: token.name, depth: 1 }
         }
         continue

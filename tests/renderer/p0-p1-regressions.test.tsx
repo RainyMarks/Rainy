@@ -15,6 +15,7 @@ import { embedImage, exportHtml, resolveExportImagePath } from '../../src/render
 import { preserveSource, rebaseEdit } from '../../src/renderer/ide/viewers/markdown-merge.ts'
 import { markdownOutline } from '../../src/renderer/ide/viewers/markdown-outline.ts'
 import { OfficeLockViewer, SheetViewer, WordViewer } from '../../src/renderer/ide/viewers/OfficeViewers.tsx'
+import { expandRowSpanWindow } from '../../src/renderer/ide/viewers/SheetViewer.tsx'
 import { PdfViewer } from '../../src/renderer/ide/viewers/PdfViewer.tsx'
 import { remarkReferences } from '../../src/renderer/ide/viewers/rich-syntax.ts'
 import { MAX_SHEET_COLUMNS, MAX_SHEET_ROWS, parseWorkbookRaw } from '../../src/renderer/ide/viewers/sheet-format.ts'
@@ -145,6 +146,18 @@ describe('P0: Markdown HTML self-closing dangerous tag bypass', () => {
     expect(main).not.toMatch(/alert\(1\)|display:\s*none|evil\.example|vector-payload|math-payload|<script|<style|<iframe|<svg/iu)
     expect(main).toContain('可见正文')
   })
+
+  it('does not swallow normal text between a real self-closing <svg/> and a later paired <svg>...</svg> in the same paragraph', async () => {
+    const html = await exportHtml({
+      text: '<svg/>正常文本<svg>hidden-svg</svg>尾部文本\n',
+      name: 'multi-svg',
+      image: async () => undefined,
+    })
+    const main = html.slice(html.indexOf('<main>'), html.indexOf('</main>'))
+    expect(main).toContain('正常文本')
+    expect(main).toContain('尾部文本')
+    expect(main).not.toMatch(/hidden-svg|<svg/iu)
+  })
 })
 
 describe('P0: Spreadsheet !merges DoS cap and SheetViewer row virtualization', () => {
@@ -180,6 +193,40 @@ describe('P0: Spreadsheet !merges DoS cap and SheetViewer row virtualization', (
       const renderedRows = container.querySelectorAll('tbody tr[data-row]')
       expect(renderedRows.length).toBeGreaterThan(0)
       expect(renderedRows.length).toBeLessThan(120)
+    } finally {
+      vi.stubGlobal('Worker', savedWorker)
+    }
+  })
+
+  it('converges staggered top and bottom rowSpan ranges to a fixed point without overflowing bottomSpacer', async () => {
+    // Staggered top spans: 40..60 and 50..90 with rawStart=80 must pull startRow all the way back to 40.
+    // Bottom span: 75..130 with rawEnd=110 must expand endRow to 130 so rowSpan never pierces bottomSpacer.
+    const spans = new Map([
+      ['40:0', { rows: 20, columns: 1 }],
+      ['50:1', { rows: 40, columns: 1 }],
+      ['75:2', { rows: 55, columns: 1 }],
+    ])
+    expect(expandRowSpanWindow({ spans }, 80, 110, 400)).toEqual({ startRow: 40, endRow: 130 })
+
+    // Verify rendered SheetViewer DOM with a tall rowSpan crossing the initial window end keeps rowSpan inside rendered rows.
+    const wb = XLSX.utils.book_new()
+    const aoa = Array.from({ length: 300 }, (_unused, row) => [`R${row}`, `V${row}`])
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!merges'] = [{ s: { r: 10, c: 0 }, e: { r: 79, c: 0 } }] // 70-row span crossing initial ~41-row window
+    XLSX.utils.book_append_sheet(wb, ws, 'SpanSheet')
+    const bytes = new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer)
+    const savedWorker = globalThis.Worker
+    vi.stubGlobal('Worker', undefined)
+    try {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(binaryResponse(bytes))
+      const container = mount(<SheetViewer url="/rainy/ide/raw?w=w&p=span.xlsx" size={bytes.byteLength} location={{ name: 'span.xlsx', extension: 'xlsx' }} />)
+      await waitFor(() => container.querySelector('tbody tr[data-row]') !== null)
+      const rows = [...container.querySelectorAll<HTMLTableRowElement>('tbody tr[data-row]')]
+      const lastRenderedRow = Number(rows.at(-1)!.dataset.row)
+      expect(lastRenderedRow).toBeGreaterThanOrEqual(79)
+      const spanCell = container.querySelector<HTMLTableCellElement>('tbody tr[data-row="10"] td[rowspan]')!
+      expect(Number(spanCell.getAttribute('rowspan'))).toBe(70)
+      expect(10 + Number(spanCell.getAttribute('rowspan')) - 1).toBeLessThanOrEqual(lastRenderedRow)
     } finally {
       vi.stubGlobal('Worker', savedWorker)
     }

@@ -1,6 +1,6 @@
 /** Renderer build: one React page served by the Host at `/`. */
-import { realpathSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileSync, realpathSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { codemirrorAlias } from './scripts/codemirror-alias.ts'
@@ -22,20 +22,37 @@ const CODEMIRROR_COMMON_LANGUAGES = new Set([
 ])
 
 /**
- * KaTeX's stylesheets list every font as WOFF2, WOFF and TrueType. Chromium always takes WOFF2, so the other two
- * (~0.7 MB) are stripped from CSS and dropped from the bundle; fails the build if upstream CSS changes silently break stripping.
+ * Deduplicate KaTeX CSS across `katex-plugin.ts` and Milkdown Crepe (Crepe's `latex.css` uses CSS `@import` which
+ * otherwise inlines a second 26 KiB copy into Crepe's stylesheet; `RichMarkdown.tsx` imports `katex/dist/katex.min.css`
+ * directly instead), and strip legacy WOFF/TrueType font fallbacks so only WOFF2 fonts are shipped.
  */
 const katexWoff2Only: Plugin = {
   name: 'rainy-katex-woff2-only',
+  enforce: 'pre',
+  transform(code, id) {
+    // Strip the nested `@import 'katex/dist/katex.min.css'` inside Crepe's `latex.css` before `vite:css` inlines it
+    // into Crepe's stylesheet; `RichMarkdown.tsx` imports `katex/dist/katex.min.css` directly so it shares one CSS chunk
+    // with `katex-plugin.ts`.
+    if (/@milkdown[\\/]crepe[\\/]lib[\\/]theme[\\/]common[\\/]style\.css$/u.test(id)) {
+      const latexImport = /@import\s+['"]\.\/latex\.css['"];?/u
+      if (!latexImport.test(code)) this.error('rainy-katex-woff2-only: expected @import "./latex.css" in Crepe style.css')
+      const latexCss = readFileSync(resolve(dirname(id), 'latex.css'), 'utf8')
+      const katexImport = /@import\s+['"]katex\/dist\/katex\.min\.css['"];?/u
+      if (!katexImport.test(latexCss)) this.error('rainy-katex-woff2-only: expected KaTeX @import in Crepe latex.css')
+      // Append the stripped latex.css rules after all @import statements so CSS @import ordering stays valid.
+      return { code: `${code.replace(latexImport, '')}\n${latexCss.replace(katexImport, '')}`, map: null }
+    }
+    return null
+  },
   generateBundle(_options, bundle) {
     const fallbacks = /,\s*url\([^)]*KaTeX_[^)]*\.woff\)\s*format\("woff"\)\s*,\s*url\([^)]*KaTeX_[^)]*\.ttf\)\s*format\("truetype"\)/gu
     const styles: string[] = []
-    let sawKatexCss = false
+    let katexCssCount = 0
     let strippedFallbacks = 0
     for (const item of Object.values(bundle)) {
       if (item.type !== 'asset' || !item.fileName.endsWith('.css')) continue
       const source = String(item.source)
-      if (source.includes('KaTeX_')) sawKatexCss = true
+      if (source.includes('KaTeX_')) katexCssCount++
       const updated = source.replace(fallbacks, () => { strippedFallbacks++; return '' })
       item.source = updated
       styles.push(updated)
@@ -45,7 +62,10 @@ const katexWoff2Only: Plugin = {
       if (/^KaTeX_.*\.(?:woff|ttf)$/u.test(file) && !styles.some(style => style.includes(file))) delete bundle[name]
     }
     const remainingLegacy = Object.values(bundle).filter(item => /^KaTeX_.*\.(?:woff|ttf)$/u.test(item.fileName.split('/').at(-1)!))
-    if (sawKatexCss && (strippedFallbacks === 0 || remainingLegacy.length > 0)) {
+    if (katexCssCount > 1) {
+      this.error(`rainy-katex-woff2-only: expected a single shared KaTeX CSS asset, found ${katexCssCount}`)
+    }
+    if (katexCssCount > 0 && (strippedFallbacks === 0 || remainingLegacy.length > 0)) {
       this.error(`rainy-katex-woff2-only did not strip legacy KaTeX fonts cleanly (stripped=${strippedFallbacks}, remaining=${remainingLegacy.length})`)
     }
   },
@@ -88,43 +108,26 @@ const codemirrorCommonLanguages: Plugin = {
 }
 
 /**
- * Mermaid bundles optional ELK layout (~1.5 MB) and experimental cynefin-beta diagram (~638 KiB).
- * Leaving both out preserves every standard diagram (flowchart, sequence, class, state, er, gantt, pie, mindmap,
- * timeline, gitGraph, journey, etc.) while verifying during build that neither chunk sneaks back in.
+ * Mermaid bundles the optional ELK layout engine (~1.5 MB) for diagrams that ask for `layout: elk`; without its loader
+ * Mermaid falls back to its default dagre layout. Verifies during build that ELK is excluded and core diagrams remain intact.
  */
-const mermaidTrim: Plugin = {
-  name: 'rainy-mermaid-trim',
+const mermaidWithoutElk: Plugin = {
+  name: 'rainy-mermaid-without-elk',
   transform(code, id) {
     if (/mermaid[\\/]dist[\\/]chunks[\\/]mermaid\.core[\\/]/u.test(id) && code.includes('...elkLayoutLoaders()')) {
       return { code: code.replace('...elkLayoutLoaders()', ''), map: null }
-    }
-    if (/mermaid[\\/]dist[\\/]mermaid\.core\.mjs$/u.test(id)) {
-      const cynefinImport = /await import\("\.\/chunks\/mermaid\.core\/cynefinDiagram-[^"]+\.mjs"\)/u
-      if (!cynefinImport.test(code)) this.error('rainy-mermaid-trim: cynefin loader pattern no longer matches mermaid.core.mjs')
-      return {
-        code: code.replace(cynefinImport, 'await Promise.reject(new Error("cynefin diagram is not bundled"))'),
-        map: null,
-      }
-    }
-    if (/@mermaid-js[\\/]parser[\\/]dist[\\/]mermaid-parser\.core\.mjs$/u.test(id)) {
-      const cynefinParserImport = /await import\("\.\/chunks\/mermaid-parser\.core\/cynefin-[^"]+\.mjs"\)/u
-      if (!cynefinParserImport.test(code)) this.error('rainy-mermaid-trim: cynefin parser pattern no longer matches mermaid-parser.core.mjs')
-      return {
-        code: code.replace(cynefinParserImport, 'await Promise.reject(new Error("cynefin parser is not bundled"))'),
-        map: null,
-      }
     }
     return null
   },
   generateBundle(_options, bundle) {
     const names = Object.keys(bundle)
-    if (names.some(name => /cynefin|elk-api|elk\.bundled/iu.test(name))) {
-      this.error('rainy-mermaid-trim: excluded Mermaid ELK or cynefin chunk was still emitted')
+    if (names.some(name => /elk-api|elk\.bundled/iu.test(name))) {
+      this.error('rainy-mermaid-without-elk: excluded Mermaid ELK chunk was still emitted')
     }
     const coreDiagrams = ['flowDiagram', 'sequenceDiagram', 'classDiagram', 'stateDiagram', 'erDiagram']
     if (names.some(name => /mermaid\.core/u.test(name))) {
       const missing = coreDiagrams.filter(diagram => !names.some(name => name.includes(diagram)))
-      if (missing.length > 0) this.error(`rainy-mermaid-trim: expected core Mermaid chunks missing (${missing.join(', ')})`)
+      if (missing.length > 0) this.error(`rainy-mermaid-without-elk: expected core Mermaid chunks missing (${missing.join(', ')})`)
     }
   },
 }
@@ -170,7 +173,7 @@ export default defineConfig({
     react(),
     katexWoff2Only,
     codemirrorCommonLanguages,
-    mermaidTrim,
+    mermaidWithoutElk,
     sharedSheetWorker,
     thirdPartyNotices('RainyAgent interface: third-party license and notice texts.'),
   ],
