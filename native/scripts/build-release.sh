@@ -5,13 +5,18 @@
 set -euo pipefail
 profile="${RAINY_PROFILE:-release}"
 native="$(cd "$(dirname "$0")/.." && pwd)"
-export PATH="$HOME/.cargo/bin:/c/msys64/ucrt64/bin:$PATH"
+msys2="${RAINY_MSYS2:-/c/msys64/ucrt64/bin}"
+export PATH="$HOME/.cargo/bin:$msys2:$PATH"
+win_root="$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:\\Windows}}")"
+csc="$win_root/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
 fxc="$native/target/tools/fxc.exe"
 if [ ! -f "$fxc" ] || [ "$native/scripts/fxc.cs" -nt "$fxc" ]; then
   mkdir -p "$native/target/tools"
-  MSYS2_ARG_CONV_EXCL='*' /c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -nologo -optimize -platform:x64 \
+  MSYS2_ARG_CONV_EXCL='*' "$csc" -nologo -optimize -platform:x64 \
     "-out:$(cygpath -w "$fxc")" "$(cygpath -w "$native/scripts/fxc.cs")"
 fi
 export GPUI_FXC_PATH="$(cygpath -w "$fxc")"
 cd "$native"
-cargo build -p rainy --profile "$profile" --offline "$@"
+extra=()
+[ "${RAINY_CARGO_OFFLINE:-0}" = "1" ] && extra+=(--offline)
+cargo build --locked -p rainy --profile "$profile" "${extra[@]}" "$@"

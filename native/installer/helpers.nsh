@@ -43,7 +43,8 @@
 !macroend
 
 ; ${prefix}rainyRemoveTree: deletes the folder on the stack and everything in it. A link or junction inside is removed
-; itself and never followed, and a folder that is a link is left alone.
+; itself and never followed, and a folder that is a link is left alone. Uses \\?\ extended-length paths for
+; GetFileAttributesW so deep directories past MAX_PATH are inspected instead of silently skipped.
 !macro rainyRemoveTreeFunction prefix
   Function ${prefix}rainyRemoveTree
     Exch $R0
@@ -51,7 +52,16 @@
     Push $R2
     Push $R3
     Push $R4
-    System::Call 'kernel32::GetFileAttributesW(w R0) i .R3'
+    Push $R5
+    StrCpy $R5 $R0
+    StrLen $R4 $R5
+    ${If} $R4 >= 248
+      StrCpy $R3 $R5 4
+      ${If} $R3 != "\\?\"
+        StrCpy $R5 "\\?\$R5"
+      ${EndIf}
+    ${EndIf}
+    System::Call 'kernel32::GetFileAttributesW(w R5) i .R3'
     ${If} $R3 = -1
       Goto done
     ${EndIf}
@@ -64,7 +74,15 @@
     ${DoUntil} ${Errors}
       ${If} $R2 != "."
       ${AndIf} $R2 != ".."
-        System::Call 'kernel32::GetFileAttributesW(w "$R0\$R2") i .R3'
+        StrCpy $R5 "$R0\$R2"
+        StrLen $R4 $R5
+        ${If} $R4 >= 248
+          StrCpy $R3 $R5 4
+          ${If} $R3 != "\\?\"
+            StrCpy $R5 "\\?\$R5"
+          ${EndIf}
+        ${EndIf}
+        System::Call 'kernel32::GetFileAttributesW(w R5) i .R3'
         ${If} $R3 <> -1
           IntOp $R4 $R3 & 0x400
           IntOp $R3 $R3 & 0x10
@@ -89,6 +107,7 @@
     RMDir "$R0"
     done:
     ClearErrors
+    Pop $R5
     Pop $R4
     Pop $R3
     Pop $R2

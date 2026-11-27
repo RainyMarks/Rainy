@@ -38,20 +38,32 @@ static class Fxc {
         uint flags = 0;
         for (int i = 0; i < args.Length; i++) {
             string arg = args[i];
-            switch (arg) {
-                case "/T": target = args[++i]; break;
-                case "/E": entry = args[++i]; break;
-                case "/Fh": header = args[++i]; break;
-                case "/Vn": name = args[++i]; break;
-                case "/Od": flags |= SkipOptimization; break;
-                case "/O0": flags |= OptimizationLevel0; break;
-                case "/O1": break;
-                case "/O2": flags |= OptimizationLevel2; break;
-                case "/O3": flags |= OptimizationLevel3; break;
-                default:
-                    if (arg.StartsWith("/")) { Console.Error.WriteLine("fxc: unsupported option " + arg); return 2; }
-                    file = arg;
-                    break;
+            string opt = arg.StartsWith("-") ? "/" + arg.Substring(1) : arg;
+            Func<string, string> requireNext = flagName => {
+                if (i + 1 >= args.Length) {
+                    Console.Error.WriteLine("fxc: missing value for " + flagName);
+                    return null;
+                }
+                return args[++i];
+            };
+            if (opt == "/T") { target = requireNext("/T"); if (target == null) return 2; }
+            else if (opt.StartsWith("/T") && opt.Length > 2) { target = opt.Substring(2); }
+            else if (opt == "/E") { entry = requireNext("/E"); if (entry == null) return 2; }
+            else if (opt.StartsWith("/E") && opt.Length > 2) { entry = opt.Substring(2); }
+            else if (opt == "/Fh") { header = requireNext("/Fh"); if (header == null) return 2; }
+            else if (opt.StartsWith("/Fh") && opt.Length > 3) { header = opt.Substring(3); }
+            else if (opt == "/Vn") { name = requireNext("/Vn"); if (name == null) return 2; }
+            else if (opt.StartsWith("/Vn") && opt.Length > 3) { name = opt.Substring(3); }
+            else if (opt == "/Od") { flags |= SkipOptimization; }
+            else if (opt == "/O0") { flags |= OptimizationLevel0; }
+            else if (opt == "/O1") { }
+            else if (opt == "/O2") { flags |= OptimizationLevel2; }
+            else if (opt == "/O3") { flags |= OptimizationLevel3; }
+            else if (arg.StartsWith("/") || arg.StartsWith("-")) {
+                Console.Error.WriteLine("fxc: unsupported option " + arg);
+                return 2;
+            } else {
+                file = arg;
             }
         }
         if (target == null || entry == null || header == null || file == null) {
@@ -74,6 +86,8 @@ static class Fxc {
             if (i % 16 == 15 || i + 1 == bytecode.Length) text.Append('\n');
         }
         text.Append("};\n");
+        string headerDir = Path.GetDirectoryName(Path.GetFullPath(header));
+        if (!string.IsNullOrEmpty(headerDir)) Directory.CreateDirectory(headerDir);
         File.WriteAllText(header, text.ToString(), new UTF8Encoding(false));
         return 0;
     }

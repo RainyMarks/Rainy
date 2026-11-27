@@ -6,9 +6,18 @@
 set -euo pipefail
 native="$(cd "$(dirname "$0")/.." && pwd)"
 zig="${RAINY_ZIG:-$HOME/.rainy-release/tools/zig/ziglang}"
+msys2="${RAINY_MSYS2:-/c/msys64/ucrt64/bin}"
 profile="${RAINY_PROFILE:-release}"
-export PATH="$zig:$HOME/.cargo/bin:/c/msys64/ucrt64/bin:$PATH"
+export PATH="$zig:$HOME/.cargo/bin:$msys2:$PATH"
+if ! command -v zig >/dev/null 2>&1; then
+  echo "zig not found on PATH (checked RAINY_ZIG=$zig)" >&2
+  exit 1
+fi
+if ! command -v cargo-zigbuild >/dev/null 2>&1; then
+  echo "cargo-zigbuild not found on PATH" >&2
+  exit 1
+fi
 cd "$native"
-cargo build -p rainy-host --profile "$profile" "$@"
-cargo zigbuild -p rainy-host --profile "$profile" --target x86_64-unknown-linux-gnu.2.17 "$@"
+cargo build --locked -p rainy-host --profile "$profile" "$@"
+cargo zigbuild --locked -p rainy-host --profile "$profile" --target x86_64-unknown-linux-gnu.2.17 "$@"
 ls -l "target/$profile/rainy-host.exe" "target/x86_64-unknown-linux-gnu/$profile/rainy-host"

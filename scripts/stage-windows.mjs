@@ -3,21 +3,20 @@
  *
  *   rainy-host.exe     the Rust Host (native/target/release, from native/scripts/build-hosts.sh)
  *   app/dist/renderer  the viewer page (scripts/build.ts)
- *   app/resources      the resources, without IDE tools: the Windows ones (runtime/ide-windows, from
- *                      `prepare-ide-tools.py --platform win32-x64`) are the optional modules ide-python and ide-web
- *                      (prepare-optional-modules.mjs), the Linux ones belong to the Linux runtime
- *   app/LICENSE…       the license files
+ *   app/resources      the viewer resources (pdfjs and icon.png), without IDE tools: the Windows ones
+ *                      (runtime/ide-windows, from `prepare-ide-tools.py --platform win32-x64`) are the optional
+ *                      modules ide-python and ide-web (prepare-optional-modules.mjs), the Linux ones belong to the
+ *                      Linux runtime. License files live at the Windows installation root via package-native.mjs.
  *   runtime.json       the file inventory
  *
  * No Node.js is shipped. PowerShell is not shipped either: the Host uses PowerShell 7 when the system or the Windows
  * basic component has it, else Windows PowerShell 5.1. The directory is replaced atomically; a failed run leaves the
  * previous staging in place.
  */
-import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { fileDigest } from './lib/common.mjs'
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // RAINY_PROFILE=qa stages the Host native/scripts/build-hosts.sh built with the QA profile (QA packages only).
@@ -25,9 +24,7 @@ const host = join(app, 'native/target', process.env.RAINY_PROFILE || 'release', 
 const destination = join(app, 'runtime/windows-host')
 
 async function digest(path) {
-  const hash = createHash('sha256')
-  for await (const chunk of createReadStream(path)) hash.update(chunk)
-  return hash.digest('hex')
+  return (await fileDigest(path)).digest
 }
 
 async function required(path, hint) {
@@ -39,18 +36,19 @@ async function required(path, hint) {
 await required(host, 'run native/scripts/build-hosts.sh')
 await required(join(app, 'dist/renderer/index.html'), 'run pnpm run build:release')
 
+await mkdir(join(app, 'runtime'), { recursive: true })
 const staging = await mkdtemp(join(app, 'runtime/windows-host-pending-'))
 try {
   await cp(host, join(staging, 'rainy-host.exe'))
   const target = join(staging, 'app')
   await mkdir(join(target, 'dist'), { recursive: true })
-  for (const name of ['LICENSE', 'LICENSE.Rainy', 'LICENSE.upstream', 'THIRD_PARTY_NOTICES.md']) await cp(join(app, name), join(target, name))
   await cp(join(app, 'dist/renderer'), join(target, 'dist/renderer'), { recursive: true, filter: file => !file.endsWith('.map') })
-  // The Linux IDE tools belong to the Linux runtime; a Strata runtime an earlier bootstrap left (Rainy up to 4.2 bundled
-  // one) is not packaged: Rainy now downloads Strata's own release when asked.
-  const skipped = [join(app, 'resources/strata-runtime'), join(app, 'resources/ide')].map(path => resolve(path))
-  await cp(join(app, 'resources'), join(target, 'resources'), { recursive: true, dereference: true,
-    filter: file => !file.endsWith('.map') && !skipped.includes(resolve(file)) })
+  // Allowlist only the viewer resources the Windows Host actually serves (pdf.js and icon.png).
+  await mkdir(join(target, 'resources'), { recursive: true })
+  await cp(join(app, 'resources/pdfjs'), join(target, 'resources/pdfjs'), {
+    recursive: true, dereference: true, filter: file => !file.endsWith('.map'),
+  })
+  await cp(join(app, 'resources/icon.png'), join(target, 'resources/icon.png'), { dereference: true })
 
   const files = []
   async function inventory(directory) {

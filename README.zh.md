@@ -7,13 +7,13 @@
 ### 会动手的 AI 工作台，为办公、科研和编码而生
 
 能读写文件、执行命令、自己检查成果的 AI 智能体，<br>
-连同编辑器、Office 文档预览和 SSH 远程开发，装进一个 16 MB 的 Windows 应用。
+连同编辑器、Office 文档预览和 SSH 远程开发，装进一个约 17 MB 的 Windows 应用。
 
 <br>
 
 [![下载 Windows 版](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-4.7-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
+[![更新日志](https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-5.0-0f172a?style=for-the-badge)](CHANGELOG.zh.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -42,7 +42,7 @@
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/zh/stats-dark.svg">
-  <img src="assets/zh/stats-light.svg" width="900" alt="Rainy 4.7 的几个数字：安装包 16 MB；Claude 长对话每步等到首个输出快 43%；上下文快满时续接花费少 25% 到 30%；长对话里的早期细节 12 次实测全部答对">
+  <img src="assets/zh/stats-light.svg" width="900" alt="Rainy 5.0 的几个数字：安装包约 17 MB；Claude 长对话每步等到首个输出快 43%；上下文快满时续接花费少 25% 到 30%；长对话里的早期细节 12 次实测全部答对">
 </picture>
 </p>
 
@@ -84,7 +84,7 @@ AI 直接改文件、跑命令、上网查资料。默认在运行命令前先�
 <tr>
 <td width="33%" valign="top">
 
-**轻：安装包 16 MB**
+**轻：安装包约 17 MB**
 
 原生界面（Rust + GPUI），不带 Electron，也不带 Node。编程工具、Linux 环境和额外字体都在用到时才下载。
 
@@ -114,29 +114,32 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 
 - 打开就是 **Agent 模式**：和 AI 的对话在窗口正中，输入框是一条细长的条，模型、权限和上下文占用排在它右下方；新对话在窗口中间问候你，并标出新对话所在的项目。
 - 对话里，读文件、跑命令这些步骤和“已思考”一样是一行浅色文字，不抢正文；点一下才展开命令输出和改动。
-- 左侧是对话列表：**新对话**（Ctrl+N）、**搜索**（Ctrl+Alt+K）、当前项目，然后是置顶的对话和按项目分组、可以折叠的对话。正在运行的对话旁边转圈，等你批准的对话亮起圆点；右键或悬停时的 **···** 可以重命名、置顶、归档和删除。**Ctrl+B** 显示或隐藏侧边栏。
+- 左侧是对话列表：**新对话**（Ctrl+N）和**搜索**（Ctrl+Alt+K，支持搜标题、目录和消息全文），下方是置顶对话和按项目分组、可折叠的对话（悬停项目行可直接在该项目新建对话或打开项目菜单）；已归档对话可从侧边栏底部单独打开窗口查看。正在运行的对话旁边转圈，等你批准或有未读回复的对话亮起圆点，后台完成的对话会弹出 Windows 通知。**Ctrl+B** 显示或隐藏侧边栏。
 - 标题栏右侧的按钮打开**文件**（文件树和编辑器）、**终端**和本对话的**变更**，面板默认在对话左边，和 IDE 模式一样是“文件树、编辑器、对话”的顺序；面板标题上的按钮可以把它换到右边，Rainy 会记住。点工具卡片里的文件或审查一处改动，文件面板会自己打开。窗口变窄时侧边栏和面板先让位，对话始终保持能读的宽度。
 - 标题栏左边的两个按钮随时在 Agent 模式和 **IDE 模式**（文件、编辑器和 AI 面板并排的经典布局）之间切换，也可以按 **Ctrl+Shift+A**。切换不打断任何事：选中的对话、草稿、正在运行的任务、打开的文件和终端都原样保留；这台电脑会记住你的选择。
 
 ### AI 智能体：放手让它做，结果你说了算
 
-- **真正干活**：读写和搜索项目文件、执行命令，用 DeepSeek 联网搜索和读网页，跨对话记住项目要点。
-- **三档权限**：每个对话可选只读、询问（默认，执行命令前先问）或完全自动；“总是允许”按项目记住。
-- **逐处审查**：AI 改过的文件列在输入框上方，在编辑器里一处一处保留或撤销；GBK、UTF-16 文件改完仍是原编码。
+- **真正干活**：读写和搜索项目文件、直接读取 LSP 诊断与符号结构（`lsp_diagnostics`、`symbol_outline`、`module_deps`）、执行命令，用 DeepSeek 联网搜索和读网页，跨对话记住项目要点。
+- **权限、安全规则与钩子**：每个对话可选只读、询问（默认，执行命令、调用 MCP 或访问项目外路径前先问）或完全自动；**设置 → 安全**管理每个项目的 Allow/Deny 通配规则（Deny 始终优先）、信任工作区以及 `.rainy/hooks.json` 生命周期钩子（`PreToolUse`、`PostToolUse`、`PostEdit`、`Stop`）。
+- **逐处审查**：AI 改过的文件列在输入框上方，可在编辑器里按块（hunk）或并排对比差异，一处一处保留或撤销；GBK、UTF-16 文件改完仍是原编码。
 - **会自查**：开发服务器放在后台一直跑；改完网页后，AI 在本机预览窗口里打开成果，看页面、控制台报错和失败的请求，再告诉你结果。
-- **能分工**：费时的查找交给子 Agent，只带回一份报告，不占对话的上下文。
+- **能分工且过程可见**：费时的查找交给子 Agent，实时步骤卡片在工作时逐条展示进展、完成后收起为一份报告，不占主对话上下文。
+- **Git 独立工作区**：新建对话时可选在**独立工作区（worktree）**里干活，并行任务互不干扰（自动带入未提交改动与 `.worktreeinclude` 文件），做完可建分支或三路合并交回原项目。
+- **外部 CLI Agent 与团队面板**：在 **设置 → 模型**启用 **Codex**（`codex app-server`）、**Antigravity**（`agy acp`）或任意 ACP Agent；实时查看剩余使用额度、斜杠命令，并在 **Swarm** 面板中查看其活跃团队与子 Agent。
 - **编排模式**：在模型菜单里选“A 规划 · B 执行”。当前模型先读代码、写出计划，再交给另一个更快或更便宜的模型改文件、跑测试；执行模型连续出错或发现计划不对时，会把这一轮交回规划模型修订计划。两个模型共用同一段对话。
 - **Swarm**：在输入框写 `/swarm 任务`，这个对话就成了协调者：它把大任务拆给几位有名字的成员（`@parser`、`@tests`……），成员各开一个对话并行工作，需要时可以各用一份独立工作区；大家在同一块看板上用 @ 互相发消息，成员做完一轮会自动向协调者回报。协调者自己不改文件，只负责拆分、验收和汇报。面板里的 **Swarm** 显示看板和成员状态，点成员跳到它的对话，“全部停止”一键停下所有成员。
-- **长对话不丢细节**：上下文快满时，先把较早的工具输出移出上下文，再把较早的对话收成一份索引；模型用 `recall` 原样查回之前的任何消息、命令输出或粘贴的文档。
-- **可扩展**：`.rainy/skills` 放技能，设置里添加 MCP 服务；一键接入开源的 [Windows-MCP](https://github.com/CursorTouch/Windows-MCP)，让 AI 操作电脑上的窗口和应用。
+- **长对话不丢细节**：点开上下文占比可查看**上下文构成**（系统提示、指令文件、MCP、工具、历史消息、召回）；上下文快满时，先把较早的工具输出移出上下文，再把较早的对话收成一份索引，模型用 `recall` 原样查回之前的任何消息、命令输出或粘贴的文档。
+- **自定义提示词与扩展**：**设置 → 提示词**支持按模型家族微调内置提示词、全局提示词以及 `AGENTS.md`/`CLAUDE.md` 规则文件；`.rainy/skills` 放技能，设置里添加 MCP 服务，或一键接入开源的 [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) 操作电脑上的窗口和应用。
 
 ![在编辑器里审查 AI 的修改，每处改动旁都有保留和撤销](assets/zh/review.png)
 
 <a id="ssh"></a>
 ### SSH 远程开发：服务器上的项目，本地般的体验
 
-- 从 `~/.ssh/config` 里选主机，或直接填写 `user@host`。
+- 从 `~/.ssh/config`（支持 `Include` 指令）里选主机，或直接填写 `user@host`，断线后自动原地重连。
 - AI、终端、运行调试和语言服务都在服务器上处理文件，界面留在这台电脑上。
+- **科研工作台**：每台主机独立配置（持久化 `RAINY_HOME`、常用目录书签、预设环境变量与主机备注）、断线不断跑的**后台实验**（`CUDA_VISIBLE_DEVICES` 与实时日志跟踪）、自动发现监听端口的一键 **`-L` 端口转发**、状态栏实时 **GPU / cgroup 资源监控**，以及文件树直接上传下载（单文件最高 512 MB）。
 - 使用 Windows 自带的 OpenSSH 客户端，密钥、ssh-agent 和 ProxyJump 照常可用。
 - 首次连接在服务器的 `~/.rainy-agent` 安装约 37 MB 的运行环境（之后的版本只下载 10 MB 的应用层），之后几秒就能进入工作台。
 
@@ -193,7 +196,7 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 | **项目记忆** | 开启后在空闲时整理项目要点，新对话开始时自动带上。 |
 | **上下文管理** | 实时显示上下文占用；快满时先移出旧的工具输出，再留索引供模型查回原文；Claude 走官方接口时只上传新增内容（message threads），提示词缓存保留一小时。 |
 | **字体** | 界面和代码字体可以换：系统自带的微软雅黑、等线、Consolas、Cascadia Code，以及选中时才下载的开源字体 Inter、Geist、思源黑体、霞鹜文楷、JetBrains Mono、Fira Code、Geist Mono、霞鹜文楷等宽。 |
-| **轻量** | 安装包 16 MB；编程工具、PHP、Linux 运行环境和额外字体都在用到时才下载。 |
+| **轻量** | 安装包约 17 MB；编程工具、PHP、Linux 运行环境和额外字体都在用到时才下载。 |
 | **适配任意屏幕** | 高缩放（如 225%）和小屏幕上自动适配，换显示器或改缩放后自动调整。 |
 | **光学质感** | 在 **设置 → 外观** 打开后，新对话页飘着缓慢变化的字符云，点一下泛起涟漪；输入框背后透出光晕，上方是使用概览（对话、消息、Token、活跃天数、缓存命中率、最常用模型和活跃热力图，全部从本机对话记录统计）和一只会眨眼、散步、被鼠标指到会蹦起来的像素小宠物；推理强度换成星光滑块。窗口在后台、一段时间没有操作或系统关闭了动画效果时，画面静止，不占 CPU。 |
 
@@ -201,10 +204,10 @@ Word、Excel、PPT、PDF、Markdown、图片和音视频直接打开，写论文
 ## 快速开始
 
 1. 下载并安装[最新版 Windows x64 安装包](https://github.com/RainyMarks/Rainy/releases/latest)，无需激活码。
-2. 打开 Rainy，点击左侧边栏的 **选择项目**，再点 **打开文件夹**（打开项目后，这个按钮显示项目名，点开是项目菜单；IDE 模式下它在标题栏中间）。
+2. 打开 Rainy，在左侧边栏的项目分组处打开文件夹（IDE 模式下在标题栏的项目菜单里），然后在该项目下发起对话。
 3. 在 **设置 → 模型** 连接一个模型（见[连接模型](#connect-a-model)），然后在窗口中间的输入框里提问（IDE 模式下是右侧的 AI 面板）。
 
-连接 Linux 服务器：先确认终端里能用 `ssh` 登录，再到 **设置 → 运行环境 → SSH 远程开发** 选择主机并点击 **切换到此主机**，最后用项目菜单（侧边栏的项目按钮；IDE 模式下在标题栏）里的 **浏览当前执行环境文件夹** 打开服务器上的项目。详见[桌面指南](docs/desktop.zh.md#ssh-remote-development)。
+连接 Linux 服务器：先确认终端里能用 `ssh` 登录，再到 **设置 → 运行环境 → SSH 远程开发** 选择主机并点击 **切换到此主机**，最后用项目菜单里的 **浏览当前执行环境文件夹** 打开服务器上的项目。详见[桌面指南](docs/desktop.zh.md#ssh-remote-development)。
 
 Rainy 会在后台下载稳定版更新，下载完成后可选择 **稍后** 或 **重启安装**。
 
@@ -249,7 +252,7 @@ Agent 会按模型家族换上它“老家”的用法：Claude 用 Anthropic �
 
 长对话会保留完整记录。上下文快满时，先把较早的工具输出移出上下文；还不够时，把较早的一段对话收成检查点。什么都不会删：模型可以用 `recall` 工具原样查回之前的任何消息、命令输出或粘贴的文档。**设置 → 通用 → 上下文快满时**可以选择怎么收：检索原文（默认，只留索引，不额外请求）或写摘要（让模型写一份摘要）。用 Anthropic 官方接口时，Claude 的对话每次只发送上次回复之后新增的内容（Anthropic 的 message threads），长对话开始回答更快。
 
-输入框下方的模型按钮显示模型名和推理强度，点开是推理强度卡片：每个模型只列出它官方支持的档位（如 GPT 的低到最高、DeepSeek 的关闭到最高、Claude 的自适应思考档位），默认用官方默认档，一键恢复；点模型名可以换模型。各模型的档位和请求参数见[推理强度说明](docs/reasoning-models.md)。
+输入框下方的模型按钮显示模型名和推理强度（外部 Agent 剩余额度低于 20% 时同时显示额度），点开是推理强度卡片：每个模型只列出它官方支持的档位（如 GPT 的低到最高、DeepSeek 的关闭到最高、Claude 的自适应思考档位）并标注官方默认档，开启光学质感后切换为星光滑块；点模型名可以换模型。各模型的档位和请求参数见[推理强度说明](docs/reasoning-models.md)。
 
 所选的 Windows、WSL 或 SSH 环境必须能访问模型服务。通过中转使用 Claude 时，协议保持 `anthropic-messages`，模型 ID 填 Claude 的模型名（如 `claude-opus-5-5`）。想在自己的电脑上跑模型，可在 **设置 → 工具 → Strata 本地大模型** 下载 Strata，从推荐表里下载适合这台电脑的模型，启动后连接并设为默认模型。
 
@@ -264,9 +267,9 @@ Agent 会按模型家族换上它“老家”的用法：Claude 用 Anthropic �
 - **发行包可验证**：安装文件首次启动时按签名清单逐个校验。
 
 <a id="whats-new"></a>
-## 4.7 新变化
+## 5.0 新变化
 
-**Claude 的长对话开始回答更快。** 走 Anthropic 官方接口时只上传新增内容（message threads），每步等到首个输出平均从 4.2 秒降到 2.4 秒，花费不变。**所有模型默认检索原文**：上下文快满时不再写摘要，细节不丢，花费少 25%–30%。**界面更安静**：工具调用变成一行浅色文字，输入框变成细长的一条；外观设置新增 8 款开源字体，选中时才下载。[查看完整更新日志 →](CHANGELOG.zh.md)
+**光学质感、使用概览与像素小宠物。** 在 **设置 → 外观 → 效果** 打开后，新对话页呈现轻微漂移的字符云与点击涟漪、玻璃质感卡片、本机使用概览（对话、Token、缓存命中率、全年活跃热力图以及 Codex/Antigravity 额度）、彩色推理强度与星光滑块，以及后台零额外 CPU 占用的像素小宠物。**承接 4.9–4.13 能力**：按项目折叠的侧边栏与 Git 独立工作区、编排模式与 Swarm、外部 CLI Agent（Codex / Antigravity / ACP）实时团队面板与额度展示、SSH 科研工作台（后台实验、`-L` 端口转发、GPU/cgroup 监控）、**设置 → 安全**（Allow/Deny 规则与钩子）、**设置 → 提示词**，以及子 Agent 实时步骤卡片。[查看完整更新日志 →](CHANGELOG.zh.md)
 
 <a id="docs"></a>
 ## 文档
@@ -343,7 +346,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 
 只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`5.0.0` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。从源码构建只限自己非商业使用：构建出的安装包不能分发，修改代码需要 RainyMarks 的书面同意。
 
-日常开发时，`pnpm run dev` 构建并单独启动 Host，打印可在浏览器中打开的地址；界面在 `native/` 里，用 `cargo build -p rainy --offline` 构建，`bash native/scripts/run-ui.sh` 以临时数据目录启动。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
+日常开发时，`pnpm run build` 将文档预览页构建到 `dist/renderer`；原生界面和 Host 在 `native/` 里，用 `cd native && cargo build -p rainy -p rainy-host` 一并构建（把 `rainy-host.exe` 拷入 `tmp/dev-resources/windows-host/`），再用 `bash native/scripts/run-ui.sh` 以临时数据目录 `tmp/ui-data` 启动窗口。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 
 </details>
 

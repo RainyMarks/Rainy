@@ -23,14 +23,14 @@
  * RAINY_NSIS_DIR names another NSIS folder (makensis.exe; plugins from RAINY_NSIS_PLUGINS or its Plugins\x86-unicode),
  * and RAINY_RELEASE_SIGNING_KEY another private key, as for 3.x.
  */
-import { createHash, createPublicKey, sign, verify } from 'node:crypto'
-import { createReadStream, existsSync } from 'node:fs'
+import { createPublicKey, sign, verify } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { appendFile, copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
 import { gunzipSync } from 'node:zlib'
+import { fileDigest, isInsidePath, isMainEntry, isOutsidePath, pathExists, sha256Hex } from './lib/common.mjs'
 import { releaseSigningKeyPath } from './release-signing-key.mjs'
 import { SIGNED_RESOURCES, resolveReleaseSigner, signReleaseResources } from './sign-release.mjs'
 
@@ -67,18 +67,15 @@ function options(argv) {
 }
 
 async function sha(path, algorithm = 'sha256', encoding = 'hex') {
-  const hash = createHash(algorithm)
-  for await (const chunk of createReadStream(path)) hash.update(chunk)
-  return hash.digest(encoding)
+  return (await fileDigest(path, algorithm, encoding)).digest
 }
 
-async function exists(path) {
-  try { await lstat(path); return true } catch (error) { if (error.code === 'ENOENT') return false; throw error }
-}
+const exists = pathExists
 
-function inside(folder, path) {
-  const child = relative(resolve(folder), resolve(path))
-  return child !== '' && !isAbsolute(child) && child !== '..' && !child.startsWith('..\\') && !child.startsWith('../')
+function publicKeysPath() {
+  const configured = process.env.RAINY_RELEASE_PUBLIC_KEYS
+  if (configured !== undefined && configured.trim() === '') throw new Error('RAINY_RELEASE_PUBLIC_KEYS must name a keyring file')
+  return configured === undefined ? join(root, 'runtime/release-public-keys.json') : resolve(configured)
 }
 
 function cargoHome() {
@@ -133,6 +130,17 @@ export function releaseMismatches(version, { host, linux, exe, modules }) {
     if (!String(module?.baseUrl ?? '').endsWith(`/v${version}-resources/`)) {
       problems.push(`runtime/optional-modules.json downloads ${module?.id} from ${module?.baseUrl}`)
     }
+    if (module?.id === 'linux-runtime' && linux?.sha256 !== undefined) {
+      if (module.sha256 !== linux.sha256 || module.bytes !== linux.bytes
+        || (linux.unpackedBytes !== undefined && module.unpackedBytes !== linux.unpackedBytes)) {
+        problems.push('runtime/optional-modules.json linux-runtime digest or size differs from runtime/linux-runtime.json')
+      }
+    }
+    if (module?.id === 'linux-app' && linux?.app !== undefined) {
+      if (module.sha256 !== linux.app.sha256 || module.bytes !== linux.app.bytes) {
+        problems.push('runtime/optional-modules.json linux-app digest or size differs from runtime/linux-runtime.json')
+      }
+    }
   }
   return problems
 }
@@ -168,7 +176,7 @@ export function tarMember(archive, member) {
 
 /** Remove a staging folder this script owns; refuses links and anything outside `owner`. */
 async function clean(folder, owner) {
-  if (!inside(owner, folder)) throw new Error(`Refusing to remove ${folder}, which is not inside ${owner}`)
+  if (!(await isInsidePath(owner, folder))) throw new Error(`Refusing to remove ${folder}, which is not inside ${owner}`)
   if (!await exists(folder)) return
   if ((await lstat(folder)).isSymbolicLink()) throw new Error(`Refusing to remove the link ${folder}`)
   await rm(folder, { recursive: true, force: false, maxRetries: 3 })
@@ -190,7 +198,7 @@ async function toolchain(work, owner) {
     return { makensis: join(folder, 'makensis.exe'), plugins }
   }
   const cache = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData/Local'), 'electron-builder/Cache')
-  const digestOf = bytes => createHash('sha256').update(bytes).digest('hex')
+  const digestOf = sha256Hex
   // The kept copy, else electron-builder's cache, else a download; whatever is used is kept, checked against its pin.
   const pinned = async pin => {
     const kept = join(TOOLCHAIN, pin.folder, pin.archive)
@@ -288,13 +296,22 @@ async function licenseFiles(crate) {
 /** The Linux Host's target (native/scripts/build-hosts.sh). */
 const LINUX_TARGET = 'x86_64-unknown-linux-gnu'
 
+/** Extract the Windows release target triple from `native/rust-toolchain.toml`. */
+export function windowsToolchainTarget(tomlText) {
+  const list = tomlText.match(/^targets\s*=\s*\[([^\]]*)\]/msu)?.[1]
+  if (!list) throw new Error('native/rust-toolchain.toml names no targets')
+  const targets = [...list.matchAll(/"([^"]+)"/gu)].map(match => match[1])
+  const windowsTarget = targets.find(item => item.includes('windows'))
+  if (!windowsTarget) throw new Error('native/rust-toolchain.toml names no Windows target')
+  return windowsTarget
+}
+
 /**
  * The crates RainyAgent.exe and the Windows Host link on the release target of native/rust-toolchain.toml, and the
  * Linux Host on its own, with their license texts.
  */
 async function rustLicenses() {
-  const target = (await readFile(join(native, 'rust-toolchain.toml'), 'utf8')).match(/^targets\s*=\s*\[\s*"([^"]+)"/mu)?.[1]
-  if (!target) throw new Error('native/rust-toolchain.toml names no target')
+  const target = windowsToolchainTarget(await readFile(join(native, 'rust-toolchain.toml'), 'utf8'))
   const installed = join(cargoHome(), 'bin/cargo.exe')
   const cargo = process.env.CARGO ?? (existsSync(installed) ? installed : 'cargo')
   const metadataFor = platform => {
@@ -450,7 +467,7 @@ async function stage(target, version, release) {
     icon: join(native, 'crates/app/assets/brand/rainy.ico'),
   }
   const resources = {
-    'release-public-keys.json': join(root, 'runtime/release-public-keys.json'),
+    'release-public-keys.json': publicKeysPath(),
     'environment-component-catalog.json': join(root, 'runtime/environment-component-catalog.json'),
     'install-environment-component.py': join(root, 'scripts/install-environment-component.py'),
     'linux-runtime.json': join(root, 'runtime/linux-runtime.json'),
@@ -463,10 +480,19 @@ async function stage(target, version, release) {
     if (!await exists(path)) throw new Error(`Missing package input: ${path}`)
   }
   const linux = JSON.parse(await readFile(resources['linux-runtime.json'], 'utf8'))
-  // The application layer is a downloaded module (`linux-app`); the metadata shipped here must name the one published.
+  // Both Linux runtime layers are downloaded modules (`linux-runtime`, `linux-app`); verify the staged archives match.
+  const linuxBase = join(root, 'runtime/linux-runtime.tar.xz')
+  if (release || await exists(linuxBase)) {
+    if (!await exists(linuxBase)) throw new Error(`Missing package input: ${linuxBase}`)
+    const base = await fileDigest(linuxBase)
+    if (linux.sha256 !== base.digest || linux.bytes !== base.bytes) {
+      throw new Error('runtime/linux-runtime.tar.xz is not the base runtime/linux-runtime.json names; stage the Linux runtime again')
+    }
+  }
   const linuxApp = join(root, 'runtime/linux-app.tar.gz')
-  const app = await sha(linuxApp)
-  if (linux.app?.sha256 !== app || linux.app?.bytes !== (await stat(linuxApp)).size) {
+  if (!await exists(linuxApp)) throw new Error(`Missing package input: ${linuxApp}`)
+  const app = await fileDigest(linuxApp)
+  if (linux.app?.sha256 !== app.digest || linux.app?.bytes !== app.bytes) {
     throw new Error('runtime/linux-app.tar.gz is not the application layer runtime/linux-runtime.json names; stage the Linux runtime again')
   }
   const host = JSON.parse(await readFile(join(inputs.windowsHost, 'runtime.json'), 'utf8'))
@@ -516,7 +542,7 @@ async function main() {
   const name = option.qa ? `Rainy-QA-${version}-windows-x64-setup.exe` : `Rainy-${version}-windows-x64-setup.exe`
   const setup = join(out, name)
   const keyPath = releaseSigningKeyPath(process.env.RAINY_RELEASE_SIGNING_KEY)
-  if (!option.skipSign && (inside(out, keyPath) || resolve(out) === resolve(keyPath))) throw new Error('The private release key must be outside the output folder')
+  if (!option.skipSign && !(await isOutsidePath(out, keyPath))) throw new Error('The private release key must be outside the output folder')
   await mkdir(out, { recursive: true })
   // A run that stops on the way leaves nothing of this version that could be published.
   for (const file of [name, 'latest.yml', 'latest.yml.sig', 'release-integrity.json']) await rm(join(out, file), { force: true })
@@ -524,7 +550,7 @@ async function main() {
   const tool = await toolchain(join(nsis, 'toolchain'), out)
   await stage(target, version, !option.qa)
 
-  const keys = JSON.parse(await readFile(join(root, 'runtime/release-public-keys.json'), 'utf8'))
+  const keys = JSON.parse(await readFile(publicKeysPath(), 'utf8'))
   // A release Rainy.exe checks its resources against the keys build.rs compiled in, as raw 32-byte Ed25519 keys.
   const carried = carriedKeys(await readFile(join(target, 'RainyAgent.exe')), keys)
   let signed
@@ -537,7 +563,7 @@ async function main() {
   } else {
     const missing = Object.keys(keys.keys ?? {}).find(id => !carried.includes(id))
     if (missing) throw new Error(`native/target/release/Rainy.exe does not carry release key ${missing}; build it with RAINY_RELEASE_PUBLIC_KEYS=runtime\\release-public-keys.json`)
-    signed = await signReleaseResources(join(target, 'resources'), { privateKeyPath: keyPath, version, packageRoot: out })
+    signed = await signReleaseResources(join(target, 'resources'), { privateKeyPath: keyPath, version, packageRoot: out, rejectExtra: true })
     console.log(`Signed ${signed.files} resources (release-manifest.signed.json ${signed.manifestSha256})`)
   }
 
@@ -550,7 +576,7 @@ async function main() {
   const defines = { VERSION: version, VI_VERSION: `${major}.${minor}.${patch}.0`, YEAR: String(new Date().getUTCFullYear()), PAYLOAD: target,
     PAYLOAD_FILES: include, OUTFILE: setup, ICON: join(native, 'crates/app/assets/brand/rainy.ico'), NSIS_PLUGINS: tool.plugins,
     ESTIMATED_SIZE: String(Math.ceil(bytes / 1024)) }
-  if (option.qa) Object.assign(defines, { QA: true, QA_ROOT: option.qaRoot, QA_ARGS: `--user-data-dir=${join(option.qaRoot, 'user-data')}` })
+  if (option.qa) Object.assign(defines, { QA: true, QA_ROOT: option.qaRoot, QA_USER_DATA: join(option.qaRoot, 'user-data') })
   const compiling = Date.now()
   makensis(tool, defines, join(native, 'installer/rainy.nsi'))
   const compiled = Date.now() - compiling
@@ -574,4 +600,4 @@ async function main() {
   console.log(JSON.stringify({ ...evidence, output: out, makensisSeconds: Math.round(compiled / 100) / 10, totalSeconds: Math.round((Date.now() - started) / 100) / 10 }))
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main()
+if (isMainEntry(import.meta.url)) await main()

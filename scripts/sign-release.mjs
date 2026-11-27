@@ -1,8 +1,8 @@
 /** Sign final packaged resources with the builder's independent release key. */
-import { createHash, sign } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { sign } from 'node:crypto'
 import { lstat, readFile, readdir, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
+import { fileDigest, isMainEntry, isOutsidePath, sha256Hex } from './lib/common.mjs'
 import { readReleaseSigningKey, releasePublicKeys, releaseSigningKeyPath } from './release-signing-key.mjs'
 
 const app = resolve(import.meta.dirname, '..')
@@ -10,17 +10,8 @@ const signatureDomain = 'RainyAgent/release-manifest/v1\0'
 /** The signed resources besides `windows-host`, in the order 3.x lists them. */
 export const SIGNED_RESOURCES = ['release-public-keys.json', 'environment-component-catalog.json', 'install-environment-component.py',
   'linux-runtime.json', 'install-runtime.py', 'optional-modules.json', 'icon.ico']
-
-/**
- * Whether `path` lies outside `root` (not equal to it and not below it).
- * @param {string} root Folder.
- * @param {string} path Absolute or relative path.
- * @returns {boolean} True when the path is elsewhere.
- */
-function outside(root, path) {
-  const child = relative(resolve(root), resolve(path))
-  return child !== '' && (isAbsolute(child) || child === '..' || child.startsWith('..\\') || child.startsWith('../'))
-}
+/** On-demand module directories an earlier installation may leave beside signed resources. */
+const ALLOWED_UNMANAGED_ENTRIES = new Set(['strata-runtime', 'php'])
 
 /**
  * Match a builder's private key to the public key staged before compiling the carrier.
@@ -52,18 +43,24 @@ export async function resolveReleaseSigner(path, publicKeys) {
 export async function signReleaseResources(resourceRoot, options = {}) {
   const root = resolve(resourceRoot)
   const keyPath = options.privateKeyPath ?? releaseSigningKeyPath(process.env.RAINY_RELEASE_SIGNING_KEY)
-  if (!outside(root, keyPath)) throw new Error('The private release key must be outside packaged resources')
-  if (options.packageRoot !== undefined && !outside(options.packageRoot, keyPath)) throw new Error('The private release key must be outside the package')
+  if (!(await isOutsidePath(root, keyPath))) throw new Error('The private release key must be outside packaged resources')
+  if (options.packageRoot !== undefined && !(await isOutsidePath(options.packageRoot, keyPath))) throw new Error('The private release key must be outside the package')
   if ((await lstat(root)).isSymbolicLink()) throw new Error(`Release resources cannot be a symbolic link: ${root}`)
   const keys = JSON.parse(await readFile(join(root, 'release-public-keys.json'), 'utf8'))
   const signer = await resolveReleaseSigner(keyPath, keys)
-  const privateKeyDigest = createHash('sha256').update(await readFile(keyPath)).digest('hex')
+  const privateKeyDigest = sha256Hex(await readFile(keyPath))
   const version = options.version ?? JSON.parse(await readFile(join(app, 'package.json'), 'utf8')).version
   try {
     await lstat(join(root, 'app-update.yml'))
     throw new Error('app-update.yml belongs to the 3.x Electron updater and cannot be part of a Rainy 4 package')
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
+  }
+  const expectedTopLevel = new Set(['windows-host', ...SIGNED_RESOURCES, 'release-manifest.signed.json'])
+  for (const name of (await readdir(root)).sort()) {
+    if (expectedTopLevel.has(name)) continue
+    if (!options.rejectExtra && ALLOWED_UNMANAGED_ENTRIES.has(name)) continue
+    throw new Error(`Unexpected unsigned entry in packaged resources: ${name}`)
   }
   const files = []
   async function inventory(path) {
@@ -74,9 +71,7 @@ export async function signReleaseResources(resourceRoot, options = {}) {
       return
     }
     if (!info.isFile()) throw new Error(`Unexpected release resource: ${path}`)
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(path)) hash.update(chunk)
-    const sha256 = hash.digest('hex')
+    const { digest: sha256 } = await fileDigest(path)
     if (sha256 === privateKeyDigest) throw new Error('A private release key was copied into packaged resources')
     files.push({ path: relative(root, path).replaceAll('\\', '/'), sha256, bytes: info.size })
   }
@@ -97,10 +92,10 @@ export async function signReleaseResources(resourceRoot, options = {}) {
     signature: sign(null, Buffer.concat([Buffer.from(signatureDomain), bytes]), signer.key).toString('base64url') }
   const target = join(root, 'release-manifest.signed.json')
   await writeFile(target, JSON.stringify(signed) + '\n')
-  return { files: files.length, path: target, version, manifestSha256: createHash('sha256').update(await readFile(target)).digest('hex') }
+  return { files: files.length, path: target, version, manifestSha256: sha256Hex(await readFile(target)) }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isMainEntry(import.meta.url)) {
   if (!process.argv[2]) throw new Error('Pass the final packaged resource directory')
   console.log(JSON.stringify(await signReleaseResources(process.argv[2])))
 }

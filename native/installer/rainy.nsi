@@ -44,13 +44,20 @@ SetCompressorDictSize 64
   !ifdef QA_ARGS
     !error "QA_ARGS is only for a QA build (/DQA)."
   !endif
+  !ifdef QA_USER_DATA
+    !error "QA_USER_DATA is only for a QA build (/DQA)."
+  !endif
   !define APP_GUID "2b4d0a43-506b-52c1-a15c-818e3e1af64d"
   !define PRODUCT_NAME "Rainy"
 !endif
-!ifdef QA_ARGS
-  !define APP_ARGS " ${QA_ARGS}"
+!ifdef QA_USER_DATA
+  !define APP_ARGS ' --user-data-dir="${QA_USER_DATA}"'
 !else
-  !define APP_ARGS ""
+  !ifdef QA_ARGS
+    !define APP_ARGS " ${QA_ARGS}"
+  !else
+    !define APP_ARGS ""
+  !endif
 !endif
 !define MUTEX "${APP_GUID}"
 !define INSTALL_KEY "Software\${APP_GUID}"
@@ -236,8 +243,15 @@ VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductVersion" "${VERSION}"
 !insertmacro rainyLogFunction ""
 !insertmacro rainyLogFunction "un."
 
+!define RAINY_EXEC_TIMEOUT_MS ${MAINTENANCE_TIMEOUT_MS}
+!include "${__FILEDIR__}\helpers.nsh"
+!insertmacro rainyRemoveTreeFunction ""
+
 !macro rainyRejectReparse path message
-  System::Call 'kernel32::GetFileAttributesW(w "${path}") i .r0'
+  Push $R0
+  StrCpy $R0 "${path}"
+  System::Call 'kernel32::GetFileAttributesW(w R0) i .r0'
+  Pop $R0
   ${If} $0 != -1
     IntOp $1 $0 & 0x400
     ${If} $1 != 0
@@ -376,11 +390,19 @@ FunctionEnd
 !macroend
 
 ; Setup speaks Chinese, as Rainy does by default; English only when Rainy was switched to English (desktop.json's
-; "locale"), whatever language Windows itself shows.
+; "locale": "en"), whatever language Windows itself shows. QA builds read only their isolated user-data folder.
 !macro rainyPickLanguage
   StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
   ClearErrors
-  FileOpen $0 "$APPDATA\RainyAgent\desktop.json" r
+  !ifdef QA
+    !ifdef QA_USER_DATA
+      FileOpen $0 "${QA_USER_DATA}\desktop.json" r
+    !else
+      FileOpen $0 "${QA_ROOT}\user-data\desktop.json" r
+    !endif
+  !else
+    FileOpen $0 "$APPDATA\RainyAgent\desktop.json" r
+  !endif
   ${IfNot} ${Errors}
     ${Do}
       ClearErrors
@@ -390,8 +412,29 @@ FunctionEnd
       ${EndIf}
       ${WordFind} $1 '"locale"' "E+1}" $2
       ${IfNot} ${Errors}
-        ${WordFind} $2 '"en"' "E+1{" $3
-        ${IfNot} ${Errors}
+        ; Inspect only the JSON string value immediately following `"locale"` so `"en"` in another field cannot match.
+        StrCpy $3 0
+        ${Do}
+          StrCpy $4 $2 1 $3
+          ${If} $4 == " "
+          ${OrIf} $4 == "$\t"
+          ${OrIf} $4 == ":"
+          ${OrIf} $4 == "$\r"
+          ${OrIf} $4 == "$\n"
+            IntOp $3 $3 + 1
+          ${ElseIf} $4 == ""
+            ClearErrors
+            FileRead $0 $2
+            ${If} ${Errors}
+              ${Break}
+            ${EndIf}
+            StrCpy $3 0
+          ${Else}
+            ${Break}
+          ${EndIf}
+        ${Loop}
+        StrCpy $4 $2 4 $3
+        ${If} $4 == '"en"'
           StrCpy $LANGUAGE ${LANG_ENGLISH}
         ${EndIf}
         ${Break}
@@ -651,8 +694,36 @@ FunctionEnd
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
+; Moves one existing installation file into the rollback folder before replacement so .onInstFailed can restore it.
+!macro rainyBackupFile rel
+  ${If} ${FileExists} "$INSTDIR\${rel}"
+    ${GetParent} "$INSTDIR\.rainy-prev\${rel}" $R0
+    CreateDirectory "$R0"
+    ClearErrors
+    Rename "$INSTDIR\${rel}" "$INSTDIR\.rainy-prev\${rel}"
+    ${If} ${Errors}
+      !insertmacro rainyLog "Stopped: $INSTDIR\${rel} could not be moved aside before update"
+      MessageBox MB_OK|MB_ICONSTOP "$(rainyFileBusy)$INSTDIR\${rel}" /SD IDOK
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro rainyRestoreFile rel
+  ${IfNot} ${FileExists} "$INSTDIR\${rel}"
+  ${AndIf} ${FileExists} "$INSTDIR\.rainy-prev\${rel}"
+    ${GetParent} "$INSTDIR\${rel}" $R0
+    CreateDirectory "$R0"
+    ClearErrors
+    Rename "$INSTDIR\.rainy-prev\${rel}" "$INSTDIR\${rel}"
+  ${EndIf}
+!macroend
+
 Section "-Rainy"
   !insertmacro rainyLog "Setup ${VERSION} for $installMode into $INSTDIR (updated $updated, force-run $forceRun)"
+  ; Always reject a reparse point at $INSTDIR itself even when empty or dangling (IfFileExists "$INSTDIR\*.*" can be false).
+  !insertmacro rainyRejectReparse "$INSTDIR" "$(rainyReparseInstall)"
   ${If} ${FileExists} "$INSTDIR\*.*"
     !insertmacro rainyCheckFolder "$(rainyReparseInstall)"
     Call rainyWaitForExit
@@ -669,28 +740,38 @@ Section "-Rainy"
       StrCpy $keepShortcuts "true"
     ${EndIf}
   ${EndIf}
-  ; Move the previous executable aside before deleting anything: verifies it is not locked and lets .onInstFailed
-  ; restore it if replacing files stops halfway through.
+  ; Move the previous executable, uninstaller and signed resource files aside before deleting anything: verifies none
+  ; is locked and lets .onInstFailed restore a working installation if replacing files stops halfway through.
+  ${If} ${FileExists} "$INSTDIR\.rainy-prev\*.*"
+    !insertmacro rainyRejectReparse "$INSTDIR\.rainy-prev" "$(rainyReparseInstall)"
+    Push "$INSTDIR\.rainy-prev"
+    Call rainyRemoveTree
+  ${EndIf}
   ${If} ${FileExists} "$INSTDIR\${APP_EXE}"
     ${If} ${FileExists} "$INSTDIR\${APP_EXE}.prev"
       Delete "$INSTDIR\${APP_EXE}.prev"
     ${EndIf}
-    ClearErrors
-    Rename "$INSTDIR\${APP_EXE}" "$INSTDIR\${APP_EXE}.prev"
-    ${If} ${Errors}
-      !insertmacro rainyLog "Stopped: $INSTDIR\${APP_EXE} could not be moved aside before update"
-      MessageBox MB_OK|MB_ICONSTOP "$(rainyFileBusy)$INSTDIR\${APP_EXE}" /SD IDOK
-      SetErrorLevel 1
-      Abort
-    ${EndIf}
+    !insertmacro rainyBackupFile "${APP_EXE}"
+    !insertmacro rainyBackupFile "${UNINSTALL_EXE}"
+    !insertmacro rainyBackupFile "WebView2Loader.dll"
+    !insertmacro rainyBackupFile "resources\release-manifest.signed.json"
+    !insertmacro rainyBackupFile "resources\release-public-keys.json"
+    !insertmacro rainyBackupFile "resources\environment-component-catalog.json"
+    !insertmacro rainyBackupFile "resources\install-environment-component.py"
+    !insertmacro rainyBackupFile "resources\linux-runtime.json"
+    !insertmacro rainyBackupFile "resources\install-runtime.py"
+    !insertmacro rainyBackupFile "resources\optional-modules.json"
+    !insertmacro rainyBackupFile "resources\icon.ico"
   ${EndIf}
   !insertmacro rainyRemoveReplaced
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD}\*.*"
+  WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
   ${If} ${FileExists} "$INSTDIR\${APP_EXE}.prev"
     Delete "$INSTDIR\${APP_EXE}.prev"
   ${EndIf}
-  WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
+  Push "$INSTDIR\.rainy-prev"
+  Call rainyRemoveTree
   !insertmacro rainyWriteRegistry
   !ifndef QA
     !insertmacro rainyShortcuts
@@ -707,6 +788,22 @@ Section "-Rainy"
 SectionEnd
 
 Function .onInstFailed
+  ${If} ${FileExists} "$INSTDIR\.rainy-prev\*.*"
+    !insertmacro rainyRestoreFile "${APP_EXE}"
+    !insertmacro rainyRestoreFile "${UNINSTALL_EXE}"
+    !insertmacro rainyRestoreFile "WebView2Loader.dll"
+    !insertmacro rainyRestoreFile "resources\release-manifest.signed.json"
+    !insertmacro rainyRestoreFile "resources\release-public-keys.json"
+    !insertmacro rainyRestoreFile "resources\environment-component-catalog.json"
+    !insertmacro rainyRestoreFile "resources\install-environment-component.py"
+    !insertmacro rainyRestoreFile "resources\linux-runtime.json"
+    !insertmacro rainyRestoreFile "resources\install-runtime.py"
+    !insertmacro rainyRestoreFile "resources\optional-modules.json"
+    !insertmacro rainyRestoreFile "resources\icon.ico"
+    RMDir "$INSTDIR\.rainy-prev\resources"
+    RMDir "$INSTDIR\.rainy-prev"
+    !insertmacro rainyLog "Restored previous files in $INSTDIR after failed setup"
+  ${EndIf}
   ${IfNot} ${FileExists} "$INSTDIR\${APP_EXE}"
   ${AndIf} ${FileExists} "$INSTDIR\${APP_EXE}.prev"
     ClearErrors
@@ -722,15 +819,12 @@ FunctionEnd
 ; Uninstaller: `Uninstall RainyAgent.exe`, as 3.x named it. Setup never runs it; 3.x setup does when going back to 3.x,
 ; with /S /KEEP_APP_DATA /currentuser --keep-shortcuts --updated _?=<folder>.
 
-; Rainy.exe runs each uninstall step for at most this long; one that takes longer is left running.
-!define RAINY_EXEC_TIMEOUT_MS ${MAINTENANCE_TIMEOUT_MS}
-!include "${__FILEDIR__}\helpers.nsh"
 !insertmacro rainyExecFunction "un."
 !insertmacro rainyRemoveTreeFunction "un."
 
 ; When RainyAgent.exe is missing or could not remove its Explorer entries, what 3.x's uninstaller deleted goes here, each
 ; only while it still names this installation's RainyAgent.exe: the three menu commands, "Open with" for the program,
-; and its Default apps registration (RegisteredApplications and Software\RainyMarks\Rainy).
+; its Default apps registration (RegisteredApplications and Software\RainyMarks\Rainy), and Rainy.<ext> ProgIDs.
 !macro rainyRemoveShellFallback
   ReadRegStr $1 HKCU "Software\Classes\*\shell\Rainy\command" ""
   ${If} $1 == `"$INSTDIR\${APP_EXE}" "%1"`
@@ -757,6 +851,30 @@ FunctionEnd
     DeleteRegKey HKCU "Software\RainyMarks\Rainy"
     DeleteRegKey /ifempty HKCU "Software\RainyMarks"
   ${EndIf}
+  StrCpy $R0 0
+  ${Do}
+    EnumRegKey $R1 HKCU "Software\Classes" $R0
+    ${If} $R1 == ""
+      ${Break}
+    ${EndIf}
+    StrCpy $R2 $R1 6
+    ${If} $R2 == "Rainy."
+      ReadRegStr $1 HKCU "Software\Classes\$R1\shell\open\command" ""
+      ${If} $1 == `"$INSTDIR\${APP_EXE}" "%1"`
+        DeleteRegKey HKCU "Software\Classes\$R1"
+        StrCpy $R3 $R1 "" 6
+        ${If} $R3 != ""
+          DeleteRegValue HKCU "Software\Classes\.$R3\OpenWithProgids" "$R1"
+          DeleteRegKey /ifempty HKCU "Software\Classes\.$R3\OpenWithProgids"
+          DeleteRegKey /ifempty HKCU "Software\Classes\.$R3"
+          DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.$R3\OpenWithProgids" "$R1"
+          DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\ApplicationAssociationToasts" "$R1_.$R3"
+        ${EndIf}
+        ${Continue}
+      ${EndIf}
+    ${EndIf}
+    IntOp $R0 $R0 + 1
+  ${Loop}
 !macroend
 
 Function un.onInit
@@ -771,6 +889,10 @@ Function un.onInit
       StrCpy $installMode "all"
     ${ElseIf} $forCurrentUser != "true"
       ReadRegStr $0 HKLM "${INSTALL_KEY}" "InstallLocation"
+      StrCpy $1 $0 1 -1
+      ${If} $1 == "\"
+        StrCpy $0 $0 -1
+      ${EndIf}
       ${If} $0 == $INSTDIR
         StrCpy $installMode "all"
       ${EndIf}
@@ -846,6 +968,9 @@ Section "un.Rainy"
     !insertmacro rainyLog "--rainy-remove-runtime: $0"
   ${EndIf}
   !insertmacro rainyRemoveOwnFiles
+  Delete "$INSTDIR\${APP_EXE}.prev"
+  Push "$INSTDIR\.rainy-prev"
+  Call un.rainyRemoveTree
   Delete "$INSTDIR\${UNINSTALL_EXE}"
   !insertmacro rainyRemoveOwnFolders
   RMDir "$INSTDIR"

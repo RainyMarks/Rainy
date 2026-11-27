@@ -1,7 +1,6 @@
 /** Download and authenticate the fixed offline WSL/Ubuntu installation inputs. */
-import { createHash } from 'node:crypto'
-import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pipeline } from 'node:stream/promises'
@@ -9,6 +8,7 @@ import { Readable } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { environmentMedia } from './environment-media.ts'
+import { fileDigest } from './lib/common.mjs'
 
 const exec = promisify(execFile)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -19,9 +19,7 @@ await mkdir(destination, { recursive: true })
 await mkdir(evidence, { recursive: true })
 
 async function sha256(path) {
-  const hash = createHash('sha256')
-  for await (const chunk of createReadStream(path)) hash.update(chunk)
-  return hash.digest('hex')
+  return (await fileDigest(path)).digest
 }
 
 async function present(path) {
@@ -37,13 +35,22 @@ async function download(url, file, expected) {
   const temporary = `${target}.part`
   const partial = await present(temporary)
   const offset = partial?.size ?? 0
-  const response = await fetch(url, { headers: offset ? { Range: `bytes=${offset}-` } : {} })
-  if (!response.ok || !response.body) throw new Error(`${response.status} downloading ${url}`)
+  const response = await fetch(url, { headers: offset ? { Range: `bytes=${offset}-` } : {}, signal: AbortSignal.timeout(300_000) })
+  if (!response.ok || !response.body) {
+    if (offset > 0 && response.status === 416) await rm(temporary, { force: true })
+    throw new Error(`${response.status} downloading ${url}`)
+  }
   const append = offset > 0 && response.status === 206
-  if (append && !response.headers.get('content-range')?.startsWith(`bytes ${offset}-`)) throw new Error('Unexpected partial download range')
+  if (append && !response.headers.get('content-range')?.startsWith(`bytes ${offset}-`)) {
+    await rm(temporary, { force: true })
+    throw new Error('Unexpected partial download range')
+  }
   console.log(`Downloading ${file}${append ? ` (resuming at ${offset} bytes)` : ''}`)
   await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: append ? 'a' : 'w' }))
-  if (expected && ((await stat(temporary)).size !== expected.bytes || await sha256(temporary) !== expected.sha256)) throw new Error(`Downloaded media checksum mismatch: ${file}`)
+  if (expected && ((await stat(temporary)).size !== expected.bytes || await sha256(temporary) !== expected.sha256)) {
+    await rm(temporary, { force: true })
+    throw new Error(`Downloaded media checksum mismatch: ${file}`)
+  }
   await rename(temporary, target)
   return target
 }
@@ -54,7 +61,8 @@ const key = await download(`https://keyserver.ubuntu.com/pks/lookup?op=get&searc
 const gpgHome = join(evidence, 'gnupg')
 await mkdir(gpgHome, { recursive: true, mode: 0o700 })
 const gpg = process.env.RAINY_GPG ?? (process.platform === 'win32' ? 'C:/msys64/usr/bin/gpg.exe' : 'gpg')
-const gpgPath = path => /msys/i.test(gpg) ? path.replaceAll('\\', '/').replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`) : path
+const usesPosixPath = /(?:msys|cygwin|git[\\/]+usr[\\/]+bin)/i.test(gpg)
+const gpgPath = path => usesPosixPath ? path.replaceAll('\\', '/').replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`) : path
 const gpgArgs = ['--no-options', '--homedir', gpgPath(gpgHome), '--batch', '--no-tty', '--no-autostart', '--no-auto-key-retrieve']
 const keyDetails = await exec(gpg, [...gpgArgs, '--with-colons', '--import-options', 'show-only', '--import', gpgPath(key)], { windowsHide: true })
 if (!keyDetails.stdout.includes(`fpr:::::::::${fingerprint}:`)) throw new Error('Ubuntu signing key fingerprint does not match the pinned release key')

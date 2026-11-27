@@ -2,6 +2,7 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto'
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { isMainEntry } from './lib/common.mjs'
 
 const app = resolve(import.meta.dirname, '..')
 
@@ -61,7 +62,7 @@ export async function prepareReleaseKey(options) {
   return keys
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isMainEntry(import.meta.url)) {
   const configured = process.env.RAINY_RELEASE_SIGNING_KEY
   const keys = await prepareReleaseKey({ privateKeyPath: releaseSigningKeyPath(configured),
     publicKeyPath: resolve(app, 'runtime/release-public-keys.json'), create: configured === undefined })

@@ -132,19 +132,33 @@ test('download bootstrap verifies each piece and never publishes a corrupt recon
 
 test('PowerShell reassembles binary and Unicode files and rejects a modified or missing piece', { skip: process.platform !== 'win32' ? 'Windows PowerShell is the release entry point' : false }, async t => {
   const f = await fixture(t)
-  const invoke = output => run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', reassembler,
-    '-Manifest', join(f.output, 'release-assets.json'), '-PartsDirectory', f.output, '-OutputDirectory', output], { windowsHide: true })
   const restored = join(f.root, 'ps-restored')
-  await invoke(restored)
-  await invoke(restored)
-  for (const entry of f.manifest.files) assert.deepEqual(await readFile(join(restored, entry.path)), await readFile(join(f.source, entry.path)))
   const piece = f.manifest.files.find(entry => entry.category === 'offline').pieces[0]
-  const original = await readFile(join(f.output, piece.file))
-  await writeFile(join(f.output, piece.file), Buffer.alloc(piece.bytes, 100))
-  await assert.rejects(invoke(join(f.root, 'ps-corrupt')), /checksum/)
-  await writeFile(join(f.output, piece.file), original)
-  await rm(join(f.output, piece.file))
-  await assert.rejects(invoke(join(f.root, 'ps-missing')))
+  const runner = join(f.root, 'run-reassemble-checks.ps1')
+  // Run all four reassembler invocations inside one PowerShell host to avoid paying four cold startups.
+  await writeFile(runner, [
+    'param([string]$Script, [string]$Manifest, [string]$Parts, [string]$Restored, [string]$CorruptOut, [string]$MissingOut, [string]$PiecePath, [int]$PieceBytes)',
+    '$ErrorActionPreference = "Stop"',
+    '& $Script -Manifest $Manifest -PartsDirectory $Parts -OutputDirectory $Restored | Out-Null',
+    '& $Script -Manifest $Manifest -PartsDirectory $Parts -OutputDirectory $Restored | Out-Null',
+    '$original = [IO.File]::ReadAllBytes($PiecePath)',
+    '[IO.File]::WriteAllBytes($PiecePath, [byte[]](,100 * $PieceBytes))',
+    '$corruptErr = $null',
+    'try { & $Script -Manifest $Manifest -PartsDirectory $Parts -OutputDirectory $CorruptOut | Out-Null } catch { $corruptErr = $_.Exception.Message }',
+    'if (-not $corruptErr -or $corruptErr -notmatch "checksum") { throw "Expected checksum error, got: $corruptErr" }',
+    '[IO.File]::WriteAllBytes($PiecePath, $original)',
+    'Remove-Item -LiteralPath $PiecePath -Force',
+    '$missingErr = $null',
+    'try { & $Script -Manifest $Manifest -PartsDirectory $Parts -OutputDirectory $MissingOut | Out-Null } catch { $missingErr = $_.Exception.Message }',
+    'if (-not $missingErr) { throw "Expected missing-piece failure" }',
+  ].join('\n') + '\n', 'utf8')
+  await run('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', runner,
+    '-Script', reassembler, '-Manifest', join(f.output, 'release-assets.json'), '-Parts', f.output,
+    '-Restored', restored, '-CorruptOut', join(f.root, 'ps-corrupt'), '-MissingOut', join(f.root, 'ps-missing'),
+    '-PiecePath', join(f.output, piece.file), '-PieceBytes', String(piece.bytes),
+  ], { windowsHide: true })
+  for (const entry of f.manifest.files) assert.deepEqual(await readFile(join(restored, entry.path)), await readFile(join(f.source, entry.path)))
 })
 
 test('build bootstrap extracts the offline Ubuntu packages and Windows resources and prepares the existing builder layout', async t => {
@@ -228,4 +242,43 @@ test('archive traversal and duplicate members are rejected before extraction', a
   await tar.c({ cwd: f.source, file: duplicate, gzip: true }, ['说明.txt', '说明.txt'])
   await assert.rejects(extractBuildInput(duplicate, join(f.root, 'duplicate-output')), /duplicate archive member/)
   await assert.rejects(readFile(join(f.root, 'escape/说明.txt')), { code: 'ENOENT' })
+})
+
+test('manifest rejects 0-byte pieces on non-empty files and files exceeding 999 pieces', async t => {
+  const f = await fixture(t)
+  const zeroPiece = structuredClone(f.manifest)
+  zeroPiece.files[1].pieces.push({ file: 'extra.099', bytes: 0, sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' })
+  assert.throws(() => validateReleaseManifest(zeroPiece), /Invalid release piece/)
+
+  const tooMany = structuredClone(f.manifest)
+  tooMany.partBytes = 1
+  tooMany.files[1].bytes = 1000
+  tooMany.files[1].pieces = Array.from({ length: 1000 }, (_, i) => ({
+    file: `part.${String(i + 1).padStart(4, '0')}`, bytes: 1, sha256: 'a'.repeat(64),
+  }))
+  assert.throws(() => validateReleaseManifest(tooMany), /Invalid release file/)
+
+  await f.put('big.bin', Buffer.alloc(1000, 1))
+  await assert.rejects(packReleaseAssets({
+    sourceRoot: f.source, outputDirectory: join(f.root, 'too-many-parts'),
+    files: [{ path: 'big.bin', category: 'offline' }], releaseVersion: '1.0.0', baseUrl, partBytes: 1,
+  }), /exceeds 999 pieces/)
+})
+
+test('extractBuildInput accepts ./-prefixed members and extendReleaseAssets ignores JSON key order', async t => {
+  const f = await fixture(t)
+  const dotArchive = join(f.root, 'dot-prefixed.tar.gz')
+  await tar.c({ cwd: f.source, file: dotArchive, gzip: true, prefix: '.' }, ['说明.txt'])
+  const destination = join(f.root, 'dot-extracted')
+  await extractBuildInput(dotArchive, destination)
+  assert.equal(await readFile(join(destination, '说明.txt'), 'utf8'), '测试\n')
+
+  const reordered = Object.fromEntries(Object.entries(f.manifest).reverse())
+  await writeFile(join(f.output, 'release-assets.json'), JSON.stringify(reordered, null, 2) + '\n')
+  await f.put('latest.yml', 'version: 1.0.0\n')
+  const extended = await extendReleaseAssets({
+    manifest: f.manifest, sourceRoot: f.source, outputDirectory: f.output,
+    files: [{ path: 'latest.yml', category: 'installer' }],
+  })
+  assert.equal(extended.files.length, f.manifest.files.length + 1)
 })

@@ -7,13 +7,13 @@
 ### The AI workbench that gets things done, for office work, research and code
 
 An agent that edits your files, runs commands and checks its own work,<br>
-with an editor, Office previews and SSH remote development, in one 16 MB Windows app.
+with an editor, Office previews and SSH remote development, in one ~17 MB Windows app.
 
 <br>
 
 [![Download for Windows](https://img.shields.io/github/v/release/RainyMarks/Rainy?style=for-the-badge&label=Download%20for%20Windows&color=2563eb)](https://github.com/RainyMarks/Rainy/releases/latest)
 &nbsp;
-[![Changelog](https://img.shields.io/badge/Changelog-4.7-0f172a?style=for-the-badge)](CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/Changelog-5.0-0f172a?style=for-the-badge)](CHANGELOG.md)
 
 [![Downloads](https://img.shields.io/github/downloads/RainyMarks/Rainy/total?style=flat-square&color=10b981)](https://github.com/RainyMarks/Rainy/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=flat-square)
@@ -42,7 +42,7 @@ Every number below comes from comparisons with real models; the method, raw resu
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/stats-dark.svg">
-  <img src="assets/stats-light.svg" width="900" alt="Rainy 4.7 in numbers: a 16 MB installer; 43% less wait for each step's first output in long Claude chats; 25 to 30% lower cost of carrying on when the context is full; early details of long chats answered correctly in 12 of 12 runs">
+  <img src="assets/stats-light.svg" width="900" alt="Rainy 5.0 in numbers: a ~17 MB installer; 43% less wait for each step's first output in long Claude chats; 25 to 30% lower cost of carrying on when the context is full; early details of long chats answered correctly in 12 of 12 runs">
 </picture>
 </p>
 
@@ -84,7 +84,7 @@ The agent edits files, runs commands and searches the web. It asks before comman
 <tr>
 <td width="33%" valign="top">
 
-**Light: a 16 MB installer**
+**Light: a ~17 MB installer**
 
 A native interface (Rust and GPUI) with no Electron and no Node. Editor tools, the Linux runtime and extra fonts download only when you use them.
 
@@ -114,29 +114,32 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 
 - Rainy opens in **Agent mode**: the conversation with the AI fills the middle of the window, the message box is one slim bar below it, and the model, the permission mode and the context use sit under its right end. A new chat greets you in the middle of the window and names the project it starts in.
 - In the conversation, steps such as reading a file or running a command are one muted line, like "Thought", so they never crowd the answer; a click opens the output and the change.
-- The chats are on the left: **New chat** (Ctrl+N), **Search** (Ctrl+Alt+K), the current project, then the pinned chats and the chats of each project under headers that fold. A spinner marks a chat at work and a dot one waiting for your approval; right-click a chat or use its **···** to rename, pin, archive or delete it. **Ctrl+B** shows or hides the sidebar.
+- The chats are on the left: **New chat** (Ctrl+N) and **Search** (Ctrl+Alt+K, searching titles, folders and message content), followed by pinned chats and each project as a foldable group (hover a project to start a chat there or open its menu); archived chats open in their own window from the bottom of the sidebar. A spinner marks a chat at work, a dot marks one waiting for your approval or with an unread reply, and background chats notify you through Windows notifications. **Ctrl+B** shows or hides the sidebar.
 - The buttons at the right of the title bar open the **Files** (the file tree and the editor), the **Terminal** and the chat's **Changes** in a panel, on the left of the conversation by default so the order is the same as in IDE mode: file tree, editor, chat. A button on the panel's header moves it to the right, and Rainy remembers. A file you open from a tool card or a change you review opens the files panel by itself. In a narrow window the sidebar and the panel make room first, so the conversation stays readable.
 - The two buttons at the left of the title bar switch between Agent mode and **IDE mode** (the classic layout with the files, the editor and the AI pane side by side) at any time, as does **Ctrl+Shift+A**. Nothing is interrupted: the selected chat, its draft, running work, open files and terminals stay as they are, and this computer remembers your choice.
 
 ### An AI agent: let it work, keep the final say
 
-- **Real work**: reads, searches and edits project files, runs commands, searches the web and reads pages through DeepSeek, and remembers the project across chats.
-- **Three permission modes**: each chat runs read-only, asks before commands (the default), or runs fully automatically; "Always allow" is remembered per project.
-- **Review every change**: the files it changed are listed above the message box; keep or undo each change in the editor. GBK and UTF-16 files keep their encoding.
+- **Real work**: reads, searches and edits project files, inspects LSP diagnostics (`lsp_diagnostics`, `symbol_outline`, `module_deps`), runs commands, searches the web and reads pages through DeepSeek, and remembers the project across chats.
+- **Permissions, security rules and hooks**: each chat runs read-only, asks before commands/MCP tools/out-of-project access (the default), or runs fully automatically; **Settings → Security** manages per-project Allow/Deny wildcard rules (Deny always wins), trusted workspaces and `.rainy/hooks.json` lifecycle hooks (`PreToolUse`, `PostToolUse`, `PostEdit`, `Stop`).
+- **Review every change**: the files it changed are listed above the message box; review changes hunk by hunk or side by side, and keep or undo each change in the editor. GBK and UTF-16 files keep their encoding.
 - **Checks its own work**: development servers keep running in the background; after changing a web app, the agent opens it in a local preview, reads the page, console errors and failed requests, and tells you what it saw.
-- **Delegates**: a long search goes to a sub-agent that answers with one report, so the conversation keeps its room.
+- **Delegates with live steps**: a long search goes to a sub-agent whose live card shows each step as it works and folds into its report when done, keeping the main conversation focused.
+- **Git worktrees**: start a chat in its **Own worktree** so parallel tasks work on isolated copies (with your uncommitted changes and `.worktreeinclude` files), then create a branch or hand changes back to the project via three-way merge.
+- **External CLI agents & teams**: enable **Codex** (`codex app-server`), **Antigravity** (`agy acp`) or any ACP agent in **Settings → Models**; view their remaining usage quotas, slash commands and active teams/sub-agents live in the **Swarm** panel.
 - **Orchestrator**: pick "A plans · B executes" in the model menu. The current model reads the code and writes a plan, then hands it to a faster or cheaper model that edits files and runs the tests; when the executor keeps failing or finds the plan wrong, it hands the turn back for a revised plan. Both share the same conversation.
 - **Swarm**: type `/swarm <task>` and the chat becomes a coordinator. It splits a large task among named workers (`@parser`, `@tests`, …), each a chat of its own working in parallel, optionally in its own worktree; everyone talks over one board with @mentions, and a worker's finished turn is reported to the coordinator on its own. The coordinator edits nothing itself: it splits, checks and reports. The **Swarm** panel shows the board and the members' state; click a member to open its chat, and **Stop all** stops every member at once.
-- **Long chats keep every detail**: when the context fills up, older tool outputs leave it first, then an earlier span is folded into an index; the model reads any earlier message, command output or pasted document back verbatim with `recall`.
-- **Extensible**: skills in `.rainy/skills`, MCP servers in Settings, and one click adds computer use through the open-source [Windows-MCP](https://github.com/CursorTouch/Windows-MCP).
+- **Long chats keep every detail**: click the context meter for a per-segment **context breakdown** (system, instructions, MCP, tools, history, recall); when the context fills up, older tool outputs leave it first, then an earlier span is folded into an index that `recall` reads back verbatim.
+- **Customizable prompts & extensions**: **Settings → Prompts** customizes the built-in prompts per model family, global prompt and `AGENTS.md`/`CLAUDE.md` files; add skills in `.rainy/skills`, MCP servers in Settings, or one-click computer use via [Windows-MCP](https://github.com/CursorTouch/Windows-MCP).
 
 ![Reviewing the agent's changes in the editor, with Keep and Undo beside each change](assets/review.png)
 
 <a id="ssh"></a>
 ### SSH remote development: the server's project, a local feel
 
-- Pick a host from `~/.ssh/config`, or enter `user@host`.
+- Pick a host from `~/.ssh/config` (including `Include` directives), or enter `user@host`, with automatic in-place reconnect on drops.
 - The agent, terminals, run and debug, and language services work on the server's files; the interface stays on your PC.
+- **Research workbench**: per-host profiles (persistent `RAINY_HOME`, bookmarked directories, preset env vars and host notes), detached **Background experiments** (`CUDA_VISIBLE_DEVICES`, live log tailing across disconnects), one-click **`-L` port forwarding** with listening-port discovery, live **GPU/cgroup resource metrics** in the status bar, and direct file-tree upload/download (up to 512 MB).
 - It uses the OpenSSH client built into Windows, so your keys, ssh-agent and ProxyJump just work.
 - The first connection installs a runtime of about 37 MB in `~/.rainy-agent` (later versions download only their 10 MB application layer) on the server; later connections reach the workbench in seconds.
 
@@ -193,7 +196,7 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 | **Project memory** | When turned on, collects a project's key facts while idle and brings them into new chats. |
 | **Context management** | Shows how full the context is; before it runs out, older tool outputs leave it and an index lets the model read the record back. Claude on Anthropic's API uploads only what is new (message threads), and its prompt cache lasts an hour. |
 | **Fonts** | Change the interface and code fonts: Windows' Segoe UI, Microsoft YaHei, DengXian, Consolas and Cascadia Code, and open-source fonts downloaded when chosen: Inter, Geist, Noto Sans SC, LXGW WenKai, JetBrains Mono, Fira Code, Geist Mono and LXGW WenKai Mono. |
-| **Light** | A 16 MB installer; editor tools, PHP, the Linux runtime and extra fonts download only when needed. |
+| **Light** | A ~17 MB installer; editor tools, PHP, the Linux runtime and extra fonts download only when needed. |
 | **Any screen** | Fits high scaling (such as 225%) and small screens, and adjusts when you change displays or scaling. |
 | **Optical look** | Turn it on in **Settings → Appearance**: a new chat shows a slowly changing cloud of characters that ripples where you click, a glow behind the composer, a usage overview above it (chats, messages, tokens, active days, cache hit rate, most used model and an activity map, all counted from your own chat history) and a pixel pet that blinks, strolls and hops when you point at it; reasoning is set with a starry slider. Nothing moves, and no CPU is used, while the window is in the background, after a while without input, or when Windows' animation effects are off. |
 
@@ -201,10 +204,10 @@ Word, Excel, PowerPoint, PDF, Markdown, images and media open in place, so paper
 ## Quick start
 
 1. Download and install [the latest Windows x64 installer](https://github.com/RainyMarks/Rainy/releases/latest). No activation code is required.
-2. Open Rainy, select **Choose a project** in the sidebar, then **Open folder** (once a project is open, that button shows its name and opens the project menu; in IDE mode it is in the middle of the title bar).
+2. Open Rainy, open a folder from the sidebar's project header (or the project menu in the title bar in IDE mode), then start a chat in that project.
 3. Connect a model in **Settings → Models** (see [Connect a model](#connect-a-model)), then ask in the message box in the middle of the window (the AI pane on the right in IDE mode).
 
-To work on a Linux server, make sure `ssh` logs in from a terminal, pick the host under **Settings → Runtime → SSH remote development**, select **Switch to this host**, then open a project with **Browse folders on current host** in the project menu (the project button of the sidebar; in IDE mode, in the title bar). See the [desktop guide](docs/desktop.md#ssh-remote-development).
+To work on a Linux server, make sure `ssh` logs in from a terminal, pick the host under **Settings → Runtime → SSH remote development**, select **Switch to this host**, then open a project with **Browse folders on current host** in the project menu. See the [desktop guide](docs/desktop.md#ssh-remote-development).
 
 Rainy downloads stable updates in the background and then offers **Later** or **Restart and install**.
 
@@ -249,7 +252,7 @@ The agent adapts to each model family the way its vendor's own agent does: Claud
 
 Long chats keep their full record. When the context fills up, older tool outputs leave it first; when that is not enough, an earlier span is folded into a checkpoint. Nothing is deleted: the model reads any earlier message, command output or pasted document back verbatim with its `recall` tool. **Settings → General → When the context fills up** picks how a span is folded: Read back (the default: an index, no extra request) or Summary (the model writes one). With Anthropic's own API, Claude chats send only what was added since the previous reply (Anthropic's message threads), so long chats start answering sooner.
 
-The model button under the composer shows the model and its reasoning effort and opens the reasoning card: each model lists only the levels its provider documents (low to max for GPT, off to max for DeepSeek, Claude's adaptive-thinking levels), starts at the provider's default and resets to it in one click; the model's name switches models. [Reasoning levels](docs/reasoning-models.md) lists every family's levels and request fields.
+The model button under the composer shows the model and its reasoning effort (plus remaining quota when an external agent drops below 20%) and opens the reasoning card: each model lists only the levels its provider documents (low to max for GPT, off to max for DeepSeek, Claude's adaptive-thinking levels) with the provider's default marked — or a starry slider when Optical look is enabled; click the model's name to switch models. [Reasoning levels](docs/reasoning-models.md) lists every family's levels and request fields.
 
 The selected Windows, WSL or SSH environment must reach the model service. Through a relay, keep the `anthropic-messages` protocol and the Claude model ID (for example `claude-opus-5-5`). To run a model on your own PC, **Settings → Tools → Strata local models** downloads Strata and the model it recommends for your PC; start it, then connect it as the default model.
 
@@ -264,9 +267,9 @@ The selected Windows, WSL or SSH environment must reach the model service. Throu
 - **Verifiable releases**: on first start the installed files are checked one by one against a signed manifest.
 
 <a id="whats-new"></a>
-## What's new in 4.7
+## What's new in 5.0
 
-**Long Claude chats answer sooner.** On Anthropic's API only what is new is uploaded (message threads), so the wait for each step's first output fell from 4.2 s to 2.4 s on average at the same cost. **Every model reads back by default**: a full context no longer asks for a summary, keeping every detail at 25–30% less cost. **A quieter interface**: tool calls are one muted line, the message box is one slim bar, and Appearance offers eight open-source fonts downloaded when chosen. [Read the full changelog →](CHANGELOG.md)
+**Optical look, usage overview & pixel pet.** Enable **Settings → Appearance → Effects** for a subtle drifting character field with click ripples, glass cards, a local usage overview (chats, tokens, cache hit rate, yearly activity heatmap and Codex/Antigravity limits), colored reasoning levels with a slider, and a pixel pet that sleeps with zero extra CPU in the background. **Built on 4.9–4.13**: project-grouped sidebar and Git worktrees, Orchestrator & Swarm, external CLI agents (Codex / Antigravity / ACP) with live team panel and quota display, SSH research workbench (background experiments, `-L` port forwarding, GPU/cgroup metrics), **Settings → Security** (Allow/Deny rules & hooks), **Settings → Prompts**, and live sub-agent step cards. [Read the full changelog →](CHANGELOG.md)
 
 <a id="docs"></a>
 ## Documentation
@@ -343,7 +346,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Dis
 
 Replace `Ubuntu` only when your WSL build distribution has another name, and `5.0.0` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Building from source is for your own noncommercial use: the installer you build may not be distributed, and changing the code needs written permission from RainyMarks.
 
-For development, `pnpm run dev` builds the app and starts a Host on its own, then prints a URL to open in a browser; the interface lives in `native/`: `cargo build -p rainy --offline` builds it and `bash native/scripts/run-ui.sh` starts it with a scratch data folder. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+For development, `pnpm run build` builds the viewer pages into `dist/renderer`; the native interface and Host live in `native/`: `cd native && cargo build -p rainy -p rainy-host` builds both (copy `rainy-host.exe` into `tmp/dev-resources/windows-host/`), and `bash native/scripts/run-ui.sh` starts the window with the scratch data folder `tmp/ui-data`. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
 </details>
 

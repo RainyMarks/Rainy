@@ -51,13 +51,40 @@ function Contains-RootExecutable([string]$text, [string[]]$roots) {
   $lower = $text.Replace('/', '\').ToLowerInvariant()
   $exts = ($script:ExecutableExts | ForEach-Object { [regex]::Escape($_) }) -join '|'
   foreach ($root in $roots) {
-    if ([regex]::IsMatch($lower, [regex]::Escape($root + '\') + '[^"''<>|\s]*?(' + $exts + ')(?![\w.])')) { return $true }
+    $escapedRoot = [regex]::Escape($root + '\')
+    # Quoted paths may legally contain spaces (for example "C:\Program Files\RainyAgent\Uninstall RainyAgent.exe").
+    if ([regex]::IsMatch($lower, '"' + $escapedRoot + '[^"<>|]*?(' + $exts + ')"')) { return $true }
+    if ([regex]::IsMatch($lower, '''' + $escapedRoot + '[^''<>|]*?(' + $exts + ')''')) { return $true }
+    if ([regex]::IsMatch($lower, $escapedRoot + '[^"''<>|\s]*?(' + $exts + ')(?![\w.])')) { return $true }
   }
   return $false
 }
+# Collect the installer process and its ancestor chain (for example a non-elevated UAC outer uninstaller waiting on
+# its elevated child under _?=<INSTDIR>), so setup never deadlocks waiting on its own launcher.
+function Get-ExcludedPids($processes, [int]$currentPid, [int]$installerPid) {
+  $parentByPid = @{}
+  foreach ($proc in $processes) {
+    $parentByPid[[int]$proc.ProcessId] = [int]$proc.ParentProcessId
+  }
+  $excluded = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($seed in @($currentPid, $installerPid)) {
+    if ($seed -le 0) { continue }
+    $cursor = $seed
+    for ($depth = 0; $depth -lt 16 -and $cursor -gt 0; $depth++) {
+      if (-not $excluded.Add($cursor)) { break }
+      if (-not $parentByPid.ContainsKey($cursor)) { break }
+      $next = $parentByPid[$cursor]
+      if ($next -le 0 -or $next -eq $cursor) { break }
+      $cursor = $next
+    }
+  }
+  return $excluded
+}
 function Find-Busy([string[]]$roots) {
-  foreach ($row in Get-CimInstance Win32_Process) {
-    if ($row.ProcessId -eq $PID -or $row.ProcessId -eq $InstallerPid) { continue }
+  $processes = @(Get-CimInstance Win32_Process)
+  $excluded = Get-ExcludedPids $processes $PID $InstallerPid
+  foreach ($row in $processes) {
+    if ($excluded.Contains([int]$row.ProcessId)) { continue }
     $program = Normalize-Candidate ([string]$row.ExecutablePath)
     if ($program) {
       foreach ($root in $roots) { if ($program.StartsWith($root + '\')) { return $row } }

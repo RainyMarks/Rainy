@@ -1,9 +1,9 @@
 /** Refuse a release with missing, stale or changed Linux IDE tools (`prepare-ide-tools.py --platform linux-x64`) or offline Ubuntu packages. */
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainEntry, sha256Hex } from './lib/common.mjs'
 
 /** Verify the complete prepared IDE payload before building a carrier.
  * @param {string} app - application directory containing source and resource inventories.
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 export async function verifyIdeResources(app) {
 const sourceFile = resolve(app, 'toolpacks/ide-tools.sources.json')
 const root = await realpath(resolve(app, 'resources/ide'))
-const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+const sha256 = sha256Hex
 const source = JSON.parse(await readFile(sourceFile, 'utf8'))
 const helpers = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'))
 assert.equal(helpers.version, 2)
@@ -62,6 +62,6 @@ const systemFiles = await inventory(systemRoot, system.packages, 'file')
 return { helpers: helperFiles.files, systemPackages: systemFiles.files, bytes: helperFiles.bytes + systemFiles.bytes }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainEntry(import.meta.url)) {
   console.log(JSON.stringify(await verifyIdeResources(resolve(dirname(fileURLToPath(import.meta.url)), '..'))))
 }

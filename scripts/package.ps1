@@ -17,6 +17,13 @@ function Find-Python {
 }
 $rainyOffline = Join-Path $rainyApp "release/offline-$rainyVersion"
 function Check-Exit { if ($LASTEXITCODE -ne 0) { throw "Build step failed with exit code $LASTEXITCODE" } }
+function Resolve-WslPath([string]$WindowsPath) {
+    $raw = & wsl.exe -d $Distribution --exec wslpath -u $WindowsPath
+    Check-Exit
+    $text = (@($raw) -join "`n").Trim()
+    if (-not $text) { throw "wslpath returned an empty path for $WindowsPath" }
+    return $text
+}
 # Git for Windows' bash (or MSYS2's) runs the native build script; System32\bash.exe would be WSL.
 function Find-Bash {
     if ($env:RAINY_BASH) { return $env:RAINY_BASH }
@@ -28,6 +35,8 @@ function Find-Bash {
     if (Test-Path -LiteralPath 'C:\msys64\usr\bin\bash.exe') { return 'C:\msys64\usr\bin\bash.exe' }
     throw 'Install Git for Windows or MSYS2, or set RAINY_BASH to its bash.exe'
 }
+$prevWslUtf8 = $env:WSL_UTF8
+$env:WSL_UTF8 = '1'
 Push-Location $rainyApp
 try {
     & node --import tsx (Join-Path $PSScriptRoot 'prepare-environment-media.mjs'); Check-Exit
@@ -38,18 +47,21 @@ try {
     $rainyPython = @(Find-Python)
     $rainyPythonArgs = @($rainyPython | Select-Object -Skip 1) + @((Join-Path $PSScriptRoot 'prepare-ide-tools.py'), '--platform', 'win32-x64')
     & $rainyPython[0] @rainyPythonArgs; Check-Exit
-    $ideScript = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $PSScriptRoot 'prepare-ide-tools.py')).Trim(); Check-Exit
+    $ideScript = Resolve-WslPath (Join-Path $PSScriptRoot 'prepare-ide-tools.py')
     & wsl.exe -d $Distribution --exec python3 $ideScript --platform linux-x64; Check-Exit
     & node --import tsx (Join-Path $PSScriptRoot 'build.ts') --release; Check-Exit
     # The Rust Host for Windows and, through cargo-zigbuild, for Linux.
     & (Find-Bash) ((Join-Path $rainyApp 'native/scripts/build-hosts.sh').Replace('\', '/')); Check-Exit
     & node (Join-Path $PSScriptRoot 'stage-windows.mjs'); Check-Exit
-    $stageScript = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $PSScriptRoot 'stage-linux.py')).Trim(); Check-Exit
-    $runtimeDir = (& wsl.exe -d $Distribution --exec wslpath -u (Join-Path $rainyApp 'runtime')).Trim(); Check-Exit
+    $stageScript = Resolve-WslPath (Join-Path $PSScriptRoot 'stage-linux.py')
+    $runtimeDir = Resolve-WslPath (Join-Path $rainyApp 'runtime')
     & wsl.exe -d $Distribution --exec python3 $stageScript --output $runtimeDir; Check-Exit
     # The editor's Windows tools, PHP, the Linux runtime (base and application layer) and the offline Ubuntu packages ship as downloadable components; their pieces go to the resources release.
     $rainyPieces = Join-Path $rainyApp "release/resources-$rainyVersion"
-    foreach ($rainyModule in @('ide-python', 'ide-web', 'php', 'linux-runtime', 'linux-app', 'linux-dev-packages')) { Remove-Item -LiteralPath (Join-Path $rainyPieces $rainyModule) -Recurse -Force -ErrorAction SilentlyContinue }
+    foreach ($rainyModule in @('ide-python', 'ide-web', 'php', 'linux-runtime', 'linux-app', 'linux-dev-packages')) {
+        $moduleDir = Join-Path $rainyPieces $rainyModule
+        if (Test-Path -LiteralPath $moduleDir) { Remove-Item -LiteralPath $moduleDir -Recurse -Force }
+    }
     & node (Join-Path $PSScriptRoot 'prepare-optional-modules.mjs') --version $rainyVersion --pieces $rainyPieces; Check-Exit
     # RainyAgent.exe carries the public release keys the resources are signed with; package-native.mjs stages, signs and
     # builds the NSIS installer, latest.yml and latest.yml.sig in release/.
@@ -66,11 +78,16 @@ try {
         ForEach-Object { Write-Host "Removing the earlier installer $($_.Name) from the offline release"; Remove-Item -LiteralPath $_.FullName -Force }
     Copy-Item -LiteralPath $rainyInstaller -Destination $rainyOffline -Force
     Copy-Item -LiteralPath (Join-Path $rainyApp 'native/installer/offline-readme.txt') -Destination (Join-Path $rainyOffline '安装说明.txt') -Force
-    $rainyChecksums = Get-ChildItem -LiteralPath $rainyOffline -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object FullName | ForEach-Object {
+    $rainyChecksums = Get-ChildItem -LiteralPath $rainyOffline -File -Recurse | Where-Object {
+        $_.Name -ne 'SHA256SUMS.txt' -and $_.Name -notmatch '\.(pending|part)$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    } | Sort-Object FullName | ForEach-Object {
         $rainyHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         $rainyRelative = $_.FullName.Substring($rainyOffline.Length + 1).Replace('\', '/')
         "$rainyHash  $rainyRelative"
     }
     [IO.File]::WriteAllText((Join-Path $rainyOffline 'SHA256SUMS.txt'), ($rainyChecksums -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
     Write-Host "Offline release: $rainyOffline"
-} finally { Pop-Location }
+} finally {
+    Pop-Location
+    if ($null -eq $prevWslUtf8) { Remove-Item Env:\WSL_UTF8 -ErrorAction SilentlyContinue } else { $env:WSL_UTF8 = $prevWslUtf8 }
+}

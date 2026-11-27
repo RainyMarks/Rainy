@@ -143,3 +143,32 @@ test('a private key copied under a public resource name prevents signing', async
   await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath }), /private release key was copied/)
   assert(!(await readdir(f.root)).includes('release-manifest.signed.json'))
 })
+
+test('unexpected unsigned entries are rejected, and rejectExtra also forbids unmanaged module folders', async t => {
+  const f = await fixture(t)
+  await resources(f)
+  await writeFile(join(f.root, 'stray.bin'), 'unsigned leftover')
+  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath }), /Unexpected unsigned entry.*stray\.bin/)
+  await rm(join(f.root, 'stray.bin'))
+
+  await mkdir(join(f.root, 'php'), { recursive: true })
+  await writeFile(join(f.root, 'php/php.exe'), 'legacy')
+  await assert.rejects(signReleaseResources(f.root, { privateKeyPath: f.privateKeyPath, rejectExtra: true }), /Unexpected unsigned entry.*php/)
+  assert(!(await readdir(f.root)).includes('release-manifest.signed.json'))
+})
+
+test('a private key reached through a symlink pointing inside the package is rejected', async t => {
+  const f = await fixture(t)
+  await resources(f)
+  const insideDir = join(f.directory, 'inside-keys')
+  await mkdir(insideDir, { recursive: true })
+  const insideKey = join(insideDir, 'key.pem')
+  await writeFile(insideKey, await readFile(f.privateKeyPath))
+  const externalAlias = join(tmpdir(), `rainy-key-alias-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  t.after(async () => { await rm(externalAlias, { recursive: true, force: true, maxRetries: 5 }) })
+  await symlink(insideDir, externalAlias, 'junction')
+  await assert.rejects(
+    signReleaseResources(f.root, { privateKeyPath: join(externalAlias, 'key.pem'), packageRoot: f.directory }),
+    /outside the package/,
+  )
+})

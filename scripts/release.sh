@@ -87,13 +87,28 @@ stage_bump() {
   need "$notes/changelog-$version.zh.md" "$notes/changelog-$version.en.md"
   [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "commit or put aside the changes first"
   say "version $previous -> $version"
-  # package.json: the version field only (a blind replace once changed a dependency pin).
-  node -e '
-    const fs = require("fs"); const text = fs.readFileSync("package.json", "utf8")
-    const next = text.replace(/("version":\s*")[^"]+(")/, `$1${process.argv[1]}$2`)
-    if (next === text) throw new Error("package.json: no version field"); fs.writeFileSync("package.json", next)' "$version"
+  # Structured files: update only their declared version fields (never blind sed across dependency pins or URLs).
+  node - "$previous" "$version" <<'EOF'
+const fs = require('fs')
+const [previous, version] = process.argv.slice(2)
+function replaceExact(file, regex, replacement, label) {
+  const text = fs.readFileSync(file, 'utf8')
+  const next = text.replace(regex, replacement)
+  if (next === text) throw new Error(`${file}: ${label} did not match ${previous}`)
+  fs.writeFileSync(file, next)
+}
+replaceExact('package.json', new RegExp(`("version":\\s*")${previous.replace(/\./g, '\\.')}(")`), `$1${version}$2`, 'version')
+replaceExact('toolpacks/build-inputs.v1.json', new RegExp(`("releaseVersion":\\s*")${previous.replace(/\./g, '\\.')}(")`), `$1${version}$2`, 'releaseVersion')
+const cargo = fs.readFileSync('native/Cargo.toml', 'utf8')
+const cargoNext = cargo.replace(/(^\[workspace\.package\][\s\S]*?^version\s*=\s*")([^"]+)(")/m, (whole, head, cur, tail) => {
+  if (cur !== previous) throw new Error(`native/Cargo.toml: [workspace.package] version is ${cur}, expected ${previous}`)
+  return `${head}${version}${tail}`
+})
+if (cargoNext === cargo) throw new Error('native/Cargo.toml: no [workspace.package] version')
+fs.writeFileSync('native/Cargo.toml', cargoNext)
+EOF
   local pattern="${previous//./\\.}"
-  for file in README.md README.zh.md docs/desktop-setup.zh-CN.md native/Cargo.toml native/installer/offline-readme.txt toolpacks/build-inputs.v1.json; do
+  for file in README.md README.zh.md docs/desktop-setup.zh-CN.md native/installer/offline-readme.txt; do
     grep -q "$pattern" "$file" || fail "$file does not mention $previous"
     sed -i "s/$pattern/$version/g" "$file"
   done
@@ -108,7 +123,7 @@ stage_bump() {
 
 stage_build() {
   local offline
-  offline="$(ls -d release/offline-* 2>/dev/null | sort -V | tail -1)"
+  offline="$({ ls -d release/offline-* 2>/dev/null || true; } | sort -V | tail -1)"
   [ -n "$offline" ] || fail "no release/offline-<version> to start from"
   if [ "$offline" != "release/offline-$version" ]; then
     say "offline inputs $offline -> release/offline-$version"
@@ -128,6 +143,9 @@ stage_build() {
     { tail -20 "tmp/package-$version.log"; fail "packaging failed"; }
   need "release/Rainy-$version-windows-x64-setup.exe" release/latest.yml release/latest.yml.sig
   grep -q "^version: $version$" release/latest.yml || fail "release/latest.yml is not for $version"
+  if ! git diff --quiet -- native/installer/shipped-files.txt; then
+    say "native/installer/shipped-files.txt was updated by packaging; commit it before publishing"
+  fi
   sha256sum "release/Rainy-$version-windows-x64-setup.exe"
 }
 
@@ -162,10 +180,14 @@ stage_resources() {
       continue
     fi
     uploaded=0
+    local upload_err=""
     for try in 1 2 3; do
-      if node "$tools/upload-release-asset.mjs" "$repo" "v$version-resources" "$file" > /dev/null 2>&1; then
+      if upload_err="$(node "$tools/upload-release-asset.mjs" "$repo" "v$version-resources" "$file" 2>&1 >/dev/null)"; then
         uploaded=1
         break
+      fi
+      if [ -n "$upload_err" ]; then
+        printf 'upload error (%s, try %d): %s\n' "$name" "$try" "$upload_err" >&2
       fi
       if [ "$try" -lt 3 ]; then
         echo "retrying $name"
@@ -223,8 +245,9 @@ stage_publish() {
       fail "v$version lacks $(basename "$file") (gh release upload v$version $file --repo $repo --clobber, then publish again)"
   done
   local published=""
-  retry curl -fsSL --max-time 60 -o tmp/latest-published.yml "https://github.com/$repo/releases/latest/download/latest.yml" &&
+  if retry curl -fsSL --max-time 60 -o tmp/latest-published.yml "https://github.com/$repo/releases/latest/download/latest.yml"; then
     published="$(head -1 tmp/latest-published.yml)"
+  fi
   [ "$published" = "version: $version" ] || fail "the latest release's latest.yml says: ${published:-nothing (the download failed)}"
   retry git push -q origin "$branch:main" || fail "could not push main"
   # The working copy that follows main.

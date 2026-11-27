@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createPublicKey, generateKeyPairSync } from 'node:crypto'
 import { carriedKeys, compareHistory, deletablePath, linkedCrates, parseHistory, payloadPaths, releaseMismatches, tarMember, uninstallList,
-  versionStrings } from '../../scripts/package-native.mjs'
+  versionStrings, windowsToolchainTarget } from '../../scripts/package-native.mjs'
 
 /** A VERSIONINFO node: wLength, wValueLength, wType, the key, and the value and children on 32-bit boundaries. */
 function versionNode(key, value, children = []) {
@@ -142,4 +142,36 @@ test('lists the registry crates the executable links, not build or dev dependenc
   metadata.resolve.nodes[2].deps.push(normal('gitdep'))
   metadata.resolve.nodes.push({ id: 'gitdep', deps: [] })
   assert.throws(() => linkedCrates(metadata), /only registry crates/u)
+})
+
+test('releaseMismatches catches linux-runtime and linux-app digest or size drift against linux-runtime.json', () => {
+  const baseUrl = 'https://github.com/RainyMarks/Rainy/releases/download/v5.0.0-resources/'
+  const matched = {
+    host: { version: 2, host: '5.0.0' },
+    linux: { version: '5.0.0', sha256: 'a'.repeat(64), bytes: 100, unpackedBytes: 300, app: { sha256: 'b'.repeat(64), bytes: 50 } },
+    exe: { fileVersion: '5.0.0', productVersion: '5.0.0' },
+    modules: { modules: [
+      { id: 'linux-runtime', baseUrl, sha256: 'a'.repeat(64), bytes: 100, unpackedBytes: 300 },
+      { id: 'linux-app', baseUrl, sha256: 'b'.repeat(64), bytes: 50 },
+    ] },
+  }
+  assert.deepEqual(releaseMismatches('5.0.0', matched), [])
+
+  const driftedBase = structuredClone(matched)
+  driftedBase.modules.modules[0].sha256 = 'c'.repeat(64)
+  assert.match(releaseMismatches('5.0.0', driftedBase).join('\n'), /linux-runtime digest or size differs/u)
+
+  const driftedUnpacked = structuredClone(matched)
+  driftedUnpacked.modules.modules[0].unpackedBytes = 999
+  assert.match(releaseMismatches('5.0.0', driftedUnpacked).join('\n'), /linux-runtime digest or size differs/u)
+
+  const driftedApp = structuredClone(matched)
+  driftedApp.modules.modules[1].bytes = 51
+  assert.match(releaseMismatches('5.0.0', driftedApp).join('\n'), /linux-app digest or size differs/u)
+})
+
+test('windowsToolchainTarget selects the Windows target regardless of array order', () => {
+  assert.equal(windowsToolchainTarget('[toolchain]\ntargets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]\n'), 'x86_64-pc-windows-gnu')
+  assert.equal(windowsToolchainTarget('[toolchain]\ntargets = [\n  "x86_64-pc-windows-gnu",\n  "x86_64-unknown-linux-gnu",\n]\n'), 'x86_64-pc-windows-gnu')
+  assert.throws(() => windowsToolchainTarget('[toolchain]\ntargets = ["x86_64-unknown-linux-gnu"]\n'), /no Windows target/u)
 })

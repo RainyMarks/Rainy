@@ -134,9 +134,34 @@ $h = [Drive]::Largest([uint32]$ProcessId)
 if ($h -eq [IntPtr]::Zero) { Write-Output "no window"; exit 1 }
 # Restored without taking the focus from whatever the user is doing.
 if ([Drive]::IsIconic($h)) { [Drive]::ShowWindow($h, 4) | Out-Null; Start-Sleep -Milliseconds 800 }
-$vks = @{ enter = 0x0D; escape = 0x1B; tab = 0x09; down = 0x28; up = 0x26; backspace = 0x08; f1 = 0x70; f2 = 0x71; f5 = 0x74; f8 = 0x77; f9 = 0x78; f10 = 0x79; f11 = 0x7A; f12 = 0x7B; space = 0x20 }
+$vks = @{
+  enter = 0x0D; escape = 0x1B; tab = 0x09; down = 0x28; up = 0x26; left = 0x25; right = 0x27;
+  backspace = 0x08; delete = 0x2E; insert = 0x2D; home = 0x24; end = 0x23; pgup = 0x21; pgdn = 0x22;
+  space = 0x20;
+  f1 = 0x70; f2 = 0x71; f3 = 0x72; f4 = 0x73; f5 = 0x74; f6 = 0x75;
+  f7 = 0x76; f8 = 0x77; f9 = 0x78; f10 = 0x79; f11 = 0x7A; f12 = 0x7B;
+  '/' = 0xBF; '?' = 0xBF; '-' = 0xBD; '_' = 0xBD; '=' = 0xBB; '+' = 0xBB;
+  '[' = 0xDB; ']' = 0xDD; '\' = 0xDC; ';' = 0xBA; "'" = 0xDE; ',' = 0xBC; '.' = 0xBE; '`' = 0xC0;
+  slash = 0xBF; minus = 0xBD; equal = 0xBB; comma = 0xBC; period = 0xBE;
+}
 $mods = @{ ctrl = 0x11; shift = 0x10; alt = 0x12 }
+function Resolve-Vk([string]$name) {
+  $key = $name.ToLowerInvariant()
+  if ($vks.ContainsKey($key)) { return [uint32]$vks[$key] }
+  if ($name.Length -eq 1 -and $name -match '^[A-Za-z0-9]$') { return [uint32][int][char]$name.ToUpperInvariant() }
+  throw "Unknown key name: $name"
+}
+function Resolve-Modifier([string]$name) {
+  $key = $name.ToLowerInvariant()
+  if (-not $mods.ContainsKey($key)) { throw "Unknown modifier: $name" }
+  return [uint32]$mods[$key]
+}
+function Resolve-LocalPath([string]$raw) {
+  if ([IO.Path]::IsPathRooted($raw)) { return $raw }
+  return [IO.Path]::GetFullPath((Join-Path $PWD.Path $raw))
+}
 foreach ($step in ($Steps -split ';;')) {
+  if ([string]::IsNullOrWhiteSpace($step)) { continue }
   $kind, $arg = $step -split ':', 2
   $r = New-Object Drive+RECT; [Drive]::GetWindowRect($h, [ref]$r) | Out-Null
   switch ($kind) {
@@ -148,32 +173,38 @@ foreach ($step in ($Steps -split ';;')) {
     'clickbusy' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $false); Write-Output ("click " + $arg + ": " + [Drive]::Busy($h)) }
     'hittest' { $x, $y = $arg -split ','; Write-Output ("hittest " + $arg + ": " + [Drive]::HitTest($h, $r.Left + [int]$x, $r.Top + [int]$y)) }
     'busy' { Write-Output ("busy: " + [Drive]::Busy($h)) }
-    'typefile' { [Drive]::Type($h, [IO.File]::ReadAllText($arg).TrimEnd()); Start-Sleep -Milliseconds 150 }
+    'typefile' { [Drive]::Type($h, [IO.File]::ReadAllText((Resolve-LocalPath $arg)).TrimEnd()); Start-Sleep -Milliseconds 150 }
     'chord' {
       $parts = $arg -split '\+'
-      $name = $parts[-1]
-      $vk = if ($vks.ContainsKey($name)) { $vks[$name] } else { [int][char]$name.ToUpper() }
-      [uint32[]]$held = @($parts[0..($parts.Count - 2)] | ForEach-Object { $mods[$_] })
+      $vk = Resolve-Vk $parts[-1]
+      [uint32[]]$held = if ($parts.Count -gt 1) { @($parts[0..($parts.Count - 2)] | ForEach-Object { Resolve-Modifier $_ }) } else { @() }
       [Drive]::Chord($h, $held, $vk)
       Start-Sleep -Milliseconds 150
     }
     'key' {
       $parts = $arg -split '\+'
-      if ($parts.Count -gt 1) { [Drive]::Down($h, $mods[$parts[0]]) }
-      $name = $parts[-1]
-      $vk = if ($vks.ContainsKey($name)) { $vks[$name] } else { [int][char]$name.ToUpper() }
-      [Drive]::Key($h, $vk)
-      if ($parts.Count -gt 1) { [Drive]::Up($h, $mods[$parts[0]]) }
+      [uint32[]]$held = if ($parts.Count -gt 1) { @($parts[0..($parts.Count - 2)] | ForEach-Object { Resolve-Modifier $_ }) } else { @() }
+      foreach ($mod in $held) { [Drive]::Down($h, $mod) }
+      [Drive]::Key($h, (Resolve-Vk $parts[-1]))
+      for ($i = $held.Count - 1; $i -ge 0; $i--) { [Drive]::Up($h, $held[$i]) }
       Start-Sleep -Milliseconds 150
     }
     'wait' { Start-Sleep -Milliseconds ([int]([double]$arg * 1000)) }
     'shot' {
       $w = $r.Right - $r.Left; $hgt = $r.Bottom - $r.Top
+      if ($w -le 0 -or $hgt -le 0) { Write-Error "Invalid window dimensions: ${w}x${hgt}"; exit 1 }
+      $outPath = Resolve-LocalPath $arg
+      $parent = Split-Path -Parent $outPath
+      if ($parent -and -not (Test-Path -LiteralPath $parent)) { [void][IO.Directory]::CreateDirectory($parent) }
       $bmp = New-Object System.Drawing.Bitmap $w, $hgt
       $g = [System.Drawing.Graphics]::FromImage($bmp); $hdc = $g.GetHdc()
       [Drive]::PrintWindow($h, $hdc, 2) | Out-Null
-      $g.ReleaseHdc($hdc); $bmp.Save($arg, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
+      $g.ReleaseHdc($hdc); $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
       Write-Output "shot $arg"
+    }
+    default {
+      Write-Error "Unknown drive step: $kind"
+      exit 1
     }
   }
 }

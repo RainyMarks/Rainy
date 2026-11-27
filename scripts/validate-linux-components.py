@@ -17,7 +17,7 @@ environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1', 
 def run(arguments):
     return subprocess.check_output([str(value) for value in arguments], env=environment, text=True, timeout=180).strip()
 for component_id in ['linux-basic', 'linux-science-cpu', 'linux-science-cuda']:
-    descriptor = json.loads((media / (component_id + '.json')).read_text())
+    descriptor = json.loads((media / (component_id + '.json')).read_text(encoding='utf-8'))
     completed = subprocess.check_output(['python3', str(app / 'scripts/install-environment-component.py'), str(media / descriptor['file']), json.dumps(descriptor), '--root', str(root)], text=True, timeout=1800)
     installed = Path(json.loads(completed)['path'])
     python = installed / 'python/bin/python3'
@@ -38,4 +38,4 @@ for component_id in ['linux-basic', 'linux-science-cpu', 'linux-science-cuda']:
     print(json.dumps(row), flush=True)
 report_path = app / 'validation/environment-components-linux.json'
 report_path.parent.mkdir(parents=True, exist_ok=True)
-report_path.write_text(json.dumps({'results': results}, indent=2) + '\n')
+report_path.write_text(json.dumps({'results': results}, indent=2) + '\n', encoding='utf-8')

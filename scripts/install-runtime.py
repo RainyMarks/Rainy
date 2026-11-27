@@ -23,7 +23,10 @@ METADATA is a path to `linux-runtime.json`, or its JSON text (the SSH modes, whi
 {sha256, bytes} of the base archive, `content` (the base's identity), `app: {sha256, bytes}`, and the Rainy version.
 PIECES is a JSON list of `{url, bytes, sha256}` whose concatenation is the base archive.
 """
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import hashlib
 import json
 from pathlib import Path
@@ -36,6 +39,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 DIGEST = re.compile('[0-9a-f]{64}')
 CHUNK = 1024 * 1024
@@ -195,23 +199,59 @@ def extract(archive, destination):
         shutil.rmtree(plain.parent, ignore_errors=True)
 
 
+def _unpack_legacy(package, destination):
+    """Manual equivalent of tarfile's `data` filter for Python versions before 3.12."""
+    root = os.path.realpath(destination)
+    members = package.getmembers()
+    symlinks = set()
+    for member in members:
+        if member.name.startswith(('/', '\\')) or '..' in Path(member.name).parts:
+            raise RuntimeError('Rainy runtime archive has an unsafe entry: ' + member.name)
+        if member.isdev() or member.isfifo():
+            raise RuntimeError('Rainy runtime archive has an unsafe entry: ' + member.name)
+        target = os.path.realpath(os.path.join(destination, member.name))
+        if not (target == root or target.startswith(root + os.sep)):
+            raise RuntimeError('Rainy runtime archive has an unsafe entry: ' + member.name)
+        # Reject entries traversing through a symlink created earlier in the same archive.
+        parent = os.path.dirname(target)
+        while parent != root and parent.startswith(root + os.sep):
+            if parent in symlinks:
+                raise RuntimeError('Rainy runtime archive has an unsafe symlink parent: ' + member.name)
+            parent = os.path.dirname(parent)
+        if member.issym() or member.islnk():
+            link = os.path.realpath(os.path.join(os.path.dirname(target), member.linkname) if member.issym()
+                                    else os.path.join(destination, member.linkname))
+            if not link.startswith(root + os.sep) or link in symlinks:
+                raise RuntimeError('Rainy runtime archive has an unsafe link: ' + member.name)
+            if member.issym():
+                symlinks.add(target)
+        member.mode &= 0o777
+        member.uid = 0
+        member.gid = 0
+        member.uname = ''
+        member.gname = ''
+    package.extractall(destination, members=members)
+
+
 def unpack(archive, destination):
-    """Unpack with the `data` filter; Pythons before it (3.8 on older servers) get the same checks by hand."""
+    """Unpack with the `data` filter; Pythons before it (3.8 on older servers) get equivalent safety checks by hand."""
     with tarfile.open(archive, 'r:*') as package:
         if hasattr(tarfile, 'data_filter'):
             package.extractall(destination, filter='data')
             return
-        root = os.path.realpath(destination)
-        for member in package.getmembers():
-            target = os.path.realpath(os.path.join(destination, member.name))
-            if not (target == root or target.startswith(root + os.sep)) or member.isdev():
-                raise RuntimeError('Rainy runtime archive has an unsafe entry: ' + member.name)
-            if member.issym() or member.islnk():
-                link = os.path.realpath(os.path.join(os.path.dirname(target), member.linkname) if member.issym()
-                                        else os.path.join(destination, member.linkname))
-                if not link.startswith(root + os.sep):
-                    raise RuntimeError('Rainy runtime archive has an unsafe link: ' + member.name)
-        package.extractall(destination)
+        _unpack_legacy(package, destination)
+
+
+def validate_piece_url(url):
+    """Allow only HTTPS URLs or loopback HTTP URLs (used by local tests); refuse file:// and other schemes."""
+    parsed = urlsplit(str(url))
+    if parsed.username or parsed.password:
+        raise RuntimeError('Invalid download URL: credentials in URL are not allowed')
+    if parsed.scheme == 'https' and parsed.hostname:
+        return url
+    if parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost', '::1'):
+        return url
+    raise RuntimeError(f'Unsupported download URL scheme or host: {parsed.scheme}://{parsed.hostname or ""}')
 
 
 def installed(target):
@@ -243,26 +283,34 @@ def install(owned, base_archive, app_archive, metadata):
                 base.rename(Path(tempfile.mkdtemp(prefix='.trash-', dir=owned)) / base.name)
             if matches(base_archive, metadata):
                 staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
-                extract(base_archive, staging)
-                if not (staging / BASE_IN_APP[0] / 'manifest.json').is_file():
-                    raise RuntimeError('Rainy runtime is missing its IDE tools')
-                (staging / '.complete').write_text(identity + '\n', encoding='utf-8')
-                staging.rename(base)
+                try:
+                    extract(base_archive, staging)
+                    if not (staging / BASE_IN_APP[0] / 'manifest.json').is_file():
+                        raise RuntimeError('Rainy runtime is missing its IDE tools')
+                    (staging / '.complete').write_text(identity + '\n', encoding='utf-8')
+                    staging.rename(base)
+                except Exception:
+                    shutil.rmtree(staging, ignore_errors=True)
+                    raise
             else:
                 # The carrier downloads the base only when no installed one has this content.
                 return {'needsArchive': True}
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=owned))
-        extract(app_archive, staging)
-        if not (staging / 'rainy-host').is_file():
-            raise RuntimeError('Rainy runtime is missing its Host')
-        # The application layer links to the base parts.
-        for kept in BASE_IN_APP:
-            if (base / kept).exists() or (base / kept).is_symlink():
-                link = staging / kept
-                link.parent.mkdir(parents=True, exist_ok=True)
-                link.symlink_to('../' * len(kept.split('/')) + f'{base.name}/{kept}')
-        (staging / '.complete').write_text(app['sha256'] + '\n', encoding='utf-8')
-        staging.rename(target)
+        try:
+            extract(app_archive, staging)
+            if not (staging / 'rainy-host').is_file():
+                raise RuntimeError('Rainy runtime is missing its Host')
+            # The application layer links to the base parts.
+            for kept in BASE_IN_APP:
+                if (base / kept).exists() or (base / kept).is_symlink():
+                    link = staging / kept
+                    link.parent.mkdir(parents=True, exist_ok=True)
+                    link.symlink_to('../' * len(kept.split('/')) + f'{base.name}/{kept}')
+            (staging / '.complete').write_text(app['sha256'] + '\n', encoding='utf-8')
+            staging.rename(target)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
     return installed(target)
 
 
@@ -280,27 +328,41 @@ def fetch(owned, metadata, pieces):
     done = 0
     started, fetched = time.monotonic(), 0
     for index, piece in enumerate(pieces):
+        url = validate_piece_url(piece['url'])
+        expected_bytes = int(piece['bytes'])
+        if expected_bytes < 0:
+            raise RuntimeError('Invalid piece size')
         path = folder / f'{index:03d}'
-        if not (path.is_file() and path.stat().st_size == piece['bytes'] and file_digest(path) == piece['sha256']):
+        if not (path.is_file() and path.stat().st_size == expected_bytes and file_digest(path) == piece['sha256']):
             partial = folder / f'{index:03d}.part'
             digest = hashlib.sha256()
-            with urlopen(Request(piece['url'], headers={'User-Agent': 'Rainy'}), timeout=60) as response, partial.open('wb') as file:
-                reported = done
-                for block in iter(lambda: response.read(CHUNK), b''):
-                    file.write(block)
-                    digest.update(block)
-                    fetched += len(block)
-                    elapsed = time.monotonic() - started
-                    if elapsed > SLOW_AFTER_SECONDS and fetched / elapsed < SLOW_BYTES_PER_SECOND:
-                        raise RuntimeError(f'The download is too slow ({fetched // 1024 // int(elapsed)} KiB/s)')
-                    if done + file.tell() - reported >= 8 * CHUNK:
-                        reported = done + file.tell()
-                        progress(reported, total)
-            if partial.stat().st_size != piece['bytes'] or digest.hexdigest() != piece['sha256']:
-                partial.unlink()
-                raise RuntimeError('The downloaded Rainy runtime does not match this version')
-            partial.rename(path)
-        done += piece['bytes']
+            written = 0
+            try:
+                with urlopen(Request(url, headers={'User-Agent': 'Rainy'}), timeout=60) as response, partial.open('wb') as file:
+                    reported = done
+                    for block in iter(lambda: response.read(CHUNK), b''):
+                        written += len(block)
+                        if written > expected_bytes:
+                            raise RuntimeError('The downloaded Rainy runtime exceeds its declared size')
+                        file.write(block)
+                        digest.update(block)
+                        fetched += len(block)
+                        elapsed = time.monotonic() - started
+                        if elapsed > SLOW_AFTER_SECONDS and fetched / elapsed < SLOW_BYTES_PER_SECOND:
+                            raise RuntimeError(f'The download is too slow ({fetched // 1024 // int(elapsed)} KiB/s)')
+                        if done + written - reported >= 8 * CHUNK:
+                            reported = done + written
+                            progress(reported, total)
+                if written != expected_bytes or partial.stat().st_size != expected_bytes or digest.hexdigest() != piece['sha256']:
+                    raise RuntimeError('The downloaded Rainy runtime does not match this version')
+                partial.rename(path)
+            except Exception:
+                try:
+                    partial.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+        done += expected_bytes
         progress(done, total)
     archive = folder / 'linux-runtime.base'
     with archive.open('wb') as output:
@@ -355,8 +417,8 @@ def remote(owned, mode, metadata, pieces, do_prune=False):
         base_archive = None
         if mode == '--receive':
             base_archive = folder / 'linux-runtime.base'
-            with base_archive.open('wb') as output:
-                shutil.copyfileobj(sys.stdin.buffer, output, CHUNK)
+            # Cap reads to declared size + 1 byte so an oversized stream cannot exhaust disk before digest checking.
+            read_exactly(sys.stdin.buffer, int(metadata['bytes']) + 1, base_archive)
         else:
             sys.stdin.buffer.read()
         if not matches(app_archive, metadata['app']):
@@ -433,17 +495,32 @@ if __name__ == '__main__':
     home_arg, args = extract_home_arg(sys.argv[1:])
     if not args:
         raise RuntimeError('Missing install-runtime mode argument')
-    owned = resolve_rainy_home(home_arg) / 'runtime'
-    owned.mkdir(mode=0o700, parents=True, exist_ok=True)
+    rainy_home = resolve_rainy_home(home_arg)
+    rainy_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == 'posix':
+        try:
+            os.chmod(rainy_home, 0o700)
+        except OSError:
+            pass
+    owned = rainy_home / 'runtime'
+    owned.mkdir(mode=0o700, exist_ok=True)
     if args[0] == '--prune':
+        if len(args) < 2:
+            raise RuntimeError('Usage: install-runtime.py --prune METADATA')
         print(json.dumps({'removed': prune(owned, read_metadata(args[1]))}))
     elif args[0] == '--probe':
+        if len(args) < 2:
+            raise RuntimeError('Usage: install-runtime.py --probe METADATA [--prune]')
         do_prune = '--prune' in args[2:]
         print(json.dumps(probe(owned, read_metadata(args[1]), do_prune)))
     elif args[0] in ('--fetch', '--receive'):
+        if len(args) < 2:
+            raise RuntimeError(f'Usage: install-runtime.py {args[0]} METADATA [PIECES] [--prune]')
         extra = [arg for arg in args[2:] if arg != '--prune']
         do_prune = '--prune' in args[2:]
         pieces = json.loads(extra[0]) if extra else []
         print(json.dumps(remote(owned, args[0], read_metadata(args[1]), pieces, do_prune)))
     else:
+        if len(args) < 3:
+            raise RuntimeError('Usage: install-runtime.py BASE APP METADATA')
         print(json.dumps(install(owned, Path(args[0]).resolve(), Path(args[1]).resolve(), read_metadata(args[2]))))

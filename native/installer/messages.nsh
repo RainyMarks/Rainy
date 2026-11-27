@@ -1,5 +1,5 @@
-﻿; What the Rainy setup and uninstaller say, in Simplified Chinese and English (the language follows Windows). Texts 3.x
-; had in resources/installer.nsh are kept as they were.
+﻿; What the Rainy setup and uninstaller say, in Simplified Chinese (default) and English (selected when desktop.json
+; sets "locale": "en"). Texts 3.x had in resources/installer.nsh are kept as they were.
 
 LangString rainyRunApp ${LANG_SIMPCHINESE} "运行 ${PRODUCT_NAME}"
 LangString rainyRunApp ${LANG_ENGLISH} "Run ${PRODUCT_NAME}"

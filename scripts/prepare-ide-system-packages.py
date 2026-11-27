@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--archives', default='/var/cache/apt/archives')
 options = parser.parse_args()
 app = Path(__file__).resolve().parent.parent
-release = Path('/etc/os-release').read_text()
+release = Path('/etc/os-release').read_text(encoding='utf-8')
 if '\nID=ubuntu\n' not in '\n' + release or 'VERSION_ID="26.04"' not in release:
     raise RuntimeError('Development package preparation requires the Ubuntu 26.04 baseline')
 output = app / 'resources/ide/system-packages'
@@ -46,10 +46,10 @@ for archive in sorted(Path(options.archives).glob('*.deb')):
                      'repositoryPath': expected['Filename'], 'bytes': archive.stat().st_size, 'sha256': checksum})
 if not packages:
     raise RuntimeError('No APT-verified development packages were found')
-sources = json.loads((app / 'toolpacks/ide-tools.sources.json').read_text())
+sources = json.loads((app / 'toolpacks/ide-tools.sources.json').read_text(encoding='utf-8'))
 manifest = {'version': 1, 'os': 'ubuntu', 'osVersion': '26.04', 'architecture': 'amd64',
             'requestedPackages': sources['systemPackages'],
             'signedIndexes': [{'file': file.name, 'sha256': digest(file)} for file in sorted(Path('/var/lib/apt/lists').glob('*InRelease'))],
             'packages': packages, 'bytes': sum(row['bytes'] for row in packages)}
-(output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+(output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
 print(json.dumps({'packages': len(packages), 'bytes': manifest['bytes']}))

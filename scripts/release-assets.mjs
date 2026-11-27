@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { copyFile, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
+import { fileDigest, isMainEntry, parseFlagPairs } from './lib/common.mjs'
 
 const PART_BYTES = 1024 ** 3
+const MAX_PIECES_PER_FILE = 999
 const categories = new Set(['installer', 'offline', 'build-input'])
 const hashPattern = /^[a-f0-9]{64}$/u
 
@@ -52,10 +54,8 @@ export async function releaseTarget(root, name) {
 export async function releaseDigest(path) {
   const info = await lstat(path)
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`Release input is not a regular file: ${path}`)
-  const hash = createHash('sha256')
-  let bytes = 0
-  for await (const chunk of createReadStream(path)) { hash.update(chunk); bytes += chunk.length }
-  return { bytes, sha256: hash.digest('hex') }
+  const { bytes, digest: sha256 } = await fileDigest(path)
+  return { bytes, sha256 }
 }
 
 /**
@@ -81,12 +81,13 @@ export function validateReleaseManifest(input) {
     if (paths.has(key) || [...paths].some(path => path.startsWith(key + '/') || key.startsWith(path + '/'))) throw new Error(`Release path collision: ${entry.path}`)
     paths.add(key)
     if (!categories.has(entry.category) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || !hashPattern.test(entry.sha256)
-      || !Array.isArray(entry.pieces) || entry.pieces.length === 0) throw new Error(`Invalid release file: ${entry.path}`)
+      || !Array.isArray(entry.pieces) || entry.pieces.length === 0 || entry.pieces.length > MAX_PIECES_PER_FILE) throw new Error(`Invalid release file: ${entry.path}`)
     if (entry.baseUrl !== undefined) pinnedUrl(entry.baseUrl)
     let size = 0
     for (const piece of entry.pieces) {
       const name = releasePath(piece.file)
       if (name.includes('/') || pieces.has(name.toLowerCase()) || !Number.isSafeInteger(piece.bytes) || piece.bytes < 0
+        || (entry.bytes > 0 && piece.bytes === 0) || (entry.bytes === 0 && entry.pieces.length !== 1)
         || piece.bytes >= 2 * 1024 ** 3 || !hashPattern.test(piece.sha256)
         || entry.category !== 'installer' && piece.bytes > input.partBytes) throw new Error(`Invalid release piece: ${piece.file}`)
       pieces.add(name.toLowerCase())
@@ -128,7 +129,9 @@ export async function packReleaseAssets(options) {
     let piece
     let hash
     async function nextPiece() {
-      const file = entry.category === 'installer' ? basename(entry.path) : `${prefix}.${String(entry.pieces.length + 1).padStart(3, '0')}`
+      const nextIndex = entry.pieces.length + 1
+      if (nextIndex > MAX_PIECES_PER_FILE) throw new Error(`Release file exceeds ${MAX_PIECES_PER_FILE} pieces: ${entry.path}`)
+      const file = entry.category === 'installer' ? basename(entry.path) : `${prefix}.${String(nextIndex).padStart(3, '0')}`
       handle = await open(join(output, file), 'wx')
       piece = { file, bytes: 0, sha256: '' }
       hash = createHash('sha256')
@@ -178,7 +181,7 @@ export async function extendReleaseAssets(options) {
   if (!Array.isArray(options.files) || !options.files.length || options.files.some(entry => entry.category !== 'installer')) throw new Error('Release extension accepts only raw installer or updater assets')
   const output = resolve(options.outputDirectory)
   const originalPath = await releaseTarget(output, 'release-assets.json')
-  if (JSON.stringify(JSON.parse(await readFile(originalPath, 'utf8'))) !== JSON.stringify(baseline)) throw new Error('Transport output does not match the frozen input manifest')
+  if (!isDeepStrictEqual(JSON.parse(await readFile(originalPath, 'utf8')), baseline)) throw new Error('Transport output does not match the frozen input manifest')
   const provisional = options.files.map(entry => ({ ...entry, bytes: 0, sha256: '0'.repeat(64), pieces: [{ file: basename(entry.path), bytes: 0, sha256: '0'.repeat(64) }] }))
   validateReleaseManifest({ ...baseline, files: [...baseline.files, ...provisional] })
   const temporary = await mkdtemp(join(dirname(output), 'rainy-release-raw-'))
@@ -192,18 +195,18 @@ export async function extendReleaseAssets(options) {
     }
     const pending = join(temporary, 'release-assets.json')
     await writeFile(pending, JSON.stringify(manifest, null, 2) + '\n')
-    if (JSON.stringify(JSON.parse(await readFile(originalPath, 'utf8'))) !== JSON.stringify(baseline)) throw new Error('Transport manifest changed during extension')
+    if (!isDeepStrictEqual(JSON.parse(await readFile(originalPath, 'utf8')), baseline)) throw new Error('Transport manifest changed during extension')
     await rename(pending, originalPath)
     return manifest
   } finally { await rm(temporary, { recursive: true, force: true, maxRetries: 5 }) }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainEntry(import.meta.url)) {
   const args = process.argv.slice(2)
   const command = args.shift()
-  if (!['pack', 'extend'].includes(command) || args.length % 2) throw new Error('Usage: release-assets.mjs pack|extend --source DIR --output DIR --files ALLOWLIST.json [--version VERSION --base-url URL | --manifest FROZEN_INPUTS.json]')
-  const values = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, index) => [args[index * 2], args[index * 2 + 1]]))
-  for (const name of Object.keys(values)) if (!['--source', '--output', '--files', '--version', '--base-url', '--manifest'].includes(name)) throw new Error(`Unknown option: ${name}`)
+  const usage = 'Usage: release-assets.mjs pack|extend --source DIR --output DIR --files ALLOWLIST.json [--version VERSION --base-url URL | --manifest FROZEN_INPUTS.json]'
+  if (!['pack', 'extend'].includes(command)) throw new Error(usage)
+  const values = parseFlagPairs(args, ['--source', '--output', '--files', '--version', '--base-url', '--manifest'], usage)
   const options = { sourceRoot: values['--source'], outputDirectory: values['--output'], files: JSON.parse(await readFile(values['--files'], 'utf8')) }
   const manifest = command === 'extend' ? await extendReleaseAssets({ ...options, manifest: JSON.parse(await readFile(values['--manifest'], 'utf8')) })
     : await packReleaseAssets({ ...options, releaseVersion: values['--version'], baseUrl: values['--base-url'] })

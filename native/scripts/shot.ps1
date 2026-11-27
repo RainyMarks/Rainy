@@ -41,6 +41,7 @@ public static class Win {
 "@
 [Win]::SetProcessDPIAware() | Out-Null
 if ($Attach -ne 0) { $p = Get-Process -Id $Attach; $Keep = $true }
+elseif ([string]::IsNullOrWhiteSpace($Exe)) { Write-Error "Pass -Exe <path> or -Attach <pid>"; exit 1 }
 elseif ($Args) { $p = Start-Process -FilePath $Exe -ArgumentList $Args -PassThru }
 else { $p = Start-Process -FilePath $Exe -PassThru }
 $deadline = (Get-Date).AddSeconds($Wait + 30)
@@ -59,18 +60,31 @@ Start-Sleep -Seconds $Wait
 $p.Refresh()
 if ($p.HasExited) { Write-Output "exited with $($p.ExitCode)"; exit 1 }
 $h = [Win]::Largest([uint32]$p.Id)
+if ($h -eq [IntPtr]::Zero) {
+  Write-Error "No visible window found for pid $($p.Id)"
+  if (-not $Keep) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+  exit 1
+}
 # A window started minimized (the launcher's show state) is restored before it is captured.
 if ([Win]::IsIconic($h)) { [Win]::ShowWindow($h, 9) | Out-Null; Start-Sleep -Milliseconds 800 }
 $r = New-Object Win+RECT
 [Win]::GetWindowRect($h, [ref]$r) | Out-Null
 $w = $r.Right - $r.Left; $hgt = $r.Bottom - $r.Top
+if ($w -le 0 -or $hgt -le 0) {
+  Write-Error "Invalid window dimensions (${w}x${hgt}) for pid $($p.Id)"
+  if (-not $Keep) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+  exit 1
+}
+$outPath = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { [IO.Path]::GetFullPath((Join-Path $PWD.Path $Out)) }
+$outDir = Split-Path -Parent $outPath
+if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { [void][IO.Directory]::CreateDirectory($outDir) }
 $bmp = New-Object System.Drawing.Bitmap $w, $hgt
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $hdc = $g.GetHdc()
 # PW_RENDERFULLCONTENT captures DirectX content even when covered.
 [Win]::PrintWindow($h, $hdc, 2) | Out-Null
 $g.ReleaseHdc($hdc)
-$bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose(); $bmp.Dispose()
 Write-Output "window ${w}x${hgt} pid $($p.Id) -> $Out"
 if (-not $Keep) { Stop-Process -Id $p.Id -Force }

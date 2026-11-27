@@ -3,9 +3,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { copyFile, link, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import * as tar from 'tar'
+import { isMainEntry, parseFlagPairs } from './lib/common.mjs'
 import { releaseDigest, releasePath, releaseTarget, validateReleaseManifest } from './release-assets.mjs'
 
 async function matches(path, expected) {
@@ -22,6 +22,7 @@ async function matches(path, expected) {
 async function writeVerified(stream, target, expected) {
   const temporary = target + `.${randomUUID()}.pending`
   const handle = await open(temporary, 'wx')
+  let closed = false
   const hash = createHash('sha256')
   let bytes = 0
   try {
@@ -39,11 +40,29 @@ async function writeVerified(stream, target, expected) {
     }
     if (bytes !== expected.bytes || hash.digest('hex') !== expected.sha256) throw new Error(`Release checksum differs: ${target}`)
     await handle.close()
+    closed = true
     await link(temporary, target)
   } finally {
-    await handle.close()
+    if (!closed) await handle.close()
     await rm(temporary, { force: true })
   }
+}
+
+async function fetchPiece(url) {
+  let lastError
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(300_000) })
+      if (response.ok || (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429)) {
+        return response
+      }
+      lastError = new Error(`HTTP ${response.status}`)
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < 3) await new Promise(done => setTimeout(done, attempt * 2000))
+  }
+  throw lastError
 }
 
 const PLATFORMS = new Set(['all', 'windows', 'windows-core', 'linux'])
@@ -93,7 +112,7 @@ export async function restoreReleaseInputs(options) {
     } else {
       async function* pieces() {
         for (const piece of entry.pieces) {
-          const response = await fetch(new URL(piece.file, entry.baseUrl ?? baseUrl))
+          const response = await fetchPiece(new URL(piece.file, entry.baseUrl ?? baseUrl))
           if (!response.ok || !response.body) throw new Error(`Release download failed: ${piece.file} (${response.status})`)
           const hash = createHash('sha256')
           let bytes = 0
@@ -124,7 +143,9 @@ export async function extractBuildInput(archive, destination, only) {
   let invalid
   await tar.t({ file: archive, strict: true, onReadEntry(entry) {
     try {
-      const path = releasePath(entry.path.replace(/\/$/u, ''))
+      const normalized = entry.path.replace(/^\.\//u, '').replace(/\/$/u, '')
+      if (!normalized && entry.type === 'Directory') return
+      const path = releasePath(normalized)
       const key = path.toLowerCase()
       if (!['File', 'Directory'].includes(entry.type) || names.has(key)) throw new Error(`Unsafe or duplicate archive member: ${entry.path}`)
       names.set(key, entry.type)
@@ -218,11 +239,9 @@ export async function bootstrapReleaseInputs(options) {
   return offline
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const args = process.argv.slice(2)
-  if (args.length % 2) throw new Error('Usage: bootstrap-release-inputs.mjs --manifest FILE [--inputs-dir DIR | --base-url PINNED_URL] [--platform all|windows|windows-core|linux]')
-  const values = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, index) => [args[index * 2], args[index * 2 + 1]]))
-  for (const name of Object.keys(values)) if (!['--manifest', '--inputs-dir', '--base-url', '--platform'].includes(name)) throw new Error(`Unknown option: ${name}`)
+if (isMainEntry(import.meta.url)) {
+  const usage = 'Usage: bootstrap-release-inputs.mjs --manifest FILE [--inputs-dir DIR | --base-url PINNED_URL] [--platform all|windows|windows-core|linux]'
+  const values = parseFlagPairs(process.argv.slice(2), ['--manifest', '--inputs-dir', '--base-url', '--platform'], usage)
   if (!values['--manifest']) throw new Error('--manifest must name the source-pinned release manifest')
   const offline = await bootstrapReleaseInputs({ appDirectory: resolve(import.meta.dirname, '..'),
     manifest: JSON.parse(await readFile(values['--manifest'], 'utf8')), inputsDirectory: values['--inputs-dir'], baseUrl: values['--base-url'], platform: values['--platform'] })

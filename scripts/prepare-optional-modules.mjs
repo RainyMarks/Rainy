@@ -1,18 +1,14 @@
 /** Describe the components that the carrier downloads on demand and split newly built archives into release pieces. */
-import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import * as tar from 'tar'
+import { fileDigest, isMainEntry, parseFlagPairs } from './lib/common.mjs'
 import { packReleaseAssets } from './release-assets.mjs'
 
 async function digest(path) {
-  const hash = createHash('sha256')
-  let bytes = 0
-  for await (const chunk of createReadStream(path)) { hash.update(chunk); bytes += chunk.length }
-  return { bytes, sha256: hash.digest('hex') }
+  const { bytes, digest: sha256 } = await fileDigest(path)
+  return { bytes, sha256 }
 }
 
 async function unpackedBytes(archive) {
@@ -44,12 +40,12 @@ export async function prepareOptionalModules(options) {
     const licenses = (await readdir(join(tools, 'licenses'))).sort()
     const pythonLicenses = licenses.filter(name => /^(ruff|ty)-/u.test(name)).map(name => `licenses/${name}`)
     const webLicenses = licenses.filter(name => !/^(ruff|ty)-/u.test(name)).map(name => `licenses/${name}`)
-    const toolArchive = (name, entries) => tar.c({ cwd: tools, file: join(scratch, name), gzip: true, portable: true, mtime: new Date(0) }, entries)
+    const toolArchive = (name, entries) => tar.c({ cwd: tools, file: join(scratch, name), gzip: { level: 9 }, portable: true, mtime: new Date(0) }, entries)
     await toolArchive('ide-python.tar.gz', ['bin', 'python', ...pythonLicenses, 'manifest.json'])
     await toolArchive('ide-web.tar.gz', ['typescript', 'js-debug', ...webLicenses, 'manifest.json'])
     const php = join(app, 'runtime/component-stage/windows-basic/php')
     const names = (await readdir(php)).filter(name => name !== 'dev').sort()
-    await tar.c({ cwd: php, file: join(scratch, 'php.tar.gz'), gzip: true, portable: true, mtime: new Date(0) }, names)
+    await tar.c({ cwd: php, file: join(scratch, 'php.tar.gz'), gzip: { level: 9 }, portable: true, mtime: new Date(0) }, names)
     // The .deb files are compressed already; the archive only bundles them with their manifest.
     const devPackages = join(app, 'resources/ide/system-packages')
     await tar.c({ cwd: devPackages, file: join(scratch, 'linux-dev-packages.tar.gz'), gzip: { level: 1 }, portable: true, mtime: new Date(0) },
@@ -89,13 +85,10 @@ export async function prepareOptionalModules(options) {
   } finally { await rm(scratch, { recursive: true, force: true }) }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const args = process.argv.slice(2)
-  const values = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, index) => [args[index * 2], args[index * 2 + 1]]))
-  for (const name of Object.keys(values)) if (!['--version', '--pieces', '--output'].includes(name)) throw new Error(`Unknown option: ${name}`)
-  if (args.length % 2 || !values['--version'] || !values['--pieces']) {
-    throw new Error('Usage: prepare-optional-modules.mjs --version VERSION --pieces DIR [--output FILE]')
-  }
+if (isMainEntry(import.meta.url)) {
+  const usage = 'Usage: prepare-optional-modules.mjs --version VERSION --pieces DIR [--output FILE]'
+  const values = parseFlagPairs(process.argv.slice(2), ['--version', '--pieces', '--output'], usage)
+  if (!values['--version'] || !values['--pieces']) throw new Error(usage)
   const app = resolve(import.meta.dirname, '..')
   const result = await prepareOptionalModules({ appDirectory: app, releaseVersion: values['--version'], pieces: resolve(values['--pieces']),
     output: resolve(values['--output'] ?? join(app, 'runtime/optional-modules.json')) })
