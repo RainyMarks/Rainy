@@ -1,93 +1,194 @@
-//! The pixel pet on the edge of a new chat's composer: a small white-haired cat girl with a leaf clip and a sailor
-//! collar, drawn after the user's own avatar as 26 x 30 pixel art. She blinks, twitches an ear and looks towards the
-//! pointer; now and then she strolls a few steps along the composer and back; pointed at, she hops and a heart rises;
-//! while the page's clock is paused she sleeps. Everything follows the page's clock ([`Backdrop`]), so she costs
-//! nothing while it stands still.
+//! The pixel pet on the edge of a new chat's composer: a small white-haired cat girl with an amber hair clip set with
+//! a blue gem, a blue sailor jacket, an orange scarf and a white tail, as 44 x 54 pixel art. She blinks, twitches an
+//! ear and looks towards the pointer; now and then she strolls a few steps along the composer and back; pointed at,
+//! she hops and a heart rises; while the page's clock is paused she sleeps. Everything follows the page's clock
+//! ([`Backdrop`]), so she costs nothing while it stands still.
 
 use gpui_kit::*;
 
 use super::backdrop::{Backdrop, motion_allowed};
 
-const WIDTH: usize = 26;
-const HEIGHT: usize = 30;
+const WIDTH: usize = 44;
+const HEIGHT: usize = 54;
 /// A pixel of the art in window pixels at most: it is drawn as a whole number of the screen's pixels, so its edges
-/// stay sharp at any scaling.
-pub const PIXEL: f32 = 2.0;
+/// stay sharp at any scaling (two of them at 150 % and at 200 %).
+pub const PIXEL: f32 = 1.34;
 /// How far she strolls to the left of her place, and how high she hops, in pixels of the art.
-const STROLL: f32 = 28.0;
-const HOP: f32 = 4.0;
+const STROLL: f32 = 48.0;
+const HOP: f32 = 7.0;
 
-/// `o` outline, `w`/`s`/`S` hair, `p`/`P` inner ear, `f`/`F` skin, `d`/`e`/`E`/`h` eyes, `b` blush, `m` mouth,
-/// `g`/`G` leaf clip, `c`/`C`/`n` collar and skirt, `u` shirt, `k` bow.
+/// `o` outline, `w`/`s`/`S` hair, `q`/`l` its pink and blue tips, `p`/`P` inner ear, `y`/`Y` amber clip and scarf,
+/// `x` the scarf's star, `j`/`J` gem, `f`/`F` skin, `D`/`d`/`v`/`i`/`I`/`h` eyes, `b`/`B` blush, `m` mouth,
+/// `c`/`C` jacket, `k`/`K` collar, `n` its stripe and the cuffs, `u` frill and socks.
 const ART: [&str; HEIGHT] = [
-    "..........................",
-    "..o...........oo.......o..",
-    "..oo.........owo......oo..",
-    ".opo........owo.......opo.",
-    ".oppo.......o........oppo.",
-    ".oPppo.oooooooooooo.oppPo.",
-    ".oPpppowwwwwwwwwwwwopppPo.",
-    ".oppppwwwwwwwwwwwwwwppppo.",
-    "oppPwwwwwwwwwwwwwwwggwPppo",
-    "owwwwwwwwwwSwwSwwwgGgwwwwo",
-    "owwwwwwwwwwwwwwwwwwwGgwwwo",
-    "owwwSwwwwSwwwwwwSwwgwSwwwo",
-    "owwSfSwwSffSwwSffSwwSfSwwo",
-    "owsfffffffffFFfffffffffswo",
-    "owsffdddffffffffffdddffswo",
-    "owsffheeffffffffffheeffswo",
-    "owsffedeffffffffffedeffswo",
-    "owsffEEEffffffffffEEEffswo",
-    "owsfbbbffffffffffffbbbfswo",
-    "owswffffffffmmffffffffwswo",
-    "owsSwfffffffFFfffffffwSswo",
-    "owsS.offffffffffffffo.Sswo",
-    ".osS..onccccccccccno..Sso.",
-    ".owS.ocnnccukkuccnnco.Swo.",
-    ".owS.ocuuuukkkkuuuuco.Swo.",
-    "..oS.ofuuuuukkuuuuufo.So..",
-    "..oo.ooCCCCCCCCCCCCoo.oo..",
-    "......oCcCcCccCcCcCo......",
-    ".........FF....FF.........",
-    "........ooo....ooo........",
+    "...................ooooo....................",
+    "..................oyyyyYo...................",
+    ".........o........oyJjyYo.........o.........",
+    "........owo.......oyJjyYo........owo........",
+    "........owwoo.....oyJjyYo......oowwo........",
+    "........owpwwo....oyjjyYo.....owwpwo........",
+    "........owppwwo...oyjjyYo....owwppwo........",
+    "........owPppwwooooyjjyYooooowwppPwo........",
+    "........owPPpppwwwwyyyyYwwwwwpppPPwo........",
+    "........owPPppppwwwyyyyYwwwwppppPPwo........",
+    "........owPppppwwwwwsssswwwwwppppPwo........",
+    "........owpppwwwwwwwwwwwwwwwwwwpppwo........",
+    "........owpwwwwwwwwwwwwwwwwwwwwwwpwo........",
+    "........owwwwwwwwwwwwwwwwwwwwwwwwwwo........",
+    ".........owwwwwwwwwwwwwwwwwwwwsssso.........",
+    "........owwwwwwwwwwwwwwwwwwwwwssssso........",
+    "........owwwwwwwwwwwwwwwwwwwwwssssso........",
+    "........owwwwwwwwwwwwwwwwwwwwwssssso........",
+    ".......owwwswwwwwwwwwwwwwwwwwwsswssso.......",
+    ".......owwwswswwwwwwwwwwwwwwwwsswssso.......",
+    ".......owwwsSfSwwwsswwwwsswwwSfSwssso.......",
+    ".......owwwsfffSwSffSwwSffSwSfffwssso.......",
+    "........owwsffffSfffSwwSfffSffffwsso........",
+    "........owwsfDDDDfffSwwSfffDDDDfwsso........",
+    "........owwsfdvvvDfffSSfffDvvvdfwsso........",
+    "........owwsfvhhvvfffSSfffvvhhvfwsso........",
+    "........owwsfvhvviffffffffivvhvfwsso........",
+    "........owwsfiiiIiffffffffiIiiifwsso........",
+    "........owwsffIIIffffffffffIIIffwsso........",
+    "........owwsSbBbBffffffffffBbBbSwsso........",
+    "........owwswSbbfffffmmfffffbbSswsso........",
+    "........owwswwSffffffffffffffSsswsso........",
+    "........owwswwwwSfffFFFFfffSwwsswsso........",
+    ".........owsssskknKKuuuuKKnkkssswsso...o....",
+    ".........owssssccnKKuuuuKKnccssswsso..olo...",
+    ".........owsssccccnKuuuuKnccccsswsso.olllo..",
+    ".........owssscccknyyxxyynkcccsswso...ollo..",
+    ".........oqqscccckkyyxxyykkccccsllo...osso..",
+    ".........oqqccccckkkYyyYkkkcccccllo..owsso..",
+    ".........oqqcccccckkyyyykkccccccllo..owso...",
+    ".........oqqccccccccyYYyccccccccllo..owso...",
+    ".........oqnnncccccccyycccccccnnnlooowwso...",
+    ".........oqnnnnccccccccccccccnnnnlowwwwo....",
+    "..........offffccccccccccccccfffflssssso....",
+    "...........offfccccccccccccccfffSssssso.....",
+    "...........offfCCCCCCCCCCCCCCfffosssoo......",
+    "...........oCCCCCfffCCCCfffCCCCCoooo........",
+    "............ooooofffoooofffooooo............",
+    "................offfo..offfo................",
+    "................ouuuo..ouuuo................",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "................ooooo..ooooo................",
 ];
-/// The eyes: 3 x 4 blocks whose left column is 5 and 18 on rows 14 to 17, open, closed and smiling.
-const EYE_ROW: usize = 14;
-const EYE_COLUMNS: [usize; 2] = [5, 18];
-const EYES_OPEN: [&str; 4] = ["ddd", "hee", "ede", "EEE"];
-const EYES_CLOSED: [&str; 4] = ["fff", "fff", "ddd", "fff"];
-const EYES_HAPPY: [&str; 4] = ["fff", "fdf", "dfd", "fff"];
-/// The legs (the last two rows) standing and in the two steps of a walk.
-const LEGS_STAND: [&str; 2] = [".........FF....FF.........", "........ooo....ooo........"];
-const LEGS_LEFT: [&str; 2] = [".........oo....FF.........", "...............ooo........"];
-const LEGS_RIGHT: [&str; 2] = [".........FF....oo.........", "........ooo..............."];
-/// The right ear's tip, bent out for a twitch (rows 1 and 2 from column 22).
-const FLICK: [&str; 2] = ["..o", ".oo"];
-const HEART: [&str; 6] = [".rr.rr.", "rrrrrrr", "rrrrrrr", ".rrrrr.", "..rrr..", "...r..."];
-const ZED: [&str; 4] = ["zzz", "..z", ".z.", "zzz"];
+/// The eyes: 5 x 6 blocks on rows 23 to 28, the left one from column 13, the right one from column 26 and drawn
+/// mirrored; open, closed and smiling.
+const EYE_ROW: usize = 23;
+const EYES_AT: [(usize, bool); 2] = [(13, false), (26, true)];
+const EYE_WIDTH: usize = 5;
+const EYE_HEIGHT: usize = 6;
+const EYES_OPEN: [&str; EYE_HEIGHT] = [
+    "DDDDf",
+    "dvvvD",
+    "vhhvv",
+    "vhvvi",
+    "iiiIi",
+    "fIIIf",
+];
+const EYES_CLOSED: [&str; EYE_HEIGHT] = [
+    "fffff",
+    "fffff",
+    "fffff",
+    "DfffD",
+    "fDDDf",
+    "fffff",
+];
+const EYES_HAPPY: [&str; EYE_HEIGHT] = [
+    "fffff",
+    "fffff",
+    "fDDDf",
+    "DfffD",
+    "fffff",
+    "fffff",
+];
+/// The legs (the rows from `LEG_ROW` down) standing and in the two steps of a walk.
+const LEG_ROW: usize = 48;
+const LEGS_STAND: [&str; HEIGHT - LEG_ROW] = [
+    "................offfo..offfo................",
+    "................ouuuo..ouuuo................",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "................ooooo..ooooo................",
+];
+const LEGS_LEFT: [&str; HEIGHT - LEG_ROW] = [
+    "................ouuuo..offfo................",
+    "...............okkkkko.ouuuo................",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "................ooooo.okkkkko...............",
+    ".......................ooooo................",
+];
+const LEGS_RIGHT: [&str; HEIGHT - LEG_ROW] = [
+    "................offfo..ouuuo................",
+    "................ouuuo.okkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkkookkkkko...............",
+    "...............okkkkko.ooooo................",
+    "................ooooo.......................",
+];
+/// The right ear's top bent outwards for a twitch: these rows from column 30, row 2.
+const FLICK_AT: (usize, usize) = (30, 2);
+const FLICK: [&str; 4] = [
+    "....oo.",
+    "...oowo",
+    ".ooowwo",
+    ".owwpwo",
+];
+const HEART: [&str; 8] = [
+    ".rr...rr.",
+    "rhrr.rrrr",
+    "rrrrrrrrr",
+    "rrrrrrrrr",
+    ".rrrrrrr.",
+    "..rrrrr..",
+    "...rrr...",
+    "....r....",
+];
+const ZED: [&str; 5] = [
+    "zzzz",
+    "...z",
+    "..z.",
+    ".z..",
+    "zzzz",
+];
 
 fn color(mark: char) -> Option<Hsla> {
     let rgb = |r: u8, g: u8, b: u8| Some(Hsla::from(Rgba { r: f32::from(r) / 255.0, g: f32::from(g) / 255.0, b: f32::from(b) / 255.0, a: 1.0 }));
     match mark {
-        'o' => rgb(88, 92, 138),
-        'w' => rgb(246, 247, 255),
-        's' => rgb(205, 210, 245),
-        'S' => rgb(178, 184, 232),
-        'p' => rgb(245, 168, 188),
-        'P' => rgb(255, 214, 224),
-        'f' => rgb(255, 238, 230),
-        'F' => rgb(236, 196, 188),
-        'd' => rgb(150, 40, 72),
-        'e' => rgb(226, 86, 118),
-        'E' => rgb(246, 150, 168),
+        'o' => rgb(70, 72, 120),
+        'w' => rgb(250, 250, 255),
+        's' => rgb(218, 220, 248),
+        'S' => rgb(186, 190, 232),
+        'q' => rgb(250, 196, 220),
+        'l' => rgb(176, 208, 250),
+        'p' => rgb(168, 206, 248),
+        'P' => rgb(216, 236, 255),
+        'y' => rgb(250, 182, 70),
+        'Y' => rgb(222, 138, 46),
+        'x' => rgb(255, 232, 124),
+        'j' => rgb(60, 138, 236),
+        'J' => rgb(160, 216, 255),
+        'f' => rgb(255, 241, 234),
+        'F' => rgb(246, 210, 200),
+        'D' => rgb(96, 34, 70),
+        'd' => rgb(176, 50, 88),
+        'v' => rgb(50, 60, 158),
+        'i' => rgb(98, 124, 230),
+        'I' => rgb(164, 192, 254),
         'h' | 'u' | 'n' => rgb(255, 255, 255),
-        'b' => rgb(255, 182, 196),
-        'm' => rgb(196, 100, 126),
-        'g' => rgb(104, 184, 100),
-        'G' => rgb(58, 132, 70),
-        'c' => rgb(122, 178, 242),
-        'C' => rgb(74, 130, 212),
-        'k' => rgb(66, 112, 196),
+        'b' => rgb(255, 190, 204),
+        'B' => rgb(244, 150, 174),
+        'm' => rgb(206, 102, 124),
+        'c' => rgb(100, 150, 234),
+        'C' => rgb(70, 110, 205),
+        'k' => rgb(40, 56, 140),
+        'K' => rgb(64, 84, 170),
         'r' => rgb(236, 84, 116),
         'z' => rgb(132, 136, 186),
         _ => None,
@@ -147,7 +248,7 @@ pub fn pose(clock: f32, poked: f32, asleep: bool, pointer: Option<f32>) -> Pose 
         None => (Legs::Stand, 0.0),
     };
     let looking_around = if (15.0..16.5).contains(&t) { 1 } else if (16.5..18.0).contains(&t) { -1 } else { 0 };
-    let towards_pointer = pointer.map_or(0, |dx| if dx < -6.0 { -1 } else if dx > 6.0 { 1 } else { 0 });
+    let towards_pointer = pointer.map_or(0, |dx| if dx < -10.0 { -1 } else if dx > 10.0 { 1 } else { 0 });
     let glance = walking.unwrap_or(if towards_pointer != 0 { towards_pointer } else { looking_around });
     let since = clock - poked;
     let happy = (0.0..1.2).contains(&since);
@@ -170,30 +271,35 @@ pub fn pose(clock: f32, poked: f32, asleep: bool, pointer: Option<f32>) -> Pose 
 
 /// The mark of the art at column `x`, row `y` in `pose`.
 fn mark(pose: &Pose, x: usize, y: usize) -> char {
-    if (EYE_ROW..EYE_ROW + 4).contains(&y) {
-        for column in EYE_COLUMNS {
+    if (EYE_ROW..EYE_ROW + EYE_HEIGHT).contains(&y) {
+        for (column, mirrored) in EYES_AT {
             // The eye and the skin around it, which the eye moves into when it looks aside.
-            if (column - 1..=column + 3).contains(&x) {
+            if (column - 1..=column + EYE_WIDTH).contains(&x) {
                 let block = match pose.eyes {
                     Eyes::Open => EYES_OPEN,
                     Eyes::Closed => EYES_CLOSED,
                     Eyes::Happy => EYES_HAPPY,
                 };
                 let offset = x as i32 - column as i32 - pose.glance;
-                return if (0..3).contains(&offset) { block[y - EYE_ROW].as_bytes()[offset as usize] as char } else { 'f' };
+                if !(0..EYE_WIDTH as i32).contains(&offset) {
+                    return 'f';
+                }
+                let index = if mirrored { EYE_WIDTH - 1 - offset as usize } else { offset as usize };
+                return block[y - EYE_ROW].as_bytes()[index] as char;
             }
         }
     }
-    if y >= HEIGHT - 2 {
+    if y >= LEG_ROW {
         let legs = match pose.legs {
             Legs::Stand => LEGS_STAND,
             Legs::Left => LEGS_LEFT,
             Legs::Right => LEGS_RIGHT,
         };
-        return legs[y - (HEIGHT - 2)].as_bytes()[x] as char;
+        return legs[y - LEG_ROW].as_bytes()[x] as char;
     }
-    if pose.flick && (1..=2).contains(&y) && x >= 22 && x < 25 {
-        return FLICK[y - 1].as_bytes()[x - 22] as char;
+    let (fx, fy) = FLICK_AT;
+    if pose.flick && (fy..fy + FLICK.len()).contains(&y) && (fx..fx + FLICK[0].len()).contains(&x) {
+        return FLICK[y - fy].as_bytes()[x - fx] as char;
     }
     ART[y].as_bytes()[x] as char
 }
@@ -232,7 +338,7 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
                 // Where she would stand, to know where the pointer is from her middle.
                 let home = f32::from(bounds.right()) - WIDTH as f32 * unit;
                 let middle = home + WIDTH as f32 * unit / 2.0;
-                let near = pointer.map(|point| (f32::from(point.x) - middle) / unit).filter(|dx| dx.abs() < 160.0);
+                let near = pointer.map(|point| (f32::from(point.x) - middle) / unit).filter(|dx| dx.abs() < 300.0);
                 let pose = pose(clock, poked, asleep, near);
                 let left = snap(home - pose.stroll * unit);
                 let top = snap(f32::from(bounds.bottom()) - (HEIGHT as f32 + pose.lift) * unit);
@@ -246,21 +352,30 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
                         }
                     }
                 };
-                // One layer for her few hundred pixels and what floats over her head: one place in the frame's order.
-                let reach = Bounds::new(point(px(left - unit), px(top - 14.0 * unit)), size(px((WIDTH as f32 + 4.0) * unit), px((HEIGHT as f32 + 14.0) * unit)));
+                // One layer for her pixels and what floats over her head: one place in the frame's order.
+                let reach = Bounds::new(point(px(left - unit), px(top - 20.0 * unit)), size(px((WIDTH as f32 + 2.0) * unit), px((HEIGHT as f32 + 20.0) * unit)));
                 window.paint_layer(reach, |window| {
+                    // A run of one colour along a row is one quad: a third of the quads, the same pixels.
                     for y in 0..HEIGHT {
-                        for x in 0..WIDTH {
-                            if let Some(shade) = color(mark(&pose, x, y)) {
-                                window.paint_quad(fill(cell(x as f32, y as f32), shade));
+                        let mut x = 0;
+                        while x < WIDTH {
+                            let here = mark(&pose, x, y);
+                            let mut end = x + 1;
+                            while end < WIDTH && mark(&pose, end, y) == here {
+                                end += 1;
                             }
+                            if let Some(shade) = color(here) {
+                                let run = Bounds::new(point(px(left + x as f32 * unit), px(top + y as f32 * unit)), size(px((end - x) as f32 * unit), px(unit)));
+                                window.paint_quad(fill(run, shade));
+                            }
+                            x = end;
                         }
                     }
                     if let Some(rise) = pose.heart {
-                        picture(window, &HEART, 18.0, -7.0 - rise * 4.0, 1.0 - rise * rise);
+                        picture(window, &HEART, 30.0, -9.0 - rise * 6.0, 1.0 - rise * rise);
                     }
                     if pose.asleep {
-                        picture(window, &ZED, 24.0, -6.0, 1.0);
+                        picture(window, &ZED, 36.0, -6.0, 1.0);
                     }
                 });
                 // Pointing at her (not at the empty path beside her) makes her hop.
@@ -291,15 +406,21 @@ mod tests {
             assert!(row.chars().all(|mark| mark == '.' || color(mark).is_some()), "{row}");
         }
         assert!(ART.iter().all(|row| row.len() == WIDTH) && LEGS_STAND.iter().chain(&LEGS_LEFT).chain(&LEGS_RIGHT).all(|row| row.len() == WIDTH));
-        // The art's own legs are the standing ones, and the eyes sit in skin they can move into.
-        assert_eq!([ART[HEIGHT - 2], ART[HEIGHT - 1]], LEGS_STAND);
-        for column in EYE_COLUMNS {
-            for y in EYE_ROW..EYE_ROW + 4 {
+        // The art's own legs are the standing ones, and the eyes (the right one mirrored) sit in skin they can move into.
+        assert_eq!(&ART[LEG_ROW..], &LEGS_STAND[..]);
+        for (column, mirrored) in EYES_AT {
+            for y in EYE_ROW..EYE_ROW + EYE_HEIGHT {
                 let row = ART[y].as_bytes();
-                assert_eq!((row[column - 1], row[column + 3]), (b'f', b'f'), "row {y}");
-                assert_eq!(&ART[y][column..column + 3], EYES_OPEN[y - EYE_ROW], "row {y}");
+                assert_eq!((row[column - 1], row[column + EYE_WIDTH]), (b'f', b'f'), "row {y}");
+                let open = EYES_OPEN[y - EYE_ROW];
+                let open: String = if mirrored { open.chars().rev().collect() } else { open.to_string() };
+                assert_eq!(&ART[y][column..column + EYE_WIDTH], open, "row {y}");
             }
         }
+        assert!(EYES_OPEN.iter().chain(&EYES_CLOSED).chain(&EYES_HAPPY).all(|row| row.len() == EYE_WIDTH));
+        // The ear's twitch and what floats over her stay inside her width.
+        assert!(FLICK.iter().all(|row| row.len() == FLICK[0].len()) && FLICK_AT.0 + FLICK[0].len() <= WIDTH);
+        assert!(30 + HEART[0].len() <= WIDTH && 36 + ZED[0].len() <= WIDTH);
     }
 
     #[test]
@@ -327,8 +448,13 @@ mod tests {
         assert_eq!((asleep.eyes, asleep.lift, asleep.heart, asleep.glance), (Eyes::Closed, 0.0, None, 0));
         // Looking aside moves the eye one pixel and leaves skin where it was.
         let aside = Pose { glance: -1, ..pose(5.0, f32::NEG_INFINITY, false, None) };
-        assert_eq!(mark(&aside, 4, EYE_ROW), 'd');
-        assert_eq!(mark(&aside, 7, EYE_ROW), 'f');
+        let (left, _) = EYES_AT[0];
+        assert_eq!(mark(&aside, left - 1, EYE_ROW), EYES_OPEN[0].as_bytes()[0] as char);
+        assert_eq!(mark(&aside, left + EYE_WIDTH - 1, EYE_ROW), 'f');
+        // The right eye is the left one mirrored.
+        let ahead = pose(5.0, f32::NEG_INFINITY, false, None);
+        let (right, _) = EYES_AT[1];
+        assert_eq!(mark(&ahead, right + EYE_WIDTH - 1, EYE_ROW + 2), mark(&ahead, left, EYE_ROW + 2));
     }
 
     #[test]
@@ -338,6 +464,7 @@ mod tests {
             assert!(unit <= PIXEL + 1e-6, "{scale}");
             assert!(((unit * scale) - (unit * scale).round()).abs() < 1e-4, "{scale}");
         }
-        assert!((unit(2.25) * 2.25 - 4.0).abs() < 1e-4);
+        // Two screen pixels to a pixel of the art at 150 % and at 200 %.
+        assert!((unit(1.5) * 1.5 - 2.0).abs() < 1e-4 && (unit(2.0) * 2.0 - 2.0).abs() < 1e-4);
     }
 }
