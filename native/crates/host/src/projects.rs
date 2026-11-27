@@ -120,7 +120,7 @@ impl Projects {
         let (projects, extra) = match read_json::<File>(&file) {
             Ok(Some(loaded)) => (loaded.projects, loaded.extra),
             Ok(None) => (Vec::new(), BTreeMap::new()),
-            Err(error) => {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 if let Some(backup) = backup_damaged(&file) {
                     log::warn!("projects.json is unreadable ({error}); backed up to {}", backup.display());
                 } else {
@@ -128,6 +128,7 @@ impl Projects {
                 }
                 (Vec::new(), BTreeMap::new())
             }
+            Err(error) => return Err(error),
         };
         Ok(Self { file, projects: Mutex::new(projects), extra: Mutex::new(extra) })
     }

@@ -308,10 +308,11 @@ impl StateStore {
 
     fn cache_insert(&self, workspace_id: &str, record: Value) {
         let mut records = self.records.lock().unwrap();
-        if !records.contains_key(workspace_id) && records.len() >= MAX_CACHED_STATES {
-            if let Some(oldest) = records.iter().min_by_key(|(_, (used, _))| *used).map(|(k, _)| k.clone()) {
-                records.remove(&oldest);
-            }
+        if !records.contains_key(workspace_id)
+            && records.len() >= MAX_CACHED_STATES
+            && let Some(oldest) = records.iter().min_by_key(|(_, (used, _))| *used).map(|(k, _)| k.clone())
+        {
+            records.remove(&oldest);
         }
         records.insert(workspace_id.to_owned(), (Instant::now(), record));
     }

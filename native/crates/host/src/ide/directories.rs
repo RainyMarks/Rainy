@@ -2,7 +2,9 @@
 //! (zero-thread `GetLogicalDrives()` on Windows, cached WSL drive discovery on Linux).
 
 use std::path::Path;
+#[cfg(windows)]
 use std::sync::Mutex;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -12,6 +14,7 @@ use crate::locale::l;
 use crate::paths::fully_qualified;
 
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
+#[cfg(windows)]
 const ROOTS_CACHE_TTL: Duration = Duration::from_secs(10);
 
 fn not_absolute() -> HostError {

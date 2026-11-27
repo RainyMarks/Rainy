@@ -299,12 +299,11 @@ impl ProjectMaps {
     /// workspace cache when `workspace_id` matches `root`, otherwise caches a bounded scan keyed by canonical root).
     pub async fn module_deps_in_dir(&self, root: &std::path::Path, path: &str, workspace_id: Option<&str>) -> HostResult<ModuleDeps> {
         let canonical_root = crate::paths::realpath(root)?;
-        if let Some(id) = workspace_id {
-            if let Ok(project) = self.project(id) {
-                if crate::paths::realpath(std::path::Path::new(&project.path)).ok().as_deref() == Some(canonical_root.as_path()) {
-                    return self.module_deps(id, path).await;
-                }
-            }
+        if let Some(id) = workspace_id
+            && let Ok(project) = self.project(id)
+            && crate::paths::realpath(std::path::Path::new(&project.path)).ok().as_deref() == Some(canonical_root.as_path())
+        {
+            return self.module_deps(id, path).await;
         }
         let cache_key = format!("dir:{}", canonical_root.to_string_lossy());
         let cached = self.cache.lock().unwrap().get(&cache_key).filter(|(_, at)| at.elapsed() < RELATIONS_CACHE).map(|(map, _)| map.clone());

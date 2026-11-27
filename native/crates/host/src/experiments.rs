@@ -247,12 +247,16 @@ impl Experiments {
         let (loaded, extra) = match read_json::<ExperimentsFile>(&registry_path) {
             Ok(Some(file)) => (file.experiments, file.extra),
             Ok(None) => (Vec::new(), BTreeMap::new()),
-            Err(error) => {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 if let Some(backup) = backup_damaged(&registry_path) {
                     log::warn!("experiments.v1.json is unreadable ({error}); backed up to {}", backup.display());
                 } else {
                     log::warn!("experiments.v1.json is unreadable ({error}); starting with an empty list");
                 }
+                (Vec::new(), BTreeMap::new())
+            }
+            Err(error) => {
+                log::warn!("experiments.v1.json could not be read due to I/O error ({error}); keeping file untouched");
                 (Vec::new(), BTreeMap::new())
             }
         };
@@ -543,6 +547,41 @@ struct Launched {
     uid: Option<u32>,
 }
 
+/// Unix experiment wrapper: runs without `-l` so login profiles never clobber `CUDA_VISIBLE_DEVICES`/`PATH`,
+/// forwards `SIGTERM`/`SIGINT` once to the child (never re-signaling `-$$`), and loops `wait` while the child is
+/// still alive so trapping/ignoring `SIGTERM` never causes premature wrapper exit or orphaned GPU jobs.
+#[cfg(any(unix, test))]
+const UNIX_WRAPPER: &str = r#"_rainy_cmd="$1"
+_rainy_exit="$2"
+_rainy_pid_file="$3"
+if [ -n "$_rainy_pid_file" ]; then
+  printf '%s\n' "$$" > "${_rainy_pid_file}.tmp" && mv -f "${_rainy_pid_file}.tmp" "$_rainy_pid_file"
+fi
+_rainy_child=""
+_rainy_signaled=0
+trap 'if [ "$_rainy_signaled" -eq 0 ]; then _rainy_signaled=1; if [ -n "$_rainy_child" ]; then kill -TERM "$_rainy_child" 2>/dev/null || true; fi; fi' TERM INT
+if [ -x /bin/bash ]; then
+  /bin/bash -c "$_rainy_cmd" &
+else
+  /bin/sh -c "$_rainy_cmd" &
+fi
+_rainy_child=$!
+while :; do
+  wait "$_rainy_child"
+  _rc=$?
+  if [ "$_rc" -gt 128 ] && kill -0 "$_rainy_child" 2>/dev/null; then
+    continue
+  fi
+  break
+done
+_sec=$(date +%s 2>/dev/null || echo 0)
+case "$_sec" in
+  ''|*[!0-9]*) _ts=0 ;;
+  *) _ts="${_sec}000" ;;
+esac
+printf '{"exitCode":%d,"endedAt":%s}\n' "$_rc" "$_ts" > "${_rainy_exit}.tmp" && mv -f "${_rainy_exit}.tmp" "$_rainy_exit"
+exit $_rc"#;
+
 #[cfg(unix)]
 fn find_setsid() -> Option<&'static str> {
     if Path::new("/usr/bin/setsid").is_file() {
@@ -565,31 +604,7 @@ fn spawn_detached(
     use std::os::unix::process::CommandExt as _;
 
     let shell = if Path::new("/bin/bash").is_file() { "/bin/bash" } else { "/bin/sh" };
-    // Run the user command without `-l` (so login profiles cannot clobber CUDA_VISIBLE_DEVICES / PATH),
-    // forward SIGTERM to the process group, and write exit status atomically on completion.
-    let wrapper = r#"_rainy_cmd="$1"
-_rainy_exit="$2"
-_rainy_pid_file="$3"
-if [ -n "$_rainy_pid_file" ]; then
-  printf '%s\n' "$$" > "${_rainy_pid_file}.tmp" && mv -f "${_rainy_pid_file}.tmp" "$_rainy_pid_file"
-fi
-_rainy_child=""
-trap 'if [ -n "$_rainy_child" ]; then kill -TERM -- -$$ 2>/dev/null || kill -TERM "$_rainy_child" 2>/dev/null; fi' TERM INT
-if [ -x /bin/bash ]; then
-  /bin/bash -c "$_rainy_cmd" &
-else
-  /bin/sh -c "$_rainy_cmd" &
-fi
-_rainy_child=$!
-wait "$_rainy_child"
-_rc=$?
-_sec=$(date +%s 2>/dev/null || echo 0)
-case "$_sec" in
-  ''|*[!0-9]*) _ts=0 ;;
-  *) _ts="${_sec}000" ;;
-esac
-printf '{"exitCode":%d,"endedAt":%s}\n' "$_rc" "$_ts" > "${_rainy_exit}.tmp" && mv -f "${_rainy_exit}.tmp" "$_rainy_exit"
-exit $_rc"#;
+    let wrapper = UNIX_WRAPPER;
 
     // SAFETY: `geteuid` has no preconditions and always succeeds.
     let uid = Some(unsafe { libc::geteuid() });
@@ -1053,5 +1068,9 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("experiments.v1.json.damaged-"))
             .count();
         assert_eq!(backups, 1);
+
+        // Unix wrapper must never re-signal `-$$` and must loop `wait` while the child is still alive.
+        assert!(!UNIX_WRAPPER.contains("kill -TERM -- -$$"));
+        assert!(UNIX_WRAPPER.contains("kill -0 \"$_rainy_child\""));
     }
 }

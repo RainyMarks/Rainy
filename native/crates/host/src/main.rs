@@ -370,10 +370,8 @@ fn register(host: &Arc<Host>) {
                     .and_then(Value::as_array)
                     .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                     .unwrap_or_default();
-                if watch_paths.is_empty() {
-                    if let Some(first) = host.projects.list().first() {
-                        watch_paths.push(first.path.clone());
-                    }
+                if watch_paths.is_empty() && let Some(first) = host.projects.list().first() {
+                    watch_paths.push(first.path.clone());
                 }
                 let include_gpu_processes = params.get("includeGpuProcesses").and_then(Value::as_bool).unwrap_or(false);
                 let metrics = host.sysinfo.collect(&host.env, watch_paths, include_gpu_processes).await;

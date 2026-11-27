@@ -558,10 +558,11 @@ impl Languages {
 
     fn insert_published_cache(&self, key: String, file_version: String, diagnostics: Vec<DiagnosticItem>) {
         let mut cache = self.published_cache.lock().unwrap();
-        if !cache.contains_key(&key) && cache.len() >= MAX_CACHED_DIAGNOSTICS {
-            if let Some(oldest) = cache.iter().min_by_key(|(_, v)| v.updated_at).map(|(k, _)| k.clone()) {
-                cache.remove(&oldest);
-            }
+        if !cache.contains_key(&key)
+            && cache.len() >= MAX_CACHED_DIAGNOSTICS
+            && let Some(oldest) = cache.iter().min_by_key(|(_, v)| v.updated_at).map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest);
         }
         cache.insert(key, CachedDiagnostics { file_version, diagnostics, updated_at: Instant::now() });
     }

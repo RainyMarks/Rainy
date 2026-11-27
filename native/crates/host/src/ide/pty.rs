@@ -10,6 +10,7 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::watch;
 
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 
 /// How a program ended.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -276,10 +277,15 @@ impl Pty {
     }
 
     pub fn write(&self, data: &str) -> HostResult<()> {
-        let tx = self.writer_tx.lock().unwrap().clone().ok_or_else(|| HostError::other("This terminal is not running."))?;
+        let tx = self
+            .writer_tx
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| HostError::other(l("该终端未在运行。", "This terminal is not running.")))?;
         tx.try_send(data.as_bytes().to_vec()).map_err(|err| match err {
-            std::sync::mpsc::TrySendError::Full(_) => HostError::other("The terminal input buffer is full; retry shortly."),
-            std::sync::mpsc::TrySendError::Disconnected(_) => HostError::other("This terminal is not running."),
+            std::sync::mpsc::TrySendError::Full(_) => HostError::other(l("终端输入缓冲已满，请稍后重试。", "The terminal input buffer is full; retry shortly.")),
+            std::sync::mpsc::TrySendError::Disconnected(_) => HostError::other(l("该终端未在运行。", "This terminal is not running.")),
         })
     }
 

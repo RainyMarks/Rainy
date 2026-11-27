@@ -475,11 +475,9 @@ pub fn resolve_cgroup_levels(version: u8, levels: &[(Option<f64>, Option<u64>, O
         if let Some(q) = cpu {
             cpu_quota = Some(cpu_quota.map_or(q, |prev| prev.min(q)));
         }
-        if let Some(l) = lim {
-            if mem_limit.is_none_or(|prev| l < prev) {
-                mem_limit = Some(l);
-                mem_current = cur;
-            }
+        if let Some(l) = lim && mem_limit.is_none_or(|prev| l < prev) {
+            mem_limit = Some(l);
+            mem_current = cur;
         }
     }
     if cpu_quota.is_none() && mem_limit.is_none() {
@@ -794,10 +792,8 @@ fn collect_disks(paths: &[String]) -> Vec<DiskUsage> {
         #[cfg(unix)]
         {
             let mount = longest_mount_match(&key, &mounts);
-            if let Some(m) = mount.as_deref() {
-                if !seen_mounts.insert(m.to_owned()) {
-                    continue;
-                }
+            if let Some(m) = mount.as_deref() && !seen_mounts.insert(m.to_owned()) {
+                continue;
             }
             if let Some((avail, total)) = statvfs_bytes(&canonical) {
                 out.push(DiskUsage { path: raw.clone(), mount, available_bytes: avail, total_bytes: total });
@@ -993,7 +989,7 @@ fn parse_proc_ipv6(hex: &str) -> Option<String> {
 }
 
 /// Infer a human-friendly service label for common research/web services.
-#[cfg(any(unix, test))]
+#[cfg(test)]
 pub fn infer_port_label(port: u16, process_name: Option<&str>) -> Option<String> {
     infer_port_label_with_cmdline(port, process_name, None)
 }

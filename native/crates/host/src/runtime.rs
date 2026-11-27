@@ -299,7 +299,7 @@ impl Runtime {
                 *self.components.lock().unwrap() = Default::default();
                 return Ok(());
             }
-            Err(error) => {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 if let Some(backup) = crate::text::backup_damaged(&active_path) {
                     log::warn!("active.json is unreadable ({error}); backed up to {}", backup.display());
                 } else {
@@ -308,6 +308,7 @@ impl Runtime {
                 *self.components.lock().unwrap() = Default::default();
                 return Ok(());
             }
+            Err(error) => return Err(error),
         };
         let platform = platform();
         let mut entries = Vec::new();
@@ -693,9 +694,13 @@ fn load_selection_file(path: &Path) -> SelectionFile {
     match read_json::<SelectionFile>(path) {
         Ok(Some(state)) => state,
         Ok(None) => SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() },
-        Err(error) => {
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
             log::warn!("runtime-environments.json is unreadable and was backed up: {error}");
             let _ = crate::text::backup_damaged(path);
+            SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() }
+        }
+        Err(error) => {
+            log::warn!("runtime-environments.json could not be read due to I/O error ({error}); keeping file untouched");
             SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() }
         }
     }

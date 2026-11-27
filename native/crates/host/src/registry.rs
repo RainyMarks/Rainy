@@ -78,7 +78,7 @@ impl Registry {
         match read_json::<Catalog>(&self.file) {
             Ok(Some(catalog)) => Ok(catalog),
             Ok(None) => Ok(Catalog { version: 1, projects: Vec::new(), extra: BTreeMap::new() }),
-            Err(error) => {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 if let Some(backup) = backup_damaged(&self.file) {
                     log::warn!("registry projects.json is unreadable ({error}); backed up to {}", backup.display());
                 } else {
@@ -86,6 +86,7 @@ impl Registry {
                 }
                 Ok(Catalog { version: 1, projects: Vec::new(), extra: BTreeMap::new() })
             }
+            Err(error) => Err(error.into()),
         }
     }
 

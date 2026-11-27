@@ -13,20 +13,31 @@ use futures::{SinkExt as _, StreamExt as _};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
-use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{HostError, HostResult};
 
 type Handler = Arc<dyn Fn(Value) -> BoxFuture<'static, HostResult<Value>> + Send + Sync>;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const CLIENT_QUEUE_CAPACITY: usize = 512;
+const CLIENT_QUEUE_CAPACITY: usize = 2048;
 const MAX_IN_FLIGHT_REQUESTS: usize = 64;
+
+/// High-frequency streaming/output events that can be shed individually under backpressure without losing
+/// durable UI state transitions (unlike `session.state`, `session.entry`, approvals, or `sessions.changed`).
+fn is_ephemeral_event(event: &str) -> bool {
+    matches!(event, "session.stream" | "ide.terminal.output" | "ide.run.output" | "ide.debug.output")
+}
+
+struct ClientHandle {
+    tx: mpsc::Sender<Message>,
+    disconnect: CancellationToken,
+}
 
 #[derive(Default)]
 pub struct RpcHub {
     handlers: RwLock<HashMap<String, Handler>>,
-    clients: Mutex<HashMap<u64, mpsc::Sender<Message>>>,
+    clients: Mutex<HashMap<u64, ClientHandle>>,
     next: AtomicU64,
 }
 
@@ -46,22 +57,29 @@ impl RpcHub {
         assert!(previous.is_none(), "RPC method {method} is already registered");
     }
 
-    /// Send an event to every connected window. Serialization runs outside the clients lock, and slow/closed
-    /// connections cannot cause unbounded memory growth.
+    /// Send an event to every connected window. Serialization runs outside the clients lock; ephemeral streaming
+    /// frames shed under backpressure, while overflowing a durable state event closes that stalled socket so the
+    /// client reconnects and resyncs full state rather than silently missing transitions or approval prompts.
     pub fn emit(&self, event: &str, data: impl Serialize) {
         if self.clients.lock().unwrap().is_empty() {
             return;
         }
         let Ok(data) = serde_json::to_value(data) else { return };
         let text = json!({ "event": event, "data": data }).to_string();
+        let ephemeral = is_ephemeral_event(event);
         let mut clients = self.clients.lock().unwrap();
         let mut stale = Vec::new();
         for (&id, client) in clients.iter() {
-            match client.try_send(Message::Text(text.clone().into())) {
+            match client.tx.try_send(Message::Text(text.clone().into())) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Closed(_)) => stale.push(id),
+                Err(mpsc::error::TrySendError::Full(_)) if ephemeral => {
+                    log::debug!("RPC streaming event {event} shed for slow client {id}");
+                }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    log::debug!("RPC event {event} dropped for slow client {id}");
+                    log::warn!("RPC state event {event} overflowed client {id}; disconnecting to force resync");
+                    client.disconnect.cancel();
+                    stale.push(id);
                 }
             }
         }
@@ -80,24 +98,42 @@ impl RpcHub {
     }
 
     /// Serve one authenticated window until its socket closes. Requests run concurrently up to a bounded limit;
-    /// answers go out as they finish, and in-flight tasks are cancelled when the socket disconnects.
+    /// already-started RPC handlers are allowed to finish safely across disconnects so write transactions are never
+    /// torn mid-commit.
     pub async fn serve(self: Arc<Self>, socket: WebSocket) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (mut sink, mut stream) = socket.split();
         let (outgoing, mut queue) = mpsc::channel::<Message>(CLIENT_QUEUE_CAPACITY);
-        self.clients.lock().unwrap().insert(id, outgoing.clone());
+        let disconnect = CancellationToken::new();
+        self.clients.lock().unwrap().insert(id, ClientHandle { tx: outgoing.clone(), disconnect: disconnect.clone() });
+        let writer_disconnect = disconnect.clone();
         let writer = tokio::spawn(async move {
-            while let Some(message) = queue.recv().await {
-                let close = matches!(message, Message::Close(_));
-                if sink.send(message).await.is_err() || close {
-                    break;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = writer_disconnect.cancelled() => {
+                        let _ = sink.send(close_frame(1013, "client backpressure overflow")).await;
+                        break;
+                    }
+                    next = queue.recv() => match next {
+                        Some(message) => {
+                            let close = matches!(message, Message::Close(_));
+                            if sink.send(message).await.is_err() || close {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
                 }
             }
         });
         let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
-        let mut in_flight = JoinSet::new();
-        while let Some(Ok(message)) = stream.next().await {
-            while in_flight.try_join_next().is_some() {}
+        loop {
+            let next = tokio::select! {
+                _ = disconnect.cancelled() => break,
+                item = stream.next() => item,
+            };
+            let Some(Ok(message)) = next else { break };
             let text = match message {
                 Message::Text(text) => text,
                 Message::Close(_) => break,
@@ -118,9 +154,15 @@ impl RpcHub {
                 let _ = outgoing.try_send(close_frame(1003, "invalid frame"));
                 break;
             };
-            let Ok(permit) = permits.clone().acquire_owned().await else { break };
+            let permit = tokio::select! {
+                _ = disconnect.cancelled() => break,
+                acquired = permits.clone().acquire_owned() => match acquired {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                },
+            };
             let (hub, method, params, reply) = (self.clone(), method.to_owned(), frame.get("params").cloned().unwrap_or(Value::Null), outgoing.clone());
-            in_flight.spawn(async move {
+            tokio::spawn(async move {
                 let _permit = permit;
                 let response = match hub.dispatch(&method, params).await {
                     Ok(result) => json!({ "id": request, "result": result }),
@@ -129,7 +171,6 @@ impl RpcHub {
                 let _ = reply.send(Message::Text(response.to_string().into())).await;
             });
         }
-        in_flight.abort_all();
         self.clients.lock().unwrap().remove(&id);
         drop(outgoing);
         let _ = writer.await;
@@ -138,7 +179,7 @@ impl RpcHub {
     /// Close every window connection.
     pub fn close(&self) {
         for client in self.clients.lock().unwrap().drain().map(|(_, client)| client) {
-            let _ = client.try_send(close_frame(1001, "host stopping"));
+            let _ = client.tx.try_send(close_frame(1001, "host stopping"));
         }
     }
 }
@@ -150,4 +191,29 @@ fn close_frame(code: u16, reason: &'static str) -> Message {
 /// Deserialize request parameters, failing with `invalid-request`.
 pub fn params<T: serde::de::DeserializeOwned>(value: Value) -> HostResult<T> {
     serde_json::from_value(value).map_err(|error| HostError::invalid(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnects_stalled_client_on_state_event_overflow_but_sheds_streaming() {
+        let hub = RpcHub::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let disconnect = CancellationToken::new();
+        hub.clients.lock().unwrap().insert(1, ClientHandle { tx, disconnect: disconnect.clone() });
+
+        // Fill the 1-slot buffer with a first event.
+        hub.emit("session.stream", json!({ "n": 1 }));
+        assert!(!disconnect.is_cancelled());
+        // Overflow with an ephemeral streaming event: shed without disconnecting.
+        hub.emit("session.stream", json!({ "n": 2 }));
+        assert!(!disconnect.is_cancelled());
+        assert!(hub.clients.lock().unwrap().contains_key(&1));
+        // Overflow with a durable state event: disconnect client so it resyncs on reconnect.
+        hub.emit("session.state", json!({ "status": "idle" }));
+        assert!(disconnect.is_cancelled());
+        assert!(!hub.clients.lock().unwrap().contains_key(&1));
+    }
 }

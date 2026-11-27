@@ -94,6 +94,9 @@ pub struct CredentialFiles {
     set_aside: BTreeMap<String, Vec<String>>,
     /// Without the carrier: names in the sealed file the plain file does not hold.
     unopened: Vec<String>,
+    /// Unknown top-level fields preserved across read/write for forward compatibility.
+    plain_extra: BTreeMap<String, serde_json::Value>,
+    sealed_extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl CredentialFiles {
@@ -105,6 +108,8 @@ impl CredentialFiles {
             unreadable: Keys::new(),
             set_aside: BTreeMap::new(),
             unopened: Vec::new(),
+            plain_extra: BTreeMap::new(),
+            sealed_extra: BTreeMap::new(),
         }
     }
 
@@ -119,22 +124,24 @@ impl CredentialFiles {
 
     /// Read the stored keys. Keys in the plain file are newer than sealed ones; they are sealed and removed from it.
     pub fn read(&mut self) -> io::Result<Keys> {
-        let plain = match read_json::<PlainFile>(&self.plain_file) {
-            Ok(Some(file)) if file.version == 1 => file.keys,
-            Ok(None) => Keys::new(),
+        let (plain, plain_extra) = match read_json::<PlainFile>(&self.plain_file) {
+            Ok(Some(file)) if file.version == 1 => (file.keys, file.extra),
+            Ok(None) => (Keys::new(), BTreeMap::new()),
             Ok(Some(file)) => {
                 if let Some(backup) = backup_damaged(&self.plain_file) {
                     log::warn!(".credentials.json has unexpected version {}; backed up to {}", file.version, backup.display());
                 }
-                Keys::new()
+                (Keys::new(), BTreeMap::new())
             }
-            Err(error) => {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                 if let Some(backup) = backup_damaged(&self.plain_file) {
                     log::warn!(".credentials.json is unreadable ({error}); backed up to {}", backup.display());
                 }
-                Keys::new()
+                (Keys::new(), BTreeMap::new())
             }
+            Err(error) => return Err(error),
         };
+        self.plain_extra = plain_extra;
         let sealed_raw: Option<SealedFile> = read_json(&self.sealed_file).ok().flatten();
         let Some(sealer) = &self.sealer else {
             // Only the carrier's key opens the sealed file; it stays untouched for a run that has the key.
@@ -150,16 +157,18 @@ impl CredentialFiles {
                 }
                 SealedFile::default()
             }
-            Err(error) => {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                 if let Some(backup) = backup_damaged(&self.sealed_file) {
                     log::warn!(".credentials.sealed.json is unreadable ({error}); backed up to {}", backup.display());
                 }
                 SealedFile::default()
             }
+            Err(error) => return Err(error),
         };
         let mut keys = Keys::new();
         self.unreadable.clear();
         self.set_aside = file.unreadable;
+        self.sealed_extra = file.extra;
         for (name, value) in file.keys {
             match sealer.open(&name, &value) {
                 Some(opened) => {
@@ -181,7 +190,7 @@ impl CredentialFiles {
     /// Store the complete set of keys; `removed` names the user removed, whose unreadable values are set aside too.
     pub fn write(&mut self, keys: &Keys, removed: &[String]) -> io::Result<()> {
         let Some(sealer) = &self.sealer else {
-            write_json(&self.plain_file, &PlainFile { version: 1, keys: keys.clone(), extra: BTreeMap::new() })?;
+            write_json(&self.plain_file, &PlainFile { version: 1, keys: keys.clone(), extra: self.plain_extra.clone() })?;
             self.unopened.retain(|name| !keys.contains_key(name) && !removed.contains(name));
             return Ok(());
         };
@@ -201,8 +210,8 @@ impl CredentialFiles {
             sealed.insert(name.clone(), sealer.seal(name, value));
         }
         // Sealed first: an interrupted write leaves the plain key in place, and the next start seals it again.
-        write_json(&self.sealed_file, &SealedFile { version: 2, keys: sealed, unreadable: set_aside.clone(), extra: BTreeMap::new() })?;
-        write_json(&self.plain_file, &PlainFile { version: 1, keys: Keys::new(), extra: BTreeMap::new() })?;
+        write_json(&self.sealed_file, &SealedFile { version: 2, keys: sealed, unreadable: set_aside.clone(), extra: self.sealed_extra.clone() })?;
+        write_json(&self.plain_file, &PlainFile { version: 1, keys: Keys::new(), extra: self.plain_extra.clone() })?;
         self.unreadable = kept;
         self.set_aside = set_aside;
         Ok(())
@@ -272,5 +281,14 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n.starts_with(".credentials.json.damaged-")));
         assert!(names.iter().any(|n| n.starts_with(".credentials.sealed.json.damaged-")));
+
+        // Unknown top-level fields in `.credentials.json` survive read/write roundtrips.
+        let dir2 = tempfile::tempdir().unwrap();
+        std::fs::write(dir2.path().join(".credentials.json"), r#"{"version":1,"keys":{},"futureMeta":"keep"}"#).unwrap();
+        let mut plain_creds = CredentialFiles::new(dir2.path(), None);
+        assert!(plain_creds.read().unwrap().is_empty());
+        plain_creds.write(&Keys::from([("A".into(), "1".into())]), &[]).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir2.path().join(".credentials.json")).unwrap()).unwrap();
+        assert_eq!(saved["futureMeta"], "keep");
     }
 }

@@ -281,15 +281,15 @@ impl Files {
                 continue;
             }
             let child_abs = directory.target.join(&name);
-            let info = match ifs::lstat(&child_abs) {
-                Ok(Some(info)) => info,
+            let (info, is_reparse) = match ifs::lstat_with_reparse(&child_abs) {
+                Ok(Some(found)) => found,
                 Ok(None) => continue,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            // Non-symlink children inside a verified canonical parent directory reuse the parent realpath directly,
-            // saving ~60% of syscalls (`realpath` + `resolve` + `stat`) per entry.
-            let observation = if info.kind != Kind::Symlink {
+            // Plain non-symlink, non-reparse-point children inside a verified canonical parent reuse the parent
+            // realpath directly; symlinks and Windows NTFS junctions/reparse points fall back to full `observe()`.
+            let observation = if info.kind != Kind::Symlink && !is_reparse {
                 let absolute = join_relative(&workspace.root, &child);
                 let version = sha256_hex(json!([absolute, info.version, child_abs, Some(&info.version)]).to_string());
                 let bytes = info.size;
@@ -978,5 +978,32 @@ mod tests {
         assert_eq!(committed2.bytes, 17);
         assert_ne!(committed2.version, committed.version);
         assert_eq!(std::fs::read(root.join("data.bin")).unwrap(), b"payload-v2-longer");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn list_detects_outside_windows_directory_junction_with_matching_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let junction = root.join("ext-link");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", &junction.display().to_string(), &outside.display().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J must succeed");
+
+        let projects = Arc::new(Projects::load(dir.path().join("projects.json")).unwrap());
+        let added = projects.open(root.to_str().unwrap(), None).unwrap();
+        let files = Files::new(projects, |_, _, _| {}, |_| BTreeMap::new());
+        let ws = files.resolve_workspace(&added.id, None).unwrap();
+
+        let listed = files.list(&ws, "").unwrap();
+        let entry = listed["entries"].as_array().unwrap().iter().find(|e| e["name"] == "ext-link").expect("junction entry");
+        let observed = files.observe(&ws, "ext-link", false, true).unwrap();
+        assert_eq!(entry["outsideWorkspace"], true, "junction pointing outside workspace must be flagged: {entry}");
+        assert_eq!(entry["version"].as_str(), Some(observed.version.as_str()));
     }
 }

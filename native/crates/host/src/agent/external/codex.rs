@@ -550,10 +550,11 @@ impl CodexProcess {
                 let child = item.get("agentThreadId").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let (started, name, reply) = {
                     let Ok(mut teams) = self.teams.lock() else { return };
-                    if teams.len() >= MAX_CODEX_TEAMS && !teams.contains_key(main) {
-                        if let Some(evict) = teams.keys().find(|k| k.as_str() != main).cloned() {
-                            teams.remove(&evict);
-                        }
+                    if teams.len() >= MAX_CODEX_TEAMS
+                        && !teams.contains_key(main)
+                        && let Some(evict) = teams.keys().find(|k| k.as_str() != main).cloned()
+                    {
+                        teams.remove(&evict);
                     }
                     let team = teams.entry(main.to_owned()).or_insert_with(|| CodexTeam::new(main));
                     let started = team.sub_agent_activity(sender, item);

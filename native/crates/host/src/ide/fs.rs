@@ -92,13 +92,21 @@ fn identity(path: &Path, follow: bool) -> io::Result<(u64, u64, i128, i128)> {
     Ok((u64::from(information.dwVolumeSerialNumber), index, nanos(basic.LastWriteTime), nanos(basic.ChangeTime)))
 }
 
-fn observe(path: &Path, follow: bool) -> io::Result<Option<Info>> {
+fn observe(path: &Path, follow: bool) -> io::Result<Option<(Info, bool)>> {
     let metadata = match if follow { fs::metadata(path) } else { fs::symlink_metadata(path) } {
         Ok(metadata) => metadata,
         Err(error) if absent(&error) => return Ok(None),
         Err(error) => return Err(error),
     };
     let file_type = metadata.file_type();
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
     let kind = if file_type.is_symlink() {
         Kind::Symlink
     } else if file_type.is_file() {
@@ -120,17 +128,23 @@ fn observe(path: &Path, follow: bool) -> io::Result<Option<Info>> {
         (metadata.dev(), metadata.ino(), i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec()), i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()))
     };
     let size = metadata.len();
-    Ok(Some(Info { kind, size, version: format!("{dev}:{ino}:{size}:{mtime}:{ctime}") }))
+    Ok(Some((Info { kind, size, version: format!("{dev}:{ino}:{size}:{mtime}:{ctime}") }, reparse)))
 }
 
 /// A path entry without following a final link; `None` when it or a parent is missing.
 pub fn lstat(path: &Path) -> io::Result<Option<Info>> {
+    Ok(observe(path, false)?.map(|(info, _)| info))
+}
+
+/// Like [`lstat`], also reporting whether the entry is a Windows reparse point (such as an NTFS Directory Junction)
+/// whose target may lie outside the parent directory despite `file_type().is_symlink() == false`.
+pub fn lstat_with_reparse(path: &Path) -> io::Result<Option<(Info, bool)>> {
     observe(path, false)
 }
 
 /// A target after following links; `None` when missing. A link's kind is its target's.
 pub fn stat(path: &Path) -> io::Result<Option<Info>> {
-    observe(path, true)
+    Ok(observe(path, true)?.map(|(info, _)| info))
 }
 
 /// Canonicalize a path; a missing path keeps its missing tail below the nearest existing ancestor.
