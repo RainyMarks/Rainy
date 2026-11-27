@@ -4,6 +4,21 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 5.0.1 · 2026-11-27
+
+- **Now open source under GPL-3.0-only**: from this version on, Rainy's own code and documentation are licensed under the GNU GPL version 3, so you may use, study, modify and redistribute them for personal, academic or commercial work. A modified version you distribute must also be GPL-3.0-only with its complete source, keep the copyright and origin notices, say what was changed, and use its own name, icon and artwork: the Rainy name, icon and pixel pet are not licensed with the code. See NOTICE and TRADEMARKS.md. Settings → General → About has a new License row with the copyright, the license and the warranty disclaimer.
+- **The pixel pet in chats too**: with the Optical look on and a wide enough window, a smaller pixel pet stands at the right of the message box in a chat. She looks up while the model thinks and answers and a music note pops up when the reply is done; she stops to watch while you type; pat her three times quickly and she hops twice. When nothing is happening she keeps still and takes no CPU.
+- **Finer motion**: collapsible blocks such as tool steps fade in as they open; in Settings the highlight of the navigation and of segmented buttons slides to the new choice; every loading spinner runs at 30 frames a second. With Windows' animation effects off, all of this stays still.
+- **Fixes and hardening**:
+  - After clicking a switch in Settings and closing it, text in the chat behind no longer keeps a selection highlight.
+  - Word documents converted for preview with Word or WPS always open with macros disabled, and Word and Markdown previews drop any scripts in the file.
+  - The agent's web preview tool opens only addresses on this computer, and URLs disguised with a backslash can no longer get around that.
+  - Paths denied in the Security settings are now skipped by the search tools as well.
+  - Overlapping patches from a model no longer crash the Host; the model is told about the error instead.
+  - The WSL and SSH runtime downloads only from HTTPS addresses, with every piece capped to its size; the installer handles symbolic links and failed rollbacks more safely.
+  - Several reliability fixes in update downloads, Strata, SSH connections and external agents.
+- **Lighter**: document previews load their parts on demand, so about two thirds less script loads when a preview opens; encryption now uses a single library, leaving fewer dependencies in the installer.
+
 ## 5.0.0 · 2026-11-26
 
 - **A new Optical look**: turn it on under Settings → Appearance → Effects; it is off by default; everything below comes with it, and with it off Rainy looks exactly as 4.13 did. With it on, a new chat is filled with faint characters drifting slowly, brighter near the pointer and rippling where you click; a blue, violet and pink glow comes from behind the message box; cards and the message box turn to glass, and the pickers for where the chat runs, the model and permissions move inside the message box.

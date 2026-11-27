@@ -1,7 +1,7 @@
 {
   "name": "rainy-agent",
   "productName": "Rainy",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "private": true,
   "type": "module",
   "description": "Rainy: the viewer page and release scripts beside the native app in native/",
