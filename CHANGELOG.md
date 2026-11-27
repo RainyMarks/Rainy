@@ -4,6 +4,14 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 5.0.0 · 2026-11-26
+
+- **A new look, "Optical"**: turn it on under Settings → Appearance → Effects; it is off by default; everything below comes with it, and with it off Rainy looks exactly as 4.13 did. With it on, a new chat is filled with faint characters drifting slowly, brighter near the pointer and rippling where you click; a blue, violet and pink glow comes from behind the message box; cards and the message box turn to glass, and the pickers for where the chat runs, the model and permissions move inside the message box.
+- **A usage overview**: a new chat greets you by your Windows user name ("What's next, …?") above an overview card: chats, messages, total tokens, active days, the cache hit rate, the most used model, a map of your days with messages (up to a year; pointing at a day shows its message count), and a comparison such as "These tokens are about 25 copies of Dream of the Red Chamber". The Models tab shows each model's share, the Limits tab what is left of Codex's and Antigravity's usage limits; the overview can show one project, and the last 30 or 7 days. Everything is counted by Rainy from the chats on this computer.
+- **A pixel pet**: a small white-haired cat girl stands on the message box. She blinks, twitches an ear and looks at the pointer, now and then strolls a few steps along the box and back; point at her and she hops, with a heart; while the page is still, she sleeps.
+- **Reasoning levels in color, and a slider**: in the model button under the message box and in the model list, each reasoning level has its own color (teal and blue for the low ones through violet and pink for the high ones); the model menu sets the level with a slider: click or drag, and it applies when you let go.
+- **No extra power drawn**: the animation runs at 10 frames a second, only while the window is in front, a new chat is shown and within 45 seconds of switching to the window, opening a new chat or moving the pointer over the page. In the background, after a while without input, or with Windows' animation effects off, nothing moves and it takes no extra CPU. The glow and the glass are fitted to every color scheme so text keeps its contrast: at least 7:1 for body text and 4.5:1 for secondary text.
+
 ## 4.13.0 · 2026-11-26
 
 - **See what a sub-agent is doing**: while a sub-agent (the task tool) works, its card opens and lists each step: the file it read, what it searched for, the page it opened. The step in progress has a spinner, a failed one a red dot, and below them is what it is writing. When it is done the card folds, with the number of steps beside its title; opened, it shows each step and the report it handed back, laid out as Markdown. A sub-agent that ran out of steps, time or token budget is marked "Hit a limit", with a note that its report may be incomplete.
