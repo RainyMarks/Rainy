@@ -125,6 +125,8 @@ impl Network {
 
     pub fn configure(&self, settings: Option<ProxySettings>) {
         *self.settings.write().unwrap() = settings.unwrap_or_default();
+        self.answers.lock().unwrap().clear();
+        self.clients.lock().unwrap().clear();
         for listener in self.listeners.lock().unwrap().iter() {
             listener();
         }
@@ -164,16 +166,20 @@ impl Network {
             return proxy.clone();
         }
         // Without an answer the environment decides, which on Windows usually means direct.
+        // Do not cache transient IPC failures/timeouts for 30s so recovery happens on the next request.
         let proxy = match system(format!("{origin}/")).await {
-            Ok(answer) => proxy_url(answer.as_deref()),
+            Ok(answer) => {
+                let resolved = proxy_url(answer.as_deref());
+                let mut answers = self.answers.lock().unwrap();
+                answers.retain(|(known, ..)| *known != origin);
+                answers.push((origin, Instant::now(), resolved.clone()));
+                if answers.len() > MAX_SYSTEM_ANSWERS {
+                    answers.remove(0);
+                }
+                resolved
+            }
             Err(_) => environment_proxy(url),
         };
-        let mut answers = self.answers.lock().unwrap();
-        answers.retain(|(known, ..)| *known != origin);
-        answers.push((origin, Instant::now(), proxy.clone()));
-        if answers.len() > MAX_SYSTEM_ANSWERS {
-            answers.remove(0);
-        }
         proxy
     }
 
@@ -221,7 +227,10 @@ impl Network {
                 Err(error) => log::warn!("The proxy {} is not usable: {error}", masked(address)),
             }
         }
-        let client = builder.build().unwrap_or_default();
+        let client = builder.build().unwrap_or_else(|error| {
+            log::warn!("HTTP client builder failed ({error}); falling back to direct no-proxy client");
+            reqwest::Client::builder().no_proxy().build().unwrap_or_else(|_| reqwest::Client::new())
+        });
         if clients.len() >= MAX_CLIENTS {
             clients.clear();
         }

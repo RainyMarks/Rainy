@@ -222,6 +222,16 @@ pub async fn probe(target: &str, language: &str, path: &str, source: &str) -> Ca
     candidate
 }
 
+type TrustCheck = Arc<dyn Fn(Option<&str>, Option<&Path>) -> bool + Send + Sync>;
+
+struct OpsGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for OpsGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// The runtime service of one Host.
 pub struct Runtime {
     env: HostEnv,
@@ -234,6 +244,7 @@ pub struct Runtime {
     components: Mutex<(Vec<(String, PathBuf)>, BTreeMap<String, String>)>,
     operations: Arc<std::sync::atomic::AtomicUsize>,
     listeners: Mutex<Vec<Box<dyn Fn(&str) + Send + Sync>>>,
+    trust_check: Mutex<Option<TrustCheck>>,
 }
 
 impl Runtime {
@@ -254,9 +265,23 @@ impl Runtime {
             components: Mutex::default(),
             operations,
             listeners: Mutex::default(),
+            trust_check: Mutex::default(),
         });
         runtime.refresh_components()?;
         Ok(runtime)
+    }
+
+    /// Inject a workspace-trust check so untrusted workspaces never auto-execute project `.venv` binaries on discover.
+    pub fn set_trust_check(&self, check: impl Fn(Option<&str>, Option<&Path>) -> bool + Send + Sync + 'static) {
+        *self.trust_check.lock().unwrap() = Some(Arc::new(check));
+    }
+
+    fn is_workspace_trusted(&self, workspace_id: &str, root: &Path) -> bool {
+        let check = self.trust_check.lock().unwrap().clone();
+        match check {
+            Some(check) => check(Some(workspace_id), Some(root)),
+            None => true,
+        }
     }
 
     /// Called with the project whose selection was saved, so processes started with the old PATH can be replaced.
@@ -267,9 +292,22 @@ impl Runtime {
     /// The installed offline components (`active.json` of the toolchain root) and their default executables.
     fn refresh_components(&self) -> std::io::Result<()> {
         let root = &self.env.toolchain_root;
-        let Some(active) = read_json::<BTreeMap<String, String>>(&root.join("active.json"))? else {
-            *self.components.lock().unwrap() = Default::default();
-            return Ok(());
+        let active_path = root.join("active.json");
+        let active = match read_json::<BTreeMap<String, String>>(&active_path) {
+            Ok(Some(active)) => active,
+            Ok(None) => {
+                *self.components.lock().unwrap() = Default::default();
+                return Ok(());
+            }
+            Err(error) => {
+                if let Some(backup) = crate::text::backup_damaged(&active_path) {
+                    log::warn!("active.json is unreadable ({error}); backed up to {}", backup.display());
+                } else {
+                    log::warn!("active.json is unreadable ({error}); continuing without bundled components");
+                }
+                *self.components.lock().unwrap() = Default::default();
+                return Ok(());
+            }
         };
         let platform = platform();
         let mut entries = Vec::new();
@@ -279,7 +317,8 @@ impl Runtime {
             let valid_id = id.split_once('-').is_some_and(|(os, kind)| (os == "windows" || os == "linux") && kinds.contains(&kind));
             let generation = spelling.strip_prefix(&format!("{id}/")).is_some_and(|hash| (hash.len() == 32 || hash.len() == 64) && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
             if !valid_id || !generation || !id.starts_with(&format!("{platform}-")) {
-                return Err(std::io::Error::other("An installed component has an invalid execution target or generation."));
+                log::warn!("Skipping component entry {id}={spelling} in active.json for platform {platform}");
+                continue;
             }
             let path = root.join(&id).join(&spelling[id.len() + 1..]);
             if id == format!("{platform}-basic") {
@@ -427,12 +466,33 @@ impl Runtime {
 
     async fn discover(&self, workspace_id: &str) -> HostResult<Value> {
         self.refresh_components()?;
+        let root = PathBuf::from(self.workspace_root(workspace_id)?);
+        let trusted = self.is_workspace_trusted(workspace_id, &root);
         let candidates = self.candidates(workspace_id)?;
         let target = self.env.target_id.clone();
         let mut probes = Vec::new();
         for (language, path, source) in candidates {
             let target = target.clone();
-            probes.push(async move { probe(&target, &language, &path, source).await });
+            probes.push(async move {
+                if source == "project" && !trusted {
+                    return Candidate {
+                        id: identity(&target, &language, &path),
+                        language,
+                        path,
+                        source: source.to_owned(),
+                        platform: platform().to_owned(),
+                        version: None,
+                        prefix: None,
+                        ready: false,
+                        capabilities: Vec::new(),
+                        error: Some(l(
+                            "当前工作区尚未设为受信任，未自动执行项目内虚拟环境检测。请在设置中信任该工作区或手动检测。",
+                            "Workspace is not trusted; skipped automatic probing of project virtual environments. Trust this workspace in Settings or probe it manually.",
+                        )),
+                    };
+                }
+                probe(&target, &language, &path, source).await
+            });
         }
         let results: Vec<Candidate> = futures::stream::iter(probes).buffered(PROBE_CONCURRENCY).collect().await;
         self.observations.lock().unwrap().insert(workspace_id.to_owned(), results);
@@ -498,6 +558,7 @@ impl Runtime {
         }
         self.activity.assert_can_start().map_err(failure)?;
         self.operations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let _ops_guard = OpsGuard(self.operations.clone());
         let result = match op.as_str() {
             "discover" => self.discover(&workspace_id).await,
             "probe" => match (language, request["path"].as_str()) {
@@ -514,7 +575,6 @@ impl Runtime {
             },
             _ => Err(HostError::invalid(format!("Unknown runtime operation {op}"))),
         };
-        self.operations.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         result.map_err(|error| if error.code == "invalid-request" { error } else { failure(error) })
     }
 
@@ -557,7 +617,7 @@ impl Runtime {
             }
         }
         let host_path = std::env::var_os("PATH").unwrap_or_default();
-        let joined = std::env::join_paths(directories.into_iter().chain(std::env::split_paths(&host_path))).unwrap_or_default();
+        let joined = join_paths_lossy(directories.into_iter().chain(std::env::split_paths(&host_path)));
         let mut environment = BTreeMap::from([("PATH".to_owned(), joined.to_string_lossy().into_owned()), ("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned())]);
         if components.iter().any(|(id, _)| id == "windows-cpp") {
             environment.insert("CMAKE_GENERATOR".into(), "Ninja".into());
@@ -619,14 +679,23 @@ fn extra_research_python_candidates(home: &Path, unix: bool) -> Vec<(PathBuf, &'
     out
 }
 
+/// Join `PATH` entries while skipping individual entries containing the platform path separator
+/// (e.g. `:` on Unix or `"` on Windows) so one bad directory never wipes the whole `PATH`.
+fn join_paths_lossy(entries: impl IntoIterator<Item = PathBuf>) -> std::ffi::OsString {
+    let valid: Vec<PathBuf> = entries
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty() && std::env::join_paths(std::iter::once(path)).is_ok())
+        .collect();
+    std::env::join_paths(valid).unwrap_or_default()
+}
+
 fn load_selection_file(path: &Path) -> SelectionFile {
     match read_json::<SelectionFile>(path) {
         Ok(Some(state)) => state,
         Ok(None) => SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() },
         Err(error) => {
             log::warn!("runtime-environments.json is unreadable and was backed up: {error}");
-            let backup = path.with_file_name(format!("runtime-environments.json.damaged-{}", crate::text::now_ms()));
-            let _ = std::fs::copy(path, &backup);
+            let _ = crate::text::backup_damaged(path);
             SelectionFile { version: 1, workspaces: BTreeMap::new(), extra: BTreeMap::new() }
         }
     }
@@ -692,5 +761,77 @@ mod tests {
         assert!(unix_candidates.iter().any(|(p, s)| *s == "venv" && p == &home.join(".venvs/ctf-research/bin/python")));
         assert!(unix_candidates.iter().any(|(p, s)| *s == "uv" && p == &home.join(".local/share/uv/python/cpython-3.12/bin/python")));
         assert!(unix_candidates.iter().any(|(p, s)| *s == "conda" && p == Path::new("/opt/conda/bin/python")));
+    }
+
+    #[test]
+    fn join_paths_lossy_skips_invalid_entries_without_clearing_path() {
+        let bad = if cfg!(windows) { PathBuf::from(r#"C:\bad"dir"#) } else { PathBuf::from("/tmp/a:b") };
+        let good = if cfg!(windows) { PathBuf::from(r"C:\Tools\bin") } else { PathBuf::from("/usr/local/bin") };
+        let joined = join_paths_lossy([bad, good.clone()]);
+        let split: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(split, vec![good]);
+    }
+
+    #[tokio::test]
+    async fn untrusted_workspace_skips_auto_probing_project_venv_and_recovers_bad_active_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let toolchain = dir.path().join("toolchain");
+        let work = dir.path().join("project");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&toolchain).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        // Invalid active.json must be backed up instead of failing Runtime::new.
+        std::fs::write(toolchain.join("active.json"), "{corrupted").unwrap();
+
+        let venv_py = if cfg!(windows) {
+            work.join(".venv").join("Scripts").join("python.exe")
+        } else {
+            work.join(".venv").join("bin").join("python")
+        };
+        std::fs::create_dir_all(venv_py.parent().unwrap()).unwrap();
+        // Write a dummy file (not a real Python executable); if auto-probed it would try to spawn it.
+        std::fs::write(&venv_py, b"not-a-binary").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut perms = std::fs::metadata(&venv_py).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&venv_py, perms).unwrap();
+        }
+
+        let env = HostEnv {
+            version: "5.0.0",
+            home: home.clone(),
+            app_root: dir.path().to_path_buf(),
+            resources: dir.path().to_path_buf(),
+            windows: cfg!(windows),
+            target_id: "local".into(),
+            target_label: None,
+            carrier_state_root: dir.path().to_path_buf(),
+            toolchain_root: toolchain.clone(),
+            builtin_php: None,
+            pwsh_path: None,
+            configure_deepseek: false,
+            tmp: dir.path().join("tmp"),
+            port: 0,
+        };
+        let projects = Arc::new(Projects::load(home.join("projects.json")).unwrap());
+        let project = projects.open(&work.display().to_string(), Some("w-untrusted".into())).unwrap();
+        let registry = Arc::new(Registry::new(dir.path().to_path_buf(), "local".into()));
+        let runtime = Runtime::new(env, projects, registry, Arc::new(Activity::default())).unwrap();
+        runtime.set_trust_check(|_, _| false);
+
+        let result = runtime.discover(&project.id).await.unwrap();
+        let candidates = result["candidates"].as_array().unwrap();
+        let proj_candidate = candidates.iter().find(|c| c["source"] == "project").expect("project venv candidate listed");
+        assert_eq!(proj_candidate["ready"], false);
+        assert!(proj_candidate["error"].as_str().is_some_and(|e| e.contains("受信任") || e.contains("not trusted")));
+        let backups = std::fs::read_dir(&toolchain)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("active.json.damaged-"))
+            .count();
+        assert_eq!(backups, 1);
     }
 }

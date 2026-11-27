@@ -24,10 +24,9 @@ pub struct Outcome {
 pub struct Utf8Stream {
     pending: Vec<u8>,
     legacy: Option<&'static encoding_rs::Encoding>,
-    /// Once invalid UTF-8 is observed and decoded via `legacy`, keep decoding high-byte runs with the legacy code page
-    /// so subsequent 2-byte CJK characters split across chunks (e.g. GBK "通" 0xCD 0xA8, "目录" 0xC4 0xBF 0xC2 0xBC)
-    /// are not mistaken for valid 2-byte UTF-8 Latin/diacritic code points.
-    legacy_mode: bool,
+    /// True only while decoding the current contiguous non-ASCII run after invalid UTF-8 was seen; resets to `false`
+    /// as soon as an ASCII/control byte (`< 0x80`) arrives so subsequent UTF-8 output in the same terminal stays UTF-8.
+    in_legacy_run: bool,
 }
 
 impl Utf8Stream {
@@ -37,7 +36,7 @@ impl Utf8Stream {
     }
 
     pub fn with_legacy(legacy: Option<&'static encoding_rs::Encoding>) -> Self {
-        Self { pending: Vec::new(), legacy, legacy_mode: false }
+        Self { pending: Vec::new(), legacy, in_legacy_run: false }
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> String {
@@ -55,22 +54,19 @@ impl Utf8Stream {
             if self.pending.is_empty() {
                 return out;
             }
-            if self.legacy_mode {
+            if self.in_legacy_run {
                 if let Some(encoding) = self.legacy {
-                    // Drain any leading ASCII / ANSI escape bytes directly.
-                    let ascii_end = self.pending.iter().position(|&b| b >= 0x80).unwrap_or(self.pending.len());
-                    if ascii_end > 0 {
-                        out.push_str(std::str::from_utf8(&self.pending[..ascii_end]).expect("ascii"));
-                        self.pending.drain(..ascii_end);
-                        if self.pending.is_empty() {
-                            return out;
-                        }
+                    if self.pending[0] < 0x80 {
+                        // End of contiguous legacy high-byte run: resume UTF-8 preference for subsequent runs.
+                        self.in_legacy_run = false;
+                        continue;
                     }
                     if !self.decode_legacy_run(encoding, eof, &mut out) {
                         return out;
                     }
                     continue;
                 }
+                self.in_legacy_run = false;
             }
             match std::str::from_utf8(&self.pending) {
                 Ok(text) => {
@@ -126,6 +122,7 @@ impl Utf8Stream {
     fn decode_legacy_run(&mut self, encoding: &'static encoding_rs::Encoding, eof: bool, out: &mut String) -> bool {
         while let Some(&first) = self.pending.first() {
             if first < 0x80 {
+                self.in_legacy_run = false;
                 break;
             }
             if self.pending.len() < 2 {
@@ -134,11 +131,12 @@ impl Utf8Stream {
                 }
                 out.push('\u{fffd}');
                 self.pending.clear();
+                self.in_legacy_run = false;
                 return true;
             }
             let (pair, had_errors) = encoding.decode_without_bom_handling(&self.pending[..2]);
             if !had_errors {
-                self.legacy_mode = true;
+                self.in_legacy_run = true;
                 out.push_str(&pair);
                 self.pending.drain(..2);
                 continue;
@@ -152,7 +150,7 @@ impl Utf8Stream {
                 } else {
                     let (quad, quad_err) = encoding.decode_without_bom_handling(&self.pending[..4]);
                     if !quad_err {
-                        self.legacy_mode = true;
+                        self.in_legacy_run = true;
                         out.push_str(&quad);
                         self.pending.drain(..4);
                         continue;
@@ -166,10 +164,12 @@ impl Utf8Stream {
     }
 }
 
+const PTY_WRITE_QUEUE_CAPACITY: usize = 64;
+
 pub struct Pty {
     pub pid: u32,
     job: Option<crate::process::ProcessJob>,
-    writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+    writer_tx: Mutex<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
     master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     exit: watch::Receiver<Option<Outcome>>,
     output_done: watch::Receiver<bool>,
@@ -198,8 +198,41 @@ impl Pty {
                 crate::process::contain_pid(pid);
             }
         }
-        let mut reader = pair.master.try_clone_reader().map_err(|error| HostError::other(error.to_string()))?;
-        let writer = pair.master.take_writer().map_err(|error| HostError::other(error.to_string()))?;
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                if let Some(job) = &job {
+                    job.terminate();
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(HostError::other(error.to_string()));
+            }
+        };
+        let mut writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                if let Some(job) = &job {
+                    job.terminate();
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(HostError::other(error.to_string()));
+            }
+        };
+        let (writer_tx, writer_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_WRITE_QUEUE_CAPACITY);
+        std::thread::spawn(move || {
+            while let Ok(bytes) = writer_rx.recv() {
+                for chunk in bytes.chunks(16 * 1024) {
+                    if writer.write_all(chunk).is_err() {
+                        return;
+                    }
+                }
+                if writer.flush().is_err() {
+                    return;
+                }
+            }
+        });
         let master = Arc::new(Mutex::new(Some(pair.master)));
         let (exit_sender, exit) = watch::channel(None);
         let (done_sender, output_done) = watch::channel(false);
@@ -227,7 +260,11 @@ impl Pty {
         std::thread::spawn(move || {
             let status = child.wait();
             let outcome = match status {
-                Ok(status) => Outcome { exit_code: Some(status.exit_code() as i32), signal: status.signal().map(|signal| format!("SIG{}", signal.trim_start_matches("SIG").to_uppercase())) },
+                Ok(status) => {
+                    let signal = status.signal().map(|signal| format!("SIG{}", signal.trim_start_matches("SIG").to_uppercase()));
+                    let exit_code = if signal.is_some() { None } else { Some(status.exit_code() as i32) };
+                    Outcome { exit_code, signal }
+                }
                 Err(_) => Outcome::default(),
             };
             // Closing the pseudo-console flushes its last output and ends the reader on Windows.
@@ -235,17 +272,15 @@ impl Pty {
             closing.lock().unwrap().take();
             let _ = exit_sender.send(Some(outcome));
         });
-        Ok(Arc::new(Self { pid, job, writer: Mutex::new(Some(writer)), master, exit, output_done }))
+        Ok(Arc::new(Self { pid, job, writer_tx: Mutex::new(Some(writer_tx)), master, exit, output_done }))
     }
 
     pub fn write(&self, data: &str) -> HostResult<()> {
-        let mut writer = self.writer.lock().unwrap();
-        let writer = writer.as_mut().ok_or_else(|| HostError::other("This terminal is not running."))?;
-        // Write large pastes in bounded chunks to avoid saturating the ConPTY/PTY input buffer in one call.
-        for chunk in data.as_bytes().chunks(16 * 1024) {
-            writer.write_all(chunk).map_err(|error| HostError::other(error.to_string()))?;
-        }
-        writer.flush().map_err(|error| HostError::other(error.to_string()))
+        let tx = self.writer_tx.lock().unwrap().clone().ok_or_else(|| HostError::other("This terminal is not running."))?;
+        tx.try_send(data.as_bytes().to_vec()).map_err(|err| match err {
+            std::sync::mpsc::TrySendError::Full(_) => HostError::other("The terminal input buffer is full; retry shortly."),
+            std::sync::mpsc::TrySendError::Disconnected(_) => HostError::other("This terminal is not running."),
+        })
     }
 
     /// A size change; one reaching a program that already ended does nothing.
@@ -277,13 +312,14 @@ impl Pty {
 
     /// Stop the terminal's process tree and wait for it.
     pub async fn terminate(&self) {
+        // Drop the writer channel first so the writer thread exits without blocking on a full ConPTY pipe.
+        self.writer_tx.lock().unwrap().take();
         if let Some(job) = &self.job {
             job.terminate();
         }
         if self.running() && self.pid != 0 {
             crate::process::kill_pid_tree(self.pid).await;
         }
-        self.writer.lock().unwrap().take();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(3), self.wait()).await;
         self.master.lock().unwrap().take();
     }
@@ -325,5 +361,13 @@ mod tests {
         }
         utf8_out.push_str(&utf8_stream.finish());
         assert_eq!(utf8_out, "你好世界 UTF-8 🚀");
+
+        // After a legacy GBK segment ends at an ASCII boundary, subsequent UTF-8 output must still decode as UTF-8.
+        let mut mixed = Utf8Stream::with_legacy(Some(encoding_rs::GBK));
+        let (gbk_line, _, _) = encoding_rs::GBK.encode("联通目录\n");
+        let mut mixed_out = mixed.push(&gbk_line);
+        mixed_out.push_str(&mixed.push("接下来是中文 UTF-8 🎉\n".as_bytes()));
+        mixed_out.push_str(&mixed.finish());
+        assert_eq!(mixed_out, "联通目录\n接下来是中文 UTF-8 🎉\n");
     }
 }

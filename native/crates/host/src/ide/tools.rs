@@ -48,6 +48,22 @@ pub fn missing(kit: Kit) -> HostError {
     HostError::new(MISSING_REASON, message)
 }
 
+fn is_ready_tool(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        let script = path.extension().and_then(|e| e.to_str()).is_some_and(|ext| matches!(ext, "py" | "js"));
+        if !script {
+            use std::os::unix::fs::PermissionsExt as _;
+            return meta.permissions().mode() & 0o111 != 0;
+        }
+    }
+    true
+}
+
 impl Tools {
     pub fn new(resources: &Path) -> Self {
         let mut roots = vec![resources.join("ide")];
@@ -65,7 +81,7 @@ impl Tools {
     /// The first root holding `relative`; else where the bundled copy would be.
     fn find(&self, relative: &[&str]) -> PathBuf {
         let place = |root: &PathBuf| relative.iter().fold(root.clone(), |path, part| path.join(part));
-        self.roots.iter().map(place).find(|path| path.is_file()).unwrap_or_else(|| place(&self.roots[0]))
+        self.roots.iter().map(place).find(|path| is_ready_tool(path)).unwrap_or_else(|| place(&self.roots[0]))
     }
 
     pub fn ruff(&self) -> PathBuf {
@@ -91,9 +107,9 @@ impl Tools {
         self.find(&["js-debug", "src", "dapDebugServer.js"])
     }
 
-    /// `path` when it is there, else the error that names the download it belongs to.
+    /// `path` when it is there (and executable on Unix for native binaries), else the error that names the download.
     pub fn require(path: PathBuf, kit: Kit) -> Result<PathBuf, HostError> {
-        if path.is_file() { Ok(path) } else { Err(missing(kit)) }
+        if is_ready_tool(&path) { Ok(path) } else { Err(missing(kit)) }
     }
 
     /// What `tools.status` reports; inspecting never installs or runs anything.
@@ -107,7 +123,7 @@ impl Tools {
         ]
         .into_iter()
         .map(|(name, path)| {
-            let ready = path.is_file();
+            let ready = is_ready_tool(&path);
             json!({ "name": name, "path": ready.then(|| path.display().to_string()), "ready": ready })
         })
         .collect();
@@ -139,16 +155,31 @@ mod tests {
         let tools = Tools::with_roots(vec![bundled.clone(), python.clone(), dir.path().join("modules").join("ide-web")]);
         assert_eq!(tools.ruff(), bundled.join("bin").join(exe("ruff")));
         assert!(Tools::require(tools.ruff(), Kit::Python).is_err_and(|error| error.code == MISSING_REASON));
-        std::fs::create_dir_all(python.join("bin")).unwrap();
-        std::fs::write(python.join("bin").join(exe("ruff")), b"").unwrap();
+        let write_bin = |path: &Path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mut perms = std::fs::metadata(path).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(path, perms).unwrap();
+            }
+        };
+        write_bin(&python.join("bin").join(exe("ruff")));
         std::fs::create_dir_all(python.join("python").join("debugpy").join("adapter")).unwrap();
         std::fs::write(python.join("python").join("debugpy").join("adapter").join("__main__.py"), b"").unwrap();
         assert_eq!(Tools::require(tools.ruff(), Kit::Python).unwrap(), python.join("bin").join(exe("ruff")));
         assert_eq!(tools.debugpy(), python.join("python"));
         assert!(Tools::require(tools.tsc(), Kit::Web).is_err());
         // A bundled copy wins, as in the Linux runtime.
-        std::fs::create_dir_all(bundled.join("bin")).unwrap();
-        std::fs::write(bundled.join("bin").join(exe("ruff")), b"").unwrap();
+        write_bin(&bundled.join("bin").join(exe("ruff")));
         assert_eq!(tools.ruff(), bundled.join("bin").join(exe("ruff")));
+        #[cfg(unix)]
+        {
+            let non_exec = python.join("bin").join("ty");
+            std::fs::write(&non_exec, b"").unwrap();
+            assert!(Tools::require(non_exec, Kit::Python).is_err());
+        }
     }
 }

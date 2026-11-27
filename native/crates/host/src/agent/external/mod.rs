@@ -5,12 +5,14 @@
 
 pub mod acp;
 pub mod codex;
+pub mod common;
 pub mod jsonrpc;
 pub mod quota;
 pub mod team;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -154,6 +156,7 @@ struct CachedProbe {
 pub struct ExternalManager {
     settings: Arc<Settings>,
     windows: bool,
+    closed: AtomicBool,
     cache: Mutex<HashMap<String, CachedProbe>>,
     codex_pool: AsyncMutex<HashMap<ProcessKey, Arc<CodexProcess>>>,
     acp_pool: AsyncMutex<HashMap<String, (ProcessKey, Arc<AcpProcess>)>>,
@@ -163,10 +166,24 @@ pub struct ExternalManager {
     /// The models each kind of agent last listed, kept in `external-models.json` so the model menu has them after
     /// a restart without starting the agent (a probe leaves an empty conversation in Antigravity's history).
     known_models: Mutex<HashMap<String, Vec<ExternalModelInfo>>>,
+    models_write_lock: Mutex<()>,
     models_file: PathBuf,
     /// Each kind's usage limits as last read, and the kinds being read now.
     quotas: Mutex<HashMap<String, ExternalQuota>>,
     quota_reading: Mutex<HashSet<String>>,
+}
+
+struct QuotaReadingGuard<'a> {
+    set: &'a Mutex<HashSet<String>>,
+    kind: String,
+}
+
+impl Drop for QuotaReadingGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut reading) = self.set.lock() {
+            reading.remove(&self.kind);
+        }
+    }
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -189,12 +206,14 @@ impl ExternalManager {
         let manager = Arc::new(Self {
             settings,
             windows,
+            closed: AtomicBool::new(false),
             cache: Mutex::new(HashMap::new()),
             codex_pool: AsyncMutex::new(HashMap::new()),
             acp_pool: AsyncMutex::new(HashMap::new()),
             stop_reaper: CancellationToken::new(),
             commands: Mutex::new(HashMap::new()),
             known_models: Mutex::new(known_models),
+            models_write_lock: Mutex::new(()),
             models_file,
             quotas: Mutex::new(HashMap::new()),
             quota_reading: Mutex::new(HashSet::new()),
@@ -278,7 +297,7 @@ impl ExternalManager {
                 let normalized = raw.to_ascii_lowercase();
                 if !is_valid_kind(&normalized) {
                     return Err(HostError::invalid(l(
-                        "外部代理标识只能包含 1–32 个小写字母、数字或连字符。",
+                        "外部 Agent 标识只能包含 1–32 个小写字母、数字或连字符。",
                         "External agent kind must be 1–32 lowercase letters, digits or hyphens.",
                     )));
                 }
@@ -336,7 +355,7 @@ impl ExternalManager {
         if !remove {
             check_external_agent(&config)?;
         } else if !is_valid_kind(&config.kind) {
-            return Err(HostError::invalid(l("外部代理标识无效。", "Invalid external agent kind.")));
+            return Err(HostError::invalid(l("外部 Agent 标识无效。", "Invalid external agent kind.")));
         }
         let target_kind = config.kind.clone();
         self.settings.update(|data| {
@@ -369,8 +388,9 @@ impl ExternalManager {
             let process = self.get_or_spawn_codex(key, &args).await?;
             let control = Arc::new(CodexTurnControl::new(process.rpc.clone()));
             let handle = ExternalTurnHandle { inner: TurnControl::Codex(control.clone()) };
+            let session_id = session_id.to_owned();
             tokio::spawn(async move {
-                if let Err(err) = process.run_turn(&req, tx.clone(), control, cancel).await {
+                if let Err(err) = process.run_turn(&session_id, &req, tx.clone(), control, cancel).await {
                     let _ = tx.send(ExternalEvent::TurnFinished {
                         stop_reason: if err.code == "aborted" { "aborted".into() } else { "error".into() },
                         error: (err.code != "aborted").then_some(err.message),
@@ -398,12 +418,13 @@ impl ExternalManager {
         }
     }
 
-    /// Keep the slash commands an agent of `kind` listed, for `external.status` and the next chats with it.
     /// Keep the models an agent listed; whether they differ from what was known (then they are saved too).
     pub fn remember_models(&self, kind: &str, models: Vec<ExternalModelInfo>) -> bool {
         if models.is_empty() {
             return false;
         }
+        // Serialize read-modify-write + disk persistence so concurrent probes never overwrite newer model lists.
+        let Ok(_write_guard) = self.models_write_lock.lock() else { return false };
         let snapshot = {
             let Ok(mut known) = self.known_models.lock() else { return false };
             if known.get(kind) == Some(&models) {
@@ -454,10 +475,9 @@ impl ExternalManager {
                 return false;
             }
         }
+        let _guard = QuotaReadingGuard { set: &self.quota_reading, kind: kind.to_owned() };
         let read = self.read_quota(kind, cwd).await;
-        if let Ok(mut reading) = self.quota_reading.lock() {
-            reading.remove(kind);
-        }
+        drop(_guard);
         let quota = read.unwrap_or_else(|error| {
             // Keep the last limits read, marked with why they could not be read now.
             let mut last = self.quotas.lock().ok().and_then(|known| known.get(kind).cloned()).unwrap_or_default();
@@ -513,16 +533,21 @@ impl ExternalManager {
         self.codex_pool.lock().await.values().find_map(|process| process.agent_activity(main, member, limit))
     }
 
-    /// Release any per-session external process when a Rainy chat is closed or deleted.
+    /// Release any per-session external process and Codex team cache when a Rainy chat is closed or deleted.
     pub async fn close_session(&self, session_id: &str) {
         let removed = self.acp_pool.lock().await.remove(session_id);
         if let Some((_, process)) = removed {
             process.close().await;
         }
+        let codex_procs: Vec<Arc<CodexProcess>> = self.codex_pool.lock().await.values().cloned().collect();
+        for proc in codex_procs {
+            proc.remove_session_team(session_id);
+        }
     }
 
     /// Shut down the reaper and terminate every running external agent subprocess cleanly.
     pub async fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         self.stop_reaper.cancel();
         let codex_list: Vec<Arc<CodexProcess>> = self.codex_pool.lock().await.drain().map(|(_, p)| p).collect();
         let acp_list: Vec<Arc<AcpProcess>> = self.acp_pool.lock().await.drain().map(|(_, (_, p))| p).collect();
@@ -530,45 +555,16 @@ impl ExternalManager {
         futures::future::join_all(acp_list.iter().map(|p| p.close())).await;
     }
 
-    async fn reap_idle(&self) {
-        let mut stale_codex = Vec::new();
-        {
-            let mut pool = self.codex_pool.lock().await;
-            pool.retain(|_, proc| {
-                if !proc.is_alive() || proc.idle_for() >= IDLE_REAP_AFTER {
-                    stale_codex.push(proc.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-        let mut stale_acp = Vec::new();
-        {
-            let mut pool = self.acp_pool.lock().await;
-            pool.retain(|_, (_, proc)| {
-                if !proc.is_alive() || proc.idle_for() >= IDLE_REAP_AFTER {
-                    stale_acp.push(proc.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-        for proc in stale_codex {
-            proc.close().await;
-        }
-        for proc in stale_acp {
-            proc.close().await;
-        }
-    }
-
-    async fn evict_kind(&self, kind: &str) {
+    async fn drain_pools(
+        &self,
+        codex_evict: impl Fn(&ProcessKey, &CodexProcess) -> bool,
+        acp_evict: impl Fn(&ProcessKey, &AcpProcess) -> bool,
+    ) {
         let mut stale_codex = Vec::new();
         {
             let mut pool = self.codex_pool.lock().await;
             pool.retain(|k, proc| {
-                if k.kind == kind {
+                if codex_evict(k, proc) {
                     stale_codex.push(proc.clone());
                     false
                 } else {
@@ -580,7 +576,7 @@ impl ExternalManager {
         {
             let mut pool = self.acp_pool.lock().await;
             pool.retain(|_, (k, proc)| {
-                if k.kind == kind {
+                if acp_evict(k, proc) {
                     stale_acp.push(proc.clone());
                     false
                 } else {
@@ -596,29 +592,48 @@ impl ExternalManager {
         }
     }
 
+    async fn reap_idle(&self) {
+        self.drain_pools(
+            |_, proc| !proc.is_alive() || proc.idle_for() >= IDLE_REAP_AFTER,
+            |_, proc| !proc.is_alive() || proc.idle_for() >= IDLE_REAP_AFTER,
+        )
+        .await;
+    }
+
+    async fn evict_kind(&self, kind: &str) {
+        self.drain_pools(|k, _| k.kind == kind, |k, _| k.kind == kind).await;
+    }
+
     async fn get_or_spawn_codex(&self, key: ProcessKey, args: &[String]) -> HostResult<Arc<CodexProcess>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostError::other(l("外部 Agent 服务已关闭。", "External agent manager is closed.")));
+        }
         if let Some(existing) = self.codex_pool.lock().await.get(&key).filter(|proc| proc.is_alive()).cloned() {
             return Ok(existing);
         }
         // Spawn and complete the handshake outside the pool lock so other workspaces never stall.
         let spawned = CodexProcess::spawn(&key.binary, args, &key.cwd).await?;
-        let existing = {
+        let (selected, to_close) = {
             let mut pool = self.codex_pool.lock().await;
-            if let Some(existing) = pool.get(&key).filter(|proc| proc.is_alive()).cloned() {
-                Some(existing)
+            if self.closed.load(Ordering::Acquire) {
+                (None, Some(spawned))
+            } else if let Some(existing) = pool.get(&key).filter(|proc| proc.is_alive()).cloned() {
+                (Some(existing), Some(spawned))
             } else {
-                pool.insert(key, spawned.clone());
-                None
+                let replaced = pool.insert(key, spawned.clone());
+                (Some(spawned), replaced)
             }
         };
-        if let Some(existing) = existing {
-            spawned.close().await;
-            return Ok(existing);
+        if let Some(stale) = to_close {
+            stale.close().await;
         }
-        Ok(spawned)
+        selected.ok_or_else(|| HostError::other(l("外部 Agent 服务已关闭。", "External agent manager is closed.")))
     }
 
     async fn get_or_spawn_acp(&self, session_id: &str, key: ProcessKey, args: &[String]) -> HostResult<Arc<AcpProcess>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostError::other(l("外部 Agent 服务已关闭。", "External agent manager is closed.")));
+        }
         let old = {
             let mut pool = self.acp_pool.lock().await;
             match pool.get(session_id) {
@@ -632,8 +647,24 @@ impl ExternalManager {
             old.close().await;
         }
         let spawned = AcpProcess::spawn(&key.kind, &key.binary, args, &key.cwd).await?;
-        self.acp_pool.lock().await.insert(session_id.to_owned(), (key, spawned.clone()));
-        Ok(spawned)
+        let (selected, to_close) = {
+            let mut pool = self.acp_pool.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                (None, Some(spawned))
+            } else if let Some((existing_key, existing_proc)) = pool.get(session_id)
+                && *existing_key == key
+                && existing_proc.is_alive()
+            {
+                (Some(existing_proc.clone()), Some(spawned))
+            } else {
+                let replaced = pool.insert(session_id.to_owned(), (key, spawned.clone())).map(|(_, p)| p);
+                (Some(spawned), replaced)
+            }
+        };
+        if let Some(stale) = to_close {
+            stale.close().await;
+        }
+        selected.ok_or_else(|| HostError::other(l("外部 Agent 服务已关闭。", "External agent manager is closed.")))
     }
 
     fn effective_configs(&self) -> Vec<ExternalAgentConfig> {
@@ -664,7 +695,7 @@ impl ExternalManager {
             .unwrap_or_else(|| default_command(&kind).to_owned());
         if cmd.is_empty() {
             return Err(HostError::invalid(l(
-                "请先在 设置 → 外部 Agent 中配置该 ACP 代理的可执行命令。",
+                "请先在 设置 → 外部 Agent 中配置该 ACP Agent 的可执行命令。",
                 "Configure the executable command for this ACP agent in Settings → External Agents first.",
             )));
         }
@@ -731,7 +762,7 @@ async fn probe_one(cfg: &ExternalAgentConfig, env: &std::collections::BTreeMap<s
                     Ok(Err(err)) => (Vec::new(), Some(err.message)),
                     Err(_) => (
                         Vec::new(),
-                        Some(l("外部 ACP 代理探测超时，请确认已完成登录。", "External ACP probe timed out; verify CLI login.")),
+                        Some(l("外部 ACP Agent 探测超时，请确认已完成登录。", "External ACP probe timed out; verify CLI login.")),
                     ),
                 }
             }
@@ -830,14 +861,14 @@ pub fn is_valid_kind(kind: &str) -> bool {
 
 fn check_binary_str(bin: &str) -> HostResult<()> {
     if bin.chars().count() > 512 || bin.chars().any(|c| c == '\0' || c == '\n' || c == '\r') {
-        return Err(HostError::invalid(l("外部代理命令路径无效。", "External agent binary path is invalid.")));
+        return Err(HostError::invalid(l("外部 Agent 命令路径无效。", "External agent binary path is invalid.")));
     }
     Ok(())
 }
 
 fn check_args_slice(args: &[String]) -> HostResult<()> {
     if args.len() > 32 || args.iter().any(|a| a.chars().count() > 512 || a.contains('\0')) {
-        return Err(HostError::invalid(l("外部代理启动参数无效。", "External agent arguments are invalid.")));
+        return Err(HostError::invalid(l("外部 Agent 启动参数无效。", "External agent arguments are invalid.")));
     }
     Ok(())
 }
@@ -846,7 +877,7 @@ fn check_args_slice(args: &[String]) -> HostResult<()> {
 pub fn check_external_agent(config: &ExternalAgentConfig) -> HostResult<()> {
     if !is_valid_kind(&config.kind) {
         return Err(HostError::invalid(l(
-            "外部代理标识只能包含 1–32 个小写字母、数字或连字符。",
+            "外部 Agent 标识只能包含 1–32 个小写字母、数字或连字符。",
             "External agent kind must be 1–32 lowercase letters, digits or hyphens.",
         )));
     }
@@ -855,7 +886,7 @@ pub fn check_external_agent(config: &ExternalAgentConfig) -> HostResult<()> {
     }
     check_args_slice(&config.args)?;
     if config.kind != "codex" && config.kind != "antigravity" && config.binary.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        return Err(HostError::invalid(l("自定义 ACP 代理必须指定可执行命令。", "A custom ACP agent must specify a binary command.")));
+        return Err(HostError::invalid(l("自定义 ACP Agent 必须指定可执行命令。", "A custom ACP agent must specify a binary command.")));
     }
     Ok(())
 }
@@ -864,7 +895,7 @@ pub fn check_external_agent(config: &ExternalAgentConfig) -> HostResult<()> {
 pub fn check_backend_ref(backend: &ExternalBackendRef) -> HostResult<ExternalBackendRef> {
     let kind = backend.kind.trim().to_ascii_lowercase();
     if !is_valid_kind(&kind) {
-        return Err(HostError::invalid(l("外部代理类型无效。", "Invalid external backend kind.")));
+        return Err(HostError::invalid(l("外部 Agent 类型无效。", "Invalid external backend kind.")));
     }
     if let Some(bin) = &backend.binary {
         check_binary_str(bin)?;

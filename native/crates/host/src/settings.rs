@@ -48,13 +48,17 @@ pub struct ModelSetup {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredModel {
+    #[serde(default)]
     provider: String,
-    #[serde(rename = "baseURL")]
+    #[serde(default, rename = "baseURL")]
     base_url: String,
+    #[serde(default)]
     model: String,
+    #[serde(default)]
     context_window: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u64>,
+    #[serde(default)]
     local: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api: Option<String>,
@@ -113,8 +117,11 @@ pub use rainy_protocol::models::ModelSelection;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
     pub transport: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -127,6 +134,7 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
     /// Tools the server lists that are allowed; empty allows all.
+    #[serde(default)]
     pub tools: Vec<String>,
     /// Tools turned off in Settings; a tool the server adds later is on.
     #[serde(default, rename = "disabledTools", skip_serializing_if = "Vec::is_empty")]
@@ -196,19 +204,29 @@ impl Default for ProxySettings {
     }
 }
 
+fn default_settings_version() -> u8 {
+    1
+}
+
 /// The persisted settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsData {
+    #[serde(default = "default_settings_version")]
     pub version: u8,
+    #[serde(default)]
     pub models: Vec<ModelSetup>,
+    #[serde(default)]
     pub selected: Option<ModelSelection>,
+    #[serde(default)]
     pub global_prompt: String,
     /// The built-in prompt the user wrote for a group of models (`claude`, `gpt`, `gemini`), used instead of Rainy's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub builtin_prompts: BTreeMap<String, String>,
+    #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
     /// Interface preferences as stored; values this version does not accept are dropped when read.
+    #[serde(default)]
     pub ui: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workbench: Option<Map<String, Value>>,
@@ -220,6 +238,9 @@ pub struct SettingsData {
     pub hooks: Vec<crate::agent::hooks::HookRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_agents: Vec<rainy_protocol::chat::ExternalAgentConfig>,
+    /// Preserves unknown top-level fields written by newer versions for forward/backward compatibility.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for SettingsData {
@@ -237,6 +258,7 @@ impl Default for SettingsData {
             proxy: None,
             hooks: Vec::new(),
             external_agents: Vec::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -410,7 +432,7 @@ fn check_data(data: &SettingsData) -> HostResult<()> {
         crate::agent::hooks::check_rule(hook)?;
     }
     if data.external_agents.len() > 32 {
-        return Err(HostError::invalid(l("外部代理配置数量超过上限。", "Too many external agent entries.")));
+        return Err(HostError::invalid(l("外部 Agent 配置数量超过上限。", "Too many external agent entries.")));
     }
     for ext in &data.external_agents {
         crate::agent::external::check_external_agent(ext)?;
@@ -599,7 +621,7 @@ impl Settings {
     }
 
     pub fn locale(&self) -> String {
-        self.prefs().get("locale").and_then(Value::as_str).unwrap_or("zh").to_owned()
+        self.inner.lock().unwrap().data.ui.get("locale").and_then(Value::as_str).unwrap_or("zh").to_owned()
     }
 
     /// Update interface preferences; every given field must be valid.
@@ -968,5 +990,17 @@ mod tests {
         assert_eq!(rules["w1"].deny_tools, ["bash"]);
         assert_eq!(rules["w2"].deny_commands, ["rm -rf /"]);
         assert_eq!(security.trusted_workspaces, ["/home/a/project"]);
+    }
+
+    #[test]
+    fn preserves_unknown_top_level_fields_and_reads_locale_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"futureFeature":{"enabled":true},"models":[],"selected":null,"globalPrompt":"","mcpServers":[],"ui":{"locale":"en"}}"#;
+        std::fs::write(dir.path().join("settings.json"), text).unwrap();
+        let settings = Settings::load(dir.path(), None).unwrap();
+        assert_eq!(settings.locale(), "en");
+        settings.set_prefs(Map::from_iter([("theme".to_owned(), json!("dark"))])).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["futureFeature"], json!({"enabled": true}));
     }
 }

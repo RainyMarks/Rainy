@@ -26,6 +26,68 @@ const PREVIEW_CHARS: usize = 240;
 const PREVIEW_BEFORE: usize = 40;
 const EXCLUDED: [&str; 4] = [".git", "node_modules", ".venv", "__pycache__"];
 
+/// Compiled search matcher: pure literal fast path, linear-time `regex::Regex`, or `fancy_regex::Regex` fallback
+/// for lookaround / back-references.
+enum Matcher {
+    Literal(String),
+    Fast(regex::Regex),
+    Fancy(Regex),
+}
+
+impl Matcher {
+    fn compile(options: &Value) -> HostResult<Self> {
+        let pattern = options["pattern"].as_str().unwrap_or_default();
+        let is_regex = options["regex"] == true;
+        let whole_word = options["wholeWord"] == true;
+        let case_sensitive = options["caseSensitive"] == true;
+        if !is_regex && !whole_word && case_sensitive {
+            return Ok(Self::Literal(pattern.to_owned()));
+        }
+        let mut source = if is_regex { pattern.to_owned() } else { regex::escape(pattern) };
+        if whole_word {
+            source = format!(r"\b(?:{source})\b");
+        }
+        if !case_sensitive {
+            source = format!("(?i){source}");
+        }
+        if let Ok(fast) = regex::Regex::new(&source) {
+            return Ok(Self::Fast(fast));
+        }
+        Regex::new(&source)
+            .map(Self::Fancy)
+            .map_err(|error| HostError::new("invalid-pattern", l(&format!("正则表达式有误：{error}"), &format!("Invalid regular expression: {error}"))))
+    }
+
+    fn for_each_match(&self, line: &str, mut visit: impl FnMut(usize, usize) -> bool) {
+        match self {
+            Self::Literal(needle) => {
+                if needle.is_empty() {
+                    return;
+                }
+                for (start, matched) in line.match_indices(needle.as_str()) {
+                    if !visit(start, start + matched.len()) {
+                        break;
+                    }
+                }
+            }
+            Self::Fast(re) => {
+                for m in re.find_iter(line) {
+                    if m.start() != m.end() && !visit(m.start(), m.end()) {
+                        break;
+                    }
+                }
+            }
+            Self::Fancy(re) => {
+                for m in re.find_iter(line).flatten() {
+                    if m.start() != m.end() && !visit(m.start(), m.end()) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The expression a search runs: literal unless `regex`, case-insensitive unless `caseSensitive`, `\b…\b` for whole words.
 pub fn expression(options: &Value) -> HostResult<Regex> {
     let pattern = options["pattern"].as_str().unwrap_or_default();
@@ -71,7 +133,7 @@ fn replacement(options: &Value, text: &str) -> String {
     out
 }
 
-/// Replace every match line by line, as the search finds them; the new text and the count.
+/// Replace every match line by line, as the search finds them; the new text and the count (single pass per line).
 pub fn replace_in_text(text: &str, regex: &Regex, replacement: &str) -> (String, usize) {
     let mut count = 0;
     let mut out = String::with_capacity(text.len());
@@ -80,13 +142,15 @@ pub fn replace_in_text(text: &str, regex: &Regex, replacement: &str) -> (String,
         let end = rest.find(['\n', '\r']).unwrap_or(rest.len());
         let separator = if rest[end..].starts_with("\r\n") { 2 } else { usize::from(end < rest.len()) };
         let line = &rest[..end];
-        let found = regex.find_iter(line).filter(Result::is_ok).count();
-        if found > 0 {
-            count += found;
-            out.push_str(&regex.replace_all(line, replacement));
-        } else {
-            out.push_str(line);
-        }
+        let mut line_matches = 0usize;
+        let replaced = regex.replace_all(line, |caps: &fancy_regex::Captures<'_>| {
+            line_matches += 1;
+            let mut expanded = String::new();
+            caps.expand(replacement, &mut expanded);
+            expanded
+        });
+        count += line_matches;
+        out.push_str(&replaced);
         out.push_str(&rest[end..end + separator]);
         rest = &rest[end + separator..];
     }
@@ -98,16 +162,55 @@ fn utf16_len(text: &str) -> usize {
 }
 
 /// The part of a long line around a match, and where the match starts in it (UTF-16 columns).
-fn preview(line: &str, column: usize) -> (String, usize) {
-    let units: Vec<u16> = line.encode_utf16().collect();
-    if units.len() <= PREVIEW_CHARS {
+/// Slices strictly on Unicode scalar boundaries so surrogate pairs are never split, and avoids encoding the whole line.
+fn preview(line: &str, match_byte_start: usize, column: usize) -> (String, usize) {
+    // Fast path: UTF-8 byte length is always >= UTF-16 code unit count for ASCII and >= half for supplementary planes.
+    if line.len() <= PREVIEW_CHARS {
         return (line.to_owned(), column);
     }
-    let start = column.saturating_sub(PREVIEW_BEFORE);
-    let end = (start + PREVIEW_CHARS).min(units.len());
-    let middle = String::from_utf16_lossy(&units[start..end]);
-    let text = format!("{}{middle}{}", if start > 0 { "…" } else { "" }, if end < units.len() { "…" } else { "" });
-    (text, column - start + usize::from(start > 0))
+    // Check whether the whole line fits within PREVIEW_CHARS UTF-16 units without allocating a Vec<u16>.
+    let mut total_u16 = 0usize;
+    let mut exceeds = false;
+    for ch in line.chars() {
+        total_u16 += ch.len_utf16();
+        if total_u16 > PREVIEW_CHARS {
+            exceeds = true;
+            break;
+        }
+    }
+    if !exceeds {
+        return (line.to_owned(), column);
+    }
+
+    // Walk backward from `match_byte_start` by up to `PREVIEW_BEFORE` UTF-16 units on char boundaries.
+    let mut start_byte = match_byte_start.min(line.len());
+    let mut before_u16 = 0usize;
+    for (idx, ch) in line[..start_byte].char_indices().rev() {
+        let w = ch.len_utf16();
+        if before_u16 + w > PREVIEW_BEFORE {
+            break;
+        }
+        before_u16 += w;
+        start_byte = idx;
+    }
+
+    // Walk forward from `start_byte` by up to `PREVIEW_CHARS` UTF-16 units on char boundaries.
+    let mut end_byte = start_byte;
+    let mut window_u16 = 0usize;
+    for (rel, ch) in line[start_byte..].char_indices() {
+        let w = ch.len_utf16();
+        if window_u16 + w > PREVIEW_CHARS {
+            break;
+        }
+        window_u16 += w;
+        end_byte = start_byte + rel + ch.len_utf8();
+    }
+
+    let has_leading = start_byte > 0;
+    let has_trailing = end_byte < line.len();
+    let middle = &line[start_byte..end_byte];
+    let text = format!("{}{middle}{}", if has_leading { "…" } else { "" }, if has_trailing { "…" } else { "" });
+    (text, before_u16 + usize::from(has_leading))
 }
 
 /// The typed include and exclude lists as globs; a plain name also covers a folder of that name.
@@ -126,6 +229,21 @@ pub fn globs(list: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+struct RunningGuard<'a> {
+    running: &'a Mutex<HashMap<String, Arc<AtomicBool>>>,
+    workspace_id: String,
+    token: Arc<AtomicBool>,
+}
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        let mut running = self.running.lock().unwrap();
+        if running.get(&self.workspace_id).is_some_and(|current| Arc::ptr_eq(current, &self.token)) {
+            running.remove(&self.workspace_id);
+        }
+    }
 }
 
 pub struct TextSearch {
@@ -150,25 +268,22 @@ impl TextSearch {
         }
         let workspace_id = request["workspaceId"].as_str().unwrap_or_default().to_owned();
         let roots = self.roots(&workspace_id)?;
-        let regex = expression(request)?;
+        let matcher = Matcher::compile(request)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Some(previous) = self.running.lock().unwrap().insert(workspace_id.clone(), cancelled.clone()) {
             previous.store(true, Ordering::Relaxed);
         }
+        let _guard = RunningGuard { running: &self.running, workspace_id, token: cancelled.clone() };
         let deadline = Instant::now() + TIMEOUT;
         let (mut files, mut total, mut truncated) = (Vec::new(), 0usize, false);
         for root in &roots {
-            let found = search_root(root, request, &regex, MAX_MATCHES - total, &cancelled, deadline)?;
+            let found = search_root(root, request, &matcher, MAX_MATCHES - total, &cancelled, deadline)?;
             total += found.1;
             files.extend(found.0);
             if found.2 {
                 truncated = true;
                 break;
             }
-        }
-        let mut running = self.running.lock().unwrap();
-        if running.get(&workspace_id).is_some_and(|current| Arc::ptr_eq(current, &cancelled)) {
-            running.remove(&workspace_id);
         }
         Ok(json!({ "files": files, "matches": total, "truncated": truncated || cancelled.load(Ordering::Relaxed) }))
     }
@@ -226,7 +341,7 @@ fn replace_file(root: &Root, path: &str, regex: &Regex, replacement: &str) -> Re
 }
 
 /// Search one folder: its files, their match count, and whether the search stopped early.
-fn search_root(root: &Root, request: &Value, regex: &Regex, budget: usize, cancelled: &Arc<AtomicBool>, deadline: Instant) -> HostResult<(Vec<Value>, usize, bool)> {
+fn search_root(root: &Root, request: &Value, matcher: &Matcher, budget: usize, cancelled: &Arc<AtomicBool>, deadline: Instant) -> HostResult<(Vec<Value>, usize, bool)> {
     let base = Path::new(&root.path);
     let mut overrides = ignore::overrides::OverrideBuilder::new(base);
     let invalid = |error: ignore::Error| HostError::invalid(l(&format!("文件筛选规则无效：{error}"), &format!("The file filter is not valid: {error}")));
@@ -247,6 +362,7 @@ fn search_root(root: &Root, request: &Value, regex: &Regex, budget: usize, cance
     let stopped = AtomicBool::new(false);
     walker.run(|| {
         Box::new(|entry| {
+            use std::io::Read as _;
             if cancelled.load(Ordering::Relaxed) || stopped.load(Ordering::Relaxed) || Instant::now() > deadline {
                 stopped.store(true, Ordering::Relaxed);
                 return ignore::WalkState::Quit;
@@ -258,30 +374,31 @@ fn search_root(root: &Root, request: &Value, regex: &Regex, budget: usize, cance
             let Ok(mut file) = std::fs::File::open(entry.path()) else { return ignore::WalkState::Continue };
             // Probe the first 8 KiB for NUL bytes before reading the whole file to avoid allocating large binary files.
             let mut probe = [0u8; 8192];
-            let Ok(first) = std::io::Read::read(&mut file, &mut probe) else { return ignore::WalkState::Continue };
+            let Ok(first) = file.read(&mut probe) else { return ignore::WalkState::Continue };
             if probe[..first].contains(&0) {
                 return ignore::WalkState::Continue;
             }
             let mut bytes = Vec::with_capacity(first);
             bytes.extend_from_slice(&probe[..first]);
-            if first == probe.len() && std::io::Read::read_to_end(&mut file, &mut bytes).is_err() {
-                return ignore::WalkState::Continue;
+            if first == probe.len() {
+                let remaining = MAX_FILE_BYTES.saturating_sub(first as u64) + 1;
+                if file.take(remaining).read_to_end(&mut bytes).is_err() || (bytes.len() as u64) > MAX_FILE_BYTES {
+                    return ignore::WalkState::Continue;
+                }
             }
             let text = String::from_utf8_lossy(&bytes);
             let mut matches = Vec::new();
             for (index, line) in text.lines().enumerate() {
-                for found in regex.find_iter(line).flatten() {
-                    if found.start() == found.end() {
-                        continue;
-                    }
+                matcher.for_each_match(line, |start, end| {
                     if count.fetch_add(1, Ordering::Relaxed) >= budget {
                         stopped.store(true, Ordering::Relaxed);
-                        break;
+                        return false;
                     }
-                    let column = utf16_len(&line[..found.start()]);
-                    let (shown, shown_column) = preview(line, column);
-                    matches.push(json!({ "line": index + 1, "column": column, "length": utf16_len(found.as_str()), "preview": shown, "previewColumn": shown_column }));
-                }
+                    let column = utf16_len(&line[..start]);
+                    let (shown, shown_column) = preview(line, start, column);
+                    matches.push(json!({ "line": index + 1, "column": column, "length": utf16_len(&line[start..end]), "preview": shown, "previewColumn": shown_column }));
+                    true
+                });
                 if stopped.load(Ordering::Relaxed) {
                     break;
                 }
@@ -324,11 +441,25 @@ mod tests {
         std::fs::write(dir.path().join("node_modules").join("b.txt"), "rain").unwrap();
         let root = Root { root_id: "primary".into(), path: dir.path().display().to_string(), title: "t".into(), primary: true };
         let options = json!({ "pattern": "rain" });
-        let (files, total, truncated) = search_root(&root, &options, &expression(&options).unwrap(), 10, &Arc::default(), Instant::now() + TIMEOUT).unwrap();
+        let (files, total, truncated) = search_root(&root, &options, &Matcher::compile(&options).unwrap(), 10, &Arc::default(), Instant::now() + TIMEOUT).unwrap();
         assert_eq!((total, truncated), (2, false));
         assert_eq!(files[0]["path"], "a.txt");
         assert_eq!(files[0]["matches"][0]["column"], 3);
         assert_eq!(globs("src, *.py, build/"), ["src", "src/**", "**/src/**", "*.py", "build/**"]);
+    }
+
+    #[test]
+    fn preview_never_splits_surrogate_pairs_on_long_lines() {
+        let prefix = "😀".repeat(60); // 120 UTF-16 units
+        let suffix = "🚀".repeat(160); // 320 UTF-16 units
+        let line = format!("{prefix}TARGET{suffix}");
+        let start = prefix.len();
+        let col = utf16_len(&prefix);
+        let (shown, shown_col) = preview(&line, start, col);
+        assert!(!shown.contains('\u{FFFD}'), "surrogate pair must never be split: {shown}");
+        assert!(shown.contains("TARGET"));
+        let target_u16 = utf16_len(&shown[..shown.find("TARGET").unwrap()]);
+        assert_eq!(shown_col, target_u16);
     }
 
     #[test]

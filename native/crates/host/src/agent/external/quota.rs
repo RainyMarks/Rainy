@@ -6,7 +6,7 @@ use serde_json::Value;
 
 /// Unix milliseconds now.
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)
+    crate::text::now_ms() as i64
 }
 
 /// The limits in Codex's `account/rateLimits/read` result or `account/rateLimits/updated` params: `rateLimits` with a
@@ -61,25 +61,11 @@ pub fn agy_usage(text: &str) -> Option<ExternalQuota> {
 
 /// Unix seconds of a UTC time written `2026-11-30T20:04:56Z` (fractions of a second allowed, `+00:00` too).
 pub fn utc_seconds(text: &str) -> Option<i64> {
-    let text = text.trim();
-    let text = text.strip_suffix('Z').or_else(|| text.strip_suffix("+00:00"))?;
-    let (date, time) = text.split_once('T')?;
-    let mut date = date.split('-').map(|part| part.parse::<i64>().ok());
-    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
-    let time = time.split('.').next()?;
-    let mut time = time.split(':').map(|part| part.parse::<i64>().ok());
-    let (hour, minute, second) = (time.next()??, time.next()??, time.next().flatten().unwrap_or(0));
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+    let trimmed = text.trim();
+    if !(trimmed.ends_with('Z') || trimmed.ends_with('z') || trimmed.ends_with("+00:00")) {
         return None;
     }
-    // Days from 1970-01-01 to the date (Howard Hinnant's days_from_civil).
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let of_era = year - era * 400;
-    let of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let of_era_days = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
-    let days = era * 146_097 + of_era_days - 719_468;
-    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
+    crate::text::parse_rfc3339_secs(trimmed)
 }
 
 #[cfg(test)]

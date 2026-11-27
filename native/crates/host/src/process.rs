@@ -10,15 +10,26 @@ use tokio::process::{Child, Command};
 
 use crate::locale::l;
 
-/// Whether an environment name looks like a credential; such variables are never inherited by child processes.
-/// `GIT_CONFIG_KEY_<n>` names a configuration key, not a credential: dropping it while `GIT_CONFIG_COUNT` and
-/// `GIT_CONFIG_VALUE_<n>` stay makes every `git` command fail with "missing config key".
+/// Whether an environment name looks like a credential or internal Host variable; such variables are never inherited by
+/// child processes. `GIT_CONFIG_KEY_<n>` names a configuration key, not a credential: dropping it while
+/// `GIT_CONFIG_COUNT` and `GIT_CONFIG_VALUE_<n>` stay makes every `git` command fail with "missing config key".
 pub fn sensitive(name: &str) -> bool {
     let upper = name.to_uppercase();
     if upper.strip_prefix("GIT_CONFIG_KEY_").is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())) {
         return false;
     }
-    ["KEY", "PASSWORD", "SECRET", "TOKEN"].iter().any(|word| upper.contains(word))
+    if upper == "PWD" || upper == "OLDPWD" || upper == "SSH_AUTH_SOCK" {
+        return false;
+    }
+    if upper.starts_with("RAINY_") {
+        return upper != "RAINY_PHP_EXTENSION_DIR";
+    }
+    if ["KEY", "PASSWORD", "SECRET", "TOKEN", "CREDENTIAL", "COOKIE"].iter().any(|word| upper.contains(word)) {
+        return true;
+    }
+    upper
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| matches!(part, "AUTH" | "AUTHORIZATION" | "OAUTH" | "PASS" | "PASSWD" | "PWD" | "PGPASS" | "CRED" | "CREDS"))
 }
 
 /// The Host's environment without credential-shaped variables.
@@ -328,13 +339,28 @@ async fn taskkill(pid: u32, force: bool) {
     let _ = command.status().await;
 }
 
+#[cfg(any(unix, test))]
+fn valid_signal_pid(pid: u32) -> Option<i32> {
+    (pid > 1 && pid <= i32::MAX as u32).then_some(pid as i32)
+}
+
 #[cfg(unix)]
 fn signal_group(pid: u32, signal: i32) {
+    let Some(pid) = valid_signal_pid(pid) else { return };
     // SAFETY: plain signal delivery; a negative pid names the process group the child leads.
     unsafe {
-        if libc::kill(-(pid as i32), signal) != 0 {
-            libc::kill(pid as i32, signal);
+        if libc::kill(-pid, signal) != 0 {
+            libc::kill(pid, signal);
         }
+    }
+}
+
+#[cfg(unix)]
+fn signal_group_only(pid: u32, signal: i32) {
+    let Some(pid) = valid_signal_pid(pid) else { return };
+    // SAFETY: signals only the process group after the leader has been reaped, never an arbitrary reused pid.
+    unsafe {
+        let _ = libc::kill(-pid, signal);
     }
 }
 
@@ -348,16 +374,18 @@ pub async fn kill_tree(child: &mut Child, grace: Duration) {
         taskkill(pid, false).await;
         if tokio::time::timeout(grace, child.wait()).await.is_err() {
             taskkill(pid, true).await;
-            let _ = child.wait().await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
     }
     #[cfg(unix)]
     {
         signal_group(pid, libc::SIGTERM);
         let exited = tokio::time::timeout(grace, child.wait()).await.is_ok();
-        signal_group(pid, libc::SIGKILL);
-        if !exited {
-            let _ = child.wait().await;
+        if exited {
+            signal_group_only(pid, libc::SIGKILL);
+        } else {
+            signal_group(pid, libc::SIGKILL);
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
     }
 }
@@ -370,7 +398,7 @@ pub async fn kill_pid_tree(pid: u32) {
     {
         signal_group(pid, libc::SIGTERM);
         tokio::time::sleep(Duration::from_millis(500)).await;
-        signal_group(pid, libc::SIGKILL);
+        signal_group_only(pid, libc::SIGKILL);
     }
 }
 
@@ -395,9 +423,48 @@ pub fn outcome(status: &std::process::ExitStatus) -> (Option<i32>, Option<String
     (status.code(), None)
 }
 
+/// Ensures a spawned child tree is killed if the owning future is dropped mid-flight.
+struct ChildCleanup {
+    pid: Option<u32>,
+    job: Option<ProcessJob>,
+    armed: bool,
+}
+
+impl ChildCleanup {
+    fn new(child: &Child) -> Self {
+        let job = ProcessJob::new();
+        if let Some(job) = job.as_ref() {
+            let _ = job.assign_child(child);
+        }
+        Self { pid: child.id(), job, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ChildCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(job) = self.job.as_ref() {
+            job.terminate();
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            signal_group(pid, libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = self.pid;
+    }
+}
+
 /// Run a program to completion; output past `limit` bytes per stream is dropped.
 pub async fn run(program: impl AsRef<std::ffi::OsStr>, args: &[impl AsRef<std::ffi::OsStr>], cwd: &Path, env: &BTreeMap<OsString, OsString>, limit: usize, timeout: Option<Duration>) -> std::io::Result<Output> {
     let mut child = spawn(program, args, cwd, env, false)?;
+    let mut cleanup = ChildCleanup::new(&child);
     let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
     let work = async {
         let (out, err, status) = tokio::join!(read_limited(stdout, limit), read_limited(stderr, limit), child.wait());
@@ -407,12 +474,17 @@ pub async fn run(program: impl AsRef<std::ffi::OsStr>, args: &[impl AsRef<std::f
         Some(limit) => match tokio::time::timeout(limit, work).await {
             Ok(result) => result,
             Err(_) => {
+                if let Some(job) = cleanup.job.as_ref() {
+                    job.terminate();
+                }
                 kill_tree(&mut child, Duration::from_millis(500)).await;
+                cleanup.disarm();
                 return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "The program did not finish in time."));
             }
         },
         None => work.await,
     };
+    cleanup.disarm();
     let status = status?;
     Ok(Output { code: status.code(), success: status.success(), stdout: out, stderr: err })
 }
@@ -440,7 +512,7 @@ pub struct Output {
     pub stderr: Vec<u8>,
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -448,10 +520,24 @@ mod tests {
     fn git_config_keys_are_inherited_but_credentials_are_not() {
         assert!(!sensitive("GIT_CONFIG_KEY_0") && !sensitive("git_config_key_12"));
         assert!(!sensitive("GIT_CONFIG_COUNT") && !sensitive("GIT_CONFIG_VALUE_0"));
+        assert!(!sensitive("PWD") && !sensitive("OLDPWD") && !sensitive("SSH_AUTH_SOCK") && !sensitive("CLASSPATH"));
+        assert!(!sensitive("RAINY_PHP_EXTENSION_DIR"));
+        assert!(sensitive("RAINY_HOME") && sensitive("RAINY_PORT") && sensitive("RAINY_SSH_EXTRA_ENV") && sensitive("RAINY_ADMIN_PASSWORD"));
         assert!(sensitive("GIT_CONFIG_KEY_") && sensitive("GIT_CONFIG_KEY_X") && sensitive("GIT_CONFIG_KEYS"));
         assert!(sensitive("OPENAI_API_KEY") && sensitive("GITHUB_TOKEN") && sensitive("DB_PASSWORD") && sensitive("CLIENT_SECRET"));
+        assert!(sensitive("AWS_CREDENTIAL_FILE") && sensitive("HTTP_AUTH") && sensitive("SMTP_PASS") && sensitive("MYSQL_PWD") && sensitive("SESSION_COOKIE"));
     }
 
+    #[test]
+    fn signal_pid_rejects_zero_one_and_overflow() {
+        assert_eq!(valid_signal_pid(0), None);
+        assert_eq!(valid_signal_pid(1), None);
+        assert_eq!(valid_signal_pid(u32::MAX), None);
+        assert_eq!(valid_signal_pid(i32::MAX as u32 + 1), None);
+        assert_eq!(valid_signal_pid(42), Some(42));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn bare_names_take_a_pathext_extension_on_windows() {
         let dir = std::env::temp_dir().join(format!("rainy-resolve-{}", std::process::id()));
@@ -464,6 +550,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn process_job_terminates_child_and_binds_to_host_job() {
         let job = ProcessJob::new().expect("windows job object");

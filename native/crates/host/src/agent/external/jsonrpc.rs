@@ -17,8 +17,48 @@ use tokio_util::sync::CancellationToken;
 
 use crate::process::{ProcessJob, console_text, kill_tree};
 
-/// Maximum bytes kept from stderr for diagnostics when a subprocess fails.
+/// Maximum chars kept from stderr for diagnostics when a subprocess fails.
 const STDERR_TAIL_CHARS: usize = 1200;
+/// Single JSON-RPC line cap on stdout (32 MiB) so an unframed or runaway stream cannot OOM the Host.
+const MAX_STDOUT_LINE_BYTES: usize = 32 * 1024 * 1024;
+/// Single line cap on stderr diagnostics (256 KiB).
+const MAX_STDERR_LINE_BYTES: usize = 256 * 1024;
+const LINE_SHRINK_THRESHOLD: usize = 256 * 1024;
+const LINE_SHRINK_TO: usize = 64 * 1024;
+
+/// Read one `\n`-delimited line keeping at most `max_bytes`; excess bytes up to the newline are discarded.
+async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max_bytes: usize,
+) -> std::io::Result<Option<bool>> {
+    buf.clear();
+    let mut saw_any = false;
+    let mut truncated = false;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(saw_any.then_some(truncated));
+        }
+        saw_any = true;
+        let newline = chunk.iter().position(|&b| b == b'\n');
+        let consume = newline.map_or(chunk.len(), |idx| idx + 1);
+        let available = &chunk[..consume];
+        if !truncated {
+            let room = max_bytes.saturating_sub(buf.len());
+            if available.len() <= room {
+                buf.extend_from_slice(available);
+            } else {
+                buf.extend_from_slice(&available[..room]);
+                truncated = true;
+            }
+        }
+        reader.consume(consume);
+        if newline.is_some() {
+            return Ok(Some(truncated));
+        }
+    }
+}
 
 /// Failure returned by a JSON-RPC call.
 #[derive(Debug, Clone)]
@@ -235,7 +275,7 @@ impl JsonRpcClient {
             });
         }
 
-        // Stdout reader task: decodes one JSON object per line.
+        // Stdout reader task: decodes one JSON object per line with bounded line memory.
         {
             let pending = client.pending.clone();
             let closed = client.closed.clone();
@@ -244,16 +284,23 @@ impl JsonRpcClient {
             tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stdout);
                 let mut buf = Vec::new();
-                while reader.read_until(b'\n', &mut buf).await.is_ok_and(|n| n > 0) {
-                    let line = String::from_utf8_lossy(&buf);
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        match serde_json::from_str::<Value>(trimmed) {
-                            Ok(message) => pending.incoming(message),
-                            Err(_) => log::debug!("[external:{tag}] non-json stdout: {}", &trimmed[..trimmed.len().min(200)]),
+                while let Ok(Some(truncated)) = read_line_bounded(&mut reader, &mut buf, MAX_STDOUT_LINE_BYTES).await {
+                    if truncated {
+                        log::warn!("[external:{tag}] dropped oversized stdout line (>{MAX_STDOUT_LINE_BYTES} bytes)");
+                    } else {
+                        let line = String::from_utf8_lossy(&buf);
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            match serde_json::from_str::<Value>(trimmed) {
+                                Ok(message) => pending.incoming(message),
+                                Err(_) => log::debug!("[external:{tag}] non-json stdout: {}", crate::text::truncate_chars(trimmed, 200)),
+                            }
                         }
                     }
                     buf.clear();
+                    if buf.capacity() > LINE_SHRINK_THRESHOLD {
+                        buf.shrink_to(LINE_SHRINK_TO);
+                    }
                 }
                 closed.cancel();
                 let tail = stderr_ref.lock().map(|s| s.trim().to_owned()).unwrap_or_default();
@@ -268,19 +315,18 @@ impl JsonRpcClient {
             tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stderr);
                 let mut buf = Vec::new();
-                while reader.read_until(b'\n', &mut buf).await.is_ok_and(|n| n > 0) {
+                while let Ok(Some(_)) = read_line_bounded(&mut reader, &mut buf, MAX_STDERR_LINE_BYTES).await {
                     let text = console_text(&buf);
                     buf.clear();
+                    if buf.capacity() > LINE_SHRINK_THRESHOLD {
+                        buf.shrink_to(LINE_SHRINK_TO);
+                    }
                     let line = text.trim_end_matches(['\r', '\n']);
                     if !line.is_empty() {
                         log::info!("[external:{tag}] {line}");
                         if let Ok(mut kept) = stderr_ref.lock() {
-                            kept.push_str(line);
-                            kept.push('\n');
-                            let count = kept.chars().count();
-                            if count > STDERR_TAIL_CHARS {
-                                *kept = kept.chars().skip(count - STDERR_TAIL_CHARS).collect();
-                            }
+                            super::common::push_bounded_tail(&mut kept, line, STDERR_TAIL_CHARS);
+                            super::common::push_bounded_tail(&mut kept, "\n", STDERR_TAIL_CHARS);
                         }
                     }
                 }
@@ -404,6 +450,7 @@ impl Drop for JsonRpcClient {
         {
             #[cfg(unix)]
             if let Some(pid) = child.id()
+                && pid > 1
                 && pid <= i32::MAX as u32
             {
                 // SAFETY: child leads its own process group (`process_group(0)` in `crate::process::command`).
@@ -417,16 +464,11 @@ impl Drop for JsonRpcClient {
 }
 
 /// Environment for an external CLI subprocess: inherits user environment (preserving CLI auth env vars
-/// such as `OPENAI_API_KEY`, `GEMINI_API_KEY`, `CODEX_HOME`, `HTTP(S)_PROXY`) while scrubbing Rainy's
-/// own internal secrets (`RAINY_TOKEN`, `RAINY_*_KEY`, `RAINY_CREDENTIAL_*`).
+/// such as `OPENAI_API_KEY`, `GEMINI_API_KEY`, `CODEX_HOME`, `HTTP(S)_PROXY`) while scrubbing all internal
+/// `RAINY_*` variables so Host paths, ports, SSH metadata and credentials never leak to external CLIs.
 pub fn external_env() -> BTreeMap<OsString, OsString> {
     let mut env: BTreeMap<OsString, OsString> = std::env::vars_os()
-        .filter(|(name, _)| {
-            let upper = name.to_string_lossy().to_uppercase();
-            !(upper == "RAINY_TOKEN"
-                || upper.starts_with("RAINY_CREDENTIAL")
-                || (upper.starts_with("RAINY_") && (upper.ends_with("_KEY") || upper.ends_with("_SECRET") || upper.ends_with("_TOKEN"))))
-        })
+        .filter(|(name, _)| !name.to_string_lossy().to_uppercase().starts_with("RAINY_"))
         .collect();
     if cfg!(windows) && !env.keys().any(|k| k.to_string_lossy().eq_ignore_ascii_case("PYTHONUTF8")) {
         env.insert(OsString::from("PYTHONUTF8"), OsString::from("1"));
@@ -535,32 +577,49 @@ pub fn explain_missing(command: &str, env: &BTreeMap<OsString, OsString>) -> Str
     } else {
         vec![trimmed.to_owned()]
     };
+    let extra_dirs = if is_direct(trimmed) { Vec::new() } else { fallback_dirs() };
+    let path_dirs: Vec<std::path::PathBuf> = if is_direct(trimmed) {
+        Vec::new()
+    } else {
+        std::env::split_paths(&path_of(env)).filter(|dir| !dir.as_os_str().is_empty()).collect()
+    };
     let candidates: Vec<std::path::PathBuf> = if is_direct(trimmed) {
         names.iter().map(std::path::PathBuf::from).collect()
     } else {
-        let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path_of(env)).filter(|dir| !dir.as_os_str().is_empty()).collect();
-        dirs.extend(fallback_dirs());
-        dirs.iter().flat_map(|dir| names.iter().map(move |name| dir.join(name))).collect()
+        path_dirs
+            .iter()
+            .chain(extra_dirs.iter())
+            .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+            .collect()
     };
-    // A file that is there by name (the directory lists it) but whose metadata cannot be read.
-    let unreadable = candidates.iter().find_map(|candidate| {
+    // A file that is there by name (the directory lists it) but whose metadata cannot be read or lacks +x on Unix.
+    for candidate in &candidates {
         let present = std::fs::symlink_metadata(candidate).is_ok();
         match std::fs::metadata(candidate) {
-            Err(error) if present => Some((candidate.clone(), error)),
-            _ => None,
+            Err(error) if present => {
+                return crate::locale::l(
+                    &format!("找到了 {}，但读不了它：{error}", candidate.display()),
+                    &format!("Found {}, but it cannot be read: {error}", candidate.display()),
+                );
+            }
+            #[cfg(unix)]
+            Ok(meta) if meta.is_file() => {
+                use std::os::unix::fs::PermissionsExt as _;
+                if meta.permissions().mode() & 0o111 == 0 {
+                    return crate::locale::l(
+                        &format!("找到了 {}，但它没有可执行权限（请运行 chmod +x）。", candidate.display()),
+                        &format!("Found {}, but it is not executable (run chmod +x).", candidate.display()),
+                    );
+                }
+            }
+            _ => {}
         }
-    });
-    if let Some((path, error)) = unreadable {
-        return crate::locale::l(
-            &format!("找到了 {}，但读不了它：{error}", path.display()),
-            &format!("Found {}, but it cannot be read: {error}", path.display()),
-        );
     }
     if is_direct(trimmed) {
         return crate::locale::l(&format!("没有这个文件：{trimmed}"), &format!("No such file: {trimmed}"));
     }
-    let searched = std::env::split_paths(&path_of(env)).filter(|dir| !dir.as_os_str().is_empty()).count();
-    let extra = fallback_dirs().len();
+    let searched = path_dirs.len();
+    let extra = extra_dirs.len();
     crate::locale::l(
         &format!("在 PATH 的 {searched} 个目录和另外 {extra} 个常见安装位置都没找到 {trimmed}。装好后点“重新探测”，或在“自定义可执行文件路径”里填它的完整路径。"),
         &format!("{trimmed} is in none of the {searched} PATH directories or {extra} other usual install places. After installing it, choose Re-probe, or enter its full path as the custom executable path."),
@@ -575,7 +634,21 @@ mod tests {
     fn external_env_scrubs_rainy_secrets_but_keeps_path() {
         let env = external_env();
         assert!(env.keys().any(|k| k.to_string_lossy().eq_ignore_ascii_case("PATH")));
-        assert!(!env.keys().any(|k| k.to_string_lossy().eq_ignore_ascii_case("RAINY_TOKEN")));
+        assert!(!env.keys().any(|k| k.to_string_lossy().to_uppercase().starts_with("RAINY_")));
+    }
+
+    #[tokio::test]
+    async fn read_line_bounded_caps_oversized_lines_and_handles_multibyte_text() {
+        let payload = format!("{}\n{{\"ok\":true}}\n", "雨".repeat(400));
+        let mut reader = tokio::io::BufReader::new(payload.as_bytes());
+        let mut buf = Vec::new();
+        assert_eq!(read_line_bounded(&mut reader, &mut buf, 100).await.unwrap(), Some(true));
+        assert_eq!(buf.len(), 100);
+        let text = String::from_utf8_lossy(&buf);
+        let _ = crate::text::truncate_chars(text.trim(), 200);
+        assert_eq!(read_line_bounded(&mut reader, &mut buf, 100).await.unwrap(), Some(false));
+        assert_eq!(std::str::from_utf8(&buf).unwrap().trim(), r#"{"ok":true}"#);
+        assert_eq!(read_line_bounded(&mut reader, &mut buf, 100).await.unwrap(), None);
     }
 
     #[test]

@@ -8,13 +8,14 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncWriteExt as _;
 
-use super::framing;
+use super::lsp_client::{LspStdioClient, document_language_id};
 use super::tools::{Kit, Tools};
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::paths::{join_relative, relative_path};
-use crate::process::{child_env, read_limited, resolve_executable};
+use crate::process::{ProcessJob, child_env, contain_child, read_limited, resolve_executable};
 
 const MAX_TEXT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 65536;
@@ -25,7 +26,7 @@ pub async fn format(request: &Value, root: &Path, tools: &Tools, environment: &B
     relative_path(path, false)?;
     let text = request["text"].as_str().ok_or_else(|| HostError::invalid("Invalid formatter request"))?;
     if text.len() > MAX_TEXT_BYTES {
-        return Err(HostError::new("too-large", "Editor text exceeds the formatting limit"));
+        return Err(HostError::new("too-large", l("文本超过格式化大小上限。", "Editor text exceeds the formatting limit.")));
     }
     let file = join_relative(root, path);
     let filename = file.display().to_string();
@@ -41,10 +42,40 @@ pub async fn format(request: &Value, root: &Path, tools: &Tools, environment: &B
             _ => Err(HostError::invalid("Invalid formatter request")),
         }
     };
-    let formatted = tokio::time::timeout(TIMEOUT, work).await.map_err(|_| HostError::new("aborted", "Formatting timed out"))??;
+    let formatted = tokio::time::timeout(TIMEOUT, work)
+        .await
+        .map_err(|_| HostError::new("aborted", l("代码格式化超时。", "Formatting timed out.")))??;
     // A CRLF document stays CRLF.
     let crlf = text.contains("\r\n") && !text.replace("\r\n", "").contains('\n');
     Ok(json!({ "text": if crlf { formatted.replace("\r\n", "\n").replace('\n', "\r\n") } else { formatted } }))
+}
+
+struct FormatterProcessGuard {
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pid: Option<u32>,
+    job: Option<ProcessJob>,
+    armed: bool,
+}
+
+impl Drop for FormatterProcessGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(job) = self.job.take() {
+            job.terminate();
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.pid
+            && pid > 1
+            && pid <= i32::MAX as u32
+        {
+            // SAFETY: child leads its own process group (`process_group(0)` in `crate::process::command`).
+            unsafe {
+                let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
 }
 
 /// Run a formatter that reads the text on standard input and writes the result on standard output.
@@ -52,6 +83,11 @@ async fn filter(argv: &[String], root: &Path, env: &BTreeMap<std::ffi::OsString,
     let mut command = crate::process::command(&argv[0], &argv[1..], root, env);
     command.env("PYTHONDONTWRITEBYTECODE", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = command.spawn().map_err(|error| HostError::new("io-error", format!("{}: {error}", argv[0])))?;
+    let job = ProcessJob::new();
+    if !job.as_ref().is_some_and(|job| job.assign_child(&child)) {
+        contain_child(&child);
+    }
+    let mut guard = FormatterProcessGuard { pid: child.id(), job, armed: true };
     let mut stdin = child.stdin.take().expect("piped");
     let input = text.to_owned();
     let writing = tokio::spawn(async move {
@@ -61,10 +97,14 @@ async fn filter(argv: &[String], root: &Path, env: &BTreeMap<std::ffi::OsString,
     let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
     let (out, err, status) = tokio::join!(read_limited(stdout, MAX_TEXT_BYTES + 1), read_limited(stderr, MAX_STDERR_BYTES), child.wait());
     writing.abort();
+    guard.armed = false;
     let status = status?;
     if !status.success() || out.len() > MAX_TEXT_BYTES {
         let message = String::from_utf8_lossy(&err).trim().to_owned();
-        return Err(HostError::new("io-error", if message.is_empty() { "Formatting did not produce a complete result".to_owned() } else { message }));
+        return Err(HostError::new(
+            "io-error",
+            if message.is_empty() { l("格式化未产出完整结果。", "Formatting did not produce a complete result.") } else { message },
+        ));
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
@@ -72,7 +112,7 @@ async fn filter(argv: &[String], root: &Path, env: &BTreeMap<std::ffi::OsString,
 /// Format JavaScript or TypeScript (LF text) with `tsc --lsp --stdio`: open the document, ask for its formatting edits,
 /// apply them.
 async fn script(tsc: &Path, root: &Path, file: &Path, language: &str, text: &str, env: &BTreeMap<std::ffi::OsString, std::ffi::OsString>) -> HostResult<String> {
-    let missing = || HostError::new("not-found", format!("TypeScript's language server is missing: {}", tsc.display()));
+    let missing = || HostError::new("not-found", l(&format!("缺少 TypeScript 语言服务器：{}", tsc.display()), &format!("TypeScript's language server is missing: {}", tsc.display())));
     if !tsc.is_file() {
         return Err(missing());
     }
@@ -80,63 +120,28 @@ async fn script(tsc: &Path, root: &Path, file: &Path, language: &str, text: &str
         (Ok(root), Ok(file)) => (root.to_string(), file.to_string()),
         _ => return Err(HostError::invalid("Invalid formatter request")),
     };
-    let mut command = crate::process::command(tsc, &["--lsp", "--stdio"], root, env);
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
-    let mut child = command.spawn().map_err(|_| missing())?;
-    let mut server = Server { input: child.stdin.take().expect("piped"), output: child.stdout.take().expect("piped"), decoder: framing::Decoder::new(MAX_TEXT_BYTES * 4), received: Vec::new() };
-    server.request(1, "initialize", json!({ "processId": std::process::id(), "rootUri": root_uri, "capabilities": {} })).await?;
-    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} })).await?;
-    server.send(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": { "textDocument": { "uri": uri, "languageId": language, "version": 1, "text": text } } })).await?;
-    let edits = server.request(2, "textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } })).await?;
-    let _ = server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" })).await;
-    let _ = server.send(json!({ "jsonrpc": "2.0", "method": "exit" })).await;
-    drop(server);
-    if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
-        let _ = child.kill().await;
-    }
+    let mut client = LspStdioClient::spawn(tsc, &["--lsp", "--stdio"], root, env, MAX_TEXT_BYTES * 4, false).map_err(|_| missing())?;
+    let unwrap_rpc = |res: Result<Value, (i64, String)>| -> HostResult<Value> {
+        res.map_err(|(_, msg)| {
+            HostError::new("io-error", if msg.is_empty() { l("TypeScript 格式化失败。", "The TypeScript formatter failed.") } else { msg })
+        })
+    };
+    unwrap_rpc(client.request("initialize", json!({ "processId": std::process::id(), "rootUri": root_uri, "capabilities": {} }), |_| {}).await?)?;
+    client.notify("initialized", json!({})).await?;
+    let doc_lang = document_language_id(file, language);
+    client
+        .notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri, "languageId": doc_lang, "version": 1, "text": text } }),
+        )
+        .await?;
+    let edits = unwrap_rpc(
+        client
+            .request("textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } }), |_| {})
+            .await?,
+    )?;
+    client.shutdown().await;
     apply_edits(text, edits.as_array().map(Vec::as_slice).unwrap_or_default())
-}
-
-/// One language-server session over the child's standard streams.
-struct Server {
-    input: tokio::process::ChildStdin,
-    output: tokio::process::ChildStdout,
-    decoder: framing::Decoder,
-    received: Vec<Value>,
-}
-
-impl Server {
-    async fn send(&mut self, message: Value) -> HostResult<()> {
-        self.input.write_all(&framing::encode(&message)).await.map_err(|error| HostError::new("io-error", error.to_string()))
-    }
-
-    /// Send a request and wait for its result; the server's own requests meanwhile are answered with nothing, since it
-    /// may wait for them before it answers.
-    async fn request(&mut self, id: u64, method: &str, params: Value) -> HostResult<Value> {
-        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).await?;
-        let mut chunk = vec![0; 65536];
-        loop {
-            while !self.received.is_empty() {
-                let message = self.received.remove(0);
-                if message.get("method").is_some() {
-                    if let Some(request) = message.get("id") {
-                        self.send(json!({ "jsonrpc": "2.0", "id": request, "result": null })).await?;
-                    }
-                } else if message["id"] == id {
-                    return match message.get("error") {
-                        Some(error) => Err(HostError::new("io-error", error["message"].as_str().unwrap_or("The TypeScript formatter failed").to_owned())),
-                        None => Ok(message["result"].clone()),
-                    };
-                }
-            }
-            let read = self.output.read(&mut chunk).await.map_err(|error| HostError::new("io-error", error.to_string()))?;
-            if read == 0 {
-                return Err(HostError::new("io-error", "TypeScript's language server stopped"));
-            }
-            let messages = self.decoder.push(&chunk[..read]).map_err(|error| HostError::new("io-error", error))?;
-            self.received.extend(messages);
-        }
-    }
 }
 
 /// Apply language-server text edits (positions in UTF-16 units) to LF text.
@@ -160,13 +165,13 @@ fn apply_edits(text: &str, edits: &[Value]) -> HostResult<String> {
         .iter()
         .map(|edit| Some((offset(&edit["range"]["start"])?, offset(&edit["range"]["end"])?, edit["newText"].as_str()?)))
         .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| HostError::new("io-error", "The TypeScript formatter returned an invalid edit"))?;
+        .ok_or_else(|| HostError::new("io-error", l("TypeScript 格式化器返回了无效编辑。", "The TypeScript formatter returned an invalid edit.")))?;
     spans.sort_by_key(|(start, end, _)| std::cmp::Reverse((*start, *end)));
     let mut result = text.to_owned();
     let mut limit = usize::MAX;
     for (start, end, replacement) in spans {
         if start > end || end > limit {
-            return Err(HostError::new("io-error", "The TypeScript formatter returned overlapping edits"));
+            return Err(HostError::new("io-error", l("TypeScript 格式化器返回了重叠编辑。", "The TypeScript formatter returned overlapping edits.")));
         }
         result.replace_range(start..end, replacement);
         limit = start;

@@ -20,6 +20,7 @@ struct WatchSet {
     watcher: notify::RecommendedWatcher,
     folders: Vec<PathBuf>,
     lease: u64,
+    expiry_task: Option<tokio::task::AbortHandle>,
 }
 
 struct Inner {
@@ -99,7 +100,7 @@ impl Hints {
             });
             match watcher {
                 Ok(watcher) => {
-                    sets.insert(key.clone(), WatchSet { watcher, folders: Vec::new(), lease });
+                    sets.insert(key.clone(), WatchSet { watcher, folders: Vec::new(), lease, expiry_task: None });
                 }
                 Err(error) => {
                     log::debug!("Folders cannot be watched: {error}");
@@ -109,6 +110,9 @@ impl Hints {
         }
         let set = sets.get_mut(&key).expect("inserted above");
         set.lease = lease;
+        if let Some(prev) = set.expiry_task.take() {
+            prev.abort();
+        }
         for folder in set.folders.clone() {
             if !wanted.contains(&folder) {
                 let _ = set.watcher.unwatch(&folder);
@@ -125,21 +129,29 @@ impl Hints {
             sets.remove(&key);
             return;
         }
-        drop(sets);
         let weak = Arc::downgrade(&self.inner);
         let duration = self.inner.lease;
-        self.inner.runtime.spawn(async move {
+        let expiry_key = key.clone();
+        let handle = self.inner.runtime.spawn(async move {
             tokio::time::sleep(duration).await;
             let Some(inner) = weak.upgrade() else { return };
             let mut sets = inner.sets.lock().unwrap();
-            if sets.get(&key).is_some_and(|set| set.lease == lease) {
-                sets.remove(&key);
+            if sets.get(&expiry_key).is_some_and(|set| set.lease == lease) {
+                sets.remove(&expiry_key);
             }
         });
+        if let Some(set) = sets.get_mut(&key) {
+            set.expiry_task = Some(handle.abort_handle());
+        }
     }
 
     pub fn close(&self) {
-        self.inner.sets.lock().unwrap().clear();
+        let mut sets = self.inner.sets.lock().unwrap();
+        for (_, mut set) in sets.drain() {
+            if let Some(task) = set.expiry_task.take() {
+                task.abort();
+            }
+        }
     }
 }
 

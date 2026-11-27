@@ -34,6 +34,8 @@ const ACTIVITY_TAIL: u64 = 384 * 1024;
 const RECENT_MS: f64 = 20_000.0;
 /// Characters of a post or reply kept.
 const TEXT_CHARS: usize = 6000;
+/// Maximum buffered streaming reply chars kept per Codex sub-agent.
+const MAX_AGENT_REPLY_CHARS: usize = 64 * 1024;
 
 /// Where Antigravity's App and CLI keep their conversations.
 pub fn antigravity_brains() -> Vec<PathBuf> {
@@ -54,50 +56,21 @@ pub fn member_of_call(call_id: &str) -> Option<&str> {
 }
 
 fn now_ms() -> f64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+    crate::text::now_ms() as f64
 }
 
 /// `2026-11-23T01:38:56Z` (fractions and offsets allowed) as Unix milliseconds.
 pub fn parse_utc(text: &str) -> Option<f64> {
-    let bytes = text.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let num = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
-    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
-    let mut rest = &text[19..];
-    let mut fraction = 0.0;
-    if let Some(after) = rest.strip_prefix('.') {
-        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-        fraction = format!("0.{digits}").parse::<f64>().unwrap_or(0.0);
-        rest = &after[digits.len()..];
-    }
-    let offset_minutes = match rest.as_bytes().first() {
-        Some(b'+' | b'-') if rest.len() >= 6 => {
-            let sign = if rest.starts_with('-') { -1 } else { 1 };
-            sign * (rest.get(1..3)?.parse::<i64>().ok()? * 60 + rest.get(4..6)?.parse::<i64>().ok()?)
-        }
-        _ => 0,
-    };
-    // Days from 1970-01-01 (Howard Hinnant's days_from_civil).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let seconds = days * 86_400 + hour * 3600 + minute * 60 + second - offset_minutes * 60;
-    Some((seconds as f64 + fraction) * 1000.0)
+    crate::text::parse_rfc3339_ms(text)
 }
 
 fn clip(text: &str, chars: usize) -> String {
-    let mut out: String = text.chars().take(chars).collect();
-    if text.chars().count() > chars {
-        out.push('…');
+    let prefix = crate::text::truncate_chars(text, chars);
+    if prefix.len() < text.len() {
+        format!("{prefix}…")
+    } else {
+        prefix.to_owned()
     }
-    out
 }
 
 fn one_line(text: &str, chars: usize) -> String {
@@ -266,6 +239,8 @@ fn tool_calls(step: &Value) -> Vec<(String, Map<String, Value>)> {
 #[derive(Clone, Default, Debug)]
 struct Tail {
     running: bool,
+    /// True when the last logged step itself carries `status == "RUNNING"` (as opposed to recency inference).
+    explicit_running: bool,
     waiting: bool,
     error: bool,
     activity: Option<String>,
@@ -321,7 +296,8 @@ fn read_tail(path: &Path, previous: Option<&Tail>) -> Tail {
     let status = last.get("status").and_then(Value::as_str).unwrap_or_default();
     let kind = last.get("type").and_then(Value::as_str).unwrap_or_default();
     tail.error = status == "ERROR" || kind == "ERROR_MESSAGE";
-    tail.running = status == "RUNNING" || tail.active_at.is_some_and(|at| now_ms() - at < RECENT_MS);
+    tail.explicit_running = status == "RUNNING";
+    tail.running = tail.explicit_running || tail.active_at.is_some_and(|at| now_ms() - at < RECENT_MS);
     // The latest call it made, and whether that leaves it asleep on the board.
     if let Some((name, args)) = steps.iter().rev().find_map(|step| tool_calls(step).into_iter().last()) {
         tail.waiting = name == "swarm_wait" && status != "RUNNING";
@@ -331,6 +307,7 @@ fn read_tail(path: &Path, previous: Option<&Tail>) -> Tail {
     }
     if tail.waiting {
         tail.running = false;
+        tail.explicit_running = false;
     }
     tail
 }
@@ -399,10 +376,29 @@ fn kind_and_name(spawned: &Spawned, rostered: Option<&Rostered>) -> (String, Str
     (kind.to_owned(), name)
 }
 
+#[derive(Clone, Default)]
+struct CachedMembers {
+    title: Option<String>,
+    lead_model: Option<String>,
+    roster: HashMap<String, Rostered>,
+}
+
+#[derive(Clone, Default)]
+struct CachedPlan {
+    title: Option<String>,
+    goal: Option<String>,
+    tasks: HashMap<String, String>,
+    threads: Vec<TeamThread>,
+}
+
 /// The Antigravity team of one chat, read again as its files change.
 pub struct AntigravityTeam {
     session_id: String,
     brain: PathBuf,
+    members_sig: Option<Sig>,
+    members_cache: Option<CachedMembers>,
+    plan_sig: Option<Sig>,
+    plan_cache: Option<CachedPlan>,
     board_sig: Option<Sig>,
     board_read: u64,
     posts: Vec<TeamPost>,
@@ -422,6 +418,10 @@ impl AntigravityTeam {
         Some(Self {
             session_id: session_id.to_owned(),
             brain,
+            members_sig: None,
+            members_cache: None,
+            plan_sig: None,
+            plan_cache: None,
             board_sig: None,
             board_read: 0,
             posts: Vec::new(),
@@ -436,6 +436,10 @@ impl AntigravityTeam {
         Self {
             session_id: session_id.to_owned(),
             brain: brain.to_owned(),
+            members_sig: None,
+            members_cache: None,
+            plan_sig: None,
+            plan_cache: None,
             board_sig: None,
             board_read: 0,
             posts: Vec::new(),
@@ -452,14 +456,19 @@ impl AntigravityTeam {
     fn tail(&mut self, conversation: &str) -> Tail {
         let path = self.generated(conversation).join("logs").join("transcript.jsonl");
         let Some(now) = sig(&path) else { return Tail::default() };
-        match self.tails.get(conversation) {
-            Some((was, tail)) if *was == now && !tail.running => tail.clone(),
-            previous => {
-                let tail = read_tail(&path, previous.map(|(_, tail)| tail));
-                self.tails.insert(conversation.to_owned(), (now, tail.clone()));
-                tail
+        if let Some((was, cached)) = self.tails.get_mut(conversation)
+            && *was == now
+        {
+            // File unchanged on disk: never re-read 96 KiB; only re-evaluate recency-inferred `running` in memory.
+            if cached.running && !cached.explicit_running && !cached.active_at.is_some_and(|at| now_ms() - at < RECENT_MS) {
+                cached.running = false;
             }
+            return cached.clone();
         }
+        let previous = self.tails.get(conversation).map(|(_, tail)| tail);
+        let tail = read_tail(&path, previous);
+        self.tails.insert(conversation.to_owned(), (now, tail.clone()));
+        tail
     }
 
     /// New posts appended to the board since the last read.
@@ -512,53 +521,83 @@ impl AntigravityTeam {
     pub fn refresh(&mut self) -> bool {
         let root = self.session_id.clone();
         let swarm = self.generated(&root).join("swarm");
-        let mut roster: HashMap<String, Rostered> = HashMap::new();
-        let mut title = None;
-        let mut goal = None;
-        let mut tasks: HashMap<String, String> = HashMap::new();
-        let mut threads = Vec::new();
-        let mut lead_model = None;
-        if let Some(members) = read_json(&swarm.join("members.json")) {
-            title = members.get("title").and_then(Value::as_str).map(str::to_owned);
-            if let Some(map) = members.get("members").and_then(Value::as_object) {
-                for (name, entry) in map {
-                    let Some(id) = entry.get("conversation_id").and_then(Value::as_str) else { continue };
-                    let model = entry.get("applied_model").or_else(|| entry.get("model")).and_then(Value::as_str).map(str::to_owned);
-                    if entry.get("role").and_then(Value::as_str) == Some("coordinator") || id == root {
-                        lead_model = model;
-                        continue;
+        let members_path = swarm.join("members.json");
+        let members_sig = sig(&members_path);
+        if members_sig != self.members_sig {
+            self.members_sig = members_sig;
+            self.members_cache = members_sig.and_then(|_| read_json(&members_path)).map(|members| {
+                let title = members.get("title").and_then(Value::as_str).map(str::to_owned);
+                let mut lead_model = None;
+                let mut roster = HashMap::new();
+                if let Some(map) = members.get("members").and_then(Value::as_object) {
+                    for (name, entry) in map {
+                        let Some(id) = entry.get("conversation_id").and_then(Value::as_str) else { continue };
+                        let model = entry.get("applied_model").or_else(|| entry.get("model")).and_then(Value::as_str).map(str::to_owned);
+                        if entry.get("role").and_then(Value::as_str) == Some("coordinator") || id == root {
+                            lead_model = model;
+                            continue;
+                        }
+                        let killed = entry.get("killed").and_then(Value::as_bool) == Some(true) || entry.get("phase").and_then(Value::as_str) == Some("KILLED");
+                        roster.insert(id.to_owned(), Rostered { name: name.clone(), killed, model });
                     }
-                    let killed = entry.get("killed").and_then(Value::as_bool) == Some(true) || entry.get("phase").and_then(Value::as_str) == Some("KILLED");
-                    roster.insert(id.to_owned(), Rostered { name: name.clone(), killed, model });
                 }
-            }
+                CachedMembers { title, lead_model, roster }
+            });
+        }
+        let (has_members, mut title, lead_model, roster) = match &self.members_cache {
+            Some(cached) => (true, cached.title.clone(), cached.lead_model.clone(), cached.roster.clone()),
+            None => (false, None, None, HashMap::new()),
+        };
+        if has_members {
             self.read_board(&swarm);
         }
-        if let Some(plan) = read_json(&swarm.join("plan.json")) {
-            if let Some(plan_goal) = plan.get("goal") {
-                title = plan_goal.get("title").and_then(Value::as_str).map(str::to_owned).or(title);
-                goal = plan_goal.get("line").and_then(Value::as_str).map(str::to_owned);
-            }
-            if let Some(map) = plan.get("tasks").and_then(Value::as_object) {
-                tasks = map.iter().filter_map(|(name, text)| Some((name.clone(), text.as_str()?.to_owned()))).collect();
-            }
-            threads = plan
-                .get("threads")
-                .and_then(Value::as_array)
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|thread| {
-                            Some(TeamThread {
-                                id: thread.get("id")?.as_str()?.to_owned(),
-                                title: thread.get("title").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                                goal: thread.get("goal").and_then(Value::as_str).map(str::to_owned),
-                                members: thread.get("tasks").and_then(Value::as_array).map(|tasks| tasks.iter().filter_map(|task| task.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+
+        let plan_path = swarm.join("plan.json");
+        let plan_sig = sig(&plan_path);
+        if plan_sig != self.plan_sig {
+            self.plan_sig = plan_sig;
+            self.plan_cache = plan_sig.and_then(|_| read_json(&plan_path)).map(|plan| {
+                let mut plan_title = None;
+                let mut plan_goal = None;
+                if let Some(goal_obj) = plan.get("goal") {
+                    plan_title = goal_obj.get("title").and_then(Value::as_str).map(str::to_owned);
+                    plan_goal = goal_obj.get("line").and_then(Value::as_str).map(str::to_owned);
+                }
+                let tasks = plan
+                    .get("tasks")
+                    .and_then(Value::as_object)
+                    .map(|map| map.iter().filter_map(|(name, text)| Some((name.clone(), text.as_str()?.to_owned()))).collect())
+                    .unwrap_or_default();
+                let threads = plan
+                    .get("threads")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|thread| {
+                                Some(TeamThread {
+                                    id: thread.get("id")?.as_str()?.to_owned(),
+                                    title: thread.get("title").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                                    goal: thread.get("goal").and_then(Value::as_str).map(str::to_owned),
+                                    members: thread
+                                        .get("tasks")
+                                        .and_then(Value::as_array)
+                                        .map(|tasks| tasks.iter().filter_map(|task| task.as_str().map(str::to_owned)).collect())
+                                        .unwrap_or_default(),
+                                })
                             })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                CachedPlan { title: plan_title, goal: plan_goal, tasks, threads }
+            });
         }
+        let (goal, tasks, threads) = match &self.plan_cache {
+            Some(cached) => {
+                title = cached.title.clone().or(title);
+                (cached.goal.clone(), cached.tasks.clone(), cached.threads.clone())
+            }
+            None => (None, HashMap::new(), Vec::new()),
+        };
 
         // The chat's own agent, then everything it started, depth first.
         let lead_tail = self.tail(&root);
@@ -623,7 +662,7 @@ impl AntigravityTeam {
             revision: 0,
         };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&team).unwrap_or_default().hash(&mut hasher);
+        hash_team(&team, &mut hasher);
         let fingerprint = hasher.finish();
         let changed = fingerprint != self.fingerprint;
         team.revision = self.team.revision + u64::from(changed);
@@ -674,6 +713,41 @@ impl AntigravityTeam {
         }
         let path = self.generated(member).join("logs").join("transcript.jsonl");
         Some(activity_from(&tail_lines(&path, ACTIVITY_TAIL), limit))
+    }
+}
+
+fn hash_team(team: &ExternalTeam, hasher: &mut impl std::hash::Hasher) {
+    team.session_id.hash(hasher);
+    team.source.hash(hasher);
+    team.title.hash(hasher);
+    team.goal.hash(hasher);
+    team.last_post.hash(hasher);
+    team.members.len().hash(hasher);
+    for m in &team.members {
+        m.id.hash(hasher);
+        m.parent.hash(hasher);
+        m.name.hash(hasher);
+        m.kind.hash(hasher);
+        m.role.hash(hasher);
+        m.task.hash(hasher);
+        m.status.hash(hasher);
+        m.model.hash(hasher);
+        m.focus.hash(hasher);
+        m.activity.hash(hasher);
+        m.active_at.map(f64::to_bits).hash(hasher);
+        m.depth.hash(hasher);
+        m.steps.len().hash(hasher);
+        for s in &m.steps {
+            s.title.hash(hasher);
+            s.status.hash(hasher);
+        }
+    }
+    team.threads.len().hash(hasher);
+    for t in &team.threads {
+        t.id.hash(hasher);
+        t.title.hash(hasher);
+        t.goal.hash(hasher);
+        t.members.hash(hasher);
     }
 }
 
@@ -895,16 +969,18 @@ impl CodexTeam {
                 agent.log.push(TeamActivity { ts: now, kind: "tool".into(), title, detail: None });
             }
             "item/agentMessage/delta" => {
-                agent.reply.push_str(params.get("delta").and_then(Value::as_str).unwrap_or_default());
+                if let Some(delta) = params.get("delta").and_then(Value::as_str) {
+                    super::common::push_bounded_tail(&mut agent.reply, delta, MAX_AGENT_REPLY_CHARS);
+                }
                 changed = false;
             }
             "item/completed" => {
                 let item = params.get("item")?;
                 if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                    let text = item.get("text").and_then(Value::as_str).unwrap_or_default().to_owned();
+                    let text = item.get("text").and_then(Value::as_str).unwrap_or_default();
                     if !text.trim().is_empty() {
-                        agent.reply = text.clone();
-                        agent.log.push(TeamActivity { ts: now, kind: "reply".into(), title: one_line(&text, 160), detail: Some(clip(&text, TEXT_CHARS)) });
+                        agent.reply = clip(text, MAX_AGENT_REPLY_CHARS);
+                        agent.log.push(TeamActivity { ts: now, kind: "reply".into(), title: one_line(text, 160), detail: Some(clip(text, TEXT_CHARS)) });
                     }
                 } else {
                     changed = false;

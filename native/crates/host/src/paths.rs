@@ -21,21 +21,38 @@ pub fn realpath(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
-fn comparable(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    let text = text.trim_end_matches('/').to_owned();
-    if cfg!(windows) { text.to_lowercase() } else { text }
+fn comparable_for(path: &Path, windows: bool) -> String {
+    let raw = path.to_string_lossy();
+    if windows {
+        let text = raw.replace('\\', "/");
+        text.trim_end_matches('/').to_lowercase()
+    } else if raw.is_empty() {
+        String::new()
+    } else {
+        let trimmed = raw.trim_end_matches('/');
+        if trimmed.is_empty() { "/".to_owned() } else { trimmed.to_owned() }
+    }
+}
+
+fn contains_for(root: &Path, target: &Path, windows: bool) -> bool {
+    let (root, target) = (comparable_for(root, windows), comparable_for(target, windows));
+    if root.is_empty() || target.is_empty() {
+        return false;
+    }
+    if !windows && root == "/" {
+        return target.starts_with('/');
+    }
+    target == root || target.starts_with(&format!("{root}/"))
 }
 
 /// Whether `target` is `root` or inside it; both absolute and resolved.
 pub fn contains(root: &Path, target: &Path) -> bool {
-    let (root, target) = (comparable(root), comparable(target));
-    target == root || target.starts_with(&format!("{root}/")) || (root.ends_with(':') && target.starts_with(&root))
+    contains_for(root, target, cfg!(windows))
 }
 
 /// Whether two folder paths name the same folder spelling, as the platform compares them.
 pub fn same_path(left: &Path, right: &Path) -> bool {
-    comparable(left) == comparable(right)
+    comparable_for(left, cfg!(windows)) == comparable_for(right, cfg!(windows))
 }
 
 /// The portable relative spelling of editor paths: `/`-separated, inside the project, no `.`/`..`, `\`, `:` or control
@@ -145,5 +162,20 @@ mod tests {
             assert_eq!(relative_to(Path::new(r"C:\Work\Proj"), Path::new(r"c:/work/proj/Src/x.rs")).as_deref(), Some("Src/x.rs"));
             assert_eq!(relative_to(Path::new("C:\\"), Path::new(r"C:\a\b")).as_deref(), Some("a/b"));
         }
+    }
+
+    #[test]
+    fn contains_handles_unix_colons_backslashes_and_root() {
+        // Linux: colons and backslashes are ordinary filename bytes, not drive roots or separators.
+        assert!(!contains_for(Path::new("/tmp/foo:"), Path::new("/tmp/foo:bar"), false));
+        assert!(contains_for(Path::new("/tmp/foo:"), Path::new("/tmp/foo:/bar"), false));
+        assert!(!contains_for(Path::new("/tmp/a\\b"), Path::new("/tmp/a/b"), false));
+        assert!(contains_for(Path::new("/"), Path::new("/etc/hosts"), false));
+        assert!(!contains_for(Path::new(""), Path::new("/etc/hosts"), false));
+        assert_ne!(comparable_for(Path::new("/"), false), comparable_for(Path::new(""), false));
+        // Windows: drive roots contain children on that drive, not drive-relative spellings.
+        assert!(contains_for(Path::new(r"C:\"), Path::new(r"c:\Work\file.txt"), true));
+        assert!(contains_for(Path::new(r"C:\"), Path::new(r"C:\"), true));
+        assert!(!contains_for(Path::new(r"C:\"), Path::new("C:relative"), true));
     }
 }

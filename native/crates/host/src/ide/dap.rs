@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::framing::{Decoder, encode};
 use crate::error::HostError;
+use crate::locale::l;
 
 static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
@@ -134,7 +135,10 @@ impl Peer {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().unwrap().insert(seq, (command.to_owned(), sender));
-        self.send(&json!({ "seq": seq, "type": "request", "command": command, "arguments": arguments })).map_err(error)?;
+        if let Err(err) = self.send(&json!({ "seq": seq, "type": "request", "command": command, "arguments": arguments })) {
+            self.pending.lock().unwrap().remove(&seq);
+            return Err(error(err));
+        }
         match tokio::time::timeout(self.timeout, receiver).await {
             Ok(Ok(result)) => result.map_err(error),
             Ok(Err(_)) => Err(error("The debug adapter connection is closed.".into())),
@@ -168,7 +172,7 @@ impl Peer {
                 return Ok(());
             }
             if self.closed.load(Ordering::Relaxed) || receiver.changed().await.is_err() {
-                return Err(HostError::new("execution-error", "The debug adapter connection is closed."));
+                return Err(HostError::new("execution-error", l("调试适配器连接已关闭。", "The debug adapter connection is closed.")));
             }
         }
     }

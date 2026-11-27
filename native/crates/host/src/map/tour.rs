@@ -74,16 +74,17 @@ pub struct Tour {
     pub tasks: Vec<Task>,
 }
 
+const MAX_DOC_READ_BYTES: u64 = 64 * 1024;
+
 fn clip(text: &str, chars: usize) -> String {
-    let text = text.trim();
-    if text.chars().count() <= chars {
-        return text.to_owned();
-    }
-    format!("{}…", text.chars().take(chars).collect::<String>())
+    crate::text::clip_chars(text.trim(), chars)
 }
 
 fn read_start(root: &Path, path: &str, chars: usize) -> Option<String> {
-    let bytes = std::fs::read(root.join(path)).ok()?;
+    use std::io::Read as _;
+    let file = std::fs::File::open(root.join(path)).ok()?;
+    let mut bytes = Vec::new();
+    let _ = file.take(MAX_DOC_READ_BYTES).read_to_end(&mut bytes);
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim();
     (!text.is_empty()).then(|| clip(text, chars))

@@ -38,11 +38,24 @@ impl Default for ScanLimits {
 const EXCLUDED: &[&str] = &[".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".gradle", ".next", ".nuxt", ".svelte-kit", ".turbo", ".cache", ".idea", ".vs"];
 /// Imports are looked for in files up to this size.
 const MAX_IMPORT_BYTES: u64 = 512 * 1024;
+/// Upper bounds for auxiliary project metadata files.
+const MAX_GITATTRIBUTES_BYTES: u64 = 64 * 1024;
+const MAX_GITATTRIBUTES_RULES: usize = 256;
+const MAX_TSCONFIG_BYTES: u64 = 256 * 1024;
+const MAX_GOMOD_BYTES: u64 = 64 * 1024;
 /// Bytes per line when a file's lines are estimated from its size.
 const BYTES_PER_LINE: u64 = 36;
 const READERS: usize = 16;
 /// Average characters per line above which a large text file is minified output.
 const MINIFIED_LINE_LENGTH: usize = 400;
+
+fn read_text_limited(path: &Path, limit: u64) -> String {
+    use std::io::Read as _;
+    let Ok(file) = std::fs::File::open(path) else { return String::new() };
+    let mut buf = Vec::new();
+    let _ = file.take(limit).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}
 
 /// The scanned part of a map.
 pub struct ScanResult {
@@ -62,6 +75,9 @@ static GENERATED_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.min
 pub fn vendored_patterns(text: &str) -> Vec<Regex> {
     let mut patterns = Vec::new();
     for line in text.split('\n') {
+        if patterns.len() >= MAX_GITATTRIBUTES_RULES {
+            break;
+        }
         let mut fields = line.split_whitespace();
         let Some(pattern) = fields.next().filter(|pattern| !pattern.starts_with('#')) else { continue };
         if !fields.any(|attribute| matches!(attribute, "linguist-vendored" | "linguist-vendored=true" | "linguist-generated" | "linguist-generated=true")) {
@@ -201,7 +217,11 @@ pub fn scan_project(root: &Path, limits: ScanLimits, cancelled: &AtomicBool) -> 
     let listed = list(root, limits.max_files, cancelled);
     let mut truncated = listed.len() > limits.max_files;
     let paths: Vec<String> = listed.into_iter().take(limits.max_files).collect();
-    let attributes = if paths.iter().any(|path| path == ".gitattributes") { vendored_patterns(&std::fs::read_to_string(root.join(".gitattributes")).unwrap_or_default()) } else { Vec::new() };
+    let attributes = if paths.iter().any(|path| path == ".gitattributes") {
+        vendored_patterns(&read_text_limited(&root.join(".gitattributes"), MAX_GITATTRIBUTES_BYTES))
+    } else {
+        Vec::new()
+    };
     let types: Vec<_> = paths.iter().map(|path| file_type(path)).collect();
     // Third-party and generated code is shown, but not as the project's own code.
     let files: Vec<Mutex<MapFile>> = paths
@@ -213,7 +233,8 @@ pub fn scan_project(root: &Path, limits: ScanLimits, cancelled: &AtomicBool) -> 
             Mutex::new(MapFile { path: path.clone(), language: kind.language.to_owned(), kind: shown.to_owned(), lines: 0, bytes: 0 })
         })
         .collect();
-    let texts: Mutex<Vec<(usize, String)>> = Mutex::default();
+    // Parse imports inside each worker thread and drop source text immediately to avoid retaining up to 96 MiB in RAM.
+    let parsed_imports = Mutex::new(Vec::new());
     let manifests: Mutex<Vec<(String, String)>> = Mutex::default();
     let (read_files, read_bytes, next) = (AtomicUsize::new(0), AtomicU64::new(0), AtomicUsize::new(0));
     let partial = AtomicBool::new(false);
@@ -282,7 +303,10 @@ pub fn scan_project(root: &Path, limits: ScanLimits, cancelled: &AtomicBool) -> 
                         }
                     }
                     if is_code && bytes <= MAX_IMPORT_BYTES {
-                        texts.lock().unwrap().push((index, text));
+                        let specs = parse_imports(kind.language, &text);
+                        if !specs.is_empty() {
+                            parsed_imports.lock().unwrap().push((index, specs));
+                        }
                     }
                 }
             });
@@ -290,8 +314,8 @@ pub fn scan_project(root: &Path, limits: ScanLimits, cancelled: &AtomicBool) -> 
     });
     truncated |= partial.load(Ordering::Relaxed);
     let files: Vec<MapFile> = files.into_iter().map(|file| file.into_inner().unwrap()).collect();
-    let mut texts = texts.into_inner().unwrap();
-    texts.sort_by_key(|(index, _)| *index);
+    let mut parsed_imports = parsed_imports.into_inner().unwrap();
+    parsed_imports.sort_by_key(|(index, _)| *index);
 
     let mut context = ImportContext::default();
     for path in &paths {
@@ -318,22 +342,22 @@ pub fn scan_project(root: &Path, limits: ScanLimits, cancelled: &AtomicBool) -> 
     }
     let tsconfig = paths.iter().find(|path| *path == "tsconfig.json").or_else(|| paths.iter().find(|path| *path == "jsconfig.json"));
     if let Some(tsconfig) = tsconfig {
-        context.aliases = aliases_of(&std::fs::read_to_string(root.join(tsconfig)).unwrap_or_default());
+        context.aliases = aliases_of(&read_text_limited(&root.join(tsconfig), MAX_TSCONFIG_BYTES));
     }
     if paths.iter().any(|path| path == "go.mod") {
         static MODULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^module\s+(\S+)").unwrap());
-        let text = std::fs::read_to_string(root.join("go.mod")).unwrap_or_default();
+        let text = read_text_limited(&root.join("go.mod"), MAX_GOMOD_BYTES);
         context.go_module = MODULE.captures(&text).map(|captures| captures[1].to_owned());
     }
     let index_of: HashMap<&str, usize> = paths.iter().enumerate().map(|(index, path)| (path.as_str(), index)).collect();
     let mut pairs: HashSet<(usize, usize)> = HashSet::new();
     let mut imports = Vec::new();
-    let mut packages: Vec<(String, Vec<usize>)> = Vec::new();
-    for (index, text) in &texts {
+    let mut package_map: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, specs) in &parsed_imports {
         let from = &paths[*index];
         let language = types[*index].language;
-        for spec in parse_imports(language, text) {
-            let target = resolve_import(&context, language, from, &spec);
+        for spec in specs {
+            let target = resolve_import(&context, language, from, spec);
             for path in &target.files {
                 let Some(&to) = index_of.get(path.as_str()) else { continue };
                 if to == *index || !pairs.insert((*index, to)) {
@@ -342,21 +366,18 @@ pub fn scan_project(root: &Path, limits: ScanLimits, cancelled: &AtomicBool) -> 
                 imports.extend([*index, to]);
             }
             if let (true, Some(external)) = (target.files.is_empty(), target.external) {
-                match packages.iter_mut().find(|(name, _)| *name == external) {
-                    Some((_, users)) => {
-                        if !users.contains(index) {
-                            users.push(*index);
-                        }
-                    }
-                    None => packages.push((external, vec![*index])),
+                let users = package_map.entry(external).or_default();
+                if users.last() != Some(index) {
+                    users.push(*index);
                 }
             }
         }
     }
-    let mut packages: Vec<MapPackage> = packages
+    let mut packages: Vec<MapPackage> = package_map
         .into_iter()
         .map(|(name, mut files)| {
             files.sort_unstable();
+            files.dedup();
             MapPackage { name, files }
         })
         .collect();

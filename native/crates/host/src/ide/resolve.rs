@@ -401,11 +401,18 @@ fn read_presets(root: &Path) -> HostResult<(PresetMap, PresetMap)> {
             return Ok(());
         }
         loading.insert(canonical.clone());
-        let text = std::fs::read_to_string(&canonical)?;
-        *bytes += text.len();
+        let remaining = (32 * 1024usize).saturating_sub(*bytes);
+        let mut raw = Vec::new();
+        {
+            use std::io::Read as _;
+            let file = std::fs::File::open(&canonical)?;
+            file.take(remaining as u64 + 1).read_to_end(&mut raw)?;
+        }
+        *bytes += raw.len();
         if *bytes > 32 * 1024 {
             return Err(error("CMake preset files exceed the configured size limit."));
         }
+        let text = String::from_utf8(raw).map_err(|parse| error(format!("{}: {parse}", canonical.display())))?;
         let document: Value = serde_json::from_str(&text).map_err(|parse| error(format!("{}: {parse}", canonical.display())))?;
         for include in strings(&document["include"]) {
             if include.contains('$') {
@@ -469,7 +476,8 @@ fn expand_preset_directory(value: &str, root: &Path, preset: &Value, explicit: &
     let mut environment: BTreeMap<String, String> = std::env::vars().filter(|(name, _)| !crate::process::sensitive(name) && !name.to_uppercase().starts_with("RAINY_")).collect();
     environment.extend(explicit.clone());
     fn expand(input: &str, root: &Path, preset: &Value, environment: &BTreeMap<String, String>, expanding: &mut HashSet<String>) -> HostResult<String> {
-        let pattern = regex::Regex::new(r"\$\{(sourceDir|sourceParentDir|sourceDirName|presetName)\}|\$(p?env)\{([^}]+)\}").expect("valid pattern");
+        static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let pattern = PATTERN.get_or_init(|| regex::Regex::new(r"\$\{(sourceDir|sourceParentDir|sourceDirName|presetName)\}|\$(p?env)\{([^}]+)\}").expect("valid pattern"));
         let mut out = String::new();
         let mut last = 0;
         for captures in pattern.captures_iter(input) {

@@ -41,10 +41,7 @@ pub struct Turn {
 
 fn clip(text: &str) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() <= TEXT_CHARS {
-        return line;
-    }
-    format!("{}…", line.chars().take(TEXT_CHARS).collect::<String>())
+    crate::text::clip_chars(&line, TEXT_CHARS)
 }
 
 fn text<'a>(arguments: &'a Map<String, Value>, key: &str) -> Option<&'a str> {

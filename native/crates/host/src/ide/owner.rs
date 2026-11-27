@@ -11,6 +11,7 @@ use tokio::process::{Child, ChildStderr, ChildStdout};
 use super::pty::{Outcome, Pty, Utf8Stream};
 use super::resolve::CommandSpec;
 use crate::error::{HostError, HostResult};
+use crate::locale::l;
 use crate::process::{child_env, kill_pid_tree};
 
 pub type Output = Arc<dyn Fn(&'static str, String) + Send + Sync>;
@@ -25,7 +26,7 @@ pub struct Owner {
 }
 
 fn stopped_error() -> HostError {
-    HostError::new("execution-error", "The IDE operation is stopping or closed.")
+    HostError::new("execution-error", l("该运行或调试操作正在停止或已关闭。", "The IDE operation is stopping or closed."))
 }
 
 impl Owner {
@@ -46,7 +47,12 @@ impl Owner {
     }
 
     pub fn closing(&self) -> bool {
-        self.closing.load(Ordering::Relaxed)
+        self.closing.load(Ordering::Acquire)
+    }
+
+    /// Remove a reaped process id so `close()` will never signal a later reused PID.
+    pub fn untrack_pid(&self, pid: u32) {
+        self.processes.lock().unwrap().retain(|known| *known != pid);
     }
 
     pub fn emit(&self, stream: &'static str, text: String) {
@@ -63,28 +69,38 @@ impl Owner {
         let (program, args) = spec.argv.split_first().ok_or_else(|| HostError::invalid("A command needs a program."))?;
         let mut command = crate::process::command(program, args, &spec.cwd, &child_env(&spec.environment));
         command.stdin(if stdin { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let child = command.spawn().map_err(|error| {
+        let mut child = command.spawn().map_err(|error| {
             let code = if error.kind() == std::io::ErrorKind::NotFound { "dependency-unavailable" } else { "execution-error" };
             HostError::new(code, format!("{program}: {error}"))
         })?;
         if !self.job.as_ref().is_some_and(|job| job.assign_child(&child)) {
             crate::process::contain_child(&child);
         }
+        // Double-check `closing` while holding `processes` lock to eliminate the spawn/close TOCTOU window.
+        let mut processes = self.processes.lock().unwrap();
+        if self.closing() {
+            drop(processes);
+            if let Some(job) = &self.job {
+                job.terminate();
+            }
+            if let Some(pid) = child.id() {
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(kill_pid_tree(pid));
+                }
+            }
+            let _ = child.start_kill();
+            return Err(stopped_error());
+        }
         if let Some(pid) = child.id() {
-            self.processes.lock().unwrap().push(pid);
+            processes.push(pid);
         }
         Ok(child)
     }
 
     /// Start a program in a terminal.
     pub fn terminal(&self, spec: &CommandSpec, cols: u16, rows: u16) -> HostResult<Arc<Pty>> {
-        if self.closing() {
-            return Err(stopped_error());
-        }
         let output = self.output.clone();
-        let terminal = Pty::spawn(&spec.argv, &spec.cwd, &child_env(&spec.environment), cols, rows, Arc::new(move |text| output("terminal", text)))?;
-        self.terminals.lock().unwrap().push(terminal.clone());
-        Ok(terminal)
+        self.terminal_with(spec, cols, rows, Arc::new(move |text| output("terminal", text)))
     }
 
     /// Start a program in a terminal whose output goes to `output` instead of the terminal channel.
@@ -93,7 +109,15 @@ impl Owner {
             return Err(stopped_error());
         }
         let terminal = Pty::spawn(&spec.argv, &spec.cwd, &child_env(&spec.environment), cols, rows, output)?;
-        self.terminals.lock().unwrap().push(terminal.clone());
+        let mut terminals = self.terminals.lock().unwrap();
+        if self.closing() {
+            drop(terminals);
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move { terminal.terminate().await });
+            }
+            return Err(stopped_error());
+        }
+        terminals.push(terminal.clone());
         Ok(terminal)
     }
 
@@ -156,7 +180,7 @@ impl Owner {
 
     /// Stop admission and every process tree; terminals end too.
     pub async fn close(&self) {
-        if self.closing.swap(true, Ordering::Relaxed) {
+        if self.closing.swap(true, Ordering::AcqRel) {
             return;
         }
         self.stopped.cancel();

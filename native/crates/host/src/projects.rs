@@ -1,15 +1,17 @@
 //! Projects registered in this Host and the folders attached to each (3.x `projects.ts`), in `<home>/projects.json`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::error::{HostError, HostResult};
 use crate::locale::l;
 use crate::paths::{contains, realpath, same_path};
 use crate::store::{read_json, write_json};
-use crate::text::now_ms;
+use crate::text::{backup_damaged, now_ms};
 
 /// The root id of each project's primary folder.
 pub const PRIMARY: &str = "primary";
@@ -19,24 +21,37 @@ pub const MAX_ROOTS: usize = 16;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attached {
+    #[serde(default)]
     pub root_id: String,
+    #[serde(default)]
     pub path: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
+    #[serde(default)]
     pub id: String,
     /// The canonical primary folder; chats started in the project use it as their working folder.
+    #[serde(default)]
     pub path: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub attached: Vec<Attached>,
+    #[serde(default)]
     pub created_at: f64,
+    #[serde(default)]
     pub opened_at: f64,
     /// Kept at the top of the sidebar.
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 /// One folder of a project, as the page sees it.
@@ -63,10 +78,18 @@ impl Project {
     }
 }
 
+fn default_file_version() -> u8 {
+    1
+}
+
 #[derive(Serialize, Deserialize)]
 struct File {
+    #[serde(default = "default_file_version")]
     version: u8,
+    #[serde(default)]
     projects: Vec<Project>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 fn folder_name(path: &Path) -> String {
@@ -89,12 +112,24 @@ pub fn canonical_directory(path: &str) -> HostResult<PathBuf> {
 pub struct Projects {
     file: PathBuf,
     projects: Mutex<Vec<Project>>,
+    extra: Mutex<BTreeMap<String, Value>>,
 }
 
 impl Projects {
     pub fn load(file: PathBuf) -> std::io::Result<Self> {
-        let projects = read_json::<File>(&file)?.map(|file| file.projects).unwrap_or_default();
-        Ok(Self { file, projects: Mutex::new(projects) })
+        let (projects, extra) = match read_json::<File>(&file) {
+            Ok(Some(loaded)) => (loaded.projects, loaded.extra),
+            Ok(None) => (Vec::new(), BTreeMap::new()),
+            Err(error) => {
+                if let Some(backup) = backup_damaged(&file) {
+                    log::warn!("projects.json is unreadable ({error}); backed up to {}", backup.display());
+                } else {
+                    log::warn!("projects.json is unreadable ({error}); starting with an empty project list");
+                }
+                (Vec::new(), BTreeMap::new())
+            }
+        };
+        Ok(Self { file, projects: Mutex::new(projects), extra: Mutex::new(extra) })
     }
 
     /// Projects, most recently opened first.
@@ -109,21 +144,23 @@ impl Projects {
     }
 
     fn save(&self, projects: &[Project]) -> HostResult<()> {
-        Ok(write_json(&self.file, &File { version: 1, projects: projects.to_vec() })?)
+        let extra = self.extra.lock().unwrap().clone();
+        Ok(write_json(&self.file, &File { version: 1, projects: projects.to_vec(), extra })?)
     }
 
     /// Register a folder as a project, or mark the project that has it as primary folder as opened now.
     pub fn open(&self, path: &str, id: Option<String>) -> HostResult<Project> {
         let canonical = canonical_directory(path)?;
         let mut projects = self.projects.lock().unwrap();
+        let mut next = projects.clone();
         let now = now_ms() as f64;
-        let index = match projects.iter().position(|project| same_path(Path::new(&project.path), &canonical)) {
+        let index = match next.iter().position(|project| same_path(Path::new(&project.path), &canonical)) {
             Some(index) => {
-                projects[index].opened_at = now;
+                next[index].opened_at = now;
                 index
             }
             None => {
-                projects.push(Project {
+                next.push(Project {
                     id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     path: canonical.display().to_string(),
                     title: folder_name(&canonical),
@@ -131,12 +168,14 @@ impl Projects {
                     created_at: now,
                     opened_at: now,
                     pinned: false,
+                    extra: BTreeMap::new(),
                 });
-                projects.len() - 1
+                next.len() - 1
             }
         };
-        let project = projects[index].clone();
-        self.save(&projects)?;
+        let project = next[index].clone();
+        self.save(&next)?;
+        *projects = next;
         Ok(project)
     }
 
@@ -144,8 +183,9 @@ impl Projects {
     pub fn attach(&self, id: &str, path: &str, imported: Option<(String, String)>) -> HostResult<Project> {
         let canonical = canonical_directory(path)?;
         let mut projects = self.projects.lock().unwrap();
-        let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
-        let roots = projects[index].roots();
+        let mut next = projects.clone();
+        let index = next.iter().position(|project| project.id == id).ok_or_else(missing)?;
+        let roots = next[index].roots();
         if imported.as_ref().is_some_and(|(root, _)| root == PRIMARY) {
             return Err(HostError::invalid("The primary directory cannot be imported as an attachment."));
         }
@@ -153,7 +193,7 @@ impl Projects {
             if imported.as_ref().is_some_and(|(root, _)| *root != existing.root_id) {
                 return Err(HostError::invalid("The imported directory already has another root identity."));
             }
-            return Ok(projects[index].clone());
+            return Ok(next[index].clone());
         }
         if roots.iter().any(|root| contains(Path::new(&root.path), &canonical) || contains(&canonical, Path::new(&root.path))) {
             return Err(HostError::new("root-overlap", l("这个文件夹与项目中已有的文件夹重叠。", "The directory overlaps an existing project folder.")));
@@ -162,9 +202,10 @@ impl Projects {
             return Err(HostError::new("too-large", l("这个项目的文件夹数量已达上限。", "The project has reached its directory limit.")));
         }
         let (root_id, title) = imported.unwrap_or_else(|| (uuid::Uuid::new_v4().to_string(), folder_name(&canonical)));
-        projects[index].attached.push(Attached { root_id, path: canonical.display().to_string(), title });
-        let project = projects[index].clone();
-        self.save(&projects)?;
+        next[index].attached.push(Attached { root_id, path: canonical.display().to_string(), title, extra: BTreeMap::new() });
+        let project = next[index].clone();
+        self.save(&next)?;
+        *projects = next;
         Ok(project)
     }
 
@@ -174,12 +215,14 @@ impl Projects {
             return Err(HostError::invalid(l("不能移除项目的主文件夹。", "The primary project directory cannot be removed.")));
         }
         let mut projects = self.projects.lock().unwrap();
-        let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
-        let before = projects[index].attached.len();
-        projects[index].attached.retain(|root| root.root_id != root_id);
-        let project = projects[index].clone();
+        let mut next = projects.clone();
+        let index = next.iter().position(|project| project.id == id).ok_or_else(missing)?;
+        let before = next[index].attached.len();
+        next[index].attached.retain(|root| root.root_id != root_id);
+        let project = next[index].clone();
         if project.attached.len() != before {
-            self.save(&projects)?;
+            self.save(&next)?;
+            *projects = next;
         }
         Ok(project)
     }
@@ -190,28 +233,35 @@ impl Projects {
             return Err(HostError::invalid(l("项目名称需为 1–200 个字符。", "Project titles must be 1–200 characters.")));
         }
         let mut projects = self.projects.lock().unwrap();
-        let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
-        projects[index].title = trimmed.to_owned();
-        let project = projects[index].clone();
-        self.save(&projects)?;
+        let mut next = projects.clone();
+        let index = next.iter().position(|project| project.id == id).ok_or_else(missing)?;
+        next[index].title = trimmed.to_owned();
+        let project = next[index].clone();
+        self.save(&next)?;
+        *projects = next;
         Ok(project)
     }
 
     /// Keep a project at the top of the sidebar, or not.
     pub fn pin(&self, id: &str, pinned: bool) -> HostResult<Project> {
         let mut projects = self.projects.lock().unwrap();
-        let index = projects.iter().position(|project| project.id == id).ok_or_else(missing)?;
-        projects[index].pinned = pinned;
-        let project = projects[index].clone();
-        self.save(&projects)?;
+        let mut next = projects.clone();
+        let index = next.iter().position(|project| project.id == id).ok_or_else(missing)?;
+        next[index].pinned = pinned;
+        let project = next[index].clone();
+        self.save(&next)?;
+        *projects = next;
         Ok(project)
     }
 
     /// Remove a project from the list; its folders and chats stay on disk.
     pub fn remove(&self, id: &str) -> HostResult<()> {
         let mut projects = self.projects.lock().unwrap();
-        projects.retain(|project| project.id != id);
-        self.save(&projects)
+        let mut next = projects.clone();
+        next.retain(|project| project.id != id);
+        self.save(&next)?;
+        *projects = next;
+        Ok(())
     }
 
     /// One folder of a project, checked to still resolve to itself right before a file or process operation.

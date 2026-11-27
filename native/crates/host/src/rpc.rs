@@ -12,18 +12,21 @@ use futures::future::BoxFuture;
 use futures::{SinkExt as _, StreamExt as _};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinSet;
 
 use crate::error::{HostError, HostResult};
 
 type Handler = Arc<dyn Fn(Value) -> BoxFuture<'static, HostResult<Value>> + Send + Sync>;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const CLIENT_QUEUE_CAPACITY: usize = 512;
+const MAX_IN_FLIGHT_REQUESTS: usize = 64;
 
 #[derive(Default)]
 pub struct RpcHub {
     handlers: RwLock<HashMap<String, Handler>>,
-    clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
+    clients: Mutex<HashMap<u64, mpsc::Sender<Message>>>,
     next: AtomicU64,
 }
 
@@ -43,16 +46,27 @@ impl RpcHub {
         assert!(previous.is_none(), "RPC method {method} is already registered");
     }
 
-    /// Send an event to every connected window.
+    /// Send an event to every connected window. Serialization runs outside the clients lock, and slow/closed
+    /// connections cannot cause unbounded memory growth.
     pub fn emit(&self, event: &str, data: impl Serialize) {
-        let clients = self.clients.lock().unwrap();
-        if clients.is_empty() {
+        if self.clients.lock().unwrap().is_empty() {
             return;
         }
         let Ok(data) = serde_json::to_value(data) else { return };
         let text = json!({ "event": event, "data": data }).to_string();
-        for client in clients.values() {
-            let _ = client.send(Message::Text(text.clone().into()));
+        let mut clients = self.clients.lock().unwrap();
+        let mut stale = Vec::new();
+        for (&id, client) in clients.iter() {
+            match client.try_send(Message::Text(text.clone().into())) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => stale.push(id),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    log::debug!("RPC event {event} dropped for slow client {id}");
+                }
+            }
+        }
+        for id in stale {
+            clients.remove(&id);
         }
     }
 
@@ -65,11 +79,12 @@ impl RpcHub {
         }
     }
 
-    /// Serve one authenticated window until its socket closes. Requests run concurrently; answers go out as they finish.
+    /// Serve one authenticated window until its socket closes. Requests run concurrently up to a bounded limit;
+    /// answers go out as they finish, and in-flight tasks are cancelled when the socket disconnects.
     pub async fn serve(self: Arc<Self>, socket: WebSocket) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (mut sink, mut stream) = socket.split();
-        let (outgoing, mut queue) = mpsc::unbounded_channel::<Message>();
+        let (outgoing, mut queue) = mpsc::channel::<Message>(CLIENT_QUEUE_CAPACITY);
         self.clients.lock().unwrap().insert(id, outgoing.clone());
         let writer = tokio::spawn(async move {
             while let Some(message) = queue.recv().await {
@@ -79,36 +94,42 @@ impl RpcHub {
                 }
             }
         });
+        let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
+        let mut in_flight = JoinSet::new();
         while let Some(Ok(message)) = stream.next().await {
+            while in_flight.try_join_next().is_some() {}
             let text = match message {
                 Message::Text(text) => text,
                 Message::Close(_) => break,
                 _ => continue,
             };
             if text.len() > MAX_FRAME_BYTES {
-                let _ = outgoing.send(close_frame(1009, "frame too large"));
+                let _ = outgoing.try_send(close_frame(1009, "frame too large"));
                 break;
             }
             let frame: Value = match serde_json::from_str(text.as_str()) {
                 Ok(frame) => frame,
                 Err(_) => {
-                    let _ = outgoing.send(close_frame(1003, "invalid frame"));
+                    let _ = outgoing.try_send(close_frame(1003, "invalid frame"));
                     break;
                 }
             };
             let (Some(request), Some(method)) = (frame.get("id").filter(|id| id.is_number()).cloned(), frame.get("method").and_then(Value::as_str)) else {
-                let _ = outgoing.send(close_frame(1003, "invalid frame"));
+                let _ = outgoing.try_send(close_frame(1003, "invalid frame"));
                 break;
             };
+            let Ok(permit) = permits.clone().acquire_owned().await else { break };
             let (hub, method, params, reply) = (self.clone(), method.to_owned(), frame.get("params").cloned().unwrap_or(Value::Null), outgoing.clone());
-            tokio::spawn(async move {
+            in_flight.spawn(async move {
+                let _permit = permit;
                 let response = match hub.dispatch(&method, params).await {
                     Ok(result) => json!({ "id": request, "result": result }),
                     Err(error) => json!({ "id": request, "error": error }),
                 };
-                let _ = reply.send(Message::Text(response.to_string().into()));
+                let _ = reply.send(Message::Text(response.to_string().into())).await;
             });
         }
+        in_flight.abort_all();
         self.clients.lock().unwrap().remove(&id);
         drop(outgoing);
         let _ = writer.await;
@@ -117,7 +138,7 @@ impl RpcHub {
     /// Close every window connection.
     pub fn close(&self) {
         for client in self.clients.lock().unwrap().drain().map(|(_, client)| client) {
-            let _ = client.send(close_frame(1001, "host stopping"));
+            let _ = client.try_send(close_frame(1001, "host stopping"));
         }
     }
 }

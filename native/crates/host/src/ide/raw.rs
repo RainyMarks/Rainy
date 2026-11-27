@@ -177,6 +177,13 @@ fn tokio_stream_from(mut receiver: tokio::sync::mpsc::Receiver<Result<Vec<u8>, s
     futures::stream::poll_fn(move |context| receiver.poll_recv(context))
 }
 
+/// Synchronously release a `tokio::fs::File` handle before removing/renaming on Windows so background drop cannot
+/// race into `ERROR_SHARING_VIOLATION` and leave `.upload.tmp` behind.
+async fn close_file_sync(file: tokio::fs::File) {
+    let std_file = file.into_std().await;
+    drop(std_file);
+}
+
 struct TempCleanup {
     path: Option<PathBuf>,
 }
@@ -190,7 +197,14 @@ impl TempCleanup {
 impl Drop for TempCleanup {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            let _ = std::fs::remove_file(path);
+            if std::fs::remove_file(&path).is_err() && cfg!(windows) {
+                for _ in 0..4 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    if std::fs::remove_file(&path).is_ok() {
+                        break;
+                    }
+                }
+            }
         }
     }
 }
@@ -277,12 +291,12 @@ async fn respond_upload(files: Arc<Files>, server: Arc<HostServer>, activity: Ar
     let mut written: u64 = 0;
     while let Some(chunk) = stream.next().await {
         let Ok(bytes) = chunk else {
-            drop(file);
+            close_file_sync(file).await;
             return status(StatusCode::BAD_REQUEST);
         };
         written = written.saturating_add(bytes.len() as u64);
         if written > MAX_UPLOAD_BYTES {
-            drop(file);
+            close_file_sync(file).await;
             return upload_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "too-large",
@@ -291,16 +305,16 @@ async fn respond_upload(files: Arc<Files>, server: Arc<HostServer>, activity: Ar
         }
         for slice in bytes.chunks(UPLOAD_WRITE_CHUNK_BYTES) {
             if file.write_all(slice).await.is_err() {
-                drop(file);
+                close_file_sync(file).await;
                 return status(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
     }
     if file.sync_all().await.is_err() {
-        drop(file);
+        close_file_sync(file).await;
         return status(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    drop(file);
+    close_file_sync(file).await;
 
     let commit_target = target.clone();
     let committed = tokio::task::spawn_blocking(move || files.commit_upload(&commit_target, overwrite, written)).await;

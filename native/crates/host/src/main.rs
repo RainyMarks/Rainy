@@ -52,7 +52,7 @@ struct StderrLog;
 
 impl log::Log for StderrLog {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Info || std::env::var_os("RAINY_HOST_DEBUG").is_some()
+        metadata.level() <= log::max_level()
     }
 
     fn log(&self, record: &log::Record<'_>) {
@@ -83,7 +83,12 @@ pub struct Host {
 }
 
 fn main() {
-    let _ = log::set_logger(&StderrLog).map(|()| log::set_max_level(log::LevelFilter::Debug));
+    let max_level = if std::env::var_os("RAINY_HOST_DEBUG").is_some() {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    let _ = log::set_logger(&StderrLog).map(|()| log::set_max_level(max_level));
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     if let Err(error) = runtime.block_on(start()) {
         log::error!("{error:#}");
@@ -146,6 +151,10 @@ async fn start() -> Result<()> {
         ]
     });
     let runtime = Runtime::new(env.clone(), projects.clone(), registry.clone(), activity.clone())?;
+    {
+        let settings_for_trust = settings.clone();
+        runtime.set_trust_check(move |workspace_id, path| settings_for_trust.is_workspace_trusted(workspace_id, path));
+    }
     let maps = Arc::new(map::ProjectMaps::new(projects.clone(), env.home.join("maps")));
     let sysinfo = Arc::new(sysinfo::SysInfo::new());
     let experiments = Arc::new(experiments::Experiments::open(&env.home));
@@ -156,14 +165,6 @@ async fn start() -> Result<()> {
     let agent = agent::service::Agent::start(&host, preview_access(&host)).await?;
     host.server.listen(env.port).await?;
 
-    // A project the registry refuses (the same folder recorded for another target, as with two SSH aliases of one
-    // server) stays usable here; only its cross-target identity is missing.
-    for project in host.projects.list() {
-        if let Err(error) = host.registry.get_or_register(&project.id, &project.path, &project.title).await {
-            log::warn!("Project {} is not registered for this execution target: {}", project.path, error.message);
-        }
-    }
-
     let ready = json!({ "type": "ready", "protocol": 1, "url": host.server.launch_url(), "pid": std::process::id(), "home": env.home });
     if let Ok(file) = std::env::var("RAINY_READY_FILE") {
         let _ = store::write_atomic(std::path::Path::new(&file), ready.to_string().as_bytes());
@@ -171,8 +172,37 @@ async fn start() -> Result<()> {
     control::send(ready);
     log::info!("ready on 127.0.0.1:{}", host.server.port());
 
+    // Register existing projects in the background after signaling ready so startup latency stays minimal.
+    // A project the registry refuses (the same folder recorded for another target, as with two SSH aliases of one
+    // server) stays usable here; only its cross-target identity is missing.
+    {
+        let projects = host.projects.clone();
+        let registry = host.registry.clone();
+        tokio::spawn(async move {
+            for project in projects.list() {
+                if let Err(error) = registry.get_or_register(&project.id, &project.path, &project.title).await {
+                    log::warn!("Project {} is not registered for this execution target: {}", project.path, error.message);
+                }
+            }
+        });
+    }
+
     let detached = std::env::var("RAINY_DETACHED").as_deref() == Ok("1");
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
     loop {
+        #[cfg(unix)]
+        let term = async {
+            match sigterm.as_mut() {
+                Some(sig) => {
+                    sig.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let term = std::future::pending::<()>();
+
         tokio::select! {
             command = commands.recv() => match command {
                 Some(command) => {
@@ -185,6 +215,7 @@ async fn start() -> Result<()> {
                 None => break,
             },
             _ = tokio::signal::ctrl_c() => break,
+            _ = term => break,
         }
     }
     agent.close().await;

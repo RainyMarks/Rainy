@@ -3,13 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rainy_protocol::chat::{ExternalModelInfo, PendingApproval, UsageSummary};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::common::{CancelOnDrop, TurnTracker, format_rpc_error, push_bounded_tail, spawn_approval_bridge};
 use super::jsonrpc::{IncomingEvent, JsonRpcClient, JsonRpcError, external_env};
 use super::team::CodexTeam;
 use super::{ApprovalDecision, ExternalEvent, TurnRequest};
@@ -19,6 +20,7 @@ use crate::locale::l;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const INTERRUPT_GRACE: Duration = Duration::from_secs(3);
+const MAX_CODEX_TEAMS: usize = 64;
 
 /// Active turn control handle for a running Codex turn (supports live `turn/steer` and `turn/interrupt`).
 pub struct CodexTurnControl {
@@ -84,10 +86,11 @@ impl CodexTurnControl {
 /// A live `codex app-server --stdio` subprocess capable of hosting multiple threads.
 pub struct CodexProcess {
     pub rpc: Arc<JsonRpcClient>,
-    last_used: Mutex<Instant>,
-    active_turns: Mutex<usize>,
+    tracker: Arc<TurnTracker>,
     /// The sub-agents of each main thread, kept across its turns.
     teams: Mutex<HashMap<String, CodexTeam>>,
+    /// Maps Rainy chat `session_id` -> Codex main `thread_id` so closing a chat frees its team cache.
+    session_threads: Mutex<HashMap<String, String>>,
 }
 
 /// What a turn keeps about the team: the sub-agent cards it opened and the team revision it last sent.
@@ -140,9 +143,9 @@ impl CodexProcess {
         let _ = rpc.notify("initialized", json!({}));
         Ok(Arc::new(Self {
             rpc,
-            last_used: Mutex::new(Instant::now()),
-            active_turns: Mutex::new(0),
+            tracker: TurnTracker::new(),
             teams: Mutex::new(HashMap::new()),
+            session_threads: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -151,16 +154,20 @@ impl CodexProcess {
     }
 
     pub fn idle_for(&self) -> Duration {
-        let busy = self.active_turns.lock().map(|n| *n > 0).unwrap_or(false);
-        if busy {
-            return Duration::ZERO;
-        }
-        self.last_used.lock().map(|t| t.elapsed()).unwrap_or(Duration::ZERO)
+        self.tracker.idle_for()
     }
 
     fn touch(&self) {
-        if let Ok(mut t) = self.last_used.lock() {
-            *t = Instant::now();
+        self.tracker.touch();
+    }
+
+    /// Release the cached Codex team associated with a closed Rainy chat session.
+    pub fn remove_session_team(&self, session_id: &str) {
+        let thread_id = self.session_threads.lock().ok().and_then(|mut map| map.remove(session_id));
+        if let Some(thread_id) = thread_id
+            && let Ok(mut teams) = self.teams.lock()
+        {
+            teams.remove(&thread_id);
         }
     }
 
@@ -187,16 +194,14 @@ impl CodexProcess {
     /// Run one full conversational turn on Codex, emitting normalized [`ExternalEvent`] updates until `turn/completed`.
     pub async fn run_turn(
         self: &Arc<Self>,
+        session_id: &str,
         req: &TurnRequest,
         events: mpsc::UnboundedSender<ExternalEvent>,
         control: Arc<CodexTurnControl>,
         cancel: CancellationToken,
     ) -> HostResult<()> {
-        if let Ok(mut n) = self.active_turns.lock() {
-            *n += 1;
-        }
-        let _guard = ActiveGuard(self.clone());
-        self.touch();
+        let _guard = self.tracker.begin_turn();
+        let turn_done = CancelOnDrop(CancellationToken::new());
 
         let (sandbox_mode, approval_policy, sandbox_policy) = map_permission(&req.permission, &req.cwd);
         let model = normalize_model(req.model.as_deref());
@@ -205,12 +210,15 @@ impl CodexProcess {
         let (thread_id, resumed_fallback) = self
             .ensure_thread(req.thread_id.as_deref(), &req.cwd, model.as_deref(), sandbox_mode, approval_policy, &cancel)
             .await?;
+        if let Ok(mut map) = self.session_threads.lock() {
+            map.insert(session_id.to_owned(), thread_id.clone());
+        }
         control.set_thread(thread_id.clone());
         let _ = events.send(ExternalEvent::ThreadReady { thread_id: thread_id.clone() });
         if resumed_fallback {
             let _ = events.send(ExternalEvent::Notice {
                 code: "external-thread-reset".into(),
-                text: l("原 Codex 会话未能续接，已开启新的 Codex 线程。", "The previous Codex thread could not be resumed, so a new Codex thread was started."),
+                text: l("原 Codex 对话未能续接，已开启新的 Codex 线程。", "The previous Codex thread could not be resumed, so a new Codex thread was started."),
             });
         }
 
@@ -252,6 +260,7 @@ impl CodexProcess {
         let mut tool_outputs: HashMap<String, String> = HashMap::new();
         let mut tool_names: HashMap<String, String> = HashMap::new();
         let mut text_delta_items: HashSet<String> = HashSet::new();
+        let mut saw_anonymous_delta = false;
         let mut latest_usage: Option<UsageSummary> = None;
         let mut turn_team = TurnTeam::default();
 
@@ -266,7 +275,7 @@ impl CodexProcess {
                         let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
                         match tokio::time::timeout(remain, stream.recv()).await {
                             Ok(Some(IncomingEvent::Notification(note))) if note.method == "turn/completed" => {
-                                if matches_thread(&note.params, &thread_id) {
+                                if matches_thread(&note.params, &thread_id, false) {
                                     break;
                                 }
                             }
@@ -308,9 +317,9 @@ impl CodexProcess {
                             return Ok(());
                         }
                         IncomingEvent::Request(server_req) => {
-                            // The chat's own thread, or one of its sub-agents (the approval names it); another chat's
-                            // thread on the same Codex process is left to that chat.
-                            let agent = if matches_thread(&server_req.params, &thread_id) {
+                            // Never broadcast a request missing `threadId` across concurrent chats.
+                            let solo = self.tracker.active_count() <= 1;
+                            let agent = if matches_thread(&server_req.params, &thread_id, solo) {
                                 None
                             } else {
                                 let child = server_req.params.get("threadId").and_then(Value::as_str).unwrap_or_default();
@@ -319,30 +328,41 @@ impl CodexProcess {
                                     None => continue,
                                 }
                             };
-                            handle_codex_request(&self.rpc, server_req, &events, &cancel, agent);
+                            handle_codex_request(&self.rpc, server_req, &events, &cancel, &turn_done.0, agent);
                         }
                         IncomingEvent::Notification(note) => {
-                            if !matches_thread(&note.params, &thread_id) {
+                            // Global account notification carries no `threadId`.
+                            if note.method == "account/rateLimits/updated" {
+                                if let Some(quota) = super::quota::codex(&note.params) {
+                                    let _ = events.send(ExternalEvent::QuotaUpdated(quota));
+                                }
+                                continue;
+                            }
+                            let solo = self.tracker.active_count() <= 1;
+                            if !matches_thread(&note.params, &thread_id, solo && note.method != "error") {
                                 // A sub-agent's own thread: its card and the team, never the chat's transcript.
                                 if let Some(child) = note.params.get("threadId").and_then(Value::as_str) {
                                     self.on_agent_note(&thread_id, child, &note.method, &note.params, &mut turn_team, &events);
                                 }
                                 continue;
                             }
+                            // Ignore late notifications belonging to a previous cancelled turn on the same thread.
+                            if let (Some(expected), Some(got)) = (turn_id.as_deref(), notification_turn_id(&note.params))
+                                && expected != got
+                            {
+                                continue;
+                            }
                             self.touch();
                             match note.method.as_str() {
-                                // Sent when a turn uses up some of the account's limits; it names no thread.
-                                "account/rateLimits/updated" => {
-                                    if let Some(quota) = super::quota::codex(&note.params) {
-                                        let _ = events.send(ExternalEvent::QuotaUpdated(quota));
-                                    }
-                                }
                                 "item/agentMessage/delta" => {
                                     if let Some(delta) = note.params.get("delta").and_then(Value::as_str)
                                         && !delta.is_empty()
                                     {
-                                        if let Some(item_id) = note.params.get("itemId").and_then(Value::as_str) {
-                                            text_delta_items.insert(item_id.to_owned());
+                                        match note.params.get("itemId").and_then(Value::as_str) {
+                                            Some(item_id) => {
+                                                text_delta_items.insert(item_id.to_owned());
+                                            }
+                                            None => saw_anonymous_delta = true,
                                         }
                                         let _ = events.send(ExternalEvent::TextDelta(delta.to_owned()));
                                     }
@@ -366,8 +386,7 @@ impl CodexProcess {
                                         note.params.get("delta").and_then(Value::as_str),
                                     ) {
                                         let entry = tool_outputs.entry(item_id.to_owned()).or_default();
-                                        entry.push_str(delta);
-                                        trim_tail_chars(entry, 16384);
+                                        push_bounded_tail(entry, delta, 16384);
                                         let name = tool_names.get(item_id).cloned().unwrap_or_else(|| {
                                             if note.method.contains("fileChange") { "apply_patch".into() } else { "bash".into() }
                                         });
@@ -381,7 +400,7 @@ impl CodexProcess {
                                 "item/completed" => {
                                     if let Some(item) = note.params.get("item") {
                                         self.on_team_item(&thread_id, &thread_id, item, true, &mut turn_team, &events);
-                                        handle_item_completed(item, &mut tool_names, &mut tool_outputs, &text_delta_items, &events);
+                                        handle_item_completed(item, &mut tool_names, &mut tool_outputs, &text_delta_items, saw_anonymous_delta, &events);
                                     }
                                 }
                                 "turn/diff/updated" => {
@@ -396,12 +415,6 @@ impl CodexProcess {
                                     }
                                 }
                                 "turn/completed" => {
-                                    let completed_id = note.params.pointer("/turn/id").and_then(Value::as_str);
-                                    if let (Some(expected), Some(got)) = (turn_id.as_deref(), completed_id)
-                                        && expected != got
-                                    {
-                                        continue;
-                                    }
                                     let status = note.params.pointer("/turn/status").and_then(Value::as_str).unwrap_or("completed");
                                     let (stop_reason, error) = match status {
                                         "interrupted" => ("aborted".to_owned(), None),
@@ -537,6 +550,11 @@ impl CodexProcess {
                 let child = item.get("agentThreadId").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let (started, name, reply) = {
                     let Ok(mut teams) = self.teams.lock() else { return };
+                    if teams.len() >= MAX_CODEX_TEAMS && !teams.contains_key(main) {
+                        if let Some(evict) = teams.keys().find(|k| k.as_str() != main).cloned() {
+                            teams.remove(&evict);
+                        }
+                    }
                     let team = teams.entry(main.to_owned()).or_insert_with(|| CodexTeam::new(main));
                     let started = team.sub_agent_activity(sender, item);
                     (started, team.name_of(&child).unwrap_or_default(), team.reply_of(&child))
@@ -648,22 +666,19 @@ impl CodexProcess {
     }
 }
 
-struct ActiveGuard(Arc<CodexProcess>);
-
-impl Drop for ActiveGuard {
-    fn drop(&mut self) {
-        if let Ok(mut n) = self.0.active_turns.lock() {
-            *n = n.saturating_sub(1);
-        }
-        self.0.touch();
+fn matches_thread(params: &Value, thread_id: &str, allow_missing: bool) -> bool {
+    match params.get("threadId").and_then(Value::as_str) {
+        Some(id) => id == thread_id,
+        None => allow_missing,
     }
 }
 
-fn matches_thread(params: &Value, thread_id: &str) -> bool {
-    match params.get("threadId").and_then(Value::as_str) {
-        Some(id) => id == thread_id,
-        None => true,
-    }
+fn notification_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.pointer("/turn/id"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 fn extract_thread_id(res: &Value) -> Option<String> {
@@ -799,13 +814,15 @@ fn handle_item_completed(
     tool_names: &mut HashMap<String, String>,
     tool_outputs: &mut HashMap<String, String>,
     text_delta_items: &HashSet<String>,
+    saw_anonymous_delta: bool,
     events: &mpsc::UnboundedSender<ExternalEvent>,
 ) {
     let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
     let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
     match kind {
         "agentMessage" => {
-            if !text_delta_items.contains(id) {
+            let already_streamed = (!id.is_empty() && text_delta_items.contains(id)) || (id.is_empty() && saw_anonymous_delta);
+            if !already_streamed {
                 let text = item
                     .get("text")
                     .and_then(Value::as_str)
@@ -912,8 +929,18 @@ fn handle_codex_request(
     req: super::jsonrpc::ServerRequest,
     events: &mpsc::UnboundedSender<ExternalEvent>,
     cancel: &CancellationToken,
+    turn_done: &CancellationToken,
     agent: Option<String>,
 ) {
+    let decision_reply = |decision: Option<ApprovalDecision>| {
+        let value = match decision {
+            Some(ApprovalDecision::Allow) => "accept",
+            Some(ApprovalDecision::AllowSession) => "acceptForSession",
+            Some(ApprovalDecision::Deny) => "decline",
+            None => "cancel",
+        };
+        json!({ "decision": value })
+    };
     match req.method.as_str() {
         "item/commandExecution/requestApproval" | "execCommandApproval" => {
             let item_id = req
@@ -934,31 +961,9 @@ fn handle_codex_request(
                 rule,
                 path: None,
                 workdir,
-                agent: agent.clone(),
+                agent,
             };
-            let (tx, rx) = oneshot::channel::<ApprovalDecision>();
-            let sent = events.send(ExternalEvent::ApprovalRequested {
-                approval,
-                respond: Arc::new(Mutex::new(Some(tx))),
-            });
-            if sent.is_err() {
-                let _ = rpc.reply_result(&req.id, json!({ "decision": "decline" }));
-                return;
-            }
-            let rpc = rpc.clone();
-            let id = req.id;
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                let decision = tokio::select! {
-                    ans = rx => match ans {
-                        Ok(ApprovalDecision::Allow) => "accept",
-                        Ok(ApprovalDecision::AllowSession) => "acceptForSession",
-                        Ok(ApprovalDecision::Deny) | Err(_) => "decline",
-                    },
-                    () = cancel.cancelled() => "cancel",
-                };
-                let _ = rpc.reply_result(&id, json!({ "decision": decision }));
-            });
+            spawn_approval_bridge(rpc, req.id, approval, events, cancel, turn_done, json!({ "decision": "decline" }), decision_reply);
         }
         "item/fileChange/requestApproval" | "applyPatchApproval" => {
             let item_id = req
@@ -977,31 +982,9 @@ fn handle_codex_request(
                 rule,
                 path,
                 workdir: None,
-                agent: agent.clone(),
+                agent,
             };
-            let (tx, rx) = oneshot::channel::<ApprovalDecision>();
-            let sent = events.send(ExternalEvent::ApprovalRequested {
-                approval,
-                respond: Arc::new(Mutex::new(Some(tx))),
-            });
-            if sent.is_err() {
-                let _ = rpc.reply_result(&req.id, json!({ "decision": "decline" }));
-                return;
-            }
-            let rpc = rpc.clone();
-            let id = req.id;
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                let decision = tokio::select! {
-                    ans = rx => match ans {
-                        Ok(ApprovalDecision::Allow) => "accept",
-                        Ok(ApprovalDecision::AllowSession) => "acceptForSession",
-                        Ok(ApprovalDecision::Deny) | Err(_) => "decline",
-                    },
-                    () = cancel.cancelled() => "cancel",
-                };
-                let _ = rpc.reply_result(&id, json!({ "decision": decision }));
-            });
+            spawn_approval_bridge(rpc, req.id, approval, events, cancel, turn_done, json!({ "decision": "decline" }), decision_reply);
         }
         "item/permissions/requestApproval" => {
             let item_id = req
@@ -1019,29 +1002,12 @@ fn handle_codex_request(
                 rule: reason,
                 path: None,
                 workdir: None,
-                agent: agent.clone(),
+                agent,
             };
-            let (tx, rx) = oneshot::channel::<ApprovalDecision>();
-            if events
-                .send(ExternalEvent::ApprovalRequested { approval, respond: Arc::new(Mutex::new(Some(tx))) })
-                .is_err()
-            {
-                let _ = rpc.reply_result(&req.id, json!({ "permissions": {} }));
-                return;
-            }
-            let rpc = rpc.clone();
-            let id = req.id;
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                let result = tokio::select! {
-                    ans = rx => match ans {
-                        Ok(ApprovalDecision::Allow) => json!({ "permissions": requested, "scope": "turn" }),
-                        Ok(ApprovalDecision::AllowSession) => json!({ "permissions": requested, "scope": "session" }),
-                        Ok(ApprovalDecision::Deny) | Err(_) => json!({ "permissions": {} }),
-                    },
-                    () = cancel.cancelled() => json!({ "permissions": {} }),
-                };
-                let _ = rpc.reply_result(&id, result);
+            spawn_approval_bridge(rpc, req.id, approval, events, cancel, turn_done, json!({ "permissions": {} }), move |decision| match decision {
+                Some(ApprovalDecision::Allow) => json!({ "permissions": requested, "scope": "turn" }),
+                Some(ApprovalDecision::AllowSession) => json!({ "permissions": requested, "scope": "session" }),
+                Some(ApprovalDecision::Deny) | None => json!({ "permissions": {} }),
             });
         }
         _ => {
@@ -1050,28 +1016,16 @@ fn handle_codex_request(
     }
 }
 
-fn trim_tail_chars(text: &mut String, max_chars: usize) {
-    let count = text.chars().count();
-    if count > max_chars {
-        *text = text.chars().skip(count - max_chars).collect();
-    }
-}
-
 fn codex_error(method: &str, err: JsonRpcError, stderr: &str) -> HostError {
-    match err {
-        JsonRpcError::Cancelled => HostError::new("aborted", l("已停止。", "Stopped.")),
-        JsonRpcError::Timeout => HostError::other(l(
-            &format!("Codex 请求 {method} 超时。请检查本机 Codex 登录状态（运行 `codex login`）。"),
-            &format!("Codex request {method} timed out. Check your Codex login (`codex login`)."),
-        )),
-        other => {
-            let suffix = if stderr.is_empty() { String::new() } else { format!(" ({stderr})") };
-            HostError::other(l(
-                &format!("Codex {method} 失败：{other}{suffix}"),
-                &format!("Codex {method} failed: {other}{suffix}"),
-            ))
-        }
-    }
+    format_rpc_error(
+        "Codex",
+        "Codex",
+        method,
+        err,
+        stderr,
+        format!("Codex 请求 {method} 超时。请检查本机 Codex 登录状态（运行 `codex login`）。"),
+        format!("Codex request {method} timed out. Check your Codex login (`codex login`)."),
+    )
 }
 
 #[cfg(test)]

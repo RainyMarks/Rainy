@@ -1,7 +1,7 @@
 //! Language servers over the `/rainy/ide/lsp` WebSocket (3.x `ide/language.ts`) plus a shared lightweight diagnostics
 //! pool keyed by `(scope, root_id, language)` for Agent tools and post-edit feedback.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,6 +19,7 @@ use url::Url;
 
 use super::files::Files;
 use super::framing::{Decoder, encode};
+use super::lsp_client::{LspStdioClient, document_language_id};
 use super::state::StateStore;
 use super::tools::{Kit, Tools};
 use crate::activity::Activity;
@@ -31,6 +32,7 @@ use crate::runtime::Runtime;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DIAG_POOL: usize = 4;
+const MAX_OPENED_DOCS: usize = 32;
 const MAX_DIAG_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CACHED_DIAGNOSTICS: usize = 512;
 const DIAG_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -163,15 +165,10 @@ struct PoolKey {
 }
 
 struct DiagProcess {
-    child: tokio::process::Child,
-    job: Option<ProcessJob>,
-    stdin: tokio::process::ChildStdin,
-    stdout: tokio::process::ChildStdout,
-    decoder: Decoder,
-    received: Vec<Value>,
+    client: LspStdioClient,
     published: HashMap<String, Vec<DiagnosticItem>>,
-    opened: HashMap<String, i32>,
-    next_id: u64,
+    opened: HashMap<String, (String, i32)>,
+    opened_order: VecDeque<String>,
     supports_pull: Option<bool>,
 }
 
@@ -179,30 +176,13 @@ impl DiagProcess {
     async fn start(spec: &Spec) -> HostResult<Self> {
         let mut env = child_env(&spec.environment);
         env.insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
-        let mut command = crate::process::command(&spec.argv[0], &spec.argv[1..], &spec.root, &env);
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|error| HostError::other(format!("{}: {error}", spec.argv[0])))?;
-        let job = ProcessJob::new();
-        if !job.as_ref().is_some_and(|job| job.assign_child(&child)) {
-            contain_child(&child);
-        }
-        let stdin = child.stdin.take().expect("piped");
-        let stdout = child.stdout.take().expect("piped");
-        let mut stderr = child.stderr.take().expect("piped");
-        tokio::spawn(async move {
-            let mut sink = [0u8; 4096];
-            while matches!(stderr.read(&mut sink).await, Ok(read) if read > 0) {}
-        });
+        let client = LspStdioClient::spawn(&spec.argv[0], &spec.argv[1..], &spec.root, &env, MAX_MESSAGE_BYTES, true)
+            .map_err(|error| HostError::other(format!("{}: {error}", spec.argv[0])))?;
         let mut process = Self {
-            child,
-            job,
-            stdin,
-            stdout,
-            decoder: Decoder::new(MAX_MESSAGE_BYTES),
-            received: Vec::new(),
+            client,
             published: HashMap::new(),
             opened: HashMap::new(),
-            next_id: 1,
+            opened_order: VecDeque::new(),
             supports_pull: None,
         };
         let uri = file_uri(&spec.root);
@@ -222,7 +202,7 @@ impl DiagProcess {
         let init_result = tokio::time::timeout(DIAG_INIT_TIMEOUT, process.request("initialize", init_params)).await;
         match init_result {
             Ok(Ok(_)) => {
-                process.notify("initialized", json!({})).await?;
+                process.client.notify("initialized", json!({})).await?;
                 Ok(process)
             }
             Ok(Err(error)) => {
@@ -236,28 +216,7 @@ impl DiagProcess {
         }
     }
 
-    async fn send(&mut self, message: &Value) -> HostResult<()> {
-        let bytes = encode(message);
-        self.stdin.write_all(&bytes).await.map_err(|error| HostError::other(error.to_string()))?;
-        self.stdin.flush().await.map_err(|error| HostError::other(error.to_string()))
-    }
-
-    async fn notify(&mut self, method: &str, params: Value) -> HostResult<()> {
-        self.send(&json!({ "jsonrpc": "2.0", "method": method, "params": params })).await
-    }
-
-    async fn read_more(&mut self) -> HostResult<()> {
-        let mut chunk = [0u8; 32768];
-        let read = self.stdout.read(&mut chunk).await.map_err(|error| HostError::other(error.to_string()))?;
-        if read == 0 {
-            return Err(HostError::other("Language server exited"));
-        }
-        let messages = self.decoder.push(&chunk[..read]).map_err(HostError::other)?;
-        self.received.extend(messages);
-        Ok(())
-    }
-
-    fn record_notification(&mut self, message: &Value) -> Option<String> {
+    fn record_notification(published: &mut HashMap<String, Vec<DiagnosticItem>>, message: &Value) -> Option<String> {
         if message.get("method").and_then(Value::as_str) != Some("textDocument/publishDiagnostics") {
             return None;
         }
@@ -266,41 +225,24 @@ impl DiagProcess {
         let items = params.get("diagnostics").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
         let parsed = parse_lsp_diagnostics(items);
         let key = uri_key(uri);
-        self.published.insert(key.clone(), parsed);
+        published.insert(key.clone(), parsed);
         Some(key)
     }
 
     async fn request(&mut self, method: &str, params: Value) -> HostResult<Result<Value, (i64, String)>> {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).await?;
-        loop {
-            while !self.received.is_empty() {
-                let message = self.received.remove(0);
-                if message.get("method").is_some() {
-                    if let Some(req_id) = message.get("id") {
-                        let _ = self.send(&json!({ "jsonrpc": "2.0", "id": req_id, "result": Value::Null })).await;
-                    } else {
-                        let _ = self.record_notification(&message);
-                    }
-                } else if message.get("id").and_then(Value::as_u64) == Some(id) {
-                    if let Some(err) = message.get("error") {
-                        let code = err.get("code").and_then(Value::as_i64).unwrap_or(-1);
-                        let msg = err.get("message").and_then(Value::as_str).unwrap_or("LSP error").to_owned();
-                        return Ok(Err((code, msg)));
-                    }
-                    return Ok(Ok(message.get("result").cloned().unwrap_or(Value::Null)));
-                }
-            }
-            self.read_more().await?;
-        }
+        let published = &mut self.published;
+        self.client.request(method, params, |message| {
+            let _ = Self::record_notification(published, message);
+        }).await
     }
 
-    fn document_language_id<'a>(path: &Path, server_language: &'a str) -> &'a str {
-        match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-            Some("tsx") => "typescriptreact",
-            Some("jsx") => "javascriptreact",
-            _ => server_language,
+    async fn evict_oldest_opened(&mut self) {
+        while self.opened.len() >= MAX_OPENED_DOCS {
+            let Some(old_key) = self.opened_order.pop_front() else { break };
+            if let Some((old_uri, _)) = self.opened.remove(&old_key) {
+                self.published.remove(&old_key);
+                let _ = self.client.notify("textDocument/didClose", json!({ "textDocument": { "uri": old_uri } })).await;
+            }
         }
     }
 
@@ -308,27 +250,31 @@ impl DiagProcess {
         let uri = file_uri(file);
         let key = uri_key(&uri);
         self.published.remove(&key);
-        if let Some(version) = self.opened.get_mut(&key) {
+        if let Some((_, version)) = self.opened.get_mut(&key) {
             *version += 1;
             let ver = *version;
-            self.notify(
-                "textDocument/didChange",
-                json!({
-                    "textDocument": { "uri": uri, "version": ver },
-                    "contentChanges": [{ "text": text }]
-                }),
-            )
-            .await?;
+            self.client
+                .notify(
+                    "textDocument/didChange",
+                    json!({
+                        "textDocument": { "uri": uri, "version": ver },
+                        "contentChanges": [{ "text": text }]
+                    }),
+                )
+                .await?;
         } else {
-            self.opened.insert(key.clone(), 1);
-            let doc_lang = Self::document_language_id(file, language);
-            self.notify(
-                "textDocument/didOpen",
-                json!({
-                    "textDocument": { "uri": uri, "languageId": doc_lang, "version": 1, "text": text }
-                }),
-            )
-            .await?;
+            self.evict_oldest_opened().await;
+            self.opened.insert(key.clone(), (uri.clone(), 1));
+            self.opened_order.push_back(key.clone());
+            let doc_lang = document_language_id(file, language);
+            self.client
+                .notify(
+                    "textDocument/didOpen",
+                    json!({
+                        "textDocument": { "uri": uri, "languageId": doc_lang, "version": 1, "text": text }
+                    }),
+                )
+                .await?;
         }
 
         // Prefer LSP 3.17 pull diagnostics when supported (ty, tsgo/tsc --lsp).
@@ -360,12 +306,11 @@ impl DiagProcess {
         // Wait briefly for `textDocument/publishDiagnostics` notification from push-only servers.
         let deadline = tokio::time::Instant::now() + DIAG_PUSH_WAIT;
         loop {
-            while !self.received.is_empty() {
-                let message = self.received.remove(0);
+            while let Some(message) = self.client.pop_received() {
                 if message.get("method").is_some() {
                     if let Some(req_id) = message.get("id") {
-                        let _ = self.send(&json!({ "jsonrpc": "2.0", "id": req_id, "result": Value::Null })).await;
-                    } else if self.record_notification(&message).as_deref() == Some(key.as_str()) {
+                        let _ = self.client.send(&json!({ "jsonrpc": "2.0", "id": req_id, "result": Value::Null })).await;
+                    } else if Self::record_notification(&mut self.published, &message).as_deref() == Some(key.as_str()) {
                         return Ok(self.published.get(&key).cloned().unwrap_or_default());
                     }
                 }
@@ -374,7 +319,7 @@ impl DiagProcess {
             if remaining.is_zero() {
                 return Ok(self.published.get(&key).cloned().unwrap_or_default());
             }
-            match tokio::time::timeout(remaining, self.read_more()).await {
+            match tokio::time::timeout(remaining, self.client.read_more()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => return Err(error),
                 Err(_) => return Ok(self.published.get(&key).cloned().unwrap_or_default()),
@@ -382,13 +327,8 @@ impl DiagProcess {
         }
     }
 
-    async fn shutdown(mut self) {
-        let _ = tokio::time::timeout(Duration::from_millis(300), self.send(&json!({ "jsonrpc": "2.0", "id": self.next_id, "method": "shutdown", "params": Value::Null }))).await;
-        let _ = tokio::time::timeout(Duration::from_millis(200), self.send(&json!({ "jsonrpc": "2.0", "method": "exit", "params": Value::Null }))).await;
-        if let Some(job) = &self.job {
-            job.terminate();
-        }
-        crate::process::kill_tree(&mut self.child, Duration::from_secs(1)).await;
+    async fn shutdown(self) {
+        self.client.shutdown().await;
     }
 }
 
@@ -616,7 +556,17 @@ impl Languages {
         None
     }
 
-    fn cache_published(&self, root: &Path, message: &Value) {
+    fn insert_published_cache(&self, key: String, file_version: String, diagnostics: Vec<DiagnosticItem>) {
+        let mut cache = self.published_cache.lock().unwrap();
+        if !cache.contains_key(&key) && cache.len() >= MAX_CACHED_DIAGNOSTICS {
+            if let Some(oldest) = cache.iter().min_by_key(|(_, v)| v.updated_at).map(|(k, _)| k.clone()) {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(key, CachedDiagnostics { file_version, diagnostics, updated_at: Instant::now() });
+    }
+
+    fn cache_published(&self, root: &Path, message: &Value, dirty_uris: &Mutex<HashSet<String>>) {
         if message.get("method").and_then(Value::as_str) != Some("textDocument/publishDiagnostics") {
             return;
         }
@@ -631,16 +581,16 @@ impl Languages {
         if !contains(root, &real) {
             return;
         }
+        let cache_key = path_cache_key(&real);
+        // Never cache diagnostics computed over an unsaved dirty editor buffer as if they came from disk.
+        if dirty_uris.lock().unwrap().contains(&uri_key(uri)) {
+            self.published_cache.lock().unwrap().remove(&cache_key);
+            return;
+        }
         let Ok(Some(info)) = super::fs::stat(&real) else { return };
         let items = params.get("diagnostics").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
         let diagnostics = parse_lsp_diagnostics(items);
-        let mut cache = self.published_cache.lock().unwrap();
-        if cache.len() >= MAX_CACHED_DIAGNOSTICS {
-            if let Some(oldest) = cache.iter().min_by_key(|(_, v)| v.updated_at).map(|(k, _)| k.clone()) {
-                cache.remove(&oldest);
-            }
-        }
-        cache.insert(path_cache_key(&real), CachedDiagnostics { file_version: info.version, diagnostics, updated_at: Instant::now() });
+        self.insert_published_cache(cache_key, info.version, diagnostics);
     }
 
     /// Quiet diagnostics query for a file inside a workspace (returns `Ok(vec![])` when the file has no LSP or the tool
@@ -817,9 +767,8 @@ impl Languages {
         match query_result {
             Ok(Ok(diagnostics)) => {
                 entry.touch();
-                // Cache under file version so immediate repeated queries hit fast path.
-                let mut cache = self.published_cache.lock().unwrap();
-                cache.insert(path_cache_key(&canonical_file), CachedDiagnostics { file_version: info.version, diagnostics: diagnostics.clone(), updated_at: Instant::now() });
+                // Cache under file version with bounded capacity so immediate repeated queries hit fast path.
+                self.insert_published_cache(path_cache_key(&canonical_file), info.version, diagnostics.clone());
                 Ok(DiagnosticsReport {
                     language: Some(language.to_owned()),
                     available: true,
@@ -882,27 +831,8 @@ impl Languages {
                 return;
             }
         };
-        if self.connections.lock().unwrap().len() >= MAX_CONNECTIONS {
-            let _ = sink.send(close(1013, "Editor language capacity reached")).await;
-            return;
-        }
-        let mut env = child_env(&spec.environment);
-        env.insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
-        let mut command = crate::process::command(&spec.argv[0], &spec.argv[1..], &spec.root, &env);
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                log::warn!("IDE language startup failed: {}: {error}", spec.argv[0]);
-                let _ = sink.send(Message::Text(json!({ "jsonrpc": "2.0", "method": "window/logMessage", "params": { "type": 1, "message": format!("{}: {error}", spec.argv[0]) } }).to_string().into())).await;
-                let _ = sink.send(close(1011, "Language server could not start")).await;
-                return;
-            }
-        };
-        let job = ProcessJob::new();
-        if !job.as_ref().is_some_and(|job| job.assign_child(&child)) {
-            contain_child(&child);
-        }
+        // Atomically reserve a connection slot under the lock so concurrent connects cannot exceed MAX_CONNECTIONS
+        // or race past `close()`.
         let (done_tx, done_rx) = watch::channel(false);
         let connection = Arc::new(Connection {
             id: self.next.fetch_add(1, Ordering::Relaxed),
@@ -915,7 +845,42 @@ impl Languages {
             done: done_rx,
             close: Mutex::new(None),
         });
-        self.connections.lock().unwrap().push(connection.clone());
+        let rejected = {
+            let mut connections = self.connections.lock().unwrap();
+            if self.closing.load(Ordering::Acquire) {
+                Some((1001, "Editor language services are closing"))
+            } else if connections.len() >= MAX_CONNECTIONS {
+                Some((1013, "Editor language capacity reached"))
+            } else {
+                connections.push(connection.clone());
+                None
+            }
+        };
+        if let Some((code, reason)) = rejected {
+            let _ = done_tx.send(true);
+            let _ = sink.send(close(code, reason)).await;
+            return;
+        }
+        let mut env = child_env(&spec.environment);
+        env.insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
+        let mut command = crate::process::command(&spec.argv[0], &spec.argv[1..], &spec.root, &env);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.connections.lock().unwrap().retain(|known| known.id != connection.id);
+                let _ = done_tx.send(true);
+                log::warn!("IDE language startup failed: {}: {error}", spec.argv[0]);
+                let _ = sink.send(Message::Text(json!({ "jsonrpc": "2.0", "method": "window/logMessage", "params": { "type": 1, "message": format!("{}: {error}", spec.argv[0]) } }).to_string().into())).await;
+                let _ = sink.send(close(1011, "Language server could not start")).await;
+                return;
+            }
+        };
+        let job = ProcessJob::new();
+        if !job.as_ref().is_some_and(|job| job.assign_child(&child)) {
+            contain_child(&child);
+        }
+        let dirty_uris: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
         let (mut stdin, mut stdout, mut stderr) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
         tokio::spawn(async move {
             let mut sink = [0u8; 8192];
@@ -930,12 +895,13 @@ impl Languages {
                 }
             }
         });
-        // Server → editor (also taps `publishDiagnostics` into the shared cache).
+        // Server → editor (also taps `publishDiagnostics` into the shared cache when the buffer is clean).
         let server_output = {
             let to_socket = to_socket.clone();
             let stop = connection.stop.clone();
             let languages = self.clone();
             let root = spec.root.clone();
+            let dirty_uris = dirty_uris.clone();
             tokio::spawn(async move {
                 let mut decoder = Decoder::new(MAX_MESSAGE_BYTES);
                 let mut buffer = vec![0u8; 65536];
@@ -949,7 +915,7 @@ impl Languages {
                         Ok(read) => match decoder.push(&buffer[..read]) {
                             Ok(messages) => {
                                 for message in messages {
-                                    languages.cache_published(&root, &message);
+                                    languages.cache_published(&root, &message, &dirty_uris);
                                     let _ = to_socket.send(Message::Text(message.to_string().into()));
                                 }
                             }
@@ -968,6 +934,7 @@ impl Languages {
         let input_stop = connection.stop.clone();
         let editor_input = {
             let to_socket = to_socket.clone();
+            let dirty_uris = dirty_uris.clone();
             tokio::spawn(async move {
                 loop {
                     let message = tokio::select! {
@@ -989,6 +956,20 @@ impl Languages {
                     let admitted = serde_json::from_str::<Value>(text.as_str()).map_err(HostError::from).and_then(|message| prepare(message, &root));
                     match admitted {
                         Ok(message) => {
+                            if let Some(method) = message.get("method").and_then(Value::as_str)
+                                && let Some(uri) = message.pointer("/params/textDocument/uri").and_then(Value::as_str)
+                            {
+                                let key = uri_key(uri);
+                                match method {
+                                    "textDocument/didChange" => {
+                                        dirty_uris.lock().unwrap().insert(key);
+                                    }
+                                    "textDocument/didSave" | "textDocument/didClose" => {
+                                        dirty_uris.lock().unwrap().remove(&key);
+                                    }
+                                    _ => {}
+                                }
+                            }
                             let encoded = encode(&message);
                             let wrote = tokio::time::timeout(Duration::from_secs(5), async {
                                 stdin.write_all(&encoded).await?;

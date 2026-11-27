@@ -11,10 +11,12 @@ use axum::extract::{FromRequestParts as _, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::STANDARD;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use url::Url;
+
+use crate::text::{constant_time_eq, random_token};
 
 const COOKIE: &str = "rainy_auth";
 
@@ -58,16 +60,6 @@ pub fn mime(extension: &str) -> &'static str {
         "txt" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
-}
-
-fn random_token() -> String {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("random bytes");
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn same(given: &[u8], expected: &[u8]) -> bool {
-    given.len() == expected.len() && given.iter().zip(expected).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 fn status(code: StatusCode) -> Response {
@@ -134,7 +126,7 @@ impl HostServer {
         }
         headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok()).flat_map(|value| value.split(';')).any(|part| {
             let part = part.trim();
-            part.split_once('=').is_some_and(|(name, value)| name == COOKIE && same(value.as_bytes(), self.secret.as_bytes()))
+            part.split_once('=').is_some_and(|(name, value)| name == COOKIE && constant_time_eq(value.as_bytes(), self.secret.as_bytes()))
         })
     }
 
@@ -244,8 +236,9 @@ fn local_path(next: &str) -> bool {
 async fn handle(State(server): State<Arc<HostServer>>, request: Request) -> Response {
     let mut response = route(&server, request).await;
     let headers = response.headers_mut();
-    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.entry(header::X_CONTENT_TYPE_OPTIONS).or_insert(HeaderValue::from_static("nosniff"));
+    headers.entry(header::REFERRER_POLICY).or_insert(HeaderValue::from_static("no-referrer"));
+    headers.entry("cross-origin-resource-policy").or_insert(HeaderValue::from_static("same-origin"));
     response
 }
 
@@ -257,7 +250,7 @@ async fn route(server: &Arc<HostServer>, request: Request) -> Response {
     let headers = request.headers();
     if url.path() == "/" && server.authority_ok(headers) {
         if let Some(token) = url.query_pairs().find(|(name, _)| name == "token").map(|(_, value)| value.into_owned()) {
-            if !same(token.as_bytes(), server.launch_token.as_bytes()) {
+            if !constant_time_eq(token.as_bytes(), server.launch_token.as_bytes()) {
                 return status(StatusCode::FORBIDDEN);
             }
             // `next` lets a pane land on its own page; only paths on this origin are followed.

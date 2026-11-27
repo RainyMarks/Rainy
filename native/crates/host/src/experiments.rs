@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{HostError, HostResult};
 use crate::locale::l;
+use crate::paths::contains;
 use crate::process::scrubbed_env;
 use crate::store::{create_private_dir, read_json, write_json};
-use crate::text::now_ms;
+use crate::text::{backup_damaged, now_ms};
 
 pub const DEFAULT_TAIL_BYTES: u64 = 64 * 1024;
 pub const MAX_TAIL_BYTES: u64 = 512 * 1024;
@@ -28,6 +29,8 @@ struct ExperimentsFile {
     version: u8,
     #[serde(default)]
     experiments: Vec<ExperimentRecord>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 fn default_version() -> u8 {
@@ -164,7 +167,22 @@ pub fn read_tail_chunk(path: &Path, offset: Option<u64>, max_bytes: Option<u64>)
         }
     }
     // Hold back an incomplete trailing multi-byte UTF-8 sequence so the next poll completes it cleanly.
-    let trim_end = utf8_complete_end(&buf, trim_start);
+    // Avoid livelock on non-UTF-8 logs (e.g. GBK) where a trailing byte mimics a UTF-8 lead byte:
+    // if the prefix already contains invalid UTF-8, or we made zero progress on a quiescent file, consume all bytes.
+    let mut trim_end = utf8_complete_end(&buf, trim_start);
+    if trim_end < buf.len() {
+        let prefix_invalid_utf8 = trim_end > trim_start && std::str::from_utf8(&buf[trim_start..trim_end]).is_err();
+        let zero_progress_quiescent = trim_end == trim_start
+            && start.saturating_add(read_len as u64) == total_bytes
+            && meta
+                .modified()
+                .ok()
+                .and_then(|mtime| mtime.elapsed().ok())
+                .is_some_and(|age| age >= std::time::Duration::from_secs(1));
+        if prefix_invalid_utf8 || zero_progress_quiescent {
+            trim_end = buf.len();
+        }
+    }
     let slice = &buf[trim_start..trim_end];
     let text = String::from_utf8_lossy(slice).into_owned();
 
@@ -219,27 +237,45 @@ pub struct Experiments {
     registry_path: PathBuf,
     data_dir: PathBuf,
     records: Mutex<Vec<ExperimentRecord>>,
+    extra: Mutex<BTreeMap<String, serde_json::Value>>,
 }
 
 impl Experiments {
     pub fn open(home: &Path) -> Self {
         let registry_path = home.join("experiments.v1.json");
         let data_dir = home.join("experiments");
-        let loaded = read_json::<ExperimentsFile>(&registry_path)
-            .ok()
-            .flatten()
-            .map(|file| file.experiments)
-            .unwrap_or_default();
-        Self { registry_path, data_dir, records: Mutex::new(loaded) }
+        let (loaded, extra) = match read_json::<ExperimentsFile>(&registry_path) {
+            Ok(Some(file)) => (file.experiments, file.extra),
+            Ok(None) => (Vec::new(), BTreeMap::new()),
+            Err(error) => {
+                if let Some(backup) = backup_damaged(&registry_path) {
+                    log::warn!("experiments.v1.json is unreadable ({error}); backed up to {}", backup.display());
+                } else {
+                    log::warn!("experiments.v1.json is unreadable ({error}); starting with an empty list");
+                }
+                (Vec::new(), BTreeMap::new())
+            }
+        };
+        Self { registry_path, data_dir, records: Mutex::new(loaded), extra: Mutex::new(extra) }
     }
 
     fn save_locked(&self, records: &[ExperimentRecord]) -> HostResult<()> {
-        let file = ExperimentsFile { version: 1, experiments: records.to_vec() };
+        let extra = self.extra.lock().unwrap().clone();
+        let file = ExperimentsFile { version: 1, experiments: records.to_vec(), extra };
         write_json(&self.registry_path, &file).map_err(Into::into)
     }
 
     fn exit_marker_path(&self, id: &str) -> PathBuf {
         self.data_dir.join(format!("{id}.exit"))
+    }
+
+    /// Delete the `.exit` marker and managed `<id>.log` inside `self.data_dir` (never deletes custom external logs).
+    fn cleanup_files(&self, record: &ExperimentRecord) {
+        let _ = fs::remove_file(self.exit_marker_path(&record.id));
+        let log = Path::new(&record.log_path);
+        if contains(&self.data_dir, log) {
+            let _ = fs::remove_file(log);
+        }
     }
 
     /// List all tracked experiments after refreshing live process states.
@@ -340,39 +376,55 @@ impl Experiments {
 
         let mut records = self.records.lock().unwrap();
         records.push(record.clone());
+        let mut evicted = None;
         if records.len() > MAX_EXPERIMENTS {
             // Trim oldest finished records first so active experiments are never evicted.
-            if let Some(idx) = records.iter().position(|r| r.status != ExperimentStatus::Running) {
-                records.remove(idx);
-            } else {
-                records.remove(0);
-            }
+            let idx = records.iter().position(|r| r.status != ExperimentStatus::Running).unwrap_or(0);
+            evicted = Some(records.remove(idx));
         }
         self.save_locked(&records)?;
+        drop(records);
+        if let Some(removed) = evicted {
+            self.cleanup_files(&removed);
+        }
         Ok(record)
     }
 
     /// Safely stop a running experiment after strict PID + start-time (+ UID/PGID on Unix) verification.
     pub fn stop(&self, id: &str, force: bool) -> HostResult<ExperimentRecord> {
+        let snapshot = {
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.iter_mut().find(|r| r.id == id) else {
+                return Err(HostError::new("not-found", l("找不到该实验记录。", "Experiment record not found.")));
+            };
+            let _ = self.refresh_record(record);
+            if record.status != ExperimentStatus::Running {
+                let result = record.clone();
+                let _ = self.save_locked(&records);
+                return Ok(result);
+            }
+            record.clone()
+        };
+
+        // Release `self.records` while signaling and polling so concurrent `list`/`tail` calls never stall.
+        let signaled = terminate_verified(&snapshot, force)?;
+        let exited = if signaled {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            let mut dead = !is_experiment_alive(&snapshot);
+            while !dead && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                dead = !is_experiment_alive(&snapshot);
+            }
+            dead
+        } else {
+            false
+        };
+
         let mut records = self.records.lock().unwrap();
         let Some(record) = records.iter_mut().find(|r| r.id == id) else {
             return Err(HostError::new("not-found", l("找不到该实验记录。", "Experiment record not found.")));
         };
-        let _ = self.refresh_record(record);
-        if record.status != ExperimentStatus::Running {
-            let result = record.clone();
-            let _ = self.save_locked(&records);
-            return Ok(result);
-        }
-        if terminate_verified(record, force)? {
-            // Poll briefly to verify the process actually exited; if it traps/ignores SIGTERM keep it Running
-            // so the user can escalate to `force: true` (SIGKILL) and `remove()` cannot orphan a live GPU job.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-            let mut exited = !is_experiment_alive(record);
-            while !exited && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(40));
-                exited = !is_experiment_alive(record);
-            }
+        if signaled {
             if exited {
                 record.status = ExperimentStatus::Stopped;
                 record.ended_at = Some(now_ms());
@@ -402,8 +454,9 @@ impl Experiments {
             return Err(HostError::new("busy", l("实验仍在运行，请先停止后再移除记录。", "The experiment is still running. Stop it before removing.")));
         }
         let removed = records.remove(idx);
-        let _ = fs::remove_file(self.exit_marker_path(&removed.id));
         self.save_locked(&records)?;
+        drop(records);
+        self.cleanup_files(&removed);
         Ok(true)
     }
 
@@ -491,6 +544,17 @@ struct Launched {
 }
 
 #[cfg(unix)]
+fn find_setsid() -> Option<&'static str> {
+    if Path::new("/usr/bin/setsid").is_file() {
+        Some("/usr/bin/setsid")
+    } else if Path::new("/bin/setsid").is_file() {
+        Some("/bin/setsid")
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
 fn spawn_detached(
     command: &str,
     cwd: &Path,
@@ -501,14 +565,23 @@ fn spawn_detached(
     use std::os::unix::process::CommandExt as _;
 
     let shell = if Path::new("/bin/bash").is_file() { "/bin/bash" } else { "/bin/sh" };
-    // Run the user command inside a new session (`setsid`) and write exit status atomically on completion.
+    // Run the user command without `-l` (so login profiles cannot clobber CUDA_VISIBLE_DEVICES / PATH),
+    // forward SIGTERM to the process group, and write exit status atomically on completion.
     let wrapper = r#"_rainy_cmd="$1"
 _rainy_exit="$2"
-if [ -x /bin/bash ]; then
-  /bin/bash -lc "$_rainy_cmd"
-else
-  /bin/sh -c "$_rainy_cmd"
+_rainy_pid_file="$3"
+if [ -n "$_rainy_pid_file" ]; then
+  printf '%s\n' "$$" > "${_rainy_pid_file}.tmp" && mv -f "${_rainy_pid_file}.tmp" "$_rainy_pid_file"
 fi
+_rainy_child=""
+trap 'if [ -n "$_rainy_child" ]; then kill -TERM -- -$$ 2>/dev/null || kill -TERM "$_rainy_child" 2>/dev/null; fi' TERM INT
+if [ -x /bin/bash ]; then
+  /bin/bash -c "$_rainy_cmd" &
+else
+  /bin/sh -c "$_rainy_cmd" &
+fi
+_rainy_child=$!
+wait "$_rainy_child"
 _rc=$?
 _sec=$(date +%s 2>/dev/null || echo 0)
 case "$_sec" in
@@ -518,9 +591,60 @@ esac
 printf '{"exitCode":%d,"endedAt":%s}\n' "$_rc" "$_ts" > "${_rainy_exit}.tmp" && mv -f "${_rainy_exit}.tmp" "$_rainy_exit"
 exit $_rc"#;
 
+    // SAFETY: `geteuid` has no preconditions and always succeeds.
+    let uid = Some(unsafe { libc::geteuid() });
+
+    // Double-fork via `setsid` when available so the experiment reparents away from rainy-host's PPID tree
+    // (surviving carrier FORCE_STOP) and needs zero long-lived reaper threads.
+    if let Some(setsid) = find_setsid() {
+        let pid_path = exit_path.with_extension("pid");
+        let _ = fs::remove_file(&pid_path);
+        let stderr_file = log_file.try_clone()?;
+        let launcher = r#""$1" "$2" -c "$3" rainy-experiment "$4" "$5" "$6" </dev/null &"#;
+        let mut mid = std::process::Command::new("/bin/sh");
+        mid.args([
+            "-c",
+            launcher,
+            "rainy-exp-launch",
+            setsid,
+            shell,
+            wrapper,
+            command,
+            &exit_path.display().to_string(),
+            &pid_path.display().to_string(),
+        ])
+        .current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(stderr_file));
+        let mut child = mid.spawn().map_err(|error| HostError::other(l(&format!("无法启动后台实验：{error}"), &format!("Failed to start detached experiment: {error}"))))?;
+        let _ = child.wait();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut grandchild_pid: Option<u32> = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(text) = fs::read_to_string(&pid_path)
+                && let Ok(pid) = text.trim().parse::<u32>()
+                && pid > 1
+            {
+                grandchild_pid = Some(pid);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = fs::remove_file(&pid_path);
+        if let Some(pid) = grandchild_pid {
+            let proc_start_ticks = read_unix_proc_stat(pid).map(|stat| stat.start_ticks);
+            return Ok(Launched { pid, pgid: Some(pid), proc_start_ticks, uid });
+        }
+        return Err(HostError::other(l("后台实验未能成功汇报进程号。", "Detached experiment failed to report its process ID.")));
+    }
+
     let stderr_file = log_file.try_clone()?;
     let mut cmd = std::process::Command::new(shell);
-    cmd.args(["-c", wrapper, "rainy-experiment", command, &exit_path.display().to_string()])
+    cmd.args(["-c", wrapper, "rainy-experiment", command, &exit_path.display().to_string(), ""])
         .current_dir(cwd)
         .env_clear()
         .envs(env)
@@ -539,10 +663,8 @@ exit $_rc"#;
     let mut child = cmd.spawn().map_err(|error| HostError::other(l(&format!("无法启动后台实验：{error}"), &format!("Failed to start detached experiment: {error}"))))?;
     let pid = child.id();
     let proc_start_ticks = read_unix_proc_stat(pid).map(|stat| stat.start_ticks);
-    // SAFETY: `geteuid` has no preconditions and always succeeds.
-    let uid = Some(unsafe { libc::geteuid() });
 
-    // Reap the child in the background if it finishes while this Host stays alive; never kills on Host exit.
+    // Reap the child in the background when setsid-based double-fork is unavailable; never kills on Host exit.
     std::thread::Builder::new()
         .name(format!("exp-reap-{pid}"))
         .spawn(move || {
@@ -555,15 +677,17 @@ exit $_rc"#;
 
 /// The PowerShell that runs an experiment on Windows. The command and the exit-marker path come in through
 /// environment variables, and the wrapper itself has no double quotes, so Windows argument quoting cannot change it.
+/// Running the user command in a child PowerShell ensures `exit N` cannot bypass writing the `.exit` marker.
 /// It goes in with `-Command`, not `-EncodedCommand`: Windows PowerShell writes the error and progress streams of an
 /// encoded command as CLIXML, which made a failing run's log unreadable (and every log start with `#< CLIXML`).
 #[cfg(any(windows, test))]
 const WINDOWS_WRAPPER: &str = concat!(
     "$ProgressPreference = 'SilentlyContinue'; ",
-    "$c = $env:_RAINY_EXP_CMD; $e = $env:_RAINY_EXP_EXIT; ",
-    "Remove-Item Env:_RAINY_EXP_CMD, Env:_RAINY_EXP_EXIT -ErrorAction SilentlyContinue; ",
-    "$rc = 0; ",
-    "try { Invoke-Expression $c; if ($null -ne $LASTEXITCODE) { $rc = [int]$LASTEXITCODE } } catch { Write-Error $_; $rc = 1 }; ",
+    "$c = $env:_RAINY_EXP_CMD; $e = $env:_RAINY_EXP_EXIT; $p = $env:_RAINY_EXP_PWSH; ",
+    "Remove-Item Env:_RAINY_EXP_CMD, Env:_RAINY_EXP_EXIT, Env:_RAINY_EXP_PWSH -ErrorAction SilentlyContinue; ",
+    "$env:_RAINY_EXP_RUN = $c; ",
+    "& $p -NoLogo -NoProfile -NonInteractive -Command '$_c = $env:_RAINY_EXP_RUN; Remove-Item Env:_RAINY_EXP_RUN -ErrorAction SilentlyContinue; Invoke-Expression $_c; if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit [int]$LASTEXITCODE }'; ",
+    "$rc = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }; ",
     "$ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); ",
     "$json = (@{ exitCode = $rc; endedAt = $ts } | ConvertTo-Json -Compress); ",
     "$tmp = $e + '.tmp'; ",
@@ -594,22 +718,18 @@ fn spawn_detached(
         .envs(env)
         .env("_RAINY_EXP_CMD", command)
         .env("_RAINY_EXP_EXIT", exit_path)
+        .env("_RAINY_EXP_PWSH", &pwsh)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_file))
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 
     // Deliberately do NOT attach to Host's ProcessJob so the experiment survives Host exit.
-    let mut child = cmd.spawn().map_err(|error| HostError::other(l(&format!("无法启动后台实验：{error}"), &format!("Failed to start detached experiment: {error}"))))?;
+    // Windows does not require wait() reaping to avoid zombies, so dropping the handle costs zero threads.
+    let child = cmd.spawn().map_err(|error| HostError::other(l(&format!("无法启动后台实验：{error}"), &format!("Failed to start detached experiment: {error}"))))?;
     let pid = child.id();
     let proc_start_ticks = read_windows_process_creation_time(pid);
-
-    std::thread::Builder::new()
-        .name(format!("exp-reap-{pid}"))
-        .spawn(move || {
-            let _ = child.wait();
-        })
-        .ok();
+    drop(child);
 
     Ok(Launched { pid, pgid: Some(pid), proc_start_ticks, uid: None })
 }
@@ -857,7 +977,36 @@ mod tests {
         assert!(tail.text.contains("exp-hello-42"), "unexpected tail: {:?}", tail.text);
         // Errors reach the log as text, not as PowerShell's CLIXML.
         assert!(tail.text.contains("exp-oops") && !tail.text.contains("CLIXML"), "unexpected tail: {:?}", tail.text);
+        let managed_log = PathBuf::from(&final_rec.log_path);
+        assert!(managed_log.is_file());
         assert!(mgr.remove(&rec.id).unwrap());
+        assert!(!managed_log.exists(), "removing an experiment must clean up its managed log file");
+
+        // Explicit `exit 7` must still write the exit marker with exit_code == Some(7).
+        let exit_rec = mgr
+            .start(ExperimentStartParams {
+                name: Some("exit-code".into()),
+                cwd: work.display().to_string(),
+                command: "exit 7".into(),
+                cuda_visible_devices: None,
+                env: BTreeMap::new(),
+                log_path: None,
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let mut exit_final = exit_rec.clone();
+        while std::time::Instant::now() < deadline {
+            if let Some(found) = mgr.list().unwrap().experiments.into_iter().find(|r| r.id == exit_rec.id) {
+                exit_final = found;
+                if exit_final.status != ExperimentStatus::Running {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(exit_final.status, ExperimentStatus::Exited);
+        assert_eq!(exit_final.exit_code, Some(7));
+        assert!(mgr.remove(&exit_rec.id).unwrap());
 
         // Start a longer experiment and verify safe stop + removal.
         let sleep_cmd = if cfg!(windows) { "Start-Sleep -Seconds 30" } else { "sleep 30" };
@@ -881,5 +1030,28 @@ mod tests {
         let stopped = mgr.stop(&running.id, false).unwrap();
         assert_eq!(stopped.status, ExperimentStatus::Stopped);
         assert!(mgr.remove(&running.id).unwrap());
+    }
+
+    #[test]
+    fn tail_does_not_livelock_on_gbk_bytes_and_backs_up_damaged_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        // GBK "中文" = [0xD6, 0xD0, 0xCE, 0xC4] where 0xC4 resembles a 2-byte UTF-8 lead byte.
+        let gbk_log = dir.path().join("gbk.log");
+        fs::write(&gbk_log, b"ok \xD6\xD0\xCE\xC4").unwrap();
+        let chunk = read_tail_chunk(&gbk_log, Some(0), Some(1024)).unwrap();
+        assert_eq!(chunk.next_offset, 7, "non-UTF-8 log must advance cleanly to EOF without stalling");
+
+        // Corrupted experiments.v1.json is backed up instead of silently discarded.
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("experiments.v1.json"), "{broken").unwrap();
+        let mgr = Experiments::open(&home);
+        assert!(mgr.list().unwrap().experiments.is_empty());
+        let backups = fs::read_dir(&home)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("experiments.v1.json.damaged-"))
+            .count();
+        assert_eq!(backups, 1);
     }
 }

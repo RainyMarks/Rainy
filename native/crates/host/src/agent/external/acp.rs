@@ -5,17 +5,18 @@
 //! prompt, history and tools — Rainy never injects custom system prompts or wraps `agy acp`
 //! as a bare model API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine as _;
 use rainy_protocol::chat::{ExternalCommand, ExternalModelInfo, PendingApproval, UsageSummary};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::common::{CancelOnDrop, TurnTracker, format_rpc_error, push_bounded_tail, spawn_approval_bridge};
 use super::jsonrpc::{IncomingEvent, JsonRpcClient, JsonRpcError, external_env};
 use super::{ApprovalDecision, ExternalEvent, TurnRequest};
 use crate::error::{HostError, HostResult};
@@ -28,6 +29,7 @@ const CANCEL_GRACE: Duration = Duration::from_secs(3);
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// The most text of a reported edit kept to show its diff.
 const MAX_DIFF_TEXT: usize = 256 * 1024;
+const MAX_KNOWN_SESSIONS: usize = 256;
 
 /// Active turn control handle for an ACP session (`session/cancel`, `session/set_mode`).
 pub struct AcpTurnControl {
@@ -88,12 +90,13 @@ pub struct AcpProcess {
     pub kind: String,
     pub rpc: Arc<JsonRpcClient>,
     capabilities: Value,
-    /// Maps Rainy chat `external_thread_id` -> cached advertised modes for that ACP session.
+    /// Session IDs already live in this ACP process (even when the server advertises no modes).
+    known_sessions: Mutex<HashSet<String>>,
+    /// Maps ACP `sessionId` -> cached advertised modes for that ACP session.
     known_modes: Mutex<HashMap<String, Vec<String>>>,
     /// The thinking-level option each ACP session advertised.
     thought_options: Mutex<HashMap<String, String>>,
-    last_used: Mutex<Instant>,
-    active_turns: Mutex<usize>,
+    tracker: Arc<TurnTracker>,
 }
 
 impl AcpProcess {
@@ -102,7 +105,7 @@ impl AcpProcess {
         let env = external_env();
         let rpc = JsonRpcClient::spawn(binary, args, cwd, &env, kind, true).map_err(|error| {
             HostError::other(l(
-                &format!("无法启动外部 ACP 代理 ({})：{error}", binary.display()),
+                &format!("无法启动外部 ACP Agent ({})：{error}", binary.display()),
                 &format!("Could not start external ACP agent ({}): {error}", binary.display()),
             ))
         })?;
@@ -132,10 +135,10 @@ impl AcpProcess {
             kind: kind.to_owned(),
             rpc,
             capabilities,
+            known_sessions: Mutex::new(HashSet::new()),
             known_modes: Mutex::new(HashMap::new()),
             thought_options: Mutex::new(HashMap::new()),
-            last_used: Mutex::new(Instant::now()),
-            active_turns: Mutex::new(0),
+            tracker: TurnTracker::new(),
         }))
     }
 
@@ -144,16 +147,19 @@ impl AcpProcess {
     }
 
     pub fn idle_for(&self) -> Duration {
-        let busy = self.active_turns.lock().map(|n| *n > 0).unwrap_or(false);
-        if busy {
-            return Duration::ZERO;
-        }
-        self.last_used.lock().map(|t| t.elapsed()).unwrap_or(Duration::ZERO)
+        self.tracker.idle_for()
     }
 
     fn touch(&self) {
-        if let Ok(mut t) = self.last_used.lock() {
-            *t = Instant::now();
+        self.tracker.touch();
+    }
+
+    fn remember_session(&self, session_id: &str) {
+        if let Ok(mut known) = self.known_sessions.lock() {
+            if known.len() >= MAX_KNOWN_SESSIONS && !known.contains(session_id) {
+                known.clear();
+            }
+            known.insert(session_id.to_owned());
         }
     }
 
@@ -176,16 +182,15 @@ impl AcpProcess {
         control: Arc<AcpTurnControl>,
         cancel: CancellationToken,
     ) -> HostResult<()> {
-        if let Ok(mut n) = self.active_turns.lock() {
-            *n += 1;
-        }
-        let _guard = ActiveGuard(self.clone());
-        self.touch();
+        let _guard = self.tracker.begin_turn();
+        let turn_done = CancelOnDrop(CancellationToken::new());
+        let read_only = req.permission == "read-only";
 
         // Subscribed before the session is made: an agent lists its commands right after `session/new`.
         let mut stream = self.rpc.subscribe();
         let (meta, resumed_fallback) = self.ensure_session(req.thread_id.as_deref(), &req.cwd, &cancel).await?;
         let session_id = meta.session_id.clone();
+        self.remember_session(&session_id);
         if !meta.models.is_empty() {
             let _ = events.send(ExternalEvent::ModelsListed(meta.models.clone()));
         }
@@ -198,7 +203,13 @@ impl AcpProcess {
                         let _ = events.send(ExternalEvent::CommandsUpdated(commands));
                     }
                 }
-                IncomingEvent::Request(server_req) if matches_session(&server_req.params, &session_id) => handle_acp_request(&self.rpc, server_req, &events, &cancel),
+                IncomingEvent::Request(server_req) => {
+                    if matches_session(&server_req.params, &session_id) {
+                        handle_acp_request(&self.rpc, server_req, &events, &cancel, &turn_done.0, read_only);
+                    } else {
+                        let _ = self.rpc.reply_error(&server_req.id, -32602, "Unknown or inactive sessionId");
+                    }
+                }
                 _ => {}
             }
         }
@@ -224,17 +235,49 @@ impl AcpProcess {
         if resumed_fallback {
             let _ = events.send(ExternalEvent::Notice {
                 code: "external-thread-reset".into(),
-                text: l("原外部会话未能续接，已开启新的会话。", "The previous external session could not be resumed, so a new session was started."),
+                text: l("原外部对话未能续接，已开启新的对话。", "The previous external session could not be resumed, so a new session was started."),
             });
         }
 
-        // Apply permission mode & model selection before prompting (best-effort; unsupported options do not fail the turn).
-        if let Some(mode_id) = pick_acp_mode(&req.permission, &modes) {
-            let _ = self.rpc.request("session/set_mode", json!({ "sessionId": session_id, "modeId": mode_id }), Duration::from_secs(10), &cancel).await;
+        let requested_model = self.configure_session_options(&session_id, req, &modes, thought_option.as_deref(), &events, &cancel).await;
+        self.drive_prompt_loop(&session_id, req, requested_model, read_only, &mut stream, &events, &control, &cancel, &turn_done.0)
+            .await
+    }
+
+    async fn configure_session_options<'a>(
+        &self,
+        session_id: &str,
+        req: &'a TurnRequest,
+        modes: &[String],
+        thought_option: Option<&str>,
+        events: &mpsc::UnboundedSender<ExternalEvent>,
+        cancel: &CancellationToken,
+    ) -> Option<&'a str> {
+        if let Some(mode_id) = pick_acp_mode(&req.permission, modes) {
+            let res = self.rpc.request("session/set_mode", json!({ "sessionId": session_id, "modeId": mode_id }), Duration::from_secs(10), cancel).await;
+            if let Err(err) = res
+                && req.permission == "read-only"
+            {
+                let _ = events.send(ExternalEvent::Notice {
+                    code: "external-readonly-failed".into(),
+                    text: l(
+                        &format!("外部 Agent 切换只读模式失败（{err}），已启用写入与命令拦截。"),
+                        &format!("The external agent failed to enter read-only mode ({err}); edit and command permissions will be denied."),
+                    ),
+                });
+            }
+        } else if req.permission == "read-only" {
+            let _ = events.send(ExternalEvent::Notice {
+                code: "external-readonly-unsupported".into(),
+                text: l(
+                    "当前外部 Agent 未提供只读模式，写入与命令权限请求将自动拒绝。",
+                    "This external agent does not advertise a read-only mode; edit and command permission prompts will be denied automatically.",
+                ),
+            });
         }
         let requested_model = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty() && *m != "default");
         if let Some(model_id) = requested_model {
-            let res = self.rpc.request("session/set_model", json!({ "sessionId": session_id, "modelId": model_id }), Duration::from_secs(10), &cancel).await;
+            let res = self.rpc.request("session/set_model", json!({ "sessionId": session_id, "modelId": model_id }), Duration::from_secs(10), cancel).await;
             if res.is_err() {
                 let _ = self
                     .rpc
@@ -242,7 +285,7 @@ impl AcpProcess {
                         "session/set_config_option",
                         json!({ "sessionId": session_id, "configId": "model", "value": model_id }),
                         Duration::from_secs(10),
-                        &cancel,
+                        cancel,
                     )
                     .await;
             }
@@ -250,8 +293,8 @@ impl AcpProcess {
         // After the model: choosing a model resets its thinking level. The option the session advertised, else the
         // ids agents use (Antigravity's is `thought_level` and refuses any other).
         if let Some(thinking) = req.thinking.as_deref().map(str::trim).filter(|t| !t.is_empty() && *t != "off") {
-            let options = match &thought_option {
-                Some(option) => vec![option.clone()],
+            let options = match thought_option {
+                Some(option) => vec![option.to_owned()],
                 None => vec!["thought_level".to_owned(), "reasoning_effort".to_owned()],
             };
             for option in options {
@@ -261,7 +304,7 @@ impl AcpProcess {
                         "session/set_config_option",
                         json!({ "sessionId": session_id, "configId": option, "value": thinking }),
                         Duration::from_secs(10),
-                        &cancel,
+                        cancel,
                     )
                     .await;
                 if res.is_ok() {
@@ -269,8 +312,23 @@ impl AcpProcess {
                 }
             }
         }
+        requested_model
+    }
 
-        let prompt_blocks = build_acp_prompt_blocks(&req.prompt, &req.image_paths);
+    #[allow(clippy::too_many_arguments)]
+    async fn drive_prompt_loop(
+        &self,
+        session_id: &str,
+        req: &TurnRequest,
+        requested_model: Option<&str>,
+        read_only: bool,
+        stream: &mut super::jsonrpc::EventStream,
+        events: &mpsc::UnboundedSender<ExternalEvent>,
+        control: &Arc<AcpTurnControl>,
+        cancel: &CancellationToken,
+        turn_done: &CancellationToken,
+    ) -> HostResult<()> {
+        let prompt_blocks = build_acp_prompt_blocks(&req.prompt, &req.image_paths).await;
         let prompt_cancel = CancellationToken::new();
         let prompt_fut = self.rpc.request(
             "session/prompt",
@@ -289,8 +347,12 @@ impl AcpProcess {
                 () = cancel.cancelled() => {
                     control.cancel_prompt();
                     let deadline = tokio::time::Instant::now() + CANCEL_GRACE;
-                    let _ = tokio::time::timeout_at(deadline, &mut prompt_fut).await;
+                    let settled = tokio::time::timeout_at(deadline, &mut prompt_fut).await.is_ok();
                     prompt_cancel.cancel();
+                    if !settled {
+                        // The subprocess ignored `session/cancel`; terminate it so stale updates cannot leak into the next turn.
+                        self.rpc.close().await;
+                    }
                     let _ = events.send(ExternalEvent::TurnFinished {
                         stop_reason: "aborted".into(),
                         error: None,
@@ -301,9 +363,16 @@ impl AcpProcess {
                 }
                 prompt_res = &mut prompt_fut => {
                     // Drain any trailing notifications already queued before `session/prompt` returned.
-                    while let Ok(Some(IncomingEvent::Notification(note))) = tokio::time::timeout(Duration::from_millis(20), stream.recv()).await {
-                        if matches_session(&note.params, &session_id) && note.method == "session/update" {
-                            handle_acp_update(&note.params, &req.cwd, &mut tool_state, &mut latest_usage, &events);
+                    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(20), stream.recv()).await {
+                        match ev {
+                            IncomingEvent::Notification(note) if matches_session(&note.params, session_id) && note.method == "session/update" => {
+                                handle_acp_update(&note.params, &req.cwd, &mut tool_state, &mut latest_usage, events);
+                            }
+                            IncomingEvent::Request(server_req) => {
+                                let _ = self.rpc.reply_error(&server_req.id, -32602, "Turn already finished");
+                            }
+                            IncomingEvent::Closed(_) => break,
+                            _ => {}
                         }
                     }
                     match prompt_res {
@@ -321,7 +390,7 @@ impl AcpProcess {
                                 res.get("error")
                                     .and_then(Value::as_str)
                                     .map(str::to_owned)
-                                    .unwrap_or_else(|| l("外部代理拒绝或终止了请求。", "The external agent refused or stopped the request."))
+                                    .unwrap_or_else(|| l("外部 Agent 拒绝或终止了请求。", "The external agent refused or stopped the request."))
                             });
                             let _ = events.send(ExternalEvent::TurnFinished {
                                 stop_reason,
@@ -347,7 +416,7 @@ impl AcpProcess {
                         prompt_cancel.cancel();
                         let _ = events.send(ExternalEvent::TurnFinished {
                             stop_reason: "error".into(),
-                            error: Some(l("外部 ACP 代理连接已断开。", "The external ACP agent connection closed.")),
+                            error: Some(l("外部 ACP Agent 连接已断开。", "The external ACP agent connection closed.")),
                             usage: latest_usage,
                             model: requested_model.map(str::to_owned),
                         });
@@ -357,9 +426,9 @@ impl AcpProcess {
                         IncomingEvent::Closed(tail) => {
                             prompt_cancel.cancel();
                             let detail = if tail.is_empty() {
-                                l("外部 ACP 代理意外退出。", "The external ACP agent exited unexpectedly.")
+                                l("外部 ACP Agent 意外退出。", "The external ACP agent exited unexpectedly.")
                             } else {
-                                l(&format!("外部 ACP 代理退出：{tail}"), &format!("External ACP agent exited: {tail}"))
+                                l(&format!("外部 ACP Agent 退出：{tail}"), &format!("External ACP agent exited: {tail}"))
                             };
                             let _ = events.send(ExternalEvent::TurnFinished {
                                 stop_reason: "error".into(),
@@ -370,18 +439,19 @@ impl AcpProcess {
                             return Ok(());
                         }
                         IncomingEvent::Request(server_req) => {
-                            if !matches_session(&server_req.params, &session_id) {
+                            if !matches_session(&server_req.params, session_id) {
+                                let _ = self.rpc.reply_error(&server_req.id, -32602, "Unknown or inactive sessionId");
                                 continue;
                             }
-                            handle_acp_request(&self.rpc, server_req, &events, &cancel);
+                            handle_acp_request(&self.rpc, server_req, events, cancel, turn_done, read_only);
                         }
                         IncomingEvent::Notification(note) => {
-                            if !matches_session(&note.params, &session_id) {
+                            if !matches_session(&note.params, session_id) {
                                 continue;
                             }
                             self.touch();
                             if note.method == "session/update" {
-                                handle_acp_update(&note.params, &req.cwd, &mut tool_state, &mut latest_usage, &events);
+                                handle_acp_update(&note.params, &req.cwd, &mut tool_state, &mut latest_usage, events);
                             }
                         }
                     }
@@ -394,7 +464,7 @@ impl AcpProcess {
         let cwd_str = cwd.to_string_lossy().into_owned();
         if let Some(session_id) = existing.filter(|id| !id.trim().is_empty()) {
             // If this process already holds this session in memory, reuse directly without reloading.
-            if self.known_modes.lock().is_ok_and(|m| m.contains_key(session_id)) {
+            if self.known_sessions.lock().is_ok_and(|s| s.contains(session_id)) {
                 return Ok((AcpSessionMeta { session_id: session_id.to_owned(), ..AcpSessionMeta::default() }, false));
             }
             // Prefer `session/resume` (no replay), then fall back to `session/load` if supported.
@@ -435,7 +505,7 @@ impl AcpProcess {
             .map_err(|err| acp_error(&self.kind, "session/new", err, &self.rpc.stderr_tail()))?;
         let meta = parse_acp_session_meta(&res);
         if meta.session_id.is_empty() {
-            return Err(HostError::other(l("外部 ACP 代理未返回会话 ID。", "The external ACP agent did not return a session id.")));
+            return Err(HostError::other(l("外部 ACP Agent 未返回对话 ID。", "The external ACP agent did not return a session id.")));
         }
         Ok((meta, existing.is_some()))
     }
@@ -445,23 +515,14 @@ impl AcpProcess {
     }
 }
 
-struct ActiveGuard(Arc<AcpProcess>);
-
-impl Drop for ActiveGuard {
-    fn drop(&mut self) {
-        if let Ok(mut n) = self.0.active_turns.lock() {
-            *n = n.saturating_sub(1);
-        }
-        self.0.touch();
-    }
-}
-
 #[derive(Default)]
 struct AcpToolState {
     name: String,
     kind: String,
     output: String,
     locations: Vec<String>,
+    /// Diff snapshots collected during `in_progress` updates so they survive if `completed` omits them.
+    diffs: HashMap<String, (String, String)>,
     completed: bool,
 }
 
@@ -472,10 +533,10 @@ fn matches_session(params: &Value, session_id: &str) -> bool {
     }
 }
 
-fn build_acp_prompt_blocks(prompt: &str, image_paths: &[PathBuf]) -> Vec<Value> {
+async fn build_acp_prompt_blocks(prompt: &str, image_paths: &[PathBuf]) -> Vec<Value> {
     let mut blocks = vec![json!({ "type": "text", "text": prompt })];
     for path in image_paths {
-        if let Ok(bytes) = std::fs::read(path)
+        if let Ok(bytes) = tokio::fs::read(path).await
             && bytes.len() <= MAX_IMAGE_BYTES
         {
             let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
@@ -723,7 +784,7 @@ fn handle_acp_update(
             add_rainy_args(tool_kind, &locations, cwd, &mut args);
             tools.insert(
                 id.to_owned(),
-                AcpToolState { name: name.clone(), kind: tool_kind.to_owned(), output: String::new(), locations, completed: false },
+                AcpToolState { name: name.clone(), kind: tool_kind.to_owned(), output: String::new(), locations, diffs: HashMap::new(), completed: false },
             );
             let _ = events.send(ExternalEvent::ToolStarted { id: id.to_owned(), name, args });
         }
@@ -732,6 +793,7 @@ fn handle_acp_update(
             if id.is_empty() {
                 return;
             }
+            let newly_seen = !tools.contains_key(id);
             let state = tools.entry(id.to_owned()).or_insert_with(|| {
                 let tool_kind = update.get("kind").and_then(Value::as_str).unwrap_or("other");
                 let title = update.get("title").and_then(Value::as_str).unwrap_or(tool_kind);
@@ -743,17 +805,26 @@ fn handle_acp_update(
                     state.locations.push(path);
                 }
             }
+            if newly_seen {
+                let title = update.get("title").and_then(Value::as_str).unwrap_or(&state.kind);
+                let mut args = update.get("rawInput").cloned().unwrap_or_else(|| json!({}));
+                if !args.is_object() {
+                    args = json!({ "input": args });
+                }
+                if args.as_object().is_some_and(|m| m.is_empty()) && !title.is_empty() {
+                    args["title"] = json!(title);
+                }
+                add_rainy_args(&state.kind, &state.locations, cwd, &mut args);
+                let _ = events.send(ExternalEvent::ToolStarted { id: id.to_owned(), name: state.name.clone(), args });
+            }
+            collect_acp_diffs(update, &mut state.locations, &mut state.diffs);
             if let Some(chunk) = extract_tool_update_text(update)
                 && !chunk.is_empty()
             {
                 if !state.output.is_empty() {
-                    state.output.push('\n');
+                    push_bounded_tail(&mut state.output, "\n", 16384);
                 }
-                state.output.push_str(&chunk);
-                let count = state.output.chars().count();
-                if count > 16384 {
-                    state.output = state.output.chars().skip(count - 16384).collect();
-                }
+                push_bounded_tail(&mut state.output, &chunk, 16384);
             }
             let status = update.get("status").and_then(Value::as_str).unwrap_or_default();
             if matches!(status, "completed" | "failed" | "error" | "cancelled") && !state.completed {
@@ -799,11 +870,17 @@ fn handle_acp_update(
     }
 }
 
+fn pick_acp_option(options: &[(String, String)], wanted: &[&str]) -> Option<String> {
+    wanted.iter().find_map(|target| options.iter().find(|(_, k)| k == target).map(|(oid, _)| oid.clone()))
+}
+
 fn handle_acp_request(
     rpc: &Arc<JsonRpcClient>,
     req: super::jsonrpc::ServerRequest,
     events: &mpsc::UnboundedSender<ExternalEvent>,
     cancel: &CancellationToken,
+    turn_done: &CancellationToken,
+    read_only: bool,
 ) {
     if req.method != "session/request_permission" {
         let _ = rpc.reply_error(&req.id, -32601, "Method not supported by Rainy");
@@ -832,6 +909,14 @@ fn handle_acp_request(
             Some((id, kind))
         })
         .collect();
+    if read_only && matches!(kind, "execute" | "edit" | "delete" | "move") {
+        let outcome = match pick_acp_option(&options, &["reject_once", "reject_always"]) {
+            Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
+            None => json!({ "outcome": "cancelled" }),
+        };
+        let _ = rpc.reply_result(&req.id, json!({ "outcome": outcome }));
+        return;
+    }
     let has_always = options.iter().any(|(_, k)| k == "allow_always");
     let reason = match kind {
         "execute" => "command",
@@ -847,40 +932,33 @@ fn handle_acp_request(
         workdir: None,
         agent: None,
     };
-    let (tx, rx) = oneshot::channel::<ApprovalDecision>();
-    if events
-        .send(ExternalEvent::ApprovalRequested { approval, respond: Arc::new(Mutex::new(Some(tx))) })
-        .is_err()
-    {
-        let _ = rpc.reply_result(&req.id, json!({ "outcome": { "outcome": "cancelled" } }));
-        return;
-    }
-    let rpc = rpc.clone();
-    let id = req.id;
-    let cancel = cancel.clone();
-    tokio::spawn(async move {
-        let pick = |kinds: &[&str]| -> Option<String> {
-            kinds.iter().find_map(|wanted| options.iter().find(|(_, k)| k == wanted).map(|(oid, _)| oid.clone()))
-        };
-        let outcome = tokio::select! {
-            ans = rx => match ans {
-                Ok(ApprovalDecision::Allow) => match pick(&["allow_once", "allow_always"]) {
+    spawn_approval_bridge(
+        rpc,
+        req.id,
+        approval,
+        events,
+        cancel,
+        turn_done,
+        json!({ "outcome": { "outcome": "cancelled" } }),
+        move |decision| {
+            let outcome = match decision {
+                Some(ApprovalDecision::Allow) => match pick_acp_option(&options, &["allow_once", "allow_always"]) {
                     Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
                     None => json!({ "outcome": "cancelled" }),
                 },
-                Ok(ApprovalDecision::AllowSession) => match pick(&["allow_always", "allow_once"]) {
+                Some(ApprovalDecision::AllowSession) => match pick_acp_option(&options, &["allow_always", "allow_once"]) {
                     Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
                     None => json!({ "outcome": "cancelled" }),
                 },
-                Ok(ApprovalDecision::Deny) | Err(_) => match pick(&["reject_once", "reject_always"]) {
+                Some(ApprovalDecision::Deny) => match pick_acp_option(&options, &["reject_once", "reject_always"]) {
                     Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
                     None => json!({ "outcome": "cancelled" }),
                 },
-            },
-            () = cancel.cancelled() => json!({ "outcome": "cancelled" }),
-        };
-        let _ = rpc.reply_result(&id, json!({ "outcome": outcome }));
-    });
+                None => json!({ "outcome": "cancelled" }),
+            };
+            json!({ "outcome": outcome })
+        },
+    );
 }
 
 fn acp_tool_name(kind: &str, title: &str) -> String {
@@ -965,18 +1043,7 @@ fn acp_path(raw: &str) -> String {
     if is_drive(path) { path.replace('/', "\\") } else { path.to_owned() }
 }
 
-fn build_acp_tool_details(id: &str, state: &AcpToolState, update: &Value) -> Option<Value> {
-    if state.kind == "execute" {
-        let mut details = json!({ "external": true });
-        let raw = update.get("rawOutput");
-        if let Some(code) = raw.and_then(|raw| raw.get("exit_code").or_else(|| raw.get("exitCode"))).and_then(Value::as_i64) {
-            details["exitCode"] = json!(code);
-        }
-        return Some(details);
-    }
-    // The files it names, and for those an ACP `diff` shows, the text before (none for a new file) and after.
-    let mut paths: Vec<String> = state.locations.clone();
-    let mut texts: HashMap<String, (String, String)> = HashMap::new();
+fn collect_acp_diffs(update: &Value, paths: &mut Vec<String>, texts: &mut HashMap<String, (String, String)>) {
     for block in update.get("content").and_then(Value::as_array).into_iter().flatten() {
         if block.get("type").and_then(Value::as_str) != Some("diff") {
             continue;
@@ -992,6 +1059,21 @@ fn build_acp_tool_details(id: &str, state: &AcpToolState, update: &Value) -> Opt
             texts.insert(path, (before.to_owned(), after.to_owned()));
         }
     }
+}
+
+fn build_acp_tool_details(id: &str, state: &AcpToolState, update: &Value) -> Option<Value> {
+    if state.kind == "execute" {
+        let mut details = json!({ "external": true });
+        let raw = update.get("rawOutput");
+        if let Some(code) = raw.and_then(|raw| raw.get("exit_code").or_else(|| raw.get("exitCode"))).and_then(Value::as_i64) {
+            details["exitCode"] = json!(code);
+        }
+        return Some(details);
+    }
+    // The files it names, and for those an ACP `diff` shows (including `in_progress` updates), before and after text.
+    let mut paths: Vec<String> = state.locations.clone();
+    let mut texts: HashMap<String, (String, String)> = state.diffs.clone();
+    collect_acp_diffs(update, &mut paths, &mut texts);
     if matches!(state.kind.as_str(), "edit" | "delete" | "move") && !paths.is_empty() {
         let op = if state.kind == "delete" { "delete" } else { "update" };
         let files: Vec<Value> = paths
@@ -1018,20 +1100,15 @@ fn build_acp_tool_details(id: &str, state: &AcpToolState, update: &Value) -> Opt
 }
 
 fn acp_error(kind: &str, method: &str, err: JsonRpcError, stderr: &str) -> HostError {
-    match err {
-        JsonRpcError::Cancelled => HostError::new("aborted", l("已停止。", "Stopped.")),
-        JsonRpcError::Timeout => HostError::other(l(
-            &format!("外部代理 {kind} 请求 {method} 超时。请检查登录与配置状态。"),
-            &format!("External agent {kind} timed out on {method}. Check login and CLI setup."),
-        )),
-        other => {
-            let suffix = if stderr.is_empty() { String::new() } else { format!(" ({stderr})") };
-            HostError::other(l(
-                &format!("外部代理 {kind} ({method}) 失败：{other}{suffix}"),
-                &format!("External agent {kind} ({method}) failed: {other}{suffix}"),
-            ))
-        }
-    }
+    format_rpc_error(
+        &format!("外部 Agent {kind}"),
+        &format!("External agent {kind}"),
+        method,
+        err,
+        stderr,
+        format!("外部 Agent {kind} 请求 {method} 超时。请检查登录与配置状态。"),
+        format!("External agent {kind} timed out on {method}. Check login and CLI setup."),
+    )
 }
 
 #[cfg(test)]

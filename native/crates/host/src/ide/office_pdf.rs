@@ -16,8 +16,6 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::StreamExt as _;
 use rainy_protocol::ide::OfficePdfRegistration;
 use tokio::io::AsyncWriteExt as _;
@@ -26,6 +24,7 @@ use url::Url;
 use crate::error::{HostError, HostResult};
 use crate::locale::l;
 use crate::paths::{contains, realpath};
+use crate::text::{constant_time_eq, random_token};
 
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
 const TOKEN_TTL: Duration = Duration::from_secs(120);
@@ -45,16 +44,6 @@ pub struct OfficePdfStore {
     entries: Mutex<HashMap<String, Entry>>,
 }
 
-fn random_token() -> String {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("random bytes");
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 fn status(code: StatusCode) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = code;
@@ -70,7 +59,14 @@ fn secure_headers(response: &mut Response) {
 }
 
 fn remove_temp_pdf(path: &Path) {
-    let _ = std::fs::remove_file(path);
+    if std::fs::remove_file(path).is_err() && cfg!(windows) {
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(20));
+            if std::fs::remove_file(path).is_ok() {
+                break;
+            }
+        }
+    }
     // Clean up an empty `rainy-office-*` parent folder created by desktop Office conversion.
     if let Some(parent) = path.parent() {
         let is_office_dir = parent
@@ -83,8 +79,19 @@ fn remove_temp_pdf(path: &Path) {
     }
 }
 
+async fn close_file_sync(file: tokio::fs::File) {
+    let std_file = file.into_std().await;
+    drop(std_file);
+}
+
 struct DeleteOnDrop {
     path: Option<PathBuf>,
+}
+
+impl DeleteOnDrop {
+    fn disarm(&mut self) {
+        self.path = None;
+    }
 }
 
 impl Drop for DeleteOnDrop {
@@ -234,7 +241,9 @@ impl OfficePdfStore {
             return resp;
         }
         let target = self.upload_dir.join(format!("{}.pdf", uuid::Uuid::new_v4().simple()));
+        let mut cleanup = DeleteOnDrop { path: Some(target.clone()) };
         let Ok(mut file) = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&target).await else {
+            cleanup.disarm();
             let mut resp = status(StatusCode::INTERNAL_SERVER_ERROR);
             secure_headers(&mut resp);
             return resp;
@@ -244,16 +253,14 @@ impl OfficePdfStore {
         let mut head = Vec::with_capacity(5);
         while let Some(chunk) = stream.next().await {
             let Ok(bytes) = chunk else {
-                drop(file);
-                let _ = tokio::fs::remove_file(&target).await;
+                close_file_sync(file).await;
                 let mut resp = status(StatusCode::BAD_REQUEST);
                 secure_headers(&mut resp);
                 return resp;
             };
             total = total.saturating_add(bytes.len() as u64);
             if total > MAX_PDF_BYTES {
-                drop(file);
-                let _ = tokio::fs::remove_file(&target).await;
+                close_file_sync(file).await;
                 let mut resp = status(StatusCode::PAYLOAD_TOO_LARGE);
                 secure_headers(&mut resp);
                 return resp;
@@ -262,31 +269,29 @@ impl OfficePdfStore {
                 let need = PDF_MAGIC.len() - head.len();
                 head.extend_from_slice(&bytes[..bytes.len().min(need)]);
                 if head.len() == PDF_MAGIC.len() && head.as_slice() != PDF_MAGIC {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&target).await;
+                    close_file_sync(file).await;
                     let mut resp = status(StatusCode::BAD_REQUEST);
                     secure_headers(&mut resp);
                     return resp;
                 }
             }
             if file.write_all(&bytes).await.is_err() {
-                drop(file);
-                let _ = tokio::fs::remove_file(&target).await;
+                close_file_sync(file).await;
                 let mut resp = status(StatusCode::INTERNAL_SERVER_ERROR);
                 secure_headers(&mut resp);
                 return resp;
             }
         }
         if head.as_slice() != PDF_MAGIC || file.flush().await.is_err() {
-            drop(file);
-            let _ = tokio::fs::remove_file(&target).await;
+            close_file_sync(file).await;
             let mut resp = status(StatusCode::BAD_REQUEST);
             secure_headers(&mut resp);
             return resp;
         }
-        drop(file);
+        close_file_sync(file).await;
         let canonical = realpath(&target).unwrap_or(target);
         let registration = self.insert(canonical, true);
+        cleanup.disarm();
         let body = serde_json::to_vec(&registration).unwrap_or_default();
         let mut response = Response::new(Body::from(body));
         response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));

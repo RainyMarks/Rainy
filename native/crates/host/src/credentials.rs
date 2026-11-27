@@ -16,6 +16,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use crate::store::{read_json, write_json};
+use crate::text::backup_damaged;
 
 const IV_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
@@ -60,18 +61,26 @@ impl Seal {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 struct PlainFile {
+    #[serde(default)]
     version: u8,
+    #[serde(default)]
     keys: Keys,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
 struct SealedFile {
+    #[serde(default)]
     version: u8,
+    #[serde(default)]
     keys: Keys,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     unreadable: BTreeMap<String, Vec<String>>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// The credential files of one Host home.
@@ -85,10 +94,6 @@ pub struct CredentialFiles {
     set_aside: BTreeMap<String, Vec<String>>,
     /// Without the carrier: names in the sealed file the plain file does not hold.
     unopened: Vec<String>,
-}
-
-fn invalid(path: &Path) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("{} is not a valid credential file", path.display()))
 }
 
 impl CredentialFiles {
@@ -114,10 +119,21 @@ impl CredentialFiles {
 
     /// Read the stored keys. Keys in the plain file are newer than sealed ones; they are sealed and removed from it.
     pub fn read(&mut self) -> io::Result<Keys> {
-        let plain = match read_json::<PlainFile>(&self.plain_file)? {
-            Some(file) if file.version == 1 => file.keys,
-            Some(_) => return Err(invalid(&self.plain_file)),
-            None => Keys::new(),
+        let plain = match read_json::<PlainFile>(&self.plain_file) {
+            Ok(Some(file)) if file.version == 1 => file.keys,
+            Ok(None) => Keys::new(),
+            Ok(Some(file)) => {
+                if let Some(backup) = backup_damaged(&self.plain_file) {
+                    log::warn!(".credentials.json has unexpected version {}; backed up to {}", file.version, backup.display());
+                }
+                Keys::new()
+            }
+            Err(error) => {
+                if let Some(backup) = backup_damaged(&self.plain_file) {
+                    log::warn!(".credentials.json is unreadable ({error}); backed up to {}", backup.display());
+                }
+                Keys::new()
+            }
         };
         let sealed_raw: Option<SealedFile> = read_json(&self.sealed_file).ok().flatten();
         let Some(sealer) = &self.sealer else {
@@ -125,10 +141,21 @@ impl CredentialFiles {
             self.unopened = sealed_raw.map(|file| file.keys.into_keys().filter(|name| !plain.contains_key(name)).collect()).unwrap_or_default();
             return Ok(plain);
         };
-        let file = match read_json::<SealedFile>(&self.sealed_file)? {
-            Some(file) if file.version == 2 => file,
-            Some(_) => return Err(invalid(&self.sealed_file)),
-            None => SealedFile::default(),
+        let file = match read_json::<SealedFile>(&self.sealed_file) {
+            Ok(Some(file)) if file.version == 2 => file,
+            Ok(None) => SealedFile::default(),
+            Ok(Some(file)) => {
+                if let Some(backup) = backup_damaged(&self.sealed_file) {
+                    log::warn!(".credentials.sealed.json has unexpected version {}; backed up to {}", file.version, backup.display());
+                }
+                SealedFile::default()
+            }
+            Err(error) => {
+                if let Some(backup) = backup_damaged(&self.sealed_file) {
+                    log::warn!(".credentials.sealed.json is unreadable ({error}); backed up to {}", backup.display());
+                }
+                SealedFile::default()
+            }
         };
         let mut keys = Keys::new();
         self.unreadable.clear();
@@ -154,7 +181,7 @@ impl CredentialFiles {
     /// Store the complete set of keys; `removed` names the user removed, whose unreadable values are set aside too.
     pub fn write(&mut self, keys: &Keys, removed: &[String]) -> io::Result<()> {
         let Some(sealer) = &self.sealer else {
-            write_json(&self.plain_file, &PlainFile { version: 1, keys: keys.clone() })?;
+            write_json(&self.plain_file, &PlainFile { version: 1, keys: keys.clone(), extra: BTreeMap::new() })?;
             self.unopened.retain(|name| !keys.contains_key(name) && !removed.contains(name));
             return Ok(());
         };
@@ -174,8 +201,8 @@ impl CredentialFiles {
             sealed.insert(name.clone(), sealer.seal(name, value));
         }
         // Sealed first: an interrupted write leaves the plain key in place, and the next start seals it again.
-        write_json(&self.sealed_file, &SealedFile { version: 2, keys: sealed, unreadable: set_aside.clone() })?;
-        write_json(&self.plain_file, &PlainFile { version: 1, keys: Keys::new() })?;
+        write_json(&self.sealed_file, &SealedFile { version: 2, keys: sealed, unreadable: set_aside.clone(), extra: BTreeMap::new() })?;
+        write_json(&self.plain_file, &PlainFile { version: 1, keys: Keys::new(), extra: BTreeMap::new() })?;
         self.unreadable = kept;
         self.set_aside = set_aside;
         Ok(())
@@ -223,11 +250,27 @@ mod tests {
         let file: SealedFile = read_json(&dir.path().join(".credentials.sealed.json")).unwrap().unwrap();
         assert!(file.keys.contains_key("B") && file.unreadable["A"].len() == 1);
         // Plain keys from a run without the carrier are sealed on the next start.
-        write_json(&dir.path().join(".credentials.json"), &PlainFile { version: 1, keys: Keys::from([("C".into(), "4".into())]) }).unwrap();
+        write_json(&dir.path().join(".credentials.json"), &PlainFile { version: 1, keys: Keys::from([("C".into(), "4".into())]), extra: BTreeMap::new() }).unwrap();
         let mut again = CredentialFiles::new(dir.path(), Some(Seal::new(&[2; 32]).unwrap()));
         let keys = again.read().unwrap();
         assert_eq!(keys.get("C").map(String::as_str), Some("4"));
         let plain: PlainFile = read_json(&dir.path().join(".credentials.json")).unwrap().unwrap();
         assert!(plain.keys.is_empty());
+    }
+
+    #[test]
+    fn backs_up_damaged_credential_files_instead_of_blocking_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".credentials.json"), "{broken").unwrap();
+        std::fs::write(dir.path().join(".credentials.sealed.json"), "{broken").unwrap();
+        let mut creds = CredentialFiles::new(dir.path(), Some(Seal::new(&[3; 32]).unwrap()));
+        assert!(creds.read().unwrap().is_empty());
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.starts_with(".credentials.json.damaged-")));
+        assert!(names.iter().any(|n| n.starts_with(".credentials.sealed.json.damaged-")));
     }
 }

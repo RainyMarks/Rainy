@@ -226,21 +226,6 @@ impl Execution {
         json!({ "runs": pick(|kind| matches!(kind, Kind::Run)), "terminals": pick(|kind| matches!(kind, Kind::Terminal)), "debugSessions": pick(|kind| matches!(kind, Kind::Debug(_))) })
     }
 
-    fn reserve(&self) -> HostResult<()> {
-        if self.disposed.load(Ordering::Relaxed) {
-            return Err(error("The IDE execution service is closed."));
-        }
-        let mut operations = self.operations.lock().unwrap();
-        if operations.len() < MAX_OPERATIONS {
-            return Ok(());
-        }
-        let Some(index) = operations.iter().position(|operation| operation.finished.load(Ordering::Relaxed)) else {
-            return Err(error("The workspace execution limit is reached. Stop an operation before starting another."));
-        };
-        operations.remove(index);
-        Ok(())
-    }
-
     fn find(&self, workspace_id: &str, id: &str) -> HostResult<Arc<Operation>> {
         self.operations
             .lock()
@@ -251,7 +236,21 @@ impl Execution {
             .ok_or_else(|| error("The operation does not belong to the selected workspace."))
     }
 
-    fn new_operation(self: &Arc<Self>, workspace_id: &str, kind_of: impl FnOnce(&str, Arc<Owner>) -> Kind, snapshot: Value) -> Arc<Operation> {
+    /// Atomically enforce `MAX_OPERATIONS` and register the new operation under one lock acquisition.
+    fn try_create_operation(self: &Arc<Self>, workspace_id: &str, kind_of: impl FnOnce(&str, Arc<Owner>) -> Kind, snapshot: Value) -> HostResult<Arc<Operation>> {
+        if self.disposed.load(Ordering::Acquire) {
+            return Err(error("The IDE execution service is closed."));
+        }
+        let mut operations = self.operations.lock().unwrap();
+        if self.disposed.load(Ordering::Acquire) {
+            return Err(error("The IDE execution service is closed."));
+        }
+        if operations.len() >= MAX_OPERATIONS {
+            let Some(index) = operations.iter().position(|operation| operation.finished.load(Ordering::Relaxed)) else {
+                return Err(error("The workspace execution limit is reached. Stop an operation before starting another."));
+            };
+            operations.remove(index);
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let (service, workspace, operation_id) = (Arc::downgrade(self), workspace_id.to_owned(), id.clone());
         let owner = Owner::new(Arc::new(move |stream, text: String| {
@@ -276,8 +275,8 @@ impl Execution {
             stdin: tokio::sync::Mutex::new(None),
             done,
         });
-        self.operations.lock().unwrap().push(operation.clone());
-        operation
+        operations.push(operation.clone());
+        Ok(operation)
     }
 
     fn workspace_root(&self, workspace_id: &str, root_id: Option<&str>, files: &super::files::Files) -> HostResult<PathBuf> {
@@ -383,9 +382,8 @@ impl Execution {
         let workspace_id = request["workspaceId"].as_str().unwrap_or_default();
         let resolved = self.resolve(workspace_id, &request["configuration"], files)?;
         let (cols, rows) = (dimension(&request["cols"], DEFAULT_COLS)?, dimension(&request["rows"], DEFAULT_ROWS)?);
-        self.reserve()?;
         let snapshot = json!({ "workspaceId": workspace_id, "name": resolved.name, "phase": "starting", "spec": resolved.spec() });
-        let operation = self.new_operation(workspace_id, |_, _| Kind::Run, snapshot);
+        let operation = self.try_create_operation(workspace_id, |_, _| Kind::Run, snapshot)?;
         self.publish_operation(&operation);
         let snapshot = operation.snapshot();
         tokio::spawn(self.clone().execute_run(operation, resolved, cols, rows));
@@ -408,12 +406,12 @@ impl Execution {
             vec![shell.display().to_string(), "-NoLogo".into(), "-NoProfile".into()]
         } else {
             let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/bash".into());
-            let resolved = executable(Some(&shell).filter(|shell| shell.starts_with('/')).map(String::as_str), "bash", &environment)?;
+            let resolved = executable(Some(&shell).filter(|shell| shell.starts_with('/')).map(String::as_str), "bash", &environment)
+                .or_else(|_| executable(Some("/bin/sh"), "sh", &environment))?;
             unix_terminal_argv(&resolved)
         };
-        self.reserve()?;
         let snapshot = json!({ "workspaceId": workspace_id, "cwd": cwd, "phase": "starting" });
-        let operation = self.new_operation(workspace_id, |_, _| Kind::Terminal, snapshot);
+        let operation = self.try_create_operation(workspace_id, |_, _| Kind::Terminal, snapshot)?;
         self.publish_operation(&operation);
         let snapshot = operation.snapshot();
         let service = self.clone();
@@ -454,7 +452,6 @@ impl Execution {
         }
         let resolved = self.resolve(&workspace_id, &request["configuration"], files)?;
         let (cols, rows) = (dimension(&request["cols"], DEFAULT_COLS)?, dimension(&request["rows"], DEFAULT_ROWS)?);
-        self.reserve()?;
         let own_root = resolved.configuration["rootId"].as_str().unwrap_or("primary").to_owned();
         let breakpoints: Vec<(String, Vec<u64>)> = request["breakpoints"]
             .as_array()
@@ -476,7 +473,7 @@ impl Execution {
         let service = Arc::downgrade(self);
         let publish_workspace = workspace_id.clone();
         let resolved_for_session = resolved.clone();
-        let operation = self.new_operation(
+        let operation = self.try_create_operation(
             &workspace_id,
             move |id, owner| {
                 snapshot.insert("id".into(), json!(id));
@@ -488,7 +485,7 @@ impl Execution {
                 Kind::Debug(DebugSession::new(snapshot, resolved_for_session, owner, tools, (cols, rows), stop_on_entry, breakpoints, publish))
             },
             Value::Null,
-        );
+        )?;
         let Kind::Debug(session) = &operation.kind else { unreachable!() };
         let session = session.clone();
         self.publish_operation(&operation);
@@ -559,7 +556,7 @@ impl Execution {
             if data.len() > MAX_INPUT_BYTES {
                 return Err(error("The terminal input exceeds the configured byte limit."));
             }
-        } else if request.to_string().len() > MAX_CONFIGURATION_BYTES {
+        } else if crate::text::json_byte_len_capped(request, MAX_CONFIGURATION_BYTES).map_or(true, |len| len.is_none()) {
             return Err(error("The IDE request exceeds the configured input limit."));
         }
         let workspace_id = request["workspaceId"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| HostError::invalid("workspaceId is required"))?;

@@ -4,9 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any(unix, test))]
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(any(unix, test))]
 use rainy_protocol::metrics::ListeningPort;
@@ -19,32 +21,93 @@ use crate::text::now_ms;
 const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_WATCH_PATHS: usize = 16;
 const MAX_SSH_NOTES_CHARS: usize = 2000;
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(2);
+#[cfg(unix)]
+const MIN_CPU_DELTA_INTERVAL: Duration = Duration::from_millis(200);
 /// Threshold above which a cgroup memory limit represents "unlimited" (e.g. `PAGE_ALIGN(LONG_MAX)` in cgroup v1).
 #[cfg(any(unix, test))]
 const UNLIMITED_MEMORY_THRESHOLD: u64 = 1u64 << 58;
 
-/// Stateful collector holding the previous `/proc/stat` CPU sample for utilization deltas.
-#[derive(Default)]
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct CpuSample {
+    jiffies: (u64, u64),
+    at: Instant,
+    last_percent: Option<f64>,
+}
+
+struct CachedMetrics {
+    at: Instant,
+    watch_paths: Vec<String>,
+    include_gpu_processes: bool,
+    metrics: HostMetrics,
+}
+
+/// Stateful collector holding the previous `/proc/stat` CPU sample and a short-lived coalescing cache.
 pub struct SysInfo {
     #[cfg(unix)]
-    last_cpu: Mutex<Option<(u64, u64)>>,
+    last_cpu: Arc<Mutex<Option<CpuSample>>>,
     #[cfg(not(unix))]
     _marker: Mutex<()>,
+    cache: Mutex<Option<CachedMetrics>>,
+    collect_gate: tokio::sync::Mutex<()>,
+}
+
+impl Default for SysInfo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SysInfo {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            #[cfg(unix)]
+            last_cpu: Arc::new(Mutex::new(None)),
+            #[cfg(not(unix))]
+            _marker: Mutex::new(()),
+            cache: Mutex::new(None),
+            collect_gate: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn cached(&self, paths: &[String], include_gpu_processes: bool) -> Option<HostMetrics> {
+        let guard = self.cache.lock().unwrap();
+        let entry = guard.as_ref()?;
+        if entry.at.elapsed() < METRICS_CACHE_TTL
+            && entry.watch_paths == paths
+            && (entry.include_gpu_processes == include_gpu_processes || (entry.include_gpu_processes && !include_gpu_processes))
+        {
+            return Some(entry.metrics.clone());
+        }
+        None
     }
 
     /// Collect CPU, memory, cgroup limits, NVIDIA GPUs and disk space. Degrades gracefully on every platform.
     pub async fn collect(&self, env: &HostEnv, watch_paths: Vec<String>, include_gpu_processes: bool) -> HostMetrics {
+        let mut paths: Vec<String> = watch_paths
+            .into_iter()
+            .filter(|path| !path.trim().is_empty() && !path.contains('\0'))
+            .take(MAX_WATCH_PATHS)
+            .collect();
+        if paths.is_empty() {
+            paths.push(env.home.display().to_string());
+        }
+
+        if let Some(cached) = self.cached(&paths, include_gpu_processes) {
+            return cached;
+        }
+        let _gate = self.collect_gate.lock().await;
+        if let Some(cached) = self.cached(&paths, include_gpu_processes) {
+            return cached;
+        }
+
         let collected_at = now_ms();
         let hostname = detect_hostname();
         let platform = env.platform().to_owned();
         let cpu_count = detect_cpu_count();
 
-        let (cpu_percent, load_avg_1m, host_memory_total_bytes, host_memory_used_bytes, cgroup) = self.collect_cpu_mem();
+        let (cpu_percent, load_avg_1m, host_memory_total_bytes, host_memory_used_bytes, cgroup) = self.collect_cpu_mem().await;
         let effective_cpu_cores = cgroup
             .as_ref()
             .and_then(|limit| limit.cpu_quota_cores)
@@ -55,17 +118,10 @@ impl SysInfo {
 
         let gpus = collect_gpus(include_gpu_processes).await;
 
-        let mut paths: Vec<String> = watch_paths
-            .into_iter()
-            .filter(|path| !path.trim().is_empty() && !path.contains('\0'))
-            .take(MAX_WATCH_PATHS)
-            .collect();
-        if paths.is_empty() {
-            paths.push(env.home.display().to_string());
-        }
-        let disks = tokio::task::spawn_blocking(move || collect_disks(&paths)).await.unwrap_or_default();
+        let disk_paths = paths.clone();
+        let disks = tokio::task::spawn_blocking(move || collect_disks(&disk_paths)).await.unwrap_or_default();
 
-        HostMetrics {
+        let metrics = HostMetrics {
             collected_at,
             hostname,
             platform,
@@ -79,7 +135,14 @@ impl SysInfo {
             cgroup,
             gpus,
             disks,
-        }
+        };
+        *self.cache.lock().unwrap() = Some(CachedMetrics {
+            at: Instant::now(),
+            watch_paths: paths,
+            include_gpu_processes,
+            metrics: metrics.clone(),
+        });
+        metrics
     }
 
     /// Discover TCP ports listening on the Host (excluding `self_port`), for one-click SSH `-L` forwarding.
@@ -95,21 +158,35 @@ impl SysInfo {
     }
 
     #[cfg(unix)]
-    fn collect_cpu_mem(&self) -> (Option<f64>, Option<f64>, u64, u64, Option<CgroupLimits>) {
-        let cpu_percent = std::fs::read_to_string("/proc/stat").ok().and_then(|text| parse_proc_stat_cpu(&text)).and_then(|sample| {
-            let mut guard = self.last_cpu.lock().unwrap();
-            let pct = guard.and_then(|prev| cpu_utilization_percent(prev, sample));
-            *guard = Some(sample);
-            pct
-        });
-        let load_avg_1m = std::fs::read_to_string("/proc/loadavg").ok().and_then(|text| parse_loadavg(&text));
-        let (host_total, host_used) = std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| parse_proc_meminfo(&text)).unwrap_or((0, 0));
-        let cgroup = read_linux_cgroup();
-        (cpu_percent, load_avg_1m, host_total, host_used, cgroup)
+    async fn collect_cpu_mem(&self) -> (Option<f64>, Option<f64>, u64, u64, Option<CgroupLimits>) {
+        let last_cpu = self.last_cpu.clone();
+        tokio::task::spawn_blocking(move || {
+            let cpu_percent = std::fs::read_to_string("/proc/stat").ok().and_then(|text| parse_proc_stat_cpu(&text)).and_then(|sample| {
+                let mut guard = last_cpu.lock().unwrap();
+                let now = Instant::now();
+                if let Some(prev) = *guard {
+                    if now.duration_since(prev.at) < MIN_CPU_DELTA_INTERVAL {
+                        return prev.last_percent;
+                    }
+                    let pct = cpu_utilization_percent(prev.jiffies, sample).or(prev.last_percent);
+                    *guard = Some(CpuSample { jiffies: sample, at: now, last_percent: pct });
+                    pct
+                } else {
+                    *guard = Some(CpuSample { jiffies: sample, at: now, last_percent: None });
+                    None
+                }
+            });
+            let load_avg_1m = std::fs::read_to_string("/proc/loadavg").ok().and_then(|text| parse_loadavg(&text));
+            let (host_total, host_used) = std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| parse_proc_meminfo(&text)).unwrap_or((0, 0));
+            let cgroup = read_linux_cgroup();
+            (cpu_percent, load_avg_1m, host_total, host_used, cgroup)
+        })
+        .await
+        .unwrap_or((None, None, 0, 0, None))
     }
 
     #[cfg(not(unix))]
-    fn collect_cpu_mem(&self) -> (Option<f64>, Option<f64>, u64, u64, Option<CgroupLimits>) {
+    async fn collect_cpu_mem(&self) -> (Option<f64>, Option<f64>, u64, u64, Option<CgroupLimits>) {
         let _ = &self._marker;
         (None, None, 0, 0, None)
     }
@@ -249,14 +326,17 @@ fn detect_hostname() -> String {
 }
 
 fn detect_cpu_count() -> u32 {
-    #[cfg(unix)]
-    if let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") {
-        let count = text.lines().filter(|line| line.starts_with("processor")).count();
-        if count > 0 {
-            return count as u32;
+    static CPU_COUNT: OnceLock<u32> = OnceLock::new();
+    *CPU_COUNT.get_or_init(|| {
+        #[cfg(unix)]
+        if let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") {
+            let count = text.lines().filter(|line| line.starts_with("processor")).count();
+            if count > 0 {
+                return count as u32;
+            }
         }
-    }
-    std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1)
+        std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1)
+    })
 }
 
 /// Parse the aggregate `cpu ...` line of `/proc/stat`, returning `(total_jiffies, idle_jiffies)`.
@@ -369,77 +449,126 @@ pub fn parse_cgroup_v2_relpath(proc_self_cgroup: &str) -> Option<String> {
     None
 }
 
+/// Extract a cgroup v1 controller's relative path (e.g. `memory` or `cpu`) from `/proc/self/cgroup`.
+#[cfg(any(unix, test))]
+pub fn parse_cgroup_v1_relpath(proc_self_cgroup: &str, controller: &str) -> Option<String> {
+    for line in proc_self_cgroup.lines() {
+        let mut parts = line.splitn(3, ':');
+        let (Some(_id), Some(controllers), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        if controllers.split(',').any(|entry| entry.trim() == controller) {
+            let trimmed = path.trim().trim_start_matches('/');
+            return Some(trimmed.to_owned());
+        }
+    }
+    None
+}
+
+/// Fold `(cpu_quota, mem_limit, mem_current)` samples ordered from leaf cgroup up to root.
+/// When no ancestor imposes an active memory limit (`memory.max == "max"`), `memory_current_bytes` stays `None`
+/// so a single SSH session's usage is never mistaken for host memory usage.
+#[cfg(any(unix, test))]
+pub fn resolve_cgroup_levels(version: u8, levels: &[(Option<f64>, Option<u64>, Option<u64>)]) -> Option<CgroupLimits> {
+    let mut cpu_quota: Option<f64> = None;
+    let mut mem_limit: Option<u64> = None;
+    let mut mem_current: Option<u64> = None;
+    for &(cpu, lim, cur) in levels {
+        if let Some(q) = cpu {
+            cpu_quota = Some(cpu_quota.map_or(q, |prev| prev.min(q)));
+        }
+        if let Some(l) = lim {
+            if mem_limit.is_none_or(|prev| l < prev) {
+                mem_limit = Some(l);
+                mem_current = cur;
+            }
+        }
+    }
+    if cpu_quota.is_none() && mem_limit.is_none() {
+        return None;
+    }
+    Some(CgroupLimits {
+        version,
+        cpu_quota_cores: cpu_quota,
+        memory_limit_bytes: mem_limit,
+        memory_current_bytes: mem_current,
+    })
+}
+
+#[cfg(unix)]
+fn ancestor_dirs(root: &Path, rel: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(rel) = rel.filter(|r| !r.is_empty()) {
+        let mut cur = root.join(rel);
+        while cur.starts_with(root) {
+            dirs.push(cur.clone());
+            if cur == root {
+                break;
+            }
+            let Some(parent) = cur.parent() else { break };
+            cur = parent.to_path_buf();
+        }
+    }
+    if !dirs.iter().any(|d| d == root) {
+        dirs.push(root.to_path_buf());
+    }
+    dirs
+}
+
 #[cfg(unix)]
 fn read_linux_cgroup() -> Option<CgroupLimits> {
+    let self_cgroup = std::fs::read_to_string("/proc/self/cgroup").ok().unwrap_or_default();
+
     // Try cgroup v2 first (unified hierarchy at /sys/fs/cgroup).
     let root_v2 = Path::new("/sys/fs/cgroup");
     if root_v2.join("cgroup.controllers").exists() {
-        let rel = std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|t| parse_cgroup_v2_relpath(&t));
-        let mut dirs = Vec::new();
-        if let Some(rel) = rel.filter(|r| !r.is_empty()) {
-            let mut cur = root_v2.join(&rel);
-            while cur.starts_with(root_v2) {
-                dirs.push(cur.clone());
-                if cur == root_v2 {
-                    break;
-                }
-                let Some(parent) = cur.parent() else { break };
-                cur = parent.to_path_buf();
-            }
-        }
-        if !dirs.iter().any(|d| d == root_v2) {
-            dirs.push(root_v2.to_path_buf());
-        }
-        // Walk from the process's own cgroup up to the container root, taking the tightest active limit.
-        let mut cpu_quota: Option<f64> = None;
-        let mut mem_limit: Option<u64> = None;
-        let mut mem_current: Option<u64> = None;
-        for dir in &dirs {
-            if let Ok(text) = std::fs::read_to_string(dir.join("cpu.max")) {
-                if let Some(q) = parse_cgroup_v2_cpu_max(&text) {
-                    cpu_quota = Some(cpu_quota.map_or(q, |prev| prev.min(q)));
-                }
-            }
-            if let Ok(text) = std::fs::read_to_string(dir.join("memory.max")) {
-                if let Some(lim) = parse_cgroup_v2_memory_max(&text) {
-                    mem_limit = Some(mem_limit.map_or(lim, |prev| prev.min(lim)));
-                }
-            }
-            if mem_current.is_none() {
-                if let Ok(text) = std::fs::read_to_string(dir.join("memory.current")) {
-                    mem_current = text.trim().parse::<u64>().ok();
-                }
-            }
-        }
-        if cpu_quota.is_some() || mem_limit.is_some() || mem_current.is_some() {
-            return Some(CgroupLimits {
-                version: 2,
-                cpu_quota_cores: cpu_quota,
-                memory_limit_bytes: mem_limit,
-                memory_current_bytes: mem_current,
-            });
+        let rel = parse_cgroup_v2_relpath(&self_cgroup);
+        let dirs = ancestor_dirs(root_v2, rel.as_deref());
+        let levels: Vec<(Option<f64>, Option<u64>, Option<u64>)> = dirs
+            .iter()
+            .map(|dir| {
+                let cpu = std::fs::read_to_string(dir.join("cpu.max")).ok().and_then(|t| parse_cgroup_v2_cpu_max(&t));
+                let lim = std::fs::read_to_string(dir.join("memory.max")).ok().and_then(|t| parse_cgroup_v2_memory_max(&t));
+                let cur = lim.and_then(|_| std::fs::read_to_string(dir.join("memory.current")).ok().and_then(|t| t.trim().parse::<u64>().ok()));
+                (cpu, lim, cur)
+            })
+            .collect();
+        if let Some(limits) = resolve_cgroup_levels(2, &levels) {
+            return Some(limits);
         }
     }
 
     // Fallback to cgroup v1 (common in older Docker / Kubernetes GPU clusters).
-    let cpu_dirs = [Path::new("/sys/fs/cgroup/cpu"), Path::new("/sys/fs/cgroup/cpu,cpuacct")];
-    let cpu_quota = cpu_dirs.iter().find_map(|dir| {
-        let q = std::fs::read_to_string(dir.join("cpu.cfs_quota_us")).ok()?;
-        let p = std::fs::read_to_string(dir.join("cpu.cfs_period_us")).ok()?;
-        parse_cgroup_v1_cpu(&q, &p)
-    });
-    let mem_dir = Path::new("/sys/fs/cgroup/memory");
-    let mem_limit = std::fs::read_to_string(mem_dir.join("memory.limit_in_bytes")).ok().and_then(|t| parse_cgroup_v1_memory_limit(&t));
-    let mem_current = std::fs::read_to_string(mem_dir.join("memory.usage_in_bytes")).ok().and_then(|t| t.trim().parse::<u64>().ok());
-    if cpu_quota.is_some() || mem_limit.is_some() || mem_current.is_some() {
-        return Some(CgroupLimits {
-            version: 1,
-            cpu_quota_cores: cpu_quota,
-            memory_limit_bytes: mem_limit,
-            memory_current_bytes: mem_current,
-        });
+    let cpu_rel = parse_cgroup_v1_relpath(&self_cgroup, "cpu").or_else(|| parse_cgroup_v1_relpath(&self_cgroup, "cpuacct"));
+    let cpu_roots = [Path::new("/sys/fs/cgroup/cpu"), Path::new("/sys/fs/cgroup/cpu,cpuacct")];
+    let mut cpu_quota: Option<f64> = None;
+    for root in cpu_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for dir in ancestor_dirs(root, cpu_rel.as_deref()) {
+            let Some(q) = std::fs::read_to_string(dir.join("cpu.cfs_quota_us")).ok() else { continue };
+            let Some(p) = std::fs::read_to_string(dir.join("cpu.cfs_period_us")).ok() else { continue };
+            if let Some(cores) = parse_cgroup_v1_cpu(&q, &p) {
+                cpu_quota = Some(cpu_quota.map_or(cores, |prev| prev.min(cores)));
+            }
+        }
     }
-    None
+    let mem_root = Path::new("/sys/fs/cgroup/memory");
+    let mem_rel = parse_cgroup_v1_relpath(&self_cgroup, "memory");
+    let mem_levels: Vec<(Option<f64>, Option<u64>, Option<u64>)> = if mem_root.is_dir() {
+        ancestor_dirs(mem_root, mem_rel.as_deref())
+            .into_iter()
+            .map(|dir| {
+                let lim = std::fs::read_to_string(dir.join("memory.limit_in_bytes")).ok().and_then(|t| parse_cgroup_v1_memory_limit(&t));
+                let cur = lim.and_then(|_| std::fs::read_to_string(dir.join("memory.usage_in_bytes")).ok().and_then(|t| t.trim().parse::<u64>().ok()));
+                (None, lim, cur)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut all_levels = vec![(cpu_quota, None, None)];
+    all_levels.extend(mem_levels);
+    resolve_cgroup_levels(1, &all_levels)
 }
 
 /// Parse `nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits`.
@@ -490,14 +619,40 @@ pub fn parse_nvidia_smi_apps(csv: &str) -> Vec<(String, GpuProcess)> {
     out
 }
 
+/// Locate `nvidia-smi` once per Host process so CPU-only machines avoid spawning missing binaries on every poll.
+fn nvidia_smi_path() -> Option<&'static Path> {
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let name = if cfg!(windows) { "nvidia-smi.exe" } else { "nvidia-smi" };
+        if let Some(path_var) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        #[cfg(unix)]
+        let fallbacks = ["/usr/bin/nvidia-smi", "/usr/local/nvidia/bin/nvidia-smi", "/usr/local/bin/nvidia-smi"];
+        #[cfg(windows)]
+        let fallbacks = [
+            r"C:\Windows\System32\nvidia-smi.exe",
+            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        ];
+        fallbacks.iter().map(PathBuf::from).find(|candidate| candidate.is_file())
+    })
+    .as_deref()
+}
+
 async fn collect_gpus(include_processes: bool) -> Vec<GpuInfo> {
+    let Some(smi) = nvidia_smi_path() else { return Vec::new() };
     let env = scrubbed_env();
     let cwd = std::env::temp_dir();
     let args = [
         "--query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu",
         "--format=csv,noheader,nounits",
     ];
-    let Ok(output) = crate::process::run("nvidia-smi", &args, &cwd, &env, 256 * 1024, Some(NVIDIA_SMI_TIMEOUT)).await else {
+    let Ok(output) = crate::process::run(smi, &args, &cwd, &env, 256 * 1024, Some(NVIDIA_SMI_TIMEOUT)).await else {
         return Vec::new();
     };
     if !output.success {
@@ -506,7 +661,7 @@ async fn collect_gpus(include_processes: bool) -> Vec<GpuInfo> {
     let mut entries = parse_nvidia_smi_gpus(&String::from_utf8_lossy(&output.stdout));
     if include_processes && !entries.is_empty() {
         let app_args = ["--query-compute-apps=gpu_uuid,pid,used_memory,process_name", "--format=csv,noheader,nounits"];
-        if let Ok(app_out) = crate::process::run("nvidia-smi", &app_args, &cwd, &env, 256 * 1024, Some(NVIDIA_SMI_TIMEOUT)).await {
+        if let Ok(app_out) = crate::process::run(smi, &app_args, &cwd, &env, 256 * 1024, Some(NVIDIA_SMI_TIMEOUT)).await {
             if app_out.success {
                 #[cfg_attr(not(unix), allow(unused_mut))]
                 let mut apps = parse_nvidia_smi_apps(&String::from_utf8_lossy(&app_out.stdout));
@@ -535,8 +690,9 @@ fn collect_gpu_topology_sync() -> Vec<GpuInfo> {
     use std::io::Read as _;
     use std::process::Stdio;
 
+    let Some(smi) = nvidia_smi_path() else { return Vec::new() };
     let env = scrubbed_env();
-    let mut cmd = std::process::Command::new("nvidia-smi");
+    let mut cmd = std::process::Command::new(smi);
     cmd.args([
         "--query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu",
         "--format=csv,noheader,nounits",
@@ -622,26 +778,40 @@ fn read_proc_uid(pid: u32) -> Option<u32> {
 }
 
 fn collect_disks(paths: &[String]) -> Vec<DiskUsage> {
-    let mut seen = BTreeSet::new();
+    let mut seen_dirs = BTreeSet::new();
+    let mut seen_mounts = BTreeSet::new();
     let mut out = Vec::new();
     #[cfg(unix)]
     let mounts = std::fs::read_to_string("/proc/mounts").ok().map(|t| parse_proc_mounts(&t)).unwrap_or_default();
     for raw in paths {
         let path = Path::new(raw);
-        let probe = nearest_existing_dir(path);
-        let Some(probe) = probe else { continue };
-        let key = probe.display().to_string();
-        if !seen.insert(key.clone()) {
+        let Some(probe) = nearest_existing_dir(path) else { continue };
+        let canonical = crate::paths::realpath(&probe).unwrap_or(probe);
+        let key = canonical.display().to_string();
+        if !seen_dirs.insert(key.clone()) {
             continue;
         }
         #[cfg(unix)]
-        if let Some((avail, total)) = statvfs_bytes(&probe) {
+        {
             let mount = longest_mount_match(&key, &mounts);
-            out.push(DiskUsage { path: raw.clone(), mount, available_bytes: avail, total_bytes: total });
+            if let Some(m) = mount.as_deref() {
+                if !seen_mounts.insert(m.to_owned()) {
+                    continue;
+                }
+            }
+            if let Some((avail, total)) = statvfs_bytes(&canonical) {
+                out.push(DiskUsage { path: raw.clone(), mount, available_bytes: avail, total_bytes: total });
+            }
         }
         #[cfg(windows)]
-        if let Some((avail, total)) = windows_disk_bytes(&probe) {
-            out.push(DiskUsage { path: raw.clone(), mount: None, available_bytes: avail, total_bytes: total });
+        {
+            let volume_key = canonical.components().next().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).unwrap_or_else(|| key.to_lowercase());
+            if !seen_mounts.insert(volume_key) {
+                continue;
+            }
+            if let Some((avail, total)) = windows_disk_bytes(&canonical) {
+                out.push(DiskUsage { path: raw.clone(), mount: None, available_bytes: avail, total_bytes: total });
+            }
         }
     }
     out
@@ -694,15 +864,53 @@ fn windows_disk_bytes(path: &Path) -> Option<(u64, u64)> {
     (ok != 0).then_some((avail, total))
 }
 
-/// Parse mount target paths from `/proc/mounts`.
+/// Parse mount target paths from `/proc/mounts`, unescaping standard octal escapes (`\040`, `\011`, `\012`, `\134`).
 #[cfg(any(unix, test))]
 pub fn parse_proc_mounts(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| {
             let target = line.split_whitespace().nth(1)?;
-            Some(target.replace("\\040", " "))
+            Some(unescape_proc_mount(target))
         })
         .collect()
+}
+
+#[cfg(any(unix, test))]
+fn unescape_proc_mount(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            match &bytes[i + 1..i + 4] {
+                b"040" => {
+                    out.push(' ');
+                    i += 4;
+                    continue;
+                }
+                b"011" => {
+                    out.push('\t');
+                    i += 4;
+                    continue;
+                }
+                b"012" => {
+                    out.push('\n');
+                    i += 4;
+                    continue;
+                }
+                b"134" => {
+                    out.push('\\');
+                    i += 4;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        let ch = raw[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Return the deepest mount point containing `path`.
@@ -787,29 +995,45 @@ fn parse_proc_ipv6(hex: &str) -> Option<String> {
 /// Infer a human-friendly service label for common research/web services.
 #[cfg(any(unix, test))]
 pub fn infer_port_label(port: u16, process_name: Option<&str>) -> Option<String> {
-    let lower = process_name.unwrap_or_default().to_ascii_lowercase();
-    if lower.contains("tensorboard") || port == 6006 {
+    infer_port_label_with_cmdline(port, process_name, None)
+}
+
+#[cfg(any(unix, test))]
+pub fn infer_port_label_with_cmdline(port: u16, process_name: Option<&str>, cmdline: Option<&str>) -> Option<String> {
+    let mut hay = process_name.unwrap_or_default().to_ascii_lowercase();
+    if let Some(cmd) = cmdline {
+        hay.push(' ');
+        hay.push_str(&cmd.to_ascii_lowercase());
+    }
+    if hay.contains("tensorboard") || port == 6006 {
         return Some("TensorBoard".into());
     }
-    if lower.contains("jupyter") || (8888..=8899).contains(&port) {
+    if hay.contains("jupyter") || (8888..=8899).contains(&port) {
         return Some("Jupyter".into());
     }
-    if lower.contains("gradio") || port == 7860 {
+    if hay.contains("gradio") || port == 7860 {
         return Some("Gradio".into());
     }
-    if lower.contains("streamlit") || port == 8501 {
+    if hay.contains("streamlit") || port == 8501 {
         return Some("Streamlit".into());
     }
-    if lower.contains("vllm") {
+    if hay.contains("vllm") {
         return Some("vLLM".into());
     }
-    if lower.contains("mlflow") || port == 5000 {
+    if hay.contains("mlflow") || port == 5000 {
         return Some("MLflow".into());
     }
-    if lower.contains("ray") || port == 8265 {
+    if hay.contains("ray") || port == 8265 {
         return Some("Ray".into());
     }
-    if matches!(port, 3000 | 5173 | 8000 | 8080 | 8880) || lower.contains("uvicorn") || lower.contains("gunicorn") || lower.contains("vite") {
+    if matches!(port, 3000 | 5173 | 8000 | 8080 | 8880)
+        || hay.contains("uvicorn")
+        || hay.contains("gunicorn")
+        || hay.contains("vite")
+        || hay.contains("fastapi")
+        || hay.contains("flask")
+        || hay.contains("next-server")
+    {
         return Some("Web".into());
     }
     None
@@ -837,57 +1061,85 @@ fn discover_linux_listening_ports(self_port: u16) -> Vec<ListeningPort> {
 /// `127.0.0.54`), are the same thing to forward. The first address seen is kept (IPv4 is read first) and a socket
 /// whose owner was found fills in the process of one whose owner was not.
 #[cfg(any(unix, test))]
-fn merge_listening_rows(rows: Vec<ProcNetListen>, owners: &HashMap<u64, (u32, String)>) -> Vec<ListeningPort> {
-    let mut merged: BTreeMap<u16, ListeningPort> = BTreeMap::new();
+fn merge_listening_rows(rows: Vec<ProcNetListen>, owners: &HashMap<u64, (u32, String, Option<String>)>) -> Vec<ListeningPort> {
+    let mut merged: BTreeMap<u16, (ListeningPort, Option<String>)> = BTreeMap::new();
     for row in rows {
-        let port = merged.entry(row.port).or_insert_with(|| ListeningPort {
-            port: row.port,
-            address: row.address.clone(),
-            pid: None,
-            process_name: None,
-            label: None,
+        let entry = merged.entry(row.port).or_insert_with(|| {
+            (
+                ListeningPort {
+                    port: row.port,
+                    address: row.address.clone(),
+                    pid: None,
+                    process_name: None,
+                    label: None,
+                },
+                None,
+            )
         });
-        if port.pid.is_none()
-            && let Some((pid, name)) = owners.get(&row.inode)
+        if entry.0.pid.is_none()
+            && let Some((pid, name, cmdline)) = owners.get(&row.inode)
         {
-            port.pid = Some(*pid);
-            port.process_name = Some(name.clone());
+            entry.0.pid = Some(*pid);
+            entry.0.process_name = Some(name.clone());
+            entry.1 = cmdline.clone();
         }
     }
-    let mut ports: Vec<ListeningPort> = merged.into_values().collect();
-    for port in &mut ports {
-        port.label = infer_port_label(port.port, port.process_name.as_deref());
-    }
-    ports
+    merged
+        .into_values()
+        .map(|(mut port, cmdline)| {
+            port.label = infer_port_label_with_cmdline(port.port, port.process_name.as_deref(), cmdline.as_deref());
+            port
+        })
+        .collect()
 }
 
 #[cfg(unix)]
-fn map_socket_inodes_to_pids(needed: &BTreeSet<u64>) -> HashMap<u64, (u32, String)> {
+fn read_proc_cmdline(proc_dir: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(proc_dir.join("cmdline")).ok()?;
+    let mut buf = Vec::with_capacity(512);
+    let _ = file.by_ref().take(512).read_to_end(&mut buf);
+    if buf.is_empty() {
+        return None;
+    }
+    let text: String = buf
+        .split(|&b| b == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(unix)]
+fn map_socket_inodes_to_pids(needed: &BTreeSet<u64>) -> HashMap<u64, (u32, String, Option<String>)> {
     let mut found = HashMap::new();
     if needed.is_empty() {
         return found;
     }
     let Ok(entries) = std::fs::read_dir("/proc") else { return found };
-    for entry in entries.flatten().take(4096) {
+    for entry in entries.flatten().take(16_384) {
         if found.len() == needed.len() {
             break;
         }
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
         let fd_dir = entry.path().join("fd");
         let Ok(fds) = std::fs::read_dir(fd_dir) else { continue };
-        let mut comm: Option<String> = None;
+        let mut info: Option<(String, Option<String>)> = None;
         for fd in fds.flatten().take(512) {
             let Ok(target) = std::fs::read_link(fd.path()) else { continue };
             let target = target.to_string_lossy();
             let Some(inner) = target.strip_prefix("socket:[").and_then(|rest| rest.strip_suffix(']')) else { continue };
             let Ok(inode) = inner.parse::<u64>() else { continue };
             if needed.contains(&inode) && !found.contains_key(&inode) {
-                let name = comm.get_or_insert_with(|| {
-                    std::fs::read_to_string(entry.path().join("comm"))
+                let (name, cmdline) = info.get_or_insert_with(|| {
+                    let comm = std::fs::read_to_string(entry.path().join("comm"))
                         .map(|s| s.trim().to_owned())
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    let cmdline = read_proc_cmdline(&entry.path());
+                    (comm, cmdline)
                 });
-                found.insert(inode, (pid, name.clone()));
+                found.insert(inode, (pid, name.clone(), cmdline.clone()));
             }
         }
     }
@@ -988,7 +1240,11 @@ mod tests {
             row("::1", 6006, 13),
         ];
         // The IPv4 socket of 6006 belongs to another user (no owner found); its IPv6 one is ours.
-        let owners = HashMap::from([(10, (100, "node".to_owned())), (12, (100, "node".to_owned())), (13, (200, "python3".to_owned()))]);
+        let owners = HashMap::from([
+            (10, (100, "node".to_owned(), Some("node /app/node_modules/.bin/vite".to_owned()))),
+            (12, (100, "node".to_owned(), None)),
+            (13, (200, "python3".to_owned(), Some("python3 -m tensorboard.main".to_owned()))),
+        ]);
         let ports = merge_listening_rows(rows, &owners);
         let summary: Vec<(u16, &str, Option<u32>, Option<&str>)> =
             ports.iter().map(|p| (p.port, p.address.as_str(), p.pid, p.label.as_deref())).collect();
@@ -996,6 +1252,24 @@ mod tests {
             summary,
             vec![(53, "127.0.0.53", None, None), (6006, "127.0.0.1", Some(200), Some("TensorBoard")), (8080, "0.0.0.0", Some(100), Some("Web"))]
         );
+        assert_eq!(infer_port_label_with_cmdline(9001, Some("python3"), Some("python3 -m vllm.entrypoints.openai.api_server")).as_deref(), Some("vLLM"));
+        assert_eq!(infer_port_label_with_cmdline(9002, Some("python3"), Some("python3 -m uvicorn app:app")).as_deref(), Some("Web"));
+    }
+
+    #[test]
+    fn cgroup_without_memory_max_does_not_report_session_memory() {
+        // SSH session cgroup has memory.current=50MB but memory.max=max on every level: must not report cgroup memory.
+        assert_eq!(resolve_cgroup_levels(2, &[(None, None, Some(50_000_000)), (None, None, Some(500_000_000))]), None);
+        // Tightest memory.max wins together with its own level's memory.current.
+        let lim = resolve_cgroup_levels(2, &[(Some(8.0), None, Some(50_000_000)), (Some(4.0), Some(16_000_000_000), Some(6_000_000_000)), (None, Some(32_000_000_000), Some(20_000_000_000))]).unwrap();
+        assert_eq!(lim.cpu_quota_cores, Some(4.0));
+        assert_eq!(lim.memory_limit_bytes, Some(16_000_000_000));
+        assert_eq!(lim.memory_current_bytes, Some(6_000_000_000));
+
+        // cgroup v1 relpath parsing.
+        let v1 = "8:memory:/docker/abc123\n5:cpu,cpuacct:/docker/abc123\n";
+        assert_eq!(parse_cgroup_v1_relpath(v1, "memory").as_deref(), Some("docker/abc123"));
+        assert_eq!(parse_cgroup_v1_relpath(v1, "cpu").as_deref(), Some("docker/abc123"));
     }
 
     #[test]
@@ -1022,9 +1296,10 @@ mod tests {
 
     #[test]
     fn matches_longest_mount_point_and_passwd_uid() {
-        let mounts = parse_proc_mounts("overlay / overlay rw 0 0\nnfs:/vol /root/kube-user nfs4 rw 0 0\n");
+        let mounts = parse_proc_mounts("overlay / overlay rw 0 0\nnfs:/vol /root/kube-user nfs4 rw 0 0\n/dev/sdb /mnt/my\\040data\\134x ext4 rw 0 0\n");
         assert_eq!(longest_mount_match("/root/kube-user/exp1", &mounts).as_deref(), Some("/root/kube-user"));
         assert_eq!(longest_mount_match("/root/kube-user-other", &mounts).as_deref(), Some("/"));
+        assert_eq!(longest_mount_match("/mnt/my data\\x/run", &mounts).as_deref(), Some("/mnt/my data\\x"));
         let passwd = parse_etc_passwd("root:x:0:0:root:/root:/bin/bash\nalice:x:1001:1001::/home/alice:/bin/zsh\n");
         assert_eq!(passwd.get(&1001).map(String::as_str), Some("alice"));
         assert_eq!(parse_proc_status_uid("Name:\tpython\nUid:\t1001\t1001\t1001\t1001\n"), Some(1001));

@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
@@ -19,6 +20,7 @@ const MAX_BUFFER_BYTES: usize = 5 * 1024 * 1024;
 const MAX_TABS: usize = 64;
 const MAX_BUFFERS: usize = 32;
 const MAX_EXPANDED_PATHS: usize = 10_000;
+const MAX_CACHED_STATES: usize = 8;
 
 /// The file name of one project's snapshot; identities that are not plain file names are hashed.
 pub fn file_name(id: &str) -> String {
@@ -286,7 +288,7 @@ fn salvage_state(raw: Option<Value>) -> Value {
 pub struct StateStore {
     directory: PathBuf,
     projects: Arc<Projects>,
-    records: Mutex<HashMap<String, Value>>,
+    records: Mutex<HashMap<String, (Instant, Value)>>,
     selection: Mutex<Option<String>>,
     writes: Mutex<()>,
 }
@@ -304,12 +306,32 @@ impl StateStore {
         Self { directory, projects, records: Mutex::default(), selection: Mutex::new(selection), writes: Mutex::new(()) }
     }
 
-    fn current(&self, workspace_id: &str) -> HostResult<Value> {
+    fn cache_insert(&self, workspace_id: &str, record: Value) {
+        let mut records = self.records.lock().unwrap();
+        if !records.contains_key(workspace_id) && records.len() >= MAX_CACHED_STATES {
+            if let Some(oldest) = records.iter().min_by_key(|(_, (used, _))| *used).map(|(k, _)| k.clone()) {
+                records.remove(&oldest);
+            }
+        }
+        records.insert(workspace_id.to_owned(), (Instant::now(), record));
+    }
+
+    /// Drop a workspace's cached snapshot (e.g. when removed).
+    pub fn evict(&self, workspace_id: &str) {
+        self.records.lock().unwrap().remove(workspace_id);
+    }
+
+    /// Load or salvage `workspace_id`'s state while holding `self.writes` so salvage never races with `replace()`.
+    fn current_locked(&self, workspace_id: &str) -> HostResult<Value> {
         if self.projects.get(workspace_id).is_none() {
             return Err(crate::projects::missing());
         }
-        if let Some(record) = self.records.lock().unwrap().get(workspace_id) {
-            return Ok(record.clone());
+        {
+            let mut records = self.records.lock().unwrap();
+            if let Some((used, record)) = records.get_mut(workspace_id) {
+                *used = Instant::now();
+                return Ok(record.clone());
+            }
         }
         let path = self.directory.join(file_name(workspace_id));
         let record = match read_json::<Value>(&path) {
@@ -332,8 +354,23 @@ impl StateStore {
             }
             Ok(None) => empty_state(),
         };
-        self.records.lock().unwrap().insert(workspace_id.to_owned(), record.clone());
+        self.cache_insert(workspace_id, record.clone());
         Ok(record)
+    }
+
+    fn current(&self, workspace_id: &str) -> HostResult<Value> {
+        if self.projects.get(workspace_id).is_none() {
+            return Err(crate::projects::missing());
+        }
+        {
+            let mut records = self.records.lock().unwrap();
+            if let Some((used, record)) = records.get_mut(workspace_id) {
+                *used = Instant::now();
+                return Ok(record.clone());
+            }
+        }
+        let _guard = self.writes.lock().unwrap();
+        self.current_locked(workspace_id)
     }
 
     pub fn get(&self, workspace_id: &str) -> HostResult<Value> {
@@ -364,18 +401,18 @@ impl StateStore {
             || data["buffers"].as_array().map_or(0, Vec::len) > MAX_BUFFERS
             || data["expandedPaths"].as_array().map_or(0, Vec::len) + data["expandedRoots"].as_array().map_or(0, Vec::len) > MAX_EXPANDED_PATHS
             || data["buffers"].as_array().into_iter().flatten().any(|buffer| buffer["content"].as_str().map_or(0, str::len) > MAX_BUFFER_BYTES)
-            || data.to_string().len() > MAX_STATE_BYTES;
+            || crate::text::json_byte_len_capped(&data, MAX_STATE_BYTES).map_or(true, |len| len.is_none());
         if too_large {
             return Err(HostError::new("state-too-large", l("项目的恢复快照超过了存储上限。", "The workspace recovery snapshot exceeds the configured storage budget.")));
         }
-        let current = self.current(workspace_id)?;
+        let current = self.current_locked(workspace_id)?;
         if current["revision"].as_u64() != Some(base) {
             let message = l("项目的编辑器状态已被另一个窗口保存。请先恢复当前快照，再覆盖它。", "The workspace IDE state was saved by another client. Recover the current snapshot before replacing it.");
             return Err(HostError::new("revision-conflict", message).with("currentState", current));
         }
         let next = json!({ "version": 1, "revision": base + 1, "data": data });
         write_json(&self.directory.join(file_name(workspace_id)), &next)?;
-        self.records.lock().unwrap().insert(workspace_id.to_owned(), next.clone());
+        self.cache_insert(workspace_id, next.clone());
         Ok(next)
     }
 

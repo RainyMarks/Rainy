@@ -5,6 +5,8 @@ use serde_json::Value;
 
 /// A peer that never sends the separator cannot grow the header buffer past this size.
 const MAX_HEADER_BYTES: usize = 1 << 16;
+const SHRINK_THRESHOLD: usize = 256 * 1024;
+const SHRINK_TARGET: usize = 64 * 1024;
 
 /// `Content-Length: N\r\n\r\n<UTF-8 JSON>`.
 pub fn encode(message: &Value) -> Vec<u8> {
@@ -34,6 +36,7 @@ impl Decoder {
                 if self.buffer.len() > MAX_HEADER_BYTES {
                     return Err(format!("Message header exceeded {MAX_HEADER_BYTES} bytes without a terminator"));
                 }
+                self.maybe_shrink();
                 return Ok(messages);
             };
             if separator > MAX_HEADER_BYTES {
@@ -51,12 +54,19 @@ impl Decoder {
                 return Err(format!("Message length {length} exceeds the {}-byte limit", self.max_message));
             }
             let start = separator + 4;
-            if self.buffer.len() < start + length {
+            let end = start.checked_add(length).ok_or_else(|| format!("Message length {length} overflow"))?;
+            if self.buffer.len() < end {
                 return Ok(messages);
             }
-            let body: Vec<u8> = self.buffer[start..start + length].to_vec();
-            self.buffer.drain(..start + length);
-            messages.push(serde_json::from_slice(&body).map_err(|error| format!("Message body was not valid JSON: {error}"))?);
+            let parsed = serde_json::from_slice(&self.buffer[start..end]).map_err(|error| format!("Message body was not valid JSON: {error}"))?;
+            self.buffer.drain(..end);
+            messages.push(parsed);
+        }
+    }
+
+    fn maybe_shrink(&mut self) {
+        if self.buffer.is_empty() && self.buffer.capacity() > SHRINK_THRESHOLD {
+            self.buffer.shrink_to(SHRINK_TARGET);
         }
     }
 }

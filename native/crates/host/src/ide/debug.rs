@@ -228,6 +228,7 @@ impl DebugSession {
     /// Watch a process the session owns: when it ends while the session is not closing, the session fails.
     fn track_exit(self: &Arc<Self>, mut child: tokio::process::Child, message: &'static str) {
         let session = self.clone();
+        let pid = child.id();
         tokio::spawn(async move {
             let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
             let owner = session.owner.clone();
@@ -237,6 +238,9 @@ impl DebugSession {
                     () = owner.cancelled() => crate::process::kill_tree(&mut child, Duration::from_millis(1500)).await,
                 }
             });
+            if let Some(pid) = pid {
+                owner.untrack_pid(pid);
+            }
             if !session.closing() {
                 session.fail(message);
             }
@@ -289,7 +293,7 @@ impl DebugSession {
                             continue;
                         }
                         text.push_str(&decoded);
-                        if let Some(port) = text.split("Debug server listening at 127.0.0.1:").nth(1).and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()).and_then(|digits| digits.parse::<u16>().ok()).filter(|_| text.contains('\n')) {
+                        if let Some(port) = parse_js_debug_port(&text) {
                             let _ = port_sender.take().map(|sender| sender.send(Ok(port)));
                             text.clear();
                         } else if text.len() > 256 * 1024 {
@@ -301,6 +305,7 @@ impl DebugSession {
                     }
                 });
                 let stderr = child.stderr.take();
+                let pid = child.id();
                 let owner = self.owner.clone();
                 let session = self.clone();
                 tokio::spawn(async move {
@@ -310,6 +315,9 @@ impl DebugSession {
                             () = owner.cancelled() => crate::process::kill_tree(&mut child, Duration::from_millis(1500)).await,
                         }
                     });
+                    if let Some(pid) = pid {
+                        owner.untrack_pid(pid);
+                    }
                     if !session.closing() {
                         session.fail("The JavaScript debug server exited unexpectedly.");
                     }
@@ -362,13 +370,13 @@ impl DebugSession {
 
     /// A terminal for a GDB inferior: a tiny Python program reports its terminal device and then waits.
     async fn native_terminal(self: &Arc<Self>) -> HostResult<String> {
-        let python = executable(None, "python3", &Default::default())?;
+        let python = executable(None, "python3", &self.resolved.launch.environment)?;
         let script = "import os,signal\nsignal.signal(signal.SIGINT,signal.SIG_IGN)\nprint(os.ttyname(0),flush=True)\nwhile True: signal.pause()";
         let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
         let sender = Mutex::new(Some(sender));
         let prefix = Mutex::new(String::new());
         let owner = self.owner.clone();
-        let spec = CommandSpec { argv: vec![python, "-u".into(), "-c".into(), script.into()], cwd: self.resolved.launch.cwd.clone(), environment: Default::default() };
+        let spec = CommandSpec { argv: vec![python, "-u".into(), "-c".into(), script.into()], cwd: self.resolved.launch.cwd.clone(), environment: self.resolved.launch.environment.clone() };
         let terminal = self.owner.terminal_with(&spec, self.cols, self.rows, Arc::new(move |text: String| {
             let mut pending = sender.lock().unwrap();
             if pending.is_none() {
@@ -380,8 +388,12 @@ impl DebugSession {
             if let Some(newline) = prefix.find('\n') {
                 let tty = prefix[..newline].trim().to_owned();
                 let rest = prefix[newline + 1..].to_owned();
+                prefix.clear();
                 let _ = pending.take().map(|sender| sender.send(tty));
                 owner.emit("terminal", rest);
+            } else if prefix.len() > 64 * 1024 {
+                prefix.clear();
+                let _ = pending.take().map(|sender| sender.send(String::new()));
             }
         }))?;
         self.inner.lock().unwrap().terminal = Some(terminal);
@@ -475,6 +487,14 @@ impl DebugSession {
                 let (peer, command, arguments) = (peer.clone(), command.to_owned(), arguments.clone());
                 tokio::spawn(async move { peer.request(&command, arguments).await })
             };
+            let launch_abort = launching.abort_handle();
+            struct AbortOnDrop(tokio::task::AbortHandle);
+            impl Drop for AbortOnDrop {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            let _abort_guard = AbortOnDrop(launch_abort);
             tokio::pin!(launching);
             tokio::select! {
                 ready = peer.initialized_after(0) => ready?,
@@ -843,6 +863,9 @@ impl DebugSession {
             self.done().await;
             return;
         }
+        if let Some(child_init) = self.child_initialization.lock().unwrap().take() {
+            child_init.abort();
+        }
         let peers: Vec<Arc<Peer>> = self.inner.lock().unwrap().peers.clone();
         for peer in &peers {
             peer.close();
@@ -859,6 +882,16 @@ impl DebugSession {
         }
         let _ = self.done.send(true);
     }
+}
+
+/// Extract the TCP port from js-debug's `Debug server listening at 127.0.0.1:<port>\n` line only once the line
+/// after the prefix is complete (so an earlier warning containing `\n` cannot cause a split port to parse partially).
+fn parse_js_debug_port(text: &str) -> Option<u16> {
+    let (_, after) = text.split_once("Debug server listening at 127.0.0.1:")?;
+    let line_end = after.find('\n')?;
+    let digits: String = after[..line_end].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let port = digits.parse::<u16>().ok()?;
+    (port > 0).then_some(port)
 }
 
 /// The runtime's own arguments in a Node launch: those between the runtime (`argv[0]`) and the program. A launch whose
@@ -879,5 +912,11 @@ mod tests {
         assert!(node_runtime_args(&argv(&["app.js", "x"]), "app.js").is_empty());
         assert!(node_runtime_args(&argv(&["node"]), "app.js").is_empty());
         assert!(node_runtime_args(&[], "app.js").is_empty());
+    }
+
+    #[test]
+    fn parses_js_debug_port_only_after_newline_following_prefix() {
+        assert_eq!(parse_js_debug_port("Node warning\nDebug server listening at 127.0.0.1:54"), None);
+        assert_eq!(parse_js_debug_port("Node warning\nDebug server listening at 127.0.0.1:54321\r\n"), Some(54321));
     }
 }

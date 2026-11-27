@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{Value, json};
 
+pub use super::directories::{create_directory, list_directories};
 use super::fs::{self as ifs, Info, Intent, Kind};
 use super::preview;
 use crate::error::{HostError, HostResult};
 use crate::locale::l;
-use crate::paths::{contains, fully_qualified, join_relative, realpath, relative_path};
+use crate::paths::{contains, join_relative, realpath, relative_path};
 use crate::projects::Projects;
 use crate::text::{now_ms, sha256_hex};
 
@@ -125,10 +126,6 @@ fn gone() -> HostError {
     HostError::new("not-found", l("所选路径已不存在。", "The selected path no longer exists."))
 }
 
-fn not_absolute() -> HostError {
-    HostError::new("invalid-path", l("请选择一个绝对路径的文件夹。", "Choose an absolute directory path."))
-}
-
 fn stale(version: Option<&str>) -> HostError {
     ifs::changed().with("currentVersion", json!(version))
 }
@@ -187,6 +184,7 @@ impl Files {
                     return Err(crate::projects::missing());
                 }
                 self.projects.remove(id)?;
+                self.locks.lock().unwrap().remove(id);
                 return Ok(json!({ "workspaceId": id, "removed": true }));
             }
             _ => {}
@@ -276,14 +274,35 @@ impl Files {
         }
         let mut names = self.directory_names(&directory.target, MAX_DIRECTORY_ENTRIES)?;
         names.sort();
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(names.len());
         for name in names {
             let child = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
-            match self.observe(workspace, &child, false, true) {
-                Ok(observation) => entries.push((observation.info.kind == Kind::Directory, name.to_lowercase(), self.entry(&child, &observation))),
-                Err(error) if missing(&error) || error.code == "invalid-path" => {}
-                Err(error) => return Err(error),
+            if relative_path(&child, false).is_err() {
+                continue;
             }
+            let child_abs = directory.target.join(&name);
+            let info = match ifs::lstat(&child_abs) {
+                Ok(Some(info)) => info,
+                Ok(None) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            // Non-symlink children inside a verified canonical parent directory reuse the parent realpath directly,
+            // saving ~60% of syscalls (`realpath` + `resolve` + `stat`) per entry.
+            let observation = if info.kind != Kind::Symlink {
+                let absolute = join_relative(&workspace.root, &child);
+                let version = sha256_hex(json!([absolute, info.version, child_abs, Some(&info.version)]).to_string());
+                let bytes = info.size;
+                let target_info = Some(info.clone());
+                Observation { absolute, target: child_abs, info, target_info, bytes, version, outside: false }
+            } else {
+                match self.observe(workspace, &child, false, true) {
+                    Ok(obs) => obs,
+                    Err(error) if missing(&error) || error.code == "invalid-path" => continue,
+                    Err(error) => return Err(error),
+                }
+            };
+            entries.push((observation.info.kind == Kind::Directory, name.to_lowercase(), self.entry(&child, &observation)));
         }
         entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         Ok(json!({ "path": path, "entries": entries.into_iter().map(|(_, _, entry)| entry).collect::<Vec<_>>() }))
@@ -511,6 +530,10 @@ impl Files {
     }
 
     fn create_binary(&self, workspace: &Workspace, path: &str, encoded: &str) -> HostResult<Value> {
+        // Reject oversized base64 payloads before allocating a decoded buffer.
+        if encoded.len() > (MAX_BINARY_BYTES / 3 + 2) * 4 {
+            return Err(ifs::too_large());
+        }
         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| HostError::invalid("The file content is not valid base64."))?;
         if bytes.len() > MAX_BINARY_BYTES {
             return Err(ifs::too_large());
@@ -609,9 +632,14 @@ impl Files {
             }
             if kind == Kind::Directory {
                 std::fs::remove_dir(&observed.absolute)?;
-            } else if kind == Kind::Symlink && cfg!(windows) && std::fs::metadata(&observed.absolute).is_ok_and(|info| info.is_dir()) {
-                // A directory link on Windows is removed as a directory, which leaves its target alone.
-                std::fs::remove_dir(&observed.absolute)?;
+            } else if kind == Kind::Symlink && cfg!(windows) {
+                // On Windows, a directory symlink (including a dangling one whose metadata fails) must be removed via
+                // `remove_dir`; try `remove_dir` first for known dirs and fall back when `remove_file` fails.
+                if std::fs::metadata(&observed.absolute).is_ok_and(|info| info.is_dir()) {
+                    std::fs::remove_dir(&observed.absolute)?;
+                } else if let Err(file_err) = std::fs::remove_file(&observed.absolute) {
+                    std::fs::remove_dir(&observed.absolute).map_err(|_| file_err)?;
+                }
             } else {
                 std::fs::remove_file(&observed.absolute)?;
             }
@@ -621,7 +649,7 @@ impl Files {
 
     fn changes(&self, workspace: &Workspace, paths: &[String]) -> HostResult<Value> {
         if paths.len() > MAX_CHANGE_PATHS {
-            return Err(HostError::new("too-large", "Too many opened paths were requested in one change check."));
+            return Err(HostError::new("too-large", l("单次变更检查请求的文件数量超过了上限。", "Too many opened paths were requested in one change check.")));
         }
         let mut seen = HashSet::new();
         let mut result = Vec::new();
@@ -837,217 +865,9 @@ pub fn search(root: &Path, query: &str, requested: Option<usize>) -> Value {
     done(paths, truncated)
 }
 
-/// Drive letters on Windows that answer within a second; `/` and the home folder on Linux.
-fn filesystem_roots() -> Vec<String> {
-    if cfg!(not(windows)) {
-        let home = crate::env::home_dir().display().to_string();
-        let mut roots = if home == "/" { vec!["/".into()] } else { vec!["/".into(), home] };
-        roots.extend(wsl::drive_roots());
-        return roots;
-    }
-    let (sender, receiver) = std::sync::mpsc::channel();
-    for letter in b'A'..=b'Z' {
-        let drive = format!("{}:\\", char::from(letter));
-        let sender = sender.clone();
-        std::thread::spawn(move || {
-            let _ = sender.send((drive.clone(), std::fs::metadata(&drive).is_ok()));
-        });
-    }
-    drop(sender);
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut answered: HashMap<String, bool> = HashMap::new();
-    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-        match receiver.recv_timeout(left) {
-            Ok((drive, present)) => {
-                answered.insert(drive, present);
-            }
-            Err(_) => break,
-        }
-    }
-    // A drive letter that does not answer in time is mapped but slow, so it is offered.
-    (b'A'..=b'Z').map(|letter| format!("{}:\\", char::from(letter))).filter(|drive| answered.get(drive).copied().unwrap_or(true)).collect()
-}
-
-/// One level of the in-app folder browser: child folders (following links to folders), sorted by name.
-pub fn list_directories(path: Option<&str>, show_hidden: bool) -> HostResult<Value> {
-    let target = match path {
-        None => crate::env::home_dir(),
-        Some(path) if fully_qualified(path) => crate::paths::normalize(Path::new(path)),
-        Some(_) => return Err(not_absolute()),
-    };
-    let failure = |error: std::io::Error| match error.kind() {
-        std::io::ErrorKind::NotFound => HostError::new("not-found", l(&format!("文件夹不存在：{}", target.display()), &format!("The directory does not exist: {}", target.display()))),
-        std::io::ErrorKind::NotADirectory => HostError::new("not-directory", l(&format!("这个路径不是文件夹：{}", target.display()), &format!("The path is not a directory: {}", target.display()))),
-        std::io::ErrorKind::PermissionDenied => HostError::new("permission-denied", l(&format!("无法读取文件夹：{}", target.display()), &format!("The directory cannot be read: {}", target.display()))),
-        _ => HostError::new("io-error", error.to_string()),
-    };
-    let mut names = Vec::new();
-    for entry in std::fs::read_dir(&target).map_err(failure)? {
-        let Ok(entry) = entry else { continue };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !show_hidden && name.starts_with('.') {
-            continue;
-        }
-        let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_dir() || (kind.is_symlink() && std::fs::metadata(entry.path()).is_ok_and(|info| info.is_dir())) {
-            names.push(name);
-        }
-    }
-    names.sort_by_key(|name| name.to_lowercase());
-    names.truncate(MAX_DIRECTORY_ENTRIES);
-    let entries: Vec<Value> = names.iter().map(|name| json!({ "name": name, "path": target.join(name), "hidden": name.starts_with('.') })).collect();
-    let parent = target.parent().filter(|parent| *parent != target && !parent.as_os_str().is_empty()).map(Path::to_path_buf);
-    Ok(json!({ "path": target, "parent": parent, "roots": filesystem_roots(), "entries": entries }))
-}
-
-/// Create one folder whose parent exists, then list it.
-pub fn create_directory(path: &str) -> HostResult<Value> {
-    if !fully_qualified(path) {
-        return Err(not_absolute());
-    }
-    let target = crate::paths::normalize(Path::new(path));
-    if target.file_name().is_none() {
-        return Err(HostError::new("invalid-path", l("请在已有的文件夹中新建文件夹。", "Choose a new directory inside an existing directory.")));
-    }
-    match std::fs::create_dir(&target) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(HostError::new("already-exists", l(&format!("文件夹已存在：{}", target.display()), &format!("The directory already exists: {}", target.display()))));
-        }
-        Err(error) => return Err(error.into()),
-    }
-    list_directories(Some(&target.to_string_lossy()), true)
-}
-
-/// Windows drives seen from WSL. WSL mounts them under `/mnt/<letter>` only when it starts, so a USB stick or a disk
-/// image attached later stays out of reach; the folder browser mounts those (the Host runs as root in Rainy's own
-/// distribution) and offers every mounted drive as a root.
-mod wsl {
-    use std::path::Path;
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    /// How long a look at the drives holds: the folder browser lists roots with every folder it opens.
-    const FRESH: Duration = Duration::from_secs(10);
-    static SEEN: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
-
-    fn inside_wsl() -> bool {
-        cfg!(target_os = "linux") && (std::env::var_os("WSL_DISTRO_NAME").is_some() || Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists())
-    }
-
-    /// The drive mount points of a `/proc/self/mounts` text: `/mnt/<letter>` with a Windows file system.
-    pub fn mounted(mounts: &str) -> Vec<String> {
-        let mut found: Vec<String> = mounts
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let (_, point, kind) = (fields.next()?, fields.next()?, fields.next()?);
-                let letter = point.strip_prefix("/mnt/")?;
-                (letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) && matches!(kind, "drvfs" | "9p" | "virtiofs")).then(|| point.to_owned())
-            })
-            .collect();
-        found.sort();
-        found.dedup();
-        found
-    }
-
-    /// The letters of Windows' drives, asked through interop (`cmd.exe`), in at most two seconds.
-    fn windows_letters() -> Vec<char> {
-        let script = "for %d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\ echo %d";
-        let Ok(mut child) = std::process::Command::new("/mnt/c/Windows/System32/cmd.exe")
-            .args(["/d", "/c", script])
-            .current_dir("/mnt/c")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        else {
-            return Vec::new();
-        };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-                _ => {
-                    let _ = child.kill();
-                    return Vec::new();
-                }
-            }
-        }
-        let mut text = String::new();
-        if let Some(mut out) = child.stdout.take() {
-            let _ = std::io::Read::read_to_string(&mut out, &mut text);
-        }
-        text.lines().filter_map(|line| line.trim().chars().next()).filter(char::is_ascii_alphabetic).map(|c| c.to_ascii_lowercase()).collect()
-    }
-
-    fn root() -> bool {
-        std::fs::read_to_string("/proc/self/status").is_ok_and(|status| status.lines().any(|line| line.starts_with("Uid:") && line.split_whitespace().nth(1) == Some("0")))
-    }
-
-    /// Every Windows drive mounted under `/mnt`, after mounting the ones attached since WSL started.
-    pub fn drive_roots() -> Vec<String> {
-        if !inside_wsl() {
-            return Vec::new();
-        }
-        let mut seen = SEEN.lock().unwrap();
-        if let Some((when, roots)) = seen.as_ref()
-            && when.elapsed() < FRESH
-        {
-            return roots.clone();
-        }
-        let present = mounted(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default());
-        let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_default();
-        for letter in windows_letters() {
-            let point = format!("/mnt/{letter}");
-            if present.contains(&point) {
-                continue;
-            }
-            let drive = format!("{}:", letter.to_ascii_uppercase());
-            let script = format!("mkdir -p {point} && mount -t drvfs {drive} {point}");
-            // As root the Host mounts it itself; a user's Host asks WSL to run the mount as root, which needs no password.
-            let mut command = if root() {
-                let mut command = std::process::Command::new("sh");
-                command.args(["-c", &script]);
-                command
-            } else if !distro.is_empty() {
-                let mut command = std::process::Command::new("/mnt/c/Windows/System32/wsl.exe");
-                command.args(["-d", &distro, "-u", "root", "--exec", "sh", "-c", &script]).current_dir("/mnt/c");
-                command
-            } else {
-                continue;
-            };
-            match command.stdin(std::process::Stdio::null()).output() {
-                Ok(output) if output.status.success() => log::info!("mounted {drive} at {point}"),
-                Ok(output) => log::warn!("{drive} could not be mounted at {point}: {}", String::from_utf8_lossy(&output.stderr).trim()),
-                Err(error) => log::warn!("{drive} could not be mounted at {point}: {error}"),
-            }
-        }
-        let roots = mounted(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default());
-        *seen = Some((Instant::now(), roots.clone()));
-        roots
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finds_the_windows_drives_wsl_mounted() {
-        let mounts = "none /mnt/wsl tmpfs rw 0 0\nC:\\ /mnt/c 9p rw,dirsync 0 0\nD:\\ /mnt/d drvfs rw 0 0\n/dev/sdc / ext4 rw 0 0\nE: /mnt/e drvfs rw 0 0\ndrivers /usr/lib/wsl/drivers 9p ro 0 0\n";
-        assert_eq!(wsl::mounted(mounts), ["/mnt/c", "/mnt/d", "/mnt/e"]);
-    }
-
-    /// Run inside WSL with a drive attached after WSL started (`RAINY_QA_WSL_DRIVE=r`).
-    #[test]
-    #[ignore]
-    fn mounts_a_drive_attached_after_wsl_started() {
-        let letter = std::env::var("RAINY_QA_WSL_DRIVE").unwrap_or_else(|_| "r".into());
-        let roots = wsl::drive_roots();
-        assert!(roots.contains(&format!("/mnt/{letter}")), "{roots:?}");
-    }
 
     #[test]
     fn decodes_like_3x() {

@@ -3,6 +3,7 @@
 
 pub mod dap;
 pub mod debug;
+pub mod directories;
 pub mod execution;
 pub mod files;
 pub mod format;
@@ -10,6 +11,7 @@ pub mod framing;
 pub mod fs;
 pub mod hints;
 pub mod language;
+pub mod lsp_client;
 pub mod office_pdf;
 pub mod owner;
 pub mod preview;
@@ -91,7 +93,7 @@ impl Ide {
 
     /// One request of the `ide` method.
     pub async fn handle(self: &Arc<Self>, host: &Arc<Host>, request: Value) -> HostResult<Value> {
-        if request.to_string().len() > MAX_REQUEST_BYTES {
+        if crate::text::json_byte_len_capped(&request, MAX_REQUEST_BYTES).map_or(true, |len| len.is_none()) {
             return Err(HostError::new("too-large", l("请求内容超过了大小上限。", "The IDE request exceeds its configured byte limit.")));
         }
         let op = request["op"].as_str().ok_or_else(|| HostError::invalid("The IDE operation is missing"))?.to_owned();
@@ -102,6 +104,7 @@ impl Ide {
             self.languages.close_workspace(&workspace_id);
             let ide = self.clone();
             let result = tokio::task::spawn_blocking(move || ide.files.handle(&request)).await.map_err(|_| HostError::other("The file operation stopped."))??;
+            self.state.evict(&workspace_id);
             if selected {
                 self.state.set_selection(None)?;
             }

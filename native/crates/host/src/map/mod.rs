@@ -112,10 +112,22 @@ pub struct ProjectMap {
 const CACHE: Duration = Duration::from_secs(20);
 /// A map this young serves the file relations, which follow the editor from file to file.
 const RELATIONS_CACHE: Duration = Duration::from_secs(180);
+/// Maximum number of scanned project maps kept in memory at once.
+const MAX_CACHED_MAPS: usize = 8;
 /// Boxes described to the model: the top level and the level below its directories.
 const EXPLAIN_MAX_NODES: usize = 48;
 const EXPLAIN_TIMEOUT: Duration = Duration::from_secs(240);
 const EXPLAIN_MAX_TOKENS: u64 = 6000;
+
+fn insert_cached_map(cache: &Mutex<HashMap<String, (Arc<ProjectMap>, Instant)>>, key: String, map: Arc<ProjectMap>) {
+    let mut guard = cache.lock().unwrap();
+    if !guard.contains_key(&key) && guard.len() >= MAX_CACHED_MAPS {
+        if let Some(oldest) = guard.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| k.clone()) {
+            guard.remove(&oldest);
+        }
+    }
+    guard.insert(key, (map, Instant::now()));
+}
 
 fn describe_node(map: &ProjectMap, view: &graph::MapView, node: &graph::MapNode) -> String {
     let base = match node.node_type {
@@ -298,30 +310,43 @@ impl ProjectMaps {
         let cached = self.cache.lock().unwrap().get(&cache_key).filter(|(_, at)| at.elapsed() < RELATIONS_CACHE).map(|(map, _)| map.clone());
         let map = match cached {
             Some(map) => map,
-            None => {
-                let cancelled = self.cancelled.clone();
-                let scan_root = canonical_root.clone();
-                let scanned = tokio::task::spawn_blocking(move || {
-                    let result = scan::scan_project(&scan_root, scan::ScanLimits::default(), &cancelled);
-                    Arc::new(ProjectMap {
-                        workspace_id: String::new(),
-                        title: scan_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                        generated_at: crate::text::now_ms(),
-                        truncated: result.truncated,
-                        files: result.files,
-                        imports: result.imports,
-                        packages: result.packages,
-                        stack: result.stack,
-                        explanation: None,
-                    })
-                })
-                .await
-                .map_err(|error| HostError::other(error.to_string()))?;
-                self.cache.lock().unwrap().insert(cache_key, (scanned.clone(), Instant::now()));
-                scanned
-            }
+            None => self.scan_dir(cache_key, canonical_root).await?,
         };
         Ok(extract_module_deps(&map, path))
+    }
+
+    fn scan_dir(&self, cache_key: String, scan_root: PathBuf) -> Scan {
+        let mut scanning = self.scanning.lock().unwrap();
+        if let Some(pending) = scanning.get(&cache_key) {
+            return pending.clone();
+        }
+        let (key, cancelled, cache, all) = (cache_key.clone(), self.cancelled.clone(), self.cache.clone(), self.scanning.clone());
+        let pending: Scan = async move {
+            let task = tokio::task::spawn_blocking(move || {
+                let result = scan::scan_project(&scan_root, scan::ScanLimits::default(), &cancelled);
+                ProjectMap {
+                    workspace_id: String::new(),
+                    title: scan_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    generated_at: crate::text::now_ms(),
+                    truncated: result.truncated,
+                    files: result.files,
+                    imports: result.imports,
+                    packages: result.packages,
+                    stack: result.stack,
+                    explanation: None,
+                }
+            });
+            let result = task.await.map(Arc::new).map_err(|error| HostError::other(error.to_string()));
+            if let Ok(map) = &result {
+                insert_cached_map(&cache, key.clone(), map.clone());
+            }
+            all.lock().unwrap().remove(&key);
+            result
+        }
+        .boxed()
+        .shared();
+        scanning.insert(cache_key, pending.clone());
+        pending
     }
 
     /// Ask the default model to explain the project, and keep the explanation; one request per project at a time.
@@ -418,7 +443,7 @@ impl ProjectMaps {
             });
             let result = task.await.map(Arc::new).map_err(|error| HostError::other(error.to_string()));
             if let Ok(map) = &result {
-                cache.lock().unwrap().insert(key.clone(), (map.clone(), Instant::now()));
+                insert_cached_map(&cache, key.clone(), map.clone());
             }
             all.lock().unwrap().remove(&key);
             result
