@@ -105,6 +105,7 @@ impl ChatPane {
         // The pet stands on the composer's top edge, unless the suggestion list is there; either keeps the greeting
         // clear of the glow (`optics::greeting_clearance`).
         let companions = suggestions.is_none().then(|| h_flex().h(px(pet::row_height())).px_3().pr_8().justify_end().items_end().child(pet::render(&backdrop, window, cx)));
+        let glow = optics::glow_for(&look, backdrop.read(cx), window);
         // Auto margins centre the column while it fits and let it scroll from its top when it does not. The column is
         // laid out from the bottom up, so the glow behind the composer is painted first and the pet, a suggestion
         // list, the overview and the greeting are painted over its light, not under it.
@@ -123,7 +124,7 @@ impl ChatPane {
                     .w_full()
                     .max_w(px(crate::ui::agent::COLUMN))
                     .px_1()
-                    .child(div().relative().child(optics::glow(&look)).child(composer))
+                    .child(div().relative().child(glow).child(composer))
                     .children(suggestions.map(|list| div().min_h(px(pet::row_height())).flex().flex_col().justify_end().child(list)))
                     .children(companions)
                     .children(card)
@@ -158,7 +159,7 @@ impl ChatPane {
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !*hovered && let Some(backdrop) = this.backdrop.clone() {
-                    backdrop.update(cx, |backdrop, _| backdrop.pointer_left());
+                    backdrop.update(cx, |backdrop, cx| backdrop.pointer_left_notify(cx));
                 }
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -304,5 +305,99 @@ mod tests {
         assert!(state.sync_session(&Some("s2".into())));
         assert_eq!(state.session.as_deref(), Some("s2"));
         assert!(!state.list && !state.orchestrate && state.drag.is_none() && state.quota_asked.is_none());
+    }
+
+    #[test]
+    fn chat_state_maps_to_pet_activity_and_celebrates_only_clean_same_session_finishes() {
+        use crate::store::chat::ChatView;
+        use crate::ui::chat::{PetTurnSignal, pet_turn_signal, should_celebrate_pet};
+        use crate::ui::optics::backdrop::PetActivity;
+        use serde_json::json;
+
+        let make_view = |status: &str, entries: serde_json::Value, streaming: serde_json::Value, running_tools: serde_json::Value, approvals: serde_json::Value, error: Option<&str>| {
+            ChatView::new(
+                serde_json::from_value(json!({
+                    "summary": {
+                        "id": "s1", "workspaceId": null, "cwd": "/p", "title": "t",
+                        "createdAt": 1, "updatedAt": 2, "archived": false, "pinned": false,
+                        "status": status
+                    },
+                    "entries": entries,
+                    "model": null, "queue": [], "context": null,
+                    "streaming": streaming,
+                    "runningTools": running_tools,
+                    "permission": "ask",
+                    "approvals": approvals,
+                    "background": [],
+                    "error": error
+                }))
+                .unwrap(),
+                true,
+            )
+        };
+        let assistant_entry = |stop: &str| {
+            json!({
+                "id": "a1", "kind": "assistant", "ts": 2,
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                    "api": "x", "provider": "p", "model": "m",
+                    "stopReason": stop, "timestamp": 2,
+                    "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                              "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+                }
+            })
+        };
+        let stream_msg = |block: serde_json::Value| {
+            json!({
+                "role": "assistant",
+                "content": [block],
+                "api": "x", "provider": "p", "model": "m",
+                "stopReason": "pending", "timestamp": 2,
+                "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                          "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+            })
+        };
+
+        // Pending new chat creation maps to Thinking; blank idle stays Idle without celebrating.
+        assert_eq!(pet_turn_signal(None, true), PetTurnSignal { activity: PetActivity::Thinking, clean_idle: false });
+        assert_eq!(pet_turn_signal(None, false), PetTurnSignal { activity: PetActivity::Idle, clean_idle: false });
+
+        // Waiting approval takes priority over running status.
+        let approval_view = make_view(
+            "running",
+            json!([]),
+            serde_json::Value::Null,
+            json!(["c1"]),
+            json!([{"toolCallId": "c1", "toolName": "bash", "reason": "command"}]),
+            None,
+        );
+        assert_eq!(pet_turn_signal(Some(&approval_view), false).activity, PetActivity::WaitingApproval);
+
+        // Running with thinking block vs text stream vs running tool vs compacting.
+        let thinking = make_view("running", json!([]), stream_msg(json!({"type": "thinking", "thinking": "..."})), json!([]), json!([]), None);
+        assert_eq!(pet_turn_signal(Some(&thinking), false).activity, PetActivity::Thinking);
+        let responding = make_view("running", json!([]), stream_msg(json!({"type": "text", "text": "hi"})), json!([]), json!([]), None);
+        assert_eq!(pet_turn_signal(Some(&responding), false).activity, PetActivity::Responding);
+        let tool_running = make_view("running", json!([]), serde_json::Value::Null, json!(["c1"]), json!([]), None);
+        assert_eq!(pet_turn_signal(Some(&tool_running), false).activity, PetActivity::Responding);
+        let compacting = make_view("compacting", json!([]), serde_json::Value::Null, json!([]), json!([]), None);
+        assert_eq!(pet_turn_signal(Some(&compacting), false).activity, PetActivity::Thinking);
+
+        // Clean finish vs aborted vs error.
+        let clean = pet_turn_signal(Some(&make_view("idle", json!([assistant_entry("stop")]), serde_json::Value::Null, json!([]), json!([]), None)), false);
+        assert_eq!(clean, PetTurnSignal { activity: PetActivity::Idle, clean_idle: true });
+        let aborted = pet_turn_signal(Some(&make_view("idle", json!([assistant_entry("aborted")]), serde_json::Value::Null, json!([]), json!([]), None)), false);
+        assert_eq!(aborted, PetTurnSignal { activity: PetActivity::Idle, clean_idle: false });
+        let errored = pet_turn_signal(Some(&make_view("error", json!([assistant_entry("error")]), serde_json::Value::Null, json!([]), json!([]), Some("boom"))), false);
+        assert_eq!(errored, PetTurnSignal { activity: PetActivity::Idle, clean_idle: false });
+
+        // Celebration fires only when the same session finishes cleanly.
+        assert!(should_celebrate_pet(Some("s1"), PetActivity::Responding, Some("s1"), clean));
+        assert!(should_celebrate_pet(Some("s1"), PetActivity::Thinking, Some("s1"), clean));
+        assert!(!should_celebrate_pet(Some("s1"), PetActivity::Responding, Some("s1"), aborted));
+        assert!(!should_celebrate_pet(Some("s1"), PetActivity::Responding, Some("s1"), errored));
+        assert!(!should_celebrate_pet(Some("s1"), PetActivity::Responding, Some("s2"), clean));
+        assert!(!should_celebrate_pet(Some("s1"), PetActivity::Idle, Some("s1"), clean));
     }
 }

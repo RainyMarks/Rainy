@@ -63,9 +63,7 @@ fn main() {
         // The id 3.x gave its shortcuts and taskbar pins, so the window groups with them.
         cx.set_app_identity("dev.rainy.agent", "Rainy");
         gpui_kit::init(cx);
-        if reduced_motion_env() {
-            cx.set_reduce_motion(true);
-        }
+        ui::motion::init(cx);
         let user_data = paths.user_data.clone();
         fonts::init(&user_data, cx);
         let store = Store::init(paths, cx);
@@ -136,13 +134,6 @@ fn main() {
         .detach();
         cx.activate(true);
     });
-}
-
-/// Whether the user forced reduced motion through `RAINY_REDUCED_MOTION` (`1`, `true`, `yes`, `on`).
-pub(crate) fn reduced_motion_env() -> bool {
-    std::env::var("RAINY_REDUCED_MOTION")
-        .ok()
-        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// The uninstaller's switches, which run without a window or the single-instance lock: the exit code, 0 or 1 after a

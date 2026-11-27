@@ -106,6 +106,7 @@ fn glow_shadows(look: &Look, breath: f32, parallax_x: f32) -> [BoxShadow; 3] {
 /// The glow behind the composer: blue, violet and pink light (for a blue accent) spreading from under it, lower and
 /// wider than it. Placed first in the composer's positioned wrapper, so the composer is drawn over its brightest part;
 /// the page paints that wrapper before everything above it, so nothing else is drawn under the light.
+#[allow(dead_code)]
 pub fn glow(look: &Look) -> impl IntoElement {
     glow_reactive(look, 1.0, 0.0)
 }
@@ -124,7 +125,6 @@ pub fn glow_reactive(look: &Look, breath: f32, parallax_x: f32) -> impl IntoElem
 }
 
 /// Convenience wrapper deriving [`glow_reactive`] parameters directly from an active [`Backdrop`].
-#[allow(dead_code)]
 pub fn glow_for(look: &Look, backdrop: &Backdrop, window: &Window) -> impl IntoElement {
     glow_reactive(look, backdrop.glow_breath(window), backdrop.glow_parallax_x())
 }

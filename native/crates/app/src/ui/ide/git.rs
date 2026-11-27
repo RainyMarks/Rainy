@@ -8,9 +8,8 @@ use std::time::Duration;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{GitFileChange, GitRepository, GitStatus};
@@ -19,7 +18,7 @@ use serde_json::{Value, json};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
 use crate::ui::ide::file_icon;
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 /// How often the status is read while the pane is shown, and while it is not (for the change count).
 const FAST: Duration = Duration::from_secs(3);
@@ -643,7 +642,7 @@ impl Render for GitView {
             .size_full()
             .overflow_y_scrollbar()
             .when(!has_workspace, |this| this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, "git.gitNoWorkspace"))))
-            .when(has_workspace && self.loading, |this| this.child(h_flex().p_3().child(Spinner::new().small())))
+            .when(has_workspace && self.loading, |this| this.child(h_flex().p_3().child(motion::spinner(Size::Small, cx))))
             .when_some(self.error.clone(), |this, error| this.child(div().p_3().text_sm().text_color(theme.danger).child(error)))
             .when(unavailable, |this| this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, "git.gitMissing"))))
             .children(repositories)

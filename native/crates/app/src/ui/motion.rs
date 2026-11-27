@@ -47,9 +47,19 @@ static SYSTEM_ALLOWED: AtomicBool = AtomicBool::new(true);
 /// Whether [`init`] has wired GPUI's `App::reduce_motion`.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Whether the environment explicitly asks for reduced motion (`RAINY_REDUCED_MOTION=1`).
+/// Parses a `RAINY_REDUCED_MOTION` value (`1`, `true`, `yes`, `on`, ASCII case-insensitive).
+pub(crate) fn parse_reduced_motion_env(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+/// Resolves whether GPUI's `reduce_motion` flag should be active given the env override and OS animation switch.
+pub(crate) fn resolve_reduced_motion(env_forced: bool, system_animations_enabled: bool) -> bool {
+    env_forced || !system_animations_enabled
+}
+
+/// Whether the environment explicitly asks for reduced motion (`RAINY_REDUCED_MOTION=1|true|yes|on`).
 pub fn env_reduced() -> bool {
-    std::env::var("RAINY_REDUCED_MOTION").is_ok_and(|value| value == "1")
+    std::env::var("RAINY_REDUCED_MOTION").ok().is_some_and(|value| parse_reduced_motion_env(&value))
 }
 
 /// Reads the operating system's client-area animation switch.
@@ -71,35 +81,41 @@ pub fn system_animations_enabled() -> bool {
 ///
 /// `RAINY_REDUCED_MOTION=1` overrides the OS setting and locks `cx.reduce_motion()` to `true`; otherwise GPUI's flag
 /// follows the operating system setting.
-#[allow(dead_code)]
 pub fn init(cx: &mut App) {
     let forced = env_reduced();
     ENV_REDUCED.store(forced, Ordering::Relaxed);
     INITIALIZED.store(true, Ordering::Relaxed);
-    if forced {
-        cx.set_reduce_motion(true);
-        SYSTEM_ALLOWED.store(false, Ordering::Relaxed);
+    let system_enabled = if forced {
+        true
     } else {
         apply_system_reduce_motion(cx);
-        SYSTEM_ALLOWED.store(!cx.reduce_motion(), Ordering::Relaxed);
+        !cx.reduce_motion()
+    };
+    let reduced = resolve_reduced_motion(forced, system_enabled);
+    if cx.reduce_motion() != reduced {
+        cx.set_reduce_motion(reduced);
     }
+    SYSTEM_ALLOWED.store(!reduced, Ordering::Relaxed);
 }
 
 /// Re-reads the OS animation switch (for example on window activation) when not locked by `RAINY_REDUCED_MOTION=1`.
 /// Returns whether `cx.reduce_motion()` changed.
-#[allow(dead_code)]
 pub fn sync_system(cx: &mut App) -> bool {
     let before = cx.reduce_motion();
-    if ENV_REDUCED.load(Ordering::Relaxed) || env_reduced() {
+    let forced = ENV_REDUCED.load(Ordering::Relaxed) || env_reduced();
+    if forced {
         ENV_REDUCED.store(true, Ordering::Relaxed);
-        if !before {
-            cx.set_reduce_motion(true);
-        }
-        SYSTEM_ALLOWED.store(false, Ordering::Relaxed);
-        return !before;
     }
-    apply_system_reduce_motion(cx);
-    let after = cx.reduce_motion();
+    let system_enabled = if forced {
+        true
+    } else {
+        apply_system_reduce_motion(cx);
+        !cx.reduce_motion()
+    };
+    let after = resolve_reduced_motion(forced, system_enabled);
+    if cx.reduce_motion() != after {
+        cx.set_reduce_motion(after);
+    }
     SYSTEM_ALLOWED.store(!after, Ordering::Relaxed);
     before != after
 }
@@ -173,19 +189,18 @@ pub fn transition_f32(id: impl Into<TransitionId>, target: f32, duration: Durati
 /// Phase-locked, 30 fps capped loading spinner that stops cleanly under reduced motion.
 ///
 /// Replaces unconstrained native-refresh `Spinner` instances that otherwise redraw the whole window at 144–240 fps.
-#[allow(dead_code)]
 pub fn spinner(size: Size, cx: &App) -> impl IntoElement {
-    spinner_styled(size, None, cx)
+    spinner_with_id("rainy-spinner", size, None, cx)
 }
 
 /// Phase-locked, 30 fps capped loading spinner with an explicit color.
-#[allow(dead_code)]
 pub fn spinner_colored(size: Size, color: Hsla, cx: &App) -> impl IntoElement {
-    spinner_styled(size, Some(color), cx)
+    spinner_with_id("rainy-spinner", size, Some(color), cx)
 }
 
-#[allow(dead_code)]
-fn spinner_styled(size: Size, color: Option<Hsla>, cx: &App) -> impl IntoElement {
+/// Phase-locked, 30 fps capped loading spinner with a caller-supplied [`ElementId`] for views that may show more than
+/// one spinner concurrently (lists, cards, or multi-section pages).
+pub fn spinner_with_id(id: impl Into<ElementId>, size: Size, color: Option<Hsla>, cx: &App) -> AnyElement {
     let icon = Icon::new(IconName::Loader).with_size(size).when_some(color, |this, color| this.text_color(color));
     if !allowed(cx) {
         return div().flex_shrink_0().child(icon).into_any_element();
@@ -193,7 +208,7 @@ fn spinner_styled(size: Size, color: Option<Hsla>, cx: &App) -> impl IntoElement
     div()
         .flex_shrink_0()
         .child(icon.with_animation(
-            "rainy-spinner",
+            id.into(),
             Animation::new(Duration::from_millis(900)).repeat_synced().with_max_fps(SPINNER_FPS).with_easing(ease_in_out),
             |this, delta| this.transform(Transformation::rotate(percentage(delta))),
         ))
@@ -478,5 +493,21 @@ mod tests {
         assert_eq!(track.target(1, Axis::Vertical), Some((32.0, 32.0)));
         assert_eq!(track.target(0, Axis::Horizontal), None);
         assert_eq!(track.target(9, Axis::Horizontal), None);
+    }
+
+    #[test]
+    fn reduced_motion_env_and_resolution_stay_consistent() {
+        for truthy in ["1", " 1 ", "true", "TRUE", "Yes", "on", " On "] {
+            assert!(parse_reduced_motion_env(truthy), "{truthy}");
+        }
+        for falsy in ["", "0", "false", "no", "off", "2"] {
+            assert!(!parse_reduced_motion_env(falsy), "{falsy}");
+        }
+        // Env override always forces reduced motion even when OS animations are enabled.
+        assert!(resolve_reduced_motion(true, true));
+        assert!(resolve_reduced_motion(true, false));
+        // Without env override, reduced motion mirrors the inverse of OS animations.
+        assert!(!resolve_reduced_motion(false, true));
+        assert!(resolve_reduced_motion(false, false));
     }
 }

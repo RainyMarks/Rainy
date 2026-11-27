@@ -9,8 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Theme, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Size, Theme, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{TextReplaceResult, TextSearchFile, TextSearchMatch, TextSearchResult};
@@ -19,7 +18,7 @@ use serde_json::{Value, json};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
 use crate::ui::ide::file_icon;
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 /// The height of every line of the results; the list only builds the lines on screen, so they must all be this tall.
 const ROW_HEIGHT: f32 = 24.;
@@ -489,7 +488,7 @@ impl Render for SearchView {
                     .min_h_0()
                     .when(!has_workspace, |this| this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, "search.searchNoWorkspace"))))
                     .when(self.searching && no_rows, |this| {
-                        this.child(h_flex().p_3().gap_2().text_sm().text_color(theme.muted_foreground).child(Spinner::new().small()).child(tr(cx, "search.searchSearching")))
+                        this.child(h_flex().p_3().gap_2().text_sm().text_color(theme.muted_foreground).child(motion::spinner(Size::Small, cx)).child(tr(cx, "search.searchSearching")))
                     })
                     .when_some(self.error.clone(), |this, error| this.child(div().p_3().text_sm().text_color(theme.danger).child(error)))
                     .when(empty && !self.searching, |this| this.child(div().p_3().text_sm().text_color(theme.muted_foreground).child(tr(cx, "search.searchNone"))))

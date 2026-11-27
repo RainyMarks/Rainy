@@ -22,7 +22,6 @@ const HEIGHT: usize = 54;
 /// stay sharp at any scaling (two of them at 150 % and at 200 %).
 pub const PIXEL: f32 = 1.34;
 /// Compact companion scale for active chats (`0.72×`, stationary on the composer's right corner).
-#[allow(dead_code)]
 pub const MINI_PIXEL: f32 = PIXEL * 0.72;
 /// How far she strolls to the left of her place, and how high she hops, in pixels of the art.
 const STROLL: f32 = 48.0;
@@ -524,7 +523,6 @@ pub fn row_height() -> f32 {
 }
 
 /// Size of the compact active-chat companion (`0.72×`, no horizontal stroll).
-#[allow(dead_code)]
 pub fn mini_size() -> (f32, f32) {
     (WIDTH as f32 * MINI_PIXEL, (HEIGHT as f32 + HOP) * MINI_PIXEL)
 }
@@ -678,11 +676,9 @@ pub fn render(backdrop: &Entity<Backdrop>, window: &Window, cx: &App) -> impl In
 }
 
 /// Stop the mini companion's ticker if it has not been painted for this long (e.g. hidden behind settings or optics off).
-#[allow(dead_code)]
 const MINI_UNSEEN: Duration = Duration::from_millis(600);
 
 /// Whether [`MiniPet`]'s 10 fps ticker should stay alive.
-#[allow(dead_code)]
 fn mini_tick_rule(motion: bool, window_active: bool, shown: bool, active_or_burst: bool) -> bool {
     motion && window_active && shown && active_or_burst
 }
@@ -692,7 +688,6 @@ fn mini_tick_rule(motion: bool, window_active: bool, shown: bool, active_or_burs
 /// Consumes **0 frames / 0 CPU at rest** (both `Idle` and `WaitingApproval` are completely static) and stops its 10 fps
 /// ticker within [`MINI_UNSEEN`] whenever hidden or unrendered. Starts only while visible + thinking/responding
 /// (window-active gated) or during finite reaction bursts (1.2s pat, 1.5s triple-click, 1.8s celebration, 2.0s typing).
-#[allow(dead_code)]
 pub struct MiniPet {
     clock: f64,
     last_tick: Option<Instant>,
@@ -709,7 +704,6 @@ pub struct MiniPet {
     _activation: Subscription,
 }
 
-#[allow(dead_code)]
 impl MiniPet {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
@@ -735,13 +729,28 @@ impl MiniPet {
     }
 
     /// Updates AI turn status; transitioning out of `Thinking`/`Responding` into `Idle` triggers a 1.8s celebration.
+    #[allow(dead_code)]
     pub fn set_activity(&mut self, activity: PetActivity, window: &mut Window, cx: &mut Context<Self>) {
-        if self.activity == activity {
+        let was_active = matches!(self.activity, PetActivity::Thinking | PetActivity::Responding);
+        let celebrate = was_active && activity == PetActivity::Idle;
+        self.sync_activity(activity, celebrate, false, window, cx);
+    }
+
+    /// Synchronizes AI turn status with explicit control over celebration and session switches.
+    ///
+    /// `celebrate` triggers the 1.8s hop + note burst (only on clean turn completion of the same session); `reset_bursts`
+    /// clears transient celebration/typing timestamps when switching chats so another session's reaction never bleeds over.
+    pub fn sync_activity(&mut self, activity: PetActivity, celebrate: bool, reset_bursts: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let changed = self.activity != activity || celebrate || reset_bursts;
+        if !changed {
             return;
         }
-        let was_active = matches!(self.activity, PetActivity::Thinking | PetActivity::Responding);
         self.activity = activity;
-        if was_active && activity == PetActivity::Idle && motion_allowed() {
+        if reset_bursts {
+            self.last_typed = f64::NEG_INFINITY;
+            self.celebrated_at = f64::NEG_INFINITY;
+        }
+        if celebrate && motion_allowed() {
             self.celebrated_at = self.clock;
         }
         if self.is_active_or_burst() {
@@ -749,6 +758,15 @@ impl MiniPet {
         } else {
             cx.notify();
         }
+    }
+
+    /// Quiets the companion when unmounted (e.g. optics disabled, narrow window, IDE mode or blank greeting) without
+    /// waking its ticker.
+    pub fn reset_silent(&mut self) {
+        self.activity = PetActivity::Idle;
+        self.last_typed = f64::NEG_INFINITY;
+        self.celebrated_at = f64::NEG_INFINITY;
+        self.woken_at = None;
     }
 
     pub fn notify_typed(&mut self, window: &mut Window, cx: &mut Context<Self>) {

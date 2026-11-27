@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, Size, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::ConnectionState;
@@ -18,7 +17,7 @@ use serde_json::json;
 use crate::i18n::{self, Locale};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
-use crate::ui::tr;
+use crate::ui::{format_bytes_compact, motion, tr};
 
 /// Foreground polling interval for lightweight status-bar metrics.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -368,7 +367,7 @@ fn render_popover_body(
                     _ => i18n::text(locale, "metrics.title").to_owned(),
                 }),
         )
-        .when(loading, |this| this.child(Spinner::new().xsmall()))
+        .when(loading, |this| this.child(motion::spinner(Size::XSmall, cx)))
         .child(
             Button::new("metrics-refresh")
                 .ghost()
@@ -457,7 +456,7 @@ fn render_popover_body(
                             div()
                                 .font_family(theme.mono_font_family.clone())
                                 .text_color(severity_color(mem_sev, cx))
-                                .child(format!("{} / {}", format_bytes(m.memory_used_bytes), format_bytes(m.memory_total_bytes))),
+                                .child(format!("{} / {}", format_bytes_compact(m.memory_used_bytes), format_bytes_compact(m.memory_total_bytes))),
                         ),
                 )
                 .child(usage_bar(mem_ratio, mem_sev, cx)),
@@ -500,8 +499,8 @@ fn render_popover_body(
                     let used = disk.total_bytes.saturating_sub(disk.available_bytes);
                     let r = ratio(used as f64, disk.total_bytes as f64);
                     let sev = severity_of(r);
-                    let avail = format_bytes(disk.available_bytes);
-                    let total = format_bytes(disk.total_bytes);
+                    let avail = format_bytes_compact(disk.available_bytes);
+                    let total = format_bytes_compact(disk.total_bytes);
                     v_flex()
                         .gap_0p5()
                         .child(
@@ -672,22 +671,6 @@ fn format_cores(cores: f64) -> String {
     }
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    const TIB: f64 = GIB * 1024.0;
-    let b = bytes as f64;
-    if b >= TIB {
-        format!("{:.1}T", b / TIB)
-    } else if b >= 10.0 * GIB {
-        format!("{:.0}G", b / GIB)
-    } else if b >= GIB {
-        format!("{:.1}G", b / GIB)
-    } else {
-        format!("{:.0}M", b / MIB)
-    }
-}
-
 /// Compact single-line status-bar text, e.g. `GPU 4/6空闲 · 14/36C · 48/192G`.
 fn format_compact_summary(m: &HostMetrics, locale: Locale) -> String {
     let mut parts = Vec::new();
@@ -703,7 +686,7 @@ fn format_compact_summary(m: &HostMetrics, locale: Locale) -> String {
         parts.push(format!("{}C", format_cores(effective)));
     }
     if m.memory_total_bytes > 0 {
-        parts.push(format!("{}/{}", format_bytes(m.memory_used_bytes), format_bytes(m.memory_total_bytes)));
+        parts.push(format!("{}/{}", format_bytes_compact(m.memory_used_bytes), format_bytes_compact(m.memory_total_bytes)));
     }
     parts.join(" · ")
 }

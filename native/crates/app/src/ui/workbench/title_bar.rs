@@ -2,8 +2,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, TitleBar, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, Size, StyledExt as _, TitleBar, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::{ConnectionState, ExecutionTarget};
@@ -13,7 +12,7 @@ use crate::ui::agent::{self, Fit, IdeMode, Mode, ToggleSidebar, Tool};
 use crate::ui::history::ChatActions;
 use crate::ui::ide::{NewChat, OpenSettings, ShowMap, quick_open};
 use crate::ui::settings::Section;
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 use super::Workbench;
 use super::dialogs::target_menu;
@@ -277,7 +276,7 @@ impl Workbench {
                     .border_color(theme.border)
                     .text_xs()
                     .text_color(theme.foreground)
-                    .child(Spinner::new().xsmall())
+                    .child(motion::spinner(Size::XSmall, cx))
                     .child(div().flex_1().min_w_0().truncate().child(trf(cx, "ssh.swapping", &[("target", &swapping)])))
                     .into_any_element(),
             );
@@ -329,7 +328,7 @@ impl Workbench {
             .border_color(accent.opacity(0.35))
             .text_xs()
             .child(if spinning {
-                Spinner::new().xsmall().into_any_element()
+                motion::spinner(Size::XSmall, cx).into_any_element()
             } else {
                 div().size(px(7.)).flex_shrink_0().rounded_full().bg(accent).into_any_element()
             })

@@ -3,13 +3,12 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::Diff;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::store::ide::split_key;
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 use super::{EditorArea, centered};
 
@@ -156,7 +155,7 @@ impl EditorArea {
             }
             (Some(state), None) => div().flex_1().min_h_0().child(Diff::new(&state)).into_any_element(),
             (None, None) if loaded => centered(div().child(tr(cx, "native.diffNoChanges")), &theme).into_any_element(),
-            (None, None) => centered(Spinner::new().small(), &theme).into_any_element(),
+            (None, None) => centered(motion::spinner(Size::Small, cx), &theme).into_any_element(),
         };
         v_flex()
             .size_full()

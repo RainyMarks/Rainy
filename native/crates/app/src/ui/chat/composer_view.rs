@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Size, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{ContextBreakdown, RpcError};
@@ -430,19 +430,6 @@ impl ChatPane {
     }
 }
 
-fn breakdown_spinner(color: Hsla, cx: &App) -> AnyElement {
-    let icon = Icon::new(IconName::Loader).xsmall().text_color(color);
-    if cx.reduce_motion() {
-        return icon.into_any_element();
-    }
-    icon.with_animation(
-        "context-breakdown-spin",
-        Animation::new(Duration::from_millis(900)).repeat_synced().with_max_fps(30.0),
-        |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
-    )
-    .into_any_element()
-}
-
 /// Lightweight stacked bar + legend card rendered when clicking `usage_ring`.
 fn render_context_breakdown_card(
     session_id: &str,
@@ -463,7 +450,7 @@ fn render_context_breakdown_card(
             .items_center()
             .text_xs()
             .text_color(muted_foreground)
-            .child(breakdown_spinner(muted_foreground, cx))
+            .child(crate::ui::motion::spinner_colored(Size::XSmall, muted_foreground, cx))
             .child(i18n::text(locale, "native.contextBreakdownLoading"))
             .into_any_element();
     };

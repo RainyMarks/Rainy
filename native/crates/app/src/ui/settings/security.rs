@@ -4,9 +4,8 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde::Deserialize;
@@ -17,7 +16,7 @@ use super::widgets::AsyncPageGuard;
 use super::{group, heading, row, set_prefs};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
-use crate::ui::tr;
+use crate::ui::{motion, tr};
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -255,7 +254,7 @@ impl Render for SecurityPage {
             page = page.child(notice(cx, error.clone(), true));
         }
         let Some(status) = self.status.clone() else {
-            return page.child(h_flex().child(Spinner::new().small()));
+            return page.child(h_flex().child(motion::spinner(Size::Small, cx)));
         };
         let prefs = self.store.read(cx).prefs.clone();
         let current = status.default_mode.clone();

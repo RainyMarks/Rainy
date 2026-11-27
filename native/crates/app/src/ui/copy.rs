@@ -13,7 +13,6 @@ use crate::ui::motion;
 /// How long a copy button shows its check.
 const SHOWN: Duration = Duration::from_millis(1500);
 /// Entrance duration for the check micro-feedback.
-#[allow(dead_code)]
 const CHECK_ENTER: Duration = Duration::from_millis(160);
 
 thread_local! {
@@ -33,23 +32,23 @@ pub fn key_of(text: &str) -> u64 {
 }
 
 /// Whether `key` is currently inside its "just copied" confirmation window.
+#[allow(dead_code)]
 pub fn is_copied(key: u64) -> bool {
     LAST.get().is_some_and(|(last, at, _)| last == key && at.elapsed() < SHOWN)
 }
 
 /// Current generation for `key` if it is actively showing its check (used to key one-shot animations).
-#[allow(dead_code)]
 fn active_generation(key: u64) -> Option<u64> {
     LAST.get().filter(|(last, at, _)| *last == key && at.elapsed() < SHOWN).map(|(_, _, generation)| generation)
 }
 
 /// The icon of the copy button `key`: a check right after it copied.
+#[allow(dead_code)]
 pub fn icon(key: u64) -> IconName {
     if is_copied(key) { IconName::Check } else { IconName::Copy }
 }
 
 /// A readable success color for the check mark (at least WCAG 4.5:1 against the active background).
-#[allow(dead_code)]
 pub fn copied_color(cx: &App) -> Hsla {
     let theme = cx.theme();
     crate::ui::optics::look::readable(theme.success, theme.background, crate::ui::optics::look::MUTED)
@@ -58,7 +57,6 @@ pub fn copied_color(cx: &App) -> Hsla {
 /// Renders the copy/check icon for `key` with a subtle 160ms one-shot scale + fade confirmation when copied.
 ///
 /// Respects reduced motion and stops requesting frames immediately after settling (0 frames at rest).
-#[allow(dead_code)]
 pub fn indicator(key: u64, cx: &App) -> AnyElement {
     let Some(generation) = active_generation(key) else {
         return Icon::new(IconName::Copy).xsmall().into_any_element();
@@ -105,6 +103,7 @@ fn still_current(expected: u64) -> bool {
 ///
 /// Refreshes only the active window instead of broadcasting `cx.refresh_windows()`, resets any prior [`copy_in`] view
 /// immediately, and debounces rapid clicks so superseded timers trigger no redundant redraw.
+#[allow(dead_code)]
 pub fn copy(key: u64, text: &str, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
     let (generation, stale_view) = record_for(key, None);
@@ -132,7 +131,6 @@ pub fn copy(key: u64, text: &str, cx: &mut App) {
 ///
 /// If another view still shows an active check mark from a prior `copy_in`, that previous view is notified immediately
 /// so its check resets cleanly instead of getting stranded when the superseded timer exits.
-#[allow(dead_code)]
 pub fn copy_in(key: u64, text: &str, window: &mut Window, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
     let view = window.current_view();

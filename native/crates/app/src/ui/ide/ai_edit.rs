@@ -5,15 +5,14 @@ use std::ops::Range;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _};
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lsp_types::TextEdit;
 use serde_json::{Value, json};
 
 use crate::store::{Store, StoreEvent};
-use crate::ui::tr;
+use crate::ui::{motion, tr};
 
 /// Text sent around the selection (3.x `REWRITE_BEFORE`, `REWRITE_AFTER`), in characters.
 const REWRITE_BEFORE: usize = 8000;
@@ -252,7 +251,7 @@ impl Render for AiEdit {
                 h_flex()
                     .gap_2()
                     .min_w_0()
-                    .child(Spinner::new().xsmall())
+                    .child(motion::spinner(Size::XSmall, cx))
                     .child(
                         div()
                             .truncate()

@@ -4,8 +4,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Size, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::modules::{ModuleError, Phase, State, Status};
@@ -16,7 +15,7 @@ use super::runtime::file_size_text;
 use super::strata::StrataCard;
 use crate::store::modules::OFFERED;
 use crate::store::{Store, StoreEvent};
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 /// Lightweight fingerprint of `Store::modules` so unrelated store notifications do not repaint the Tools page.
 #[derive(Clone, PartialEq, Eq)]
@@ -73,7 +72,7 @@ impl ToolsPage {
         let (state, running, busy, statuses) = (modules.state.clone(), modules.running(), modules.busy, modules.statuses.clone());
         let mut body: Vec<AnyElement> = Vec::new();
         match statuses {
-            None => body.push(h_flex().child(Spinner::new().small()).into_any_element()),
+            None => body.push(h_flex().child(motion::spinner(Size::Small, cx)).into_any_element()),
             // Development resources ship no descriptor.
             Some(Err(ModuleError::Unavailable)) => {
                 body.push(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "native.modulesUnavailable")).into_any_element());
@@ -106,7 +105,7 @@ impl ToolsPage {
             _ => ("settings.modulePhp", "settings.modulePhpHint"),
         };
         let active = running && state.module.as_deref() == Some(status.id.as_str());
-        let percentage = if state.total_bytes > 0 { state.completed_bytes.saturating_mul(100) / state.total_bytes } else { 0 };
+        let percentage = state.completed_bytes.saturating_mul(100).checked_div(state.total_bytes).unwrap_or(0);
         let line = if active && state.phase == Phase::Installing {
             tr(cx, "settings.modulesInstalling")
         } else if active {

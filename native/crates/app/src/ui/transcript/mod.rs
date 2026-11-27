@@ -8,12 +8,12 @@ mod tool_card;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::motion::{Transition, transition};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Size, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::i18n::{self, Locale};
-use crate::ui::{format_duration, format_tokens};
+use crate::ui::{format_duration, format_tokens, motion};
 
 #[allow(unused_imports)]
 pub use builder::{build_rows, rebuild_rows};
@@ -23,18 +23,9 @@ pub use model::{
 };
 use tool_card::{render_tool, tool_key};
 
-/// Frame-capped synced spinner (30 fps) to avoid 144-240 fps full-window repaints on high-refresh displays.
+/// Frame-capped synced spinner (30 fps) delegated to [`motion::spinner_with_id`].
 pub(super) fn limited_spinner(id: impl Into<ElementId>, color: Hsla, cx: &App) -> AnyElement {
-    let icon = Icon::new(IconName::Loader).xsmall().text_color(color);
-    if cx.reduce_motion() {
-        return icon.into_any_element();
-    }
-    icon.with_animation(
-        id.into(),
-        Animation::new(Duration::from_millis(900)).repeat_synced().with_max_fps(30.0),
-        |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
-    )
-    .into_any_element()
+    motion::spinner_with_id(id, Size::XSmall, Some(color), cx)
 }
 
 /// Smooth 90-degree chevron rotation (140 ms, 0 fps when settled, obeys `cx.reduce_motion()`).
@@ -343,8 +334,8 @@ pub fn render_turn(
                             .id(ElementId::Name(format!("copy-{}", row.key).into()))
                             .cursor_pointer()
                             .hover(move |style| style.text_color(foreground))
-                            .child(Icon::new(crate::ui::copy::icon(key)).xsmall())
-                            .on_click(move |_, _, cx| crate::ui::copy::copy(key, &copy, cx)),
+                            .child(crate::ui::copy::indicator(key, cx))
+                            .on_click(move |_, window, cx| crate::ui::copy::copy_in(key, &copy, window, cx)),
                     )
                 })
                 .when_some(fork_from, |this, entry| {

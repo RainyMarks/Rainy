@@ -8,9 +8,8 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size as UiSize, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::strata::{Catalog, Choice, Fit, Job, JobKind, Phase, Settings, Size, Source, Status};
@@ -18,7 +17,7 @@ use rainy_carrier::strata::{Catalog, Choice, Fit, Job, JobKind, Phase, Settings,
 use super::models_extra::notice;
 use super::widgets::bind_input_change;
 use crate::store::{Store, StoreEvent};
-use crate::ui::{tr, trf};
+use crate::ui::{format_bytes_decimal as bytes_text, format_gb as gb_text, motion, tr, trf};
 
 /// Families shown before "more models": the original model, its coding version and the smaller model.
 const MAIN_FAMILIES: [&str; 3] = ["qwen", "coder", "qwen36"];
@@ -54,25 +53,9 @@ pub struct StrataCard {
     _subscriptions: Vec<Subscription>,
 }
 
-/// `12.3 GB`, `620 MB`.
-fn bytes_text(bytes: u64) -> String {
-    let gb = bytes as f64 / 1e9;
-    if gb >= 10.0 {
-        format!("{gb:.0} GB")
-    } else if gb >= 1.0 {
-        format!("{gb:.1} GB")
-    } else {
-        format!("{:.0} MB", bytes as f64 / 1e6)
-    }
-}
-
-fn gb_text(gb: f64) -> String {
-    if gb >= 10.0 { format!("{gb:.0} GB") } else { format!("{gb:.1} GB") }
-}
-
 /// A context length as people say it: `128K`.
 fn context_text(tokens: u64) -> String {
-    if tokens >= 1024 && tokens % 1024 == 0 { format!("{}K", tokens / 1024) } else { tokens.to_string() }
+    if tokens >= 1024 && tokens.is_multiple_of(1024) { format!("{}K", tokens / 1024) } else { tokens.to_string() }
 }
 
 fn elapsed_text(seconds: u64) -> String {
@@ -383,7 +366,7 @@ impl StrataCard {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Spinner::new().small())
+                    .child(motion::spinner_with_id("strata-job-spin", UiSize::Small, None, cx))
                     .child(div().flex_1().min_w_0().text_sm().font_semibold().child(title))
                     .when(job.cancellable, |this| {
                         this.child(Button::new("strata-cancel").outline().xsmall().label(tr(cx, "settings.strataCancel")).on_click(cx.listener(|this, _, window, cx| this.run(window, cx, |store, cx| store.cancel_strata(cx)))))
@@ -771,7 +754,7 @@ impl StrataCard {
             h_flex()
                 .gap_2()
                 .items_center()
-                .when(matches!(server.phase, Phase::Starting | Phase::Stopping), |this| this.child(Spinner::new().small()))
+                .when(matches!(server.phase, Phase::Starting | Phase::Stopping), |this| this.child(motion::spinner_with_id("strata-server-spin", UiSize::Small, None, cx)))
                 .when(server.phase == Phase::Running, |this| this.child(div().size(px(8.)).rounded_full().bg(theme.success)))
                 .child(div().flex_1().min_w_0().text_sm().child(line))
                 .when(server.phase == Phase::Starting, |this| {
@@ -862,7 +845,7 @@ impl Render for StrataCard {
             Self::muted(tr(cx, "settings.strataLead"), cx),
         ];
         let Some(status) = status.filter(|_| available) else {
-            body.push(h_flex().child(Spinner::new().small()).into_any_element());
+            body.push(h_flex().child(motion::spinner_with_id("strata-init-spin", UiSize::Small, None, cx)).into_any_element());
             return v_flex().gap_3().p_4().rounded(theme.radius_lg).border_1().border_color(theme.border).bg(theme.group_box).children(body);
         };
         if self.shown_port != Some(status.settings.port) {
@@ -892,7 +875,7 @@ impl Render for StrataCard {
                     body.extend(self.render_catalog(&status, catalog, cx));
                 }
                 None if status.catalog_loading => body.push(
-                    h_flex().gap_2().items_center().child(Spinner::new().small()).child(Self::muted(tr(cx, "settings.strataReadingCatalog"), cx)).into_any_element(),
+                    h_flex().gap_2().items_center().child(motion::spinner_with_id("strata-catalog-spin", UiSize::Small, None, cx)).child(Self::muted(tr(cx, "settings.strataReadingCatalog"), cx)).into_any_element(),
                 ),
                 None => {
                     if let Some(error) = &status.catalog_error {

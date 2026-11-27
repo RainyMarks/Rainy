@@ -163,13 +163,22 @@ pub fn format_tokens(tokens: f64) -> String {
     }
 }
 
+const KIB: f64 = 1024.0;
+const MIB: f64 = KIB * 1024.0;
+const GIB: f64 = MIB * 1024.0;
+const TIB: f64 = GIB * 1024.0;
+
+/// Formats a scaled quantity with 1 decimal below `10.0` and whole digits from `10.0` upward.
+fn format_scaled_unit(value: f64, sep: &str, unit: &str) -> String {
+    if value < 10.0 {
+        format!("{value:.1}{sep}{unit}")
+    } else {
+        format!("{}{sep}{unit}", value.round())
+    }
+}
+
 /// Binary byte size for logs and file panels: `512 B`, `1.5 KiB`, `2.0 MiB`, `1.25 GiB`, `1.50 TiB`.
-#[allow(dead_code)]
 pub fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    const TIB: f64 = GIB * 1024.0;
     let b = bytes as f64;
     if b >= TIB {
         format!("{:.2} TiB", b / TIB)
@@ -185,21 +194,54 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 /// Compact status-bar byte size: `512M`, `2.5G`, `48G`, `1.2T`.
-#[allow(dead_code)]
 pub fn format_bytes_compact(bytes: u64) -> String {
-    const MIB: f64 = 1024.0 * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    const TIB: f64 = GIB * 1024.0;
     let b = bytes as f64;
     if b >= TIB {
         format!("{:.1}T", b / TIB)
-    } else if b >= 10.0 * GIB {
-        format!("{:.0}G", b / GIB)
     } else if b >= GIB {
-        format!("{:.1}G", b / GIB)
+        format_scaled_unit(b / GIB, "", "G")
     } else {
         format!("{:.0}M", b / MIB)
     }
+}
+
+/// Compact 3.x-compatible binary size without spaces: `512B`, `9.5KB`, `36MB`, `1.2GB`.
+pub fn format_bytes_short(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes}B");
+    }
+    let mut value = bytes as f64 / KIB;
+    for unit in ["KB", "MB"] {
+        if value < KIB {
+            return format_scaled_unit(value, "", unit);
+        }
+        value /= KIB;
+    }
+    format_scaled_unit(value, "", "GB")
+}
+
+/// Small-file binary size in bytes or `KB`: `900 B`, `2.0 KB`.
+pub fn format_bytes_kb(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KB", bytes as f64 / KIB)
+    }
+}
+
+/// Decimal byte size for model catalogs and downloads: `620 MB`, `1.5 GB`, `12 GB`.
+pub fn format_bytes_decimal(bytes: u64) -> String {
+    let gb = bytes as f64 / 1e9;
+    if gb >= 1.0 {
+        format_gb(gb)
+    } else {
+        format!("{:.0} MB", bytes as f64 / 1e6)
+    }
+}
+
+/// Decimal gigabytes: `1.5 GB`, `12 GB`.
+pub fn format_gb(gb: f64) -> String {
+    format_scaled_unit(gb, " ", "GB")
 }
 
 #[cfg(test)]
@@ -224,5 +266,13 @@ mod tests {
         assert_eq!(format_bytes_compact(2 * 1024 * 1024 * 1024 + 512 * 1024 * 1024), "2.5G");
         assert_eq!(format_bytes_compact(48 * 1024 * 1024 * 1024), "48G");
         assert_eq!(format_bytes_compact(2 * 1024 * 1024 * 1024 * 1024), "2.0T");
+        assert_eq!(format_bytes_short(512), "512B");
+        assert_eq!(format_bytes_short(9_728), "9.5KB");
+        assert_eq!(format_bytes_short(38_191_707), "36MB");
+        assert_eq!(format_bytes_short(1_288_490_189), "1.2GB");
+        assert_eq!((format_bytes_kb(900), format_bytes_kb(2048)), ("900 B".into(), "2.0 KB".into()));
+        assert_eq!(format_bytes_decimal(620_430_878), "620 MB");
+        assert_eq!(format_bytes_decimal(1_500_000_000), "1.5 GB");
+        assert_eq!(format_bytes_decimal(12_300_000_000), "12 GB");
     }
 }

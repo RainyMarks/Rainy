@@ -11,8 +11,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{ExperimentListResponse, ExperimentRecord, ExperimentStartParams, ExperimentStatus, ExperimentTailResult};
@@ -21,8 +20,7 @@ use serde_json::json;
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
 use crate::ui::ide::log_tail::LogTailBuffer;
-pub(crate) use crate::ui::ide::log_tail::format_size;
-use crate::ui::{tr, trf};
+use crate::ui::{format_bytes, motion, tr, trf};
 
 /// Poll interval for live log tailing and running status updates while this tab is visible.
 const TAIL_INTERVAL: Duration = Duration::from_secs(1);
@@ -521,7 +519,7 @@ impl Render for ExperimentsView {
                     .tooltip(tr(cx, "experiments.refresh"))
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
-            .when(self.loading, |this| this.child(Spinner::new().xsmall()));
+            .when(self.loading, |this| this.child(motion::spinner(Size::XSmall, cx)));
 
         let form = self.show_form.then(|| self.render_form(cx));
 
@@ -644,7 +642,7 @@ impl Render for ExperimentsView {
 
         let tail_pane = if let Some(exp) = selected_record {
             let paused = self.tail.paused;
-            let size_label = format_size(self.tail.total_bytes);
+            let size_label = format_bytes(self.tail.total_bytes);
             let empty = self.tail.is_empty();
             v_flex()
                 .flex_1()
@@ -768,7 +766,7 @@ mod tests {
         assert_eq!(format_elapsed(45_000), "45s");
         assert_eq!(format_elapsed(125_000), "2m 5s");
         assert_eq!(format_elapsed(7_500_000), "2h 5m");
-        assert_eq!(format_size(512), "512 B");
-        assert_eq!(format_size(2 * 1024 * 1024), "2.0 MiB");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MiB");
     }
 }

@@ -62,7 +62,6 @@ pub const CELEBRATE_HOLD: f32 = 1.8;
 
 /// High-level AI state mirrored to the pixel pet when optics are enabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PetActivity {
     #[default]
     Idle,
@@ -236,7 +235,6 @@ impl Backdrop {
     }
 
     /// Downward alpha breathing factor (`0.88..=1.0`) for the composer glow; static `1.0` when reduced-motion or dozing.
-    #[allow(dead_code)]
     pub fn glow_breath(&self, window: &Window) -> f32 {
         if !motion_allowed() || self.dozing(window) {
             return GLOW_BREATH_MAX;
@@ -245,7 +243,6 @@ impl Backdrop {
     }
 
     /// Smoothed horizontal pointer parallax offset (`±18px`) for the composer glow; `0.0` when reduced-motion.
-    #[allow(dead_code)]
     pub fn glow_parallax_x(&self) -> f32 {
         if motion_allowed() { self.parallax_x } else { 0.0 }
     }
@@ -308,7 +305,6 @@ impl Backdrop {
     }
 
     /// Clears the pointer and immediately schedules a repaint so no highlight lingers after leaving the window.
-    #[allow(dead_code)]
     pub fn pointer_left_notify(&mut self, cx: &mut Context<Self>) {
         let had = self.pointer.is_some() || self.parallax_x.abs() > 0.1;
         self.pointer_left();
@@ -318,7 +314,6 @@ impl Backdrop {
     }
 
     /// Clears transient interaction artifacts (pointer, trail, ripples, parallax) when leaving the blank greeting page.
-    #[allow(dead_code)]
     pub fn reset_ephemeral(&mut self) {
         self.pointer = None;
         self.trail = [None; TRAIL_CAP];
@@ -383,7 +378,6 @@ impl Backdrop {
     }
 
     /// Notes composer input so the pet pauses her stroll and attentively looks toward what is being typed.
-    #[allow(dead_code)]
     pub fn notify_typed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !motion_allowed() {
             return;
@@ -512,7 +506,6 @@ fn burst_rule(has_ripple: bool, has_trail: bool, active_motion: bool, within_hol
 }
 
 /// Calm sinusoidal glow breathing strictly bounded inside `[GLOW_BREATH_MIN, GLOW_BREATH_MAX]`.
-#[allow(dead_code)]
 pub(crate) fn glow_breath_at(clock: f64) -> f32 {
     let half = (GLOW_BREATH_MAX - GLOW_BREATH_MIN) * 0.5;
     let mid = GLOW_BREATH_MIN + half;

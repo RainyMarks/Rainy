@@ -14,7 +14,7 @@ use gpui_kit::base::motion::{MotionReveal, Presence, Transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Size, WindowExt as _, h_flex, v_flex};
 use serde_json::json;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -31,20 +31,6 @@ use crate::ui::{tr, trf};
 
 /// Chats a sidebar group shows until it is asked for all of them.
 const GROUP_LIMIT: usize = 8;
-
-/// Frame-capped synced spinner (30 fps) to avoid 144-240 fps full-window repaints on high-refresh displays.
-fn limited_spinner(id: impl Into<ElementId>, color: Hsla, reduced: bool) -> AnyElement {
-    let icon = Icon::new(IconName::Loader).xsmall().text_color(color);
-    if reduced {
-        return icon.into_any_element();
-    }
-    icon.with_animation(
-        id.into(),
-        Animation::new(Duration::from_millis(900)).repeat_synced().with_max_fps(30.0),
-        |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
-    )
-    .into_any_element()
-}
 
 /// Synced subtle pulse (24 fps) for chats awaiting user approval.
 fn waiting_dot(id: impl Into<ElementId>, color: Hsla, reduced: bool) -> AnyElement {
@@ -236,7 +222,7 @@ impl HistoryPanel {
                     div().max_w(px(96.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(muted_foreground).child(folder),
                 )
             })
-            .when(busy, |this| this.child(limited_spinner(spin_id, muted_foreground, cx.reduce_motion())))
+            .when(busy, |this| this.child(crate::ui::motion::spinner_with_id(spin_id, Size::XSmall, Some(muted_foreground), cx)))
             .when(waiting, |this| this.child(waiting_dot(wait_id, warning, cx.reduce_motion())))
             .context_menu(move |menu, _, cx| actions.menu(menu, cx))
             .into_any_element()
@@ -278,7 +264,7 @@ impl HistoryPanel {
                 }))
                 .into_any_element()
         } else if busy {
-            limited_spinner(ElementId::Name(format!("sidebar-spin-{id}").into()), muted_foreground, cx.reduce_motion())
+            crate::ui::motion::spinner_with_id(ElementId::Name(format!("sidebar-spin-{id}").into()), Size::XSmall, Some(muted_foreground), cx)
         } else if waiting {
             waiting_dot(ElementId::Name(format!("sidebar-wait-{id}").into()), warning, cx.reduce_motion())
         } else {

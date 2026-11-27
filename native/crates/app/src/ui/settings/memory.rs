@@ -2,10 +2,9 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Size, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde::Deserialize;
@@ -16,7 +15,7 @@ use super::widgets::{AsyncPageGuard, bind_textarea_change};
 use super::{group, heading, row};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -249,7 +248,7 @@ impl Render for MemoryPage {
             page = page.child(notice(cx, error.clone(), true));
         }
         let Some(snapshot) = self.snapshot.clone() else {
-            return page.child(h_flex().child(Spinner::new().small()));
+            return page.child(h_flex().child(motion::spinner(Size::Small, cx)));
         };
         let (use_workspace, generate_workspace) = (workspace.clone(), workspace.clone());
         page = page.child(group(cx, None, vec![

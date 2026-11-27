@@ -6,8 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::targets::{PortForwardRule, SshHostProfile};
@@ -734,7 +733,7 @@ impl Render for RuntimePage {
             page.child(notice(cx, tr(cx, "settings.settingsOpenProject"), false))
         } else {
             match self.snapshot.clone() {
-                None => page.child(h_flex().child(Spinner::new().small())),
+                None => page.child(h_flex().child(crate::ui::motion::spinner(Size::Small, cx))),
                 Some(snapshot) => {
                     let items = self.render_interpreters(&snapshot, cx);
                     page.children(items)
@@ -747,21 +746,7 @@ impl Render for RuntimePage {
 
 /// A size as 3.x's settings show it (`fileSizeText`): `512B`, `9.5KB`, `36MB`, `1.2GB`.
 pub(super) fn file_size_text(bytes: u64) -> String {
-    if bytes < 1024 {
-        return format!("{bytes}B");
-    }
-    let mut value = bytes as f64 / 1024.0;
-    for unit in ["KB", "MB"] {
-        if value < 1024.0 {
-            return scaled(value, unit);
-        }
-        value /= 1024.0;
-    }
-    scaled(value, "GB")
-}
-
-fn scaled(value: f64, unit: &str) -> String {
-    if value < 10.0 { format!("{value:.1}{unit}") } else { format!("{}{unit}", value.round()) }
+    crate::ui::format_bytes_short(bytes)
 }
 
 fn non_empty(raw: String) -> Option<String> {

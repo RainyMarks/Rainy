@@ -5,9 +5,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::{DirectoryListing, RpcError};
@@ -15,7 +14,7 @@ use serde_json::json;
 
 use crate::store::Store;
 use crate::store::ide::Ide;
-use crate::ui::tr;
+use crate::ui::{motion, tr};
 
 pub struct FolderBrowser {
     store: Entity<Store>,
@@ -177,7 +176,7 @@ impl Render for FolderBrowser {
             .rounded(theme.radius)
             .p_1()
             .when(self.loading && entries.is_empty(), |this| {
-                this.child(h_flex().p_3().gap_2().text_sm().text_color(theme.muted_foreground).child(Spinner::new().small()).child(tr(cx, "app.browserLoading")))
+                this.child(h_flex().p_3().gap_2().text_sm().text_color(theme.muted_foreground).child(motion::spinner(Size::Small, cx)).child(tr(cx, "app.browserLoading")))
             })
             .when_some(self.error.clone(), |this, error| this.child(div().p_3().text_sm().text_color(theme.danger).child(error)))
             .children(entries.into_iter().enumerate().map(|(index, entry)| {

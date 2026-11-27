@@ -9,8 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::ssh_tunnel::{PortForwardRule, TunnelState};
@@ -19,7 +18,7 @@ use serde_json::json;
 
 use crate::i18n::{self, Locale};
 use crate::store::{Store, StoreEvent};
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 /// Common research service presets offered as one-click pills.
 const QUICK_PRESETS: [(u16, &str); 3] = [(6006, "TensorBoard"), (8888, "Jupyter"), (7860, "Gradio")];
@@ -312,7 +311,7 @@ fn render_popover_body(entity: Entity<TunnelsView>, locale: Locale, max_height: 
         .items_center()
         .gap_2()
         .child(div().flex_1().text_sm().font_semibold().child(i18n::text(locale, "ssh.portsTitle")))
-        .when(scanning || applying, |this| this.child(Spinner::new().xsmall()))
+        .when(scanning || applying, |this| this.child(motion::spinner(Size::XSmall, cx)))
         .child(
             Button::new("tunnels-refresh")
                 .ghost()

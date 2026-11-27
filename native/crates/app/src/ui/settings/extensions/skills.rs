@@ -1,16 +1,15 @@
 //! Skills card inside Settings → Skills & MCP.
 
 use gpui_kit::component::button::Button;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::ExtensionsPage;
 use crate::store::ide::Ide;
 use crate::ui::settings::models_extra::card;
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 impl ExtensionsPage {
     pub(super) fn render_skills(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -23,7 +22,7 @@ impl ExtensionsPage {
         let user_path = format!("~/.rainy-agent/skills/{name}/SKILL.md");
         let mut body = vec![div().text_xs().text_color(theme.muted_foreground).child(trf(cx, "settings.skillsHint", &[("project", &project_path), ("user", &user_path)])).into_any_element()];
         match &self.status {
-            None => body.push(h_flex().child(Spinner::new().small()).into_any_element()),
+            None => body.push(h_flex().child(motion::spinner(Size::Small, cx)).into_any_element()),
             Some(status) if status.skills.is_empty() => body.push(div().text_sm().text_color(theme.muted_foreground).child(tr(cx, "settings.settingsNoSkills")).into_any_element()),
             Some(status) => {
                 for skill in &status.skills {

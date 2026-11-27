@@ -22,7 +22,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use rainy_protocol::ContextBreakdown;
+use rainy_protocol::{AssistantBlock, ContextBreakdown, TranscriptEntry};
 use serde_json::{Value, json};
 
 use drafts::{Attachment, Draft, report_failure};
@@ -33,10 +33,92 @@ pub(crate) use model_card::{short_model_name, thinking_label};
 use suggestions::Suggestion;
 
 use crate::i18n::{self, Locale};
+use crate::store::chat::ChatView;
 use crate::store::ide::Ide;
 use crate::store::{ChatModel, Store, StoreEvent};
+use crate::ui::optics::backdrop::PetActivity;
+use crate::ui::optics::pet::{self, MiniPet};
 use crate::ui::tr;
 use crate::ui::transcript::{Expanded, Fork, Toggle, TurnRender, TurnRow, TurnStyle, rebuild_rows, render_turn};
+
+/// Minimum viewport dimensions for showing the compact active-chat companion without crowding narrow windows.
+const MINI_PET_MIN_WIDTH: f32 = 640.;
+const MINI_PET_MIN_HEIGHT: f32 = 420.;
+
+/// Summary of the active chat's execution status used to drive [`MiniPet`] reactions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PetTurnSignal {
+    pub activity: PetActivity,
+    /// Whether the turn ended cleanly (idle without error or user abort), eligible for a brief celebration.
+    pub clean_idle: bool,
+}
+
+/// Maps a loaded [`ChatView`] (or pending new-chat creation) to its [`PetTurnSignal`].
+pub(super) fn pet_turn_signal(view: Option<&ChatView>, creating: bool) -> PetTurnSignal {
+    let Some(view) = view else {
+        return PetTurnSignal {
+            activity: if creating { PetActivity::Thinking } else { PetActivity::Idle },
+            clean_idle: false,
+        };
+    };
+    let snapshot = &view.snapshot;
+    if !snapshot.approvals.is_empty() || snapshot.summary.awaiting_approval == Some(true) {
+        return PetTurnSignal { activity: PetActivity::WaitingApproval, clean_idle: false };
+    }
+    match snapshot.summary.status.as_str() {
+        "compacting" => PetTurnSignal { activity: PetActivity::Thinking, clean_idle: false },
+        "running" => {
+            let streaming_thinking = view.thinking_since.is_some()
+                || snapshot
+                    .streaming
+                    .as_ref()
+                    .and_then(|msg| msg.content.last())
+                    .is_some_and(|block| matches!(block, AssistantBlock::Thinking { .. }));
+            let activity = if streaming_thinking {
+                PetActivity::Thinking
+            } else if !view.tools.is_empty()
+                || snapshot.streaming.as_ref().is_some_and(|msg| !msg.content.is_empty())
+            {
+                PetActivity::Responding
+            } else {
+                PetActivity::Thinking
+            };
+            PetTurnSignal { activity, clean_idle: false }
+        }
+        "idle" => {
+            let mut clean = snapshot.error.is_none();
+            if clean && let Some(last_turn) = view.turn_ranges().last() {
+                let items = &snapshot.entries[last_turn.items.clone()];
+                let aborted_notice = items
+                    .iter()
+                    .any(|entry| matches!(entry, TranscriptEntry::Notice { code: Some(code), .. } if code == "stopped"));
+                let bad_stop = items.iter().rev().find_map(|entry| match entry {
+                    TranscriptEntry::Assistant { message, .. } => Some(matches!(message.stop_reason.as_str(), "error" | "aborted")),
+                    _ => None,
+                });
+                if aborted_notice || bad_stop == Some(true) {
+                    clean = false;
+                }
+            }
+            PetTurnSignal { activity: PetActivity::Idle, clean_idle: clean }
+        }
+        _ => PetTurnSignal { activity: PetActivity::Idle, clean_idle: false },
+    }
+}
+
+/// Returns `true` only when the same chat transitions from an active turn into a clean idle finish.
+pub(super) fn should_celebrate_pet(
+    prev_session: Option<&str>,
+    prev_activity: PetActivity,
+    next_session: Option<&str>,
+    next: PetTurnSignal,
+) -> bool {
+    prev_session.is_some()
+        && prev_session == next_session
+        && matches!(prev_activity, PetActivity::Thinking | PetActivity::Responding | PetActivity::WaitingApproval)
+        && next.activity == PetActivity::Idle
+        && next.clean_idle
+}
 
 /// Where the reader was: a turn by key and how far into it. `previous` stands for the turn before it, which the
 /// loaded window had cut short and only becomes whole once older entries arrive.
@@ -125,9 +207,17 @@ pub struct ChatPane {
     /// The optical look's page clock and usage overview, made the first time a new chat shows them.
     backdrop: Option<Entity<crate::ui::optics::backdrop::Backdrop>>,
     usage: Option<Entity<crate::ui::optics::usage::UsageCard>>,
+    /// Low-distraction stationary mini companion for active Agent-mode chats when optics are enabled.
+    mini_pet: Entity<MiniPet>,
     /// Whether the last render drew the optical page: the field wakes when the page comes back, not when the page
     /// that was showing is repainted for an unrelated update.
     optics_shown: bool,
+    /// Whether the last render drew `mini_pet`, so composer typing only wakes it while visible.
+    mini_pet_shown: bool,
+    /// Last `(session_id, activity)` synced to `mini_pet` to prevent false celebrations across chat switches.
+    pet_state: Option<(Option<String>, PetActivity)>,
+    /// Suppresses typing notifications during programmatic `set_value` (draft swaps and post-send clears).
+    pub(super) suppress_typing_notify: bool,
     /// Cached active workspace `(id, title)` so greeting & worktree picker update on rename/switch without noisy editor redraws.
     workspace_sig: Option<(String, String)>,
     _subscriptions: Vec<Subscription>,
@@ -169,7 +259,10 @@ impl ChatPane {
                         this.send(*secondary, window, cx);
                     }
                 }
-                InputEvent::Change => this.update_trigger(window, cx),
+                InputEvent::Change => {
+                    this.update_trigger(window, cx);
+                    this.notify_pet_typed(window, cx);
+                }
                 _ => {}
             }),
             // Keys the text area would otherwise take: the suggestion list's arrows, Esc, pasted images.
@@ -222,6 +315,7 @@ impl ChatPane {
             }),
         ];
         let changes = cx.new(|cx| crate::ui::changes::ChangesBar::new(store.clone(), cx));
+        let mini_pet = cx.new(|cx| MiniPet::new(window, cx));
         let mut pane = Self {
             attachments: Vec::new(),
             drafts: HashMap::new(),
@@ -268,7 +362,11 @@ impl ChatPane {
             wide: false,
             backdrop: None,
             usage: None,
+            mini_pet,
             optics_shown: false,
+            mini_pet_shown: false,
+            pet_state: None,
+            suppress_typing_notify: false,
             workspace_sig: initial_workspace_sig,
             _subscriptions: subscriptions,
             chat_subscription: None,
@@ -548,6 +646,27 @@ impl ChatPane {
         }
     }
 
+    fn current_pet_signal(&self, cx: &App) -> PetTurnSignal {
+        let creating = self.creating_here();
+        match &self.chat {
+            Some(chat) => pet_turn_signal(chat.read(cx).view.as_ref(), creating),
+            None => pet_turn_signal(None, creating),
+        }
+    }
+
+    fn notify_pet_typed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.suppress_typing_notify || self.composer.read(cx).value().is_empty() {
+            return;
+        }
+        if self.optics_shown
+            && let Some(backdrop) = self.backdrop.clone()
+        {
+            backdrop.update(cx, |backdrop, cx| backdrop.notify_typed(window, cx));
+        } else if self.mini_pet_shown {
+            self.mini_pet.update(cx, |pet, cx| pet.notify_typed(window, cx));
+        }
+    }
+
     /// Floating "back to latest" capsule with solid theme surface, crisp border, subtle elevation shadow and 140 ms
     /// `Presence` fade/rise so it never blends illegibly into the transcript text underneath.
     fn render_to_latest(&self, scrolled_up: bool, locale: Locale, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -681,6 +800,8 @@ impl Render for ChatPane {
                 .detach();
         });
         let wide = self.wide;
+        let optics_on = crate::ui::optics::enabled(cx);
+        let has_suggestions = !self.suggestions.is_empty() && self.trigger.is_some();
         // Agent mode greets a new chat with the composer in the middle of the window.
         let greeting = wide && failed.is_none() && rows.is_empty() && self.is_blank(cx);
         if !greeting
@@ -688,9 +809,39 @@ impl Render for ChatPane {
             && let Some(backdrop) = self.backdrop.clone()
         {
             backdrop.update(cx, |backdrop, cx| {
-                backdrop.pointer_left();
+                backdrop.reset_ephemeral();
                 cx.notify();
             });
+        }
+        let viewport = window.viewport_size();
+        let show_mini_pet = wide
+            && !greeting
+            && failed.is_none()
+            && optics_on
+            && !has_suggestions
+            && viewport.width >= px(MINI_PET_MIN_WIDTH)
+            && viewport.height >= px(MINI_PET_MIN_HEIGHT);
+        let current_session = self.session_id(cx);
+        let signal = self.current_pet_signal(cx);
+        if show_mini_pet {
+            let was_shown = std::mem::replace(&mut self.mini_pet_shown, true);
+            let next_key = (current_session.clone(), signal.activity);
+            if !was_shown || self.pet_state.as_ref() != Some(&next_key) {
+                let (session_changed, celebrate) = match &self.pet_state {
+                    Some((prev_session, prev_activity)) => (
+                        prev_session != &current_session,
+                        was_shown && should_celebrate_pet(prev_session.as_deref(), *prev_activity, current_session.as_deref(), signal),
+                    ),
+                    None => (false, false),
+                };
+                self.pet_state = Some(next_key);
+                self.mini_pet.update(cx, |pet, cx| pet.sync_activity(signal.activity, celebrate, session_changed, window, cx));
+            }
+        } else {
+            if std::mem::replace(&mut self.mini_pet_shown, false) {
+                self.mini_pet.update(cx, |pet, _| pet.reset_silent());
+            }
+            self.pet_state = Some((current_session, signal.activity));
         }
         let body = if greeting {
             self.render_greeting(locale, window, cx)
@@ -734,14 +885,20 @@ impl Render for ChatPane {
         let session = self.session_id(cx).unwrap_or_default();
         // The changes panel of Agent mode shows them instead.
         let changes = (!self.changes.read(cx).docked()).then(|| self.changes.clone());
+        let mini_pet = show_mini_pet.then(|| {
+            let (_, mini_h) = pet::mini_size();
+            div().absolute().top(px(-mini_h)).right(px(28.)).child(self.mini_pet.clone())
+        });
         // Everything below the transcript keeps its height (each list in it scrolls past a cap); the transcript
         // gives way, so nothing overlaps or pushes the composer out of the pane. In Agent mode it lines up with the
         // transcript's column.
         let below = (!greeting).then(|| {
             v_flex()
+                .relative()
                 .w_full()
                 .flex_shrink_0()
                 .when(wide, |this| this.max_w(px(crate::ui::agent::COLUMN)).px_1())
+                .children(mini_pet)
                 .when_some(approval, |this, approval| this.child(self.render_approval(&approval, approval_focused, locale, cx)))
                 .when(!queue.is_empty(), |this| this.child(self.render_queue(&session, &queue, locale, cx)))
                 .when_some(retry, |this, retry| this.child(self.render_retry(&session, &retry, cx)))
@@ -749,12 +906,12 @@ impl Render for ChatPane {
                 .when_some(run_error, |this, error| this.child(self.render_run_error(&session, error, cx)))
                 .when(!background.is_empty(), |this| this.child(self.render_background(&session, &background, cx)))
                 .children(changes)
-                .when(!self.suggestions.is_empty() && self.trigger.is_some(), |this| this.child(self.render_suggestions(cx)))
+                .when(has_suggestions, |this| this.child(self.render_suggestions(cx)))
                 .map(|this| {
                     if wide {
                         let this = this.child(self.render_composer_wide(locale, window, cx));
                         // The optical look has the pickers in the glass: the gap their row kept under it stays.
-                        if crate::ui::optics::enabled(cx) {
+                        if optics_on {
                             this.child(div().flex_shrink_0().h_3())
                         } else {
                             this.child(self.render_composer_footer(locale, false, cx))

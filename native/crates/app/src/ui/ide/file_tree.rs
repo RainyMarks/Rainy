@@ -15,10 +15,9 @@ use rainy_protocol::{FileEntry, FileUploadResult};
 
 use crate::store::Store;
 use crate::store::ide::{Ide, IdeEvent, file_key, file_name, parent_key, split_key};
-use crate::ui::ide::experiments::format_size;
 use crate::ui::ide::{choose_folder, file_icon};
 use crate::ui::prompt::prompt_text;
-use crate::ui::{tr, trf};
+use crate::ui::{format_bytes, tr, trf};
 
 /// One visible line of the tree.
 #[derive(Clone)]
@@ -200,7 +199,7 @@ fn upload_one(ide: Entity<Ide>, directory_key: String, local_path: PathBuf, over
                     let bytes = serde_json::from_slice::<FileUploadResult>(&body)
                         .map(|r| r.bytes)
                         .unwrap_or_else(|_| std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0));
-                    let size = format_size(bytes);
+                    let size = format_bytes(bytes);
                     let text = trf(cx, "ssh.uploaded", &[("name", &name), ("size", &size)]);
                     window.push_notification(Notification::success(text), cx);
                     ide.update(cx, |ide, cx| ide.refresh(window, cx));

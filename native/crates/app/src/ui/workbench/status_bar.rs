@@ -2,15 +2,14 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::ExecutionTarget;
 
 use crate::store::Phase;
 use crate::ui::settings::Section;
-use crate::ui::{tr, trf};
+use crate::ui::{motion, tr, trf};
 
 use super::Workbench;
 use super::layout::Side;
@@ -110,7 +109,7 @@ impl Workbench {
                     .justify_center()
                     .gap_3()
                     .child(img("brand/rainy-mark.svg").size(px(56.)))
-                    .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(Spinner::new().small()).child(tr(cx, "native.starting")))
+                    .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(motion::spinner(Size::Small, cx)).child(tr(cx, "native.starting")))
                     .when(step != tr(cx, "native.starting"), |this| this.child(div().text_xs().text_color(theme.muted_foreground).child(step)))
                     .when_some(fraction, |this, fraction| this.child(Progress::new("startup-progress").xsmall().w(px(240.)).value(fraction * 100.)))
                     .into_any_element(),

@@ -12,7 +12,7 @@ use gpui_kit::base::text::CodeBlock;
 use gpui_kit::component::text::{
     InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView, TextViewMotion, markdown_ast::Node,
 };
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::*;
 use latex_rust::{Color, Dim, MathFont, MathStyle, SvgOptions};
 
@@ -184,8 +184,8 @@ fn code_block_corner(block: &CodeBlock, _: &mut Window, cx: &mut App) -> impl In
                 .cursor_pointer()
                 .hover(move |style| style.text_color(foreground))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
-                .child(Icon::new(crate::ui::copy::icon(key)).xsmall())
-                .on_click(move |_, _, cx| crate::ui::copy::copy(key, &code, cx)),
+                .child(crate::ui::copy::indicator(key, cx))
+                .on_click(move |_, window, cx| crate::ui::copy::copy_in(key, &code, window, cx)),
         )
 }
 

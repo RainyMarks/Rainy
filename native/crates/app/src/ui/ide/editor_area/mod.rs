@@ -15,8 +15,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Editor, EditorMode, Enter, IndentInline, InputModeKind as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -25,7 +24,7 @@ use crate::store::{Store, StoreEvent};
 use crate::ui::ide::ai_edit::{self, AiEdit, AiEditEvent};
 use crate::ui::ide::viewers;
 use crate::ui::ide::{AiEditSelection, MarkdownPreview, MarkdownSplit, choose_folder, editor_commands, file_icon};
-use crate::ui::tr;
+use crate::ui::{motion, tr};
 use crate::web::WebPane;
 
 use file_tail::FileTail;
@@ -313,7 +312,7 @@ impl EditorArea {
         }
         let ide = self.ide.read(cx);
         let Some(file) = ide.files.get(&key) else {
-            return centered(h_flex().gap_2().child(Spinner::new().small()).child(tr(cx, "ide.ideEditorLoading")), &theme).into_any_element();
+            return centered(h_flex().gap_2().child(motion::spinner(Size::Small, cx)).child(tr(cx, "ide.ideEditorLoading")), &theme).into_any_element();
         };
         let view = ide.views.get(&key).cloned();
         // Markdown and SVG text have views of their own: a page, the source, or both.
@@ -377,7 +376,7 @@ impl EditorArea {
                     .child(img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::ScaleDown))
                     .into_any_element(),
                 Some(Picture::Failed(error, detail)) => centered(failure(error.clone(), detail.clone(), &theme), &theme).into_any_element(),
-                _ => centered(Spinner::new().small(), &theme).into_any_element(),
+                _ => centered(motion::spinner(Size::Small, cx), &theme).into_any_element(),
             };
         }
         if reason == "too-large" && self.file_tail.as_ref().is_some_and(|tail| tail.key == key) {
@@ -664,7 +663,7 @@ impl Render for EditorArea {
                 .justify_center()
                 .gap_2()
                 .text_color(theme.muted_foreground)
-                .when(loading, |this| this.child(h_flex().gap_2().text_sm().child(Spinner::new().small()).child(tr(cx, "ide.ideLoading"))))
+                .when(loading, |this| this.child(h_flex().gap_2().text_sm().child(motion::spinner(Size::Small, cx)).child(tr(cx, "ide.ideLoading"))))
                 .when(!loading, |this| {
                     this.child(div().text_lg().font_semibold().text_color(theme.foreground).child(tr(cx, "ide.ideNoFileTitle")))
                         .child(div().text_sm().child(tr(cx, "ide.ideNoFile")))

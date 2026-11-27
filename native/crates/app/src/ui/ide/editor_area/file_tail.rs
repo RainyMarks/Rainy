@@ -11,8 +11,8 @@ use serde_json::json;
 
 use crate::store::Store;
 use crate::store::ide::split_key;
-use crate::ui::ide::log_tail::{LogTailBuffer, format_size};
-use crate::ui::{tr, trf};
+use crate::ui::ide::log_tail::LogTailBuffer;
+use crate::ui::{format_bytes, tr, trf};
 
 use super::EditorArea;
 
@@ -91,7 +91,7 @@ impl EditorArea {
         let theme = cx.theme().clone();
         let paused = tail.buffer.paused;
         let reset = tail.buffer.reset;
-        let size_str = format_size(tail.buffer.total_bytes);
+        let size_str = format_bytes(tail.buffer.total_bytes);
         v_flex()
             .size_full()
             .child(

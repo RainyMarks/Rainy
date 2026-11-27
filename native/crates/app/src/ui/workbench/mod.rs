@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use gpui_kit::base::{TextSelection, apply_system_reduce_motion};
+use gpui_kit::base::TextSelection;
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 use rainy_carrier::ConnectionState;
@@ -385,8 +385,8 @@ impl Workbench {
                 let active = window.is_window_active();
                 if active {
                     crate::ui::notify::dismiss();
-                    if !crate::reduced_motion_env() {
-                        apply_system_reduce_motion(cx);
+                    if crate::ui::motion::sync_system(cx) {
+                        window.refresh();
                     }
                 }
                 this.metrics.update(cx, |metrics, cx| metrics.set_window_active(active, cx));

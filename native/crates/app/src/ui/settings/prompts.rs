@@ -3,9 +3,8 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Size, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_protocol::ModelsStatus;
@@ -17,7 +16,7 @@ use super::widgets::{AsyncPageGuard, bind_textarea_change};
 use super::{heading, segmented};
 use crate::store::ide::{Ide, IdeEvent};
 use crate::store::{Store, StoreEvent};
-use crate::ui::{tr, trf};
+use crate::ui::{format_bytes_kb as size_text, motion, tr, trf};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -64,11 +63,6 @@ struct Status {
 
 /// The model groups, as the Host names them, and their labels.
 const GROUPS: [(&str, &str); 3] = [("claude", "settings.promptsGroupClaude"), ("gpt", "settings.promptsGroupGpt"), ("gemini", "settings.promptsGroupGemini")];
-
-/// A size in bytes as the page shows it.
-fn size_text(bytes: u64) -> String {
-    if bytes < 1024 { format!("{bytes} B") } else { format!("{:.1} KB", bytes as f64 / 1024.) }
-}
 
 pub struct PromptsPage {
     store: Entity<Store>,
@@ -306,7 +300,9 @@ impl PromptsPage {
 
     fn render_builtin(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let Some(status) = &self.status else { return h_flex().child(Spinner::new().small()).into_any_element() };
+        let Some(status) = &self.status else {
+            return h_flex().child(motion::spinner_with_id("prompts-builtin-spin", Size::Small, None, cx)).into_any_element();
+        };
         let max = status.builtin.max_chars;
         let custom = self.group_status(self.group).is_some_and(|group| !group.custom.is_empty());
         let count = self.builtin.read(cx).value().chars().count();
@@ -398,7 +394,9 @@ impl PromptsPage {
             .bg(theme.group_box)
             .child(div().text_sm().font_semibold().child(tr(cx, "settings.promptsFiles")))
             .child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.promptsFilesNote")));
-        let Some(status) = &self.status else { return card.child(h_flex().child(Spinner::new().small())).into_any_element() };
+        let Some(status) = &self.status else {
+            return card.child(h_flex().child(motion::spinner_with_id("prompts-files-spin", Size::Small, None, cx))).into_any_element();
+        };
         if self.workspace.is_none() {
             card = card.child(div().text_xs().text_color(theme.muted_foreground).child(tr(cx, "settings.promptsFilesNoProject")));
         }

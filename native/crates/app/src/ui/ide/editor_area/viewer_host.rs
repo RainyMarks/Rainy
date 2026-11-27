@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Size, WindowExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rainy_carrier::ExecutionTarget;
@@ -484,12 +483,12 @@ impl EditorArea {
                     None => div()
                         .size_full()
                         .relative()
-                        .when(creating, |this| this.child(centered(Spinner::new().small(), &theme)))
+                        .when(creating, |this| this.child(centered(crate::ui::motion::spinner(Size::Small, cx), &theme)))
                         .child(div().absolute().inset_0().child(WebPane::area(&pane)))
                         .into_any_element(),
                 }
             }
-            None => centered(Spinner::new().small(), &theme).into_any_element(),
+            None => centered(crate::ui::motion::spinner(Size::Small, cx), &theme).into_any_element(),
         };
         match editor {
             Some(editor) => h_flex()

@@ -72,7 +72,9 @@ impl ChatPane {
         let draft = self.drafts.remove(&next).unwrap_or_default();
         self.attachments = draft.attachments;
         self.composer_has_text = !draft.text.trim().is_empty();
+        self.suppress_typing_notify = true;
         self.composer.update(cx, |state, cx| state.set_value(draft.text, window, cx));
+        self.suppress_typing_notify = false;
         self.cancel_suggestions();
     }
 
@@ -105,7 +107,9 @@ impl ChatPane {
             let steer_first = self.store.read(cx).prefs.busy_enter == "steer";
             if steer_first != alternate { "steer" } else { "queue" }
         });
+        self.suppress_typing_notify = true;
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+        self.suppress_typing_notify = false;
         self.composer_has_text = false;
         self.list.set_follow_mode(FollowMode::Tail);
         self.list.scroll_to_end();
