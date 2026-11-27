@@ -7,6 +7,7 @@ English | [中文](CHANGELOG.zh.md)
 ## 5.0.2 · 2026-11-27
 
 - **Choose the model and reasoning level of Antigravity and Codex before the first chat**: the model menu used to list an external agent's models only after one chat with it; until then it showed just "Default model" and "This model has no reasoning effort to set." Rainy now reads the list as soon as it finds Antigravity or Codex (`agy models` for Antigravity, Codex's own model query for Codex; neither opens a conversation), so the menu lists each model with the reasoning levels it offers. Re-probe in Settings uses `agy models` too and no longer leaves an empty conversation in Antigravity's history.
+- **Settings highlights line up again**: since 5.0.1 the sliding highlight of the segmented buttons in Settings (language, sending while busy, work steps, …) sat about 8 px right of the chosen option, leaving its label at the left edge and a gap on the right; the navigation bar sat low and the Agent / IDE switch's highlight was slightly off. They line up with their options again.
 
 ## 5.0.1 · 2026-11-27
 
