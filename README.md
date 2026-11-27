@@ -341,10 +341,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-5.0.1/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-5.0.2/environment-components
 ```
 
-Replace `Ubuntu` only when your WSL build distribution has another name, and `5.0.1` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Any redistribution of modified builds must follow `GPL-3.0-only`, the Section 7 notices in [NOTICE](NOTICE), and the trademark and visual asset boundaries in [TRADEMARKS.md](TRADEMARKS.md).
+Replace `Ubuntu` only when your WSL build distribution has another name, and `5.0.2` with the version in `package.json`. The native interface and the Host also need Rust's GNU toolchain (`x86_64-pc-windows-gnu`), MSYS2 UCRT64, `cargo-zigbuild` and Zig. Any redistribution of modified builds must follow `GPL-3.0-only`, the Section 7 notices in [NOTICE](NOTICE), and the trademark and visual asset boundaries in [TRADEMARKS.md](TRADEMARKS.md).
 
 For development, `pnpm run build` builds the viewer pages into `dist/renderer`; the native interface and Host live in `native/`: `cd native && cargo build -p rainy -p rainy-host` builds both (copy `rainy-host.exe` into `tmp/dev-resources/windows-host/`), and `bash native/scripts/run-ui.sh` starts the window with the scratch data folder `tmp/ui-data`. Developers can start with the [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 

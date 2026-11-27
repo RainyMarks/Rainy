@@ -4,6 +4,10 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 5.0.2 · 2026-11-27
+
+- **Choose the model and reasoning level of Antigravity and Codex before the first chat**: the model menu used to list an external agent's models only after one chat with it; until then it showed just "Default model" and "This model has no reasoning effort to set." Rainy now reads the list as soon as it finds Antigravity or Codex (`agy models` for Antigravity, Codex's own model query for Codex; neither opens a conversation), so the menu lists each model with the reasoning levels it offers. Re-probe in Settings uses `agy models` too and no longer leaves an empty conversation in Antigravity's history.
+
 ## 5.0.1 · 2026-11-27
 
 - **Now open source under GPL-3.0-only**: from this version on, Rainy's own code and documentation are licensed under the GNU GPL version 3, so you may use, study, modify and redistribute them for personal, academic or commercial work. A modified version you distribute must also be GPL-3.0-only with its complete source, keep the copyright and origin notices, say what was changed, and use its own name, icon and artwork: the Rainy name, icon and pixel pet are not licensed with the code. See NOTICE and TRADEMARKS.md. Settings → General → About has a new License row with the copyright, the license and the warranty disclaimer.
