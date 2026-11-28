@@ -25,6 +25,9 @@ Changes from the published package:
   - the `MouseMove` listener requires `event.pressed_button == Some(MouseButton::Left)` before extending a selection
     and automatically calls `end` / resets `mouse_down_prepared` on capture when moving without the primary button held
     (e.g. after a missed `MouseUp` outside the window).
+- `src/motion/reveal.rs`, `MotionReveal::request_layout`: a reveal does not shrink (`flex_shrink` 0). In a column
+  holding more than its height (the chat list in the sidebar with many chats), flex shrank every reveal in it, so
+  each group showed only part of its rows and the list never scrolled.
 - `src/switch.rs`, `Switch::render`: an enabled switch calls `GlobalState::suppress_text_selection` on primary mouse
   down (matching `Button`), so clicking a switch over selectable text does not start window-level text selection.
 

@@ -61,6 +61,9 @@ impl Element for MotionReveal {
         );
         let mut style = Style::default();
         style.size.width = relative(1.0).into();
+        // Rainy: a reveal keeps the height it reveals. With the default shrink of 1, a column holding more than it has
+        // room for (a scrolled list) squeezed every reveal in it, cutting their rows off, and never scrolled.
+        style.flex_shrink = 0.0;
         match height {
             None if self.progress > 0.0 => {}
             None => style.size.height = px(0.0).into(),
