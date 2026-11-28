@@ -8,6 +8,7 @@ pub mod composer;
 pub mod copy;
 pub mod chat;
 pub mod history;
+pub mod manage;
 pub mod markdown;
 pub mod metrics;
 pub mod motion;

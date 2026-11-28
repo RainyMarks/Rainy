@@ -431,3 +431,44 @@ async fn mock_llm_rpc_streaming_patch_read_before_write_approval_and_compaction_
     assert!(Path::new(&note_path).is_file());
     assert!(mock_state.requests.lock().unwrap().len() >= 7);
 }
+
+#[tokio::test]
+async fn bulk_pins_archives_and_deletes_many_chats_e2e() {
+    let host = HostProcess::spawn();
+    let cookie = host.auth_cookie().await;
+    let mut rpc = RpcSession::new(WsClient::connect(host.port, &cookie).await);
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let chat = rpc.call("sessions.create", json!({})).await.expect("sessions.create");
+        ids.push(chat["id"].as_str().unwrap().to_owned());
+    }
+    let listed = |list: &Value, id: &str| list.as_array().unwrap().iter().find(|chat| chat["id"] == id).cloned();
+
+    // A chat named twice is done once.
+    let pinned = rpc.call("sessions.bulk", json!({ "action": "pin", "sessionIds": [&ids[0], &ids[1], &ids[2], &ids[0]] })).await.expect("bulk pin");
+    assert_eq!(pinned, json!({ "done": 3, "failed": [] }));
+    let archived = rpc.call("sessions.bulk", json!({ "action": "archive", "sessionIds": [&ids[0], &ids[1]] })).await.expect("bulk archive");
+    assert_eq!(archived["done"], 2);
+    let list = rpc.call("sessions.list", json!({})).await.unwrap();
+    for id in &ids {
+        assert_eq!(listed(&list, id).unwrap()["pinned"], true);
+    }
+    assert_eq!(listed(&list, &ids[0]).unwrap()["archived"], true);
+    assert_eq!(listed(&list, &ids[2]).unwrap()["archived"], false);
+
+    // One that cannot be done is reported and does not stop the others; an id that is not a chat's never reaches the disk.
+    let deleted = rpc.call("sessions.bulk", json!({ "action": "delete", "sessionIds": [&ids[0], "../outside", &ids[1]] })).await.expect("bulk delete");
+    assert_eq!(deleted["done"], 2);
+    assert_eq!(deleted["failed"].as_array().unwrap().len(), 1);
+    assert_eq!(deleted["failed"][0]["sessionId"], "../outside");
+    let list = rpc.call("sessions.list", json!({})).await.unwrap();
+    assert!(listed(&list, &ids[0]).is_none() && listed(&list, &ids[1]).is_none());
+    assert!(listed(&list, &ids[2]).is_some());
+    let restored = rpc.call("sessions.bulk", json!({ "action": "unpin", "sessionIds": [&ids[2], &ids[0]] })).await.expect("bulk unpin");
+    assert_eq!(restored["done"], 1);
+    assert_eq!(restored["failed"][0]["sessionId"], ids[0]);
+
+    // An unknown action or an empty list is refused as a whole.
+    assert!(rpc.call("sessions.bulk", json!({ "action": "rename", "sessionIds": [&ids[2]] })).await.is_err());
+    assert!(rpc.call("sessions.bulk", json!({ "action": "archive", "sessionIds": [] })).await.is_err());
+}

@@ -216,7 +216,7 @@ pub fn with_project_menu(button: Button, cx: &App) -> impl IntoElement + use<> {
             }));
         }
         if !workspaces.is_empty() {
-            menu = menu.separator();
+            menu = menu.separator().item(PopupMenuItem::new(tr(cx, "agent.manageProjects")).on_click(|_, window, cx| crate::ui::manage::open_projects(window, cx))).separator();
         }
         menu = menu
             .item(PopupMenuItem::new(tr(cx, "ide.ideOpenFolder")).on_click(|_, window, cx| crate::ui::ide::choose_folder(window, cx)))

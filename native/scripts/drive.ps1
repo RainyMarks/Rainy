@@ -1,6 +1,6 @@
 # Drive one window of a process by posting messages to it; nothing goes through the global mouse or keyboard,
 # so other windows on the desktop never receive input. Steps are separated by ';;':
-#   click:X,Y        left click at window-relative physical pixels (rclick: right click)
+#   click:X,Y        left click at window-relative physical pixels (rclick: right click; ctrlclick / shiftclick: with that key held)
 #   drag:X1,Y1,X2,Y2 press the left button at X1,Y1, move to X2,Y2 with it held and release there
 #   wheel:X,Y,N      turn the mouse wheel N notches at X,Y (negative scrolls down)
 #   type:TEXT        type text (Unicode, as WM_CHAR)
@@ -108,6 +108,21 @@ public static class Drive {
     SetKeyboardState(before);
     AttachThreadInput(self, target, false);
   }
+  /// A left click with a modifier held, set in the window thread's key state only, as in Chord.
+  public static void ModClick(IntPtr h, uint modifier, int screenX, int screenY) {
+    uint pid; uint target = GetWindowThreadProcessId(h, out pid);
+    uint self = GetCurrentThreadId();
+    AttachThreadInput(self, target, true);
+    var state = new byte[256];
+    GetKeyboardState(state);
+    var before = (byte[])state.Clone();
+    state[modifier] = 0x80;
+    SetKeyboardState(state);
+    Click(h, screenX, screenY, false);
+    System.Threading.Thread.Sleep(300);
+    SetKeyboardState(before);
+    AttachThreadInput(self, target, false);
+  }
   public static void Click(IntPtr h, int screenX, int screenY, bool right) {
     POINT p; p.X = screenX; p.Y = screenY; ScreenToClient(h, ref p);
     IntPtr pos = (IntPtr)((p.Y << 16) | (p.X & 0xFFFF));
@@ -168,6 +183,8 @@ foreach ($step in ($Steps -split ';;')) {
     'click' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $false); Start-Sleep -Milliseconds 200 }
     'drag' { $x1, $y1, $x2, $y2 = $arg -split ','; [Drive]::Drag($h, $r.Left + [int]$x1, $r.Top + [int]$y1, $r.Left + [int]$x2, $r.Top + [int]$y2); Start-Sleep -Milliseconds 200 }
     'wheel' { $x, $y, $n = $arg -split ','; [Drive]::Wheel($h, $r.Left + [int]$x, $r.Top + [int]$y, [int]$n); Start-Sleep -Milliseconds 150 }
+    'ctrlclick' { $x, $y = $arg -split ','; [Drive]::ModClick($h, 0x11, $r.Left + [int]$x, $r.Top + [int]$y); Start-Sleep -Milliseconds 200 }
+    'shiftclick' { $x, $y = $arg -split ','; [Drive]::ModClick($h, 0x10, $r.Left + [int]$x, $r.Top + [int]$y); Start-Sleep -Milliseconds 200 }
     'rclick' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $true); Start-Sleep -Milliseconds 200 }
     'type' { [Drive]::Type($h, $arg); Start-Sleep -Milliseconds 150 }
     'clickbusy' { $x, $y = $arg -split ','; [Drive]::Click($h, $r.Left + [int]$x, $r.Top + [int]$y, $false); Write-Output ("click " + $arg + ": " + [Drive]::Busy($h)) }

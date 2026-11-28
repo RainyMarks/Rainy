@@ -6,7 +6,7 @@ use gpui_kit::assets::{Assets, icon_assets};
 use gpui_kit::{AssetSource, SharedString};
 
 icon_assets!(ExtraIcons, [
-    Archive, Brain, Bug, CirclePlus, CircleStop, Clock, CodeXml, FilePen, FilePlus, FileSearch, FolderPlus, GitBranch, GitCompare, ListTree, MessageSquarePlus,
+    Archive, ArchiveRestore, Brain, Bug, CirclePlus, CircleStop, Clock, CodeXml, FilePen, FilePlus, FileSearch, FolderCog, FolderPlus, GitBranch, GitCompare, ListChecks, ListTree, MessageSquarePlus,
     Paperclip, Pin, PinOff, Play, RotateCcw, Send, Shield, ShieldAlert, ShieldCheck, Sparkles, Square, SquarePen, Terminal, Trash, Users, Workflow, Wrench, Zap,
 ]);
 

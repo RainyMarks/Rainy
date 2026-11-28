@@ -126,6 +126,14 @@ pub(super) struct PinParams {
     pub(super) pinned: bool,
 }
 
+/// `sessions.bulk`: one action (`archive`, `unarchive`, `pin`, `unpin` or `delete`) on many chats.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BulkParams {
+    pub(super) action: String,
+    pub(super) session_ids: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ForkParams {

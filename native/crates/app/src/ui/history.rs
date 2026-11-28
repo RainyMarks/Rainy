@@ -4,9 +4,13 @@
 //! the project's menu on the row itself, pinned projects first, then the most recently active), and the chats outside
 //! any project. A chat shows how long ago it was active, a dot for a reply not seen yet and a branch icon when it works
 //! in its own worktree. Chats are listed most recently updated first; archived chats are in their own window; a search
-//! looks through titles, folders and, through the Host, the messages themselves.
+//! looks through titles, folders and, through the Host, the messages themselves. Ctrl-click (or "Select" in a chat's
+//! menu) chooses chats, Shift-click every chat listed between; while any is chosen a click chooses, and the top of the
+//! list turns into a bar that pins, archives or deletes them all (Esc forgets them, Delete deletes them).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::base::GlobalState;
@@ -14,7 +18,7 @@ use gpui_kit::base::motion::{MotionReveal, Presence, Transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Size, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _, h_flex, v_flex};
 use serde_json::json;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -26,6 +30,8 @@ use gpui_kit::component::notification::Notification;
 use crate::store::{Store, StoreEvent};
 use crate::ui::actions::run;
 use crate::ui::ide::{NewChat, SearchHistory};
+pub use crate::ui::manage::open_archived;
+use crate::ui::manage::{bulk, check_box, confirm_bulk_delete};
 use crate::ui::prompt::prompt_text;
 use crate::ui::{tr, trf};
 
@@ -57,7 +63,7 @@ struct SidebarRowSpec {
     now_ms: f64,
 }
 
-fn now_millis() -> f64 {
+pub(crate) fn now_millis() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as f64)
@@ -100,7 +106,23 @@ pub struct HistoryPanel {
     content_query: String,
     content_hits: Vec<(String, String)>,
     _content_search: Option<Task<()>>,
+    /// Chats chosen for a bulk action, and where a Shift-click range starts (the chat last clicked to choose).
+    chosen: HashSet<String>,
+    anchor: Option<String>,
+    /// The chats in the order the list last drew them, for Shift-click ranges.
+    row_order: RefCell<Vec<String>>,
+    /// Takes the keys (Esc, Delete, Ctrl+A) while chats are chosen.
+    focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What a bulk action on the chosen chats takes, in the order the list shows them.
+struct Chosen {
+    ids: Vec<String>,
+    titles: Vec<SharedString>,
+    /// Every one is pinned (the action unpins), every one is archived (it restores).
+    pinned: bool,
+    archived: bool,
 }
 
 impl HistoryPanel {
@@ -159,7 +181,219 @@ impl HistoryPanel {
             content_query: String::new(),
             content_hits: Vec::new(),
             _content_search: None,
+            chosen: HashSet::new(),
+            anchor: None,
+            row_order: RefCell::new(Vec::new()),
+            focus: cx.focus_handle(),
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Whether chats are chosen; then a click on a chat chooses it instead of opening it.
+    fn choosing(&self) -> bool {
+        !self.chosen.is_empty()
+    }
+
+    /// Forget the chosen chats.
+    fn clear_choice(&mut self, cx: &mut Context<Self>) {
+        if !self.chosen.is_empty() || self.anchor.is_some() {
+            self.chosen.clear();
+            self.anchor = None;
+            cx.notify();
+        }
+    }
+
+    /// Choose these chats in place of the chosen ones.
+    fn choose(&mut self, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.chosen = ids.into_iter().collect();
+        self.anchor = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// A click on a chat: with Ctrl, or while chats are chosen, choose it or leave it; with Shift, also choose every
+    /// chat listed from the one last clicked (else the open one) to it. False for a plain click, which opens the chat.
+    fn click_to_choose(&mut self, id: &str, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if modifiers.shift {
+            let order = self.row_order.borrow().clone();
+            let anchor = self.anchor.clone().or_else(|| self.store.read(cx).selected.clone()).filter(|anchor| order.contains(anchor));
+            self.chosen.extend(shift_range(&order, anchor.as_deref(), id));
+            self.anchor = anchor.or_else(|| Some(id.to_owned()));
+        } else if modifiers.control || modifiers.platform || self.choosing() {
+            if !self.chosen.remove(id) {
+                self.chosen.insert(id.to_owned());
+            }
+            self.anchor = Some(id.to_owned());
+        } else {
+            return false;
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// The chosen chats as a bulk action takes them, none when none is chosen.
+    fn chosen_now(&self, cx: &App) -> Option<Chosen> {
+        if self.chosen.is_empty() {
+            return None;
+        }
+        let order = self.row_order.borrow();
+        let place: HashMap<&str, usize> = order.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
+        let store = self.store.read(cx);
+        let mut chats: Vec<&SessionSummary> = store.summaries.iter().filter(|summary| self.chosen.contains(&summary.id)).collect();
+        chats.sort_by_key(|summary| place.get(summary.id.as_str()).copied().unwrap_or(usize::MAX));
+        (!chats.is_empty()).then(|| Chosen {
+            ids: chats.iter().map(|summary| summary.id.clone()).collect(),
+            titles: chats.iter().map(|summary| title_of(summary, cx)).collect(),
+            pinned: chats.iter().all(|summary| summary.pinned),
+            archived: chats.iter().all(|summary| summary.archived),
+        })
+    }
+
+    /// Pin, unpin, archive, restore or delete every chosen chat (deleting asks first), then forget them.
+    fn act_on_chosen(&mut self, action: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chosen) = self.chosen_now(cx) else { return };
+        if action == "delete" {
+            let panel = cx.entity().downgrade();
+            let after = move |cx: &mut App| {
+                let _ = panel.update(cx, |this, cx| this.clear_choice(cx));
+            };
+            confirm_bulk_delete(chosen.ids, chosen.titles, after, window, cx);
+        } else {
+            bulk(action, chosen.ids, window, cx);
+            self.clear_choice(cx);
+        }
+    }
+
+    /// Every chat a "Select all" takes: those a search found, else every chat not archived.
+    fn all_listed(&self, searching: bool, cx: &App) -> Vec<String> {
+        if searching {
+            return self.row_order.borrow().clone();
+        }
+        self.store.read(cx).summaries.iter().filter(|summary| !summary.archived).map(|summary| summary.id.clone()).collect()
+    }
+
+    /// Esc forgets the chosen chats, Delete deletes them, Ctrl+A chooses every chat listed.
+    fn choice_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.choosing() || !self.focus.is_focused(window) {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        match keystroke.key.as_str() {
+            "escape" => self.clear_choice(cx),
+            "delete" | "backspace" => self.act_on_chosen("delete", window, cx),
+            "a" if keystroke.modifiers.control || keystroke.modifiers.platform => {
+                let searching = !self.search.read(cx).value().trim().is_empty();
+                let all = self.all_listed(searching, cx);
+                self.choose(all, window, cx);
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// In place of the list's top while chats are chosen: how many, forget them, choose all, and pin, archive or
+    /// delete them all. The sidebar has room for labels on a second line; the IDE tab has one line of icons.
+    fn render_selection_bar(&self, chosen: &Chosen, all: Vec<String>, cx: &mut Context<Self>) -> AnyElement {
+        let sidebar_border = cx.theme().sidebar_border;
+        let count = chosen.ids.len();
+        let cancel = Button::new("selection-cancel")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Close)
+            .tooltip(tr(cx, "agent.clearSelection"))
+            .on_click(cx.listener(|this, _, _, cx| this.clear_choice(cx)));
+        let label = div().flex_1().min_w_0().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(trf(cx, "agent.selectedCount", &[("count", &count)]));
+        let everything = all.iter().all(|id| self.chosen.contains(id));
+        let select_all = Button::new("selection-all")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(gpui_kit::assets::IconName::ListChecks))
+            .tooltip(tr(cx, "agent.selectAll"))
+            .disabled(everything)
+            .on_click(cx.listener(move |this, _, window, cx| this.choose(all.clone(), window, cx)));
+        let (pin_action, pin_icon, pin_label) =
+            if chosen.pinned { ("unpin", gpui_kit::assets::IconName::PinOff, "chat.unpin") } else { ("pin", gpui_kit::assets::IconName::Pin, "chat.pin") };
+        let (archive_action, archive_icon, archive_label) = if chosen.archived {
+            ("unarchive", gpui_kit::assets::IconName::ArchiveRestore, "chat.unarchive")
+        } else {
+            ("archive", gpui_kit::assets::IconName::Archive, "chat.archive")
+        };
+        let actions = [
+            ("selection-pin", pin_action, pin_icon, pin_label),
+            ("selection-archive", archive_action, archive_icon, archive_label),
+            ("selection-delete", "delete", gpui_kit::assets::IconName::Trash, "chat.delete"),
+        ];
+        if self.sidebar {
+            let buttons = actions.map(|(id, action, icon, text)| {
+                div().flex_1().min_w_0().child(
+                    Button::new(id)
+                        .outline()
+                        .xsmall()
+                        .w_full()
+                        .icon(Icon::new(icon))
+                        .label(tr(cx, text))
+                        .on_click(cx.listener(move |this, _, window, cx| this.act_on_chosen(action, window, cx))),
+                )
+            });
+            v_flex()
+                .flex_shrink_0()
+                .px_2()
+                .pt_2()
+                .pb_1()
+                .gap_0p5()
+                .child(h_flex().w_full().h(px(30.)).gap_1().items_center().child(cancel).child(label).child(select_all))
+                .child(h_flex().w_full().h(px(30.)).gap_1().items_center().children(buttons))
+                .into_any_element()
+        } else {
+            let buttons = actions.map(|(id, action, icon, text)| {
+                Button::new(id)
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(icon))
+                    .tooltip(tr(cx, text))
+                    .on_click(cx.listener(move |this, _, window, cx| this.act_on_chosen(action, window, cx)))
+            });
+            h_flex()
+                .h(px(40.))
+                .flex_shrink_0()
+                .px_2()
+                .gap_1()
+                .items_center()
+                .border_b_1()
+                .border_color(sidebar_border)
+                .child(cancel)
+                .child(label)
+                .child(select_all)
+                .children(buttons)
+                .into_any_element()
+        }
+    }
+
+    /// A chat's right-click menu: while it is chosen, the bulk actions on every chosen chat; else "Select" and its own
+    /// actions.
+    fn row_menu(&self, summary: &SessionSummary, actions: ChatActions, cx: &mut Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let panel = cx.entity().downgrade();
+        let is_chosen = self.chosen.contains(&summary.id);
+        let id = summary.id.clone();
+        // What the chosen chats are is read when the menu opens, not for every row drawn.
+        move |menu, _, cx| match is_chosen.then(|| panel.upgrade().and_then(|panel| panel.read(cx).chosen_now(cx))).flatten().map(Rc::new) {
+            Some(chosen) => chosen_menu(menu, chosen, panel.clone(), cx),
+            None => {
+                let (panel, id) = (panel.clone(), id.clone());
+                let menu = menu
+                    .item(PopupMenuItem::new(tr(cx, "agent.select")).on_click(move |_, window, cx| {
+                        let id = id.clone();
+                        let _ = panel.update(cx, |this, cx| {
+                            this.chosen.insert(id.clone());
+                            this.anchor = Some(id);
+                            this.focus.focus(window, cx);
+                            cx.notify();
+                        });
+                    }))
+                    .separator();
+                actions.menu(menu, cx)
+            }
         }
     }
 
@@ -180,16 +414,19 @@ impl HistoryPanel {
     }
 
     fn render_row(&self, summary: &SessionSummary, folder: Option<SharedString>, searching: bool, cx: &mut Context<Self>) -> AnyElement {
-        let (radius, list_active, list_hover, muted_foreground, warning) = {
+        let (radius, list_active, list_hover, muted_foreground, warning, primary) = {
             let theme = cx.theme();
-            (theme.radius, theme.list_active, theme.list_hover, theme.muted_foreground, theme.warning)
+            (theme.radius, theme.list_active, theme.list_hover, theme.muted_foreground, theme.warning, theme.primary)
         };
+        self.row_order.borrow_mut().push(summary.id.clone());
         let id = summary.id.clone();
         let active = self.store.read(cx).selected.as_deref() == Some(summary.id.as_str());
+        let (choosing, chosen) = (self.choosing(), self.chosen.contains(&summary.id));
         let busy = matches!(summary.status.as_str(), "running" | "compacting");
         let waiting = summary.awaiting_approval == Some(true);
         let title = title_of(summary, cx);
         let actions = ChatActions::of(summary, title.clone());
+        let menu = self.row_menu(summary, actions, cx);
         let spin_id = ElementId::Name(format!("chat-spin-{id}").into());
         let wait_id = ElementId::Name(format!("chat-wait-{id}").into());
         h_flex()
@@ -202,12 +439,17 @@ impl HistoryPanel {
             .rounded(radius)
             .text_sm()
             .cursor_pointer()
-            .when(active, |this| this.bg(list_active))
-            .when(!active, |this| this.hover(move |style| style.bg(list_hover)))
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .when(chosen, |this| this.bg(primary.opacity(0.14)))
+            .when(active && !chosen, |this| this.bg(list_active))
+            .when(!active && !chosen, |this| this.hover(move |style| style.bg(list_hover)))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if this.click_to_choose(&id, event.modifiers(), window, cx) {
+                    return;
+                }
                 let id = id.clone();
                 this.store.update(cx, |store, cx| store.select(Some(id), cx));
             }))
+            .when(choosing, |this| this.child(check_box(chosen, cx)))
             .when(summary.pinned, |this| {
                 this.child(Icon::new(gpui_kit::assets::IconName::Pin).xsmall().flex_shrink_0().text_color(muted_foreground))
             })
@@ -224,7 +466,7 @@ impl HistoryPanel {
             })
             .when(busy, |this| this.child(crate::ui::motion::spinner_with_id(spin_id, Size::XSmall, Some(muted_foreground), cx)))
             .when(waiting, |this| this.child(waiting_dot(wait_id, warning, cx.reduce_motion())))
-            .context_menu(move |menu, _, cx| actions.menu(menu, cx))
+            .context_menu(menu)
             .into_any_element()
     }
 
@@ -240,14 +482,18 @@ impl HistoryPanel {
             let theme = cx.theme();
             (theme.radius, theme.list_active, theme.list_hover, theme.muted_foreground, theme.foreground, theme.warning, theme.primary)
         };
+        self.row_order.borrow_mut().push(summary.id.clone());
         let id = summary.id.clone();
         let active = self.store.read(cx).selected.as_deref() == Some(summary.id.as_str());
+        let (choosing, chosen) = (self.choosing(), self.chosen.contains(&summary.id));
         let busy = matches!(summary.status.as_str(), "running" | "compacting");
         let waiting = summary.awaiting_approval == Some(true);
         let unread = !active && summary.unread();
         let title = title_of(summary, cx);
         let actions = ChatActions::of(summary, title.clone());
-        let menu_shown = self.hovered.as_deref() == Some(id.as_str()) || self.menu_open.as_deref() == Some(id.as_str());
+        let row_menu = self.row_menu(summary, actions.clone(), cx);
+        // While chats are chosen the row's menu is the bulk one, so the button that opens a single chat's menu goes.
+        let menu_shown = !choosing && (self.hovered.as_deref() == Some(id.as_str()) || self.menu_open.as_deref() == Some(id.as_str()));
         let workspace = summary.workspace_id.clone();
         let (hover_id, open_id, menu_actions) = (id.clone(), id.clone(), actions.clone());
         let when = ago_from(now_ms, summary.updated_at, crate::ui::locale(cx) == crate::i18n::Locale::Zh);
@@ -275,8 +521,13 @@ impl HistoryPanel {
             .h(px(30.))
             .gap_1p5()
             .items_center()
-            // The unread dot keeps its place, so titles line up whether or not it shows.
-            .child(div().w(px(6.)).h(px(6.)).flex_shrink_0().rounded_full().when(unread, |dot| dot.bg(primary)))
+            // The unread dot keeps its place, so titles line up whether or not it shows; while chats are chosen the
+            // box that shows whether this one is takes it.
+            .child(if choosing {
+                check_box(chosen, cx)
+            } else {
+                div().w(px(6.)).h(px(6.)).flex_shrink_0().rounded_full().when(unread, |dot| dot.bg(primary)).into_any_element()
+            })
             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().when(unread, |title| title.font_weight(FontWeight::MEDIUM)).child(title))
             .when_some(external_badge(summary, cx), |this, badge| this.child(badge))
             .when_some(workers_progress, |this, progress| {
@@ -328,8 +579,9 @@ impl HistoryPanel {
             .rounded(radius)
             .text_sm()
             .cursor_pointer()
-            .when(active, |this| this.bg(list_active))
-            .when(!active, |this| this.hover(move |style| style.bg(list_hover)))
+            .when(chosen, |this| this.bg(primary.opacity(0.14)))
+            .when(active && !chosen, |this| this.bg(list_active))
+            .when(!active && !chosen, |this| this.hover(move |style| style.bg(list_hover)))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 let now = hovered.then(|| hover_id.clone());
                 if *hovered || this.hovered.as_deref() == Some(hover_id.as_str()) {
@@ -337,7 +589,10 @@ impl HistoryPanel {
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if this.click_to_choose(&id, event.modifiers(), window, cx) {
+                    return;
+                }
                 let id = id.clone();
                 this.store.update(cx, |store, cx| store.select(Some(id), cx));
                 // After the selection, so the project's own last chat does not replace it (`Ide::restore_session`).
@@ -354,7 +609,7 @@ impl HistoryPanel {
             .when_some(snippet.filter(|snippet| !snippet.is_empty()), |this, snippet| {
                 this.child(div().pl(px(12.)).pb_1().text_xs().text_color(muted_foreground).overflow_hidden().text_ellipsis().whitespace_nowrap().child(snippet))
             })
-            .context_menu(move |menu, _, cx| actions.menu(menu, cx))
+            .context_menu(row_menu)
             .into_any_element()
     }
 
@@ -475,6 +730,14 @@ impl HistoryPanel {
             .text_color(theme.muted_foreground)
             .child(div().flex_1().min_w_0().child(tr(cx, "agent.projects")))
             .child(
+                Button::new("sidebar-manage-projects")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(gpui_kit::assets::IconName::FolderCog))
+                    .tooltip(tr(cx, "agent.manageProjects"))
+                    .on_click(|_, window, cx| crate::ui::manage::open_projects(window, cx)),
+            )
+            .child(
                 Button::new("sidebar-add-project")
                     .ghost()
                     .xsmall()
@@ -502,6 +765,7 @@ impl HistoryPanel {
         let (fold_id, hover_key, open_key) = (group.id.clone(), key.clone(), key.clone());
         let chats: Vec<String> = group.chats.iter().map(|chat| chat.id.clone()).collect();
         let workspace = group.workspace.clone();
+        let (panel, group_key) = (cx.entity().downgrade(), group.id.clone());
         h_flex()
             .id(ElementId::Name(format!("project-{}", group.id).into()))
             .w_full()
@@ -565,7 +829,7 @@ impl HistoryPanel {
                                 .xsmall()
                                 .icon(IconName::Ellipsis)
                                 .tooltip(tr(cx, "agent.projectActions"))
-                                .dropdown_menu(move |menu, _, cx| project_menu(menu, workspace.clone(), chats.clone(), cx))
+                                .dropdown_menu(move |menu, _, cx| project_menu(menu, workspace.clone(), chats.clone(), (panel.clone(), group_key.clone()), cx))
                                 .on_open_change(cx.listener(move |this, open: &bool, _, cx| {
                                     this.menu_open = open.then(|| open_key.clone());
                                     cx.notify();
@@ -784,15 +1048,23 @@ fn new_chat_in(workspace: IdeWorkspace, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(NewChat), cx);
 }
 
-/// A project's menu: a new chat, rename, pin, add a folder, archive its chats, remove it from the list. A project that
-/// is no longer in the list only offers to archive its chats.
-fn project_menu(menu: PopupMenu, workspace: Option<IdeWorkspace>, chats: Vec<String>, cx: &App) -> PopupMenu {
-    let archive = PopupMenuItem::new(tr(cx, "agent.archiveProjectChats")).disabled(chats.is_empty()).on_click(move |_, window, cx| {
-        for id in &chats {
-            run("sessions.archive", json!({ "sessionId": id, "archived": true }), window.window_handle(), cx);
-        }
+/// A project's menu: a new chat, rename, pin, add a folder, choose or archive its chats, remove it from the list. A
+/// project that is no longer in the list only offers to choose or archive its chats. `panel` is the sidebar and the
+/// project's key there (choosing its chats unfolds it and shows all of them).
+fn project_menu(menu: PopupMenu, workspace: Option<IdeWorkspace>, chats: Vec<String>, panel: (WeakEntity<HistoryPanel>, String), cx: &App) -> PopupMenu {
+    let chosen = chats.clone();
+    let select = PopupMenuItem::new(tr(cx, "agent.selectProjectChats")).disabled(chats.is_empty()).on_click(move |_, window, cx| {
+        let (key, ids) = (panel.1.clone(), chosen.clone());
+        let _ = panel.0.update(cx, |this, cx| {
+            this.folded.remove(&key);
+            this.unlimited.insert(key);
+            this.choose(ids, window, cx);
+        });
     });
-    let Some(workspace) = workspace else { return menu.item(archive) };
+    let archive = PopupMenuItem::new(tr(cx, "agent.archiveProjectChats")).disabled(chats.is_empty()).on_click(move |_, window, cx| {
+        bulk("archive", chats.clone(), window, cx);
+    });
+    let Some(workspace) = workspace else { return menu.item(select).item(archive) };
     let (new_in, rename, pin, attach, remove) = (workspace.clone(), workspace.clone(), workspace.clone(), workspace.clone(), workspace.clone());
     menu.item(PopupMenuItem::new(tr(cx, "agent.newChatInProject")).on_click(move |_, window, cx| new_chat_in(new_in.clone(), window, cx)))
         .item(PopupMenuItem::new(tr(cx, "agent.renameProject")).on_click(move |_, window, cx| {
@@ -819,6 +1091,7 @@ fn project_menu(menu: PopupMenu, workspace: Option<IdeWorkspace>, chats: Vec<Str
             Ide::global(cx).update(cx, |ide, cx| ide.select(workspace, window, cx));
             crate::ui::ide::choose_folder_to_attach(window, cx);
         }))
+        .item(select)
         .item(archive)
         .separator()
         .item(PopupMenuItem::new(tr(cx, "agent.removeProject")).on_click(move |_, window, cx| {
@@ -827,7 +1100,7 @@ fn project_menu(menu: PopupMenu, workspace: Option<IdeWorkspace>, chats: Vec<Str
 }
 
 /// How long ago, as briefly as the sidebar has room for: `刚刚`, `5分钟`, `3小时`, `2天`; `now`, `5m`, `3h`, `2d`.
-fn ago_from(now_ms: f64, updated_ms: f64, zh: bool) -> String {
+pub(crate) fn ago_from(now_ms: f64, updated_ms: f64, zh: bool) -> String {
     let locale = if zh { crate::i18n::Locale::Zh } else { crate::i18n::Locale::En };
     let minutes = ((now_ms - updated_ms) / 60_000.0).max(0.0) as u64;
     let (hours, days) = (minutes / 60, minutes / (60 * 24));
@@ -942,86 +1215,8 @@ fn sidebar_tree<'a>(chats: &[&'a SessionSummary], workspaces: &[IdeWorkspace]) -
     SidebarTree { pinned, projects, loose }
 }
 
-/// The archived chats, in their own window: open, restore or delete each.
-pub fn open_archived(store: Entity<Store>, window: &mut Window, cx: &mut App) {
-    let list = cx.new(|cx| ArchivedList::new(store, cx));
-    window.open_dialog(cx, move |dialog, _, cx| dialog.title(tr(cx, "agent.archivedChats")).w(px(600.)).child(list.clone()));
-}
-
-struct ArchivedList {
-    store: Entity<Store>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl ArchivedList {
-    fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![cx.subscribe(&store, |_, _, event: &StoreEvent, cx| {
-            if matches!(event, StoreEvent::SummariesChanged | StoreEvent::PrefsChanged) {
-                cx.notify();
-            }
-        })];
-        Self { store, _subscriptions: subscriptions }
-    }
-}
-
-impl Render for ArchivedList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (border, muted_foreground) = {
-            let theme = cx.theme();
-            (theme.border, theme.muted_foreground)
-        };
-        let zh = crate::ui::locale(cx) == crate::i18n::Locale::Zh;
-        let now_ms = now_millis();
-        let workspaces = Ide::global(cx).read(cx).workspaces.clone();
-        let titles: HashMap<&str, &str> = workspaces.iter().map(|workspace| (workspace.workspace_id.as_str(), workspace.title.as_str())).collect();
-        let summaries = self.store.read(cx).summaries.clone();
-        let archived = newest_first(summaries.iter().filter(|summary| summary.archived));
-        let rows: Vec<AnyElement> = archived
-            .iter()
-            .map(|summary| {
-                let title = title_of(summary, cx);
-                let (open, restore, delete) = (summary.id.clone(), summary.id.clone(), (summary.id.clone(), title.clone()));
-                let store = self.store.clone();
-                h_flex()
-                    .w_full()
-                    .py_1p5()
-                    .gap_2()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
-                            .child(div().text_xs().text_color(muted_foreground).child(format!("{} · {}", folder_name(summary, &titles), ago_from(now_ms, summary.updated_at, zh)))),
-                    )
-                    .child(Button::new(ElementId::Name(format!("archived-open-{open}").into())).ghost().xsmall().label(tr(cx, "agent.open")).on_click(move |_, window, cx| {
-                        store.update(cx, |store, cx| store.select(Some(open.clone()), cx));
-                        window.close_dialog(cx);
-                    }))
-                    .child(Button::new(ElementId::Name(format!("archived-restore-{restore}").into())).outline().xsmall().label(tr(cx, "chat.unarchive")).on_click(move |_, window, cx| {
-                        run("sessions.archive", json!({ "sessionId": restore, "archived": false }), window.window_handle(), cx);
-                    }))
-                    .child(Button::new(ElementId::Name(format!("archived-delete-{}", delete.0).into())).ghost().xsmall().label(tr(cx, "chat.delete")).on_click(move |_, window, cx| {
-                        confirm_delete(delete.0.clone(), delete.1.clone(), window, cx);
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        let empty = rows.is_empty();
-        v_flex()
-            .id("archived-list")
-            .w_full()
-            .max_h(px(440.))
-            .overflow_y_scroll()
-            .children(rows)
-            .when(empty, |this| this.child(div().py_4().text_sm().text_color(muted_foreground).child(tr(cx, "agent.noArchived"))))
-    }
-}
-
 /// A chat's title, or what an untitled one is called.
-fn title_of(summary: &SessionSummary, cx: &App) -> SharedString {
+pub(crate) fn title_of(summary: &SessionSummary, cx: &App) -> SharedString {
     if summary.title.is_empty() { tr(cx, "chat.newChat") } else { summary.title.clone().into() }
 }
 
@@ -1071,6 +1266,40 @@ impl ChatActions {
     }
 }
 
+/// The chats a Shift-click on `id` chooses: every one listed from `anchor` to it, either way round, or only it when
+/// there is no anchor in the list.
+fn shift_range(order: &[String], anchor: Option<&str>, id: &str) -> Vec<String> {
+    let from = anchor.and_then(|anchor| order.iter().position(|row| row == anchor));
+    match (from, order.iter().position(|row| row == id)) {
+        (Some(from), Some(to)) => order[from.min(to)..=from.max(to)].to_vec(),
+        _ => vec![id.to_owned()],
+    }
+}
+
+/// The right-click menu of a chosen chat: pin or unpin, archive or restore, or delete every chosen chat, or forget
+/// them.
+fn chosen_menu(menu: PopupMenu, chosen: Rc<Chosen>, panel: WeakEntity<HistoryPanel>, cx: &App) -> PopupMenu {
+    let count = chosen.ids.len();
+    let item = |label: SharedString, action: &'static str| {
+        let panel = panel.clone();
+        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+            let _ = panel.update(cx, |this, cx| this.act_on_chosen(action, window, cx));
+        })
+    };
+    let pin = if chosen.pinned { item(tr(cx, "chat.unpin"), "unpin") } else { item(tr(cx, "chat.pin"), "pin") };
+    let archive = if chosen.archived { item(tr(cx, "chat.unarchive"), "unarchive") } else { item(tr(cx, "chat.archive"), "archive") };
+    let forget = panel.clone();
+    menu.label(trf(cx, "agent.selectedCount", &[("count", &count)]))
+        .item(pin)
+        .item(archive)
+        .separator()
+        .item(item(tr(cx, "chat.delete"), "delete"))
+        .separator()
+        .item(PopupMenuItem::new(tr(cx, "agent.clearSelection")).on_click(move |_, _, cx| {
+            let _ = forget.update(cx, |this, cx| this.clear_choice(cx));
+        }))
+}
+
 /// Chats newest first, pinned ones before the others.
 fn sorted<'a>(chats: impl Iterator<Item = &'a SessionSummary>) -> Vec<&'a SessionSummary> {
     let mut list = newest_first(chats);
@@ -1078,7 +1307,7 @@ fn sorted<'a>(chats: impl Iterator<Item = &'a SessionSummary>) -> Vec<&'a Sessio
     list
 }
 
-fn newest_first<'a>(chats: impl Iterator<Item = &'a SessionSummary>) -> Vec<&'a SessionSummary> {
+pub(crate) fn newest_first<'a>(chats: impl Iterator<Item = &'a SessionSummary>) -> Vec<&'a SessionSummary> {
     let mut list: Vec<&SessionSummary> = chats.collect();
     list.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
     list
@@ -1106,7 +1335,7 @@ fn group_of(chat: &SessionSummary, workspace_id: Option<&str>) -> Group {
 }
 
 /// The name of a chat's project, else of the folder it ran in.
-fn folder_name(chat: &SessionSummary, titles: &HashMap<&str, &str>) -> SharedString {
+pub(crate) fn folder_name(chat: &SessionSummary, titles: &HashMap<&str, &str>) -> SharedString {
     if let Some(title) = chat.workspace_id.as_deref().and_then(|id| titles.get(id)) {
         return (*title).to_owned().into();
     }
@@ -1120,7 +1349,7 @@ fn folder_of(chat: &SessionSummary, workspace_id: Option<&str>) -> Option<Shared
 }
 
 /// Whether a search finds a chat: every word of the query in its title or its folder, ignoring case.
-fn found(chat: &SessionSummary, untitled: &str, words: &[String]) -> bool {
+pub(crate) fn found(chat: &SessionSummary, untitled: &str, words: &[String]) -> bool {
     let title = if chat.title.is_empty() { untitled.to_lowercase() } else { chat.title.to_lowercase() };
     let folder = chat.cwd.to_lowercase();
     words.iter().all(|word| title.contains(word.as_str()) || folder.contains(word.as_str()))
@@ -1136,6 +1365,15 @@ impl Render for HistoryPanel {
         if searching {
             self.searching = true;
         }
+        // A chosen chat that is gone (deleted, or by another window) is no longer chosen.
+        if self.choosing() || self.anchor.is_some() {
+            let known: HashSet<&str> = summaries.iter().map(|summary| summary.id.as_str()).collect();
+            self.chosen.retain(|id| known.contains(id.as_str()));
+            if self.anchor.as_deref().is_some_and(|anchor| !known.contains(anchor)) {
+                self.anchor = None;
+            }
+        }
+        self.row_order.borrow_mut().clear();
         let now_ms = now_millis();
         let rows = if self.sidebar {
             self.render_sidebar_list(&summaries, &words, now_ms, window, cx)
@@ -1157,10 +1395,19 @@ impl Render for HistoryPanel {
             let theme = cx.theme();
             (theme.sidebar, theme.muted_foreground, theme.sidebar_border)
         };
-        let top = if self.sidebar { self.render_sidebar_top(cx).into_any_element() } else { self.render_side_header(cx).into_any_element() };
+        let top = match self.chosen_now(cx) {
+            Some(chosen) => {
+                let all = self.all_listed(searching, cx);
+                self.render_selection_bar(&chosen, all, cx)
+            }
+            None if self.sidebar => self.render_sidebar_top(cx).into_any_element(),
+            None => self.render_side_header(cx).into_any_element(),
+        };
         v_flex()
             .size_full()
             .bg(sidebar_bg)
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::choice_key))
             .child(top)
             .child(
                 v_flex()
@@ -1348,6 +1595,16 @@ mod tests {
         assert_eq!(ids(&tree.loose), ["c"]);
         // Choosing a chat never reorders projects: the order follows the chats, not the project shown.
         assert_eq!(sidebar_tree(&chats, &workspaces).projects.iter().map(|group| group.id.clone()).collect::<Vec<_>>(), order);
+    }
+
+    #[test]
+    fn shift_click_takes_every_chat_listed_between_the_anchor_and_it() {
+        let order: Vec<String> = ["a", "b", "c", "d", "e"].into_iter().map(str::to_owned).collect();
+        assert_eq!(shift_range(&order, Some("b"), "d"), ["b", "c", "d"]);
+        assert_eq!(shift_range(&order, Some("d"), "a"), ["a", "b", "c", "d"]);
+        assert_eq!(shift_range(&order, Some("c"), "c"), ["c"]);
+        assert_eq!(shift_range(&order, None, "e"), ["e"]);
+        assert_eq!(shift_range(&order, Some("gone"), "b"), ["b"]);
     }
 
     #[test]

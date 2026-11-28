@@ -177,7 +177,7 @@ pub struct NewChat {
     pub external_backend: Option<ExternalBackendRef>,
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
@@ -701,6 +701,9 @@ impl ChatStore {
 
     /// Delete a chat file.
     pub async fn delete(self: &Arc<Self>, id: &str) -> HostResult<()> {
+        if !valid_id(id) {
+            return Err(not_found());
+        }
         {
             let lock = self.lock(id);
             let _guard = lock.lock().await;

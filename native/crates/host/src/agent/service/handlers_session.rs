@@ -3,22 +3,68 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use rainy_protocol::chat::SessionSummary;
 use serde_json::{Value, json};
 
 use super::params::{
     ApproveParams, ArchiveParams, BranchParams, CallsParams, CompleteParams, CreateParams, ForkParams, GetParams, ItemParams, ListParams, ModeSessionParams, OrchestrateParams, PathParams,
-    PinParams, RenameParams, SearchParams, SendParams, SessionRef, SetModelParams, TeamMemberParams, TeamParams,
+    PinParams, RenameParams, SearchParams, SendParams, SessionRef, SetModelParams, TeamMemberParams, TeamParams, BulkParams,
 };
 use super::{Agent, no_worktree, not_found_chat, permission_mode};
 use crate::agent::complete;
 use crate::agent::external::{check_backend_ref, external_provider_id};
 use crate::agent::session::summary_of;
-use crate::agent::store::{MetaPatch, NewChat, Parent};
-use crate::error::HostError;
+use crate::agent::store::{MetaPatch, NewChat, Parent, valid_id};
+use crate::error::{HostError, HostResult};
 use crate::locale::l;
 use crate::settings::ModelSelection;
 
+/// The most chats one `sessions.bulk` request takes.
+const MAX_BULK: usize = 1000;
+
 impl Agent {
+    /// Archives or restores a chat; archiving stops a reply that is still running.
+    pub(super) async fn archive_chat(&self, id: &str, archived: bool) -> HostResult<SessionSummary> {
+        if archived && let Some(session) = self.live(id) {
+            session.abort();
+        }
+        self.set_meta(id, MetaPatch { archived: Some(archived), ..MetaPatch::default() }).await
+    }
+
+    /// Deletes a chat with its worktree, snapshots and spilled output; a coordinator takes its swarm workers' live sessions with it.
+    pub(super) async fn delete_chat(&self, id: &str) -> HostResult<()> {
+        if !valid_id(id) {
+            return Err(not_found_chat());
+        }
+        // Serialize under `opening` so `Agent::session` cannot reopen the chat while it is closing and being deleted.
+        let _opening = self.opening.lock().await;
+        let stored = self.services.store.get(id);
+        let is_coordinator = stored.as_ref().and_then(|chat| chat.swarm.as_ref()).is_some_and(|link| link.coordinator == id);
+        if is_coordinator {
+            let workers = self.services.swarm.worker_ids(id);
+            self.services.swarm.cleanup_coordinator(id);
+            for worker_id in workers {
+                let worker = self.sessions.lock().unwrap().remove(&worker_id);
+                if let Some(worker) = worker {
+                    worker.session.close().await;
+                }
+            }
+        }
+        let live = self.sessions.lock().unwrap().remove(id);
+        if let Some(entry) = live {
+            entry.session.close().await;
+        }
+        let worktree = stored.and_then(|chat| chat.worktree);
+        self.services.store.delete(id).await?;
+        if let Some(worktree) = worktree {
+            self.git.worktree_remove(&worktree).await;
+        }
+        self.services.snapshots.remove(id);
+        let _ = std::fs::remove_dir_all(self.services.env.home.join("spill").join(id));
+        self.services.rpc.emit("sessions.removed", json!({ "sessionId": id }));
+        Ok(())
+    }
+
     pub(super) fn register_sessions(self: &Arc<Self>) {
         self.on("sessions.list", |agent, params: ListParams| async move {
             let chats = agent.services.store.list();
@@ -73,16 +119,32 @@ impl Agent {
             }
             agent.set_meta(&params.session_id, MetaPatch { title: Some(title.to_owned()), ..MetaPatch::default() }).await
         });
-        self.on("sessions.archive", |agent, params: ArchiveParams| async move {
-            if params.archived
-                && let Some(session) = agent.live(&params.session_id)
-            {
-                session.abort();
-            }
-            agent.set_meta(&params.session_id, MetaPatch { archived: Some(params.archived), ..MetaPatch::default() }).await
-        });
+        self.on("sessions.archive", |agent, params: ArchiveParams| async move { agent.archive_chat(&params.session_id, params.archived).await });
         self.on("sessions.pin", |agent, params: PinParams| async move {
             agent.set_meta(&params.session_id, MetaPatch { pinned: Some(params.pinned), ..MetaPatch::default() }).await
+        });
+        // One action on many chats, each as its own request would do it; one that fails does not stop the others.
+        self.on("sessions.bulk", |agent, params: BulkParams| async move {
+            if !matches!(params.action.as_str(), "archive" | "unarchive" | "pin" | "unpin" | "delete") {
+                return Err(HostError::invalid(l("不支持这个批量操作。", "This bulk action is not supported.")));
+            }
+            if params.session_ids.is_empty() || params.session_ids.len() > MAX_BULK {
+                return Err(HostError::invalid(l(&format!("一次可以处理 1–{MAX_BULK} 个对话。"), &format!("A bulk action takes 1 to {MAX_BULK} chats."))));
+            }
+            let mut seen = std::collections::HashSet::new();
+            let (mut done, mut failed) = (0usize, Vec::new());
+            for id in params.session_ids.into_iter().filter(|id| seen.insert(id.clone())) {
+                let result = match params.action.as_str() {
+                    "archive" | "unarchive" => agent.archive_chat(&id, params.action == "archive").await.map(drop),
+                    "pin" | "unpin" => agent.set_meta(&id, MetaPatch { pinned: Some(params.action == "pin"), ..MetaPatch::default() }).await.map(drop),
+                    _ => agent.delete_chat(&id).await,
+                };
+                match result {
+                    Ok(()) => done += 1,
+                    Err(error) => failed.push(json!({ "sessionId": id, "message": error.message })),
+                }
+            }
+            Ok(json!({ "done": done, "failed": failed }))
         });
         self.on("sessions.read", |agent, params: SessionRef| async move {
             let chat = agent.services.store.get(&params.session_id).ok_or_else(not_found_chat)?;
@@ -130,32 +192,7 @@ impl Agent {
             Ok(json!({ "session": summary, "files": files }))
         });
         self.on("sessions.delete", |agent, params: SessionRef| async move {
-            // Serialize under `opening` so `Agent::session` cannot reopen the chat while it is closing and being deleted.
-            let _opening = agent.opening.lock().await;
-            let stored = agent.services.store.get(&params.session_id);
-            let is_coordinator = stored.as_ref().and_then(|chat| chat.swarm.as_ref()).is_some_and(|link| link.coordinator == params.session_id);
-            if is_coordinator {
-                let workers = agent.services.swarm.worker_ids(&params.session_id);
-                agent.services.swarm.cleanup_coordinator(&params.session_id);
-                for worker_id in workers {
-                    let worker = agent.sessions.lock().unwrap().remove(&worker_id);
-                    if let Some(worker) = worker {
-                        worker.session.close().await;
-                    }
-                }
-            }
-            let live = agent.sessions.lock().unwrap().remove(&params.session_id);
-            if let Some(entry) = live {
-                entry.session.close().await;
-            }
-            let worktree = stored.and_then(|chat| chat.worktree);
-            agent.services.store.delete(&params.session_id).await?;
-            if let Some(worktree) = worktree {
-                agent.git.worktree_remove(&worktree).await;
-            }
-            agent.services.snapshots.remove(&params.session_id);
-            let _ = std::fs::remove_dir_all(agent.services.env.home.join("spill").join(&params.session_id));
-            agent.services.rpc.emit("sessions.removed", json!({ "sessionId": params.session_id }));
+            agent.delete_chat(&params.session_id).await?;
             Ok(Value::Null)
         });
         self.on("sessions.fork", |agent, params: ForkParams| async move {
