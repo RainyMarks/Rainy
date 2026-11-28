@@ -341,10 +341,10 @@ git clone https://github.com/RainyMarks/Rainy.git
 cd Rainy
 pnpm install --frozen-lockfile
 node scripts/bootstrap-release-inputs.mjs --manifest toolpacks/build-inputs.v1.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-5.0.2/environment-components
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Distribution Ubuntu -ComponentSource release/offline-5.0.3/environment-components
 ```
 
-只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`5.0.2` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。对外分发修改后的构建产物须遵守 `GPL-3.0-only`、[NOTICE](NOTICE) 中的第 7 条声明以及 [TRADEMARKS.md](TRADEMARKS.md) 的品牌与视觉资产边界。
+只有 WSL 构建发行版名称不同时，才替换命令中的 `Ubuntu`；`5.0.3` 换成 `package.json` 中的版本号。构建原生界面和 Host 还需要 Rust 的 GNU 工具链（`x86_64-pc-windows-gnu`）、MSYS2 UCRT64、`cargo-zigbuild` 和 Zig。对外分发修改后的构建产物须遵守 `GPL-3.0-only`、[NOTICE](NOTICE) 中的第 7 条声明以及 [TRADEMARKS.md](TRADEMARKS.md) 的品牌与视觉资产边界。
 
 日常开发时，`pnpm run build` 将文档预览页构建到 `dist/renderer`；原生界面和 Host 在 `native/` 里，用 `cd native && cargo build -p rainy -p rainy-host` 一并构建（把 `rainy-host.exe` 拷入 `tmp/dev-resources/windows-host/`），再用 `bash native/scripts/run-ui.sh` 以临时数据目录 `tmp/ui-data` 启动窗口。开发者可从[架构](docs/architecture.md)和 [AGENTS.md](AGENTS.md) 开始。
 

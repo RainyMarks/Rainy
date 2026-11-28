@@ -4,6 +4,14 @@ Highlights of each release. Installers, resource pieces and full notes are on [G
 
 English | [中文](CHANGELOG.zh.md)
 
+## 5.0.3 · 2026-11-27
+
+- **Choose several chats and pin, archive or delete them at once**: Ctrl-click chats in the sidebar (Agent mode) or the chat list (IDE mode) to choose them, Shift-click to choose every chat between two clicks, or pick "Select" in a chat's right-click menu. The top of the list then becomes a bar with the count, Select all, Pin (Unpin when all are pinned), Archive (Unarchive when all are archived) and Delete. While chats are chosen a click chooses or unchooses a chat and the right-click menu acts on all of them; Esc clears the choice and Delete deletes it. Deleting asks once and names the first few chats.
+- **"Select all chats" in a project's menu**: chooses every chat of the project (unfolding it and listing all of them, even past 8) to archive, delete or pin together. "Archive all chats" now goes in one request and says how many it archived.
+- **Search and act on many archived chats**: the archived chats' window has a search field, Select all and a checkbox per row; chosen chats can be unarchived or deleted together. Opening, unarchiving or deleting one chat works as before.
+- **New "Manage projects" window**: opened from beside the "Projects" heading in the sidebar or from the project menu in the title bar. Search project names or paths, see each project's path and chat count (with how many are archived), pin, rename or remove one directly, or choose several to pin, unpin, archive all their chats or remove from the list (they are only no longer listed: their chats stay and no files are deleted).
+- **The sidebar no longer squeezes its groups when it holds many chats**: since 5.0.0, once the chats filled more than the sidebar's height, the pinned, project and "Chats" groups were squeezed together, each showing only a few rows, and the list did not scroll. Every group is now shown whole and the list scrolls.
+
 ## 5.0.2 · 2026-11-27
 
 - **Choose the model and reasoning level of Antigravity and Codex before the first chat**: the model menu used to list an external agent's models only after one chat with it; until then it showed just "Default model" and "This model has no reasoning effort to set." Rainy now reads the list as soon as it finds Antigravity or Codex (`agy models` for Antigravity, Codex's own model query for Codex; neither opens a conversation), so the menu lists each model with the reasoning levels it offers. Re-probe in Settings uses `agy models` too and no longer leaves an empty conversation in Antigravity's history.
